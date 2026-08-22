@@ -3,7 +3,8 @@ import { useChatState, useChatDispatch } from '../../state/chat-context';
 import { hookEventToAction } from '../../state/hook-dispatcher';
 import UserMessage from '../UserMessage';
 import SpecialistReportCard from '../SpecialistReportCard';
-import AssistantTurnBubble, { abnormalStopReason } from '../AssistantTurnBubble';
+import AssistantTurnBubble from '../AssistantTurnBubble';
+import { shouldRenderAssistantTurn } from '../../state/chat-types';
 import { CompactToolStrip } from './CompactToolStrip';
 import PromptCard from '../PromptCard';
 import { sendPromptInput } from '../../state/prompt-input';
@@ -390,10 +391,9 @@ export function BubbleFeed({ sessionId }: Props) {
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
-                  // MUST mirror ChatView.tsx: a segment-less turn with an
-                  // abnormal stopReason renders its footer row (the
-                  // empty_response fix); all other segment-less turns drop.
-                  if (!turn || (turn.segments.length === 0 && !abnormalStopReason(turn.stopReason))) return null;
+                  // Shared gate (chat-types.ts) — one function keeps this
+                  // mirrored with ChatView.tsx by construction.
+                  if (!shouldRenderAssistantTurn(turn)) return null;
                   key = entry.turnId;
                   content = (
                     <AssistantTurnBubble

@@ -1904,13 +1904,34 @@ describe('HarnessSession — empty final step recovery', () => {
     expect(JSON.stringify(history[1])).toContain('recovered');
   });
 
-  it("finishReason 'tool-calls' with ZERO parsed calls: orderly → retried (review fix)", async () => {
+  it("finishReason 'tool-calls' with ZERO parsed calls: orderly → retried, preparing card withdrawn (review fix)", async () => {
     // A stream that announces tool use but whose every call was dropped as
     // malformed/truncated leaves toolCalls empty with finishReason
     // 'tool-calls' — the likeliest empty-step shape on small local models.
     // Excluding it from ORDERLY_EMPTY_FINISHES ended the turn with the raw
     // passthrough stopReason 'tool-calls' (meaningless to the user) instead of
-    // the retry ladder.
+    // the retry ladder. And because this shape almost always put a "Preparing…"
+    // card on screen (tool-input-start with no completed tool-call), the retry
+    // must WITHDRAW that card before re-running — the step re-runs inside the
+    // same turn, so endTurn's reaping never fires and the orphan would spin
+    // beside the retry's own cards (same rule as the manual/stall retry paths).
+    const seen: any[] = [];
+    const model = scriptedModel([
+      stream(...toolInputChunks('c1', 'Read', '{"file_pa'), finishChunk('tool-calls')),
+      stream(...textChunks('a', 'recovered'), finishChunk('stop')),
+    ], seen);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    expect(seen).toHaveLength(2);   // one retry, then the real answer
+    expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('end_turn');
+    // The dead attempt's preparing card was explicitly withdrawn.
+    const cleared = events.filter((e) => e.type === 'assistant-thinking' && e.data.toolPreparing?.cleared);
+    expect(cleared.map((e) => e.data.toolPreparing.toolCallId)).toEqual(['c1']);
+  });
+
+  it("empty 'tool-calls' twice → empty_response (the honest end, not the raw passthrough)", async () => {
     const seen: any[] = [];
     const model = scriptedModel([stream(finishChunk('tool-calls'))], seen);
     const session = new HarnessSession(makeOpts({}), async () => model as any);

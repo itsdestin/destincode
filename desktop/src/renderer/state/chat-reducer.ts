@@ -8,6 +8,7 @@ import {
   createSessionChatState,
   deserializeChatState,
   HISTORY_EXPAND_PROMPT_ID,
+  abnormalStopReason,
 } from './chat-types';
 import { SubagentSegment, ToolCallState, ToolGroupState } from '../../shared/types';
 
@@ -1409,7 +1410,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // it — see below. Resolve WHICH turn gets stamped first, then stamp
       // once, so the mint path can never drift from the normal path's field
       // policy (it did, briefly: `model: action.model` vs `?? turn.model`).
-      const abnormalStop = !!action.stopReason && action.stopReason !== 'end_turn';
+      // Shared predicate (chat-types.ts): the mint below and the render gates
+      // must agree on what "abnormal" means, or a minted turn gets dropped —
+      // or a droppable one minted.
+      const abnormalStop = abnormalStopReason(action.stopReason);
       let assistantTurns = new Map(session.assistantTurns);
       let timeline = session.timeline;
       let seenUuids = session.seenUuids;

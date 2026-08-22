@@ -77,6 +77,26 @@ export interface AssistantTurn {
   anthropicRequestId: string | null;
 }
 
+/** The single definition of "a stopReason worth surfacing" — `end_turn` is the
+ *  normal completion and carries no signal. Lives HERE (not in a component) so
+ *  the reducer's turn-complete mint gate and the render gates below share one
+ *  predicate: a minted turn the gates drop, or a droppable turn that mints,
+ *  is exactly the divergence that shipped the empty_response footer as dead
+ *  code once (PR #324 review). */
+export function abnormalStopReason(reason: string | null | undefined): boolean {
+  return !!reason && reason !== 'end_turn';
+}
+
+/** Timeline render gate shared by ChatView and the buddy BubbleFeed (which
+ *  MUST mirror each other): a segment-less turn renders only when it carries
+ *  an abnormal stopReason — its footer row is the whole fix for the
+ *  empty_response bug (a fully-contentless turn must not end in unexplained
+ *  silence). All other segment-less turns drop. */
+export function shouldRenderAssistantTurn(turn: AssistantTurn | undefined): turn is AssistantTurn {
+  if (!turn) return false;
+  return turn.segments.length > 0 || abnormalStopReason(turn.stopReason);
+}
+
 // Snapshot of session stats + rate limits captured when /cost or /usage was typed.
 // Point-in-time — never auto-updates. The live view lives in the status bar.
 export interface UsageSnapshot {

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { AssistantTurn } from '../state/chat-types';
+import { AssistantTurn, abnormalStopReason } from '../state/chat-types';
 import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/types';
 import { assistantName } from '../utils/assistant-name';
 import MarkdownContent from './MarkdownContent';
@@ -55,16 +55,6 @@ function stopReasonCopy(reason: string, provider: SessionProvider | undefined): 
   return map[reason] ?? `Response ended: ${reason}.`;
 }
 
-// The single definition of "a stopReason worth surfacing" — `end_turn` is the
-// normal completion and carries no signal. Shared by this component's two
-// footer gates AND the timeline gates in ChatView / buddy BubbleFeed, which
-// must let a segment-less turn through exactly when this returns true (a
-// segment-less turn that renders nothing here would be dropped-then-mounted
-// for no reason; one that renders a footer must NOT be dropped upstream —
-// that exact mismatch shipped the empty_response footer as dead code once).
-export function abnormalStopReason(reason: string | null | undefined): boolean {
-  return !!reason && reason !== 'end_turn';
-}
 
 // Collapsible disclosure for the model's reasoning / chain of thought.
 // Collapsed by default — user explicitly chose this UX so reasoning doesn't
