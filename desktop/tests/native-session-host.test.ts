@@ -125,8 +125,13 @@ describe('NativeSessionHost', () => {
     // forwards to the broker rather than re-implementing the lookup.
     const emitted: any[] = [];
     host.on('hook-event', (e) => emitted.push(e));
-    void host.askPermission({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'npm test' }, denyListed: false });
-    void host.askPermission({ sessionId: 's2', toolName: 'Read', toolInput: {}, denyListed: false });
+    // Seed two pending asks straight through the broker — the public
+    // askPermission delegate was deleted (ROADMAP 2026-08-12: zero production
+    // callers; the shipped path is the askUser closure, which also threads
+    // permissionMode). This test only proves pendingAskEventsFor forwards to
+    // the broker, so seeding at the broker is the honest fixture.
+    void (host as any).broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'npm test' }, denyListed: false });
+    void (host as any).broker.ask({ sessionId: 's2', toolName: 'Read', toolInput: {}, denyListed: false });
     const events = host.pendingAskEventsFor('s1');
     expect(events).toHaveLength(1);
     expect(events[0].sessionId).toBe('s1');
