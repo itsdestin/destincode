@@ -268,7 +268,10 @@ function handleMessage(data: string): void {
       dispatchEvent('session:moved', payload);
       break;
     case 'session:meta-changed':
-      dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value });
+      // Forward note too — set-note broadcasts {sessionId, note} (no flag), and
+      // narrowing to {flag, value} silently dropped it. Preload forwards the
+      // raw payload; this now matches.
+      dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value, note: payload.note });
       break;
     case 'tags:changed':
       dispatchEvent('tags:changed', undefined, payload || {});
