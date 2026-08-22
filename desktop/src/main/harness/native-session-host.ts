@@ -1878,17 +1878,6 @@ export class NativeSessionHost extends EventEmitter {
     return this.broker.respond(requestId, decision);
   }
 
-  /** Raise a native permission ask (Task 12's decide() will call this). Resolves
-   *  when the user responds or the session is interrupted (→ 'canceled'). */
-  askPermission(req: {
-    sessionId: string;
-    toolName: string;
-    toolInput: Record<string, unknown>;
-    denyListed: boolean;
-  }): Promise<AskDecision> {
-    return this.broker.ask(req);
-  }
-
   /** Task 0 (ROADMAP #permissions): lets ipc-handlers re-send a session's open
    *  asks after TRANSCRIPT_REPLAY, so a reloaded window's card gets its
    *  buttons back instead of coming back inert. Pure delegate — see

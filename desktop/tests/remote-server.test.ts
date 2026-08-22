@@ -600,6 +600,23 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
 
       await expect(sendAndCollect(server, msg())).rejects.toThrow('store exploded');
     });
+
+    it('broadcasts session:meta-changed after a successful write (parity with ipcMain SESSION_SET_TAG)', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set()));
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      const bSpy = vi.spyOn(server, 'broadcast');
+
+      await sendAndCollect(server, msg());
+
+      // Same frame shape the ipcMain path sends (ipc-handlers SESSION_SET_TAG):
+      // a second remote client viewing this session must refetch its meta.
+      expect(bSpy).toHaveBeenCalledWith({
+        type: 'session:meta-changed',
+        payload: { sessionId: 'desktop-1', flag: 'tag:tag_abc', value: true },
+      });
+    });
   });
 
   describe('session:set-note', () => {
@@ -688,6 +705,21 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
 
       // C1: passes the boolean isNativeSessionId result, not a provider string.
       expect(mockConversationsService.noteSessionNote).toHaveBeenCalledWith('native-1', 'note text', true);
+    });
+
+    it('broadcasts session:meta-changed after a successful write (parity with ipcMain SESSION_SET_NOTE)', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set()));
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      const bSpy = vi.spyOn(server, 'broadcast');
+
+      await sendAndCollect(server, msg());
+
+      expect(bSpy).toHaveBeenCalledWith({
+        type: 'session:meta-changed',
+        payload: { sessionId: 'desktop-1', note: 'hello' },
+      });
     });
   });
 

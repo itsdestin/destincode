@@ -1,10 +1,8 @@
 // Kotlin port of desktop/src/main/artifacts/project-manager.ts.
 //
-// Provides four project-level operations:
+// Provides two project-level operations:
 //   ensureProject      — look up or create a central-index entry for a project root
 //   applyGitTreatment  — append .youcoded/ to .gitignore when inside a git repo
-//   detectOrphan       — check whether a tracked artifact file has gone missing
-//   rebuildIndex       — walk known projects, refresh stats, drop any whose sidecar is gone
 //
 // All functions are top-level (package-level) to mirror the rest of this package's
 // convention (ArtifactStore, CentralIndex, PathCanonicalize are all top-level fns).
@@ -105,60 +103,6 @@ fun applyGitTreatment(projectRoot: String) {
         gitignore.toPath(),
         java.nio.file.StandardCopyOption.REPLACE_EXISTING,
     )
-}
-
-/**
- * Return true if the file backing [path] / [absolutePath] no longer exists on disk.
- *
- * [kind] determines which path to check:
- *   "internal" → [projectRoot] + [path] (relative)
- *   "external" → [absolutePath] (must be non-null)
- *
- * Mirrors desktop/src/main/artifacts/project-manager.ts::detectOrphan exactly.
- */
-fun detectOrphan(
-    projectRoot:  String,
-    path:         String,
-    kind:         String,
-    absolutePath: String?,
-): Boolean {
-    val fullPath = if (kind == "internal") {
-        File(projectRoot, path)
-    } else {
-        File(requireNotNull(absolutePath) { "absolutePath required for external artifact" })
-    }
-    return !fullPath.exists()
-}
-
-/**
- * Walk all projects in the central index and:
- *   - For each project whose sidecar still exists: refresh [IndexStats.artifactCount] + [lastIndexed].
- *   - For each project whose sidecar is gone: remove it from the index.
- *
- * Mirrors desktop/src/main/artifacts/project-manager.ts::rebuildIndex exactly.
- */
-fun rebuildIndex(claudeDir: String) {
-    val original = listProjects(claudeDir)
-    val survivingIds = mutableSetOf<String>()
-
-    for (p in original) {
-        val sidecar = readSidecar(p.path)
-        if (sidecar is ReadResult.Ok) {
-            val refreshed = p.copy(
-                stats       = IndexStats(artifactCount = sidecar.sidecar.artifacts.size),
-                lastIndexed = Instant.now().toString(),
-            )
-            upsertProject(claudeDir, refreshed)
-            survivingIds.add(p.id)
-        }
-    }
-
-    // Remove projects that no longer have a sidecar
-    for (p in original) {
-        if (p.id !in survivingIds) {
-            removeProject(claudeDir, p.id)
-        }
-    }
 }
 
 /**

@@ -150,5 +150,5 @@ export async function applyGitTreatment(projectRoot: string): Promise<void> {
 // NOTE: detectOrphan / rebuildIndex were removed in the 2026-07-10 dead-code
 // sweep — no production caller ever invoked them (orphan detection happens
 // live in the drawer/badge via checkExistence, and the sidebar count is
-// computed live in LIST_PROJECTS_INDEX). The Kotlin mirrors in
-// ProjectManager.kt still exist and should be pruned in an Android session.
+// computed live in LIST_PROJECTS_INDEX). The Kotlin mirrors were pruned
+// 2026-08-22.

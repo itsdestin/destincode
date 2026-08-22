@@ -165,14 +165,6 @@ export class HookRelay extends EventEmitter {
     return true;
   }
 
-  closeSocket(requestId: string): void {
-    const pending = this.pendingSockets.get(requestId);
-    if (pending && !pending.socket.destroyed) {
-      pending.socket.end();
-    }
-    this.pendingSockets.delete(requestId);
-  }
-
   /**
    * True while a PermissionRequest for this session is held open. In that
    * window Claude Code's TUI is showing a live Ink select menu — automated
