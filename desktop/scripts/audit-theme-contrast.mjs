@@ -37,6 +37,27 @@ const rules = require('./vendor/contrast-rules.js');
 
 const builtinDir = resolve(scriptDir, '..', 'src', 'renderer', 'themes', 'builtin');
 
+// --- Coverage floor -------------------------------------------------------
+// WHY this exists: on 2026-07-22 a consolidation (PR #187) dropped `panel/canvas`
+// and `on-destructive/destructive` from the rule table. Nothing failed — the audit
+// printed "All 11 themes pass" while creme still shipped panel/canvas at 1.051 and
+// every theme shipped a danger label at 4.21:1. Removing a check makes this script
+// QUIETER, not louder, so two live bugs hid behind a green run and their repro
+// commands silently stopped reproducing.
+//
+// The lesson recorded at the time: "a consolidation that removes checks needs a
+// before/after count of rules evaluated, because a shrinking rule set is invisible
+// in a green run." These constants are that count. A green run must now also prove
+// the audit actually CHECKED something.
+//
+// Bump these deliberately when adding rules to contrast-rules.js. If a change
+// LOWERS them, that is the review conversation this guard exists to force.
+const EXPECTED_RULES = { HARD: 32, SURFACE: 6, SOFT: 3 };
+
+const coverage = { HARD: new Set(), SURFACE: new Set(), SOFT: new Set() };
+const skippedEverywhere = new Map(); // rule name -> how many themes skipped it
+const evaluatedSomewhere = new Set(); // rule names that ran for at least one theme
+
 function loadBuiltins() {
   return readdirSync(builtinDir)
     .filter((f) => f.endsWith('.json'))
@@ -92,6 +113,17 @@ for (const t of themes) {
   const blocking = hardFails + surfaceFails;
   if (blocking > 0) failing.push(t.slug);
 
+  // Coverage bookkeeping — see EXPECTED_RULES above. Rule-table size is a property
+  // of the ruleset, not the theme (a rule with a missing token still appears with
+  // status SKIP), so every theme must yield identical per-tier counts.
+  for (const tier of ['HARD', 'SURFACE', 'SOFT']) {
+    coverage[tier].add(results[tier].length);
+    for (const r of results[tier]) {
+      if (r.status === 'SKIP') skippedEverywhere.set(r.rule, (skippedEverywhere.get(r.rule) ?? 0) + 1);
+      else evaluatedSomewhere.add(r.rule);
+    }
+  }
+
   const glassNote = glassAware
     ? ` [glass ${Math.round(t.opts.panelsOpacity * 100)}% over ${t.opts.wallpaperAvg}]`
     : '';
@@ -115,6 +147,52 @@ for (const t of themes) {
 
 console.log('\n────────────────────────────────────────');
 for (const w of warnings) console.log(`⚠ ${w}`);
+
+// --- Coverage check: did this run actually check anything? ---
+const coverageErrors = [];
+for (const tier of ['HARD', 'SURFACE', 'SOFT']) {
+  const seen = [...coverage[tier]];
+  if (seen.length > 1) {
+    coverageErrors.push(`${tier}: themes disagree on rule count (${seen.join(', ')}) — the table must be theme-independent`);
+  } else if (seen[0] !== EXPECTED_RULES[tier]) {
+    const delta = seen[0] < EXPECTED_RULES[tier] ? 'FEWER' : 'more';
+    coverageErrors.push(
+      `${tier}: ${seen[0] ?? 0} rules evaluated, expected ${EXPECTED_RULES[tier]} — ` +
+        `the ruleset has ${delta} rules than when this floor was set`,
+    );
+  }
+}
+
+// A rule skipped for EVERY theme is checking nothing. This is the second way the
+// 2026-07-22 incident hid: destructive/on-destructive were skipped for all themes
+// because most packs never declare those tokens, so "auditing only declared
+// tokens skipped every theme" — green, and blind.
+for (const [rule, count] of skippedEverywhere) {
+  if (!evaluatedSomewhere.has(rule) && count === themes.length) {
+    coverageErrors.push(`"${rule}" was SKIPPED for all ${themes.length} themes — it is checking nothing`);
+  }
+}
+
+// Report what ACTUALLY ran, not what was expected — a coverage line that prints the
+// expected count during a coverage failure would be the same class of lie this guard
+// exists to catch.
+const actual = Object.fromEntries(
+  ['HARD', 'SURFACE', 'SOFT'].map((tier) => [tier, [...coverage[tier]][0] ?? 0]),
+);
+const actualTotal = Object.values(actual).reduce((a, b) => a + b, 0);
+const skipNote = skippedEverywhere.size > 0 ? `, ${skippedEverywhere.size} rule(s) skipped somewhere` : '';
+console.log(
+  `coverage: ${actualTotal} rules × ${themes.length} themes = ${actualTotal * themes.length} checks ` +
+    `(HARD ${actual.HARD} / SURFACE ${actual.SURFACE} / SOFT ${actual.SOFT})${skipNote}`,
+);
+
+if (coverageErrors.length > 0) {
+  console.log('\n❌ COVERAGE FAILURE — this run did not check what it claims to check:');
+  for (const e of coverageErrors) console.log(`  - ${e}`);
+  console.log('\nA shrinking ruleset is invisible in a green run. Update EXPECTED_RULES');
+  console.log('deliberately if the change is intended; otherwise a check was lost.');
+  process.exit(1);
+}
 
 if (failing.length === 0) {
   console.log(`All ${themes.length} themes pass HARD and SURFACE checks.`);
