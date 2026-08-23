@@ -189,26 +189,48 @@ first part and cache-scan sums the parts' sizes into one entry.
   downloaded on a 32 GB dev box. **PASS on b9992** (Windows x64 Vulkan,
   `Qwen3-0.6B-Q4_K_M` single + `Qwen3-0.6B-SPLIT-00001-of-00002`), 2026-07-14 —
   router discovered both ids from `--models-dir` and served the split model.
-- **Router hot-reload of `--models-dir` after boot — worked around in code
-  (2026-07-15); upstream behavior still NOT verified live.** The router discovers
-  GGUFs at BOOT; whether a file downloaded AFTER boot appears in `GET /models` is
-  unverified upstream (Amendment K2). `EngineSupervisor.listModels()` therefore
-  UNIONS a fresh `scanGgufCache` into the running router's `GET /models` rows
-  (router rows win — they carry live residency state; disk-only rows surface as
-  'unloaded'), so a just-downloaded model is immediately visible in
-  `catalogModels()` → the new-session picker's Local group, `liveModels()` → the
-  memory guard, and the model poll — no engine restart needed for LISTING.
-  Guard: engine-supervisor.test.ts "listModels UNIONS the disk scan". Still open
-  for the live pass: whether the running router can actually SERVE (hot-load) a
-  post-boot file when a completion requests it, or 400s until a restart — resolve
-  on Destin's dev machine.
+- **Router hot-reload of `--models-dir` after boot — RESOLVED 2026-08-16.** The
+  router discovers GGUFs at BOOT and re-scans ONLY when asked: `GET /models?reload=1`
+  (any non-empty value) re-runs `load_models()`. Its `need_reload` dirty flag is set
+  only when a download the ROUTER itself started finishes, and ours are app-side, so
+  it never fires for us. There is no timer, no inotify, no SIGHUP, no 404-miss
+  rescan, and a plain `GET /models` does NOT re-scan.
+  <!-- verify: {"path": "desktop/src/main/engine/engine-supervisor.ts", "contains": "reload=1"} -->
+  **A post-boot file is NOT servable until that rescan** — measured end-to-end on
+  2026-08-16 against a real b9992 router on an isolated port: file dropped in after
+  boot → absent from `GET /models` after 8s → `POST /v1/chat/completions` returns
+  `400 model 'X' not found` → `GET /models?reload=1` → same send returns 200 and the
+  model generates. This closes the question the 2026-07-15 note left open, and it is
+  the answer the upstream README's line 1613 ("The server must be restarted after
+  adding a new model") gets WRONG — contradicted by its own `?reload=1` note at 1765.
+  Measured cost of a rescan: **0.8–1.6 ms** (dir holding a 5 GB GGUF).
+  Amendment K2's union in `EngineSupervisor.listModels()` still stands, but it is a
+  LISTING fix only: it merges a fresh `scanGgufCache` into the router's rows (router
+  rows win — they carry live residency state; disk-only rows surface as 'unloaded'),
+  which makes a disk-only model a fully selectable picker row the router has never
+  heard of. Serveability is now guaranteed separately by `EngineSupervisor.ensureServable`
+  (rescan-once-then-recheck, fails OPEN) at the local-send chokepoint in
+  `provider-registry.ts`, plus a refresh after every download and delete.
+  **`?reload=1` is a WRITE, never a poll:** `load_models()` unloads a running model
+  whose source changed or vanished. Two behaviors measured on the same live probe —
+  a model already `loaded` SURVIVES a rescan unchanged, and an in-flight streaming
+  completion survives one (599 SSE chunks, clean exit); a model whose file was
+  deleted is dropped from the list.
+  Guards: engine-supervisor.test.ts → the "router rescan" describe (esp. "the
+  background model poll NEVER sends reload=1"); provider-registry.test.ts →
+  "an unservable model fails with the REAL cause, not the router 400".
 
 ## Verification
 
 `desktop/test-engine/` holds dev-run smoke probes (spawn the real engine, assert
-health + `/models` parity + a streamed tool-less chat round-trip). Re-run all
-three on every engine bump — analogous to `test-conpty/` on a CC bump. The
-original three PASS on b9992 (Windows x64 CPU, Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13.
+health + `/models` parity + **`?reload=1` picking up a post-boot file** + a streamed
+tool-less chat round-trip). Re-run all three on every engine bump — analogous to
+`test-conpty/` on a CC bump. The original three PASS on b9992 (Windows x64 CPU,
+Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13; the `?reload=1` assertion was added 2026-08-16
+and PASSES on b9992 (Linux x64 Vulkan, Qwen3.5-2B-Q8_0). **That assertion is the
+only guard that can see upstream dropping the rescan** — the unit tests mock fetch,
+so its removal would look exactly like the 2026-08-16 bug and nothing else we own
+would catch it.
 `probe-download.mjs` (Plan C: flat-basename ↔ router-id for single AND multi-part)
 PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine bump.
 `probe-tools.mjs` (Plan C: `--jinja` constrained tool-call round-trip + never-force +

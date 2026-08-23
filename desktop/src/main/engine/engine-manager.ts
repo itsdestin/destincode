@@ -28,6 +28,8 @@ export interface LocalEngineHook {
   installed(): boolean;
   ensureRunning(): Promise<string>;   // OpenAI-compatible base URL (…/v1)
   fetchImpl(): typeof fetch;          // supervisor.trackedFetch — idle accounting sees every request
+  /** Can the router actually SERVE this model right now? Fails OPEN. */
+  ensureServable(modelId: string): Promise<boolean>;
 }
 
 /** Pick the asset to install: the preferred backend if it ships an asset for
@@ -237,12 +239,34 @@ export class EngineManager extends EventEmitter {
   }
 
   /** Force a model resident (the [Reload Model] button). Boots the engine if
-   *  needed, then warms the model so its state flips loading → loaded. */
+   *  needed, then warms the model so its state flips loading → loaded.
+   *  ensureServable first: this is the pick-time safety net for a GGUF that
+   *  reached --models-dir after the router booted (download finished with the
+   *  app closed, a file copied in by hand, a refresh that failed). Without it
+   *  the warm-up 400s and the user's first send is what tells them. */
   async loadModel(modelId: string): Promise<void> {
     const inst = this.currentInstall();
     if (!inst) throw new Error('The local engine is not installed yet.');
     await this.rebuildSupervisor(inst);
+    await this.supervisor!.ensureServable(modelId);
     await this.supervisor!.loadModel(modelId);
+  }
+
+  /** Make the running router re-scan --models-dir. Called after a download lands
+   *  and after a delete, so the router's model set matches the disk. No-op when
+   *  the engine is stopped — its next boot scans the dir anyway. */
+  async refreshModels(): Promise<void> {
+    if (!this.supervisor) return;
+    await this.supervisor.refreshModels();
+    this.emit('status-changed');
+  }
+
+  /** True when the router can actually SERVE `modelId` right now. Fails OPEN
+   *  (see EngineSupervisor.ensureServable) — a false is a positive "the router
+   *  listed its models and yours was not among them", safe to act on. */
+  async ensureServable(modelId: string): Promise<boolean> {
+    if (!this.supervisor) return true;
+    return this.supervisor.ensureServable(modelId);
   }
 
   /** Live per-model residency for the create-time memory guard + coordinator. */
@@ -274,6 +298,7 @@ export class EngineManager extends EventEmitter {
         await this.rebuildSupervisor(inst);
         return this.supervisor!.ensureRunning();
       },
+      ensureServable: async (modelId: string) => this.ensureServable(modelId),
       // Bound lazily: the supervisor may not exist yet when the registry is
       // constructed; by the time the AI SDK fetches, ensureRunning built it.
       fetchImpl: () => (input: any, init?: any) => {
@@ -454,6 +479,9 @@ export class EngineManager extends EventEmitter {
       fs.rmSync(path.join(cfg.cacheDir, name), { force: true });
       fs.rmSync(path.join(cfg.cacheDir, `${name}.partial`), { force: true });
     }
+    // Tell the router the file is gone, or it keeps advertising a model that
+    // 400s on use — the delete-side twin of the post-download refresh.
+    await this.refreshModels();
     this.emit('status-changed');
   }
 

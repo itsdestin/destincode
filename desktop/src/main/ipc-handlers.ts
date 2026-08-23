@@ -2676,6 +2676,12 @@ export function registerIpcHandlers(
   modelManager.on('download-progress', (p) => {
     send(IPC.MODELS_DOWNLOAD_PROGRESS, p);
     remoteServer?.broadcast({ type: 'models:download-progress', payload: p });
+    // A finished download is invisible to a RUNNING router until it re-scans —
+    // its own rescan flag only fires for downloads IT started, and ours are
+    // app-side. Without this the model is a selectable picker row (K2's listing
+    // union) that 400s on first send. Fire-and-forget: the pick-time
+    // ensureServable is the safety net if this refresh fails or never ran.
+    if (p.state === 'done') void engineManager.refreshModels().catch(() => { /* pick-time retry covers it */ });
   });
   ipcMain.handle(IPC.ENGINE_SET_BACKEND, async (_e, backend: string) => { await engineManager.setBackend(backend as any); return engineManager.status(); });
   ipcMain.handle(IPC.ENGINE_SET_CONTEXT, async (_e, contextSize: number) => { await engineManager.setContext(contextSize); return engineManager.status(); });

@@ -1,9 +1,13 @@
 // EngineSupervisor — llama-server lifecycle (spec §3.2, ADR 007). Direct heir
 // of the archived feat/opencode-mvp OpenCodeService supervision pattern.
 //
-// Router mode: spawned WITHOUT -m; the server auto-discovers GGUFs in
-// LLAMA_CACHE, hot-loads on first request, LRU-evicts (--models-max), and
-// isolates each model in its own child process. We only ever talk HTTP to it.
+// Router mode: spawned WITHOUT -m; the server discovers GGUFs in --models-dir,
+// hot-loads on first request, LRU-evicts (--models-max), and isolates each model
+// in its own child process. We only ever talk HTTP to it.
+// Discovery is BOOT-TIME ONLY — the router never re-scans --models-dir on its
+// own (no timer, no inotify, no rescan on a plain GET /models). A file that
+// lands after boot 400s until refreshModels() asks for one. See "router rescan"
+// below; the discovery dir is --models-dir, NOT LLAMA_CACHE (vestigial).
 //
 // Idle shutdown: the AI SDK is handed trackedFetch, so every chat request
 // passes through here — each call bumps lastActivity and holds an inFlight
@@ -531,8 +535,11 @@ export class EngineSupervisor extends EventEmitter {
   // ---- model listing ----------------------------------------------------
 
   /** Running → GET /models (live status) UNIONED with a fresh disk scan, so a
-   *  model downloaded after boot is listed without a restart (Amendment K2);
+   *  model downloaded after boot is LISTED without a restart (Amendment K2);
    *  stopped → cache scan alone (loaded:false).
+   *  **Listed is not servable** — a row this union adds is a selectable model the
+   *  router has never heard of, and a completion naming it 400s. Serveability is
+   *  `ensureServable()`; never treat a row from here as usable on its own.
    *  Upstream /models schema is a tracked coupling — parse DEFENSIVELY, and
    *  keep the exact observed shape pinned in test-engine/probe-models.mjs +
    *  docs/engine-dependencies.md. */
@@ -568,12 +575,15 @@ export class EngineSupervisor extends EventEmitter {
           state,
         });
       }
-      // Fix (Amendment K2): the router discovers GGUFs at BOOT, and whether a
-      // file downloaded AFTER boot ever shows up in GET /models is unverified
-      // upstream — so union in the fresh disk scan. A just-downloaded model is
-      // then immediately visible (new-session picker via catalogModels, memory
-      // guard via liveModels) without an engine restart. Router rows win — they
-      // carry live residency state; disk-only rows are 'unloaded' by definition.
+      // Amendment K2: the router discovers GGUFs at BOOT, so union in the fresh
+      // disk scan — a just-downloaded model is then LISTED (new-session picker via
+      // catalogModels, memory guard via liveModels). Router rows win: they carry
+      // live residency state; disk-only rows are 'unloaded' by definition.
+      // LISTED IS NOT SERVABLE. A row this union added is a fully selectable model
+      // the router has never heard of, and a completion naming it 400s with
+      // `model 'X' not found` (measured 2026-08-16, after that reached a user).
+      // Serveability is ensureServable()'s job, below — do not read this union as
+      // making a post-boot download usable. It only makes it visible.
       const routerIds = new Set(out.map((m) => m.id));
       for (const m of scanned) {
         if (!routerIds.has(m.id)) out.push(m);
@@ -582,6 +592,87 @@ export class EngineSupervisor extends EventEmitter {
     } catch {
       return scanGgufCache(this.opts.cacheDir); // engine died mid-call — degrade to scan
     }
+  }
+
+  // ---- router rescan ----------------------------------------------------
+  //
+  // The router discovers GGUFs when it BOOTS and never looks again on its own:
+  // upstream gates the rescan behind a `need_reload` dirty flag that is set ONLY
+  // when a download the ROUTER itself started finishes. Our downloads are
+  // app-side, so it is never set for us — a file we drop into --models-dir is
+  // invisible to the router until we ask. There is no timer, no inotify, no
+  // SIGHUP, and a plain GET /models does NOT rescan.
+  //
+  // Asking is `GET /models?reload=1` (any non-empty value). Verified 2026-08-16
+  // two ways — disassembly of the shipped libllama-server-impl.so (b9992) and
+  // upstream tools/server/server-models.cpp at the b9992 tag — after a real send
+  // 400'd on a model that had been on disk for half an hour. NOTE the upstream
+  // README also says "The server must be restarted after adding a new model";
+  // that line is stale, contradicted by its own ?reload=1 note 150 lines later.
+
+  /** Single-flight guard: N sessions picking the same fresh model must cause ONE
+   *  rescan, not N. Cleared as soon as the in-flight scan resolves. */
+  private refreshPromise: Promise<Set<string> | null> | null = null;
+
+  /** Router-known model ids. `reload` re-scans --models-dir first. Returns null
+   *  when the router can't be reached or its payload doesn't parse — a null is
+   *  "don't know", NEVER "empty", because callers gate sends on this. */
+  private async routerModelIds(reload: boolean): Promise<Set<string> | null> {
+    if (this.state !== 'running') return null;
+    try {
+      const url = `${this.rootUrl()}/models${reload ? '?reload=1' : ''}`;
+      const res = await (this.opts.fetchImpl ?? fetch)(url, { method: 'GET' });
+      if (!res.ok) return null;
+      const payload: any = await res.json();
+      const rows: any[] = Array.isArray(payload?.data) ? payload.data
+        : Array.isArray(payload?.models) ? payload.models
+        : Array.isArray(payload) ? payload : [];
+      const ids = new Set<string>();
+      for (const row of rows) {
+        const id = typeof row?.id === 'string' ? row.id : typeof row?.name === 'string' ? row.name : null;
+        if (id) ids.add(id);
+      }
+      return ids;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Make the running router re-scan --models-dir. Call after a download lands or
+   *  a model is deleted — NEVER from the poll: a rescan is a WRITE. Upstream's
+   *  load_models() unloads a running model whose source changed or vanished, so on
+   *  a 1.5s cadence this would be a reconciliation pass every tick, forever.
+   *  Pinned by "the background model poll NEVER sends reload=1". */
+  async refreshModels(): Promise<void> {
+    if (this.state !== 'running') return; // the next boot scans the dir anyway
+    await this.rescanOnce();
+    void this.emitModelsIfChanged(); // let the UI see the new row promptly
+  }
+
+  private rescanOnce(): Promise<Set<string> | null> {
+    if (this.refreshPromise) return this.refreshPromise;
+    this.refreshPromise = this.routerModelIds(true)
+      .finally(() => { this.refreshPromise = null; });
+    return this.refreshPromise;
+  }
+
+  /** True when the router can actually SERVE `modelId` right now — the gap K2's
+   *  listing union leaves open, since that union makes a disk-only model a fully
+   *  selectable row the router has never heard of. Rescans once if the model is
+   *  missing, then re-checks.
+   *
+   *  FAILS OPEN (returns true) when the engine is stopped or the router can't
+   *  answer: a probe that doesn't know must not be the thing that blocks a send
+   *  the engine would have served fine. A false is therefore a real, positive
+   *  "the router listed its models and yours was not among them". */
+  async ensureServable(modelId: string): Promise<boolean> {
+    if (this.state !== 'running') return true; // a fresh boot scans the dir
+    const known = await this.routerModelIds(false);
+    if (known === null) return true;           // unreachable → don't block
+    if (known.has(modelId)) return true;
+    const rescanned = await this.rescanOnce();
+    if (rescanned === null) return true;
+    return rescanned.has(modelId);
   }
 
   // ---- per-model state polling (drives the UI's load/sleep/unload signals) --

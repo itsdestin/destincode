@@ -30,10 +30,19 @@ The pinned version + per-platform asset table live in
   our exact flag set; `GET /health` returns 200 when ready. (Observed on b9992:
   200 with an EMPTY body — the supervisor only checks `res.ok`, never parses the
   body, so this is fine.)
-- `node probe-models.mjs --binary <path>` — `GET /models` schema; asserts the
-  router's model ids match `cache-scan.ts`'s filename-derived ids for the same
-  directory. PRINTS both lists — on mismatch, fix `ggufIdFromFileName` in
-  `cache-scan.ts` and this probe together, and update `engine-dependencies.md`.
+- `node probe-models.mjs --binary <path>` — TWO assertions. (1) `GET /models`
+  schema + id parity: the router's model ids match `cache-scan.ts`'s
+  filename-derived ids for the same directory. PRINTS both lists — on mismatch,
+  fix `ggufIdFromFileName` in `cache-scan.ts` and this probe together, and update
+  `engine-dependencies.md`. (2) **`GET /models?reload=1` picks up a GGUF added
+  AFTER boot.** The router never re-scans `--models-dir` on its own, so this
+  param is the only thing that makes a just-downloaded model usable without
+  restarting the engine — `EngineSupervisor.refreshModels()`/`ensureServable()`
+  depend on it entirely, and the unit tests mock fetch so they cannot see it
+  disappear. If (2) fails after an engine bump, local models are broken for
+  anyone who downloads one mid-session; find the replacement mechanism before
+  shipping the new engine. It also NOTEs (does not fail) if a plain `GET /models`
+  starts re-scanning, which would make our refresh redundant rather than wrong.
 - `node probe-chat.mjs --binary <path>` — streamed `/v1/chat/completions`
   round-trip: auto-load on first request, delta frames, final usage/timings.
 

@@ -41,7 +41,8 @@ while (Date.now() < deadline) {
 
 const raw = await (await fetch(`http://127.0.0.1:${PORT}/models`)).json();
 console.log('RAW /models:', JSON.stringify(raw, null, 2));
-child.kill();
+// NOTE: the child stays UP through the ?reload=1 check below — killing it here
+// (as this probe used to) would make that check test nothing. Torn down at exit.
 
 const rows = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.models) ? raw.models : Array.isArray(raw) ? raw : [];
 const routerIds = rows.map((m) => m.id ?? m.name).sort();
@@ -50,6 +51,46 @@ console.log('router ids:', routerIds);
 console.log('scan   ids:', scan);
 if (JSON.stringify(routerIds) !== JSON.stringify(scan)) {
   console.error('FAIL: cache-scan id derivation does not match router discovery — fix ggufIdFromFileName + engine-dependencies.md');
+  child.kill();
   process.exit(1);
 }
-console.log('PASS: /models parsed; scan ids match router ids');
+
+// ---- ?reload=1 is the ONLY way a running router learns about a new file ----
+// Every local model the user downloads while the engine is up depends on this
+// query param existing and doing a real re-scan. The unit tests mock fetch, so
+// they cannot see upstream dropping or renaming it on an engine bump — this
+// probe is what would. If it fails after a bump, local models are broken for
+// anyone who downloads one without restarting (that is exactly the 2026-08-16
+// bug); find the replacement mechanism before shipping the new engine.
+const newName = '__reload_probe__.gguf';
+const newPath = path.join(cacheDir, newName);
+const seed = routerIds.length
+  ? fs.readFileSync(path.join(cacheDir, `${routerIds[0]}.gguf`))
+  : null;
+if (!seed) {
+  console.error('FAIL: no seed GGUF in the probe cache dir — cannot test ?reload=1');
+  child.kill(); process.exit(1);
+}
+fs.writeFileSync(newPath, seed); // a real, loadable GGUF the router has never seen
+try {
+  const idsAfterPlainGet = (await (await fetch(`http://127.0.0.1:${PORT}/models`)).json())
+    .data.map((m) => m.id ?? m.name);
+  if (idsAfterPlainGet.includes('__reload_probe__')) {
+    // Not a failure — upstream gained an auto-rescan, which would make our
+    // refreshModels() redundant rather than wrong. Worth knowing about.
+    console.log('NOTE: a plain GET /models now rescans — upstream behavior changed (ours still correct, just belt-and-braces)');
+  }
+  const idsAfterReload = (await (await fetch(`http://127.0.0.1:${PORT}/models?reload=1`)).json())
+    .data.map((m) => m.id ?? m.name);
+  if (!idsAfterReload.includes('__reload_probe__')) {
+    console.error('FAIL: GET /models?reload=1 did NOT pick up a file added after boot.');
+    console.error('  EngineSupervisor.refreshModels()/ensureServable() depend on this.');
+    console.error('  See youcoded/docs/engine-dependencies.md → router hot-reload.');
+    child.kill(); process.exit(1);
+  }
+} finally {
+  fs.rmSync(newPath, { force: true });
+}
+
+child.kill();
+console.log('PASS: /models parsed; scan ids match router ids; ?reload=1 picks up a post-boot file');
