@@ -418,6 +418,12 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // PREFIX. An over-cap .svg or .html takes the text path (SVG stays editable,
   // D5) but renders from its own bytes / a srcDoc — a banner there would
   // announce a partial view of something that is complete on screen.
+  // A text-EXTENSION file whose bytes sniffed binary: the format is supported,
+  // this file just isn't text. Told apart here (where the routing decision
+  // lives) so the handoff can say which of the two it is.
+  const sniffedBinaryTextFile = contentInfo?.binary === true
+    && isTextContentViewer(getViewer(artifact.path));
+
   const showPartialBanner = !editing
     && contentInfo?.truncated === true
     && typeof contentInfo.sizeBytes === 'number'
@@ -548,6 +554,8 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           <ViewerComponent
             path={artifact.path}
             content={content}
+            contentInfo={contentInfo}
+            sniffedBinaryTextFile={sniffedBinaryTextFile}
             absolutePath={absolutePath}
             isEditable={isEditable}
             editing={editing}

@@ -183,7 +183,7 @@ describe('artifact pane read lifecycle', () => {
     await settle(() => pending[0].resolve({
       ok: true, content: null, orphan: false, binary: true, sizeBytes: 128,
     }));
-    expect(utils.getByText(/Cannot preview this file type/i)).toBeTruthy();
+    expect(utils.getByText(/contains data that isn.t text/i)).toBeTruthy();
     // Not the pre-#303 false claim, and not the loading placeholder either.
     expect(utils.queryByText(MISSING_MSG)).toBeNull();
     expect(utils.queryByText(LOADING_MSG)).toBeNull();
@@ -198,7 +198,7 @@ describe('artifact pane read lifecycle', () => {
     await settle(() => pending[0].resolve({
       ok: true, content: null, orphan: false, binary: true, sizeBytes: 128,
     }));
-    expect(utils.getByText(/Cannot preview this file type/i)).toBeTruthy();
+    expect(utils.getByText(/contains data that isn.t text/i)).toBeTruthy();
     expect(utils.queryByText(/^Loading…$/)).toBeNull();
   });
 
@@ -210,7 +210,7 @@ describe('artifact pane read lifecycle', () => {
     const utils = render(<Host artifact={{ id: 'a3', kind: 'internal', path: 'shot.png' } as any} />);
     await settle(() => {});
     expect(pending).toHaveLength(0);
-    expect(utils.queryByText(/Cannot preview this file type/i)).toBeNull();
+    expect(utils.queryByText(/contains data that isn.t text/i)).toBeNull();
     // Proof ImageView mounted: its byte-read path reports 'unavailable'
     // because this test's mock exposes no artifacts.readBinary.
     expect(utils.getByText(/Preview isn.t available/i)).toBeTruthy();

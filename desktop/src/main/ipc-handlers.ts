@@ -109,7 +109,7 @@ import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { searchProjectContent } from './artifacts/content-search';
-import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
+import { looksBinary, EDIT_MAX_BYTES, READ_BINARY_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
 import { authorizeArtifactRead, authorizeArtifactWrite, isAbsoluteRecorded } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { importFile } from './artifacts/import-file';
@@ -3769,7 +3769,6 @@ export function registerIpcHandlers(
   // session drawer legitimately shows), with well-known secret locations
   // (.ssh, .netrc, .credentials.json, …) refused even inside those roots.
   // Pure decision logic + tests live in artifacts/read-binary-access.ts.
-  const READ_BINARY_MAX_BYTES = 50 * 1024 * 1024; // 50 MB — base64 inflates 33%, and it all transits IPC/WS
   ipcMain.handle(ARTIFACT_IPC.READ_BINARY, async (_e, absolutePath: string) => {
     if (typeof absolutePath !== 'string' || absolutePath.length === 0) {
       return { ok: false, error: 'no path' };

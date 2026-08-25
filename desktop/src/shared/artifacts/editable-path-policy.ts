@@ -98,6 +98,12 @@ export const EDIT_MAX_BYTES = 2 * 1024 * 1024;
  * prevent in the first place. */
 export const FULL_READ_MAX_BYTES = 4 * EDIT_MAX_BYTES;
 
+/** Ceiling for artifacts:read-binary — base64 inflates 33% and it all transits
+ * IPC/WS. This is the limit that actually governs images, PDFs and Office docs;
+ * EDIT_MAX_BYTES governs only the text editor. Confusing the two is what made
+ * the pane refuse a 2.3 MB PNG (spec §1.1). */
+export const READ_BINARY_MAX_BYTES = 50 * 1024 * 1024;
+
 /** git-style binary sniff: a NUL byte in the head slice means not-text. The
  * caller passes at most the first 8KB — do not read whole files to decide. */
 export function looksBinary(head: Uint8Array): boolean {
