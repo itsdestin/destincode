@@ -6,6 +6,13 @@ import {
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
 
+// artifactId -> pretend on-disk size, for exercising the over-cap artifact
+// states (partial-view banner, handoff) against the fake backend.
+const OVERSIZE_FIXTURES: Record<string, number> = {
+  'a-big-log': 8.4 * 1024 * 1024,     // under FULL_READ_MAX_BYTES -> offers "Load the whole file"
+  'a-huge-dump': 500 * 1024 * 1024,   // above it -> no load action
+};
+
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
  *  (tests/workbench-mock-contract.test.ts) checks each against preload.ts. */
@@ -623,7 +630,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     listAllFiles: async (projectId: string) => ({
       ok: true, files: allFiles(projectId), truncated: false,
     }),
-    get: async (_projectRoot: string, artifactId: string) => {
+    get: async (_projectRoot: string, artifactId: string, opts?: { full?: boolean }) => {
       const content = ARTIFACT_CONTENT[artifactId];
       if (content === undefined) {
         // Honest miss rather than a fabricated body: the reader renders its
@@ -631,10 +638,21 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         // orphan:true matches the real handler's not-found shape — without it
         // the tri-state read lifecycle would classify this as a resolved read
         // with no content (blank pane) instead of "no longer on disk".
-        return { ok: true, content: null, orphan: true, binary: false, tooLarge: false, sizeBytes: 0 };
+        return { ok: true, content: null, orphan: true, binary: false, sizeBytes: 0 };
+      }
+      // Over-cap fixtures: report a pretend on-disk size far larger than the
+      // body we serve, so the partial-view banner and the handoff states are
+      // reachable in the Workbench without a real 8 MB file (spec §5).
+      const fake = OVERSIZE_FIXTURES[artifactId];
+      if (fake !== undefined && !opts?.full) {
+        return {
+          ok: true, content: content.slice(0, 400), orphan: false, binary: false,
+          truncated: true, sizeBytes: fake, mtimeMs: 1,
+        };
       }
       return {
-        ok: true, content, orphan: false, binary: false, tooLarge: false, sizeBytes: content.length,
+        ok: true, content, orphan: false, binary: false, truncated: false,
+        sizeBytes: fake ?? content.length, mtimeMs: 1,
       };
     },
     // Nothing is missing from disk here — every fixture "exists" by construction.
