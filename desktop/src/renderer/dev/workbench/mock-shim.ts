@@ -662,7 +662,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // AUTHENTICATE, LAUNCH_WIZARD). WHY: the wizard is the first thing a new user
   // sees and, until 2026-08-25, the only surface no review rig could reach —
   // the mock always answered COMPLETE, so App routed straight past it.
-  const firstRunStep = new URLSearchParams(location.search).get('firstRun') || 'COMPLETE';
+  const firstRunStep = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('firstRun')) || 'COMPLETE';
   const firstRun = {
     getState: async () => ({
       currentStep: firstRunStep,
