@@ -4,6 +4,7 @@ import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
   CONTENT as ARTIFACT_CONTENT, contextGroups,
 } from './fixtures/artifacts';
+import { resolveFixture, CS_ERR_READ } from './fixtures/chatsearch';
 import type { MockState, MockSessionMeta } from './scenarios';
 
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
@@ -21,6 +22,9 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
+  // No backend yet (chatsearch session references) — registered in
+  // mock-only.ts alongside the entry above's comment.
+  'chatsearch.resolve', 'chatsearch.read',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
@@ -569,6 +573,39 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     repoInfo: async () => ({ ok: true, branch: 'master', dirty: false }),
   };
 
+  // Session references (spec 2026-08-10): the fake IPC pair backing the
+  // Preview/Resume cards, both MOCK_ONLY (mock-only.ts) since no real backend
+  // exists yet. resolve() reuses the SAME fixture table the tool-gallery and
+  // scenario fixtures reference by uuid, so a card built here shows exactly
+  // the state its short id was chosen to demonstrate. read() fabricates a
+  // fake transcript tail rather than reading anything real; CS_ERR_READ is
+  // the one id wired to fail, so the "transcript unreadable" card state has
+  // something to point at.
+  const chatsearch = {
+    resolve: async (shortIds: string[]) => ({ ok: true as const, results: shortIds.map(resolveFixture) }),
+    read: async (req: { provider: string; id: string; tail: number; before?: number }) => {
+      if (req.id === CS_ERR_READ) return { ok: false as const, error: "EACCES: permission denied, open '/home/destin/YouCoded/Personal/Conversations/claude/transcripts/youcoded/ee0011aa.jsonl'" };
+      // 60 fake messages; every 4th assistant message follows a "tool gap".
+      const total = 60;
+      const end = Math.min(req.before ?? total, total);
+      const start = Math.max(0, end - Math.min(req.tail, 200));
+      const messages = [];
+      for (let seq = start; seq < end; seq++) {
+        const assistant = seq % 2 === 1;
+        messages.push({
+          role: assistant ? 'assistant' : 'user',
+          content: assistant
+            ? `Here is what I found for step ${seq}:\n\n\`\`\`ts\nconst x = ${seq};\n\`\`\`\n\n- one\n- two`
+            : `User question number ${seq}`,
+          timestamp: Date.now() - (total - seq) * 60_000,
+          seq,
+          droppedToolCalls: assistant && seq % 4 === 3 ? 3 : 0,
+        });
+      }
+      return { ok: true as const, messages, hasMore: start > 0 };
+    },
+  };
+
   // Signed OUT is the honest default, and the `[]` catch-all gets it backwards:
   // account.signedIn() returning `[]` is TRUTHY, and account.user() returning
   // `[]` is a truthy object with no `handle` — so HandlePrompt concluded the
@@ -755,6 +792,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance,
+    terminal, artifacts, syncSpaces, project, account, appearance, chatsearch,
   } as unknown as Record<string, Record<string, unknown>>;
 }

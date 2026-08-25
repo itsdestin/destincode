@@ -6,11 +6,9 @@
 // Adding an entry is the SUPPORTED way to design UI ahead of its backend.
 // Deleting the guard test because a channel is "obviously fine" is not.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  // Empty today. The `permissions.*` trio lived here while the management UI
-  // (M5 2a) was designed against fake data; they came off when the real
-  // store/host/IPC landed. The mock namespace in mock-shim.ts STAYS — the
-  // workbench still needs fixture data — only the "no real backend" claim goes.
-  //
-  // Add entries as new UI is designed ahead of its backend, e.g.
-  //   { channel: 'thing.list', feature: 'thing manager (M9)' },
+  // Session references (spec 2026-08-10): designed in the workbench first.
+  // These come OFF the list in Phase B when the real IPC lands — the contract
+  // test fails if they stay here after preload.ts gains the channel.
+  { channel: 'chatsearch.resolve', feature: 'chatsearch session references — Preview/Resume cards' },
+  { channel: 'chatsearch.read', feature: 'chatsearch session references — transcript preview pane' },
 ];
