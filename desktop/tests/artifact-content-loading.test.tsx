@@ -283,3 +283,42 @@ describe('byte-only files never take the text path', () => {
     expect(get).not.toHaveBeenCalled();
   });
 });
+
+// ── Partial-view metadata must survive the trip from response to banner ──
+// Caught in Workbench review 2026-08-25: useArtifactContent copied the get()
+// response into contentInfo field by field and silently dropped `truncated`,
+// so the banner never rendered for ANY over-cap file. Nothing failed; the
+// notice was simply absent.
+describe('over-cap text reaches the partial-view banner', () => {
+  it('carries truncated and sizeBytes from the response into contentInfo', async () => {
+    const { result } = renderHook(() => useArtifactContent('/proj', 'a9', 'server.log'));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    await act(async () => {
+      pending[0].resolve({
+        ok: true, content: 'first chunk\n', orphan: false, binary: false,
+        truncated: true, sizeBytes: 8.4 * 1024 * 1024, mtimeMs: 1,
+      });
+    });
+    await waitFor(() => expect(result.current.contentInfo?.truncated).toBe(true));
+    expect(result.current.contentInfo?.sizeBytes).toBe(8.4 * 1024 * 1024);
+  });
+
+  it('renders the banner end to end, stating the real size not the prefix size', async () => {
+    const utils = render(<Host artifact={{ id: 'a9', kind: 'internal', path: 'logs/server.log' } as any} />);
+    await settle(() => pending[0].resolve({
+      ok: true, content: 'first chunk\n', orphan: false, binary: false,
+      truncated: true, sizeBytes: 8.4 * 1024 * 1024, mtimeMs: 1,
+    }));
+    expect(utils.getByText(/Showing the first 2\.0 MB of 8\.4 MB/)).toBeTruthy();
+  });
+
+  // A complete file must NOT wear the notice.
+  it('shows no banner for a file served whole', async () => {
+    const utils = render(<Host artifact={{ id: 'a10', kind: 'internal', path: 'logs/small.log' } as any} />);
+    await settle(() => pending[0].resolve({
+      ok: true, content: 'all of it\n', orphan: false, binary: false,
+      truncated: false, sizeBytes: 10, mtimeMs: 1,
+    }));
+    expect(utils.queryByText(/Showing the first/)).toBeNull();
+  });
+});

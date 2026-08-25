@@ -44,7 +44,9 @@ export function useArtifactContent(
 ): UseArtifactContentResult {
   const [content, setContent] = useState<string | null>(null);
   // get() metadata the content string cannot carry: binary sniff (routes
-  // unknown extensions to the code view), tooLarge (renders the size notice).
+  // unknown extensions to the code view), truncated (renders the partial-view
+  // banner), sizeBytes (the file's REAL size, which `content` cannot report once
+  // it is only a prefix).
   const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
   const [contentState, setContentState] = useState<ArtifactContentState>({ phase: 'loading' });
   // Bumping the token re-runs the effect below — the Retry action.
@@ -85,7 +87,7 @@ export function useArtifactContent(
       if (cancelled) return;
       if (res && res.ok) {
         setContent(res.content ?? null);
-        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
+        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, truncated: res.truncated, sizeBytes: res.sizeBytes });
         // orphan:true is the handler's genuine not-found signal (ENOENT /
         // orphaned record) — the ONLY thing allowed to render "no longer on
         // disk". Everything else that resolved ok is ready.

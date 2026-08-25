@@ -8,6 +8,13 @@ import type { MockState, MockSessionMeta } from './scenarios';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
 // states (partial-view banner, handoff) against the fake backend.
+// artifactId -> pretend on-disk size for fixtures with no text body at all:
+// the handler answers binary:true (never orphan), which is how a real
+// unsupported format reaches the handoff view rather than "no longer on disk".
+const BINARY_FIXTURES: Record<string, number> = {
+  'a-clip-mp4': 18 * 1024 * 1024,
+};
+
 const OVERSIZE_FIXTURES: Record<string, number> = {
   'a-big-log': 8.4 * 1024 * 1024,     // under FULL_READ_MAX_BYTES -> offers "Load the whole file"
   'a-huge-dump': 500 * 1024 * 1024,   // above it -> no load action
@@ -632,6 +639,11 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     }),
     get: async (_projectRoot: string, artifactId: string, opts?: { full?: boolean }) => {
       const content = ARTIFACT_CONTENT[artifactId];
+      const asBinary = BINARY_FIXTURES[artifactId];
+      if (asBinary !== undefined) {
+        return { ok: true, content: null, orphan: false, binary: true,
+                 truncated: false, sizeBytes: asBinary, mtimeMs: 1 };
+      }
       if (content === undefined) {
         // Honest miss rather than a fabricated body: the reader renders its
         // own missing-file state, which is a state worth being able to see.
@@ -646,7 +658,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       const fake = OVERSIZE_FIXTURES[artifactId];
       if (fake !== undefined && !opts?.full) {
         return {
-          ok: true, content: content.slice(0, 400), orphan: false, binary: false,
+          ok: true, content: content.slice(0, content.lastIndexOf('\n', 400) + 1), orphan: false, binary: false,
           truncated: true, sizeBytes: fake, mtimeMs: 1,
         };
       }
