@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
 import { getViewer, getEditViewer, rendersFromBytesOnly, isTextContentViewer } from './RendererRegistry';
 import { PartialFileBanner } from './PartialFileBanner';
+import { canEditArtifact } from './edit-permission';
 import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 import { editTier } from '../../../shared/artifacts/editable-path-policy';
@@ -140,10 +141,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // mirror miss here fails safe: the save is still rejected.)
   const tier = editTier(canonicalize(absolutePath, null));
   // D4: ANY text file is editable — the old md/markdown/txt allowlist is gone.
-  // Not editable when: policy-denied, sniffed binary, over the size cap, or
-  // content has not resolved (null = loading/orphan — the §2.2 truncation guard).
-  const isEditable = content !== null && tier !== 'denied'
-    && !contentInfo?.binary && !contentInfo?.tooLarge;
+  // The four conditions (resolved content, policy, binary sniff, SIZE) live in
+  // one predicate so the affordance, entering edit mode, restoring a stashed
+  // draft, and the save call cannot disagree — see edit-permission.ts.
+  const isEditable = canEditArtifact(contentInfo, content, tier);
 
   // ── Task 6.4: controlled edit state (lifted from MarkdownView) ──
   // Owning edit state here lets the conflict banner read/reset it without
@@ -162,8 +163,11 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   const rootRef = useRef<HTMLDivElement>(null);
   // Mirrors for the unmount stash below — cleanup closures must read the
   // CURRENT values, not the ones captured when the effect last ran.
-  const stateRef = useRef({ editing: false, draft: '', content: null as string | null });
-  stateRef.current = { editing, draft, content };
+  // contentInfo rides along so the first-mount draft restore can ask the same
+  // editability question as every other entry point (edit-permission.ts).
+  const stateRef = useRef({ editing: false, draft: '', content: null as string | null,
+                            contentInfo: null as ArtifactContentInfo | null | undefined });
+  stateRef.current = { editing, draft, content, contentInfo };
   // A stashed draft waiting for content to resolve before it re-enters edit
   // mode (restoring before the fetch lands would fight the draft-reset effect).
   const pendingRestoreRef = useRef<ReturnType<typeof takeDraft>>(undefined);
@@ -179,7 +183,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // draft; the file is open again, so hand it back — edit mode, draft, and
     // concurrency token — once real content has resolved.
     const pending = pendingRestoreRef.current;
-    if (pending && content !== null) {
+    // A stashed draft must not re-enter edit mode on a file we could not save
+    // (over the size cap, binary, policy-denied). Without this the unmount
+    // stash is a way around the hidden Edit button.
+    if (pending && content !== null && canEditArtifact(contentInfo, content, tier)) {
       pendingRestoreRef.current = undefined;
       setDraft(pending.draft);
       mtimeRef.current = pending.mtimeMs;
@@ -207,7 +214,8 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     if (firstRunRef.current) {
       firstRunRef.current = false;
       const pending = pendingRestoreRef.current;
-      if (pending && stateRef.current.content !== null) {
+      if (pending && stateRef.current.content !== null
+          && canEditArtifact(stateRef.current.contentInfo, stateRef.current.content, tier)) {
         pendingRestoreRef.current = undefined;
         setDraft(pending.draft);
         mtimeRef.current = pending.mtimeMs;
@@ -264,6 +272,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // Confirm-tier paths get one deliberate click BEFORE editing starts, not a
     // surprise refusal at save time (D5 — mistake-prevention, not security; the
     // hard boundary is main's).
+    // Belt and braces: the Edit button is already hidden for these, but a
+    // keyboard path or a host ref must not open an editor on a file whose save
+    // we would have to refuse.
+    if (!canEditArtifact(contentInfo, content, tier)) return;
     if (tier === 'needs-confirm' && !window.confirm(confirmMessage(canonicalize(absolutePath, null)))) {
       return;
     }
@@ -278,7 +290,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     setEditing(true);
     setConflict(null);
     setSaveError(null);
-  }, [tier, absolutePath, projectRoot, artifact.id, content, onContentChange]);
+  }, [tier, absolutePath, projectRoot, artifact.id, content, contentInfo, onContentChange]);
 
   // opts.force: skip the concurrency token — the deliberate "Keep mine"
   // overwrite. Shaped as an options object so accidental event-object args
@@ -289,6 +301,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // write here would truncate the file to the placeholder draft. This is the
     // single highest-risk regression in the workstream; keep it hard-blocked.
     if (content === null) return false;
+    // Saving a PREFIX would write 2 MB over the whole 8 MB file. Hard-blocked
+    // here as well as at the affordance — main cannot detect truncation itself
+    // (a shrinking file is legitimate), so this is a renderer-side guarantee.
+    if (!canEditArtifact(contentInfo, content, tier)) return false;
     const saveOpts: { baseMtimeMs?: number; confirmed?: boolean } = {};
     if (!opts?.force && mtimeRef.current !== null) saveOpts.baseMtimeMs = mtimeRef.current;
     if (tier === 'needs-confirm') saveOpts.confirmed = true; // dialog shown at startEdit
@@ -318,7 +334,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     }
     setSaveError(saveErrorMessage(res));
     return false;
-  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, tier, content]);
+  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, tier, content, contentInfo]);
 
   const handleCancel = useCallback(() => {
     clearDraft(draftKey(projectRoot, artifact.id));
@@ -481,7 +497,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   }
 
   return (
-    <div ref={rootRef} className="h-full flex flex-col">
+    <div ref={rootRef} className="h-full flex flex-col relative">
       {/* Conflict banner — shown when the file changes on disk while the user
           has UNSAVED edits. Three actions: keep draft, accept the disk version,
           or view a real unified diff (shared UnifiedDiff renderer). */}
@@ -536,15 +552,6 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           <UnifiedDiff oldStr={conflict.disk} newStr={draft} />
         </div>
       )}
-      {/* Partial-view notice — a flex sibling of the viewer box, like the
-          conflict banner above, so it cannot scroll away with the content. */}
-      {showPartialBanner && (
-        <PartialFileBanner
-          sizeBytes={contentInfo!.sizeBytes!}
-          onLoadFull={loadFull}
-          onOpenExternally={() => (window.claude as any).shell?.openPath?.(absolutePath)}
-        />
-      )}
       <div className="flex-1 overflow-hidden">
         {/* Boundary catches lazy chunk-load failures + viewer render crashes
             (Suspense alone can't — lazy() THROWS its rejection). Keyed by
@@ -569,6 +576,17 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
         </Suspense>
         </ViewerErrorBoundary>
       </div>
+      {/* Partial-view notice — floats over the BOTTOM of the doc pane, in the
+          spot the Edit pill would occupy (a file this large is read-only, so
+          that pill is gone). Outside the viewer's scroll container, so it
+          cannot scroll away and leave a partial view looking complete. */}
+      {showPartialBanner && (
+        <PartialFileBanner
+          sizeBytes={contentInfo!.sizeBytes!}
+          onLoadFull={loadFull}
+          onOpenExternally={() => (window.claude as any).shell?.openPath?.(absolutePath)}
+        />
+      )}
     </div>
   );
 });

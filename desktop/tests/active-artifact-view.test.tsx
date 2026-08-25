@@ -67,8 +67,35 @@ describe('ActiveArtifactView save safety', () => {
   it('binary / too-large content is not editable', () => {
     const bin = mountView({ content: null, contentInfo: { binary: true } });
     expect(bin.ref.current!.isEditable).toBe(false);
-    const big = mountView({ content: null, contentInfo: { tooLarge: true, sizeBytes: 5e6 } });
+    const big = mountView({ content: null, contentInfo: { sizeBytes: 5e6 } });
     expect(big.ref.current!.isEditable).toBe(false);
+  });
+
+  // Found in Workbench review 2026-08-25: a file served as a PREFIX still
+  // offered Edit, directly under a banner saying "Read-only". Saving would have
+  // written the 2 MB prefix over the whole 8.4 MB file.
+  it('a file served as a prefix offers no Edit and refuses to save', async () => {
+    const { ref } = mountView({
+      artifact: { id: 'a9', kind: 'internal', path: 'logs/server.log' } as any,
+      content: 'first chunk\n',
+      contentInfo: { binary: false, truncated: true, sizeBytes: 8.4 * 1024 * 1024 },
+    });
+    expect(ref.current!.isEditable).toBe(false);
+    // Even reaching save directly through the host ref must not write.
+    expect(await ref.current!.saveEdit()).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  // The other half: a file that is over the cap but NOT truncated (the user
+  // clicked "Load the whole file") stays read-only too — the cap exists because
+  // the editor blocks the renderer on a multi-MB string.
+  it('a fully loaded over-cap file is still not editable', () => {
+    const { ref } = mountView({
+      artifact: { id: 'a9', kind: 'internal', path: 'logs/server.log' } as any,
+      content: 'the whole thing',
+      contentInfo: { binary: false, truncated: false, sizeBytes: 8.4 * 1024 * 1024 },
+    });
+    expect(ref.current!.isEditable).toBe(false);
   });
 
   it('any text file is editable now (D4) — a .ts file, not just md/txt', () => {

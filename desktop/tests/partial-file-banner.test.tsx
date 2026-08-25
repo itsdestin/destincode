@@ -19,9 +19,10 @@ describe('PartialFileBanner', () => {
     expect(screen.getByRole('button', { name: /load the whole file/i })).toBeInTheDocument();
   });
 
-  it('offers no load action above the ceiling', () => {
+  it('swaps to the external handoff above the ceiling', () => {
     render(<PartialFileBanner sizeBytes={500 * 1024 * 1024} onLoadFull={() => {}} onOpenExternally={() => {}} />);
     expect(screen.queryByRole('button', { name: /load the whole file/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /open externally/i })).toBeInTheDocument();
   });
 
   // A button that silently does nothing is worse than no button (spec §4.3).
