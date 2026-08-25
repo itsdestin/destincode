@@ -7,7 +7,7 @@
 {"type":"tool_result","tool_use_id":"c2","content":"Applied 1 edit."}
 {"type":"assistant_text","text":"Let me check whether we discussed that before."}
 {"type":"tool_use","id":"cs-find","name":"Bash","input":{"command":"node \"/home/destin/.claude/plugins/marketplaces/youcoded/plugins/youcoded-chatsearch/skills/chatsearch/scripts/chatsearch.js\" '{\"cmd\":\"find\",\"query\":\"permission timeout\"}'","description":"Search past conversations"}}
-{"type":"tool_result","tool_use_id":"cs-find","content":"a3f2  2026-07-26  youcoded      ✓  Permission ask timeout         #perm #ui\n9c14  2026-07-22  youcoded-dev  ?  Native runtime parity program  #native\nshowing 2 of 2"}
+{"type":"tool_result","tool_use_id":"cs-find","content":"a3f2  2026-07-26  youcoded      ✓  Permission ask timeout         #perm #ui\n9c14  2026-07-22  youcoded-dev  ?  Native runtime parity program  #native"}
 {"type":"tool_use","id":"cs-read1","name":"Read","input":{"file_path":"/home/destin/youcoded-dev/youcoded/desktop/src/main/permissions.ts"}}
 {"type":"tool_result","tool_use_id":"cs-read1","content":"1  // permissions"}
 {"type":"tool_use","id":"cs-show","name":"Bash","input":{"command":"node \"/home/destin/.claude/plugins/marketplaces/youcoded/plugins/youcoded-chatsearch/skills/chatsearch/scripts/chatsearch.js\" '{\"cmd\":\"show\",\"id\":\"a3f2\"}'","description":"Open the July 26 conversation"}}
