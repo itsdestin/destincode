@@ -2,7 +2,7 @@
 // Extracted from SessionDrawer.tsx (Task 7.2) so both SessionDrawer and ProjectView
 // can use it identically without duplicating the edit state + conflict-detection logic.
 import { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
-import { getViewer, getEditViewer } from './RendererRegistry';
+import { getViewer, getEditViewer, rendersFromBytesOnly } from './RendererRegistry';
 import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 import { editTier } from '../../../shared/artifacts/editable-path-policy';
@@ -231,6 +231,11 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     const unsubFn = (window.claude as any).artifacts?.onChanged?.((evt: any) => {
       if (evt.projectRoot !== projectRoot || evt.artifactId !== artifact.id) return;
       if (evt.kind === 'remove') return; // orphan handling is the host's concern
+      // These files render from their own bytes, never from `content`. Asking
+      // artifacts:get here would re-open the text path we just closed -- and its
+      // `res.content ?? ''` would set an IMAGE's content to the empty string,
+      // which downstream reads as an ordinary editable text file (spec §4.1).
+      if (rendersFromBytesOnly(artifact.path)) return;
       (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
         if (!res || !res.ok || res.orphan) return;
         if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;

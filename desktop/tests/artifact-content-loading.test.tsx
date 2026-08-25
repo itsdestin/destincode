@@ -13,7 +13,7 @@
 //      to "no longer on disk" (a permissions failure is not a deleted file).
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, act, fireEvent, cleanup } from '@testing-library/react';
+import { render, act, fireEvent, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { ActiveArtifactView } from '../src/renderer/components/artifact-views/ActiveArtifactView';
 import { useArtifactContent } from '../src/renderer/components/artifact-views/useArtifactContent';
 
@@ -27,7 +27,7 @@ const LOADING_MSG = /Loading file/i;
 // useArtifactContent owns the read, ActiveArtifactView renders the phases.
 function Host({ artifact }: { artifact: any }) {
   const { content, setContent, contentInfo, contentState, retryRead } =
-    useArtifactContent('/proj', artifact.id);
+    useArtifactContent('/proj', artifact.id, artifact.path);
   return (
     <ActiveArtifactView
       artifact={artifact}
@@ -202,13 +202,14 @@ describe('artifact pane read lifecycle', () => {
     expect(utils.queryByText(/^Loading…$/)).toBeNull();
   });
 
-  it('a real binary-viewer extension (.png) keeps its extension routing on binary:true', async () => {
-    // Control for the test above: binary:true must NOT shove files whose
-    // registered viewer already handles bytes (Image/Pdf/…) into the fallback.
+  it('a real binary-viewer extension (.png) routes to its viewer with no text read at all', async () => {
+    // Control for the test above: files whose registered viewer already handles
+    // bytes (Image/Pdf/…) must NOT land in the fallback. Since 2026-08-25 they
+    // also never request text — the hook settles synchronously into
+    // binary:true/ready, so there is no pending read to resolve here.
     const utils = render(<Host artifact={{ id: 'a3', kind: 'internal', path: 'shot.png' } as any} />);
-    await settle(() => pending[0].resolve({
-      ok: true, content: null, orphan: false, binary: true, sizeBytes: 128,
-    }));
+    await settle(() => {});
+    expect(pending).toHaveLength(0);
     expect(utils.queryByText(/Cannot preview this file type/i)).toBeNull();
     // Proof ImageView mounted: its byte-read path reports 'unavailable'
     // because this test's mock exposes no artifacts.readBinary.
@@ -233,5 +234,52 @@ describe('artifact pane read lifecycle', () => {
     }));
     expect(await utils.findByText('Recovered')).toBeTruthy();
     expect(utils.queryByText(MISSING_MSG)).toBeNull();
+  });
+});
+
+// ── Byte-only routing: images/PDFs/Office docs never take the text path ──
+// THE REPORTED BUG (2026-08-25): a 2.3 MB PNG was refused by the TEXT editor's
+// 2 MB cap, even though images are governed by the 50 MB byte ceiling and never
+// use the text at all.
+describe('byte-only files never take the text path', () => {
+  it('does not call artifacts.get for a png', async () => {
+    const { result } = renderHook(() => useArtifactContent('/proj', 'a1', 'shot.png'));
+    await waitFor(() => expect(result.current.contentState.phase).toBe('ready'));
+    expect(get).not.toHaveBeenCalled();
+    expect(result.current.content).toBeNull();
+    // binary:true is what holds the edit affordance shut downstream.
+    expect(result.current.contentInfo?.binary).toBe(true);
+  });
+
+  it('still calls artifacts.get for svg, which is editable', async () => {
+    renderHook(() => useArtifactContent('/proj', 'a2', 'logo.svg'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+  });
+
+  it('still calls artifacts.get when no path is supplied', async () => {
+    renderHook(() => useArtifactContent('/proj', 'a3'));
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
+  });
+
+  // The back door: the watcher re-requests text on EVERY on-disk change for
+  // EVERY file type. Its `res.content ?? \'\'` would set an IMAGE's content to
+  // the empty string, which downstream reads as an ordinary editable text file.
+  it('does not call artifacts.get when an image changes on disk', () => {
+    render(
+      <ActiveArtifactView
+        artifact={{ id: 'a1', kind: 'internal', path: 'shot.png' } as any}
+        content={null}
+        contentInfo={{ binary: true }}
+        contentState={{ phase: 'ready' }}
+        projectRoot="/proj"
+        projectId="p1"
+        projectName="Proj"
+        sessionId="s1"
+        onContentChange={vi.fn()}
+      />
+    );
+    get.mockClear();
+    changedCb!({ projectRoot: '/proj', artifactId: 'a1', kind: 'change' });
+    expect(get).not.toHaveBeenCalled();
   });
 });

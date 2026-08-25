@@ -177,7 +177,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // FilesTab used to carry duplicate effects that conflated "loading" with
   // "no longer on disk" (the flash bug).
   const { content, setContent, contentInfo, contentState, retryRead } =
-    useArtifactContent(projectRoot, active?.id ?? null);
+    useArtifactContent(projectRoot, active?.id ?? null, active?.path ?? null);
 
   // ── B2 panel UI state ──
   // The list stays open once toggled; it closes on the ☰ toggle, on selecting an

@@ -7,6 +7,7 @@
 // This hook keeps them apart via ArtifactContentState (see ActiveArtifactView).
 import { useCallback, useEffect, useState } from 'react';
 import type { ArtifactContentInfo, ArtifactContentState } from './ActiveArtifactView';
+import { rendersFromBytesOnly } from './RendererRegistry';
 
 // Turn the handler's error codes into specific, accurate user-facing strings —
 // unknown codes surface verbatim rather than being replaced with a guessed
@@ -37,6 +38,9 @@ export interface UseArtifactContentResult {
 export function useArtifactContent(
   projectRoot: string,
   artifactId: string | null | undefined,
+  // The file's path — needed to answer "does this file's viewer read its own
+  // bytes?" BEFORE we ask for text. Optional so older callers keep working.
+  artifactPath?: string | null,
 ): UseArtifactContentResult {
   const [content, setContent] = useState<string | null>(null);
   // get() metadata the content string cannot carry: binary sniff (routes
@@ -52,6 +56,19 @@ export function useArtifactContent(
       setContent(null);
       setContentInfo(null);
       setContentState({ phase: 'loading' });
+      return;
+    }
+    // Images/PDFs/Office docs render through BinaryContent -> artifacts:read-binary,
+    // which has its OWN 50 MB ceiling. Asking artifacts:get for their text was
+    // pure waste AND applied the text editor's 2 MB cap to them -- the reported
+    // bug (spec 2026-08-25 §4.1). Settle straight into the exact shape an
+    // under-cap binary read already produces, so every consumer downstream is
+    // unchanged: no new content phase, and binary:true still holds the edit
+    // affordance shut.
+    if (artifactPath && rendersFromBytesOnly(artifactPath)) {
+      setContent(null);
+      setContentInfo({ binary: true });
+      setContentState({ phase: 'ready' });
       return;
     }
     let cancelled = false;
@@ -84,7 +101,7 @@ export function useArtifactContent(
       }
     });
     return () => { cancelled = true; };
-  }, [projectRoot, artifactId, retryToken]);
+  }, [projectRoot, artifactId, artifactPath, retryToken]);
 
   const retryRead = useCallback(() => setRetryToken((t) => t + 1), []);
 
