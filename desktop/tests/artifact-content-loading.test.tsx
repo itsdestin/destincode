@@ -309,7 +309,7 @@ describe('over-cap text reaches the partial-view banner', () => {
       ok: true, content: 'first chunk\n', orphan: false, binary: false,
       truncated: true, sizeBytes: 8.4 * 1024 * 1024, mtimeMs: 1,
     }));
-    expect(utils.getByText(/Showing the first 2\.0 MB of 8\.4 MB/)).toBeTruthy();
+    expect(utils.getByText(/Showing 3\.0\/8\.4 MB/)).toBeTruthy();
   });
 
   // A complete file must NOT wear the notice.
@@ -319,6 +319,6 @@ describe('over-cap text reaches the partial-view banner', () => {
       ok: true, content: 'all of it\n', orphan: false, binary: false,
       truncated: false, sizeBytes: 10, mtimeMs: 1,
     }));
-    expect(utils.queryByText(/Showing the first/)).toBeNull();
+    expect(utils.queryByText(/Large File/)).toBeNull();
   });
 });

@@ -68,7 +68,7 @@ object EditablePathPolicy {
     }
 
     /** Files above this are not served inline by artifacts:get (tooLarge). */
-    const val EDIT_MAX_BYTES: Long = 2L * 1024 * 1024
+    const val EDIT_MAX_BYTES: Long = 3L * 1024 * 1024
 
     /** git-style sniff: NUL byte in the head slice means not-text. */
     fun looksBinary(head: ByteArray): Boolean {

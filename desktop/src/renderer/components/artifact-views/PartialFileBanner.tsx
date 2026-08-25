@@ -3,7 +3,7 @@ import { Button } from '../ui';
 import { EDIT_MAX_BYTES, FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 
 function mb(bytes: number): string {
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return (bytes / (1024 * 1024)).toFixed(1);
 }
 
 /**
@@ -43,8 +43,12 @@ export function PartialFileBanner({ sizeBytes, onLoadFull, onOpenExternally }: {
     <div className="absolute bottom-4 left-4 right-4 z-20 flex items-center gap-3
                     rounded-full bg-panel border border-edge shadow-lg
                     pl-4 pr-1.5 py-1.5">
+      {/* Terse on purpose: the bar shares its width with a button, so the
+          sentence has to survive a narrow pane. "Large File" is the label, the
+          fraction is the fact (Destin, 2026-08-25). */}
       <span className="flex-1 min-w-0 truncate text-sm text-fg-2">
-        Showing the first {mb(EDIT_MAX_BYTES)} of {mb(sizeBytes)}. Read-only.
+        <span className="font-semibold text-fg">Large File</span>
+        {' — '}Showing {mb(EDIT_MAX_BYTES)}/{mb(sizeBytes)} MB
       </span>
       {action && (
         // The house Button primitive, never a hand-rolled bg-accent (design

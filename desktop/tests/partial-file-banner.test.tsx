@@ -7,11 +7,14 @@ import { PartialFileBanner } from '../src/renderer/components/artifact-views/Par
 afterEach(cleanup);
 
 // Sizes are MiB-based, matching every existing size string in the app (the
-// message Destin saw called his 2,411,724-byte file "2.3 MB").
+// message Destin saw called his 2,411,724-byte file "2.3 MB"). The bar shares
+// its width with a button, so the copy is a label plus a fraction, not a
+// sentence.
 describe('PartialFileBanner', () => {
-  it('states both sizes so the notice is information, not a refusal', () => {
+  it('states how much of how much, so the notice is information not a refusal', () => {
     render(<PartialFileBanner sizeBytes={8.4 * 1024 * 1024} onLoadFull={() => {}} onOpenExternally={() => {}} />);
-    expect(screen.getByText(/first 2\.0 MB of 8\.4 MB/)).toBeInTheDocument();
+    expect(screen.getByText(/Large File/)).toBeInTheDocument();
+    expect(screen.getByText(/Showing 3\.0\/8\.4 MB/)).toBeInTheDocument();
   });
 
   it('offers to load the rest while the file is under the full-read ceiling', () => {
