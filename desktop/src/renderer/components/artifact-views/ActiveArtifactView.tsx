@@ -2,7 +2,8 @@
 // Extracted from SessionDrawer.tsx (Task 7.2) so both SessionDrawer and ProjectView
 // can use it identically without duplicating the edit state + conflict-detection logic.
 import { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
-import { getViewer, getEditViewer, rendersFromBytesOnly } from './RendererRegistry';
+import { getViewer, getEditViewer, rendersFromBytesOnly, isTextContentViewer } from './RendererRegistry';
+import { PartialFileBanner } from './PartialFileBanner';
 import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 import { editTier } from '../../../shared/artifacts/editable-path-policy';
@@ -68,6 +69,9 @@ export interface ActiveArtifactHandle {
 export interface ArtifactContentInfo {
   binary?: boolean;
   tooLarge?: boolean;
+  /** The content is only the first EDIT_MAX_BYTES of a larger file — drives the
+   *  partial-view banner. Does NOT gate saving; size does (Stage 2B). */
+  truncated?: boolean;
   sizeBytes?: number;
 }
 
@@ -98,6 +102,10 @@ export interface ActiveArtifactViewProps {
   contentState?: ArtifactContentState;
   /** Re-runs the failed read — wired to the error state's Retry button. */
   onRetryRead?: () => void;
+  /** Hand a WHOLE artifacts:get response back to the host so the text and the
+   *  facts about the text (size, truncation) update together. Without this a
+   *  refetch can leave metadata frozen at whatever the first read said. */
+  onDiskRead?: (res: any) => void;
   projectRoot: string;
   projectId: string;
   projectName: string;
@@ -111,7 +119,7 @@ export interface ActiveArtifactViewProps {
 }
 
 export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifactViewProps>(function ActiveArtifactView({
-  artifact, content, contentInfo, contentState, onRetryRead, projectRoot, projectId, projectName, sessionId, onContentChange,
+  artifact, content, contentInfo, contentState, onRetryRead, projectRoot, projectId, projectName, sessionId, onContentChange, onDiskRead,
   controlsInHeader = false, onEditStateChange,
 }, ref) {
   // Legacy default: a caller that doesn't thread contentState keeps the OLD
@@ -340,6 +348,16 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     setConflict(null);
   }, [conflict, onContentChange, projectRoot, artifact.id]);
 
+  // "Load the whole file" on the partial-view banner. Re-asks WITHOUT the cap;
+  // main still refuses above FULL_READ_MAX_BYTES, so this can never become an
+  // unbounded read. Declared HERE with the other hooks — putting it lower would
+  // place it after the loading/missing/error early returns, making it a
+  // conditionally-called hook (React error + a lint failure).
+  const loadFull = useCallback(() => {
+    (window.claude as any).artifacts.get(projectRoot, artifact.id, { full: true })
+      .then((res: any) => { if (onDiskRead) onDiskRead(res); });
+  }, [projectRoot, artifact.id, onDiskRead]);
+
   // Expose edit control to the host header (SessionDrawer).
   useImperativeHandle(ref, () => ({
     isEditable,
@@ -395,6 +413,15 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
         // pane, so the registry reroutes it to BinaryFallback.
         binaryHint: contentInfo?.binary === true,
       });
+
+  // Only text viewers render from `content`, so only they can be showing a
+  // PREFIX. An over-cap .svg or .html takes the text path (SVG stays editable,
+  // D5) but renders from its own bytes / a srcDoc — a banner there would
+  // announce a partial view of something that is complete on screen.
+  const showPartialBanner = !editing
+    && contentInfo?.truncated === true
+    && typeof contentInfo.sizeBytes === 'number'
+    && isTextContentViewer(ViewerComponent);
 
   // Over the artifacts:get size cap: the content was deliberately not served
   // (a multi-MB string would block main + renderer, spec §2.3/§4.2). Offer the
@@ -502,6 +529,15 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           </div>
           <UnifiedDiff oldStr={conflict.disk} newStr={draft} />
         </div>
+      )}
+      {/* Partial-view notice — a flex sibling of the viewer box, like the
+          conflict banner above, so it cannot scroll away with the content. */}
+      {showPartialBanner && (
+        <PartialFileBanner
+          sizeBytes={contentInfo!.sizeBytes!}
+          onLoadFull={loadFull}
+          onOpenExternally={() => (window.claude as any).shell?.openPath?.(absolutePath)}
+        />
       )}
       <div className="flex-1 overflow-hidden">
         {/* Boundary catches lazy chunk-load failures + viewer render crashes

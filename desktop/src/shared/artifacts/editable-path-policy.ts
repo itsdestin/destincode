@@ -90,6 +90,14 @@ export function protectedReadPath(canonicalPath: string): boolean {
  * then blocks the renderer highlighting it (spec §2.3). Tunable. */
 export const EDIT_MAX_BYTES = 2 * 1024 * 1024;
 
+/** Ceiling on "Load the whole file" from the partial-view banner (spec §4.3).
+ * Deliberately expressed as a multiple of the cap rather than an independent
+ * magic number: it means "we will load at most four times what we promise to
+ * show instantly". A starting value, not a measurement. Past this the renderer
+ * blocks long enough to feel frozen -- which is what EDIT_MAX_BYTES exists to
+ * prevent in the first place. */
+export const FULL_READ_MAX_BYTES = 4 * EDIT_MAX_BYTES;
+
 /** git-style binary sniff: a NUL byte in the head slice means not-text. The
  * caller passes at most the first 8KB — do not read whole files to decide. */
 export function looksBinary(head: Uint8Array): boolean {
