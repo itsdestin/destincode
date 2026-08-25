@@ -10,6 +10,11 @@ import { useExpandAllToggle, getInitialExpanded, isExpandModeActive } from '../.
 import { useArtifactOptional } from '../../state/ArtifactContext';
 import { ArtifactThumbnail } from '../ArtifactThumbnail';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
+// Chatsearch session cards: same parser ToolCard uses for the header label,
+// so the collapsed header and expanded body always agree on what the call is.
+import { describeChatsearchCall, COPY } from '../../../shared/chatsearch-refs';
+import ChatsearchFindCard from './ChatsearchFindCard';
+import ChatsearchShowCard from './ChatsearchShowCard';
 // Fix: tool inputs are unknown-typed JSON from the model/provider. Every
 // `input.x as string` below was a lie-cast guarded only by truthiness — an
 // object survives `|| ''` (objects are truthy) and then crashes basename() /
@@ -919,6 +924,11 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
     () => buildTasksById(chatState.toolCalls),
     [chatState.toolCalls],
   );
+  // Fix: this must sit above the `inner` IIFE's switch, not inside the Bash
+  // case — hooks are unconditional, and the case only runs when toolName is
+  // 'Bash'. Sticky per card: once resolve reports Android/IPC unavailable we
+  // never retry the card view for this tool call, we just show plain Bash.
+  const [chatsearchUnavailable, setChatsearchUnavailable] = useState(false);
 
   const inner = (() => {
     // No arguments exist yet — every view below would render an empty shell.
@@ -934,8 +944,24 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         return <EditView tool={tool} sessionId={sessionId} />;
       case 'Write':
         return <WriteView tool={tool} sessionId={sessionId} />;
-      case 'Bash':
+      case 'Bash': {
+        // chatsearch calls render as session cards; anything else — and any
+        // chatsearch call whose output can't be parsed, was piped, or was
+        // truncated — stays the plain shell view. Android answers resolve with
+        // not-implemented; the card reports that back and we swap to shell.
+        const cs = describeChatsearchCall(tool);
+        if (cs && !chatsearchUnavailable) {
+          return (
+            <div className="space-y-2">
+              {cs.cmd === 'find'
+                ? <ChatsearchFindCard shortIds={cs.shortIds} onUnavailable={() => setChatsearchUnavailable(true)} />
+                : <ChatsearchShowCard id={cs.id} provider={cs.provider} onUnavailable={() => setChatsearchUnavailable(true)} />}
+              <details className="text-xs text-fg-muted"><summary className="cursor-pointer">{COPY.rawOutput}</summary><ShellView tool={tool} commandField="command" /></details>
+            </div>
+          );
+        }
         return <ShellView tool={tool} commandField="command" />;
+      }
       case 'TodoWrite':
         return <TodoWriteView tool={tool} />;
       case 'TaskCreate':

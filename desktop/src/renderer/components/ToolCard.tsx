@@ -17,6 +17,8 @@ import { asString } from '../utils/tool-input';
 // status-bar chip colors, so the footer band can never drift from the chip.
 import { fullAutoStopCopy } from './permissions/deny-list-copy';
 import { PERMISSION_DISPLAY } from './StatusBar';
+// Same parser ToolBody uses to pick the card body, so header and body agree.
+import { describeChatsearchCall, isChatsearchCommand, COPY } from '../../shared/chatsearch-refs';
 
 // --- Helpers for friendly display ---
 
@@ -58,6 +60,9 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
 
   switch (toolName) {
     case 'Bash': {
+      // Same helper ToolBody uses to pick the card, so header and body agree.
+      const cs = describeChatsearchCall(tool);
+      if (cs) return { label: cs.cmd === 'find' ? COPY.headerFind(cs.shortIds.length) : COPY.headerShow, detail: '' };
       // Fix: an object survives `(x as string) || ''` (objects are truthy), then
       // .trimStart() throws — crashing the whole Chat pane via its ErrorBoundary.
       const cmd = asString(input.command);
@@ -955,7 +960,11 @@ interface Props {
 export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }: Props) {
   // Seed from the module-level mode so a card that mounts AFTER Ctrl+O fired
   // (e.g. when its parent tool group just opened) starts in the right state.
-  const [expanded, setExpanded] = useState(() => getInitialExpanded());
+  // Chatsearch cards open expanded: their whole point is the Preview/Resume
+  // buttons, which a collapsed header would hide. Decided from the command so
+  // the card is already open when the output arrives. (Task 4 lets Destin
+  // reverse this.)
+  const [expanded, setExpanded] = useState(() => getInitialExpanded() || (tool.toolName === 'Bash' && isChatsearchCommand(asString(tool.input.command))));
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
   const dispatch = useChatDispatch();
   // Optional: the workbench tool gallery (?mode=workbench&view=tools) renders
