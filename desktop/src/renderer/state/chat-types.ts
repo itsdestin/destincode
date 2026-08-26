@@ -99,6 +99,64 @@ export interface UsageSnapshot {
   sevenDayResetsAt: string | null;
 }
 
+// Step 3 (2026-08-17, broadened "context transparency"): what the native harness
+// began the session with — a full accounting of the assistant's starting
+// context, truncated or not. The session-start panel renders this at the top of
+// every session (local or cloud), so the user can see the system prompt,
+// project instructions (as truncated), skills, and tools the assistant was
+// given — with outlinks to the real files.
+//
+// Every "was there a truncation" question is answered by a sub-field: an
+// all-null record is a session that started with everything fully loaded.
+//
+// This REPLACES the truncation-only record (2026-08-17 v1): the banner could
+// only say "something was cut". The panel can account for everything, and
+// truncation falls out naturally as the difference between the raw file and the
+// truncated copy shown.
+export interface SessionContext {
+  /** The model this session is bound to, e.g. "qwen2.5-coder:14b". */
+  modelLabel?: string | null;
+  /** The model's context window in tokens, when known. */
+  contextWindowTokens?: number | null;
+  /** Summary line for the top of the panel — "Started with the full project
+   *  context" or "Context was trimmed to fit {model}". */
+  summary?: string | null;
+  /** The system prompt the assistant began with (host-assembled). */
+  systemPrompt?: string | null;
+  /** Project instructions (CLAUDE.md / AGENTS.md): the OUTLINE received by the
+   *  model, as-truncated. When untruncated this is the full file. */
+  projectInstructions?: {
+    /** Path to the root instruction file (CLAUDE.md), even when truncated. */
+    path: string;
+    /** The text the model actually received. */
+    text: string;
+    /** The FULL original text, for the truncation diff. Present when the host
+     *  can supply it (the file is on disk); the diff view falls back to the
+     *  outlink when absent. */
+    fullText?: string | null;
+    /** True when the file was outlined/truncated to fit the window. */
+    truncated: boolean;
+    /** Human line when truncated — "3 of 12 sections kept (headings only)". */
+    note?: string | null;
+  } | null;
+  /** Skills loaded at session start, and whether each was truncated. */
+  skills?: Array<{
+    id: string;
+    label: string;
+    /** Path to the skill's SKILL.md — the outlink target. */
+    path?: string | null;
+    /** True when the skill body was truncated to fit the window. */
+    truncated?: boolean;
+    /** The FULL original skill body, for the truncation diff. */
+    fullText?: string | null;
+    note?: string | null;
+  }> | null;
+  /** Tools available to the assistant this session. */
+  tools?: string[] | null;
+  /** MCP servers dropped at session start to fit the tools budget. */
+  droppedMcpServers?: string[] | null;
+}
+
 // Thin divider entry — shown when a slash command produced a side-effect
 // worth marking in the conversation history (e.g. /clear, /compact).
 // Permanent so the user can scroll back and see that "these messages end here."
@@ -292,6 +350,16 @@ export interface SessionChatState {
    * have shown, so the drain-side removal can content-match it.
    */
   queuedMessages: Array<{ queueId: string; content: string; timestamp: number }>;
+  /**
+   * Step 3 (2026-08-17, broadened): the session's STARTING context — model,
+   * window, system prompt, project instructions (as truncated), skills, tools,
+   * dropped MCP servers. Null = the host hasn't reported it yet. Lives here
+   * (not a timeline entry) so it survives resume — the accounting is a fact
+   * about the session's prompt, which is rebuilt on resume. Set by the
+   * SESSION_CONTEXT action (native session start / resume). Drives the
+   * session-start context panel + the "Context was trimmed" banner.
+   */
+  sessionContext: SessionContext | null;
 }
 
 export function createSessionChatState(): SessionChatState {
@@ -320,6 +388,7 @@ export function createSessionChatState(): SessionChatState {
     modelEverResident: false,
     seenUuids: new Set(),
     queuedMessages: [],
+    sessionContext: null,
   };
 }
 
@@ -414,6 +483,16 @@ export type ChatAction =
       type: 'NATIVE_SESSION_ERROR';
       sessionId: string;
       message: string;
+    }
+  | {
+      // Step 3 (2026-08-17, broadened): the session's STARTING context, reported
+      // by the native harness on session start/resume. Sets
+      // SessionChatState.sessionContext — the session-start panel + the
+      // "Context was trimmed" banner both render from it. null = host hasn't
+      // reported yet (or reported a fully-loaded session).
+      type: 'SESSION_CONTEXT';
+      sessionId: string;
+      context: SessionContext | null;
     }
   | {
       // Plan 2b: another device took over this session's lease. The holder side
@@ -719,6 +798,10 @@ export interface SerializedSessionChatState {
   // mid-session. Optional so a pre-field snapshot from an older host still
   // deserializes.
   queuedMessages?: Array<{ queueId: string; content: string; timestamp: number }>;
+  // Step 3 (2026-08-17): survives resume — the accounting is a fact about the
+  // session's prompt, which IS rebuilt on resume. Optional so a pre-field
+  // snapshot from an older host still deserializes.
+  sessionContext?: SessionContext | null;
 }
 
 export interface SerializedChatState {
@@ -759,6 +842,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         modelEverResident: s.modelEverResident,
         seenUuids: Array.from(s.seenUuids),
         queuedMessages: s.queuedMessages,
+        sessionContext: s.sessionContext,
       },
     ]);
   }
@@ -806,6 +890,8 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       seenUuids: new Set(ser.seenUuids ?? []),
       // Older hosts predate queuedMessages — default to an empty list.
       queuedMessages: ser.queuedMessages ?? [],
+      // Older hosts predate sessionContext — default null (no panel/banner).
+      sessionContext: ser.sessionContext ?? null,
     });
   }
   return result;

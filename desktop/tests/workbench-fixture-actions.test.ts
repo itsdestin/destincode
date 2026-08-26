@@ -16,6 +16,10 @@ const KNOWN_KINDS = new Set([
   // 'stalled' (Task 6): parks the turn via TRANSCRIPT_THINKING_HEARTBEAT so the
   // stalled card can be looked at in the workbench — no backend involved.
   'stalled',
+  // 'session_context' (Step 3, 2026-08-17, broadened): seeds the session's
+  // STARTING context (SESSION_CONTEXT → SessionContextBanner + SessionContextPopup).
+  // No backend yet — MOCK_ONLY — but the line kind IS handled by the loader.
+  'session_context',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {

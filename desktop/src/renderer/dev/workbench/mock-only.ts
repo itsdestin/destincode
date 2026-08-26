@@ -13,4 +13,13 @@ export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
   //
   // Add entries as new UI is designed ahead of its backend, e.g.
   //   { channel: 'thing.list', feature: 'thing manager (M9)' },
+  //
+  // Step 3 (2026-08-17, broadened): the session-start context panel. The real
+  // backend (a session-start push carrying the full starting context — system
+  // prompt, fitProjectInstructions / fitInjection results, droppedMcpServers)
+  // does not exist yet — the panel is designed against claim-data seeded
+  // through the SESSION_CONTEXT reducer action (fixture-loader.ts). This names
+  // the channel the backend will provide so the design UI can never quietly
+  // ship as real.
+  { channel: 'native.onSessionContext', feature: 'session context panel (Step 3)' },
 ];

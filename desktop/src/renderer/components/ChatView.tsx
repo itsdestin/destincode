@@ -17,6 +17,8 @@ import CopyPicker from './CopyPicker';
 import ThinkingIndicator from './ThinkingIndicator';
 import AttentionBanner from './AttentionBanner';
 import ModelLoadingBar from './ModelLoadingBar';
+import { SessionContextBanner } from './SessionContextBanner';
+import SessionContextPopup from './SessionContextPopup';
 import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
 import { useArtifact } from '../state/ArtifactContext';
@@ -168,6 +170,21 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
   // Ctrl+F find-over-chat-history. Searches the message timeline (contentRef)
   // via the same CSS-Highlight ContentFindBar the artifact viewer uses.
   const [findOpen, setFindOpen] = useState(false);
+
+  // Step 3 (2026-08-17, broadened): the session-start context panel. Opens ONCE
+  // per session the first time the session's starting context is known and this
+  // ChatView is the visible one — the "popup at the start of every session"
+  // behavior Destin asked for. The persistent strip stays clickable for the
+  // rest of the session; the popup is one-time (a modal per session would be
+  // noise). Per-session ref (not state) so background sessions never auto-open.
+  const [contextPopupOpen, setContextPopupOpen] = useState(false);
+  const contextAutoOpenedRef = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!visible || !state.sessionContext) return;
+    if (contextAutoOpenedRef.current[sessionId]) return;
+    contextAutoOpenedRef.current[sessionId] = true;
+    setContextPopupOpen(true);
+  }, [visible, state.sessionContext, sessionId]);
 
   // Single pass — compute all tool status flags, memoized to avoid re-iterating
   // the Map on every render (toolCalls is a new ref on every reducer dispatch)
@@ -748,6 +765,16 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
           )}
           <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">
            <div ref={contentRef}>
+        {/* Step 3 (2026-08-17, broadened): the session's starting-context strip
+            — every session shows one, and clicking it opens the full accounting
+            (SessionContextPopup). Mounted above the first message so it also
+            shows on a fresh session before any timeline exists. in-view opts it
+            into the same wallpaper glassmorphism as the timeline bubbles. */}
+        {state.sessionContext && (
+          <div className="px-4 pt-3 in-view">
+            <SessionContextBanner context={state.sessionContext} onOpen={() => setContextPopupOpen(true)} />
+          </div>
+        )}
         {state.timeline.length === 0 && !state.isThinking ? null : (
           <>
             {(() => {
@@ -1062,6 +1089,16 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
           Jump to bottom
         </button>
       )}
+
+      {/* Step 3 (2026-08-17, broadened): the session-start context panel —
+          "what the assistant began with". Auto-opens once per session (see the
+          effect above); the strip stays clickable afterwards. */}
+      <SessionContextPopup
+        open={contextPopupOpen}
+        onClose={() => setContextPopupOpen(false)}
+        context={state.sessionContext}
+        sessionId={sessionId}
+      />
     </div>
   );
 }
