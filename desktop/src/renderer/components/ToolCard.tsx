@@ -1,14 +1,22 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
 import { useArtifactOptional } from '../state/ArtifactContext';
-import { Button } from './ui';
+import { Button, Radio, RadioGroup } from './ui';
+// The card renders the widths this SHARED derivation produced and sends back only
+// which one was chosen — it never builds a rule pattern of its own.
+import { bashGrantOptions, bashNoGrantNote, type GrantScope } from '../../shared/bash-grant-shapes';
 import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
 import { isTypingTarget } from '../utils/is-typing-target';
+import { asString } from '../utils/tool-input';
+// Full-auto safety stop (spec 2026-08-12, M5 2b): per-family copy + the
+// status-bar chip colors, so the footer band can never drift from the chip.
+import { fullAutoStopCopy } from './permissions/deny-list-copy';
+import { PERMISSION_DISPLAY } from './StatusBar';
 
 // --- Helpers for friendly display ---
 
@@ -30,13 +38,30 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
 
+// asString (the unknown-input validator this file introduced in PR #295) moved
+// to utils/tool-input.ts so ToolBody.tsx can share the exact same idiom.
+
 export function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: string } {
+  // The model is still GENERATING this call's arguments, so `input` is empty and
+  // every per-tool detail line below would render blank. Show the argument
+  // character count instead: it is the only thing on a preparing card that
+  // CHANGES, and for Read/Write/Edit the preparing state is effectively the
+  // card's whole visible life (execution is a synchronous fs call), so a static
+  // card would sit unchanged for minutes and read as stuck.
+  if (tool.preparing) {
+    return {
+      label: tool.toolName,
+      detail: `preparing… ${(tool.preparingChars ?? 0).toLocaleString()} chars`,
+    };
+  }
   const { toolName, input } = tool;
 
   switch (toolName) {
     case 'Bash': {
-      const cmd = (input.command as string) || '';
-      const desc = input.description as string | undefined;
+      // Fix: an object survives `(x as string) || ''` (objects are truthy), then
+      // .trimStart() throws — crashing the whole Chat pane via its ErrorBoundary.
+      const cmd = asString(input.command);
+      const desc = asString(input.description);
       const bg = input.run_in_background ? ' ⟳' : '';
       let label: string;
       if (desc) {
@@ -51,12 +76,14 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Read': {
-      const fp = (input.file_path as string) || '';
+      // Fix: a non-string file_path crashed basename(); non-number offset/limit
+      // and non-string pages rendered "[object Object]" in the detail line.
+      const fp = asString(input.file_path);
       const label = fp ? `Reading ${basename(fp)}` : 'Reading File';
       let detail = fp ? `↳ ${parentDir(fp)}` : '';
-      const offset = input.offset as number | undefined;
-      const limit = input.limit as number | undefined;
-      const pages = input.pages as string | undefined;
+      const offset = typeof input.offset === 'number' ? input.offset : undefined;
+      const limit = typeof input.limit === 'number' ? input.limit : undefined;
+      const pages = asString(input.pages);
       if (offset != null && limit != null) {
         detail += ` lines ${offset}-${offset + limit}`;
       } else if (offset != null) {
@@ -70,8 +97,22 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       return { label, detail };
     }
 
+    case 'SendUserFile': {
+      // Files handed to the user. The chat renders these as the DeliverablesCard,
+      // not a ToolCard; this label covers the gallery / buddy strip fallbacks.
+      const raw = input.files;
+      const files = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === 'string') : [];
+      const names = files.map(basename);
+      return {
+        // Fix: a non-array `files` (malformed input) used to read "Sent 0 files".
+        label: files.length === 1 ? 'Sent a file' : files.length ? `Sent ${files.length} files` : 'Sent files',
+        detail: names.length ? `↳ ${names.join(', ')}` : '',
+      };
+    }
+
     case 'Write': {
-      const fp = (input.file_path as string) || '';
+      // Fix: a non-string file_path crashed basename().
+      const fp = asString(input.file_path);
       return {
         label: fp ? `Writing ${basename(fp)}` : 'Writing File',
         detail: fp ? `↳ ${parentDir(fp)}` : '',
@@ -79,9 +120,11 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Edit': {
-      const fp = (input.file_path as string) || '';
+      // Fix: a non-string file_path crashed basename(); a non-string old_string
+      // crashed .replace().
+      const fp = asString(input.file_path);
       let detail = fp ? `↳ ${parentDir(fp)}` : '';
-      const oldStr = input.old_string as string | undefined;
+      const oldStr = asString(input.old_string);
       if (oldStr) {
         detail += ` ${truncate(oldStr.replace(/\n/g, '⏎'), 40)}`;
       }
@@ -92,37 +135,50 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Grep': {
-      const pattern = (input.pattern as string) || '';
+      // Fix: a non-string pattern rendered `Searching for "[object Object]"`.
+      const pattern = asString(input.pattern);
       const label = pattern ? `Searching for "${truncate(pattern, 30)}"` : 'Searching Code';
+      // Fix: validate each field before interpolating — a malformed (non-string)
+      // glob/path/type used to render "[object Object]" or crash basename().
+      const glob = asString(input.glob);
+      const grepPath = asString(input.path);
+      const grepType = asString(input.type);
       let detail = '';
-      if (input.glob) {
-        detail = `↳ in ${input.glob} files`;
-      } else if (input.path) {
-        detail = `↳ in ${basename(input.path as string)}/`;
-      } else if (input.type) {
-        detail = `↳ in .${input.type} files`;
+      if (glob) {
+        detail = `↳ in ${glob} files`;
+      } else if (grepPath) {
+        detail = `↳ in ${basename(grepPath)}/`;
+      } else if (grepType) {
+        detail = `↳ in .${grepType} files`;
       }
       return { label, detail };
     }
 
     case 'Glob': {
-      const pattern = (input.pattern as string) || '';
+      // Fix: a non-string pattern crashed .replace() (objects survive `|| ''`).
+      const pattern = asString(input.pattern);
       const simplified = pattern.replace(/^\*\*\//, '');
       const label = pattern ? `Finding ${simplified} files` : 'Finding Files';
-      const detail = input.path ? `↳ in ${basename(input.path as string)}/` : '';
+      // Fix: same hardening as Grep — a non-string path must not reach basename().
+      const globPath = asString(input.path);
+      const detail = globPath ? `↳ in ${basename(globPath)}/` : '';
       return { label, detail };
     }
 
     case 'Agent': {
-      const desc = input.description as string | undefined;
+      // Fix: a non-string description rendered "Agent: [object Object]".
+      const desc = asString(input.description);
       const bg = input.run_in_background ? ' ⟳' : '';
       const label = desc ? `Agent: ${desc}` : 'Running Sub-Agent';
-      const detail = input.subagent_type ? `↳ ${input.subagent_type}` : '';
+      // Fix: a malformed (non-string) subagent_type used to render "[object Object]".
+      const subagentType = asString(input.subagent_type);
+      const detail = subagentType ? `↳ ${subagentType}` : '';
       return { label: label + bg, detail };
     }
 
     case 'WebSearch': {
-      const query = input.query as string | undefined;
+      // Fix: a non-string query rendered "[object Object]" in the detail line.
+      const query = asString(input.query);
       return {
         label: 'Searching the Web',
         detail: query ? `↳ ${query}` : '',
@@ -130,7 +186,9 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'WebFetch': {
-      const url = input.url as string | undefined;
+      // Fix: a non-string url threw inside new URL(), and the catch fallback then
+      // rendered it as "[object Object]".
+      const url = asString(input.url);
       let domain = '';
       if (url) {
         try {
@@ -146,13 +204,16 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'Skill': {
-      const skill = input.skill as string | undefined;
-      const args = input.args as string | undefined;
+      // Fix: a non-string skill crashed .includes() — optional chaining doesn't
+      // guard objects (they're not nullish). Non-string args rendered as
+      // "[object Object]".
+      const skill = asString(input.skill);
+      const args = asString(input.args);
       // Strip the plugin namespace ("superpowers:brainstorming" -> "brainstorming")
       // so the label reads as English, not as a technical id. Past tense matches
       // the post-launch state — by the time the card renders, the skill has
       // already been invoked.
-      const bareName = skill?.includes(':') ? skill.split(':').slice(-1)[0] : skill;
+      const bareName = skill.includes(':') ? skill.split(':').slice(-1)[0] : skill;
       return {
         label: bareName ? `Invoked skill: ${bareName}` : 'Invoked skill',
         detail: args ? `↳ ${args}` : '',
@@ -160,7 +221,8 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'TaskCreate': {
-      const subject = (input.subject as string) || '';
+      // Fix: a non-string subject rendered "New Task: [object Object]".
+      const subject = asString(input.subject);
       return {
         label: subject ? `New Task: ${truncate(subject, 50)}` : 'New Task',
         detail: '',
@@ -183,15 +245,26 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
         default:
           label = 'Updating Task';
       }
-      const taskId = input.taskId as string | undefined;
+      // Fix: a non-string taskId rendered "#[object Object]" (task ids are
+      // strings throughout — see task-state.ts).
+      const taskId = asString(input.taskId);
       return { label, detail: taskId ? `↳ #${taskId}` : '' };
     }
 
     case 'AskUserQuestion': {
-      // Show the first question's header/text as the tool label
+      // Show the first question's header/text as the tool label.
+      // Fix: only accept string values — String(header) on a malformed object
+      // input produced an "[object Object]" label.
+      // P-18: read like every other card — short topic as the label, the
+      // question itself as the "↳" detail (Read shows "Reading X ↳ path").
+      // Header missing → plain "Question" so the detail still carries the text.
       const questions = input.questions as any[];
-      const header = questions?.[0]?.header || questions?.[0]?.question || 'Question';
-      return { label: truncate(String(header), 40), detail: '' };
+      const header = asString(questions?.[0]?.header);
+      const question = asString(questions?.[0]?.question);
+      return {
+        label: header ? truncate(header, 40) : 'Question',
+        detail: question ? `↳ ${truncate(question, 60)}` : '',
+      };
     }
 
     case 'ExitPlanMode': {
@@ -248,7 +321,7 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
 // CC asks keep sending their real suggestion string. Task 13.
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, onResponded, onFailed }: {
+function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed }: {
   requestId: string;
   suggestions?: string[];
   /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
@@ -263,8 +336,15 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
    *  scope checkable — a worktree does NOT inherit its parent repo's rules. */
   folderName?: string;
   /** Budget gates (max_steps / doom_loop) are a binary "Continue?" — never offer
-   *  "Always Allow" (it'd persist a rule that permanently disables the guard). */
+   *  "Always Allow" (it'd persist a rule that permanently disables the guard).
+   *  Also set for an external-directory ask, where a remembered rule could
+   *  never be consulted (harness-session.ts, step 4). */
   suppressAlwaysAllow?: boolean;
+  /** The session's mode when the ask fired (native broker only). 'full-auto'
+   *  + denyListed renders the safety-stop footer instead of the generic row —
+   *  Full auto's only rule-based ask IS the destructive-command stop, and a
+   *  generic "may I?" there reads as noise (spec 2026-08-12, M5 2b). */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
@@ -275,12 +355,42 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
   // thread. CC keeps its suggestions-gated behavior unchanged.
   const isNative = requestId.startsWith('native-');
   const hasSuggestions = !!(suggestions?.length);
-  const canAlwaysAllow = (hasSuggestions || isNative) && !suppressAlwaysAllow;
+  // canAlwaysAllow also gates on noGrantPossible (declared below with the grant
+  // options) — see its definition for the one case it removes the button.
+  // Full-auto's only rule-based ask is a deny-list stop — swap the generic row
+  // for the safety-stop footer the compare view settled (workbench surface
+  // 'full-auto-ask', R1–R4). Every other combination keeps the row as-is.
+  const fullAutoStop = permissionMode === 'full-auto' && !!denyListed;
   // Consequence-gated confirm strip (deny-listed asks) — mirrors the delete-model
   // confirm in LocalModelsSection: replace the button row with a plain-language
   // warning + Cancel / confirm.
   const [confirmingAlways, setConfirmingAlways] = useState(false);
-  const [focusIdx, setFocusIdx] = useState(canAlwaysAllow ? 1 : 0);
+
+  // M5 2c — the widths this command may be granted at. The card shows what the
+  // SHARED derivation produced and never builds a pattern itself; it sends back
+  // only which option was chosen (see alwaysAllowDecision). Only native asks
+  // carry a real Bash command — CC asks keep their suggestions-driven behavior.
+  const grantOptions = useMemo(
+    () => (isNative && typeof command === 'string' ? bashGrantOptions(command) : []),
+    [isNative, command],
+  );
+  // A Bash ask whose command yields NO option may not be always-allowed at all
+  // (a bare `git push`: its target is not in the command and changes underneath
+  // the grant). Non-Bash native asks have no options and are unaffected.
+  const noGrantNote = useMemo(
+    () => (isNative && typeof command === 'string' ? bashNoGrantNote(command) : null),
+    [isNative, command],
+  );
+  const noGrantPossible = isNative && typeof command === 'string' && grantOptions.length === 0;
+  // Which width the user picked. Preselected narrow; irrelevant when the
+  // derivation offered only one option (see chosenScope).
+  const [grantPick, setGrantPick] = useState<GrantScope>('exact');
+  const chosenScope: GrantScope = grantOptions.length === 1 ? grantOptions[0].scope : grantPick;
+  const chosen = grantOptions.find((o) => o.scope === chosenScope) ?? grantOptions[0];
+  const canAlwaysAllow = (hasSuggestions || isNative) && !suppressAlwaysAllow && !noGrantPossible;
+  // Safety-stop default is Run it (the primary verb, index 0); the generic
+  // row keeps its shipped default (Always Allow when present).
+  const [focusIdx, setFocusIdx] = useState(fullAutoStop ? 0 : canAlwaysAllow ? 1 : 0);
   const buttonsRef = useRef<(HTMLButtonElement | null)[]>([]);
 
   const handleRespond = useCallback(async (decision: object) => {
@@ -306,21 +416,35 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
   const alwaysAllowDecision = () =>
     hasSuggestions
       ? { decision: { behavior: 'allow' }, updatedPermissions: [suggestions![0]] }
-      : { decision: { behavior: 'allow' }, updatedPermissions: [NATIVE_ALWAYS_ALLOW] };
+      // A SELECTOR, never a pattern — the session re-derives the rule. Sending a
+      // pattern from here would let the renderer write the top precedence layer.
+      : { decision: { behavior: 'allow' }, updatedPermissions: [NATIVE_ALWAYS_ALLOW], grantScope: chosenScope };
 
-  // Deny-listed asks show the consequence confirm first; otherwise respond directly.
+  // The confirm opens for a deny-listed ask (as it always has) AND for any Bash
+  // ask the derivation produced options for — that is where the width choice and
+  // the limits sentence live (compare rounds R1·B / R2·C). Everything else
+  // responds directly, exactly as before.
   const onAlwaysAllow = useCallback(() => {
-    if (denyListed) { setConfirmingAlways(true); return; }
+    if (denyListed || grantOptions.length > 0) { setConfirmingAlways(true); return; }
     handleRespond(alwaysAllowDecision());
-  }, [denyListed, handleRespond, hasSuggestions, suggestions]);
+  }, [denyListed, grantOptions.length, handleRespond, hasSuggestions, suggestions, chosenScope]);
 
-  // Build actions list so keyboard handler can index into it
+  // Build actions list so keyboard handler can index into it. The array MUST
+  // match the VISUAL order so Arrow Left/Right walk the row: the safety stop
+  // puts deny in the MIDDLE (Run it / Skip it | Always Allow) — red mid-row is
+  // owner-approved (compare R2) even though every other row ends on red.
   const actions = useRef<(() => void)[]>([]);
-  actions.current = [
-    () => handleRespond({ decision: { behavior: 'allow' } }),
-    ...(canAlwaysAllow ? [onAlwaysAllow] : []),
-    () => handleRespond({ decision: { behavior: 'deny' } }),
-  ];
+  actions.current = fullAutoStop
+    ? [
+        () => handleRespond({ decision: { behavior: 'allow' } }),
+        () => handleRespond({ decision: { behavior: 'deny' } }),
+        onAlwaysAllow,
+      ]
+    : [
+        () => handleRespond({ decision: { behavior: 'allow' } }),
+        ...(canAlwaysAllow ? [onAlwaysAllow] : []),
+        () => handleRespond({ decision: { behavior: 'deny' } }),
+      ];
   const count = actions.current.length;
 
   // Global keyboard navigation: arrows cycle, Enter activates. Suspended while
@@ -358,17 +482,67 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
         {/* The header carries the ask so the body only has to carry the risk.
             Naming the folder keeps the promise checkable — the remembered rule is
             cwd-scoped, so "in this folder" alone would be unverifiable. */}
+        {/* The heading names what is actually being granted (compare R2·C): the
+            shipped "this exact command" is FALSE the moment the only option is a
+            named grant like "Always allow pushing to master", and ambiguous when
+            there are two options to choose between. */}
         <p className="text-xs font-medium text-fg-2">
-          Always allow this exact command{folderName ? ` in ${folderName}` : ''}?
+          {grantOptions.length > 1
+            ? `Always allow this${folderName ? ` in ${folderName}` : ''}?`
+            : grantOptions.length === 1 && grantOptions[0].scope === 'wide'
+              ? `${grantOptions[0].label}${folderName ? ` in ${folderName}` : ''}?`
+              : `Always allow this exact command${folderName ? ` in ${folderName}` : ''}?`}
         </p>
         {command && (
           <p className="text-2xs leading-relaxed text-fg-2 bg-inset/70 px-2 py-1.5 rounded-sm break-all">
             {command}
           </p>
         )}
-        <p className="text-2xs text-fg-dim leading-relaxed">
-          It can delete files or change published code, and you won't be asked again.
-        </p>
+        {denyListed && (
+          <p className="text-2xs text-fg-dim leading-relaxed">
+            {/* Owner-set copy (2026-08-12), shared by every mode's confirm. The
+                rule also applies to the REST OF THIS SESSION — the "future
+                sessions" understatement was accepted knowingly. Gated on
+                denyListed: an ordinary command never carried this warning, and
+                showing "may delete files" over `npm run build` would be the
+                misleading-error failure in a different costume. */}
+            It may delete files or change published code, and you won't be asked again during future sessions in this project.
+          </p>
+        )}
+        {/* The width choice. Only rendered when the derivation actually produced
+            two — a named grant replaces its exact rung rather than sitting beside
+            it, so every `git push` lands on the single-option path. */}
+        {grantOptions.length > 1 && (
+          <RadioGroup
+            options={grantOptions.map((o) => o.scope)}
+            value={chosenScope}
+            onChange={(next) => setGrantPick(next as GrantScope)}
+            aria-label="How much to allow"
+            className="flex flex-col gap-1.5 pt-0.5"
+          >
+            {grantOptions.map((o) => (
+              <button
+                key={o.scope}
+                type="button"
+                disabled={responding}
+                onClick={() => setGrantPick(o.scope)}
+                className="flex items-start gap-2 text-left disabled:opacity-50"
+              >
+                <Radio checked={chosenScope === o.scope} onChange={() => setGrantPick(o.scope)} className="mt-0.5" />
+                <span className="text-2xs text-fg-2 break-all">
+                  {o.scope === 'exact' ? 'Only this exact command' : o.label}
+                </span>
+              </button>
+            ))}
+          </RadioGroup>
+        )}
+        {/* What the grant will NOT cover. This is the item's ONLY warning about
+            the two cases that re-ask anyway (a chained command, a flag that
+            changes what the command does) — the after-the-fact explanation was
+            deliberately dropped, so this line is load-bearing. Settled R2·C. */}
+        {chosen && (
+          <p className="text-3xs text-fg-muted leading-relaxed">{chosen.limits}</p>
+        )}
         <div className="flex items-center gap-2">
           {/* "Allow once" IS the plain-allow decision, so it wears the same green
               as Yes. Previously this slot was Cancel, which dead-ended back on the
@@ -400,6 +574,58 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
     );
   }
 
+  // The full-auto safety stop (compare surface 'full-auto-ask', settled R4).
+  // Same §11/change-61 carve-out as the rows below: green/red/orange are STATUS
+  // colors; the band wears the chip's own colors so it reads as the MODE
+  // stopping itself, not a generic permission question.
+  if (fullAutoStop) {
+    const fa = PERMISSION_DISPLAY['full-auto'];
+    const stop = fullAutoStopCopy(command);
+    return (
+      <div className="px-3 py-2 space-y-2 border-t" style={{ background: fa.bg, borderColor: fa.border }}>
+        {/* Header + subheader as ONE tight block; the footer's only real gap
+            sits before the buttons (owner spacing direction, compare R3). */}
+        <div className="space-y-0.5">
+          <p className="text-xs font-medium" style={{ color: fa.color }}>{stop.header}</p>
+          <p className="text-2xs text-fg-dim leading-relaxed">{stop.subline}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            ref={el => { buttonsRef.current[0] = el; }}
+            disabled={responding}
+            onClick={() => handleRespond({ decision: { behavior: 'allow' } })}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-green-600/60 hover:bg-green-600/80 text-green-100 transition-colors disabled:opacity-50 ${focusIdx === 0 ? ring : ''}`}
+          >
+            Run it
+          </button>
+          <button
+            ref={el => { buttonsRef.current[1] = el; }}
+            disabled={responding}
+            onClick={() => handleRespond({ decision: { behavior: 'deny' } })}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-red-600/60 hover:bg-red-600/80 text-red-100 transition-colors disabled:opacity-50 ${focusIdx === 1 ? ring : ''}`}
+          >
+            Skip it
+          </button>
+          {/* P-18: a real 1px divider instead of a typed "|" — takes the theme's
+              edge colour and is silent to screen readers. */}
+          <span aria-hidden="true" className="w-px h-3.5 bg-edge shrink-0" />
+          {/* Orange, not the generic row's blue: a fourth member of the status
+              button set, distinct from the amber band behind it (compare R2·A).
+              fullAutoStop implies a native deny-listed ask, so onAlwaysAllow
+              always routes through the consequence confirm above. */}
+          <button
+            ref={el => { buttonsRef.current[2] = el; }}
+            disabled={responding}
+            onClick={onAlwaysAllow}
+            className={`px-3 ${pad} text-xs font-medium rounded-lg bg-orange-600/60 hover:bg-orange-600/80 text-orange-100 transition-colors disabled:opacity-50 ${focusIdx === 2 ? ring : ''}`}
+          >
+            Always Allow
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     // Same §11/change-61 carve-out as the confirm row above: status colors stay,
     // radius normalizes. The `ring` here is NOT a focus ring — it tracks focusIdx,
@@ -407,7 +633,8 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
     // (buttonsRef[next].focus()), so adding ui/Button's focus-visible ring would
     // paint an accent ring on top of this one on the selected button. Left alone
     // on purpose; don't "finish the migration" by adding FOCUS_RING here.
-    <div className="flex items-center gap-2 px-3 py-2 border-t border-edge bg-inset/30">
+    <div className="px-3 py-2 border-t border-edge bg-inset/30 space-y-1.5">
+    <div className="flex items-center gap-2">
       <button
         ref={el => { buttonsRef.current[0] = el; }}
         disabled={responding}
@@ -434,6 +661,13 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
       >
         No
       </button>
+    </div>
+      {/* Why there is no "Always Allow" here. Without it a missing button on a
+          command the user runs constantly reads as a bug rather than a decision
+          (compare R2·C). Shape-owned copy — see CommandShape.noGrantNote. */}
+      {noGrantPossible && noGrantNote && (
+        <p className="text-3xs text-fg-muted leading-relaxed">{noGrantNote}</p>
+      )}
     </div>
   );
 }
@@ -507,9 +741,36 @@ interface AskQuestion {
   multiSelect: boolean;
 }
 
-function isValidQuestions(input: Record<string, unknown>): input is { questions: AskQuestion[] } {
-  const q = input.questions;
-  return Array.isArray(q) && q.length > 0 && typeof q[0]?.question === 'string';
+// Fix: isValidQuestions only checked questions[0].question, so an object-valued
+// header/label/description DEEPER in the array still reached React children in
+// the expanded card ("Objects are not valid as a React child" crashes the whole
+// Chat pane via its ErrorBoundary). Normalize the whole array up front with the
+// same asString idiom as friendlyToolDisplay: coerce every rendered field, and
+// drop members that can't render or be answered (no question text, no labeled
+// options) so one malformed member degrades gracefully instead of crashing or
+// invalidating the rest of the card.
+function normalizeQuestions(input: Record<string, unknown>): AskQuestion[] {
+  const raw = input.questions;
+  if (!Array.isArray(raw)) return [];
+  const out: AskQuestion[] = [];
+  for (const q of raw as Array<Record<string, unknown> | null | undefined>) {
+    const question = asString(q?.question);
+    if (!question) continue; // no question text — nothing to render or key answers by
+    const rawOptions = Array.isArray(q?.options) ? (q.options as Array<Record<string, unknown> | null | undefined>) : [];
+    const options: AskQuestion['options'] = [];
+    for (const o of rawOptions) {
+      const label = asString(o?.label);
+      if (!label) continue; // an unlabeled option can't be selected or echoed back
+      options.push({ label, description: asString(o?.description) || undefined });
+    }
+    if (options.length === 0) continue; // nothing selectable
+    out.push({ question, header: asString(q?.header), multiSelect: q?.multiSelect === true, options });
+  }
+  return out;
+}
+
+function isValidQuestions(input: Record<string, unknown>): boolean {
+  return normalizeQuestions(input).length > 0;
 }
 
 function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
@@ -518,7 +779,10 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
   onResponded?: () => void;
   onFailed?: () => void;
 }) {
-  const questions = (tool.input as any).questions as AskQuestion[];
+  // Fix: render (and echo back) the NORMALIZED questions, never the raw input —
+  // see normalizeQuestions above. Memoized so the array identity is stable for
+  // the hook deps below.
+  const questions = useMemo(() => normalizeQuestions(tool.input), [tool.input]);
   // answers: map from question text → selected label(s)
   const [answers, setAnswers] = useState<Record<string, Set<string>>>({});
   const [responding, setResponding] = useState(false);
@@ -561,7 +825,7 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
         decision: {
           behavior: 'allow',
           updatedInput: {
-            questions,       // Echo back original questions array
+            questions,       // Echo back the (normalized) questions array
             answers: answersObj,
           },
         },
@@ -650,16 +914,21 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
                   key={oi}
                   disabled={responding}
                   onClick={() => handleSelect(q.question, opt.label, q.multiSelect)}
-                  className={`w-full text-left px-2.5 ${pad} rounded-sm text-xs transition-colors
+                  // P-18: one row shape for both states — a visible dim border
+                  // when unselected, the accent border when selected — so rows
+                  // don't jump between "flat" and "outlined" as the user picks.
+                  className={`w-full text-left px-2.5 ${pad} rounded-md border text-xs transition-colors
                     ${selected
-                      ? 'bg-accent/20 border border-accent/50 text-fg'
-                      : 'bg-inset/40 border border-transparent hover:bg-inset/70 text-fg-dim'}
+                      ? 'bg-accent/15 border-accent text-fg'
+                      : 'bg-inset/40 border-edge-dim hover:bg-inset/70 text-fg-dim'}
                     ${focused ? 'ring-1 ring-white/30' : ''}
                     disabled:opacity-50`}
                 >
                   <div className="flex items-center gap-2">
-                    {/* Selection indicator */}
-                    <span className={`w-3 h-3 shrink-0 rounded-${q.multiSelect ? 'sm' : 'full'} border
+                    {/* Selection indicator. P-18: the two shapes are written out in
+                        full — Tailwind only generates classes it can read verbatim,
+                        so a computed `rounded-${...}` never produced any styling. */}
+                    <span className={`w-3 h-3 shrink-0 border ${q.multiSelect ? 'rounded-sm' : 'rounded-full'}
                       ${selected ? 'bg-accent border-accent' : 'border-edge'}`}
                     />
                     <span className="font-medium">{opt.label}</span>
@@ -756,7 +1025,9 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
       {tool.status === 'failed' && (
         <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
       )}
-      <span className="text-fg-faint text-xs select-none">|</span>
+      {/* P-18: a real 1px divider instead of a typed "|" — takes the theme's
+          edge colour and is silent to screen readers. */}
+      <span aria-hidden="true" className="w-px h-3.5 bg-edge shrink-0" />
       <span className="text-xs font-medium text-fg-2">{display.label}</span>
       {display.detail && (
         <span className="text-xs text-fg-muted truncate flex-1 min-w-0">{display.detail}</span>
@@ -820,10 +1091,15 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             requestId={tool.requestId}
             suggestions={tool.permissionSuggestions}
             denyListed={tool.denyListed}
+            permissionMode={tool.permissionMode}
             command={typeof (tool.input as any)?.command === 'string' ? (tool.input as any).command : undefined}
             folderName={sessionCwd ? basename(sessionCwd) : undefined}
             // Budget gates are a plain Yes/No "Continue?" — no "Always Allow".
-            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop'}
+            // `tool.external` joins them: the engine forces an ask for every path
+            // outside the session folder and never consults the stored rules
+            // there, so offering "Always allow" would promise a grant that can
+            // never fire. Spec 2026-08-11, finding 3.
+            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

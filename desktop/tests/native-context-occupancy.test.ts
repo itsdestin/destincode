@@ -69,4 +69,29 @@ describe('turn-complete usage — occupancy vs turn total', () => {
     expect(usage.inputTokens).toBe(0);
     expect(usage.contextUsedTokens).toBeGreaterThan(0);   // the system prompt alone is not free
   });
+
+  // Fix (Task 7 review): the session.contextUsedTokens ACCESSOR used to return
+  // its raw internal field, which the write site (harness-session.ts ~:1412)
+  // only ever sets when a step reports real usage — so for a usage-silent
+  // provider it stayed null forever, even though the turn-complete payload
+  // above already falls back to an estimate. That silently disabled any
+  // headroom-cap consumer (e.g. a specialist's report cap) for exactly the
+  // local-model case the estimate fallback exists for. Pin that the accessor
+  // and the emitted payload agree.
+  it('the contextUsedTokens accessor falls back like the emit site, and the two agree', async () => {
+    const model = scriptedModel([stream(...textChunks('a', 'hi'), finishChunk('stop', 0, 0))]);
+    const session = new HarnessSession(makeOpts({}), async () => model as any);
+    const events: TranscriptEvent[] = [];
+    session.on('transcript-event', (e: TranscriptEvent) => events.push(e));
+
+    // Before any turn: still not null — the accessor estimates from the
+    // (empty-history) system prompt alone, same fallback as mid-session.
+    expect(session.contextUsedTokens).not.toBeNull();
+
+    await session.send('go');
+
+    const usage = usageOf(events);
+    expect(session.contextUsedTokens).not.toBeNull();
+    expect(session.contextUsedTokens).toBe(usage.contextUsedTokens);
+  });
 });

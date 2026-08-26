@@ -158,3 +158,17 @@ in the youcoded-dev workspace).
   Defensive per-row parse; rows without `url` skipped. Probe:
   `desktop/test-search/probe-tavily.mjs`. Consumer:
   `src/main/harness/search/backends/tavily.ts`. (search)
+- **vercel/ai tool-result image split (watch, unmerged)** —
+  [vercel/ai PR #12621](https://github.com/vercel/ai/pull/12621) (unmerged as
+  of 2026-08-11) implements exactly the tool-result image split we hand-roll
+  in `wire-adapter.ts`'s `adaptForWire`, natively inside
+  `@ai-sdk/openai-compatible`. Tracking issue:
+  [vercel/ai #10850](https://github.com/vercel/ai/issues/10850). If #12621
+  merges, `adaptForWire`'s OpenAI-compatible split branch could shrink to
+  configuration — but the adapter still earns its keep regardless: for the
+  llama.cpp path (no images in tool-role messages at all — llama.cpp #20319,
+  a gap `@ai-sdk/openai-compatible` itself can't close) and for the
+  non-vision pixel strip, neither of which #12621 addresses. Re-check on
+  merge. Design: youcoded-dev
+  `docs/active/specs/2026-08-11-native-image-handling.md`. Consumer:
+  `src/main/harness/wire-adapter.ts`. (harness/wire-adapter)

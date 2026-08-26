@@ -1,6 +1,11 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { chatReducer } from '../src/renderer/state/chat-reducer';
 import { ChatState, ChatAction, createSessionChatState } from '../src/renderer/state/chat-types';
+// Source-text parity check below reads the two hand-mirrored forwarding
+// switches directly off disk (App.tsx has no test harness that exercises the
+// buddy window, and vice versa) — see the describe block at the bottom.
+import fs from 'fs';
+import path from 'path';
 
 const SESSION = 'test-session';
 
@@ -494,6 +499,55 @@ describe('Subagent threading', () => {
     if (seg.type === 'text') expect(seg.content).toBe("I'll check the Android side.");
   });
 
+  // Fix: the native harness (harness-session.ts:1769) emits one assistant-text
+  // event per stream delta rather than per whole message, so without
+  // coalescing a specialist's report rendered as hundreds of separate
+  // markdown blocks. Same-partId deltas must merge into ONE segment.
+  it('subagent assistant text deltas sharing a partId coalesce into one segment', () => {
+    state = emitParentAgentToolUse();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d1',
+      text: 'The bug is ', timestamp: 1000, partId: 'part-1',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d2',
+      text: 'in the Android build.', timestamp: 1001, partId: 'part-1',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    const parent = state.get(SESSION)!.toolCalls.get('toolu_parent')!;
+    expect(parent.subagentSegments!.length).toBe(1);
+    const seg = parent.subagentSegments![0];
+    expect(seg.type).toBe('text');
+    if (seg.type === 'text') {
+      expect(seg.content).toBe('The bug is in the Android build.');
+    }
+  });
+
+  it('subagent assistant text with different partIds stays as separate segments', () => {
+    state = emitParentAgentToolUse();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d1',
+      text: 'First delta.', timestamp: 1000, partId: 'part-1',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d2',
+      text: 'Second block.', timestamp: 1001, partId: 'part-2',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    const parent = state.get(SESSION)!.toolCalls.get('toolu_parent')!;
+    expect(parent.subagentSegments!.length).toBe(2);
+    expect(parent.subagentSegments![0].type).toBe('text');
+    expect(parent.subagentSegments![1].type).toBe('text');
+    if (parent.subagentSegments![0].type === 'text') {
+      expect(parent.subagentSegments![0].content).toBe('First delta.');
+    }
+    if (parent.subagentSegments![1].type === 'text') {
+      expect(parent.subagentSegments![1].content).toBe('Second block.');
+    }
+  });
+
   it('subagent event for unknown parent is a no-op', () => {
     const before = state;
     state = chatReducer(state, {
@@ -607,6 +661,51 @@ describe('Subagent threading', () => {
     expect(parent.subagentSegments![2].type).toBe('text');
   });
 
+  // Task 9 fix (external review, 2026-08-13): getHistory() has no guard
+  // against being called twice against an already-populated reducer state —
+  // a live re-dock re-sends the SAME stamped events off disk, not just a
+  // post-restart resume. Replaying the identical delta twice must not
+  // duplicate the text it produced the first time.
+  it('replaying the same subagent assistant-text delta twice does not duplicate the segment content', () => {
+    state = emitParentAgentToolUse();
+    const deliver = (s: ChatState) => chatReducer(s, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-report',
+      text: 'The bug is in the Android build.', timestamp: 1000, partId: 'part-1',
+      parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+    });
+    state = deliver(state);
+    state = deliver(state); // second delivery of the SAME event (identical uuid) — replay-twice
+    const parent = state.get(SESSION)!.toolCalls.get('toolu_parent')!;
+    expect(parent.subagentSegments!.length).toBe(1);
+    const seg = parent.subagentSegments![0];
+    expect(seg.type).toBe('text');
+    if (seg.type === 'text') expect(seg.content).toBe('The bug is in the Android build.');
+  });
+
+  it('replaying a multi-delta subagent report twice reproduces the same final text exactly once', () => {
+    state = emitParentAgentToolUse();
+    const events: ChatAction[] = [
+      {
+        type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d1',
+        text: 'The bug is ', timestamp: 1000, partId: 'part-1',
+        parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+      },
+      {
+        type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'uuid-d2',
+        text: 'in the Android build.', timestamp: 1001, partId: 'part-1',
+        parentAgentToolUseId: 'toolu_parent', agentId: 'abc',
+      },
+    ];
+    const replay = (s: ChatState) => events.reduce((acc, ev) => chatReducer(acc, ev), s);
+    state = replay(state); // first replay (e.g. getHistory() after a restart)
+    state = replay(state); // second replay (e.g. a live re-dock) — the SAME stamped events again
+    const parent = state.get(SESSION)!.toolCalls.get('toolu_parent')!;
+    expect(parent.subagentSegments!.length).toBe(1);
+    const seg = parent.subagentSegments![0];
+    expect(seg.type).toBe('text');
+    if (seg.type === 'text') expect(seg.content).toBe('The bug is in the Android build.');
+  });
+
   it('CLEAR_TIMELINE preserves subagentSegments on toolCalls entries', () => {
     state = emitParentAgentToolUse();
     state = chatReducer(state, {
@@ -681,4 +780,22 @@ describe('Subagent threading', () => {
     // The parent's Task tool must not have been flipped to 'failed: Turn ended'.
     expect(session.toolCalls.get('toolu_parent')!.status).not.toBe('failed');
   });
+});
+
+// App.tsx (main window) and BubbleFeed.tsx (buddy window) each hand-forward the
+// native heartbeat's fields onto TRANSCRIPT_THINKING_HEARTBEAT. They are copies,
+// and a field added to one and not the other makes the two windows disagree
+// about whether a turn is stalled. Pinned as source text because the buddy
+// window has no test harness of its own.
+describe('native heartbeat forwarding parity', () => {
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  const APP = read('src', 'renderer', 'App.tsx');
+  const BUDDY = read('src', 'renderer', 'components', 'buddy', 'BubbleFeed.tsx');
+
+  for (const field of ['stallWarning', 'stalled', 'dropPart']) {
+    it(`both windows forward ${field}`, () => {
+      expect(APP).toContain(`event.data?.${field}`);
+      expect(BUDDY).toContain(`event.data?.${field}`);
+    });
+  }
 });

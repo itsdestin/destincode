@@ -7,15 +7,13 @@
 // assistant-thinking) are display-only for the same reason.
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
-// WHY imported from transcript-watcher: native sessions use the RAW
-// cwdToProjectSlug — NOT ccProjectSlug (project-conversations.ts), which
-// additionally uppercases a lowercase Windows drive letter before slugifying.
-// This is a DELIBERATE divergence, not a bug: the two encodings disagree on a
-// cwd like 'c:\Users\d\proj' (see session-store.test.ts's slug-divergence
-// pin), and unifying them would orphan every native session file already
-// written on disk under the raw slug. conversations/service.ts's
-// localJsonlPath mirrors this same raw-slug convention for native paths.
-import { cwdToProjectSlug } from '../transcript-watcher';
+// WHY nativeStoreSlug (NOT the CC mirror): the slug is the FROZEN app-private
+// rule (slug-encoding.ts) — deliberately NOT CC's; changing it orphans
+// existing native transcripts. It disagrees with ccProjectSlug on a cwd like
+// 'c:\Users\d\proj' (see session-store.test.ts's slug-divergence pin).
+// conversations/service.ts's localJsonlPath mirrors this same convention for
+// native paths.
+import { nativeStoreSlug } from '../slug-encoding';
 import { NativeHome } from '../native-home';
 
 export interface NativeSessionHeader {
@@ -26,6 +24,11 @@ export interface NativeSessionHeader {
   cwd: string;
   createdAt: number;
   title?: string;
+  // Specialists (spec 2026-08-11 §1): children are ordinary sessions marked
+  // by parentage; additive so v1 files need no migration.
+  parentSessionId?: string;
+  sessionKind?: 'root' | 'specialist';
+  agentType?: string;
 }
 
 export interface NativeSessionListEntry extends NativeSessionHeader {
@@ -61,7 +64,7 @@ export class SessionStore {
 
   /** Write the session header as line 1 of a fresh session file. */
   async create(header: NativeSessionHeader): Promise<void> {
-    await this.home.appendSessionLine(cwdToProjectSlug(header.cwd), header.sessionId, header);
+    await this.home.appendSessionLine(nativeStoreSlug(header.cwd), header.sessionId, header);
   }
 
   /**
@@ -79,6 +82,36 @@ export class SessionStore {
       return;
     }
 
+    // Manual stall Retry: the attempt that wrote these parts is being abandoned
+    // and its text is being erased on screen. Discard the buffer WITHOUT
+    // writing it — this is the only path that drops a buffered part instead of
+    // flushing it, and it must run BEFORE the display-only filter below, which
+    // would otherwise return early and leave the abandoned text to be flushed
+    // by the next event.
+    //
+    // KNOWN LIMITATION (deliberate, not an oversight): this can only discard a
+    // part still BUFFERED here — and only ONE part is ever buffered, because
+    // the coalescing branch below flushes the moment ANY different part opens.
+    // Two shapes therefore commit earlier text to the JSONL before the stall:
+    //   1. the attempt emitted a tool call (a non-delta event → flush), or
+    //   2. the attempt switched parts mid-prose — most commonly a reasoning
+    //      block giving way to visible text, which is the ordinary shape on
+    //      the model in the 2026-08-16 incident, so this is the COMMON case,
+    //      not the exotic one. (The buffer keys off type AND partId, so
+    //      reasoning→text flushes on both counts.)
+    // In either shape dropPart can't reach back and unwrite the committed
+    // line. A re-run can then duplicate that earlier text ON DISK even though
+    // the live screen (which erased via the renderer's own dropPart handling)
+    // stays correct. The transcript is append-only; rewriting already-committed
+    // lines is out of scope here.
+    if (event.type === 'assistant-thinking' && event.data?.dropPart) {
+      const open = this.open.get(event.sessionId);
+      if (open && event.data.dropPart.partIds.includes(String(open.event.data?.partId))) {
+        this.open.delete(event.sessionId);
+      }
+      return;
+    }
+
     // Streaming-watchdog heartbeats (the stall warning and its clear) are
     // transient UI signals — an assistant-thinking with NO text and NO partId.
     // Display-only: never persisted (a replayed stall countdown on a long-since
@@ -89,7 +122,7 @@ export class SessionStore {
       return;
     }
 
-    const slug = cwdToProjectSlug(cwd);
+    const slug = nativeStoreSlug(cwd);
     const partId = event.data?.partId;
 
     if (COALESCED_TYPES.has(event.type) && partId) {
@@ -170,7 +203,7 @@ export class SessionStore {
 
   /** Line 1 of the session file, validated as a v1 header for this session. */
   readHeader(sessionId: string, cwd: string): NativeSessionHeader | null {
-    const lines = this.home.readSessionLines(cwdToProjectSlug(cwd), sessionId);
+    const lines = this.home.readSessionLines(nativeStoreSlug(cwd), sessionId);
     return this.validateHeader(lines[0], sessionId);
   }
 
@@ -180,7 +213,7 @@ export class SessionStore {
    * must never produce duplicate reducer entries on replay.
    */
   readEvents(sessionId: string, cwd: string): TranscriptEvent[] {
-    const lines = this.home.readSessionLines(cwdToProjectSlug(cwd), sessionId);
+    const lines = this.home.readSessionLines(nativeStoreSlug(cwd), sessionId);
     const seen = new Set<string>();
     const out: TranscriptEvent[] = [];
     for (const line of lines.slice(1)) {
@@ -202,6 +235,11 @@ export class SessionStore {
 
   /**
    * Every persisted session with header metadata, newest first (Resume Browser).
+   * `options.includeChildren` (default false) controls whether specialist
+   * child sessions are included: by default they're hidden from the Resume
+   * Browser (a child is a normal session file marked by parentage, spec
+   * 2026-08-11 §1), so callers must opt in with `{ includeChildren: true }`
+   * to see them.
    * WHY bounded head-read (mirrors CC's Resume Browser, 256KB head): we need
    * only the header (line 1) and the first user-message (near the top), so a
    * full read is wasteful — and worse, a file exceeding Node's string cap
@@ -211,12 +249,17 @@ export class SessionStore {
    * session does. readEvents (replay) still reads all lines — it genuinely
    * needs them.
    */
-  list(): NativeSessionListEntry[] {
+  list(options?: { includeChildren?: boolean }): NativeSessionListEntry[] {
+    const includeChildren = options?.includeChildren ?? false;
     const out: NativeSessionListEntry[] = [];
     for (const file of this.home.listSessionFiles()) {
       const lines = this.home.readSessionHead(file.slug, file.sessionId);
       const header = this.validateHeader(lines[0], file.sessionId);
       if (!header) continue; // torn/foreign file — not a native session we can resume
+      // Specialists (spec 2026-08-11 §1): a specialist child is a normal
+      // session file, hidden from the default list unless asked for. Guard on
+      // BOTH fields — a future writer setting only one must not leak a child.
+      if (!includeChildren && (header.sessionKind === 'specialist' || header.parentSessionId)) continue;
       // Title precedence (spec §2.6): explicit header title, else derive from
       // the FIRST user-message event — native sessions have no CC auto-title
       // hook, so the opening prompt is the best available label.

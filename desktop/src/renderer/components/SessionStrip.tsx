@@ -797,9 +797,21 @@ export default function SessionStrip({
                   ${isBeingDragged ? 'opacity-30 scale-95' : ''}
                 `}
                 style={{
+                  // Explicit property list, not `all`: `all` animates every
+                  // animatable property that changes, including layout ones, and
+                  // each animating property is presented at the panel's full
+                  // refresh rate. Only these change on hover/active. Same springy
+                  // curve, so visually identical. box-shadow is in the list
+                  // because the active pill's glow is set right below from
+                  // GLOW_SHADOW — without it the glow would snap on.
                   transition: isBeingDragged
                     ? 'opacity 150ms, transform 150ms'
-                    : 'all 150ms cubic-bezier(0.34, 1.56, 0.64, 1)',
+                    // `opacity` is in the list because `opacity-30` (dragging)
+                    // is dropped by the SAME render that switches back to this
+                    // branch on release — without it the pill would snap from
+                    // 30% to full instead of fading, which `transition: all`
+                    // used to cover.
+                    : 'transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1), border-color 150ms cubic-bezier(0.34, 1.56, 0.64, 1), background-color 150ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 150ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 150ms cubic-bezier(0.34, 1.56, 0.64, 1)',
                   transform: (!isBeingDragged && isHovered && !isActive) ? 'scale(1.02)' : undefined,
                   boxShadow: (!forceSingle && isActive) ? GLOW_SHADOW[color] : undefined,
                   cursor: 'default',
@@ -921,7 +933,12 @@ export default function SessionStrip({
                     style={{
                       animation: `row-fade-in 100ms ease both`,
                       animationDelay: `${idx * 20}ms`,
-                      transition: 'opacity 150ms, background 150ms',
+                      // steps(4) inline, not via the .stepped-hover utility: an
+                      // inline transition cannot be overridden by a stylesheet
+                      // rule without !important. Users scan this list top-to-
+                      // bottom to pick a session, so every row's fade fires in
+                      // one sweep, inside a .glass-overlay backdrop-filter.
+                      transition: 'opacity 150ms steps(4), background 150ms steps(4)',
                       cursor: 'default',
                     }}
                   >

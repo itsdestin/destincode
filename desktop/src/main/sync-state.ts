@@ -170,6 +170,9 @@ resolvePaths(os.homedir());
  */
 export function setClaudeDirForTests(home: string): void {
   resolvePaths(home);
+  // Module state, so it survives between test files in the same worker —
+  // clear it with the paths or a dismissal leaks into the next suite.
+  dismissedThisRun.clear();
 }
 
 /** Per-backend sync marker path, used for tracking individual push times. */
@@ -215,9 +218,18 @@ async function fileExists(filePath: string): Promise<boolean> {
   }
 }
 
+// WHY a per-call counter on top of the pid: `.tmp.<pid>` alone is the SAME name
+// for every write in this process, so two overlapping atomicWrites to one target
+// (the 60s health check's writeWarnings racing a push-failure warning write, or
+// an in-flight check leaking across tests) both write the same tmp path — the
+// first rename moves it away and the second rename throws ENOENT. This was the
+// cross-OS CI flake in sync-warning-self-clear.test.ts. pid keeps the dev
+// instance and the built app apart; the counter keeps calls apart.
+let atomicWriteSeq = 0;
+
 /** Atomic write via temp file + rename (same directory to ensure same filesystem). */
 async function atomicWrite(target: string, content: string): Promise<void> {
-  const tmpPath = target + '.tmp.' + process.pid;
+  const tmpPath = `${target}.tmp.${process.pid}.${atomicWriteSeq++}`;
   await fs.promises.mkdir(path.dirname(target), { recursive: true });
   await fs.promises.writeFile(tmpPath, content, 'utf8');
   await fs.promises.rename(tmpPath, target);
@@ -692,6 +704,23 @@ export async function getSyncLog(
 }
 
 /**
+ * Codes the user dismissed during THIS app run.
+ *
+ * WHY: the health check re-runs on a timer now (so a resolved condition clears
+ * itself instead of hanging around until the next launch — see
+ * SyncService.runHealthCheck). Without this set, dismissing a still-true
+ * warning would only silence it until the next tick re-added it. Deliberately
+ * in-memory: a dismissal lasts the app session, matching the old behavior
+ * where the check simply never ran again.
+ */
+const dismissedThisRun = new Set<string>();
+
+/** True if the user dismissed this code during this app run. */
+export function wasDismissedThisRun(code: string): boolean {
+  return dismissedThisRun.has(code);
+}
+
+/**
  * Remove a warning by code. No-op if the warning has dismissible: false
  * (enforced server-side so UI bugs can't silence danger-level push failures).
  */
@@ -699,6 +728,7 @@ export async function dismissWarning(code: string): Promise<void> {
   const all = await readWarnings();
   const target = all.find((w) => w.code === code);
   if (!target || !target.dismissible) return;
+  dismissedThisRun.add(code);
   const filtered = all.filter((w) => w !== target);
   await writeWarnings(filtered);
 }

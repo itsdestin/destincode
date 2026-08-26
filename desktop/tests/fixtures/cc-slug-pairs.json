@@ -1,0 +1,14 @@
+{
+  "ccVersion": "2.1.229",
+  "generated": "2026-08-12",
+  "pairs": [
+    { "cwd": "/home/destin/YouCoded/probe/under_score.and.dots", "dir": "-home-destin-YouCoded-probe-under-score-and-dots", "note": "probe: _ and ." },
+    { "cwd": "/home/destin/YouCoded/probe/punct (x) + 'y' #z", "dir": "-home-destin-YouCoded-probe-punct--x-----y---z", "note": "probe: punctuation" },
+    { "cwd": "/home/destin/YouCoded/probe/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dir": "-home-destin-YouCoded-probe-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-6bal0v", "note": "probe: over-cap" },
+    { "cwd": "/home/destin/YouCoded/probe/real-target", "dir": "-home-destin-YouCoded-probe-real-target", "note": "probe: symlink resolves to realpath" },
+    { "cwd": "/home/destin/YouCoded/Projects/PAF 574 - Diversity, Ethics, & Public Change", "dir": "-home-destin-YouCoded-Projects-PAF-574---Diversity--Ethics----Public-Change", "note": "harvest: the reporting folder (comma+ampersand)" },
+    { "cwd": "/home/destin", "dir": "-home-destin", "note": "harvest: plain" },
+    { "cwd": "/home/destin/youcoded-dev", "dir": "-home-destin-youcoded-dev", "note": "harvest: hyphens are fixed points" },
+    { "cwd": "C:\\Users\\alice", "dir": "C--Users-alice", "note": "windows drive+backslash (synthetic, both rules agree)" }
+  ]
+}

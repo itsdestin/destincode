@@ -255,12 +255,17 @@ declare global {
         // M1: acks sent/queued/failed (Task 2 switched the channel from
         // fire-and-forget to invoke) — Task 3's InputBar awaits this to
         // decide whether to show the bubble or a failure toast.
-        send: (sessionId: string, text: string) => Promise<NativeSendResult>;
+        // attachments: absolute composer file paths. Image ones are attached to
+        // the user message when the model can see images; they ALSO remain in
+        // `text`, which is the optimistic bubble's dedup key.
+        send: (sessionId: string, text: string, attachments?: string[]) => Promise<NativeSendResult>;
         // Task 11: cancel/edit a queued-but-not-yet-sent message. true = removed
         // (caller may now safely refill the composer); false = too late (already
         // draining/sent) or the session isn't live — never throws.
         queueRemove: (sessionId: string, queueId: string) => Promise<boolean>;
         interrupt: (sessionId: string) => void;
+        // Stalled-turn Retry — fire-and-forget, same shape as interrupt above.
+        retry: (sessionId: string) => void;
         // M3 item 2: user-initiated /compact. Resolves a coded result rather than
         // a bare boolean so a refusal can be explained to the user rather than
         // swallowed — `reason` is one of turn-in-flight | nothing-to-compact |
@@ -292,6 +297,13 @@ declare global {
         test: (id: string) => Promise<{ ok: boolean; message: string }>;
         setKey: (id: string, key: string) => Promise<boolean>;
         catalog: () => Promise<any[]>;
+      };
+      // Remembered "Always allow" rules (M5 2a). Keyed by PROJECT SLUG, not
+      // cwd — permissions.json never stored the cwd, and the slug is lossy.
+      permissions: {
+        list: () => Promise<import('../../shared/permission-types').StoredProject[]>;
+        remove: (slug: string, rule: import('../../shared/permission-types').PermissionRule) => Promise<boolean>;
+        removeProject: (slug: string) => Promise<boolean>;
       };
       // Local llama.cpp engine (Plan B). install() streams progress via
       // onInstallProgress; onStatusChanged pushes state transitions

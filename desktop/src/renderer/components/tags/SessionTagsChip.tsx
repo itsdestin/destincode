@@ -45,7 +45,7 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
         // the popup never accepts an edit that would be refused. See
         // META_UNSUPPORTED_FALLBACK.
         disabled={!sessionId || !meta.supported}
-        className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm border border-edge-dim enabled:hover:bg-inset transition-colors max-w-[220px] disabled:opacity-50 disabled:cursor-not-allowed"
+        className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim enabled:hover:bg-inset transition-colors max-w-[220px] disabled:opacity-50 disabled:cursor-not-allowed"
         title={meta.supported ? 'Tags & note for this session' : meta.unsupportedReason}
       >
         {hasContent ? (

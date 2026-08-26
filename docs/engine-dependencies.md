@@ -189,28 +189,145 @@ first part and cache-scan sums the parts' sizes into one entry.
   downloaded on a 32 GB dev box. **PASS on b9992** (Windows x64 Vulkan,
   `Qwen3-0.6B-Q4_K_M` single + `Qwen3-0.6B-SPLIT-00001-of-00002`), 2026-07-14 —
   router discovered both ids from `--models-dir` and served the split model.
-- **Router hot-reload of `--models-dir` after boot — worked around in code
-  (2026-07-15); upstream behavior still NOT verified live.** The router discovers
-  GGUFs at BOOT; whether a file downloaded AFTER boot appears in `GET /models` is
-  unverified upstream (Amendment K2). `EngineSupervisor.listModels()` therefore
-  UNIONS a fresh `scanGgufCache` into the running router's `GET /models` rows
-  (router rows win — they carry live residency state; disk-only rows surface as
-  'unloaded'), so a just-downloaded model is immediately visible in
-  `catalogModels()` → the new-session picker's Local group, `liveModels()` → the
-  memory guard, and the model poll — no engine restart needed for LISTING.
-  Guard: engine-supervisor.test.ts "listModels UNIONS the disk scan". Still open
-  for the live pass: whether the running router can actually SERVE (hot-load) a
-  post-boot file when a completion requests it, or 400s until a restart — resolve
-  on Destin's dev machine.
+- **Router hot-reload of `--models-dir` after boot — RESOLVED 2026-08-16.** The
+  router discovers GGUFs at BOOT and re-scans ONLY when asked: `GET /models?reload=1`
+  (any non-empty value) re-runs `load_models()`. Its `need_reload` dirty flag is set
+  only when a download the ROUTER itself started finishes, and ours are app-side, so
+  it never fires for us. There is no timer, no inotify, no SIGHUP, no 404-miss
+  rescan, and a plain `GET /models` does NOT re-scan.
+  <!-- verify: {"path": "desktop/src/main/engine/engine-supervisor.ts", "contains": "reload=1"} -->
+  **A post-boot file is NOT servable until that rescan** — measured end-to-end on
+  2026-08-16 against a real b9992 router on an isolated port: file dropped in after
+  boot → absent from `GET /models` after 8s → `POST /v1/chat/completions` returns
+  `400 model 'X' not found` → `GET /models?reload=1` → same send returns 200 and the
+  model generates. This closes the question the 2026-07-15 note left open, and it is
+  the answer the upstream README's line 1613 ("The server must be restarted after
+  adding a new model") gets WRONG — contradicted by its own `?reload=1` note at 1765.
+  Measured cost of a rescan: **0.8–1.6 ms** (dir holding a 5 GB GGUF).
+  Amendment K2's union in `EngineSupervisor.listModels()` still stands, but it is a
+  LISTING fix only: it merges a fresh `scanGgufCache` into the router's rows (router
+  rows win — they carry live residency state; disk-only rows surface as 'unloaded'),
+  which makes a disk-only model a fully selectable picker row the router has never
+  heard of. Serveability is now guaranteed separately by `EngineSupervisor.ensureServable`
+  (rescan-once-then-recheck, fails OPEN) at the local-send chokepoint in
+  `provider-registry.ts`, plus a refresh after every download and delete.
+  **`?reload=1` is a WRITE, never a poll:** `load_models()` unloads a running model
+  whose source changed or vanished. Two behaviors measured on the same live probe —
+  a model already `loaded` SURVIVES a rescan unchanged, and an in-flight streaming
+  completion survives one (599 SSE chunks, clean exit); a model whose file was
+  deleted is dropped from the list.
+  Guards: engine-supervisor.test.ts → the "router rescan" describe (esp. "the
+  background model poll NEVER sends reload=1"); provider-registry.test.ts →
+  "an unservable model fails with the REAL cause, not the router 400".
 
 ## Verification
 
 `desktop/test-engine/` holds dev-run smoke probes (spawn the real engine, assert
-health + `/models` parity + a streamed tool-less chat round-trip). Re-run all
-three on every engine bump — analogous to `test-conpty/` on a CC bump. The
-original three PASS on b9992 (Windows x64 CPU, Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13.
+health + `/models` parity + **`?reload=1` picking up a post-boot file** + a streamed
+tool-less chat round-trip). Re-run all three on every engine bump — analogous to
+`test-conpty/` on a CC bump. The original three PASS on b9992 (Windows x64 CPU,
+Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13; the `?reload=1` assertion was added 2026-08-16
+and PASSES on b9992 (Linux x64 Vulkan, Qwen3.5-2B-Q8_0). **That assertion is the
+only guard that can see upstream dropping the rescan** — the unit tests mock fetch,
+so its removal would look exactly like the 2026-08-16 bug and nothing else we own
+would catch it.
 `probe-download.mjs` (Plan C: flat-basename ↔ router-id for single AND multi-part)
 PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine bump.
 `probe-tools.mjs` (Plan C: `--jinja` constrained tool-call round-trip + never-force +
 real `/props` `n_ctx`) runs against an already-running engine — re-run on every engine
 bump; verified live during acceptance on the Linux dev box.
+
+## Parallel slots (specialists, plan 1a probe)
+
+**Measured 2026-08-12** on the Linux dev box against a system-installed
+`llama-server` (`version: 9957 (c4ae9a88f8)`, i.e. build `b9957` — NOT the app's
+pinned `b9992`; this was the only binary available on this machine, so results
+are directionally useful but should be re-checked against `b9992` before being
+treated as final). Server launched manually on an isolated port (8199, separate
+from the live app's engine on 9920) with the supervisor's exact router-mode arg
+list (`engine-supervisor.ts:285-306`), `-c 8192` (shrunk from the real default
+32768 only to keep iteration fast on this box), against `Qwen3.5-2B-Q8_0`
+(the smallest model in `~/.cache/llama.cpp`). `desktop/test-engine/probe-parallel.mjs`
+fires N simultaneous short chat completions (`max_tokens: 24`) for N in {1, 2, 4}
+and reports total wall time, average per-request time, and a total-vs-N×single
+classification.
+
+**Run 1 — default args (no `--parallel`, i.e. `-np -1` = auto):**
+
+| N | total_ms | avg_req_ms | min_ms | max_ms | classification |
+|---|----------|------------|--------|--------|----------------|
+| 1 | 642 | 641 | 641 | 641 | batched (baseline) |
+| 2 | 599 | 598 | 597 | 599 | batched |
+| 4 | 1200 | 1188 | 1178 | 1199 | partial |
+
+Server startup log showed `n_slots = 4` even with no `--parallel` flag —
+this build's `-np -1` "auto" already resolves to 4 slots on this hardware.
+
+**Run 2 — explicit `--parallel 4` added to the same spawn args:**
+
+| N | total_ms | avg_req_ms | min_ms | max_ms | classification |
+|---|----------|------------|--------|--------|----------------|
+| 1 | 558 | 558 | 558 | 558 | batched (baseline) |
+| 2 | 495 | 486 | 477 | 495 | batched |
+| 4 | 952 | 939 | 935 | 950 | partial |
+
+`--parallel 4` added to the supervisor's arg set did **not** error — the
+process started and served normally. Numbers are consistent with Run 1 within
+noise, confirming the "auto" default and an explicit `--parallel 4` behave the
+same on this build/hardware (4 slots either way).
+
+**Decision:** `LOCAL_MAX_CONCURRENT_SPECIALISTS = 4` — at N=4, avg per-request
+latency (~939–1188 ms) is ≤ 2× the single-request baseline (~558–642 ms) in
+both runs (ratio ≈ 1.7–1.85×), the largest of the tested N values that clears
+that bar. N=2 batches cleanly (avg per-request latency actually *dropped*
+below the single-request baseline in both runs — within measurement noise, not
+a real speedup). N=4 shows partial batching, not full serialization.
+
+**Supervisor arg change:** because this build's default already resolves to 4
+slots, adding `--parallel 4` explicitly to `engine-supervisor.ts`'s spawn args
+is optional on this hardware/build but is still recommended for plan 1b — it
+pins the slot count instead of relying on an "auto" heuristic that could
+resolve differently on a smaller consumer machine (fewer cores/less RAM). That
+supervisor code change belongs to plan 1b, not this probe.
+
+**Caveat:** measured against a non-pinned build (`b9957` vs the app's pinned
+`b9992`) and a reasoning model (`Qwen3.5-2B` emits `reasoning_content`,
+truncated by the low `max_tokens`) rather than a plain chat model — re-run
+`probe-parallel.mjs` against `b9992` with the app's actual small-model tier
+before this decision is treated as load-bearing.
+
+### KV prefix reuse (specialists, plan 1a probe)
+
+**Measured 2026-08-12**, same server/model/build as above (default args, no
+`--parallel`; single manually-launched instance on port 8199).
+`desktop/test-engine/probe-prefix-cache.mjs` builds a ~2,000-token filler
+system prefix, sends two sequential requests sharing it (different user
+turns) for run (a), then two sequential requests with fully distinct
+~2,000-token prefixes for run (b), reading `timings.prompt_ms` from each
+completion payload (present on this build — no wall-clock fallback needed).
+
+| run | request | prompt_n | prompt_ms |
+|-----|---------|----------|-----------|
+| (a) identical prefix | a1 (cold) | 2209 | 1407.8 |
+| (a) identical prefix | a2 (same prefix, new user turn) | 17 | 177.6 |
+| (b) distinct prefixes | b1 (prefix A again) | 19 | 180.8 |
+| (b) distinct prefixes | b2 (prefix B, never seen) | 2207 | 1804.0 |
+
+a2/b2 prefill ratio = 177.6 / 1804.0 = **9.8%** (well under the 50% reuse
+threshold).
+
+**Verdict: prefix reuse survives sequential child-style fan-out on build
+b9957.** `prompt_n` on a repeated-prefix request drops from ~2,200 to ~17–19
+tokens (only the new user turn is reprocessed), and prefill time drops
+correspondingly from ~1.4–1.8s to ~0.18s. The server log for the parallel
+probe (above) independently corroborates this: repeat requests were
+`selected slot by LCP similarity` rather than by LRU, i.e. the router matched
+the incoming prompt against a cached slot's longest common prefix.
+
+Note run (b)'s b1 also hit the cache (reused prefix A's slot from run (a)'s
+a2, since b1 resends prefix A) — this is expected given all four requests ran
+sequentially against the same server instance and slot LRU/LCP selection
+persists across the two "runs" as scripted (they are not isolated fresh
+server starts). This does not weaken the verdict — b2 (the first-ever
+occurrence of prefix B) is the true cold-prefix comparison point, and it cost
+2207 prompt tokens vs a2's 17.

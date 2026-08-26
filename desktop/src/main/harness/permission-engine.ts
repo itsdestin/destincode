@@ -9,7 +9,7 @@
 // is only safe because remembered rules are allow-originated today (the "Always
 // allow" flow persists only allow rules); a future feature persisting remembered
 // ask/deny rules must revisit this consequence-warning logic.
-import { subjectMatches } from './tools/subject-glob';
+import { ruleMatches } from '../../shared/subject-glob';
 import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
 
 export interface PermissionLayers {
@@ -35,7 +35,10 @@ export function decidePermission(
   let winner: { r: PermissionRule; deny: boolean } | null = null;
   for (const entry of ordered) {
     if (entry.r.tool !== '*' && entry.r.tool !== tool) continue;
-    if (!subjectMatches(subject ?? '', entry.r.pattern)) continue;
+    // ruleMatches owns what a WHOLE rule means — exact vs glob, plus the two
+    // safety rules that keep a wildcard grant from swallowing a second command
+    // or a destructive flag. Never call subjectMatches from a decision path.
+    if (!ruleMatches(entry.r, subject ?? '')) continue;
     winner = entry; // last match wins
   }
   if (!winner) return { action: 'ask', denyListed: false }; // safe default — never silent-allow

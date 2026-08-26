@@ -60,7 +60,7 @@ export type { SearchFilterPillProps } from './SearchFilterPill';
 export { Dialog, DIALOG_WIDTHS } from './Dialog';
 export type { DialogProps, DialogSize } from './Dialog';
 
-export { SettingRow } from './SettingRow';
+export { SettingRow, SETTING_ROW_BASE } from './SettingRow';
 export type { SettingRowProps, SettingRowVariant } from './SettingRow';
 
 export { Callout } from './Callout';

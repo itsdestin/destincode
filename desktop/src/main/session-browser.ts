@@ -3,17 +3,13 @@ import path from 'path';
 import os from 'os';
 import { PastSession, HistoryMessage, SessionFlagName } from '../shared/types';
 // ccProjectSlug drive-normalizes before slugifying, so a store originalPath with
-// a lowercase Windows drive still maps to CC's uppercase-drive project dir. Used
-// lazily inside listPastSessions, so the session-browser ↔ project-conversations
-// import cycle is harmless (neither uses the other at module-eval time).
-import { ccProjectSlug } from './project-conversations';
-// Task 5: native rows need the SAME raw-slug encoding NativeSessionHost writes
-// under (deliberately NOT ccProjectSlug — see harness/session-store.ts's
-// slug-divergence comment). cwdToProjectSlug already lives on transcript-watcher
-// and ipc-handlers.ts imports it from here too, so this isn't a new dependency
-// direction.
-import { cwdToProjectSlug } from './transcript-watcher';
+// a lowercase Windows drive still maps to CC's uppercase-drive project dir.
+// nativeStoreSlug is the FROZEN app-private rule for native rows (deliberately
+// NOT ccProjectSlug — see harness/session-store.ts's slug-divergence comment).
+// Both live on slug-encoding.ts; ipc-handlers.ts imports from there too.
+import { ccProjectSlug, nativeStoreSlug, CC_SLUG_MAX } from './slug-encoding';
 import type { NativeSessionListEntry } from './harness/session-store';
+import { r1CwdForDir } from './transcript-cwd';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const PROJECTS_DIR = path.join(CLAUDE_DIR, 'projects');
@@ -28,7 +24,7 @@ const NATIVE_SESSIONS_DIR = path.join(os.homedir(), '.youcoded', 'sessions');
 /** The on-disk path for a native session's transcript on THIS device — the
  *  probe listPastSessions uses to decide notSyncedYet for a native row. */
 function nativeJsonlPath(cwd: string, sessionId: string): string {
-  return path.join(NATIVE_SESSIONS_DIR, cwdToProjectSlug(cwd), `${sessionId}.jsonl`);
+  return path.join(NATIVE_SESSIONS_DIR, nativeStoreSlug(cwd), `${sessionId}.jsonl`);
 }
 
 /** Read per-session metadata from conversation-index.json: the user-set flag
@@ -87,7 +83,10 @@ export function extractStoreMeta(rec: { flags: Record<string, { value: boolean }
   return { flags, tags, ...(rec.note ? { note: rec.note } : {}) };
 }
 
-const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
+// Exported so remote-server.ts can validate client-supplied session ids with
+// the SAME guard loadHistory enforces below — a second hand-copied regex
+// could silently drift.
+export const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
 
 /** Retry an async operation up to `attempts` times with a short delay between tries. */
 async function withRetry<T>(fn: () => Promise<T>, attempts: number = 3, delayMs: number = 100): Promise<T> {
@@ -103,14 +102,25 @@ async function withRetry<T>(fn: () => Promise<T>, attempts: number = 3, delayMs:
 }
 
 /**
- * Resolves a project slug back to a real filesystem path by walking the
- * directory tree. The naive approach (replace all dashes with separators)
- * breaks when directory names contain hyphens (e.g. "youcoded-core-dev"
- * becomes "youcoded-core/dev"). This function tries each segment greedily
- * against the filesystem, extending with hyphens when a single part
- * doesn't match a real directory.
+ * Resolves a project slug back to a real filesystem path via an inversion
+ * chain (spec §5.4a), each option evidence-stronger than the naive split:
+ *   1. R1 — the recorded cwd from the slug dir's own transcripts. Exact, not
+ *      inferential, and the ONLY option that still works above CC_SLUG_MAX
+ *      (a capped slug's suffix is a hash of the ORIGINAL path, not more of
+ *      the path itself, so nothing filesystem-side can recover it).
+ *   2. forwardResolveSlug — walk the filesystem forward, re-slugging real
+ *      child directories and comparing, instead of guessing where the
+ *      original separators were.
+ *   3. walkSlugParts — legacy longest-first split, kept last so folders that
+ *      already resolved correctly keep resolving identically.
  */
 function resolveSlugToPath(slug: string): string {
+  const recorded = r1CwdForDir(path.join(PROJECTS_DIR, slug));
+  if (recorded) return recorded;
+
+  const forward = forwardResolveSlug(slug);
+  if (forward) return forward;
+
   let root: string;
   let parts: string[];
 
@@ -154,6 +164,51 @@ export function walkSlugParts(base: string, parts: string[]): string {
   }
   // Nothing at this level exists on disk — best-guess naive join (unchanged).
   return path.join(base, parts.join('-'));
+}
+
+/** Option 2 (spec §5.4a): FORWARD re-slug of on-disk candidates. Splitting a
+ *  slug cannot recover ','/'&'/' ' (all collapse to '-'); slugging real child
+ *  dirs forward and prefix-matching can. Longest-encoding-first WITH
+ *  BACKTRACKING — a per-level match can dead-end levels down (siblings `a`
+ *  vs `a-b`, the 57be5e14 shape), so unwind and try the next candidate.
+ *  DECLINES (null) on a capped slug: past 200 chars the slug carries ZERO
+ *  path information, and "search every descendant and hash each" is not a
+ *  confirmation step. Capped slugs are option 1's (recorded cwd) or nothing. */
+export function forwardResolveSlug(
+  slug: string,
+  rootsOverride?: { posixRoot?: string; winRoot?: string },
+): string | null {
+  if (slug.length > CC_SLUG_MAX && slug[CC_SLUG_MAX] === '-') return null; // capped — decline
+  let base: string; let rest: string;
+  if (/^[A-Z]--/.test(slug)) {
+    base = rootsOverride?.winRoot ?? (slug[0] + ':\\');
+    rest = slug.slice(3);
+  } else if (slug.startsWith('-')) {
+    base = rootsOverride?.posixRoot ?? '/';
+    rest = slug.slice(1);
+  } else return null;
+  const found = walkForward(base, rest);
+  if (!found) return null;
+  // Terminal confirmation: the WHOLE candidate must re-slug to the WHOLE slug
+  // (lowercased — Windows folder-case drift tolerance, same as buildSlugToName).
+  return ccProjectSlug(found).toLowerCase() === slug.toLowerCase() ? found : null;
+}
+
+function walkForward(dir: string, rest: string): string | null {
+  if (rest === '') return dir;
+  let entries: fs.Dirent[] = [];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return null; }
+  const candidates = entries
+    .filter(e => e.isDirectory())
+    .map(e => ({ name: e.name, enc: e.name.replace(/[^a-zA-Z0-9]/g, '-') }))
+    .filter(c => c.enc.length > 0 && (rest === c.enc || rest.startsWith(c.enc + '-')))
+    .sort((a, b) => b.enc.length - a.enc.length);   // longest-first, then backtrack
+  for (const c of candidates) {
+    const remaining = rest === c.enc ? '' : rest.slice(c.enc.length + 1);
+    const hit = walkForward(path.join(dir, c.name), remaining);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /** Resolve a session's display name. The auto-title hook writes
@@ -354,6 +409,14 @@ export async function listPastSessions(
       continue;
     }
 
+    // Fix (final review, IMPORTANT 3): resolve once per slug DIRECTORY, not
+    // once per file inside it. resolveSlugToPath can fall through to R1's
+    // tier-2 whole-file scan (transcript-cwd.ts), which reads every
+    // top-level transcript in the dir — invoking it per-file inside
+    // files.map turned that into an N×N full-file-read multiplier on
+    // foreign-heavy directories, on the Resume Browser's hot path.
+    const projectPath = resolveSlugToPath(slug);
+
     const sessionPromises = files.map(async (file) => {
       const sessionId = file.replace('.jsonl', '');
       if (activeSessionIds?.has(sessionId)) return null;
@@ -384,7 +447,7 @@ export async function listPastSessions(
           sessionId,
           name,
           projectSlug: slug,
-          projectPath: resolveSlugToPath(slug),
+          projectPath,
           lastModified: meta.lastTimestampMs ?? stat.mtimeMs,
           size: stat.size,
           ...(joinedFlags ? { flags: joinedFlags } : {}),
@@ -531,14 +594,14 @@ export async function listPastSessions(
           // $HOME). The store knows the exact projectName, so resolveLocal maps
           // it by basename with no ambiguity. Only override when that folder
           // actually holds THIS transcript, so we never point resume elsewhere.
-          // Native uses cwdToProjectSlug + ~/.youcoded/sessions (its own raw-slug
-          // convention, deliberately diverging from ccProjectSlug — see
+          // Native uses nativeStoreSlug + ~/.youcoded/sessions (its own frozen
+          // slug convention, deliberately diverging from ccProjectSlug — see
           // harness/session-store.ts).
           const storeLocal = resolveLocal(rec);
           if (isNative) {
             if (storeLocal && fs.existsSync(nativeJsonlPath(storeLocal, rec.id))) {
               legacy.projectPath = storeLocal;
-              legacy.projectSlug = cwdToProjectSlug(storeLocal);
+              legacy.projectSlug = nativeStoreSlug(storeLocal);
             }
           } else if (storeLocal && fs.existsSync(path.join(PROJECTS_DIR, ccProjectSlug(storeLocal), `${rec.id}.jsonl`))) {
             legacy.projectPath = storeLocal;
@@ -562,7 +625,7 @@ export async function listPastSessions(
           result.push({
             sessionId: rec.id,
             name: rec.title || 'Untitled',
-            projectSlug: localPath ? (isNative ? cwdToProjectSlug(localPath) : ccProjectSlug(localPath)) : '',
+            projectSlug: localPath ? (isNative ? nativeStoreSlug(localPath) : ccProjectSlug(localPath)) : '',
             projectPath: localPath ?? rec.originalPath,
             lastModified: Date.parse(rec.lastActive) || 0,
             size: 0,

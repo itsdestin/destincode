@@ -9,7 +9,13 @@ describe('sendChatMessage', () => {
 
   it('routes native to native:send with NO trailing \\r, filepaths prefixed', () => {
     sendChatMessage('native', 's1', 'hello world', ['C:/a b.txt']);
-    expect((window as any).claude.native.send).toHaveBeenCalledWith('s1', 'C:/a b.txt hello world');
+    // The paths are prefixed into the TEXT (dedup key) AND passed separately as
+    // attachments, so main can turn image ones into image parts on the user
+    // message. Both halves are asserted: dropping either is a real regression —
+    // losing the text breaks the optimistic bubble, losing the third argument
+    // silently reverts native sessions to path-only, which is the bug this
+    // shipped to fix.
+    expect((window as any).claude.native.send).toHaveBeenCalledWith('s1', 'C:/a b.txt hello world', ['C:/a b.txt']);
     expect((window as any).claude.session.sendInput).not.toHaveBeenCalled();
   });
 
@@ -37,7 +43,9 @@ describe('sendChatMessage', () => {
       const send = vi.fn();
       (globalThis as any).window = { claude: { native: { send }, session: { sendInput: vi.fn() } } };
       sendChatMessage('native', 's1', out!.ptyText, paths);
-      expect(send).toHaveBeenCalledWith('s1', out!.content);
+      // The TEXT must still equal the bubble content exactly; attachments ride
+      // beside it and must never be folded into or removed from that string.
+      expect(send).toHaveBeenCalledWith('s1', out!.content, paths);
     }
   });
 });

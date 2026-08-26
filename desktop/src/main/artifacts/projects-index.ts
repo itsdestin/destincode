@@ -17,12 +17,13 @@ import { readSidecar } from './artifact-store';
 import { listProjects } from './central-index';
 import { buildSavedFolderProjects } from './saved-folder-projects';
 import { trackedArtifacts } from './visible-artifacts';
+import { isAbsoluteRecorded } from './write-authorization';
 import { discoverProjectFiles } from './project-file-discovery';
 import { canonicalize } from '../../shared/artifacts/canonicalize';
 import { readFolders, type SavedFolder } from '../saved-folders';
 import { getManagedRoots } from '../sync-spaces/service';
 import { listPastSessions } from '../session-browser';
-import { cwdToProjectSlug } from '../transcript-watcher';
+import { ccProjectSlug } from '../slug-encoding';
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 
@@ -39,7 +40,18 @@ export async function countArtifacts(projectRoot: string): Promise<number> {
   // Drop orphans — files marked 'active' but bash-rm'd off disk (CC has no
   // Delete tool, so this is the common case). fs.access in parallel is cheap.
   const alive = await Promise.all(visible.map(async (a: any) => {
-    const full = a.kind === 'internal' ? path.join(projectRoot, a.path) : a.absolutePath!;
+    const full = a.kind === 'internal' ? path.join(projectRoot, a.path) : a.absolutePath;
+    // Fix: a null `absolutePath` (a malformed/legacy external record) must be
+    // treated as not-alive BEFORE isAbsoluteRecorded runs — that guard calls
+    // path.isAbsolute(), which throws a TypeError on null/undefined rather than
+    // returning false. The old `fs.access(null)` call threw INSIDE the try
+    // below and was swallowed to `false`; this guard sits OUTSIDE that try, so
+    // an unguarded null would throw out of countArtifacts instead of quietly
+    // not counting the record. Same corrupt-record guard as
+    // artifacts:check-existence otherwise — never let fs.access resolve a
+    // relative record against the process cwd and count a coincidentally-named
+    // file as this artifact.
+    if (a.kind !== 'internal' && (full == null || !isAbsoluteRecorded(full))) return false;
     try { await fs.promises.access(full); return true; } catch { return false; }
   }));
   return alive.filter(Boolean).length;
@@ -119,8 +131,7 @@ export async function listProjectsIndex(opts?: { withCounts?: boolean }): Promis
   // Conversation counts: a single global session scan, bucketed by CC slug.
   // Only when requested — listPastSessions is heavier (global), and ChatView's
   // frequent cwd-resolution calls don't need it.
-  const ccSlug = (projectPath: string) =>
-    cwdToProjectSlug(projectPath.replace(/^([a-z]):/, (_m, d) => `${d.toUpperCase()}:`));
+  const ccSlug = ccProjectSlug;
   let convBySlug: Map<string, number> | null = null;
   if (opts?.withCounts) {
     const sessions = await listPastSessions();

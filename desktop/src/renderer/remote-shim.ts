@@ -268,7 +268,10 @@ function handleMessage(data: string): void {
       dispatchEvent('session:moved', payload);
       break;
     case 'session:meta-changed':
-      dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value });
+      // Forward note too — set-note broadcasts {sessionId, note} (no flag), and
+      // narrowing to {flag, value} silently dropped it. Preload forwards the
+      // raw payload; this now matches.
+      dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value, note: payload.note });
       break;
     case 'tags:changed':
       dispatchEvent('tags:changed', undefined, payload || {});
@@ -704,7 +707,11 @@ async function pickAndUploadFiles(): Promise<string[]> {
     const input = document.createElement('input');
     input.type = 'file';
     input.multiple = true;
-    input.accept = 'image/*,text/*,.pdf,.json,.csv,.md,.ts,.tsx,.js,.jsx,.py,.rs,.go,.java,.c,.cpp,.h';
+    // No `accept` attribute on purpose — the attachment picker must default to
+    // ALL file types (Destin's 2026-08-12 request). The old whitelist here made
+    // mobile browsers open a media-biased picker and desktop browsers preselect
+    // a "Custom Files" filter. Browsers can't offer a multi-category filter
+    // dropdown like Electron's native dialog, so "no accept" IS the whole fix.
     input.style.display = 'none';
     document.body.appendChild(input);
     input.addEventListener('change', () => {
@@ -778,8 +785,17 @@ export function installShim(): void {
       destroy: (sessionId: string) => invoke('session:destroy', { sessionId }),
       list: () => invoke('session:list'),
       browse: () => invoke('session:browse'),
-      loadHistory: (sessionId: string, count?: number, all?: boolean, projectSlug?: string) =>
-        invoke('session:history', { sessionId, count, all, projectSlug }),
+      // Fix: parameter order MUST match preload.ts — (sessionId, projectSlug, count, all).
+      // The shim previously declared (sessionId, count, all, projectSlug), so every
+      // caller's project slug landed in `count` and 10 landed in `all` (truthy),
+      // making the host return the ENTIRE transcript on every remote/Android
+      // initial history load (tens of MB over the WS for large conversations).
+      // `count || 10` / `all || false` mirror preload so the wire always carries
+      // real number/boolean types (Android's optInt/optBoolean and the server's
+      // slice(-count) both need them). Guard: shim-parity.test.ts +
+      // remote-shim-loadhistory-args.test.ts.
+      loadHistory: (sessionId: string, projectSlug: string, count?: number, all?: boolean) =>
+        invoke('session:history', { sessionId, projectSlug, count: count || 10, all: all || false }),
       switch: (sessionId: string) => invoke('session:switch', { sessionId }),
       // Set a named flag on a past session (complete, priority; helpful retired).
       setFlag: (sessionId: string, flag: string, value: boolean) =>
@@ -1214,10 +1230,14 @@ export function installShim(): void {
         invoke('artifacts:list-all-files', { projectId, opts }),
       listProjectsIndex: (opts?: { withCounts?: boolean }) =>
         invoke('artifacts:list-projects-index', opts ?? {}),
-      get: (projectRoot: string, artifactId: string) =>
-        invoke('artifacts:get', { projectRoot, artifactId }),
-      // Routed to the host (desktop/Android) over WS — the host has filesystem
-      // access, so binary viewers work for remote browsers too.
+      // This transport sends an OBJECT payload, not positional args — `full`
+      // has to be spread in by name or it is dropped silently.
+      get: (projectRoot: string, artifactId: string, opts?: { full?: boolean }) =>
+        invoke('artifacts:get', { projectRoot, artifactId, full: opts?.full }),
+      // NOT bridged by remote-server.ts — this and artifacts:get both fall to
+      // its `default:` case and answer { unsupported: true }, so the artifact
+      // pane opens nothing at all from a remote browser against a desktop host.
+      // Kept wired for when that bridge lands (ROADMAP #remote).
       readBinary: (absolutePath: string) =>
         invoke('artifacts:read-binary', { absolutePath }),
       save: (projectRoot: string, projectId: string, projectName: string,
@@ -1528,11 +1548,13 @@ export function installShim(): void {
       // Object payloads match how remote-server.ts's WS cases read them
       // (payload.sessionId / payload.text / payload.binding).
       // M1: invoke — returns {status,reason} so remote UI matches desktop
-      send: (sessionId: string, text: string) => invoke('native:send', { sessionId, text }),
+      send: (sessionId: string, text: string, attachments?: string[]) => invoke('native:send', { sessionId, text, attachments }),
       // Task 11: cancel/edit a queued message — request/response (mirrors preload.ts).
       queueRemove: (sessionId: string, queueId: string) => invoke('native:queue-remove', { sessionId, queueId }),
       // Fire-and-forget: no response expected
       interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
+      // Fire-and-forget like interrupt above — the stalled card needs no answer.
+      retry: (sessionId: string) => fire('native:retry', { sessionId }),
       // Request/response (mirrors preload.ts) — the remote UI needs the same
       // {ok, reason} so a refused compaction explains itself over remote too.
       compact: (sessionId: string) => invoke('native:compact', { sessionId }),
@@ -1566,6 +1588,16 @@ export function installShim(): void {
       setKey: (backend: string, key: string) => invoke('search:set-key', { backend, key }),
       removeKey: (backend: string) => invoke('search:remove-key', { backend }),
       test: (backend: string, key: string) => invoke('search:test', { backend, key }),
+    },
+    // Remembered "Always allow" rules (Settings → Permissions, M5 2a) — WS
+    // transport. Object payloads match remote-server's WS case reads
+    // (payload.slug / payload.rule); the desktop preload passes the same values
+    // positionally. The section is NOT gated on native.supported, so this route
+    // is the one a phone over remote access actually uses.
+    permissions: {
+      list: () => invoke('permissions:list'),
+      remove: (slug: string, rule: unknown) => invoke('permissions:remove', { slug, rule }),
+      removeProject: (slug: string) => invoke('permissions:remove-project', { slug }),
     },
     // Local llama.cpp engine (Plan B). Server pushes engine:install-progress /
     // engine:status-changed via the WS dispatcher; subscriptions return an

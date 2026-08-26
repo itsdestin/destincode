@@ -221,6 +221,48 @@ export class NativeHome {
     return out;
   }
 
+  /**
+   * Overwrite-write a plain-text artifact at sessions/<slug>/<name> and return
+   * its absolute path. Added ahead of its nominal owner (plan 1b Task 10,
+   * "report overflow spills to a file") because Task 4's background-completion
+   * handler needs it NOW: DelegationLedger.update() caps `rawReport` at
+   * RAW_REPORT_CAP_CHARS on every write, and for a background run nothing else
+   * ever sees the uncapped body again (the child is torn down right after) —
+   * so the full text has to be spilled to disk BEFORE that cap silently
+   * discards it, not later when Task 10 teaches formatSpecialistReport to read
+   * it back. Signature matches what Task 10's plan already specifies, so it
+   * can consume this rather than re-adding it.
+   *
+   * WHY no lock: same reasoning as appendSessionLine — exactly one process
+   * ever writes a given child's spill file, exactly once (the completion
+   * handler that owns that child's run), so a plain overwrite is correct.
+   */
+  writeSessionArtifact(slug: string, name: string, text: string): string {
+    const p = path.join(this.dir, 'sessions', slug, name);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, text, 'utf8');
+    return p;
+  }
+
+  /**
+   * Read back an artifact written by writeSessionArtifact(), given the
+   * ABSOLUTE path it returned. Added for the Task 4 fix-pass (finding 1,
+   * external review 2026-08-12): the completion handler spills an oversized
+   * specialist report to disk, but delivery was formatting from the ledger's
+   * own capped copy and never reading the spill file back — this is the read
+   * half of that write. Returns null (never throws) on ANY read failure —
+   * missing file, permission error, whatever — so a caller can fall back to
+   * the capped in-ledger copy instead of failing delivery outright over a
+   * spill file that's gone missing.
+   */
+  readSessionArtifact(absolutePath: string): string | null {
+    try {
+      return fs.readFileSync(absolutePath, 'utf8');
+    } catch {
+      return null;
+    }
+  }
+
   /** Enumerate every sessions/<slug>/<id>.jsonl with stat info (for browse/resume UIs). */
   listSessionFiles(): SessionFileInfo[] {
     const base = path.join(this.dir, 'sessions');
@@ -239,6 +281,12 @@ export class NativeHome {
         continue; // stray file (not a dir) or deleted mid-scan — skip
       }
       for (const f of files) {
+        // The .jsonl suffix is also what keeps DelegationLedger's per-parent
+        // sidecar (sessions/<slug>/<parentId>.delegations.json — plan 1b Task
+        // 2) OUT of this listing: it lives in the same slug directory as real
+        // session files, and this listing feeds both the Resume Browser and
+        // pruneNativePhantomRecords, either of which would show a sidecar as
+        // a broken, unopenable "session" if it weren't filtered out here.
         if (!f.endsWith('.jsonl')) continue;
         const full = path.join(base, slug, f);
         try {

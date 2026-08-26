@@ -19,10 +19,12 @@ interface TrackableArtifact {
  *      create a pin. (The INCLUDE_EXTERNAL handler still can; nothing calls it.)
  *   2. Manually EXCLUDED → hidden, any kind. One-way in-app, per rule 1.
  *   3. Internal files → visible only with at least one NON-READ version
- *      (create/edit/delete = Claude's actual work, or a user save). A file
- *      that was merely VIEWED via a pill click ('read' versions only) does NOT
- *      belong in "files Claude made" — it stays in All files and the session
- *      drawer (an activity log, where "viewed" is at home).
+ *      (create/edit/delete = Claude's actual work, or a user save). 'delivered'
+ *      counts as work too — a script-made file the assistant handed over
+ *      belongs here. A file that was merely VIEWED via a pill click ('read'
+ *      versions only) does NOT belong in "files Claude made" — it stays in
+ *      All files and the session drawer (an activity log, where "viewed" is
+ *      at home).
  *   4. External files → hidden unless included (rule 1). WHY: tried making this
  *      mirror rule 3 (2026-07-23) so externals were visible on edit history
  *      alone; against the real sidecar an ungated external set was ~95%

@@ -77,6 +77,26 @@ export interface AssistantTurn {
   anthropicRequestId: string | null;
 }
 
+/** The single definition of "a stopReason worth surfacing" — `end_turn` is the
+ *  normal completion and carries no signal. Lives HERE (not in a component) so
+ *  the reducer's turn-complete mint gate and the render gates below share one
+ *  predicate: a minted turn the gates drop, or a droppable turn that mints,
+ *  is exactly the divergence that shipped the empty_response footer as dead
+ *  code once (PR #324 review). */
+export function abnormalStopReason(reason: string | null | undefined): boolean {
+  return !!reason && reason !== 'end_turn';
+}
+
+/** Timeline render gate shared by ChatView and the buddy BubbleFeed (which
+ *  MUST mirror each other): a segment-less turn renders only when it carries
+ *  an abnormal stopReason — its footer row is the whole fix for the
+ *  empty_response bug (a fully-contentless turn must not end in unexplained
+ *  silence). All other segment-less turns drop. */
+export function shouldRenderAssistantTurn(turn: AssistantTurn | undefined): turn is AssistantTurn {
+  if (!turn) return false;
+  return turn.segments.length > 0 || abnormalStopReason(turn.stopReason);
+}
+
 // Snapshot of session stats + rate limits captured when /cost or /usage was typed.
 // Point-in-time — never auto-updates. The live view lives in the status bar.
 export interface UsageSnapshot {
@@ -135,7 +155,17 @@ export type TimelineEntry =
   // let a queued bubble render mid-timeline at enqueue time — landing above
   // content from the still-streaming prior turn ("assistant responding to
   // itself"). See docs/active — Task 12 brief.
-  | { kind: 'user'; message: ChatMessage; pending?: boolean }
+  // `injected` (2026-08-16): set when the host, not the user, wrote this
+  // user-role turn — today only 'specialist-report' (a background specialist's
+  // delivered report, or a host follow-up note, harness-session.ts runNotice).
+  // ChatView/BubbleFeed draw such an entry as a compact, collapsed
+  // SpecialistReportCard — never as the user's own bubble and never as a
+  // full-width message: the text is what the PARENT MODEL reads, and putting
+  // it in the chat as anyone's words showed text nobody actually said
+  // (Destin, 1b hands-on: "these reports just shouldn't be rendering at all
+  // in chat … should only register as a task completion toolcard").
+  // `injectedMeta` is the structured header (who/what/status/steps).
+  | { kind: 'user'; message: ChatMessage; pending?: boolean; injected?: string; injectedMeta?: InjectedMeta }
   | { kind: 'assistant-turn'; turnId: string }
   | { kind: 'prompt'; prompt: InteractivePrompt }
   // /cost and /usage render a snapshot card inline. Permanent (not dismissible).
@@ -191,6 +221,11 @@ export interface SessionChatState {
    * subsequent activity (a plain heartbeat, reasoning/text delta) and by endTurn().
    */
   stallWarning: { retryInMs: number; willRetry: boolean } | null;
+  /** When the stalled card was first shown, on THIS client's clock — the
+   *  count-up's origin. Null whenever the turn is not parked. Stamped on the
+   *  first `stalled` heartbeat and left alone by later ones, so the elapsed
+   *  time never resets while the card is up. */
+  stalledSince: number | null;
   /**
    * Native runtime: the model is READING the prompt (prefill), not hanging. Set
    * by a `promptProcessing`-bearing heartbeat and cleared the moment prefill ends
@@ -294,6 +329,7 @@ export function createSessionChatState(): SessionChatState {
     attentionState: 'ok',
     errorMessage: null,
     stallWarning: null,
+    stalledSince: null,
     promptProcessing: null,
     lastOutputAt: null,
     lastBufferActivityAt: 0,
@@ -430,7 +466,33 @@ export type ChatAction =
       // ThinkingIndicator countdown. Absent → a normal heartbeat that CLEARS any
       // active stall warning (activity resumed).
       stallWarning?: { retryInMs: number; willRetry: boolean };
+      // Native watchdog stage 2: the turn is PARKED. Absent → a normal
+      // heartbeat that clears the park (the stream resumed).
+      stalled?: true;
       promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
+    }
+  | {
+      // Native runtime only. A manual stall Retry abandoned an attempt: remove
+      // the segments it wrote from the current turn, or the re-run's deltas
+      // merge into the same bubble and the user reads the sentence twice.
+      type: 'NATIVE_PARTS_DROPPED';
+      sessionId: string;
+      partIds: string[];
+    }
+  | {
+      // Native runtime only. The model is generating a tool call's arguments.
+      // Creates (or updates) a display-only "preparing" tool card keyed by the
+      // provider's REAL tool call id, so the later TRANSCRIPT_TOOL_USE — which
+      // is already idempotent by toolUseId — supersedes it in place rather than
+      // adding a second card.
+      type: 'NATIVE_TOOL_PREPARING';
+      sessionId: string;
+      toolCallId: string;
+      toolName: string;
+      chars: number;
+      // The step is being retried; withdraw this card. No-op if the id already
+      // became a real tool.
+      cleared?: boolean;
     }
   | {
       // Streaming reasoning chunk WITH text payload. Per-token deltas are
@@ -455,6 +517,13 @@ export type ChatAction =
       // Native broker only: winning rule came from the destructive deny-list →
       // ToolCard shows the consequence-gated "Always allow" warning. Task 13.
       denyListed?: boolean;
+      // Native broker only: the ask was forced by a path outside the session
+      // folder → ToolCard HIDES "Always allow", because the engine skips the
+      // rules on every later external call and could never honor the grant.
+      external?: boolean;
+      // Native broker only: the session's mode at ask time. 'full-auto' +
+      // denyListed → ToolCard renders the safety-stop footer (spec 2026-08-12).
+      permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
     }
   | {
       type: 'PERMISSION_EXPIRED';
@@ -472,6 +541,11 @@ export type ChatAction =
       uuid: string;
       text: string;
       timestamp: number;
+      // Host-injected user-role turn (TranscriptEvent.data.injected, e.g.
+      // 'specialist-report') + its structured header. Carried onto the
+      // timeline entry so the renderer draws a compact report card, not a bubble.
+      injected?: string;
+      injectedMeta?: InjectedMeta;
       // Present when this event came from a subagent's JSONL (the briefing
       // Claude Code writes as the subagent's first user-role line). Reducer
       // uses these to drop it from the main chat timeline — the briefing is
@@ -527,6 +601,15 @@ export type ChatAction =
       displayName: string;
       args?: string;
       skillPath?: string;
+    }
+  | {
+      // End of a transcript replay. Reaps tool cards the replayed history left
+      // 'running' — a transcript stops wherever the process died, so its last
+      // tool_use may have no result. Only acts when `sessionIdle` is true; the
+      // same replay fires on a live re-dock, where the running tool is real.
+      type: 'TRANSCRIPT_REPLAY_COMPLETE';
+      sessionId: string;
+      sessionIdle: boolean;
     }
   | {
       type: 'TRANSCRIPT_TURN_COMPLETE';
@@ -636,6 +719,12 @@ export interface SerializedSessionChatState {
   errorMessage: string | null;
   // Optional so a pre-field snapshot from an older host still deserializes.
   stallWarning?: { retryInMs: number; willRetry: boolean } | null;
+  // Optional so a pre-field snapshot from an older host still deserializes.
+  // Serialized (unlike promptProcessing) because a parked turn is a condition
+  // of the HOST that outlives any one client — a phone reconnecting to a
+  // stalled desktop session must still see the card. Cross-device clock skew
+  // makes the elapsed number approximate on remote; that is accepted.
+  stalledSince?: number | null;
   lastBufferActivityAt: number;
   compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
   modelState?: import('../../shared/engine-types').EngineModelState | null;
@@ -681,6 +770,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         attentionState: s.attentionState,
         errorMessage: s.errorMessage,
         stallWarning: s.stallWarning,
+        stalledSince: s.stalledSince,
         lastBufferActivityAt: s.lastBufferActivityAt,
         compactionPending: s.compactionPending,
         modelState: s.modelState,
@@ -715,6 +805,8 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       errorMessage: ser.errorMessage ?? null,
       // Older hosts predate stallWarning — default null so a pre-field snapshot hydrates.
       stallWarning: ser.stallWarning ?? null,
+      // Older hosts predate stalledSince — default null so a pre-field snapshot hydrates.
+      stalledSince: ser.stalledSince ?? null,
       // Deliberately NOT serialized: prefill is an in-flight condition of THIS
       // client's stream. A hydrating client (remote reconnect, window restore) is
       // not mid-prefill, and restoring a stale "Reading your prompt…" would be a
@@ -738,3 +830,6 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
   }
   return result;
 }
+
+/** Structured header for a host-injected specialist report — mirrors TranscriptEvent.data.injectedMeta. */
+export type InjectedMeta = NonNullable<NonNullable<import('../../shared/types').TranscriptEvent['data']>['injectedMeta']>;

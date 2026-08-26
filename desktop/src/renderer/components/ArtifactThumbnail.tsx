@@ -141,7 +141,10 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
     (window.claude as any).artifacts.get(projectPath, artifact.id)
       .then((res: any) => {
         if (cancelled) return;
-        if (res && res.ok) setContent(res.content ?? '');
+        // A thumbnail shows a few lines. Over-cap files now return a real
+        // multi-MB prefix instead of null, so slice before it lands in state —
+        // otherwise every visible tile parks megabytes in React.
+        if (res && res.ok) setContent((res.content ?? '').slice(0, 2000));
       })
       .catch(() => {});
     return () => { cancelled = true; };

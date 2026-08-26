@@ -133,4 +133,82 @@ class ArtifactStoreTest {
             claudeDir.deleteRecursively()
         }
     }
+
+    // Mirror of desktop's "replay dedupe by (sessionId, toolUseId)" (2026-08-15):
+    // re-opening a conversation replays every tool call through the tracker, so
+    // the same tool call must not append twice, and the field must survive the
+    // hand-written JSON round trip (org.json marshalling drops unknown fields).
+    @Test
+    fun appendVersionDedupesTheSameToolCallAndKeepsToolUseIdOnDisk() {
+        val projectRoot = Files.createTempDirectory("kt-as-").toFile()
+        try {
+            fun input(session: String, toolUseId: String?) = AppendVersionInput(
+                path = "docs/plan.md", kind = "internal", absolutePath = null,
+                sessionId = session, type = "edit", author = "agent", toolUseId = toolUseId,
+            )
+            assertTrue(appendVersion(projectRoot.absolutePath, "p9", "test", input("s1", "toolu_A")))
+            val bytesAfterFirst = java.io.File(projectRoot, ".youcoded/artifacts.json").readText()
+            // Same tool call again: reports success, writes nothing.
+            assertTrue(appendVersion(projectRoot.absolutePath, "p9", "test", input("s1", "toolu_A")))
+            assertEquals(bytesAfterFirst, java.io.File(projectRoot, ".youcoded/artifacts.json").readText())
+            // Different tool call, and same id in another session: both new versions.
+            assertTrue(appendVersion(projectRoot.absolutePath, "p9", "test", input("s1", "toolu_B")))
+            assertTrue(appendVersion(projectRoot.absolutePath, "p9", "test", input("s2", "toolu_A")))
+            // No toolUseId: legacy always-append.
+            assertTrue(appendVersion(projectRoot.absolutePath, "p9", "test", input("s1", null)))
+            assertTrue(appendVersion(projectRoot.absolutePath, "p9", "test", input("s1", null)))
+
+            val sidecar = (readSidecar(projectRoot.absolutePath) as ReadResult.Ok).sidecar
+            assertEquals(1, sidecar.artifacts.size)
+            assertEquals(5, sidecar.artifacts[0].versions.size)
+            assertEquals("toolu_A", sidecar.artifacts[0].versions[0].toolUseId)
+            assertNull(sidecar.artifacts[0].versions[4].toolUseId)
+            // The optional field is omitted, not written as null, when absent.
+            val raw = org.json.JSONObject(java.io.File(projectRoot, ".youcoded/artifacts.json").readText())
+            val versions = raw.getJSONArray("artifacts").getJSONObject(0).getJSONArray("versions")
+            assertTrue(versions.getJSONObject(0).has("toolUseId"))
+            assertTrue(!versions.getJSONObject(4).has("toolUseId"))
+        } finally {
+            projectRoot.deleteRecursively()
+        }
+    }
+
+    // Mirror of desktop's "a 'delivered' version does NOT bump lastModified on
+    // an existing record" (artifact-store.test.ts). Delivery is not a
+    // modification — handing over an old file must not jump it to the top of
+    // "recently modified" on the phone, and the guard has to exist here too
+    // since the renderer's artifact tracker reaches this Kotlin appendVersion
+    // when it runs on Android (spec 2026-08-25 §4.2).
+    @Test
+    fun deliveredVersionDoesNotBumpLastModified() {
+        val projectRoot = Files.createTempDirectory("kt-as-").toFile()
+        try {
+            appendVersion(
+                projectRoot = projectRoot.absolutePath,
+                projectId   = "p1",
+                projectName = "test",
+                input = AppendVersionInput(
+                    path = "a.md", kind = "internal", absolutePath = null,
+                    sessionId = "s", type = "edit", author = "agent",
+                )
+            )
+            val before = (readSidecar(projectRoot.absolutePath) as ReadResult.Ok).sidecar
+            val stamp = before.artifacts[0].lastModified
+            Thread.sleep(5)
+            appendVersion(
+                projectRoot = projectRoot.absolutePath,
+                projectId   = "p1",
+                projectName = "test",
+                input = AppendVersionInput(
+                    path = "a.md", kind = "internal", absolutePath = null,
+                    sessionId = "s2", type = "delivered", author = "agent", toolUseId = "toolu_d",
+                )
+            )
+            val after = (readSidecar(projectRoot.absolutePath) as ReadResult.Ok).sidecar
+            assertEquals(stamp, after.artifacts[0].lastModified)
+            assertEquals("delivered", after.artifacts[0].versions.last().type)
+        } finally {
+            projectRoot.deleteRecursively()
+        }
+    }
 }

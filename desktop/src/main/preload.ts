@@ -330,6 +330,8 @@ const IPC = {
   // Task 11: cancel/edit a queued-but-not-yet-sent message.
   NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
+  // Stalled-turn Retry — fire-and-forget, same shape as interrupt above.
+  NATIVE_RETRY: 'native:retry',
   NATIVE_COMPACT: 'native:compact',
   NATIVE_CLEAR: 'native:clear',
   NATIVE_INVOKE_SKILL: 'native:invoke-skill',
@@ -1183,13 +1185,17 @@ contextBridge.exposeInMainWorld('claude', {
   native: {
     supported: process.env.YOUCODED_NATIVE !== '0',
     // M1: invoke — matches the handle signature, returns {status,reason}
-    send: (sessionId: string, text: string) => ipcRenderer.invoke(IPC.NATIVE_SEND, { sessionId, text }),
+    send: (sessionId: string, text: string, attachments?: string[]) => ipcRenderer.invoke(IPC.NATIVE_SEND, { sessionId, text, attachments }),
     // Task 11: cancel/edit a queued message before it sends. Request-response
     // (unlike interrupt below) — the renderer needs the true/false result to
     // decide between "removed, proceed" and a "too late" toast.
     queueRemove: (sessionId: string, queueId: string) => ipcRenderer.invoke(IPC.NATIVE_QUEUE_REMOVE, { sessionId, queueId }),
     // Fire-and-forget: match ipcMain.on handler that destructures { sessionId }.
     interrupt: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_INTERRUPT, { sessionId }),
+    // Fire-and-forget like interrupt: the stalled card needs no answer — either
+    // the step re-runs (the card clears itself) or nothing was parked (the card
+    // is already gone).
+    retry: (sessionId: string) => ipcRenderer.send(IPC.NATIVE_RETRY, { sessionId }),
     // User-initiated /compact. Request-response, NOT fire-and-forget: the caller
     // needs the {ok, reason} result to tell the user why nothing happened when a
     // compaction is refused (turn in flight, nothing to compact, summary failed).
@@ -1230,6 +1236,16 @@ contextBridge.exposeInMainWorld('claude', {
     setKey: (backend: string, key: string) => ipcRenderer.invoke('search:set-key', backend, key),
     removeKey: (backend: string) => ipcRenderer.invoke('search:remove-key', backend),
     test: (backend: string, key: string) => ipcRenderer.invoke('search:test', backend, key),
+  },
+  // Remembered "Always allow" rules (Settings → Permissions, M5 2a). Keyed by
+  // PROJECT SLUG, not cwd — the cwd is not recoverable from the lossy slug, so
+  // the renderer sends back the slug it was handed. remove/removeProject resolve
+  // false when nothing matched, i.e. the on-screen list had gone stale.
+  // Positional args match ipc-handlers, same as search:* above.
+  permissions: {
+    list: () => ipcRenderer.invoke('permissions:list'),
+    remove: (slug: string, rule: unknown) => ipcRenderer.invoke('permissions:remove', slug, rule),
+    removeProject: (slug: string) => ipcRenderer.invoke('permissions:remove-project', slug),
   },
   // Local llama.cpp engine (Plan B). Progress/status pushes return an
   // unsubscribe, matching every other on* subscription in this file.
@@ -1306,8 +1322,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke('artifacts:list-all-files', projectId, opts),
     listProjectsIndex: (opts?: { withCounts?: boolean }) =>
       ipcRenderer.invoke('artifacts:list-projects-index', opts),
-    get: (projectRoot: string, artifactId: string) =>
-      ipcRenderer.invoke('artifacts:get', projectRoot, artifactId),
+    // opts: { full? } — full opts into reading up to FULL_READ_MAX_BYTES for a
+    // file the pane is currently showing as a prefix.
+    get: (projectRoot: string, artifactId: string, opts?: { full?: boolean }) =>
+      ipcRenderer.invoke('artifacts:get', projectRoot, artifactId, opts),
     // Read a file as base64 — binary viewers (xlsx/docx/pdf/image) decode this
     // to bytes (renderer can't fetch a file:// URL from the http/app origin).
     readBinary: (absolutePath: string) =>

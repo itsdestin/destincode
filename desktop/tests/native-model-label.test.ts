@@ -5,7 +5,7 @@ import { nativeModelLabel } from '../src/renderer/components/native-model-label'
 describe('nativeModelLabel', () => {
   it('strips the vendor prefix and the redundant leading "claude"', () => {
     expect(nativeModelLabel('anthropic/claude-sonnet-5')).toBe('Sonnet 5');
-    expect(nativeModelLabel('anthropic/claude-opus-4-8')).toBe('Opus 4 8');
+    expect(nativeModelLabel('anthropic/claude-opus-4-8')).toBe('Opus 4.8');
   });
 
   it('title-cases plain hyphenated slugs', () => {

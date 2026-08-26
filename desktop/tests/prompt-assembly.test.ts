@@ -91,6 +91,40 @@ describe('assembleSystemPrompt — project instructions walk-up', () => {
   });
 });
 
+describe('assembleSystemPrompt — fixture .git containment', () => {
+  // Fix 1 (Task 3 review, 2026-08-12): the harness eval fixture
+  // (eval/fixture-workspace.ts's seedFixtureWorkspace) plants an empty `.git`
+  // directory specifically so this walk-up can't escape the fixture and pick up
+  // a stray AGENTS.md/CLAUDE.md above it — that's the CONTROL arm for every
+  // instruction A/B this evaluator will ever run. Until now nothing tested that
+  // the marker actually does this: the fixture test only asserted `.git` exists,
+  // and the "no <project-instructions>" test in harness-eval-runner.test.ts
+  // passed identically with or without the marker, because in a clean CI/dev
+  // environment nothing stray lives above os.tmpdir() anyway. This proves the
+  // real containment by seeding a genuine decoy ABOVE a hand-built fixture-shaped
+  // tree — see the mutation evidence in the Task 3 Fix pass 1 report for proof
+  // this test actually fails without the `.git` marker.
+  //
+  // WHY hand-built rather than seedFixtureWorkspace(): that helper creates its
+  // tree via fs.mkdtempSync under os.tmpdir() and has no way to nest it inside a
+  // caller-supplied parent directory, so it can't be used to plant a decoy
+  // ABOVE the fixture root. This tree mirrors its shape exactly (a `.git` dir at
+  // the fixture root, nothing more) without changing seedFixtureWorkspace's
+  // signature for a test-only need.
+  it('the .git marker actually stops the walk-up from reaching a decoy instruction file above the fixture root', () => {
+    const parent = dir; // the tmp sandbox from beforeEach — stands in for "somewhere above the fixture"
+    fs.writeFileSync(path.join(parent, 'AGENTS.md'), 'DECOY_CONTENT_FROM_ABOVE_THE_FIXTURE');
+    const fixtureRoot = path.join(parent, 'fixture-root');
+    fs.mkdirSync(fixtureRoot);
+    fs.mkdirSync(path.join(fixtureRoot, '.git')); // the marker under test
+
+    const out = assembleSystemPrompt({ presetBody: PRESET, cwd: fixtureRoot, appVersion: '1.0.0' });
+
+    expect(out).not.toContain('<project-instructions');
+    expect(out).not.toContain('DECOY_CONTENT_FROM_ABOVE_THE_FIXTURE');
+  });
+});
+
 describe('assembleSystemPrompt — byte stability (KV-cache pin)', () => {
   it('is byte-identical across two calls with the same inputs (non-git dir)', () => {
     // Non-git tmp dir → gitSnapshot returns the stable "not a repository" line,

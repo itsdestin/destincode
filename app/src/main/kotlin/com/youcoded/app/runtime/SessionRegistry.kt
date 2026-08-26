@@ -50,8 +50,7 @@ class SessionRegistry {
             model = model,
         )
 
-        val projectsDir = File(bootstrap.homeDir, ".claude/projects")
-        val transcriptWatcher = TranscriptWatcher(projectsDir, scope)
+        val transcriptWatcher = TranscriptWatcher(scope)
 
         val session = ManagedSession(
             id = sessionId,

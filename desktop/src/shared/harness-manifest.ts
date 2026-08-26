@@ -1,6 +1,6 @@
 // The shareable harness unit (marketplace item kind 'harness' arrives in
 // Phase 3). Phase 2 ships TWO built-in presets — personality profiles, not
-// capability tiers (spec decision 8): both carry the full ten-tool suite;
+// capability tiers (spec decision 8): both carry the full eleven-tool suite;
 // they differ in prompt personality and permission posture. The Chat preset
 // is CUT — legacy harnessId:'chat' headers resolve to Assistant on resume
 // (preset-registry.ts). tools[] stays in the schema for Phase 3 custom harnesses.
@@ -34,7 +34,7 @@ export interface HarnessManifest {
 
 export const NATIVE_TOOL_NAMES = [
   'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
-  'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion',
+  'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'SendUserFile',
 ] as const;
 
 /** Tools attached at RUNTIME, per session, when conditions allow — deliberately
@@ -45,8 +45,18 @@ export const NATIVE_TOOL_NAMES = [
  *  preset would do exactly what the registry↔manifest guard exists to prevent:
  *  tell the model about a tool that, on a small local model or a machine with no
  *  skills installed, is not attached. The model learns about it the only reliable
- *  way — from the tool schema buildAiTools() actually sends. */
-export const CONDITIONAL_TOOL_NAMES = ['Skill'] as const;
+ *  way — from the tool schema buildAiTools() actually sends.
+ *
+ *  `Task` (Task 6, spec decision 4) exists only when profile.canDelegate is
+ *  true AND the session is not itself a specialist child — a weak/unverified
+ *  orchestrator or a specialist attempting depth-2 delegation must never even
+ *  see the tool on its schema, same reasoning as Skill above.
+ *
+ *  `ModelSearch` (Task 14) rides the identical gate as `Task` and only ever
+ *  exists alongside it (harness-session.ts's syncTaskTool attaches/detaches
+ *  both together) — it exists to name a specific model for a Task
+ *  delegation, so a session that cannot delegate has nothing for it to do. */
+export const CONDITIONAL_TOOL_NAMES = ['Skill', 'Task', 'ModelSearch'] as const;
 
 export const ASSISTANT_PRESET: HarnessManifest = {
   schema: 1,

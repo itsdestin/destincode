@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
-import { AssistantTurn } from '../state/chat-types';
+import { AssistantTurn, abnormalStopReason } from '../state/chat-types';
 import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/types';
 import { assistantName } from '../utils/assistant-name';
 import MarkdownContent from './MarkdownContent';
 import ToolCard from './ToolCard';
+import { DeliverablesCard, isSentFilesTool } from './DeliverablesCard';
 import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
@@ -24,7 +25,7 @@ interface Props {
 // `tool_use` is filtered upstream at transcript-watcher.ts (it means "awaiting
 // tool result", not a real completion). `end_turn` — the normal completion —
 // reaches the reducer but is filtered at the render gate below, because it
-// carries no abnormal signal worth surfacing. The four keys below are the
+// carries no abnormal signal worth surfacing. The keys below are the
 // ones that ARE worth surfacing (truncation / refusal / etc.).
 // Provider-aware: native (local/cloud) sessions must not be labelled "Claude".
 // The two subject-carrying lines swap in the assistant's display name; the rest
@@ -37,9 +38,24 @@ function stopReasonCopy(reason: string, provider: SessionProvider | undefined): 
     refusal: `${name} declined to respond.`,
     pause_turn: 'Extended thinking paused mid-turn.',
     interrupted: 'Interrupted.',
+    // Deliberately provider-neutral (no assistantName interpolation): this
+    // sentence is about the user's own action, not about the assistant. Without
+    // it a dismissed turn is visually identical to a session that silently died,
+    // and the user can't trust either signal.
+    question_dismissed: 'Question closed — waiting for you.',
+    // Empty-step recovery (spec 2026-08-21): the harness already retried once
+    // silently; this is the honest end after a SECOND contentless step —
+    // "twice" states that verified fact (error-message standards: specific
+    // and accurate). "Retrying may help" stays: it refers to a LATER manual
+    // nudge, which recovered all three observed live incidents — distinct
+    // from the immediate auto-retry that just failed.
+    // Deliberately provider-neutral ("The model") — the failure belongs to
+    // the model, not the assistant persona.
+    empty_response: 'The model returned an empty response twice. Retrying may help.',
   };
   return map[reason] ?? `Response ended: ${reason}.`;
 }
+
 
 // Collapsible disclosure for the model's reasoning / chain of thought.
 // Collapsed by default — user explicitly chose this UX so reasoning doesn't
@@ -83,10 +99,13 @@ function StopReasonFooter({ reason, provider }: { reason: string; provider: Sess
 function TurnMetadataStrip({ turn }: { turn: AssistantTurn }) {
   if (!turn.usage && !turn.model) return null;
   const u = turn.usage;
-  const total = u ? u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheCreationTokens : 0;
-  const cacheHitPct = u && total > 0
-    ? Math.round((u.cacheReadTokens / total) * 100)
-    : null;
+  // Fix: this used to render a percentage over
+  // (input + output + cacheRead + cacheCreation). On the native runtime that
+  // double-counts — an OpenAI-compatible provider's inputTokens ALREADY contains
+  // the cached reads — so a turn that genuinely reused 98.7% of its prompt
+  // displayed as 49%. A raw count needs no denominator, so it cannot be wrong in
+  // either runtime's accounting; the StatusBar's Reuse chip is where the ratio
+  // lives, and it resolves the denominator per source (Destin, 2026-08-16).
 
   return (
     <div
@@ -98,7 +117,7 @@ function TurnMetadataStrip({ turn }: { turn: AssistantTurn }) {
         <>
           <span>in {u.inputTokens.toLocaleString()}</span>
           <span>out {u.outputTokens.toLocaleString()}</span>
-          {cacheHitPct !== null && <span>cache {cacheHitPct}%</span>}
+          {u.cacheReadTokens > 0 && <span>cached {u.cacheReadTokens.toLocaleString()}</span>}
         </>
       )}
     </div>
@@ -160,6 +179,27 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
       )}
     </div>
   );
+}
+
+// Walks ONE bubble's tool groups and returns its SendUserFile calls in
+// invocation order. The card renders inside the bubble — last, after the tool
+// cards — so the hoist is per bubble, unlike Skills (per turn).
+// View-layer reorder only; reducer state untouched.
+function collectBubbleSentFiles(
+  bubble: VisualBubble,
+  toolGroups: Map<string, ToolGroupState>,
+  toolCalls: Map<string, ToolCallState>,
+): ToolCallState[] {
+  const out: ToolCallState[] = [];
+  for (const groupId of bubble.toolGroupIds) {
+    const group = toolGroups.get(groupId);
+    if (!group) continue;
+    for (const id of group.toolIds) {
+      const t = toolCalls.get(id);
+      if (isSentFilesTool(t)) out.push(t);
+    }
+  }
+  return out;
 }
 
 /**
@@ -361,11 +401,42 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
     [turn, toolGroups, toolCalls],
   );
 
+  // Empty-step recovery (spec 2026-08-21, decision 4): a fully-contentless
+  // turn has ZERO bubbles, so the per-bubble stopReason footer below can never
+  // fire — yet an abnormal stopReason on such a turn is exactly the signal
+  // that must not be lost (an 'empty_response' turn with no bubbles IS the
+  // bug's worst case). Render a footer-only row for it. Zero-bubble turns
+  // with a normal/absent stopReason keep rendering nothing, byte-for-byte.
+  // Deliberately NOT wrapped in the assistant-bubble shell: there is no
+  // message here, and an empty bubble would imply one.
+  if (bubbles.length === 0) {
+    if (!abnormalStopReason(turn.stopReason)) return null;
+    return (
+      <div className="flex justify-start px-4 py-0.5">
+        <div className="max-w-[85%]">
+          {showTurnMetadata && <TurnMetadataStrip turn={turn} />}
+          <StopReasonFooter reason={turn.stopReason!} provider={provider} />
+          {/* Same trailer members as the bubble path below — the timestamp
+              matters MOST here: "when did it go silent?" is the first question
+              an empty_response row raises. */}
+          {showTimestamps && turn.timestamp && (
+            <div className="bubble-timestamp text-4xs text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
+              {formatBubbleTime(turn.timestamp)}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <>
       {bubbles.map((bubble, i) => {
+        const sentFiles = collectBubbleSentFiles(bubble, toolGroups, toolCalls);
         const hasTools = bubble.toolGroupIds.length > 0;
-        const hasContent = !!(bubble.text || bubble.plan);
+        // A sent-files card counts as content: a bubble holding only that card
+        // must get the prose padding, not the tight tools-only padding.
+        const hasContent = !!(bubble.text || bubble.plan || sentFiles.length);
         const hasReasoning = !!bubble.reasoning;
         const toolsOnly = hasTools && !hasContent && !hasReasoning;
         const reasoningOnly = hasReasoning && !hasContent && !hasTools;
@@ -401,6 +472,12 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                   ))}
                 </div>
               )}
+              {/* Sent-files card: LAST in the bubble, after the tool cards
+                  (Destin 2026-08-25). Its calls were filtered out of the groups
+                  above, so this is the only place they render. */}
+              {sentFiles.length > 0 && (
+                <DeliverablesCard tools={sentFiles} sessionId={sessionId} />
+              )}
               {/* Trailing-Skills row: Skills are reordered to the end of the turn's
                   last bubble so they read as a status footer rather than co-mingled
                   with substantive tool output. ToolGroupInline filters Skills out
@@ -419,7 +496,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
               {/* Render stopReason explainer only once per turn — on the last bubble.
                   Gate out `end_turn` (normal completion) — it reaches the reducer but
                   carries no abnormal signal worth surfacing to the user. */}
-              {isLastBubble && turn.stopReason && turn.stopReason !== 'end_turn' && <StopReasonFooter reason={turn.stopReason} provider={provider} />}
+              {isLastBubble && abnormalStopReason(turn.stopReason) && <StopReasonFooter reason={turn.stopReason!} provider={provider} />}
               {showTimestamps && isLastBubble && turn.timestamp && (
                 <div className="bubble-timestamp text-4xs text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">
                   {formatBubbleTime(turn.timestamp)}
@@ -504,7 +581,9 @@ function ToolGroupInline({
     // standalone row outside any group via AssistantTurnBubble (see
     // collectTurnSkills + the trailing-skills div on the last bubble).
     // View-layer reorder; reducer state untouched.
-    .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill');
+    // SendUserFile is ALSO pulled out: it renders as the DeliverablesCard at the
+    // end of the bubble, after the tool cards (collectBubbleSentFiles).
+    .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill' && !isSentFilesTool(t));
 
   if (tools.length === 0) return null;
 

@@ -239,6 +239,38 @@ describe('terminal:get-screen-text channel parity', () => {
   });
 });
 
+// Regression net for native:retry (stalled-turn design, 2026-08-16). Five
+// surfaces must carry identical type strings — drift would leave the stalled
+// card's Retry button dead on one platform, and a dead Retry on a red card is
+// worse than no card at all.
+describe('native:retry channel parity', () => {
+  const CHANNEL = 'native:retry';
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('is declared in shared/types.ts', () => {
+    expect(read('src', 'shared', 'types.ts')).toContain(`'${CHANNEL}'`);
+  });
+  it('is declared in preload.ts', () => {
+    expect(read('src', 'main', 'preload.ts')).toContain(`'${CHANNEL}'`);
+  });
+  it('is handled in ipc-handlers.ts', () => {
+    expect(read('src', 'main', 'ipc-handlers.ts')).toContain('NATIVE_RETRY');
+  });
+  it('is referenced in remote-shim.ts', () => {
+    expect(read('src', 'renderer', 'remote-shim.ts')).toContain(`'${CHANNEL}'`);
+  });
+  it('is handled in remote-server.ts', () => {
+    expect(read('src', 'main', 'remote-server.ts')).toContain(`'${CHANNEL}'`);
+  });
+  it('is answered not-implemented by SessionService.kt (Android)', () => {
+    const src = fs.readFileSync(path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    ), 'utf8');
+    expect(src).toContain(`"${CHANNEL}"`);
+  });
+});
+
 // Regression net for pty:raw-bytes. Tier 1 introduced the Android broadcaster;
 // Tier 2 (xterm-in-WebView) added the desktop-side consumer surfaces. Three
 // surfaces must carry identical type strings — drift would silently break the
@@ -1053,5 +1085,38 @@ describe('native:* channel parity', () => {
       'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
     ), 'utf8');
     for (const t of NATIVE_CHANNELS) expect(src, t).toContain(`"${t}"`);
+  });
+});
+
+// Five-surface parity for the permissions management UI (M5 2a). A channel
+// missing from remote-shim.ts or SessionService.kt would silently break the
+// screen on remote or Android — the exact gap native:* had until 2026-07-28.
+describe('permissions:* channel parity', () => {
+  const NEW_TYPES = ['permissions:list', 'permissions:remove', 'permissions:remove-project'];
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'permissions:list': 'IPC.PERMISSIONS_LIST',
+    'permissions:remove': 'IPC.PERMISSIONS_REMOVE',
+    'permissions:remove-project': 'IPC.PERMISSIONS_REMOVE_PROJECT',
+  };
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from ipc-handlers.ts`).toBe(true);
+  });
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`'${t}'`);
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
   });
 });

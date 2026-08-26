@@ -297,6 +297,157 @@ describe('chatReducer tool card duplication', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// A permission ask must render the input IT is about. Reported symptom: the
+// second AskUserQuestion of a session re-displayed the FIRST one's question
+// and options in chat view, while the terminal showed the correct one.
+//
+// PERMISSION_REQUEST binds a requestId to an existing card via a 3-tier match
+// (exact input → same name → any running tool) but never refreshed that card's
+// `input`. Tier 1 cannot match a *new* AskUserQuestion by construction — its
+// questions differ from every earlier ask — so whenever the hook beat the
+// transcript watcher (the documented ordering) tier 2 bound the new request to
+// an older AskUserQuestion card and rendered its stale questions.
+// ─────────────────────────────────────────────────────────────────────────
+describe('chatReducer permission ask renders the requesting tool input', () => {
+  const Q1 = { questions: [{ question: 'Which framework?', header: 'Framework', options: [{ label: 'React' }] }] };
+  const Q2 = { questions: [{ question: 'Which database?', header: 'Database', options: [{ label: 'Postgres' }] }] };
+
+  function initState(): ChatState {
+    return new Map([['sess-1', createSessionChatState()]]);
+  }
+
+  /** The card the given requestId is currently asking through. */
+  function cardFor(state: ChatState, requestId: string): ToolCallState | undefined {
+    return [...state.get('sess-1')!.toolCalls.values()]
+      .find((t) => t.requestId === requestId && t.status === 'awaiting-approval');
+  }
+
+  const perm = (requestId: string, input: unknown) => ({
+    type: 'PERMISSION_REQUEST' as const,
+    sessionId: 'sess-1', requestId, toolName: 'AskUserQuestion', input,
+  });
+
+  it('shows the NEW questions when a later ask binds to an earlier ask card', () => {
+    // Ask #1: transcript first, then hook, then answered. PERMISSION_RESPONDED
+    // returns the card to 'running' and it stays there until the watcher
+    // delivers its tool_result — a window in which it is still a match target.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_ask_1', toolName: 'AskUserQuestion', toolInput: Q1,
+    } as any);
+    state = chatReducer(state, perm('req-1', Q1) as any);
+    state = chatReducer(state, {
+      type: 'PERMISSION_RESPONDED', sessionId: 'sess-1', requestId: 'req-1',
+    } as any);
+
+    // Ask #2: the hook beats the transcript, so no card for it exists yet.
+    state = chatReducer(state, perm('req-2', Q2) as any);
+
+    const card = cardFor(state, 'req-2');
+    expect(card).toBeDefined();
+    expect((card!.input as any).questions[0].question).toBe('Which database?');
+  });
+
+  it('does not strand an answered perm-* placeholder as a permanent match target', () => {
+    // Answering before the watcher delivers the tool_use breaks the synthetic
+    // merge in TRANSCRIPT_TOOL_USE (it required status 'awaiting-approval'), so
+    // the placeholder was never reclaimed, never received a tool_result, and
+    // stayed 'running' for the rest of the session — catching every later ask.
+    let state = initState();
+    state = chatReducer(state, perm('req-1', Q1) as any);
+    state = chatReducer(state, {
+      type: 'PERMISSION_RESPONDED', sessionId: 'sess-1', requestId: 'req-1',
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_ask_1', toolName: 'AskUserQuestion', toolInput: Q1,
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_RESULT', sessionId: 'sess-1', uuid: 'u2',
+      toolUseId: 'toolu_ask_1', result: 'answered', isError: false,
+    } as any);
+
+    const stranded = [...state.get('sess-1')!.toolCalls.entries()]
+      .filter(([id, t]) => id.startsWith('perm-') && t.status === 'running');
+    expect(stranded).toHaveLength(0);
+  });
+
+  it('does not let a later same-name tool_use steal an answered placeholder', () => {
+    // The reclaim widening must not swallow the EARLIER card: reclaiming by
+    // name alone would delete perm-req-1 and drop ask #2 into its timeline
+    // slot, erasing ask #1 from the transcript view entirely.
+    let state = initState();
+    state = chatReducer(state, perm('req-1', Q1) as any);
+    state = chatReducer(state, {
+      type: 'PERMISSION_RESPONDED', sessionId: 'sess-1', requestId: 'req-1',
+    } as any);
+    // Ask #2's tool_use lands before ask #1's did — different questions.
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u2',
+      toolUseId: 'toolu_ask_2', toolName: 'AskUserQuestion', toolInput: Q2,
+    } as any);
+
+    const calls = state.get('sess-1')!.toolCalls;
+    expect(calls.has('toolu_ask_2')).toBe(true);
+    expect((calls.get('toolu_ask_2')!.input as any).questions[0].question).toBe('Which database?');
+    // ask #1's placeholder survives with its own questions intact
+    const ph = calls.get('perm-req-1');
+    expect((ph?.input as any).questions[0].question).toBe('Which framework?');
+  });
+
+  it('does not swap input onto a card matched by the any-running fallback', () => {
+    // Tier 3 matches a DIFFERENT tool name. Overwriting there would render
+    // Bash's name above AskUserQuestion's questions.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_bash_1', toolName: 'Bash', toolInput: { command: 'ls' },
+    } as any);
+    state = chatReducer(state, perm('req-1', Q1) as any);
+
+    const bash = state.get('sess-1')!.toolCalls.get('toolu_bash_1')!;
+    expect((bash.input as any).command).toBe('ls');
+  });
+
+  it('does not blank a card when the hook omits tool_input', () => {
+    // hook-dispatcher.ts defaults a missing payload.tool_input to `{}`.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_ask_1', toolName: 'AskUserQuestion', toolInput: Q1,
+    } as any);
+    state = chatReducer(state, {
+      type: 'PERMISSION_RESPONDED', sessionId: 'sess-1', requestId: 'none',
+    } as any);
+    state = chatReducer(state, perm('req-2', {}) as any);
+
+    const card = state.get('sess-1')!.toolCalls.get('toolu_ask_1')!;
+    expect((card.input as any).questions[0].question).toBe('Which framework?');
+  });
+
+  it('still prefers the exact-input match over an older same-name card', () => {
+    // Guards against "fixing" this by always overwriting input: when the real
+    // card for ask #2 already exists, the request must bind to THAT card.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u1',
+      toolUseId: 'toolu_ask_1', toolName: 'AskUserQuestion', toolInput: Q1,
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: 'sess-1', uuid: 'u2',
+      toolUseId: 'toolu_ask_2', toolName: 'AskUserQuestion', toolInput: Q2,
+    } as any);
+    state = chatReducer(state, perm('req-2', Q2) as any);
+
+    const card = cardFor(state, 'req-2');
+    expect(card?.toolUseId).toBe('toolu_ask_2');
+    expect((state.get('sess-1')!.toolCalls.get('toolu_ask_1')!.input as any).questions[0].question)
+      .toBe('Which framework?');
+  });
+});
+
 // Remote-access hydration guards. Both invariants here are the kind that fail
 // silently in production — a wrong-looking timeline, or a chat that vanishes —
 // so they are pinned rather than left to manual verification.
@@ -650,5 +801,358 @@ describe('chatReducer COMPACTION_COMPLETE — native auto-compaction (I2b)', () 
       // no `auto`, no compactionPending → stale, must be dropped
     });
     expect(next).toBe(state);   // untouched — no spurious marker
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// A permission ask must never describe a tool other than the one it approves.
+// Found by Destin in the 2026-08-09 M1–M3 dogfood: Bash 1 → "Allow Bash 1?"
+// → Read 1 → "Allow Bash 1?" → Read 1 runs. The card named Bash while its
+// buttons authorized Read. This is a consent bug, not a cosmetic one.
+describe('chatReducer PERMISSION_REQUEST tool identity', () => {
+  function initState(): ChatState {
+    return new Map([['sess-1', createSessionChatState()]]);
+  }
+
+  const bashUse = {
+    type: 'TRANSCRIPT_TOOL_USE' as const,
+    sessionId: 'sess-1',
+    uuid: 'u-bash',
+    toolUseId: 'toolu_bash_1',
+    toolName: 'Bash',
+    toolInput: { command: 'ls' },
+  };
+
+  it('does not bind an ask to a running tool with a DIFFERENT name', () => {
+    let state = initState();
+    state = chatReducer(state, bashUse);
+    // Read's ask arrives before Read's tool_use event. The only running tool
+    // is Bash, which this ask has nothing to do with.
+    state = chatReducer(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: 'sess-1',
+      requestId: 'req-read-1',
+      toolName: 'Read',
+      input: { file_path: '/etc/hosts' },
+    } as any);
+
+    const bash = state.get('sess-1')!.toolCalls.get('toolu_bash_1')!;
+    expect(bash.toolName).toBe('Bash');
+    // The Bash card must be left alone — it is not what is being approved.
+    expect(bash.status).toBe('running');
+    expect(bash.requestId).toBeUndefined();
+
+    // The ask gets its own card, naming the tool it actually authorizes.
+    const synthetic = state.get('sess-1')!.toolCalls.get('perm-req-read-1');
+    expect(synthetic).toBeDefined();
+    expect(synthetic!.toolName).toBe('Read');
+    expect(synthetic!.status).toBe('awaiting-approval');
+  });
+
+  it('still binds to a running tool of the SAME name', () => {
+    let state = initState();
+    state = chatReducer(state, bashUse);
+    state = chatReducer(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: 'sess-1',
+      requestId: 'req-bash-1',
+      toolName: 'Bash',
+      input: { command: 'ls' },
+    } as any);
+
+    const bash = state.get('sess-1')!.toolCalls.get('toolu_bash_1')!;
+    expect(bash.status).toBe('awaiting-approval');
+    expect(bash.requestId).toBe('req-bash-1');
+    // No duplicate synthetic card when a real one was matched.
+    expect(state.get('sess-1')!.toolCalls.get('perm-req-bash-1')).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// A replayed transcript ends where the process died. A tool_use with no
+// result is history, not live work — the card must not keep spinning after
+// a resume. Found by Destin in the same dogfood pass.
+describe('chatReducer TRANSCRIPT_REPLAY_COMPLETE', () => {
+  function initState(): ChatState {
+    return new Map([['sess-1', createSessionChatState()]]);
+  }
+
+  it('fails a tool left running by an interrupted transcript', () => {
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 'sess-1',
+      uuid: 'u-1',
+      toolUseId: 'toolu_1',
+      toolName: 'Bash',
+      toolInput: { command: 'sleep 1000' },
+    } as any);
+    expect(state.get('sess-1')!.toolCalls.get('toolu_1')!.status).toBe('running');
+
+    state = chatReducer(state, { type: 'TRANSCRIPT_REPLAY_COMPLETE', sessionId: 'sess-1', sessionIdle: true } as any);
+
+    const tool = state.get('sess-1')!.toolCalls.get('toolu_1')!;
+    // Not 'complete' — we do not know whether it finished before the process
+    // died, and claiming success for work that may never have run is the
+    // misleading-success failure error-message-standards.md exists to prevent.
+    expect(tool.status).toBe('failed');
+    expect(tool.error).toMatch(/closed/i);
+    // The replayed turn is over; nothing is in flight.
+    expect(state.get('sess-1')!.isThinking).toBe(false);
+  });
+
+  it('leaves a completed replayed tool alone', () => {
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 'sess-1', uuid: 'u-1',
+      toolUseId: 'toolu_1', toolName: 'Bash', toolInput: { command: 'ls' },
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_RESULT',
+      sessionId: 'sess-1', uuid: 'u-2',
+      toolUseId: 'toolu_1', result: 'a.txt', isError: false,
+    } as any);
+    state = chatReducer(state, { type: 'TRANSCRIPT_REPLAY_COMPLETE', sessionId: 'sess-1', sessionIdle: true } as any);
+
+    expect(state.get('sess-1')!.toolCalls.get('toolu_1')!.status).toBe('complete');
+  });
+
+  it('is a no-op for an unknown session', () => {
+    const state = initState();
+    const next = chatReducer(state, { type: 'TRANSCRIPT_REPLAY_COMPLETE', sessionId: 'nope', sessionIdle: true } as any);
+    expect(next).toBe(state);
+  });
+});
+
+// The same replay fires when a window re-docks a session that is genuinely
+// mid-turn. Reaping there would fail a tool that really is running, so the
+// reap is gated on main affirming the session is idle.
+describe('chatReducer TRANSCRIPT_REPLAY_COMPLETE on a live session', () => {
+  it('leaves a running tool alone when the session is NOT idle', () => {
+    let state: ChatState = new Map([['sess-1', createSessionChatState()]]);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: 'sess-1', uuid: 'u-1',
+      toolUseId: 'toolu_1', toolName: 'Bash', toolInput: { command: 'sleep 1000' },
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_REPLAY_COMPLETE', sessionId: 'sess-1', sessionIdle: false,
+    } as any);
+    expect(state.get('sess-1')!.toolCalls.get('toolu_1')!.status).toBe('running');
+  });
+});
+
+describe('chatReducer NATIVE_TOOL_PREPARING', () => {
+  const SESSION = 'sess-1';
+  function initState(): ChatState {
+    return new Map([[SESSION, createSessionChatState()]]);
+  }
+  const prep = (chars: number, extra: Record<string, unknown> = {}) => ({
+    type: 'NATIVE_TOOL_PREPARING' as const,
+    sessionId: SESSION,
+    toolCallId: 'c1',
+    toolName: 'Write',
+    chars,
+    ...extra,
+  });
+  const groupsOf = (s: ChatState) => [...s.get(SESSION)!.toolGroups.values()];
+  const idCount = (s: ChatState, id: string) =>
+    groupsOf(s).flatMap((g) => g.toolIds).filter((t) => t === id).length;
+
+  it('creates a running+preparing card with empty input, placed in a group', () => {
+    const next = chatReducer(initState(), prep(0));
+    const session = next.get(SESSION)!;
+    const card = session.toolCalls.get('c1')!;
+    expect(card).toMatchObject({
+      toolUseId: 'c1', toolName: 'Write', status: 'running', preparing: true, preparingChars: 0,
+    });
+    expect(card.input).toEqual({});
+    expect(idCount(next, 'c1')).toBe(1);
+    expect(session.activeTurnToolIds.has('c1')).toBe(true);
+  });
+
+  it('a later progress update changes only the count — no second card, no re-placement', () => {
+    let state = chatReducer(initState(), prep(0));
+    const groupIdBefore = groupsOf(state)[0].id;
+    state = chatReducer(state, prep(512));
+    state = chatReducer(state, prep(2048));
+    expect(state.get(SESSION)!.toolCalls.size).toBe(1);
+    expect(state.get(SESSION)!.toolCalls.get('c1')!.preparingChars).toBe(2048);
+    expect(idCount(state, 'c1')).toBe(1);
+    expect(groupsOf(state)[0].id).toBe(groupIdBefore);
+  });
+
+  it('TRANSCRIPT_TOOL_USE with the same id supersedes it IN PLACE', () => {
+    // This is the load-bearing behavior: the completed tool-call carries the
+    // SAME provider id as tool-input-start, and TRANSCRIPT_TOOL_USE is already
+    // idempotent by toolUseId, so no merge machinery is needed. If the
+    // idempotent group placement ever regresses, this test is what catches it.
+    let state = chatReducer(initState(), prep(2048));
+    const groupIdBefore = groupsOf(state)[0].id;
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'u-1',
+      toolUseId: 'c1', toolName: 'Write', toolInput: { file_path: 'a.ts', content: 'x' },
+    } as any);
+
+    const card = state.get(SESSION)!.toolCalls.get('c1')!;
+    expect(card.preparing).toBeUndefined();
+    expect(card.status).toBe('running');
+    expect(card.input).toEqual({ file_path: 'a.ts', content: 'x' });
+    expect(idCount(state, 'c1')).toBe(1);
+    expect(groupsOf(state)[0].id).toBe(groupIdBefore);
+  });
+
+  it('cleared removes the card and prunes the emptied group and its turn segment', () => {
+    let state = chatReducer(initState(), prep(2048));
+    const turnId = state.get(SESSION)!.currentTurnId!;
+    state = chatReducer(state, prep(2048, { cleared: true }));
+
+    const session = state.get(SESSION)!;
+    expect(session.toolCalls.has('c1')).toBe(false);
+    expect(session.activeTurnToolIds.has('c1')).toBe(false);
+    expect(session.toolGroups.size).toBe(0);
+    expect(session.assistantTurns.get(turnId)!.segments).toEqual([]);
+  });
+
+  it('cleared is a NO-OP once the id became a real tool card', () => {
+    // A retry-clear must never delete a real card. The clear can only race a
+    // tool-use that already landed, and deleting THAT would drop a tool whose
+    // result is still coming — the dangling-pair failure the runtime forbids.
+    let state = chatReducer(initState(), prep(2048));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'u-1',
+      toolUseId: 'c1', toolName: 'Write', toolInput: { file_path: 'a.ts' },
+    } as any);
+    state = chatReducer(state, prep(2048, { cleared: true }));
+
+    expect(state.get(SESSION)!.toolCalls.get('c1')).toBeDefined();
+    expect(state.get(SESSION)!.toolCalls.get('c1')!.input).toEqual({ file_path: 'a.ts' });
+  });
+
+  it('endTurn DELETES preparing cards but still FAILS real running ones', () => {
+    // No tool was ever invoked for a preparing card, so "Write · failed" would
+    // describe an event that did not happen (Destin, 2026-08-12).
+    let state = chatReducer(initState(), prep(2048));
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'u-1',
+      toolUseId: 'real-1', toolName: 'Bash', toolInput: { command: 'ls' },
+    } as any);
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: SESSION, uuid: 'u-2', timestamp: 2000,
+    } as any);
+
+    const session = state.get(SESSION)!;
+    expect(session.toolCalls.has('c1')).toBe(false);
+    expect(session.toolCalls.get('real-1')!.status).toBe('failed');
+  });
+});
+
+// Empty-step recovery, spec 2026-08-21 decision 4: assistant turns are minted
+// by CONTENT actions, so a turn whose every step was contentless had no entry
+// to carry its honest stopReason — the footer had nothing to render on and the
+// worst-case empty_response turn stayed visually silent.
+describe('TRANSCRIPT_TURN_COMPLETE — fully-silent turn (empty-step recovery)', () => {
+  function initState(sessionId = 'sess-1'): ChatState {
+    return new Map([[sessionId, createSessionChatState()]]);
+  }
+
+  it('creates a footer-only turn when turn-complete carries an abnormal stopReason and no content streamed', () => {
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'empty_response', model: 'stealth/ox-alpha', anthropicRequestId: null,
+      usage: { inputTokens: 21, outputTokens: 5 },
+    } as any);
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(1);
+    const turn = [...session.assistantTurns.values()][0];
+    expect(turn.segments).toEqual([]);
+    expect(turn.stopReason).toBe('empty_response');
+    expect(turn.model).toBe('stealth/ox-alpha');
+    expect(turn.usage).toMatchObject({ inputTokens: 21, outputTokens: 5 });
+    // The turn is on the timeline (it must render), and the turn still ENDED.
+    expect(session.timeline.some((e: any) => e.kind === 'assistant-turn' && e.turnId === turn.id)).toBe(true);
+    expect(session.currentTurnId).toBeNull();
+    expect(session.isThinking).toBe(false);
+  });
+
+  it('end_turn with no content still creates no turn', () => {
+    // Pins today's skip: normal CC/native completions with no streamed content
+    // must not grow ghost turns on the timeline.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'end_turn', model: null, anthropicRequestId: null, usage: null,
+    } as any);
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(0);
+    expect(session.timeline).toEqual([]);
+  });
+
+  it('the mint is IDEMPOTENT by uuid: a replayed turn-complete never appends a second ghost turn', () => {
+    // The watcher's re-emit contract and re-dock replay both re-deliver
+    // turn-complete relying on the reducer absorbing duplicates (readNewLines:
+    // "the reducer absorbs them"). Content actions are uuid-deduped on replay,
+    // so the replayed turn-complete arrives with currentTurnId null — without
+    // a uuid guard EVERY replay appended a fresh ghost turn + timeline row.
+    const complete = {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'empty_response', model: null, anthropicRequestId: null,
+      usage: { inputTokens: 21, outputTokens: 5 },
+    } as any;
+    let state = initState();
+    state = chatReducer(state, complete);
+    state = chatReducer(state, complete);   // replay of the same event
+    state = chatReducer(state, complete);   // and again
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(1);
+    expect(session.timeline.filter((e: any) => e.kind === 'assistant-turn')).toHaveLength(1);
+  });
+
+  it('a replayed abnormal turn-complete for a turn that HAD content re-mints nothing', () => {
+    // Live pass: text creates the turn, turn-complete 'max_tokens' stamps it.
+    // Replay into EXISTING state: the text action is uuid-deduped (no turn is
+    // re-created, currentTurnId stays null), then the same turn-complete
+    // arrives again — it must be absorbed, not minted as a segment-less ghost
+    // beside the real turn.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: 'sess-1', uuid: 'text-1',
+      timestamp: 900, text: 'partial answer',
+    } as any);
+    const complete = {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'max_tokens', model: null, anthropicRequestId: null, usage: null,
+    } as any;
+    state = chatReducer(state, complete);
+    // Re-dock replay: text drops via seenUuids, turn-complete re-delivers.
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: 'sess-1', uuid: 'text-1',
+      timestamp: 900, text: 'partial answer',
+    } as any);
+    state = chatReducer(state, complete);
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(1);   // the real turn only — no ghost
+    expect(session.timeline.filter((e: any) => e.kind === 'assistant-turn')).toHaveLength(1);
+    expect([...session.assistantTurns.values()][0].stopReason).toBe('max_tokens');
+  });
+
+  it('a minted turn is stamped with the EVENT timestamp, not the replay-time clock', () => {
+    // getOrCreateTurn defaults to Date.now(); on a re-dock replay that is the
+    // dock time, which the footer row's timestamp would then display. The mint
+    // overrides it with the event's own timestamp.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 12345,
+      stopReason: 'empty_response', model: null, anthropicRequestId: null, usage: null,
+    } as any);
+
+    const turn = [...state.get('sess-1')!.assistantTurns.values()][0];
+    expect(turn.timestamp).toBe(12345);
   });
 });

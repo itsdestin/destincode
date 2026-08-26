@@ -439,4 +439,36 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       await fs.promises.rm(otherRepo, { recursive: true, force: true });
     }
   });
+
+  // Fix (2026-07-22 bug): the porcelain parser skipped `u` (unmerged) lines,
+  // so a repo mid-merge reported its conflicted files as CLEAN — no counts,
+  // no review card. The mirror must never lie about a conflict.
+  it('fileStatus + fileReview: a mid-merge conflicted file reports conflicted, never clean', async () => {
+    sh(root, ['checkout', '-b', 'side']);
+    await fs.promises.writeFile(path.join(root, 'a.txt'), 'side\ntwo\n');
+    sh(root, ['add', '.']);
+    sh(root, ['commit', '-m', 'side change']);
+    sh(root, ['checkout', 'main']);
+    await fs.promises.writeFile(path.join(root, 'a.txt'), 'main\ntwo\n');
+    sh(root, ['add', '.']);
+    sh(root, ['commit', '-m', 'main change']);
+    // The merge conflicts and exits 1 — that mid-merge state is the fixture.
+    try { sh(root, ['merge', 'side']); } catch { /* expected: conflict */ }
+
+    const s = await gitFileStatus(root, 'a.txt');
+    expect(s.ok).toBe(true);
+    expect(s.conflicted).toBe(true);
+    // Not "clean": the worktree (conflict markers included) differs from HEAD.
+    expect(s.counts).not.toBeNull();
+    // An unmerged entry cannot be committed — it must not read as staged.
+    expect(s.staged).toBe(false);
+
+    const r = await gitFileReview(root, 'a.txt');
+    expect(r.ok).toBe(true);
+    expect(r.uncommitted?.conflicted).toBe(true);
+    // The review card shows the real conflict-marked diff, like any modified file.
+    expect(r.uncommitted?.hunks.length).toBeGreaterThan(0);
+    expect(r.uncommitted?.hunks.flatMap((h) => h.lines).some((l) => l.includes('<<<<<<<'))).toBe(true);
+    expect(r.stagedCount).toBe(0);
+  });
 });

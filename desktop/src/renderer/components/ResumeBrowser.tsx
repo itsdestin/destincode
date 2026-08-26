@@ -299,14 +299,10 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
   const [resumingId, setResumingId] = useState<string | null>(null);
   const detachAvailable = typeof (window as any).claude?.detach?.openDetached === 'function';
   // Show Complete: when off, sessions marked complete are hidden (default).
-  // Persists across opens via localStorage so Destin doesn't re-toggle each time.
-  const [showComplete, setShowComplete] = useState<boolean>(() => {
-    try { return localStorage.getItem('youcoded-resume-show-complete') === '1'; }
-    catch { return false; }
-  });
-  useEffect(() => {
-    try { localStorage.setItem('youcoded-resume-show-complete', showComplete ? '1' : '0'); } catch {}
-  }, [showComplete]);
+  // Deliberately NOT persisted — it resets to off on every open, same as the
+  // project/tag filter pills below. Destin's ruling: a browser that reopens
+  // still showing completed work hides the list he actually came for.
+  const [showComplete, setShowComplete] = useState(false);
 
   // Sessions the user flagged Complete during the current open. They stay
   // visible until the menu is closed and reopened, so the row doesn't vanish
@@ -353,6 +349,9 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
       setTagManagerOpen(false);
       // Reset the sticky-visible set each open — previously kept rows drop out.
       setStickyComplete(new Set());
+      // Show Complete resets to off each open — the component stays mounted
+      // across opens, so the useState initializer alone would never re-run.
+      setShowComplete(false);
       // Reset filter pills each open — current spec: no persistence.
       setSelectedProjects(new Set());
       setSelectedTagIds(new Set());

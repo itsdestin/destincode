@@ -21,6 +21,12 @@ export default defineConfig({
     // happy-eyeballs behavior. Hardening, not a bug fix — the dev-mode 502 was
     // caused by the proxy's hardcoded port (see remote-server.ts), not by this.
     host: '127.0.0.1',
+    // VITE_NO_WATCH=1 disables file watching. WHY: on 2026-08-25 the review rig's
+    // workbench died twice with ENOSPC — the live app plus one dev Electron
+    // instance already held ~495k of the machine's 524k inotify watches, and a
+    // watching Vite on a 12-worktree checkout needs more. A headless screenshot
+    // sweep never edits files, so it doesn't need HMR; scripts/ui-review sets this.
+    ...(process.env.VITE_NO_WATCH ? { watch: null } : {}),
   },
   base: './',
   build: {

@@ -34,6 +34,19 @@ export class ModelCatalog {
   private readonly cachePath: string;
   // Plan B: injected by ipc-handlers as () => engineManager.catalogModels().
   private readonly localModels: (() => Promise<CatalogModel[]>) | null;
+  // In-memory copy of the last cache we returned (ROADMAP 2026-08-11: every
+  // ensureFresh() re-read + re-parsed the whole catalog file from disk, twice
+  // per session start). SERVED only while its own fetchedAt is inside the TTL
+  // — a stale-but-served cache (partial refresh / total failure keep an OLD
+  // stamp on purpose) fails that check and still retries the network next
+  // call, so the retry semantics those branches were built for survive.
+  // Two accepted trade-offs (final branch review, 2026-08-22): (1) the raw
+  // upstream payloads stay resident on the main process for the TTL instead
+  // of being parsed transiently — the payload is a few MB and there is one
+  // instance app-wide; (2) deleting the cache FILE no longer forces a refetch
+  // until restart or TTL expiry, because the memo is consulted before disk.
+  // No in-app "refresh models" control depends on file deletion today.
+  private memo: CacheShape | null = null;
   constructor(cacheDir: string, private fetchImpl: FetchLike = fetch as any,
               // opts.ttlMs is TEST-ONLY (same convention as SecretsStore's
               // maxRetries) — lets the stale-fallback tests force expiry
@@ -64,8 +77,10 @@ export class ModelCatalog {
   /** Fresh-or-refetched cache. NEVER throws — a dead network degrades to the
    *  stale cache, or to an empty catalog when there is no cache at all. */
   private async ensureFresh(): Promise<CacheShape> {
+    if (this.memo && Date.now() - this.memo.fetchedAt < this.ttlMs) return this.memo;
+
     const stale = this.readCache();
-    if (stale && Date.now() - stale.fetchedAt < this.ttlMs) return stale;
+    if (stale && Date.now() - stale.fetchedAt < this.ttlMs) { this.memo = stale; return stale; }
 
     let openrouter: any | null = stale?.openrouter ?? null;
     let modelsdev: any | null = stale?.modelsdev ?? null;
@@ -106,6 +121,10 @@ export class ModelCatalog {
       fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
       fs.writeFileSync(this.cachePath, JSON.stringify(fresh));
     } catch { /* cache write is best-effort */ }
+    // Memoize unconditionally — the serve-path TTL check above is what decides
+    // whether this shape is fresh enough to reuse (a partial refresh carries an
+    // expired stamp and will be re-fetched next call regardless).
+    this.memo = fresh;
     return fresh;
   }
 
@@ -123,6 +142,31 @@ export class ModelCatalog {
       };
       if (typeof row.context_length === 'number') m.contextLength = row.context_length;
       if (Array.isArray(row.supported_parameters)) m.supportsTools = row.supported_parameters.includes('tools');
+      // Vision support: OpenRouter is a TRANSPORT (one endpoint serves vision and
+      // text-only models), so unlike the direct-key providers this is the one
+      // catalog source that can actually answer "does THIS model accept images"
+      // from data rather than a hand-maintained guess. `architecture` and its
+      // `input_modalities` array are both optional per OpenRouter's schema and
+      // rows are untrusted JSON — isObj + Array.isArray gate every access, and a
+      // missing/malformed shape leaves supportsVision unset (undefined = "don't
+      // know"), never a guessed `false` (see CatalogModel's field comment).
+      // A row without input_modalities may still carry the older single-string
+      // `architecture.modality` field (e.g. "text+image->text") — the fallback
+      // branch below reads that instead of giving up, with the same
+      // never-guess-false posture.
+      const architecture = isObj(row.architecture) ? row.architecture : null;
+      if (architecture && Array.isArray(architecture.input_modalities)) {
+        m.supportsVision = architecture.input_modalities.includes('image');
+      } else if (architecture && typeof architecture.modality === 'string' && architecture.modality.includes('->')) {
+        // Legacy OpenRouter shape, predating input_modalities: a single string
+        // like "text+image->text" ("<input>-><output>"). Only trust it when
+        // the '->' delimiter is actually present — a modality string without
+        // one gives no reliable way to isolate the input side, so that case
+        // (and a non-string modality) falls through to "don't know" below,
+        // same defensive posture as the input_modalities branch above.
+        const inputSide = architecture.modality.split('->')[0];
+        m.supportsVision = inputSide.includes('image');
+      }
       // OpenRouter pricing is USD-per-TOKEN strings; CatalogModel.pricing is
       // USD per 1M tokens, hence the *1e6. Require NON-EMPTY STRINGS before
       // Number(): Number(null) and Number('') are both 0, which would map a

@@ -30,12 +30,123 @@ The pinned version + per-platform asset table live in
   our exact flag set; `GET /health` returns 200 when ready. (Observed on b9992:
   200 with an EMPTY body — the supervisor only checks `res.ok`, never parses the
   body, so this is fine.)
-- `node probe-models.mjs --binary <path>` — `GET /models` schema; asserts the
-  router's model ids match `cache-scan.ts`'s filename-derived ids for the same
-  directory. PRINTS both lists — on mismatch, fix `ggufIdFromFileName` in
-  `cache-scan.ts` and this probe together, and update `engine-dependencies.md`.
+- `node probe-models.mjs --binary <path>` — TWO assertions. (1) `GET /models`
+  schema + id parity: the router's model ids match `cache-scan.ts`'s
+  filename-derived ids for the same directory. PRINTS both lists — on mismatch,
+  fix `ggufIdFromFileName` in `cache-scan.ts` and this probe together, and update
+  `engine-dependencies.md`. (2) **`GET /models?reload=1` picks up a GGUF added
+  AFTER boot.** The router never re-scans `--models-dir` on its own, so this
+  param is the only thing that makes a just-downloaded model usable without
+  restarting the engine — `EngineSupervisor.refreshModels()`/`ensureServable()`
+  depend on it entirely, and the unit tests mock fetch so they cannot see it
+  disappear. If (2) fails after an engine bump, local models are broken for
+  anyone who downloads one mid-session; find the replacement mechanism before
+  shipping the new engine. It also NOTEs (does not fail) if a plain `GET /models`
+  starts re-scanning, which would make our refresh redundant rather than wrong.
 - `node probe-chat.mjs --binary <path>` — streamed `/v1/chat/completions`
   round-trip: auto-load on first request, delta frames, final usage/timings.
 
 Each probe exits 0 on pass and prints the raw JSON it saw (that output is what
 goes into `engine-dependencies.md` entries).
+
+## Harness evaluator
+
+`harness-eval.mjs` answers "did this change make the assistant better or
+worse?" It runs a **case** — a task plus a rubric and a set of mechanical
+checks — across a matrix of **code version × instruction file × model**, one
+disposable fixture per cell, then grades every run twice.
+
+Use it when you change a harness tool, change an instruction file
+(`CLAUDE.md`-style guidance), or want to compare two models on the same work.
+
+Build the compiled harness code first — the script imports `dist/`, never
+`src/`, so it never runs something different from what the app ships. Use
+`build:main` (plain `tsc`), not the full `build` script — `build` also runs
+`vite build` and `electron-builder` to package the whole desktop app, which is
+slow and fails outright on a machine not set up for packaging (e.g. missing
+`rpmbuild`), even though the harness files it needs are written by `tsc` in
+the first few seconds:
+
+```
+npm run build:main
+```
+
+Then:
+
+- `node test-engine/harness-eval.mjs --plan test-engine/eval-plans/<plan>.json --dry-run`
+  — **free, no key.** Prints the expanded grid of cells and a dollar estimate,
+  spends nothing. Always start here.
+- `node test-engine/harness-eval.mjs --plan <plan>.json --key-file <path> --max-spend 5`
+  — **paid.** `--max-spend` is a hard cap, re-checked against OpenRouter's own
+  billing between cells. `--only <cellId>` runs one cell; `--repeats <n>` and
+  `--timeout <seconds>` override the plan; `--yes` skips the confirmation.
+
+**The key must arrive by file.** The script **refuses to start** if
+`OPENROUTER_API_KEY` is set in its environment, because a model running under
+it can read the parent's environment out of `/proc` — see
+`docs/harness-evaluator-internals.md`. Worker config goes over stdin, never
+argv or env.
+
+Exit codes: `0` every cell ran · `2` usage or config error · `3` stopped early
+because the spend cap was hit.
+
+A **plan** is a small JSON file (`test-engine/eval-plans/`) naming cases,
+models, optional instruction files (`test-engine/eval-guidance/`), and
+optional builds to compare. Cases live in
+`src/main/harness/eval/cases/`. Every cell gets its own disposable fixture
+workspace (a seeded project tree under `os.tmpdir()`, deleted after the run),
+byte-identical across runs, so results are comparable and no run can see
+another's leftovers.
+
+Grading is two independent halves. Mechanical checks read the event stream and
+report `passed` / `failed` / **`never ran`** — a check whose precondition never
+happened is never rendered as a pass. An LLM judge scores the written answer
+against the case's rubric, and **any grade that does not quote the answer
+verbatim is discarded**.
+
+Output lands in `docs/active/investigations/harness-eval-runs/<date>/`: a full
+event transcript and grades per cell, plus a rendered `report-<plan>.md`. The
+transcripts are git-ignored; the report is the durable record. One cell failing
+does not stop the rest.
+
+There is **no resume** — a stopped run re-pays for every finished cell.
+
+### `review-harness.mjs` (legacy)
+
+The original roster-driven battery runner, kept because it appends each model's
+free-form prose review to
+`docs/active/investigations/2026-08-01-native-agent-harness-reviews.md`, which
+the evaluator does not do. It now imports its runner logic from the evaluator's
+code, but **it still takes its key from the environment and therefore leaks it
+to the models it runs** (ROADMAP → Bugs). Prefer `harness-eval.mjs`.
+
+## conversation-triage.mjs — failure screening over past conversations (2026-08-11)
+
+Two-stage triage for the super-agent roadmap's error-analysis step
+(`docs/active/plans/2026-08-11-super-agent-roadmap.md`, step 1). Ranks stored
+sessions (native store + Claude transcript lane) by failure signals so the
+human taxonomy pass reads the right sessions first. No build step needed — it
+parses session files directly, no `dist/` import.
+
+- `node test-engine/conversation-triage.mjs scan` — **free, no key.** Deterministic
+  lexical + structural signals (apologies, user redirects/interrupts, tool errors,
+  doom-loop/max-steps gates, compaction-then-correction). Writes a ranked
+  `scan-report.md` + `scan.jsonl`.
+- `node test-engine/conversation-triage.mjs triage --top 40 --dry-run` — prints the
+  call plan and token estimate, spends nothing, needs no key.
+- `OPENROUTER_API_KEY=sk-... node test-engine/conversation-triage.mjs triage --top 40` —
+  **paid.** Sends flagged excerpt windows to a cheap model (default
+  `deepseek/deepseek-v4-flash-0731`; verify current pricing first) to classify
+  candidate failure categories as strict JSON. Capped by `--top`/`--max-calls`.
+
+Stage 2 runs two passes: per-session incident reviews (category, upstream cause,
+harness-fix idea, wasted-turn estimate, verbatim quote), then a **synthesis call**
+(`--synth-model` to use a stronger model for just that step) that consolidates
+all incidents into a draft taxonomy — definitions, counts, exemplar quotes, a
+suggested eval assertion per category, and a recommended eval-build order.
+
+Outputs land in `docs/active/investigations/conversation-triage-runs/<date>/`
+(git-ignored — reports contain conversation excerpts). The drafted taxonomy is
+built for **skim-and-veto** review: every entry carries verbatim quotes with
+session basenames so claims can be checked against the source session — same
+falsifiability discipline as the review battery above.

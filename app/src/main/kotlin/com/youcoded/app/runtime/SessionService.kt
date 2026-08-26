@@ -640,10 +640,14 @@ class SessionService : Service() {
     fun destroySession(sessionId: String) {
         // Push this session's JSONL to all backends before destroying
         // (mirrors desktop main.ts session-exit → syncService.pushSession)
+        // Capture the hook-supplied transcript path BEFORE sessionRegistry.destroySession()
+        // tears down the PTY bridge/EventBridge below — same design as desktop's
+        // watcher: no derivation can be wrong about a path CC handed us.
+        val transcriptPath = sessionRegistry.sessions.value[sessionId]?.ptyBridge?.getEventBridge()?.getTranscriptPath(sessionId)
         syncService?.let { sync ->
             serviceScope.launch {
                 try {
-                    sync.pushSession(sessionId)
+                    sync.pushSession(sessionId, transcriptPath)
                 } catch (e: Exception) {
                     android.util.Log.w("SessionService", "Session-end sync failed for $sessionId: $e")
                 }
@@ -3320,6 +3324,9 @@ class SessionService : Service() {
                 // Sets orphan=true when the backing file is missing.
                 val projectRoot = msg.payload.optString("projectRoot", "")
                 val artifactId  = msg.payload.optString("artifactId", "")
+                // full: the user tapped "Load the whole file" on the partial-view
+                // bar. Opts into a BIGGER read, not an unbounded one.
+                val wantsFullFlag = msg.payload.optBoolean("full", false)
                 if (projectRoot.isEmpty() || artifactId.isEmpty()) {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                         org.json.JSONObject().put("ok", false).put("error", "projectRoot and artifactId are required")) }
@@ -3337,8 +3344,18 @@ class SessionService : Service() {
                         org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
                     return@handleBridgeMessage
                 }
+                // A corrupt record (relative absolutePath) would resolve against the
+                // app process cwd, not the project — report it as an orphan rather
+                // than reading whatever happens to sit at that relative location.
+                val extAbs = artifact.absolutePath
+                if (artifact.kind != "internal" && (extAbs == null || !isAbsoluteRecorded(extAbs))) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", true).put("orphan", true)
+                            .put("artifact", artifact.toJson()).put("content", org.json.JSONObject.NULL)) }
+                    return@handleBridgeMessage
+                }
                 val fullPath = if (artifact.kind == "internal") java.io.File(projectRoot, artifact.path)
-                               else java.io.File(artifact.absolutePath!!)
+                               else java.io.File(extAbs!!)
                 // Resolve symlinks BEFORE any policy decision (D5 2026-07-22):
                 // canonicalize() is string work and readBytes follows links, so a
                 // link inside the root could dodge the sensitive-path deny.
@@ -3369,12 +3386,31 @@ class SessionService : Service() {
                 // Size gate BEFORE reading (spec §2.3) — a multi-MB read blocks the
                 // bridge and the WebView renderer. mtimeMs doubles as the optimistic-
                 // concurrency token round-tripped into artifacts:save.
-                if (resolved.length() > EditablePathPolicy.EDIT_MAX_BYTES) {
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject()
-                        .put("ok", true).put("artifact", artifact.toJson())
-                        .put("content", org.json.JSONObject.NULL).put("orphan", false)
-                        .put("tooLarge", true).put("sizeBytes", resolved.length())
-                        .put("mtimeMs", resolved.lastModified().toDouble())) }
+                //
+                // Above the cap we do NOT refuse blind: sniff the head first, because
+                // an over-cap IMAGE must reach the binary handoff rather than the TEXT
+                // editor's refusal (spec §4.2). Text comes back as a readable prefix.
+                // Mirrors desktop ipc-handlers.ts.
+                val wantsFull = wantsFullFlag &&
+                    resolved.length() <= EditablePathPolicy.FULL_READ_MAX_BYTES
+                if (resolved.length() > EditablePathPolicy.EDIT_MAX_BYTES && !wantsFull) {
+                    val head = ByteArray(8192)
+                    val headLen = EditablePathPolicy.readFully(resolved, head)
+                    val out = org.json.JSONObject()
+                        .put("ok", true).put("artifact", artifact.toJson()).put("orphan", false)
+                        .put("sizeBytes", resolved.length())
+                        .put("mtimeMs", resolved.lastModified().toDouble())
+                    if (EditablePathPolicy.looksBinary(head.copyOf(headLen))) {
+                        out.put("content", org.json.JSONObject.NULL)
+                           .put("binary", true).put("truncated", false)
+                    } else {
+                        val cap = EditablePathPolicy.EDIT_MAX_BYTES.toInt()
+                        val win = ByteArray(cap)
+                        val winLen = EditablePathPolicy.readFully(resolved, win)
+                        out.put("content", EditablePathPolicy.textPrefix(win, winLen, cap))
+                           .put("binary", false).put("truncated", true)
+                    }
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, out) }
                     return@handleBridgeMessage
                 }
                 val bytes = try { resolved.readBytes() } catch (_: java.io.IOException) { null }
@@ -3393,6 +3429,10 @@ class SessionService : Service() {
                     .put("content",  if (binary) org.json.JSONObject.NULL else String(bytes, Charsets.UTF_8))
                     .put("orphan",   false)
                     .put("binary",   binary)
+                    // sizeBytes and truncated ride EVERY response: the renderer
+                    // derives editability from the size, not from a separate flag.
+                    .put("truncated", false)
+                    .put("sizeBytes", resolved.length())
                     .put("mtimeMs",  resolved.lastModified().toDouble())
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
             }
@@ -3422,7 +3462,7 @@ class SessionService : Service() {
                 }
                 // 50MB gate, matching desktop READ_BINARY_MAX_BYTES — base64
                 // inflates 33% and it all transits the bridge.
-                if (resolvedBin.exists() && resolvedBin.length() > 50L * 1024 * 1024) {
+                if (resolvedBin.exists() && resolvedBin.length() > EditablePathPolicy.READ_BINARY_MAX_BYTES) {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                         org.json.JSONObject().put("ok", false).put("error", "too-large")) }
                     return@handleBridgeMessage
@@ -3464,8 +3504,18 @@ class SessionService : Service() {
                         org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
                     return@handleBridgeMessage
                 }
+                // Same corrupt-record guard as artifacts:get. Critical on the write
+                // path: a relative record would create a stray file under the app
+                // process cwd instead of refusing. Matches desktop's
+                // authorizeArtifactWrite refusal (error: 'artifact-not-found').
+                val extAbs = artifact.absolutePath
+                if (artifact.kind != "internal" && (extAbs == null || !isAbsoluteRecorded(extAbs))) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "artifact-not-found")) }
+                    return@handleBridgeMessage
+                }
                 val fullPath = if (artifact.kind == "internal") java.io.File(projectRoot, artifact.path)
-                               else java.io.File(artifact.absolutePath!!)
+                               else java.io.File(extAbs!!)
                 // D5 boundary (2026-07-22), mirroring desktop write-authorization:
                 // this branch historically wrote absolutePath!! with NO checks —
                 // the sidecar-escalation hole (spec §12.1). Resolve symlinks first,
@@ -3579,6 +3629,8 @@ class SessionService : Service() {
                         sessionId    = sessionId,
                         type         = args.optString("type", "edit"),
                         author       = args.optString("author", "agent"),
+                        // Replay-dedupe key from the tracker (see VersionEvent.toolUseId).
+                        toolUseId    = args.optString("toolUseId", "").ifEmpty { null },
                     )
                 )
                 // Broadcast push event so connected clients refresh their view
@@ -3703,6 +3755,11 @@ class SessionService : Service() {
             // not-implemented-on-mobile rather than no-op'ing.
             "native:queue-remove",
             "native:interrupt",
+            // Stalled-turn Retry. Fire-and-forget (no msg.id) exactly like
+            // native:send / native:interrupt, so this is a correct no-op here:
+            // Android hosts Claude Code sessions only and has no streaming
+            // watchdog to park.
+            "native:retry",
             // User-initiated /compact (M3 item 2). Request/response like
             // native:set-binding below — carries a msg.id, so this replies
             // not-implemented-on-mobile rather than no-op'ing. Android's native
@@ -3729,6 +3786,14 @@ class SessionService : Service() {
             "search:set-key",
             "search:remove-key",
             "search:test",
+            // Remembered "Always allow" rules (M5 2a — permissions management UI).
+            // These read/revoke the DESKTOP native harness's ~/.youcoded/permissions.json;
+            // Android has no native harness to hold those grants until M8, which is
+            // where M5's Android parity belongs. Reply not-implemented so the shared
+            // React UI degrades to a "desktop only" state instead of timing out.
+            "permissions:list",
+            "permissions:remove",
+            "permissions:remove-project",
             // Local llama.cpp engine (Plan B) — desktop-only; no Android runtime yet.
             "engine:status",
             "engine:install",

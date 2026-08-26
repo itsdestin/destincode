@@ -277,7 +277,11 @@ export default function ThinkingIndicator({ stallWarning, promptProcessing, last
   return (
     // in-view: opts the inner bg-inset bubble into wallpaper-driven bubble
     // glassmorphism (theme-engine targets `.in-view .bg-inset` descendants).
-    <div className="flex items-center gap-2 px-4 py-1.5 in-view">
+    // data-testid: the visible label is one of THINKING_LINES chosen at random,
+    // so callers that need to assert this is (or is NOT) on screen — e.g. the
+    // compaction case, where CompactingCard is the only status — have no stable
+    // text to match on.
+    <div data-testid="thinking-indicator" className="flex items-center gap-2 px-4 py-1.5 in-view">
       <div className="flex items-center gap-2 bg-inset rounded-2xl rounded-bl-sm px-4 py-2.5">
         <BrailleSpinner size="base" />
         <span className="text-sm text-fg-dim">

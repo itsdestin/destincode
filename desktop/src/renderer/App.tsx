@@ -22,8 +22,9 @@ import TerminalRightSlot from './components/TerminalRightSlot';
 import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-context';
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
-import { categorizeArtifact } from '../shared/artifacts/categorization';
-import { resolveTrackedPath } from '../shared/artifacts/resolve-tracked-path';
+import { createArtifactToolUseTracker } from './state/artifact-tool-use-tracker';
+import { createDeliverableAutoOpen } from './state/deliverable-auto-open';
+import { openFilepath } from './hooks/useOpenFilepath';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand, type DispatcherResult } from './state/slash-command-dispatcher';
@@ -41,7 +42,7 @@ import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
-import { useNativeSessionUsage } from './hooks/useNativeSessionUsage';
+import { useNativeSessionUsage, useTurnsWithUsage } from './hooks/useNativeSessionUsage';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -70,6 +71,7 @@ import { ProjectView } from './components/project-view/ProjectView';
 
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
 import type { NativePermissionMode } from '../shared/permission-types';
+import { RESUMING_NATIVE, RESUMING_CLAUDE } from '../shared/session-title';
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -96,6 +98,7 @@ import { BuddyOverlayApp } from './components/buddy/BuddyOverlayApp';
 import { EscCloseProvider, useEscStackEmpty, useDismissTop } from './hooks/use-esc-close';
 // Pure guard for the chat-focused ESC -> PTY forwarding listener below.
 import { shouldForwardEscToPty } from './state/should-forward-esc-to-pty';
+import { NARROW_VIEWPORT_QUERY } from './hooks/use-narrow-viewport';
 
 type ViewMode = 'chat' | 'terminal';
 
@@ -179,6 +182,10 @@ function AppInner() {
   // which needs to resolve cwd by sessionId).
   const sessionsRef = useRef<any[]>([]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  // The focused conversation, readable from mount-once effects (the
+  // deliverable auto-open rule needs it without re-subscribing per switch).
+  const focusedSessionIdRef = useRef<string | null>(null);
+  useEffect(() => { focusedSessionIdRef.current = sessionId; }, [sessionId]);
   // Multi-window detach state (desktop-only; remote-shim stubs these as no-ops).
   // `myWindowId` identifies this renderer's BrowserWindow so the switcher can
   // distinguish local sessions from sessions owned by peer windows. `directory`
@@ -1115,6 +1122,10 @@ function AppInner() {
             uuid: event.uuid,
             text: event.data.text,
             timestamp: event.timestamp,
+            // Host-injected turn marker (a delivered specialist report) + its
+            // structured header — MUST mirror BubbleFeed.tsx. See TimelineEntry.injected.
+            injected: event.data.injected,
+            injectedMeta: event.data.injectedMeta,
             // Forward the subagent stamp so the reducer can tell "briefing
             // written into a subagent's JSONL" apart from a real user prompt
             // and drop the former (it's already shown on the Agent card).
@@ -1176,6 +1187,18 @@ function AppInner() {
             agentId: event.data.agentId,
           });
           break;
+        case 'replay-complete':
+          // End of a transcript replay — reap cards the history left 'running'.
+          // Synthesized by the replay handler in main, never parsed from a
+          // transcript. sessionIdle false means main could not affirm the
+          // session is idle (live re-dock, or a CC session), so the reducer
+          // leaves everything alone.
+          batchTranscriptDispatch({
+            type: 'TRANSCRIPT_REPLAY_COMPLETE',
+            sessionId: event.sessionId,
+            sessionIdle: event.data?.sessionIdle === true,
+          });
+          break;
         case 'turn-complete':
           // Task 2.2: forward the full metadata payload. transcript-watcher emits these as
           // optional fields on event.data (shared/types.ts); coalesce undefined → null so
@@ -1216,12 +1239,41 @@ function AppInner() {
               partId: event.data.partId,
             });
           } else {
+            // Argument-generation progress: draw/update the preparing tool card.
+            // Dispatched IN ADDITION to the heartbeat, not instead of it — the
+            // heartbeat's promptProcessing:null is the right outcome here (prefill
+            // is over once arguments are streaming), and suppressing it would
+            // strand the previous phase's progress line on screen.
+            // MUST mirror BubbleFeed.tsx.
+            if (event.data?.toolPreparing) {
+              batchTranscriptDispatch({
+                type: 'NATIVE_TOOL_PREPARING',
+                sessionId: event.sessionId,
+                toolCallId: event.data.toolPreparing.toolCallId,
+                toolName: event.data.toolPreparing.toolName,
+                chars: event.data.toolPreparing.chars,
+                cleared: event.data.toolPreparing.cleared,
+              });
+            }
+            // Fix: erase an abandoned half-written sentence BEFORE the heartbeat
+            // below parks/clears the turn — if this ran after a retry's new text
+            // landed, it would erase the wrong (retried) content instead of the
+            // stale one. MUST mirror BubbleFeed.tsx, and must stay in this order.
+            if (event.data?.dropPart) {
+              batchTranscriptDispatch({
+                type: 'NATIVE_PARTS_DROPPED',
+                sessionId: event.sessionId,
+                partIds: event.data.dropPart.partIds,
+              });
+            }
             batchTranscriptDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
-              // Native watchdog: a stall-warning payload drives the countdown; a
-              // plain heartbeat (no payload) clears it. MUST mirror BubbleFeed.tsx.
+              // Native watchdog: a stall-warning payload drives the countdown,
+              // `stalled` parks the turn, a plain heartbeat clears both.
+              // MUST mirror BubbleFeed.tsx.
               stallWarning: event.data?.stallWarning,
+              stalled: event.data?.stalled,
               promptProcessing: event.data?.promptProcessing,
             });
           }
@@ -1474,86 +1526,48 @@ function AppInner() {
     // We resolve cwd by looking up the session in the sessions state. Because
     // the handler is registered in a useEffect that doesn't re-subscribe on
     // sessions changes, we read via sessionsRef.current to always see fresh data.
+    // The handler itself lives in state/artifact-tool-use-tracker.ts (pinned by
+    // tests/artifacts/artifact-tool-use-tracker.test.ts). It appends one version
+    // per tracked tool call and refreshes the session's drawer list ONCE per
+    // burst — see the WHY there for the 2026-08-15 out-of-memory incident.
+    const artifactTracker = createArtifactToolUseTracker({
+      getSessions: () => sessionsRef.current,
+      getSessionArtifacts: (sessionId) => artifactStateRef.current.sessionArtifacts[sessionId] ?? [],
+      appendVersion: (projectRoot, sessionId, args) =>
+        (window.claude as any).artifacts?.appendVersion?.(projectRoot, sessionId, args) ?? Promise.resolve(),
+      listSession: (sessionId, projectRoot) =>
+        (window.claude as any).artifacts?.listSession?.(sessionId, projectRoot) ?? Promise.resolve(undefined),
+      onSessionArtifacts: (sessionId, artifacts) =>
+        dispatchArtifact({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: artifacts as any }),
+    });
     const artifactToolUseHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
-      if (!event?.type || !event?.sessionId) return;
-      if (event.type !== 'tool-use') return;
-      const toolName: string = event.data?.toolName ?? '';
-      const isRead = toolName === 'Read';
-      if (!['Write', 'Edit', 'MultiEdit', 'Read'].includes(toolName)) return;
-      const targetPath: string = event.data?.toolInput?.file_path ?? event.data?.toolInput?.path ?? '';
-      if (!targetPath) return;
+      artifactTracker.handle(event);
+    });
 
-      // Reads are tracked for DOCUMENTS only (plans, notes, mockups, images) so
-      // the tool card becomes openable — code/config reads would flood the
-      // drawer and aren't what the artifact viewer is for. Writes/Edits track
-      // everything (they're genuine changes Claude made).
-      if (isRead && categorizeArtifact(targetPath) !== 'document') return;
-
-      // Resolve cwd by looking up the session — transcript events don't carry cwd.
-      const session = sessionsRef.current?.find?.((s: any) => s.id === event.sessionId);
-      const projectRoot: string = session?.cwd ?? '';
-      if (!projectRoot) return;
-
-      // Dedup reads: only the FIRST read of a doc this session appends a 'read'
-      // version. Skip if the file is already a known session artifact (already
-      // written/edited/read this session) so repeated reads don't stack version
-      // noise or bump lastModified on a real artifact. appendVersion has no
-      // dedup of its own.
-      if (isRead) {
-        const known = artifactStateRef.current.sessionArtifacts[event.sessionId] ?? [];
-        const tnorm = targetPath.replace(/\\/g, '/');
-        const already = known.some((a: any) => {
-          const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
-          const an = aPath.replace(/\\/g, '/');
-          return an === tnorm || tnorm.endsWith('/' + an) || an.endsWith('/' + tnorm);
-        });
-        if (already) return;
-      }
-
-      // Determine internal vs external. The Session Drawer shows BOTH (a
-      // session's activity log includes anything Claude touched); Project View
-      // filters externals out unless they're in manualIncludes.
-      //
-      // resolveTrackedPath also REMAPS cross-device paths: a resumed conversation
-      // replays a transcript whose absolute paths were recorded on ANOTHER device
-      // (Windows `C:\…\<project>\file` resumed on Linux). Without the remap those
-      // synced files mis-filed as external → showed "deleted" in the artifact
-      // viewer even though the file is right there under the local root.
-      const resolved = resolveTrackedPath(targetPath, projectRoot);
-
-      // Read → 'read' (viewed, not modified); Write → 'create'; Edit/MultiEdit → 'edit'.
-      const versionType: 'create' | 'edit' | 'read' =
-        isRead ? 'read' : toolName === 'Write' ? 'create' : 'edit';
-
-      const appendArgs: {
-        path: string;
-        kind: 'internal' | 'external';
-        absolutePath: string | null;
-        type: 'create' | 'edit' | 'read';
-        author: 'agent';
-      } = {
-        path: resolved.path,
-        kind: resolved.kind,
-        absolutePath: resolved.absolutePath,
-        type: versionType,
-        author: 'agent',
-      };
-      ((window.claude as any).artifacts?.appendVersion?.(projectRoot, event.sessionId, appendArgs) ?? Promise.resolve())
-        .catch((e: any) => console.error('[artifact-tracker] appendVersion failed', e))
-        .finally(() => {
-          // Then refresh the session view from the now-updated sidecar.
-          (window.claude as any).artifacts?.listSession?.(event.sessionId, projectRoot)
-            .then((res: any) => {
-              if (res && res.ok && Array.isArray(res.artifacts)) {
-                dispatchArtifact({
-                  type: 'SESSION_ARTIFACTS_LOADED',
-                  sessionId: event.sessionId,
-                  artifacts: res.artifacts,
-                });
-              }
-            })
-            .catch((e: any) => console.error('[artifact-tracker] listSession failed', e));
-        });
+    // Deliverables auto-open (spec 2026-08-25 §3): a SendUserFile result whose
+    // call asked for display:"render" opens the panel to its first file — once
+    // per reply, focused conversation only, desktop only, never for replayed
+    // history, and never over unsaved edits. Same raw event feed as the tracker.
+    const deliverableAutoOpen = createDeliverableAutoOpen({
+      getFocusedSessionId: () => focusedSessionIdRef.current,
+      canAutoOpen: () => getPlatform() === 'electron' && !window.matchMedia?.(NARROW_VIEWPORT_QUERY).matches,
+      guard: guardDirtyEditor,
+      open: (sid, path) => {
+        // drawerOpensImmediately: false — nobody clicked this. Opening the
+        // panel before the lookup resolves just shows an empty/list-only
+        // viewer for however long resolution takes (measured ~4s on a large
+        // workspace); deferred mode reveals the panel already showing the
+        // file, or stays silent entirely on a miss.
+        void openFilepath(
+          { state: artifactStateRef.current, dispatch: dispatchArtifact },
+          sid,
+          path,
+          { drawerOpensImmediately: false }
+        );
+      },
+    });
+    const deliverableAutoOpenHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
+      deliverableAutoOpen.handle(event);
     });
 
     // NOTE: the artifacts:changed push event is consumed directly by
@@ -1581,6 +1595,9 @@ function AppInner() {
       if (sessionPermissionModeHandler) window.claude.off('session:permission-mode', sessionPermissionModeHandler);
       if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
       if (artifactToolUseHandler) window.claude.off('transcript:event', artifactToolUseHandler);
+      artifactTracker.dispose();
+      if (deliverableAutoOpenHandler) window.claude.off('transcript:event', deliverableAutoOpenHandler);
+      deliverableAutoOpen.dispose();
     };
   }, [dispatch]);
 
@@ -2355,7 +2372,10 @@ function AppInner() {
     }
     if (provider === 'native') {
       const nativeSession = await (window.claude.session.create as any)({
-        name: 'Resuming…',
+        // WHY the constant: main's title feeder must be able to RECOGNIZE this
+        // as a placeholder (shared/session-title.ts). A bare literal here is
+        // what let it pass as a real title and block auto-titling on resume.
+        name: RESUMING_NATIVE,
         cwd,
         skipPermissions: false, // native sessions have no PTY permission flow
         provider: 'native',
@@ -2393,7 +2413,7 @@ function AppInner() {
 
     // Pass --resume flag so Claude Code boots directly into the resumed session
     const newSession = await (window.claude.session.create as any)({
-      name: 'Resuming...',
+      name: RESUMING_CLAUDE, // see RESUMING_NATIVE above — different spelling, same contract
       cwd,
       skipPermissions: resumeDangerous || false,
       resumeSessionId: claudeSessionId,
@@ -2550,6 +2570,9 @@ function AppInner() {
   // the memo no longer compiles and a ref would never re-render the chips. It is
   // re-expressed here as a cached store selector, mirroring useActiveSessionModel.
   const nativeStatusUsage = useNativeSessionUsage(isNativeSession ? sessionId : null);
+  // NOT gated on isNativeSession — CC turns carry usage too (the transcript
+  // watcher stamps it), and the reuse chip serves both runtimes.
+  const turnsWithUsage = useTurnsWithUsage(sessionId);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -2827,6 +2850,11 @@ function AppInner() {
                     <ChatView
                       sessionId={s.id}
                       visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
+                      // Drives content-visibility so INACTIVE sessions leave the
+                      // layout tree entirely — see ChatView's root style block.
+                      // Deliberately not folded into `visible`: the two hide
+                      // different things for different reasons.
+                      sessionActive={s.id === sessionId}
                       resumeInfo={resumeInfo}
                       provider={s.provider}
                       cwd={s.cwd}
@@ -3001,6 +3029,7 @@ function AppInner() {
                   onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}
                   nativeUsage={nativeStatusUsage}
                   nativeContextLength={nativeStatusUsage?.contextLength ?? null}
+                  turnsWithUsage={turnsWithUsage}
                 />
               </div>
           </>
@@ -3514,6 +3543,8 @@ function AppInner() {
           z-[8000]: sits below the SessionStrip dropdown (9000) but above all
           L1–L4 overlays, the same tier used by similar full-screen views. */}
       <ProjectView
+        // Project view homes to the focused conversation's folder on every open.
+        activeSessionCwd={currentSession?.cwd}
         onNewConversation={(cwd) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); createSession(cwd, false); }}
         onResumeConversation={(sid, slug, path, provider) => { dispatchArtifact({ type: 'PROJECT_VIEW_CLOSED' }); handleResumeSession(sid, slug, path, undefined, undefined, undefined, provider); }}
       />

@@ -18,6 +18,10 @@ export interface KnownModelEntry {
   supportsParallelToolCalls?: boolean;
   supportsTools?: boolean;               // verified in a later task
   maxContextWindow?: number;             // documented trained max (sanity ceiling; discovery wins)
+  /** Can this model accept image input? Overrides the provider default both ways,
+   *  which is the point: OpenRouter serves vision and text-only models from one
+   *  endpoint, so the transport cannot answer this and the modelId must. */
+  supportsVision?: boolean;
 }
 
 // Seed entries — behavioral tuning only; a later task verifies/fills the factual fields.

@@ -17,7 +17,8 @@ import { useProjectWatch } from '../../../hooks/useProjectWatch';
 import { dedupeContentHits, groupContentHits, capGroups, MAX_CONTENT_ROWS, type RankableHit } from '../../../utils/content-search-ranking';
 import type { CentralIndexProject, ArtifactRecord } from '../../../../shared/artifacts/types';
 import { ActiveArtifactView } from '../../artifact-views/ActiveArtifactView';
-import type { ActiveArtifactHandle, ArtifactContentInfo } from '../../artifact-views/ActiveArtifactView';
+import type { ActiveArtifactHandle } from '../../artifact-views/ActiveArtifactView';
+import { useArtifactContent } from '../../artifact-views/useArtifactContent';
 import { useUnsavedGuard } from '../../artifact-views/UnsavedChangesDialog';
 import { ArtifactThumbnail } from '../../ArtifactThumbnail';
 import { fileTypeGroup, fileTypeLabel } from '../../../../shared/artifacts/categorization';
@@ -524,7 +525,7 @@ export function FilesTab({
                 </div>
               )}
               {searching && !noSearchResults && (
-                <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-faint mb-0.5 px-0.5">
+                <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-muted mb-0.5 px-0.5">
                   Matches by file name ({flatResults.length})
                 </div>
               )}
@@ -537,7 +538,7 @@ export function FilesTab({
                 const capped = contentTruncated || displayCapped;
                 return (
                   <div className="col-span-full min-w-0">
-                    <div className="text-[10.5px] uppercase tracking-wider text-fg-faint mt-2 mb-1.5 px-0.5">
+                    <div className="text-[10.5px] uppercase tracking-wider text-fg-muted mt-2 mb-1.5 px-0.5">
                       Matches by file contents ({shownRows}{capped ? '+' : ''})
                     </div>
                     <div className="flex flex-col gap-2">
@@ -556,7 +557,7 @@ export function FilesTab({
                             >
                               <ChevronIcon className="w-3 h-3 shrink-0" expanded={expanded} />
                               <span className="text-xs font-mono font-medium text-fg-2 shrink-0">{filename}</span>
-                              {dir && <span className="text-2xs font-mono text-fg-faint truncate min-w-0">{dir}</span>}
+                              {dir && <span className="text-2xs font-mono text-fg-muted truncate min-w-0">{dir}</span>}
                               <span className="text-2xs text-fg-muted shrink-0 ml-auto">
                                 {group.hits.length} {group.hits.length === 1 ? 'match' : 'matches'}
                               </span>
@@ -710,15 +711,17 @@ interface DetailProps {
 
 function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed }: DetailProps) {
   const { dispatch } = useArtifact();
-  const [content, setContent] = useState<string | null>(null);
+  // Read lifecycle (fetch + loading/missing/error phases) — shared hook, same
+  // as SessionDrawer, so a slow read shows a placeholder instead of flashing
+  // "This file is no longer on disk."
+  const { content, setContent, contentInfo, contentState, retryRead, applyDiskRead } =
+    useArtifactContent(project.path, artifact.id, artifact.path);
   // Drive the viewer's edit lifecycle from the overlay header (controlsInHeader).
   // ActiveArtifactView still owns the edit/save/conflict logic; we only call into
   // it and mirror its edit state so the header can swap Edit ↔ Save/Cancel.
   const viewRef = useRef<ActiveArtifactHandle>(null);
   const [editState, setEditState] = useState({ isEditable: false, editing: false });
   const [copied, setCopied] = useState(false);
-  // get() metadata: binary sniff (code-view routing) + tooLarge notice.
-  const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
 
   const filename = artifact.path.split('/').pop() ?? artifact.path;
   const absPath = artifactAbsPath(project.path, artifact);
@@ -728,21 +731,6 @@ function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed 
   const { guard: guardUnsaved, dialog: unsavedDialog } = useUnsavedGuard(viewRef, filename);
   const handleClose = () => guardUnsaved(() =>
     dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId: PV_SESSION }));
-
-  // Load file content whenever the selected artifact changes.
-  useEffect(() => {
-    let cancelled = false;
-    setContent(null);
-    setContentInfo(null);
-    (window.claude as any).artifacts.get(project.path, artifact.id).then((res: any) => {
-      if (cancelled) return;
-      if (res && res.ok) {
-        setContent(res.content ?? null);
-        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
-      }
-    });
-    return () => { cancelled = true; };
-  }, [artifact.id, project.path]);
 
   // Search jump-to-hit: fire once, only after content resolved (the editor
   // mounts then; revealLine itself retries across the lazy-chunk window).
@@ -835,11 +823,14 @@ function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed 
           artifact={artifact}
           content={content}
           contentInfo={contentInfo}
+          contentState={contentState}
+          onRetryRead={retryRead}
           projectRoot={project.path}
           projectId={project.id}
           projectName={project.name}
           sessionId="project-view"
           onContentChange={setContent}
+          onDiskRead={applyDiskRead}
           controlsInHeader
           onEditStateChange={setEditState}
         />

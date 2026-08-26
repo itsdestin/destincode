@@ -17,7 +17,7 @@ const val INDEX_SCHEMA_VERSION   = 1
 typealias ArtifactKind   = String  // "internal" | "external"
 typealias ArtifactStatus = String  // "active" | "deleted"
 typealias VersionAuthor  = String  // "agent" | "user"
-typealias VersionType    = String  // "create" | "edit" | "delete" | "read"
+typealias VersionType    = String  // "create" | "edit" | "delete" | "read" | "delivered"
 
 // ── Data classes ─────────────────────────────────────────────────────────────
 
@@ -27,6 +27,14 @@ data class VersionEvent(
     val sessionId: String,
     val type:      VersionType,
     val author:    VersionAuthor,
+    // Mirror of types.ts VersionEvent.toolUseId (2026-08-15): the transcript
+    // tool_use id behind this version, optional and additive. appendVersion
+    // dedupes on (sessionId, toolUseId) so re-opening a conversation — which
+    // replays every tool call through the tracker — no longer appends the same
+    // edits again. Android runs the same React tracker against its own
+    // per-device sidecar, so it needs the same key, round-tripped through
+    // toJson/toVersionEvent (org.json marshalling drops unknown fields).
+    val toolUseId: String? = null,
 )
 
 data class ArtifactRecord(
@@ -87,6 +95,9 @@ fun VersionEvent.toJson(): JSONObject = JSONObject().apply {
     put("sessionId", sessionId)
     put("type",      type)
     put("author",    author)
+    // Omitted when absent (not written as null) so records that never had one
+    // stay byte-identical to what desktop writes.
+    if (toolUseId != null) put("toolUseId", toolUseId)
 }
 
 fun JSONObject.toVersionEvent() = VersionEvent(
@@ -95,6 +106,7 @@ fun JSONObject.toVersionEvent() = VersionEvent(
     sessionId = getString("sessionId"),
     type      = getString("type"),
     author    = getString("author"),
+    toolUseId = if (has("toolUseId") && !isNull("toolUseId")) getString("toolUseId") else null,
 )
 
 // ArtifactRecord ↔ JSONObject

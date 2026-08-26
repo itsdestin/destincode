@@ -29,4 +29,23 @@ describe('pruneToolOutputs', () => {
   it('never truncates a non-tool message', () => {
     expect((pruneToolOutputs([userMsg('u'.repeat(40_000))], cfg)[0] as any).content).toBe('u'.repeat(40_000));
   });
+
+  it('prunes an image content-output outside the protected window down to its text + a named note', () => {
+    const imageMsg = { role: 'tool', content: [{ type: 'tool-result', toolCallId: 't1', toolName: 'Read', output: { type: 'content', value: [{ type: 'text', text: 'Read image shot.png' }, { type: 'file', mediaType: 'image/png', data: { type: 'data', data: Buffer.alloc(500_000) } }] } }] } as any;
+    const filler = { role: 'user', content: 'x'.repeat(8_000) } as any;   // pushes imageMsg outside protectedTokens
+    const out = pruneToolOutputs([imageMsg, filler], { contextLength: 32_768, triggerRatio: 0.8, protectedTokens: 1_000, minPruneSavings: 100, pruneToChars: 4_000 });
+    const output = (out[0] as any).content[0].output;
+    expect(output.type).toBe('text');
+    expect(output.value).toContain('Read image shot.png');
+    expect(output.value).toContain('[image pruned');
+    expect(JSON.stringify(out[0])).not.toContain('"data"');
+  });
+
+  it('leaves an image content-output INSIDE the protected window untouched', () => {
+    // Same shape as the prune case above, but nothing pushes it out of the
+    // protected window — the image must survive byte-for-byte.
+    const imageMsg = { role: 'tool', content: [{ type: 'tool-result', toolCallId: 't1', toolName: 'Read', output: { type: 'content', value: [{ type: 'text', text: 'Read image shot.png' }, { type: 'file', mediaType: 'image/png', data: { type: 'data', data: Buffer.alloc(500) } }] } }] } as any;
+    const out = pruneToolOutputs([imageMsg], { contextLength: 32_768, triggerRatio: 0.8, protectedTokens: 100_000, minPruneSavings: 100, pruneToChars: 4_000 });
+    expect((out[0] as any).content[0].output.type).toBe('content');
+  });
 });

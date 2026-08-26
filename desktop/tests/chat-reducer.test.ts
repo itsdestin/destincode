@@ -244,6 +244,34 @@ describe('PERMISSION_REQUEST tool matching', () => {
     expect(session.toolCalls.get('tool-a')!.status).toBe('running');
   });
 
+  it('carries permissionMode onto the tool entry, on the matched AND synthetic paths', () => {
+    // Matched-running-tool path.
+    state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'git push origin master' }));
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'git push origin master' },
+      requestId: 'req-fa',
+      denyListed: true,
+      permissionMode: 'full-auto',
+    });
+    expect(state.get(SESSION)!.toolCalls.get('tool-a')!.permissionMode).toBe('full-auto');
+
+    // Permission-before-transcript synthetic path (no running tool to match).
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST',
+      sessionId: SESSION,
+      toolName: 'Bash',
+      input: { command: 'sudo ls' },
+      requestId: 'req-syn',
+      denyListed: true,
+      permissionMode: 'full-auto',
+    });
+    const syn = [...state.get(SESSION)!.toolCalls.values()].find((t) => t.requestId === 'req-syn')!;
+    expect(syn.permissionMode).toBe('full-auto');
+  });
+
   it('matches input regardless of key order', () => {
     state = dispatch(state, toolUse('tool-a', 'Write', { file_path: '/x', content: 'one' }));
     state = dispatch(state, toolUse('tool-b', 'Write', { content: 'two', file_path: '/y' }));
@@ -280,6 +308,92 @@ describe('PERMISSION_REQUEST tool matching', () => {
       (id) => session.toolCalls.get(id)!.status === 'awaiting-approval',
     );
     expect(awaiting).toEqual(['tool-a']);
+  });
+
+  // 2026-08-16: main now RE-ANNOUNCES every still-pending ask on a heartbeat so
+  // a card that never rendered (or that a later event overwrote) heals itself
+  // instead of hanging the turn forever. That makes PERMISSION_REQUEST a
+  // REPEATABLE action — these four pin what a repeat must and must not do.
+  describe('re-delivered by the heartbeat', () => {
+    it('is a no-op — identical state object — when the card is already awaiting approval', () => {
+      state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'ls' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      const settled = state;
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      // Reference equality, not deep equality: a fresh object every 3s would
+      // re-render the whole timeline for nothing.
+      expect(state).toBe(settled);
+    });
+
+    it('never binds a SECOND card when another same-name tool is running', () => {
+      // The hazard the heartbeat introduces: tier-2 matches by NAME only, so a
+      // repeat could hand the same requestId to an unrelated running card and
+      // put Allow/Deny buttons on two cards for one ask.
+      state = dispatch(state, toolUse('tool-a', 'Bash', { command: 'ls' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+      state = dispatch(state, toolUse('tool-b', 'Bash', { command: 'pwd' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Bash', input: { command: 'ls' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      const awaiting = [...session.toolCalls.values()].filter((t) => t.status === 'awaiting-approval');
+      expect(awaiting).toHaveLength(1);
+      expect(session.toolCalls.get('tool-a')!.status).toBe('awaiting-approval');
+      expect(session.toolCalls.get('tool-b')!.status).toBe('running');
+    });
+
+    it('RE-BINDS a card whose ask was wiped — the whole point of the heartbeat', () => {
+      // Reproduces the shipped stuck-turn shape: the card held the ask, then a
+      // later event overwrote it back to plain 'running' with no requestId, so
+      // no buttons rendered while main was still waiting. The next heartbeat
+      // must put the ask back rather than mint a duplicate.
+      state = dispatch(state, toolUse('tool-a', 'Read', { file_path: '/x' }));
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+      const session0 = state.get(SESSION)!;
+      const wiped = new Map(session0.toolCalls);
+      wiped.set('tool-a', { ...wiped.get('tool-a')!, status: 'running', requestId: undefined });
+      state = new Map(state).set(SESSION, { ...session0, toolCalls: wiped });
+
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      expect(session.toolCalls.get('tool-a')!.status).toBe('awaiting-approval');
+      expect(session.toolCalls.get('tool-a')!.requestId).toBe('req-hb');
+      expect([...session.toolCalls.values()].filter((t) => t.requestId === 'req-hb')).toHaveLength(1);
+    });
+
+    it('re-creates the card entirely when it was lost (transcript replay / re-dock)', () => {
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+      const session0 = state.get(SESSION)!;
+      // Replay rebuilt the timeline from the JSONL, which has no record of a
+      // pending ask — the card is simply gone (ROADMAP bug, 2026-08-16).
+      state = new Map(state).set(SESSION, { ...session0, toolCalls: new Map(), activeTurnToolIds: new Set() });
+
+      state = dispatch(state, {
+        type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Read', input: { file_path: '/x' }, requestId: 'req-hb',
+      });
+
+      const session = state.get(SESSION)!;
+      const card = session.toolCalls.get('perm-req-hb');
+      expect(card?.status).toBe('awaiting-approval');
+      // Load-bearing: ChatView renders awaiting cards from activeTurnToolIds,
+      // and AssistantTurnBubble deliberately skips them — an awaiting card
+      // outside that Set renders NOWHERE.
+      expect(session.activeTurnToolIds.has('perm-req-hb')).toBe(true);
+    });
   });
 
   it('still creates a synthetic entry when no running tool exists', () => {
@@ -330,10 +444,164 @@ describe('PERMISSION_REQUEST tool matching', () => {
 // PERMISSION_RESPONDED → synthetic budget gates (max_steps / doom_loop)
 // Regression: a budget gate is a synthetic ask with no real tool execution, so
 // no TRANSCRIPT_TOOL_RESULT ever closes its card. If the card stays 'running'
-// after the response, a same-turn re-trip of the gate reuses it via the tier-3
-// "first running tool of any name" fallback, and endTurn() force-fails it
-// 'Turn ended' on a normal finish. The card must close 'complete' on response.
+// after the response, endTurn() force-fails it 'Turn ended' on a normal finish.
+// The card must close 'complete' on response. (The tier-3 "first running tool of
+
 // ---------------------------------------------------------------------------
+// Preparing card × permission ask ordering (2026-08-16, Destin's Specialists 1b
+// Test 1 hang). Main emits tool-use THEN the ask; the renderer batches
+// transcript events into an animation frame but dispatches hook events at once,
+// so the reducer sees NATIVE_TOOL_PREPARING → PERMISSION_REQUEST →
+// TRANSCRIPT_TOOL_USE. The ask binds to the preparing card (status 'running');
+// the late tool-use used to overwrite that entry wholesale — status back to
+// 'running', requestId gone — so the Allow/Deny buttons never rendered and the
+// turn hung on an ask nobody could answer.
+// ---------------------------------------------------------------------------
+describe('TRANSCRIPT_TOOL_USE landing on a preparing card that already holds an ask', () => {
+  it('keeps awaiting-approval + requestId (and the ask metadata) when the real tool-use supersedes the preparing card', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'NATIVE_TOOL_PREPARING', sessionId: SESSION, toolCallId: 'call-1', toolName: 'Task', chars: 120,
+    });
+    state = dispatch(state, {
+      type: 'PERMISSION_REQUEST', sessionId: SESSION, toolName: 'Task',
+      input: { agent: 'explorer', prompt: 'find config', work_dir: '/p', description: 'd' },
+      requestId: 'req-prep', denyListed: false, external: false, permissionMode: 'ask',
+    });
+    // Sanity: the ask bound to the preparing card.
+    expect(state.get(SESSION)!.toolCalls.get('call-1')!.status).toBe('awaiting-approval');
+
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'uuid-call-1', toolUseId: 'call-1', toolName: 'Task',
+      toolInput: { agent: 'explorer', prompt: 'find config', work_dir: '/p', description: 'd' }, timestamp: 1000,
+    } as ChatAction);
+
+    const tool = state.get(SESSION)!.toolCalls.get('call-1')!;
+    expect(tool.status).toBe('awaiting-approval');
+    expect(tool.requestId).toBe('req-prep');
+    expect(tool.permissionMode).toBe('ask');
+    expect(tool.preparing).toBeFalsy();
+    expect(tool.input).toEqual({ agent: 'explorer', prompt: 'find config', work_dir: '/p', description: 'd' });
+    // Still exactly one card — superseded in place, never duplicated.
+    expect([...state.get(SESSION)!.toolCalls.keys()].filter((k) => k === 'call-1' || k.startsWith('perm-'))).toEqual(['call-1']);
+  });
+
+  it('a preparing card with NO ask still becomes a plain running tool (unchanged path)', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'NATIVE_TOOL_PREPARING', sessionId: SESSION, toolCallId: 'call-2', toolName: 'Bash', chars: 10,
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_TOOL_USE', sessionId: SESSION, uuid: 'uuid-call-2', toolUseId: 'call-2', toolName: 'Bash',
+      toolInput: { command: 'ls' }, timestamp: 1000,
+    } as ChatAction);
+    const tool = state.get(SESSION)!.toolCalls.get('call-2')!;
+    expect(tool.status).toBe('running');
+    expect(tool.requestId).toBeUndefined();
+    expect(tool.preparing).toBeFalsy();
+  });
+});
+
+// any name" fallback this also used to cite was deleted 2026-08-09.)
+// ---------------------------------------------------------------------------
+// 2026-08-16: a host-injected user-role turn (a delivered specialist report,
+// TranscriptEvent.data.injected = 'specialist-report') must carry its marker
+// onto the timeline entry so ChatView/BubbleFeed can draw it as a system
+// notice rather than the user's own bubble.
+describe('TRANSCRIPT_USER_MESSAGE carries the host-injected marker', () => {
+  it('stamps `injected` on the appended entry, and leaves a real user message unmarked', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-inj', timestamp: 1000,
+      text: '[Background specialist finished] Vega completed the task.', injected: 'specialist-report',
+      injectedMeta: { childId: 'c1', title: 'Vega', agentType: 'researcher', status: 'completed', steps: 3 },
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-real', timestamp: 2000, text: 'thanks',
+    });
+    const entries = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as Extract<import('../src/renderer/state/chat-types').TimelineEntry, { kind: 'user' }>[];
+    expect(entries).toHaveLength(2);
+    expect(entries[0].injected).toBe('specialist-report');
+    expect(entries[0].injectedMeta).toEqual({ childId: 'c1', title: 'Vega', agentType: 'researcher', status: 'completed', steps: 3 });
+    expect(entries[0].message.content).toContain('[Background specialist finished]');
+    expect(entries[1].injected).toBeUndefined();
+  });
+});
+
+describe('TRANSCRIPT_USER_MESSAGE suppresses the redundant /compact bubble', () => {
+  // CC writes a bare `/compact` user line into the JSONL on BOTH the typed path
+  // and the resume-from-summary path. CompactingCard is the intended feedback
+  // for that event, so the bubble is pure duplication — but everything else the
+  // event drives (turn state, uuid dedup) must still happen.
+  it('drops the bubble for /compact but still starts the turn', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-compact', timestamp: 1000,
+      text: '/compact',
+    });
+    const session = state.get(SESSION)!;
+    expect(session.timeline.filter((e) => e.kind === 'user')).toHaveLength(0);
+    expect(session.isThinking).toBe(true);
+    expect(session.seenUuids.has('u-compact')).toBe(true);
+  });
+
+  it('drops it with focus instructions too', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-c2', timestamp: 1000,
+      text: '/compact focus on the auth work',
+    });
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(0);
+  });
+
+  it('keeps a real message that merely mentions /compact', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-real', timestamp: 1000,
+      text: 'why did /compact take so long?',
+    });
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'user')).toHaveLength(1);
+  });
+
+  // The suppression MUST sit below the confirm arm. The `\/compact` escape
+  // hatch is passthrough text, so InputBar does dispatch an optimistic bubble
+  // for it; dropping its confirmation would leave `pending` set forever and
+  // useSubmitConfirmation would fire a stray recovery keystroke.
+  it('still confirms an optimistic /compact bubble instead of stranding it pending', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'USER_PROMPT', sessionId: SESSION, content: '/compact', timestamp: 1000,
+    });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: SESSION, uuid: 'u-esc', timestamp: 1001,
+      text: '/compact',
+    });
+    const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users).toHaveLength(1);
+    expect(users[0].pending).toBe(false);
+  });
+
+  // Reload/resume replays CC's JSONL through loadHistory, which has no filter
+  // for this (it only gates on isMeta/promptId/non-empty). Without the same
+  // rule here, every bubble the live fix removed grows back on reload.
+  it('drops the echo from replayed history too', () => {
+    let state = initState();
+    state = dispatch(state, {
+      type: 'HISTORY_LOADED', sessionId: SESSION, hasMore: false,
+      messages: [
+        { role: 'user', content: 'first question', timestamp: 1 },
+        { role: 'user', content: '/compact', timestamp: 2 },
+        { role: 'assistant', content: 'an answer', timestamp: 3 },
+        { role: 'user', content: 'second question', timestamp: 4 },
+      ],
+    });
+    const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users.map((e) => e.message.content)).toEqual(['first question', 'second question']);
+    // The assistant turn either side of it must survive untouched.
+    expect(state.get(SESSION)!.timeline.filter((e) => e.kind === 'assistant-turn')).toHaveLength(1);
+  });
+});
+
 describe('PERMISSION_RESPONDED budget gates', () => {
   let state: ChatState;
 

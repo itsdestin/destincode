@@ -201,12 +201,6 @@ class EventBridge(private val socketName: String) {
         }
     }
 
-    /** Close a held socket without sending a response (cross-path cleanup). */
-    fun closeSocket(requestId: String) {
-        val socket = pendingSockets.remove(requestId) ?: return
-        try { socket.close() } catch (_: Exception) {}
-    }
-
     /**
      * True while any PermissionRequest socket is held open. In that window
      * Claude Code's TUI is showing a live Ink select menu (permission prompt /

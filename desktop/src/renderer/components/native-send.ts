@@ -49,7 +49,11 @@ export function sendChatMessage(
 ): Promise<NativeSendResult> | void {
   if (provider === 'native') {
     const text = [...filePaths, ptyText].filter(Boolean).join(' ');
-    return window.claude.native.send(sessionId, text);
+    // The paths stay IN the text (dedup invariant above) and are ALSO passed as
+    // attachments, so a vision-capable model receives the actual pixels instead
+    // of only a path it would have to Read. Main filters to image types and
+    // drops them entirely when the bound model can't see images.
+    return window.claude.native.send(sessionId, text, filePaths);
   }
   // Claude/PTY path — for file-bearing sends InputBar keeps its own
   // FILE_GAP_MS scheduling + echo-driven `\r` submit; this helper only owns the

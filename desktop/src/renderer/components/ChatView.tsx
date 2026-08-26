@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
-import { HISTORY_EXPAND_PROMPT_ID } from '../state/chat-types';
+import { HISTORY_EXPAND_PROMPT_ID, shouldRenderAssistantTurn } from '../state/chat-types';
 import UserMessage from './UserMessage';
+import SpecialistReportCard from './SpecialistReportCard';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import AssistantTurnBubble from './AssistantTurnBubble';
 import ToolCard from './ToolCard';
@@ -29,6 +30,12 @@ import { useStickToBottom } from '../hooks/use-stick-to-bottom';
 interface Props {
   sessionId: string;
   visible: boolean;
+  /** True when this is the ACTIVE session, regardless of whether the user is
+   *  currently on its chat or terminal tab. Distinct from `visible`, which is
+   *  false for the active session's chat while its terminal is showing — see
+   *  the root element's style block for why the two axes are hidden
+   *  differently. */
+  sessionActive: boolean;
   resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
   /** Working directory of the session — used to resolve the active project for the artifact drawer. */
   cwd?: string;
@@ -97,7 +104,7 @@ function HistoryExpandButton({ sessionId, resumeInfo }: {
   );
 }
 
-export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
+export default function ChatView({ sessionId, visible, sessionActive, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -678,6 +685,26 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
         visibility: visible ? 'visible' : 'hidden',
         opacity: visible ? 1 : 0,
         pointerEvents: visible ? 'auto' : 'none',
+        // Fix (window-resize jank): App renders a ChatView for EVERY open
+        // session, and visibility:hidden does NOT remove an element from
+        // layout — so every resize tick re-wrapped every open conversation,
+        // not just the one on screen. With 6 sessions of real content that
+        // measured 117ms per resize step (13 long tasks), which reads as the
+        // window content freezing and then snapping to the new size.
+        //
+        // content-visibility:hidden skips layout of the subtree like
+        // display:none, but preserves rendering state so re-showing is cheap.
+        // Measured on the same 6-pane fixture: resize 117ms → 43ms per step
+        // with zero long tasks, and session switching got FASTER than the
+        // visibility-only behaviour it replaces (5.3ms → 0.5ms median;
+        // display:none would have cost 25.3ms). Scroll position survives.
+        //
+        // Keyed on sessionActive, NOT visible: the chat↔terminal toggle within
+        // the active session must stay on the visibility path above, because
+        // that toggle is frequent and is exactly what the original fix
+        // addressed. Switching SESSIONS is deliberate and infrequent, so
+        // paying a skipped-subtree re-render there is the right trade.
+        contentVisibility: sessionActive ? 'visible' : 'hidden',
       }}
     >
       {/* framed-shell: horizontal flex row holding the chat pane + optional
@@ -741,7 +768,19 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
               switch (entry.kind) {
                 case 'user':
                   key = entry.message.id;
-                  content = (
+                  // A host-injected user-role turn (a delivered specialist
+                  // report) is an EVENT for the assistant, not anyone's words —
+                  // a compact collapsed card, see SpecialistReportCard. MUST
+                  // mirror BubbleFeed.tsx.
+                  content = entry.injected ? (
+                    <SpecialistReportCard
+                      message={entry.message}
+                      injected={entry.injected}
+                      meta={entry.injectedMeta}
+                      sessionId={sessionId}
+                      showTimestamps={showTimestamps}
+                    />
+                  ) : (
                     <UserMessage
                       message={entry.message}
                       sessionId={sessionId}
@@ -751,7 +790,10 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
-                  if (!turn || turn.segments.length === 0) return null;
+                  // Shared gate (chat-types.ts): a segment-less turn renders
+                  // only when its abnormal stopReason gives the footer row
+                  // something to say — the empty_response fix.
+                  if (!shouldRenderAssistantTurn(turn)) return null;
                   key = entry.turnId;
                   content = (
                     <AssistantTurnBubble
@@ -873,14 +915,35 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                 gated on the thinking area. */}
             {(() => {
               const thinkingArea = state.isThinking && !hasAwaitingApproval && !hasRunningTools;
+              // 'stalled' joins the terminal states in this gate — NOT because
+              // it is terminal (the turn is alive), but because it must render
+              // even when a preparing tool card is up. A stall while the model
+              // is writing tool arguments leaves a card with status 'running',
+              // which turns thinkingArea false; without this the red card would
+              // be invisible in precisely the mid-tool stall this design exists
+              // for (2026-08-12 incident).
               const terminalAttention =
-                state.attentionState === 'error' || state.attentionState === 'session-died';
+                state.attentionState === 'error'
+                || state.attentionState === 'session-died'
+                || state.attentionState === 'stalled';
               // Native local-model: while the model isn't resident yet (cold load
               // / waking from sleep), the turn is waiting on the ENGINE, not the
               // model thinking — show a static "Loading…" instead of the animated
               // spinner until it begins processing. (2026-07-14)
               const modelNotResident = state.modelState != null && state.modelState !== 'loaded';
               if (thinkingArea && state.attentionState === 'ok') {
+                // While compaction runs, CompactingCard is already on screen
+                // with its own pulse + elapsed counter, so the generic spinner
+                // stacked a second "working" signal underneath it — and its
+                // rotating copy ("Connecting dots") describes the model
+                // thinking, which is not what a summarize step is doing. One
+                // status per event. (Destin, 2026-08-16)
+                //
+                // Gated HERE and not on `thinkingArea`: that flag also gates
+                // the 'stuck' AttentionBanner below, so folding it in there
+                // silently swallowed the one message saying something is wrong
+                // during exactly the long operation most likely to hang.
+                if (state.compactionPending) return null;
                 return modelNotResident
                   ? (
                     <div className="flex items-center gap-2 px-4 py-1.5 in-view">
@@ -897,12 +960,22 @@ export default function ChatView({ sessionId, visible, resumeInfo, cwd, gamePane
                     state={state.attentionState}
                     anthropicRequestId={lastTurnRequestId}
                     errorMessage={state.errorMessage}
+                    stalledSince={state.stalledSince}
                     // Provider-config errors (missing/disabled key) show an
                     // "Open Settings" button that deep-links to Model Providers.
                     onOpenProviderSettings={onOpenProviderSettings}
-                    // TODO(Task 12): wire onRetry to the provider-aware native
-                    // send helper (native-send.ts) to re-send the last user
-                    // message. Left unwired here so no "Try again" button shows yet.
+                    // Stalled card only. Retry re-runs the PARKED STEP — it is
+                    // deliberately NOT the native-send helper the old TODO here
+                    // pointed at, which sends a new user message and would fork
+                    // the conversation mid-turn.
+                    onRetry={state.attentionState === 'stalled'
+                      ? () => window.claude.native.retry(sessionId)
+                      : undefined}
+                    // Stop is ESC: the existing interrupt path, which already
+                    // ends the turn cleanly and flushes the partial text to disk.
+                    onStop={state.attentionState === 'stalled'
+                      ? () => window.claude.native.interrupt(sessionId)
+                      : undefined}
                   />
                 );
               }

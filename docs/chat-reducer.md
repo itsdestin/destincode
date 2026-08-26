@@ -16,13 +16,16 @@ To prevent stale `running` / `awaiting-approval` entries from old turns affectin
 
 ## endTurn() helper
 
-`endTurn()` in chat-reducer.ts:145-167 is the shared path for ending a turn. It:
+`endTurn()` in `chat-reducer.ts:270` is the shared path for ending a turn. It:
 
-- Iterates `activeTurnToolIds` and marks any `running` or `awaiting-approval` tool as `failed` with error `'Turn ended'`
+- Iterates `activeTurnToolIds` and marks any `running` or `awaiting-approval` tool as `failed` with error `'Turn ended'` — **except** a native `preparing` card, which is **deleted** instead (`removePreparingTool`). The model was still composing that call's arguments, so no tool was ever invoked and "failed" would name an event that did not happen. Deleting also prunes the group it emptied and that group's turn segment, or an empty group renders as a stray bar.
 - Returns a fresh empty `activeTurnToolIds: new Set()`
 - Clears `isThinking`, `streamingText`, `currentGroupId`, `currentTurnId`, and resets `attentionState: 'ok'`
+- Returns `toolGroups` and `assistantTurns` too, because of that pruning — see the trap below
 
 **Always use this helper when adding a new turn-ending code path.** Don't manually clear these fields.
+
+**Trap: `endTurn()` returns `assistantTurns`, so spreading it LAST discards your own edit to that map.** Any caller that builds its own `assistantTurns` must pass it in as the third argument (`endTurn(session, message, assistantTurns)`) rather than writing `{...session, assistantTurns, ...endTurn(session)}`. Two callers do this today: `TRANSCRIPT_TURN_COMPLETE` (stamps usage/model/stopReason) and `TRANSCRIPT_INTERRUPT` (stamps `stopReason: 'interrupted'`). This was true the moment preparing-card reaping landed, and it broke the interrupt footer immediately — caught by `chat-reducer.test.ts` → "chatReducer TRANSCRIPT_INTERRUPT".
 
 `SESSION_PROCESS_EXITED` spreads `endTurn()` and then overrides `attentionState: 'session-died'` — one of two cases where the post-endTurn attention is not `'ok'`. The other is `NATIVE_SESSION_ERROR` (native runtime, PR Plan A), which spreads `endTurn()` then overrides `attentionState: 'error'` + `errorMessage`; both follow the same spread-then-override pattern.
 
@@ -47,12 +50,12 @@ Replaces the prior content-match-against-last-10-entries approach, which silentl
 ### Tool cards dedup STRUCTURALLY, never by uuid
 
 `TRANSCRIPT_TOOL_USE` deliberately has **no `seenUuids` guard**, unlike `TRANSCRIPT_USER_MESSAGE` / `TRANSCRIPT_ASSISTANT_TEXT`. CC rewrites a JSONL line as the assistant message grows, and a rewrite can carry **new** `tool_use` blocks under the already-seen line uuid — so the watcher re-emits tool-use on repeats by design (`transcript-watcher.ts` `readNewLines`). A uuid guard here would silently swallow those tools; missing cards are far worse than doubled ones.
-<!-- verify: {"path": "youcoded/desktop/src/renderer/state/chat-reducer.ts", "contains": "group placement must be IDEMPOTENT"} -->
+<!-- verify: {"path": "youcoded/desktop/src/renderer/state/chat-reducer.ts", "contains": "IDEMPOTENT by tool id"} -->
 
 Instead every write on this path is idempotent by `toolUseId`:
 
 - the `toolCalls` Map — `Map.set` overwrites;
-- **group placement** — the handler scans `toolGroups` for the id first and no-ops if already placed, so neither the append nor the new-group branch can double it. A re-emit must also leave `currentGroupId` untouched, or it would retarget where subsequent new tools land;
+- **group placement** — `placeToolInCurrentGroup` scans `toolGroups` for the id first and no-ops if already placed, so neither the append nor the new-group branch can double it. A re-emit must also leave `currentGroupId` untouched, or it would retarget where subsequent new tools land. This is a shared helper, not inline in the handler: `NATIVE_TOOL_PREPARING` (the native runtime's preparing card, drawn while a tool call's arguments are still streaming) places its card through the **same** function under the provider's real tool call id, which is what lets the later `TRANSCRIPT_TOOL_USE` supersede it in place rather than render a second card beside it. If the two paths ever place differently, that is the bug;
 - `injectPlanSegment` (ExitPlanMode) — dedups by `toolUseId`, updating in place so a later, fuller emit still refreshes content.
 
 `PERMISSION_REQUEST` matches only `running` tools, so a re-delivery for a tool already flipped to `awaiting-approval` would fall through to the synthetic-placeholder branch; it bails first if any tool already carries that `requestId`.
@@ -64,14 +67,16 @@ Guard: `chat-reducer.test.ts` → "chatReducer tool card duplication". Historica
 
 `AssistantTurn` carries four fields populated from the JSONL transcript:
 
-- `stopReason: string | null` — set only for non-`end_turn` completions (`max_tokens`, `refusal`, `stop_sequence`, `pause_turn`). Rendered inline as a footer under the affected turn; `null` means the turn completed normally. The transcript-watcher filters `tool_use` upstream; `end_turn` reaches the reducer but is filtered at the `AssistantTurnBubble` render gate (it's the normal case — no note needed).
+- `stopReason: string | null` — set only for non-`end_turn` completions (`max_tokens`, `refusal`, `stop_sequence`, `pause_turn`, `interrupted`, `question_dismissed`, and the native harness's `empty_response` — an open set: unknown values render via the footer's generic fallback). Rendered inline as a footer under the affected turn; `null` means the turn completed normally. The transcript-watcher filters `tool_use` upstream; `end_turn` reaches the reducer but is filtered at the `AssistantTurnBubble` render gate (it's the normal case — no note needed). The single definition of "abnormal" is `abnormalStopReason` (exported from `chat-types.ts`), shared by the reducer's turn-complete mint gate, the bubble's footer gates, and — via `shouldRenderAssistantTurn` in the same file — the ChatView/BubbleFeed timeline gates.
+
+**A turn is NOT guaranteed to have segments** (2026-08-21, empty-step recovery): turns are normally minted by content actions, but `TRANSCRIPT_TURN_COMPLETE` mints a **segment-less** turn when it arrives with `currentTurnId === null` and an abnormal `stopReason`, so a fully-contentless turn (the `empty_response` worst case) still gets its footer row instead of unexplained silence. That mint is idempotent by the action's `uuid` via `seenUuids` (the watcher re-emits turn-complete and replay re-delivers it; without the guard each replay would append a ghost turn). Consumers must not index `segments[0]` unchecked, and the ChatView/BubbleFeed gates drop a segment-less turn only when its stopReason is normal/absent.
 - `model: string | null` — Anthropic model ID (e.g. `claude-opus-4-7`). Captured on the first `TRANSCRIPT_ASSISTANT_TEXT` action (Task 2.4) and reconfirmed on `TRANSCRIPT_TURN_COMPLETE`. Drives (a) the opt-in per-turn metadata strip and (b) a reconciliation `useEffect` in App.tsx that silently updates the session-pill `sessionModels` when the transcript reveals drift (user typed `/model X` in the terminal, rate-limit downshift, session resume).
 - `usage: TurnUsage | null` — `{ inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens }` from `message.usage`. Populated on `TRANSCRIPT_TURN_COMPLETE`. Displayed only when the `showTurnMetadata` theme-context preference is on (default off — follows the "default hidden" precedent set by the derived StatusBar widgets).
 - `anthropicRequestId: string | null` — `req_…` from the transcript line's outer `requestId` field. Surfaced in `AttentionBanner` when state is `session-died` or `error` so the user can reference it when reporting issues.
 
 **Distinct from the permission-flow `requestId`** on `ToolCallState` (used by `PERMISSION_REQUEST` / `PERMISSION_RESPONSE`). The permission `requestId` is a YouCoded-internal approval-flow ID; `anthropicRequestId` is the Anthropic API request ID. Don't conflate — the distinctive name prevents silent cross-wiring.
 
-All four fields default to `null` on turn creation. The reducer's `TRANSCRIPT_TURN_COMPLETE` handler attaches metadata to the completing turn via a spread-then-override BEFORE calling `endTurn()`, because `endTurn()` doesn't touch `assistantTurns` and the override must survive the endTurn state merge.
+All four fields default to `null` on turn creation. The reducer's `TRANSCRIPT_TURN_COMPLETE` handler builds the metadata-stamped `assistantTurns` first and then **hands that map to `endTurn()` as its third argument**. It must not spread `endTurn()` over its own `assistantTurns`: since preparing-card reaping landed, `endTurn()` returns an `assistantTurns` of its own (it prunes the turn segment of any group it empties), so a trailing spread would silently drop the metadata this section is about. See the trap under [endTurn() helper](#endturn-helper).
 
 ## PITFALLS-triage additions (2026-07-15)
 
@@ -85,6 +90,11 @@ All four fields default to `null` on turn creation. The reducer's `TRANSCRIPT_TU
 - **SubagentWatcher polls are slow (5s) safety nets by design — the fast paths are event-driven.** `TranscriptWatcher` calls `kickScan()` when a parent Agent tool_use lands (instant discovery of the subagents dir/new files) and `settleByParent()` when the parent's tool-result lands (final read, then the per-file stat poll stops; fs.watch stays attached). Don't speed the polls up "for responsiveness" (regresses idle-CPU accumulation) and don't remove the kick/settle calls.
 - **`<local-command-stdout>`/`<local-command-stderr>` are STRIPPED ENTIRELY in `stripSystemTags` — DO NOT switch back to unwrapping.** CC writes these as dimmed status echoes. After every `/compact` it writes a follow-up user-type line `<local-command-stdout>[2mCompacted (ctrl+o to see full summary)[22m</local-command-stdout>`. Unwrapping let CC's echo reach `TRANSCRIPT_USER_MESSAGE`'s "no pending match" path, which BOTH appended a fake "Compacted…" user bubble AND set `isThinking:true` with no turn to ever clear it (chat permanently stuck thinking after compaction). Both TS and Kotlin parsers strip these entirely; `transcript-watcher.test.ts` pins the JSONL fixture line. Route any new slash-command output through a NEW event type — don't reintroduce the user-message path.
 - **The `compact-summary` transcript event carries the full summary text in `data.summary`.** `SystemMarker.tsx` renders click-to-expand on the thin "Compacted · freed X tokens" divider. Both `App.tsx` and `BubbleFeed.tsx` forward `event.data.summary` into `COMPACTION_COMPLETE`; the reducer stores it on `SystemMarker.summary`. Aborted/watchdog completions carry no summary — keep the `expandable = !!marker.summary` gate.
+
+### Rule-overflow additions (2026-08-12, migrated verbatim from the path-scoped rule)
+
+- **A permission ask binds ONLY to a running tool with a MATCHING NAME** (input-match, then name-match). There is deliberately no name-agnostic fallback — one existed until 2026-08-09 and let an ask that arrived before its own `tool_use` hijack an unrelated card, so the card named Bash while its buttons approved Read. *Why:* showing one tool's identity on a card that authorizes another is a CONSENT bug, not a cosmetic one. Guard: `chat-reducer.test.ts` → "PERMISSION_REQUEST tool identity".
+- **`TRANSCRIPT_REPLAY_COMPLETE` reaps tools a replayed transcript left `running`, and ONLY when `sessionIdle`** — a transcript ends wherever the process died, so its last `tool_use` may have no result. Orphans are marked **failed, never complete** (we don't know if the tool finished). The idle gate exists because the same replay fires on a live re-dock, where the running tool is real; only `NativeSessionHost.isIdle()` can affirm it, so CC sessions report false and keep the orphan. Guard: `chat-reducer.test.ts` → "TRANSCRIPT_REPLAY_COMPLETE".
 
 ### Spinner classifier regex-anchoring (`attention-classifier.ts`)
 
@@ -100,3 +110,133 @@ All four fields default to `null` on turn creation. The reducer's `TRANSCRIPT_TU
 - **xterm display-only on touch.** `TerminalView` passes `disableStdin:true` on touch platforms (Android + remote browser) and skips `terminal.onData → sendInput`; typing flows through InputBar minimal-mode `<textarea>`. Don't reintroduce xterm-side touch input (re-exposes xterm.js #2403 IME issues). Single-finger touch scroll is custom capture-phase JS routing to `terminal.scrollLines()` (xterm's mouse selection bypassed via `preventDefault`); text selection on touch is unavailable — don't "fix" by removing the handlers.
 - **`shared-fixtures/attention-classifier/` is the contract** — adding a `BufferClass` or tweaking a `classifyBuffer` regex requires a fixture change in the same commit; `attention-classifier-parity.test.ts` enforces it.
 - **xterm scrollback can show duplicated TUI chrome** — CC (Ink) redraws its full TUI on certain events; when it exceeds visible rows, older content scrolls into xterm's scrollback. No xterm option discards programmatically-scrolled content (alt-screen would lose ALL scrollback). Mitigation deferred (bumping `scrollback` to 5000+ would let history coexist with banner duplicates).
+
+## The `stalled` attention state and the Retry erase (2026-08-16, youcoded master `28d3f82e`)
+
+The renderer half of "a stalled turn waits for you". Main-process half:
+`youcoded/docs/native-runtime.md` → "A stalled turn parks instead of dying". Spec:
+`youcoded-dev/docs/archive/specs/2026-08-16-stalled-turn-never-dies-design.md`.
+
+### `AttentionState` gained a fifth state
+
+The union is now `'ok' | 'stuck' | 'session-died' | 'error' | 'stalled'`, and every
+member still has exactly one writer — the rule that keeps dead `AttentionBanner` branches
+from accumulating. `TRANSCRIPT_THINKING_HEARTBEAT` writes three of them, in descending
+severity:
+
+| Heartbeat payload | `attentionState` | Dot | What the user sees |
+|---|---|---|---|
+| `{stalled: true}` | `'stalled'` | RED | The park card: "Provider may have stalled", counting up, Retry + Stop |
+| `{stallWarning: …}` | `'stuck'` | AMBER | The countdown warning |
+| payload-less | `'ok'` | — | Activity resumed; clears both |
+
+Before this change the warning branch wrote `'ok'`, so the dot stayed GREEN for the whole
+countdown — the app asserting health while telling the user it might be hanging. `'stuck'`
+already meant exactly "something may be wrong and I don't know", which is what a warning
+is, so the warning was routed there rather than given a state of its own. Consequence
+worth knowing: `RED_ATTENTION` is `{stalled, session-died, error}`, which leaves `'stuck'`
+as the only amber state. `attentionDotColor()` is the single source for those colours —
+the buddy `AttentionStrip` had drifted to a private table painting `'stuck'` red and now
+defers to it, which moved four pill colours (`stalled` blue→red, `session-died` grey→red,
+`error` blue→red, `stuck` red→amber).
+
+### `stalledSince` — stamped once, held, and cleared at the one write site
+
+The card counts up from `stalledSince` on THIS client's clock (see `chat-types.ts` on the
+cross-device skew note: a phone hydrating a parked desktop session gets the desktop's
+stamp). A repeat `stalled` heartbeat must not restart the count, so the stamp is held —
+but held *only while the session was already `'stalled'`*:
+
+```ts
+stalledSince: action.stalled
+  ? (session.attentionState === 'stalled' ? (session.stalledSince ?? Date.now()) : Date.now())
+  : null,
+```
+
+The naive `session.stalledSince ?? Date.now()` is wrong because **fourteen places in the
+reducer write `attentionState: 'ok'` and only five of them also clear the stamp.** The
+other nine (both `TRANSCRIPT_USER_MESSAGE` branches, both `NATIVE_TOOL_PREPARING`
+branches, both `TRANSCRIPT_TOOL_USE` branches, `TRANSCRIPT_TOOL_RESULT`, and both
+`PERMISSION_REQUEST` branches) leave it set, so any of them landing between two parks left
+the SECOND card counting from the FIRST park — "no response for 6m 12s" three seconds in.
+Gating on the state the stamp belongs to closes the whole family at the ONE place the
+field is written, instead of adding nine `stalledSince: null` lines and forgetting the
+tenth. `AttentionBanner` is the only reader, which is what makes that safe.
+
+`endTurn()` clears `attentionState`, `stallWarning` AND `stalledSince`, and every turn
+boundary (`turn-complete` / `user-interrupt` / `session-error`) spreads it — so a parked
+card cannot outlive its turn and the harness needs no extra "un-park" event.
+
+### `NATIVE_PARTS_DROPPED` erases only the TRAILING run
+
+Manual Retry abandons an attempt whose text is already on screen. Without an erase, the
+re-run's deltas merge into the same segment by `partId` and the user reads the half
+sentence twice — which is precisely why the *automatic* retry has always refused to run
+after content streamed.
+
+The first implementation filtered the whole turn by `partId`. That was a worse bug than
+the one it fixed: **part ids are not unique within a turn.** The AI SDK falls back to the
+literal `text-0` when the provider omits an id, and a turn spans many steps (each tool
+call starts a new one), so the same id legitimately appears on an earlier, already-finished
+step. A whole-list `.filter()` therefore deleted finished paragraphs the user had already
+read.
+
+The shipped rule walks from the END and removes only the trailing run of matching
+segments, stopping at the first non-match. What makes it safe is that a tool-group (or
+plan) segment carries no `partId` at all, so it always counts as non-matching and stops
+the walk — and a tool-group segment always separates one text step from the next. The
+merge check only ever inspects `segments[length-1]`, so an earlier finished segment is
+architecturally unreachable for accidental re-merge.
+
+**Accepted limitation:** if ONE attempt produced text → a tool-preparing card → more text
+before stalling, the tool-group separator stops the walk and the re-run re-emits the
+earlier text, leaving a duplicate. Strictly better than the alternative — duplicated text
+beats deleted text. It needs a model that resumes prose after starting a tool call and
+then stalls. Guard: `attention-reducer.test.ts` → the `stalled turn` describe (four `NATIVE_PARTS_DROPPED` cases, including the reused-partId regression).
+
+Ordering is guaranteed end to end without any explicit sequencing: the harness emits
+`dropPart` BEFORE returning its retry sentinel, and `App.tsx` / `BubbleFeed.tsx` dispatch
+`NATIVE_PARTS_DROPPED` from a block placed above the heartbeat dispatch in the same
+handler, with both dispatch queues plain FIFO.
+
+### The PTY classifier must not reset a state it never set
+
+`useAttentionClassifier`'s cleanup branch dispatched `ATTENTION_STATE_CHANGED → 'ok'` for
+ANY non-ok state at mount. For a NATIVE session `active` is constant-false, so it fired
+exactly once at `ChatView` mount and threw away whatever attention state was already
+there. Both `'ok'` dispatch sites are now gated on `hasBuffer` (`provider === undefined ||
+provider === 'claude'`), and `hasBuffer` is a real dependency rather than a stale closure
+read; the currently-unreachable teardown site is guarded too so the pair cannot drift.
+
+Blast radius before the fix was narrow but real: `chat:hydrate` is REMOTE-ONLY (the
+desktop path deliberately does not serve it), so ordinary desktop mounts with `'ok'` long
+before any park. What broke was **a phone reconnecting to an already-parked desktop
+session** — hydrate carried `attentionState: 'stalled'` correctly and the classifier
+discarded it, so the user saw a spinner instead of the card with the buttons. Claude Code
+behaviour is byte-identical, because `hasBuffer` is true for every CC session. Guard:
+`useAttentionClassifier.test.tsx` (a `renderHook` probe), plus a live CDP probe against
+the workbench at `?stalled=1` that showed `card:false` with the fix reverted.
+
+### Declared behaviour change: the composer Stop button while `'stuck'`
+
+`useStreamingGate` required `attentionState === 'ok'`, so the square Stop button vanished
+the moment the stall warning fired — and `StopButton` exists specifically for touch/phone
+users with no ESC key, making a phone turn un-stoppable during the countdown. The positive
+test became a negative `TURN_IS_OVER` set, which `'stuck'` and `'stalled'` are not in. That also changes CLAUDE CODE behaviour, since `'stuck'` is CC-only
+via the classifier: a stuck CC session now shows Stop where master hid it. Kept
+deliberately — it is the same safety argument, and the click writes exactly `'\x1b'`,
+byte-identical to ESC, beside a still-enabled Send. Spec §12 was amended rather than the
+behaviour reverted, and both directions are pinned by tests.
+
+### Rule-overflow additions (2026-08-16, migrated from the path-scoped rule)
+
+Room for the above was made in `.claude/rules/chat-reducer.md` by dropping or compressing
+bullets whose full text this document already carried: `getHistory` replay parity, and the
+rationale clauses of `readNewLines`-is-serialized, the bytes carry, `stripSystemTags`, the
+spinner regex, `TRANSCRIPT_REPLAY_COMPLETE`'s `isIdle()` gate, the permission-ask
+input-then-name match order, the `pending`-flag dedup, and the vendored-emulator /
+xterm-touch notes. Each was grep-verified present here before removal; no claim was lost.
+The `subagent-watcher.ts` poll-cadence bullet and the `shared-fixtures/` contract were
+deliberately KEPT in the rule despite also living here, because both of their globs are in
+the rule's own `paths:` list — dropping them would have left an editor of those exact
+files with no always-loaded invariant.

@@ -24,6 +24,7 @@ import { streamText, tool, zodSchema } from 'ai';
 // (node_modules/ai/dist/test/index.d.ts), same pattern as harness-session.test.ts.
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { z } from 'zod';
+import { makeSession, scriptModel, fakeTool } from './helpers/harness-fakes';
 
 // RAW LanguageModelV4ToolCall chunk: `input` is a stringified JSON string.
 const toolCallChunk = {
@@ -100,5 +101,82 @@ describe('ai@7 tool-call stream contract (provider-dependencies row)', () => {
       messages,
     });
     expect(await result.text).toBe('done');
+  });
+});
+
+// Task 12, item 1 — JSON-string arg recovery (weak-model hardening, spec §3).
+// The contract test above proves streamText parses a RAW provider tool-call's
+// stringified `input` into an object for us. But a weak local model sometimes
+// puts the WHOLE args object as a STRING value one level further in — e.g. the
+// model's real intent is `{ prompt: "do X" }`, but what it actually emits as
+// the provider-level input is the STRING '{"prompt":"do X"}', which streamText
+// faithfully parses into that same string (not an object). The validation seam
+// (harness-session.ts's runOneTool, `rg -n 'safeParse'`) gets one extra chance:
+// if raw input is a string that itself JSON.parses to an object, re-validate
+// THAT object before giving up. One attempt only — never a general coercion
+// layer (YAGNI).
+describe('JSON-string tool-arg recovery (Task 12, item 1)', () => {
+  it('recovers when a weak model double-encodes its args as a JSON string', async () => {
+    const echo = fakeTool('Echo', { schema: z.object({ prompt: z.string() }) });
+    // toolCallChunk() JSON.stringifies whatever `input` we hand it — passing an
+    // ALREADY-stringified object here reproduces the double-encoding: streamText's
+    // own parse (pinned above) unwraps ONE layer and hands runOneTool the STRING
+    // '{"prompt":"do the actual thing now"}', not the object.
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Echo', input: JSON.stringify({ prompt: 'do the actual thing now' }) }] },
+      { text: 'done' },
+    ]);
+    const session = makeSession({ model, tools: [echo] });
+    const events: any[] = [];
+    session.on('transcript-event', (e) => events.push(e));
+
+    await session.send('go');
+
+    // The tool actually ran with the RECOVERED object, not the raw string.
+    expect((echo as any).calls).toEqual([{ prompt: 'do the actual thing now' }]);
+    // No "Invalid arguments" error was ever surfaced for this call.
+    const toolResults = events.filter((e) => e.type === 'tool-result');
+    expect(toolResults.some((e) => e.data.isError)).toBe(false);
+  });
+
+  it('one attempt only: a recovered object that STILL fails validation falls through to the normal arg error', async () => {
+    const echo = fakeTool('Echo', { schema: z.object({ prompt: z.string() }) });
+    // Valid JSON, valid object shape at the JSON level, but the wrong TYPE for
+    // the schema (`prompt` must be a string) — recovery succeeds at JSON.parse,
+    // but the re-validate must still fail, and there must be no third attempt.
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Echo', input: JSON.stringify({ prompt: 12345 }) }] },
+      { text: 'done' },
+    ]);
+    const session = makeSession({ model, tools: [echo] });
+    const events: any[] = [];
+    session.on('transcript-event', (e) => events.push(e));
+
+    await session.send('go');
+
+    expect((echo as any).calls).toHaveLength(0);   // never executed
+    const toolResults = events.filter((e) => e.type === 'tool-result');
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0].data.isError).toBe(true);
+    expect(toolResults[0].data.toolResult).toMatch(/Invalid arguments for Echo/);
+  });
+
+  it('a plain non-JSON string falls straight through to the normal arg error (JSON.parse throws, caught, no crash)', async () => {
+    const echo = fakeTool('Echo', { schema: z.object({ prompt: z.string() }) });
+    const model = scriptModel([
+      { toolCalls: [{ name: 'Echo', input: 'not json at all' }] },
+      { text: 'done' },
+    ]);
+    const session = makeSession({ model, tools: [echo] });
+    const events: any[] = [];
+    session.on('transcript-event', (e) => events.push(e));
+
+    await session.send('go');
+
+    expect((echo as any).calls).toHaveLength(0);
+    const toolResults = events.filter((e) => e.type === 'tool-result');
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0].data.isError).toBe(true);
+    expect(toolResults[0].data.toolResult).toMatch(/Invalid arguments for Echo/);
   });
 });

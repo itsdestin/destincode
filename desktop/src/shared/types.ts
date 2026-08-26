@@ -115,6 +115,16 @@ export type TranscriptEventType =
   // presses ESC during a turn. The reducer uses this to end the turn
   // without rendering the marker as a user bubble.
   | 'user-interrupt'
+  // Terminal marker appended by the TRANSCRIPT_REPLAY handler after the last
+  // historical event — NEVER parsed from a transcript, so it is not persisted
+  // and cannot be replayed twice. A transcript ends wherever the process died,
+  // so a tool_use with no result replays as a card that spins forever after a
+  // resume (Destin, 2026-08-09 dogfood). This event is the "history is over"
+  // barrier the reducer needs to reap those orphans.
+  // `data.sessionIdle` says whether main can AFFIRM nothing is in flight: the
+  // same replay also fires when a window re-docks a live, mid-turn session,
+  // where the running tool is real and must not be failed.
+  | 'replay-complete'
   // Native-runtime only: a provider/stream failure ended the turn. Carries the
   // human-readable message in data.text. Never emitted by CC's transcript
   // watcher and never persisted to the native session store (stale on resume).
@@ -152,6 +162,19 @@ export interface TranscriptEvent {
     stopReason?: string;
     /** Edit/MultiEdit tool-result payloads carry structuredPatch hunks. */
     structuredPatch?: StructuredPatchHunk[];
+    /** Native user-message events: absolute composer attachment paths, persisted so
+     *  resume can re-read the pixels (events carry no binary). #290 follow-up fix 2. */
+    attachments?: string[];
+    /** Native tool-result events: absolute paths of images the tool delivered
+     *  (Read on an image). Resume re-reads them; the UI may render a chip. */
+    images?: string[];
+    /** Claude Code tool-result events only: the JSONL line's OWN timestamp
+     *  (epoch ms), 0 when the line has none. `timestamp` above is stamped at
+     *  PARSE time, which is "now" for a whole transcript read from offset 0 on
+     *  resume — so it cannot tell replayed history from a live result. The
+     *  Deliverables auto-open rule (deliverable-auto-open.ts) reads this; native
+     *  events keep their original `timestamp` through replay and need no field. */
+    recordedAt?: number;
     // Task 1.1: widened turn-complete payload so the reducer can attach the
     // per-turn model, token/cache usage, and the Anthropic requestId to the
     // completing AssistantTurn for UI surfacing. All optional — the field is
@@ -182,6 +205,39 @@ export interface TranscriptEvent {
      * the parent Agent tool_use that this subagent's work threads into.
      */
     parentAgentToolUseId?: string;
+    /**
+     * Task 4 (native specialists, background execution) — marks a `user-message`
+     * event as a SYNTHETIC turn the host injected (a background specialist's
+     * finished report, or its typed failure notice), not something the user
+     * actually typed. Data-field extension, not a new TranscriptEventType — the
+     * frozen emit surface stays frozen.
+     *
+     * CONSUMED by the renderer since 2026-08-16: App.tsx/BubbleFeed.tsx forward
+     * it onto TRANSCRIPT_USER_MESSAGE, the reducer stamps it on the timeline
+     * entry, and ChatView/BubbleFeed draw such an entry as a compact
+     * SpecialistReportCard (a collapsed "task finished" row, tool-card style)
+     * instead of a user bubble — the text is what the PARENT MODEL reads, and
+     * showing it as the user's own words, or even as a big notice, put text in
+     * the chat nobody actually said (Destin, 1b hands-on).
+     * Only value today is 'specialist-report'; a plain `string` (not a union)
+     * so a future injected kind never needs a TranscriptEvent schema change.
+     */
+    injected?: string;
+    /**
+     * Structured companion to `injected: 'specialist-report'` (2026-08-16):
+     * who finished, what they were asked, how it ended — so the card header
+     * is exact rather than parsed back out of the prose the model reads.
+     * `parentToolCallId` names the Task card that started this child.
+     */
+    injectedMeta?: {
+      childId: string;
+      title: string;
+      agentType: string;
+      description?: string;
+      status: 'completed' | 'failed';
+      steps?: number;
+      parentToolCallId?: string;
+    };
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
     /** Streaming-part id used to merge reasoning chunks; emitted by the native harness, not CC's watcher. */
@@ -191,10 +247,35 @@ export interface TranscriptEvent {
      * streaming watchdog has seen NO chunk for STALL_WARNING_MS. Drives the
      * ThinkingIndicator's "taking a while… retrying" countdown. `willRetry` =
      * the harness will auto-retry the step when the countdown ends (nothing had
-     * streamed yet); false = it will surface a session-error instead. A heartbeat
-     * WITHOUT this field means activity resumed and clears the warning.
+     * streamed yet, first attempt). false ends the countdown one of two ways:
+     * on Clock 1 alone (nothing ever streamed, first attempt) with a
+     * session-error; on Clock 2 (something already streamed) or a turn that
+     * has already parked once, the turn PARKS instead — see `stalled` below.
+     * A heartbeat WITHOUT this field means activity resumed and clears the
+     * warning.
      */
     stallWarning?: { retryInMs: number; willRetry: boolean };
+    /**
+     * Native runtime only. The mid-stream watchdog gave up waiting and the turn
+     * is now PARKED: the stream reader is still open, nothing has been torn
+     * down, and the turn ends only when a chunk arrives or the user presses
+     * Retry / Stop. Display-only (no text, no partId) so SessionStore drops it.
+     *
+     * Deliberately a bare `true` and not a timestamp: the renderer stamps its
+     * own clock on first receipt, so a remote client counting up never inherits
+     * clock skew from the host.
+     */
+    stalled?: true;
+    /**
+     * Native runtime only. Discard these streaming parts — the attempt that
+     * wrote them is being abandoned by a manual Retry, and the re-run would
+     * otherwise APPEND to the same bubble (the SDK's part id falls back to the
+     * literal 'text-0', so a repeat is the likely case, not a corner case).
+     * This is why the automatic retry has always refused to run after content
+     * streamed; the manual one is allowed to, because it erases first.
+     * Display-only (no text, no partId) — never persisted.
+     */
+    dropPart?: { partIds: string[] };
     /**
      * Native runtime only. Emitted on `assistant-thinking` the moment a step's
      * stream opens, BEFORE any token arrives, so the UI can say the model is
@@ -205,6 +286,24 @@ export interface TranscriptEvent {
      * to take before the watchdog treats the silence as a real stall.
      */
     promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
+    /**
+     * Native runtime only. The model is GENERATING a tool call's arguments —
+     * nothing has executed yet. This is what makes a "preparing" ToolCard
+     * appear instead of minutes of bare thinking spinner on a big Write.
+     *
+     * Rides `assistant-thinking` with NO text and NO partId so
+     * SessionStore.append drops it (session-store.ts): partial arguments must
+     * never reach the JSONL, or a resume would replay a half-written file.
+     *
+     * `toolCallId` is the provider's REAL id — identical to the one the
+     * completed `tool-call` stream part carries — which is what lets the card
+     * transition in place instead of being swapped.
+     *
+     * `cleared: true` means "remove this preparing card": the stall auto-retry
+     * re-runs a step WITHOUT ending the turn, so its cards must be withdrawn
+     * explicitly (every other death path ends the turn, where endTurn reaps).
+     */
+    toolPreparing?: { toolCallId: string; toolName: string; chars: number; cleared?: boolean };
     /**
      * Populated only on `user-interrupt` events. Distinguishes the two exact
      * marker strings Claude Code writes: `[Request interrupted by user]`
@@ -237,6 +336,20 @@ export interface TranscriptEvent {
     args?: string;
     body?: string;
     skillPath?: string;
+    /**
+     * `replay-complete` only. Whether main could AFFIRM the session has no work
+     * in flight, which is what gates the reducer's orphan reap — the same replay
+     * fires when a window re-docks a genuinely mid-turn session, where the
+     * running tool is real and must not be failed. Only NativeSessionHost can
+     * answer (`entry.inFlight`); CC sessions report false.
+     *
+     * DECLARED, not just commented, because producer (ipc-handlers.ts) and
+     * consumer (App.tsx, BubbleFeed.tsx) are otherwise linked by nothing but a
+     * matching string literal through an `any`-typed `evt.sender.send`. A typo
+     * on either side reads undefined → false, silently disabling the reap with
+     * the whole suite still green (found reviewing PR #287, 2026-08-10).
+     */
+    sessionIdle?: boolean;
   };
 }
 
@@ -265,7 +378,17 @@ export interface StructuredPatchHunk {
  * don't have user-typed messages).
  */
 export type SubagentSegment =
-  | { type: 'text'; id: string; content: string }
+  | {
+      type: 'text';
+      id: string;
+      content: string;
+      // Native runtime: per-token delta id, mirrors the main-timeline text
+      // segment's partId (chat-types.ts TRANSCRIPT_ASSISTANT_TEXT). Lets the
+      // reducer coalesce same-partId deltas into one segment instead of one
+      // per delta — see chat-reducer.ts applySubagentEvent. CC events never
+      // set this, so its absence preserves today's one-segment-per-event.
+      partId?: string;
+    }
   | {
       type: 'tool';
       id: string;
@@ -288,6 +411,33 @@ export interface ToolCallState {
   /** Native broker only: winning rule came from the destructive deny-list →
    *  the "Always allow" button shows a consequence-gated confirm. Task 13. */
   denyListed?: boolean;
+  /** Native broker only: the ask was forced by a path outside the session
+   *  folder → the "Always allow" button is HIDDEN. The engine forces an ask on
+   *  every external path and never consults the stored rules there, so a
+   *  remembered rule could not fire. Spec 2026-08-11, finding 3. */
+  external?: boolean;
+  /** Native broker only: the session's permission mode when the ask fired.
+   *  'full-auto' + denyListed swaps the generic button row for the safety-stop
+   *  footer (spec 2026-08-12, M5 2b). Absent on CC asks. */
+  permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
+  /**
+   * Native runtime only. The model is still GENERATING this call's arguments —
+   * nothing has executed, and `input` is an empty object until the real
+   * tool-use event supersedes this entry in place.
+   *
+   * A FLAG on a 'running' entry rather than a fifth ToolCallStatus, so every
+   * existing status consumer (endTurn, ChatView's hasRunningTools, ToolCard's
+   * spinner, AssistantTurnBubble's awaiting-approval hiding) keeps working
+   * untouched. Exactly two places opt in: ToolCard's body and reaping.
+   *
+   * Display-only and NEVER persisted — a preparing entry is DELETED on turn
+   * end, never failed and never given a result, so the tool-call/result pairing
+   * invariant is not involved.
+   */
+  preparing?: boolean;
+  /** Argument characters generated so far — the preparing card's liveness
+   *  counter. Meaningless once `preparing` is gone. */
+  preparingChars?: number;
   response?: string;
   error?: string;
   /** Set when the tool result carries a structuredPatch (Edit/MultiEdit). */
@@ -596,7 +746,12 @@ export type AttentionState =
   | 'session-died'    // Process exited mid-turn
   // Native-runtime provider/stream failure (dispatcher: NATIVE_SESSION_ERROR,
   // fed by the 'session-error' transcript event). CC sessions never enter it.
-  | 'error';
+  | 'error'
+  // Native runtime only. The mid-stream watchdog gave up waiting but the turn
+  // is STILL ALIVE and still holding its stream open — unlike every other
+  // non-ok state here, which are all endings. The user chooses: Retry, Stop,
+  // or wait. Dispatcher: TRANSCRIPT_THINKING_HEARTBEAT with `stalled: true`.
+  | 'stalled';
 
 // Red | green | blue | gray — mirrors SessionStatusColor in renderer.
 // Duplicated as a string literal type here (not imported) so main-process
@@ -1186,6 +1341,10 @@ export const IPC = {
   // NativeSessionHost.removeQueued(sessionId, queueId): boolean.
   NATIVE_QUEUE_REMOVE: 'native:queue-remove',
   NATIVE_INTERRUPT: 'native:interrupt',
+  // Stalled-turn Retry (fire-and-forget like interrupt above). Re-runs the ONE
+  // parked step; unlike interrupt it never cascades to specialist children or
+  // cancels pending permission asks.
+  NATIVE_RETRY: 'native:retry',
   // M3 item 2 — user-initiated /compact for a native session. invoke (not send):
   // the caller needs the {ok, reason} result to explain a refusal.
   NATIVE_COMPACT: 'native:compact',
@@ -1211,6 +1370,14 @@ export const IPC = {
   SEARCH_SET_KEY: 'search:set-key',
   SEARCH_REMOVE_KEY: 'search:remove-key',
   SEARCH_TEST: 'search:test',
+  // ---- Remembered "Always allow" rules (M5 2a: permissions management UI) ----
+  // list = every project's stored grants; remove/remove-project revoke them.
+  // Keyed by PROJECT SLUG, not cwd — permissions.json never stored the cwd for
+  // pre-existing entries and nativeStoreSlug is lossy, so the slug is the only
+  // stable handle the renderer can send back.
+  PERMISSIONS_LIST: 'permissions:list',
+  PERMISSIONS_REMOVE: 'permissions:remove',
+  PERMISSIONS_REMOVE_PROJECT: 'permissions:remove-project',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',

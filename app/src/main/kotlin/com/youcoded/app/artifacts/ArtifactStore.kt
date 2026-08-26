@@ -159,8 +159,10 @@ data class AppendVersionInput(
     val kind:         String,   // "internal" | "external"
     val absolutePath: String?,
     val sessionId:    String,
-    val type:         String,   // "create" | "edit" | "delete" | "read"
+    val type:         String,   // "create" | "edit" | "delete" | "read" | "delivered"
     val author:       String,   // "agent" | "user"
+    // Replay-dedupe key — see VersionEvent.toolUseId. Null keeps always-append.
+    val toolUseId:    String? = null,
 )
 
 /**
@@ -191,6 +193,14 @@ fun appendVersion(
             is ReadResult.Ok -> current.sidecar to current.sidecar.updatedAt
         }
 
+        val existing = sidecar.artifacts.find { it.path == input.path && it.kind == input.kind }
+        // Replay dedupe (mirror of artifact-store.ts appendVersionsDirect): the
+        // same tool call recorded once already ⇒ nothing to add, nothing to
+        // write. Same sessionId AND same toolUseId — never toolUseId alone.
+        if (existing != null && input.toolUseId != null &&
+            existing.versions.any { it.sessionId == input.sessionId && it.toolUseId == input.toolUseId }
+        ) return true
+
         val now = Instant.now().toString()
         val versionEvent = VersionEvent(
             id        = newVersionId(),
@@ -198,12 +208,17 @@ fun appendVersion(
             sessionId = input.sessionId,
             type      = input.type,
             author    = input.author,
+            toolUseId = input.toolUseId,
         )
 
-        val existing = sidecar.artifacts.find { it.path == input.path && it.kind == input.kind }
         if (existing != null) {
             existing.versions.add(versionEvent)
-            existing.lastModified = now
+            // Fix (2026-08-25): a 'read' or 'delivered' version is not a modification.
+            // Desktop already skips the bump for 'read' (artifact-store.ts); this store
+            // bumped unconditionally, so a viewed/delivered file jumped to the top of
+            // "recently modified" on the phone and the synced sidecar disagreed across
+            // devices. Delivery ≠ modification (spec 2026-08-25 §4.2).
+            if (input.type != "read" && input.type != "delivered") existing.lastModified = now
             existing.status = if (input.type == "delete") "deleted" else "active"
         } else {
             sidecar.artifacts.add(

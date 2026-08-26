@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { onConversationMetaChanged, emitConversationMetaChanged } from '../src/main/conversations/service';
-import { refreshChatsearchIndex } from '../src/main/chatsearch-index/index-service';
+import { refreshChatsearchIndex, resolveTranscriptPathTwoStep } from '../src/main/chatsearch-index/index-service';
 import { chatsearchDir, metaPath, turnsPath } from '../src/main/chatsearch-index/index-store';
 import type { ConversationRecord } from '../src/main/conversations/store-core';
 
@@ -178,5 +178,207 @@ describe('refreshChatsearchIndex', () => {
     expect(meta.conversations.c1).toBeUndefined();
     // No turns file should be written at all for a lane with zero eligible conversations.
     expect(fs.existsSync(turnsPath(dir, 'claude'))).toBe(false);
+  });
+});
+
+// 2026-08 fix: both lanes used to resolve ONLY a device-local path derived
+// from originalPath. That path never exists for a record with an empty
+// originalPath, or one synced from another device (whose originalPath is
+// that machine's own filesystem layout) — on real data this mis-tombstoned
+// 91% of the claude lane, reporting conversations deleted when 400/400
+// sampled ones were actually present in the synced space. These tests pin
+// resolveTranscriptPathTwoStep's local-first, space-mirror-backstop order.
+describe('resolveTranscriptPathTwoStep (synced-space backstop)', () => {
+  const userMsg = (content: string) => `${JSON.stringify({
+    type: 'user', promptId: 'p', uuid: 'u', timestamp: '2026-07-26T18:04:11.000Z',
+    message: { role: 'user', content },
+  })}\n`;
+
+  it('falls back to the synced-space transcript when the local copy is missing', async () => {
+    const storeRoot = fs.mkdtempSync(path.join(tmp, 'store-'));
+    const spaceTranscript = path.join(storeRoot, 'claude', 'transcripts', 'youcoded', 'c1.jsonl');
+    fs.mkdirSync(path.dirname(spaceTranscript), { recursive: true });
+    fs.writeFileSync(spaceTranscript, userMsg('from the synced space'));
+
+    const localPath = path.join(tmp, 'no-such-local.jsonl'); // never created
+
+    await refreshChatsearchIndex({
+      homeRoot: tmp,
+      lanes: [{
+        provider: 'claude', lane: 'claude', records: [rec()],
+        resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
+      }],
+      tagLabels: new Map(),
+    });
+
+    const dir = chatsearchDir(tmp);
+    const meta = JSON.parse(fs.readFileSync(metaPath(dir, 'claude'), 'utf8'));
+    expect(meta.conversations.c1.tombstone).toBe(false);
+    expect(meta.conversations.c1.turnCount).toBe(1);
+    expect(fs.readFileSync(turnsPath(dir, 'claude'), 'utf8')).toContain('from the synced space');
+  });
+
+  it('prefers the local copy when both the local file and the synced-space mirror exist', async () => {
+    const storeRoot = fs.mkdtempSync(path.join(tmp, 'store-'));
+    const spaceTranscript = path.join(storeRoot, 'claude', 'transcripts', 'youcoded', 'c1.jsonl');
+    fs.mkdirSync(path.dirname(spaceTranscript), { recursive: true });
+    fs.writeFileSync(spaceTranscript, userMsg('stale space copy'));
+
+    const localPath = path.join(tmp, 'local.jsonl');
+    fs.writeFileSync(localPath, userMsg('live local copy'));
+
+    await refreshChatsearchIndex({
+      homeRoot: tmp,
+      lanes: [{
+        provider: 'claude', lane: 'claude', records: [rec()],
+        resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
+      }],
+      tagLabels: new Map(),
+    });
+
+    const dir = chatsearchDir(tmp);
+    const turns = fs.readFileSync(turnsPath(dir, 'claude'), 'utf8');
+    expect(turns).toContain('live local copy');
+    expect(turns).not.toContain('stale space copy');
+  });
+
+  it('tombstones when the transcript exists in neither the local path nor the synced space', async () => {
+    const storeRoot = fs.mkdtempSync(path.join(tmp, 'store-'));
+    const localPath = path.join(tmp, 'never-created.jsonl');
+
+    await refreshChatsearchIndex({
+      homeRoot: tmp,
+      lanes: [{
+        provider: 'claude', lane: 'claude', records: [rec()],
+        resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
+      }],
+      tagLabels: new Map(),
+    });
+
+    const meta = JSON.parse(fs.readFileSync(metaPath(chatsearchDir(tmp), 'claude'), 'utf8'));
+    expect(meta.conversations.c1.tombstone).toBe(true);
+  });
+
+  it('does not prefer the local path when originalPath is empty, even if a file happens to exist there', () => {
+    // Guards the "empty originalPath" half of the bug: the join still
+    // produces SOME path, so existence alone is not a safe signal that it's
+    // really this record's live local copy.
+    const storeRoot = fs.mkdtempSync(path.join(tmp, 'store-'));
+    const spaceTranscript = path.join(storeRoot, 'claude', 'transcripts', 'youcoded', 'c1.jsonl');
+    fs.mkdirSync(path.dirname(spaceTranscript), { recursive: true });
+    fs.writeFileSync(spaceTranscript, userMsg('space'));
+
+    const localPath = path.join(tmp, 'coincidental-local.jsonl');
+    fs.writeFileSync(localPath, userMsg('local')); // exists, but originalPath below is empty
+
+    const resolved = resolveTranscriptPathTwoStep(rec({ originalPath: '' }), localPath, storeRoot);
+    expect(resolved).toBe(spaceTranscript);
+  });
+
+  it('refuses a transcriptRef that traverses outside the store root', () => {
+    const storeRoot = fs.mkdtempSync(path.join(tmp, 'store-'));
+    // A secret file OUTSIDE storeRoot that a traversal must never reach.
+    const secret = path.join(tmp, 'secret.jsonl');
+    fs.writeFileSync(secret, 'top secret contents');
+
+    const localPath = path.join(tmp, 'no-such-local.jsonl');
+    const maliciousRef = path.relative(storeRoot, secret); // e.g. '../secret.jsonl'
+    expect(maliciousRef.startsWith('..')).toBe(true);
+
+    const resolved = resolveTranscriptPathTwoStep(rec({ transcriptRef: maliciousRef }), localPath, storeRoot);
+
+    // Must never resolve to the secret file outside root — falls back to the
+    // (nonexistent) local guess so the record tombstones honestly instead of
+    // silently reading a path escaping the store.
+    expect(resolved).toBe(localPath);
+    expect(resolved).not.toBe(secret);
+  });
+
+  it('a malicious transcriptRef never surfaces its target contents through the built index', async () => {
+    const storeRoot = fs.mkdtempSync(path.join(tmp, 'store-'));
+    const secret = path.join(tmp, 'secret.jsonl');
+    fs.writeFileSync(secret, userMsg('SECRET OUTSIDE THE STORE ROOT'));
+
+    const localPath = path.join(tmp, 'no-such-local.jsonl');
+    const maliciousRef = path.relative(storeRoot, secret).split(path.sep).join('/');
+
+    await refreshChatsearchIndex({
+      homeRoot: tmp,
+      lanes: [{
+        provider: 'claude',
+        lane: 'claude',
+        records: [rec({ transcriptRef: maliciousRef })],
+        resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
+      }],
+      tagLabels: new Map(),
+    });
+
+    // A ref starting with '..' also fails laneMatches's 'claude/' prefix
+    // check, so this record may be excluded from the pass entirely — either
+    // way, the secret content must never appear in the index.
+    const dir = chatsearchDir(tmp);
+    if (fs.existsSync(turnsPath(dir, 'claude'))) {
+      expect(fs.readFileSync(turnsPath(dir, 'claude'), 'utf8')).not.toContain('SECRET OUTSIDE');
+    }
+    if (fs.existsSync(metaPath(dir, 'claude'))) {
+      const meta = JSON.parse(fs.readFileSync(metaPath(dir, 'claude'), 'utf8'));
+      if (meta.conversations.c1) expect(meta.conversations.c1.tombstone).toBe(true);
+    }
+  });
+
+  // Native transcripts use a different line format than claude's — a header
+  // line (skipped) followed by { type: 'user-message', data: { text } } lines
+  // (see extractNativeUserTurns in index-core.ts) — so the claude-shaped
+  // userMsg() fixture above does not apply here.
+  const nativeTranscript = (text: string) => [
+    JSON.stringify({ type: 'session-header', sessionId: 'c1' }),
+    JSON.stringify({
+      type: 'user-message', timestamp: '2026-07-26T18:04:11.000Z', data: { text },
+    }),
+    '',
+  ].join('\n');
+
+  it('covers the native lane with the same synced-space fallback', async () => {
+    const storeRoot = fs.mkdtempSync(path.join(tmp, 'store-'));
+    const spaceTranscript = path.join(storeRoot, 'native', 'transcripts', 'youcoded', 'c1.jsonl');
+    fs.mkdirSync(path.dirname(spaceTranscript), { recursive: true });
+    fs.writeFileSync(spaceTranscript, nativeTranscript('native lane from synced space'));
+
+    const localPath = path.join(tmp, 'no-such-native-local.jsonl');
+
+    await refreshChatsearchIndex({
+      homeRoot: tmp,
+      lanes: [{
+        provider: 'native',
+        lane: 'native',
+        records: [rec({ transcriptRef: 'native/transcripts/youcoded/c1.jsonl' })],
+        resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
+      }],
+      tagLabels: new Map(),
+    });
+
+    const dir = chatsearchDir(tmp);
+    const meta = JSON.parse(fs.readFileSync(metaPath(dir, 'native'), 'utf8'));
+    expect(meta.conversations.c1.tombstone).toBe(false);
+    expect(fs.readFileSync(turnsPath(dir, 'native'), 'utf8')).toContain('native lane from synced space');
+  });
+
+  it('tombstones the native lane too when neither path resolves', async () => {
+    const storeRoot = fs.mkdtempSync(path.join(tmp, 'store-'));
+    const localPath = path.join(tmp, 'never-created-native.jsonl');
+
+    await refreshChatsearchIndex({
+      homeRoot: tmp,
+      lanes: [{
+        provider: 'native',
+        lane: 'native',
+        records: [rec({ transcriptRef: 'native/transcripts/youcoded/c1.jsonl' })],
+        resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
+      }],
+      tagLabels: new Map(),
+    });
+
+    const meta = JSON.parse(fs.readFileSync(metaPath(chatsearchDir(tmp), 'native'), 'utf8'));
+    expect(meta.conversations.c1.tombstone).toBe(true);
   });
 });

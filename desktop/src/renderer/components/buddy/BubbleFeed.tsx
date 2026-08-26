@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../../state/chat-context';
 import { hookEventToAction } from '../../state/hook-dispatcher';
 import UserMessage from '../UserMessage';
+import SpecialistReportCard from '../SpecialistReportCard';
 import AssistantTurnBubble from '../AssistantTurnBubble';
+import { shouldRenderAssistantTurn } from '../../state/chat-types';
 import { CompactToolStrip } from './CompactToolStrip';
 import PromptCard from '../PromptCard';
 import { sendPromptInput } from '../../state/prompt-input';
@@ -98,6 +100,9 @@ export function BubbleFeed({ sessionId }: Props) {
             uuid: event.uuid,
             text: event.data.text,
             timestamp: event.timestamp,
+            // Host-injected turn marker + header — MUST mirror App.tsx.
+            injected: event.data.injected,
+            injectedMeta: event.data.injectedMeta,
             // Forward the subagent stamp so the reducer can drop subagent
             // briefings (they're already shown on the parent Agent card).
             parentAgentToolUseId: event.data.parentAgentToolUseId,
@@ -194,12 +199,37 @@ export function BubbleFeed({ sessionId }: Props) {
               partId: event.data.partId,
             });
           } else {
+            // Preparing tool card — the buddy feed renders tool cards too, so
+            // omitting this would make it draw the card only once arguments
+            // finish while the main window draws it immediately. MUST mirror
+            // App.tsx or the two windows diverge.
+            if (event.data?.toolPreparing) {
+              batchDispatch({
+                type: 'NATIVE_TOOL_PREPARING',
+                sessionId: event.sessionId,
+                toolCallId: event.data.toolPreparing.toolCallId,
+                toolName: event.data.toolPreparing.toolName,
+                chars: event.data.toolPreparing.chars,
+                cleared: event.data.toolPreparing.cleared,
+              });
+            }
+            // Fix: erase an abandoned half-written sentence BEFORE the heartbeat
+            // below parks/clears the turn — must stay before it, and MUST mirror
+            // App.tsx or the two windows diverge.
+            if (event.data?.dropPart) {
+              batchDispatch({
+                type: 'NATIVE_PARTS_DROPPED',
+                sessionId: event.sessionId,
+                partIds: event.data.dropPart.partIds,
+              });
+            }
             batchDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
-              // Native watchdog stall countdown — payload sets it, absence clears
-              // it. MUST mirror App.tsx or the two windows diverge.
+              // Native watchdog stall countdown + parked turn — payload sets,
+              // absence clears. MUST mirror App.tsx or the two windows diverge.
               stallWarning: event.data?.stallWarning,
+              stalled: event.data?.stalled,
             });
           }
           break;
@@ -229,6 +259,19 @@ export function BubbleFeed({ sessionId }: Props) {
               ...(event.data.autoCompaction ? { auto: true } : {}),
             });
           }
+          break;
+        case 'replay-complete':
+          // End of a transcript replay — reap tool cards the history left
+          // 'running'. The buddy feeds its OWN chatReducer instance (separate
+          // BrowserWindow), so App.tsx handling this does nothing for us and the
+          // orphaned card kept spinning here (found reviewing PR #287).
+          // sessionIdle false means main could not affirm the session is idle
+          // (live re-dock, or a CC session) and the reducer leaves it alone.
+          batchDispatch({
+            type: 'TRANSCRIPT_REPLAY_COMPLETE',
+            sessionId: event.sessionId,
+            sessionIdle: event.data?.sessionIdle === true,
+          });
           break;
       }
     });
@@ -341,11 +384,16 @@ export function BubbleFeed({ sessionId }: Props) {
                   key = entry.message.id;
                   // sessionId ?? '' — the buddy window has no ArtifactProvider, so
                   // FilepathToken pills render but their click is a documented no-op.
-                  content = <UserMessage message={entry.message} sessionId={sessionId ?? ''} showTimestamps={showTimestamps} />;
+                  // Host-injected turn → compact report card, MUST mirror ChatView.tsx.
+                  content = entry.injected
+                    ? <SpecialistReportCard message={entry.message} injected={entry.injected} meta={entry.injectedMeta} sessionId={sessionId ?? ''} showTimestamps={showTimestamps} />
+                    : <UserMessage message={entry.message} sessionId={sessionId ?? ''} showTimestamps={showTimestamps} />;
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
-                  if (!turn || turn.segments.length === 0) return null;
+                  // Shared gate (chat-types.ts) — one function keeps this
+                  // mirrored with ChatView.tsx by construction.
+                  if (!shouldRenderAssistantTurn(turn)) return null;
                   key = entry.turnId;
                   content = (
                     <AssistantTurnBubble
@@ -417,7 +465,10 @@ export function BubbleFeed({ sessionId }: Props) {
           {/* Thinking indicator — only shown when no tool is pending.
               Buddy is a passive viewer so we only show 'ok' state (no attention
               banners — the buddy floater's AttentionStrip in E5 owns that UX). */}
-          {state.isThinking && !hasAwaitingApproval && !hasRunningTools && (
+          {/* `!compactionPending` mirrors ChatView: CompactingCard is already
+              the status for a compaction, so don't stack a second spinner
+              under it. (Destin, 2026-08-16) */}
+          {state.isThinking && !hasAwaitingApproval && !hasRunningTools && !state.compactionPending && (
             <ThinkingIndicator />
           )}
         </>

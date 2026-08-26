@@ -1,0 +1,20 @@
+{
+  "_notes": [
+    "CALIBRATION SLICE of claude-md-guidance.json — one case, all three instruction arms, both models. 6 cells.",
+    "WHY run this before the full 24: three things are unmeasured, and all three are cheaper to learn here.",
+    "  1. COST. The per-cell estimate is derived from whole-BATTERY runs (40-63 tool calls, ~20 minutes). These cases are 1-3 calls. Input tokens dominate the bill ~44:1 over output because the whole conversation is resent every step, so a short case should cost a small fraction — but nobody has measured one. This slice turns that reasoning into a number.",
+    "  2. THE JUDGE. Every judge test to date drives a FAKE model. A grade is discarded unless its quote appears verbatim in the answer, and the real-world discard rate is unknown. If real judges quote loosely, the report says NOT GRADED honestly — but we would rather learn that on 6 cells than 24.",
+    "  3. THE PIPELINE. Nothing in this tool has faced a real model at all.",
+    "config-investigation is the chosen case because it is the one with an objectively checkable finding (the two config files disagree about the port), so a wrong answer is unmistakable rather than a matter of taste.",
+    "Everything else is identical to the full plan, so the full run can reuse these measurements directly."
+  ],
+  "name": "claude-md-guidance-calibration",
+  "cases": ["config-investigation"],
+  "instructions": [
+    { "id": "none", "file": null },
+    { "id": "draft", "file": "../eval-guidance/draft.md" },
+    { "id": "tightened", "file": "../eval-guidance/tightened.md" }
+  ],
+  "models": ["Claude Opus 5", "Qwen 3.8 Max"],
+  "judge": "x-ai/grok-4.5"
+}

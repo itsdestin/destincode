@@ -13,14 +13,18 @@
 // new event types.
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
 import type { TranscriptEvent } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
-import type { PermissionDecision } from '../../shared/permission-types';
+import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
+import { bashGrantOptions, type GrantScope } from '../../shared/bash-grant-shapes';
 import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
-import { checkPathGuard } from './tools/guards';
+import { checkPathGuard, workspaceMatchFor } from './tools/guards';
+import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliverableImageMediaType, MAX_ATTACHMENT_BYTES } from './image-support';
 
 // Tools whose permission SUBJECT is not a filesystem path. Bash's is a command
 // string; Skill's is a skill id. Both would be canonicalized against cwd and run
@@ -31,13 +35,105 @@ import { checkPathGuard } from './tools/guards';
 // Skill the wrong treatment the moment it was added (found in the 2026-07-28
 // branch review). Naming the set means the next non-path-subject tool has one
 // place to declare itself instead of inheriting file-tool behavior by default.
-const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill']);
+//
+// Fix 4 (review round 1): Task's subject is a CHARTER-SCOPED CONSENT KEY
+// (`${charter}:${work_dir}`, tools/task.ts's permissionSubject), not a bare
+// path — the charter prefix exists precisely so a remembered "Always allow"
+// for a read-only specialist can't silently cover a future read-write one at
+// the same path (spec §5: the charter is the unit of envelope consent).
+// Running that string through checkPathGuard/injectPathTriggers would try to
+// canonicalize "read-only:/home/x/proj" AS a path, which is a category error
+// exactly like Bash's command string or Skill's id above — workDir containment
+// itself is already enforced inside NativeSessionHost.createChild.
+const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
+
+// Tools whose target MUST already exist for the call to mean anything. Only
+// these can have an external_directory ask short-circuited by
+// workspaceMatchFor (2026-08-16): for them "nothing is there" is definitively
+// a mistake, so recovering the workspace file the model meant is strictly
+// better than an approval prompt about a fictional location.
+//
+// Write is deliberately ABSENT. "Doesn't exist yet" is its NORMAL case —
+// creating a new file outside the workspace is a real request a user may well
+// want to approve, and diverting it would refuse an action nobody rejected.
+// Glob/Grep are absent too: their subject is a DIRECTORY to search, and this
+// helper answers a file-shaped question.
+const REQUIRES_EXISTING_TARGET = new Set(['Read', 'Edit']);
+
+/** The disk question REQUIRES_EXISTING_TARGET tools are asking. Never throws —
+ *  a permission error reading someone else's directory answers "not a file I
+ *  can offer you", which is exactly the right answer here. */
+function isExistingFile(absPath: string): boolean {
+  try { return fs.statSync(absPath).isFile(); } catch { return false; }
+}
+
+/** The rule an "Always allow" persists.
+ *
+ *  The RENDERER never supplies a pattern — only a width selector — and this
+ *  re-derives from the tool call the session already holds. A renderer that could
+ *  name its own pattern could grant itself anything, because remembered rules are
+ *  the final precedence layer, above the destructive deny-list.
+ *
+ *  Returns null when nothing may be remembered for this call.
+ *
+ *  Exported (Fix, Important 6, final review): this is the ONE function that
+ *  decides both the confirm-sentence width (indirectly, via the caller
+ *  reading `scope`) and the stored rule's pattern/match shape — a routed
+ *  specialist ask (child-ask-router.ts) and a LATE routed answer
+ *  (native-session-host.ts's onLateResponse) used to hand-build their own
+ *  `{tool, pattern: subject, action:'allow', specialist}` object instead of
+ *  calling this, which silently dropped every "never rememberable" case this
+ *  function enforces (e.g. a bare `git push`, whose bashGrantOptions is empty
+ *  — see below) and discarded the grant WIDTH the user actually picked,
+ *  always storing an exact-match rule regardless of `grantScope`. Both call
+ *  sites now go through here, merging in `specialist` themselves (this
+ *  function has no concept of a specialist key — it's the same builder a
+ *  root session's own ask uses). */
+export function rememberedRuleFor(
+  toolName: string,
+  subject: string | undefined,
+  scope: GrantScope | undefined,
+): PermissionRule | null {
+  if (toolName === 'Bash' && typeof subject === 'string') {
+    // The subject is passed through untouched — bashGrantOptions does not trim,
+    // so the exact rung is byte-identical to what the engine compares later.
+    const options = bashGrantOptions(subject);
+    // Empty means no grant of any width may be offered (a bare `git push`, whose
+    // target is not in the command and changes underneath the grant). Fail closed.
+    if (options.length === 0) return null;
+    // Fall back to the NARROWEST option when the requested width was not offered
+    // for this command — never widen past what bashGrantOptions produced.
+    return (options.find((o) => o.scope === (scope ?? 'exact')) ?? options[0]).rule;
+  }
+  // Fix (Critical 1, final review): Task's subject is undefined ONLY for a
+  // task_id management call (steer/resume/interrupt), which never carries a
+  // charter/work_dir — every OTHER Task call has a real `${charter}:${workDir}`
+  // subject (tools/task.ts's permissionSubject). Falling through to the
+  // tool-wide branch below (built for genuinely subject-less tools like
+  // TodoWrite) would let a single "Always allow" on a task_id call persist a
+  // pattern-less `{tool:'Task', action:'allow'}` rule that then silently
+  // pre-approves EVERY future Task call — including a brand-new read-write
+  // spawn at any directory, which the user never saw or consented to. Fail
+  // closed: no rule of ANY width is ever remembered for a subject-less Task
+  // call — mirrors the existing "no grant possible" precedent (Bash commands
+  // with no safe width, e.g. bare `git push`, above return null the same way).
+  // The ask itself still resolves 'allow' for this one call either way.
+  if (toolName === 'Task' && subject === undefined) return null;
+  if (subject === undefined) return { tool: toolName, action: 'allow' };
+  // Non-Bash subjects are literal paths / ids. match:'exact' makes them mean what
+  // the confirm always claimed — a path containing '*' was a wildcard grant.
+  return { tool: toolName, pattern: subject, action: 'allow', match: 'exact' };
+}
 import { formatAnswers } from './tools/ask-user-question';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
-import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, type CompactionConfig } from './compaction';
+import { adaptForWire } from './wire-adapter';
+import { planCompaction, pruneToolOutputs, summarizePrompt, estimateTokens, countImageOutputs, type CompactionConfig } from './compaction';
 import { toReport, type PrefillProgress } from '../providers/prefill-progress';
+import { messageTokens, messagesTokens, APPROX_CHARS_PER_TOKEN } from './message-size';
 import { createSkillTool } from './tools/skill';
+import { createTaskTool } from './tools/task';
+import { ModelSearchTool } from './tools/model-search';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -92,6 +188,38 @@ export interface HarnessSessionOpts {
    *  NativeSessionHost from the process-level McpManager at create/resume.
    *  Absent/[] → no MCP tools attached, exactly the pre-Task-6 behavior. */
   mcpServers?: ReadyServer[];
+  /** Set ONLY by NativeSessionHost.createChild (Task 6) — true for a
+   *  specialist child session. Belt-and-suspenders against depth-2
+   *  delegation: createChild already never puts 'Task' in a child's filtered
+   *  tool set (no SpecialistDefinition.allowedTools lists it), so this is a
+   *  SECOND, independent gate on syncTaskTool, not the only one — a bug in
+   *  either check alone still cannot let a specialist spawn its own
+   *  specialists. Absent/false for every ordinary (non-child) session. */
+  isSpecialistChild?: boolean;
+  /** Per-turn specialist status block (Task 5, MOIM pattern). Evaluated at the
+   *  START of every turn; a non-null return is injected as a `<specialists-
+   *  status>` history message so the model can see which delegated children
+   *  are running or finished-and-unread WITHOUT ever polling for them. Wired
+   *  by NativeSessionHost.wire() — root sessions only, since wire() is never
+   *  called for a specialist child (see createChild's own "NOT wire()" note).
+   *  Absent → no injection, which is exactly the pre-Task-5 behavior every
+   *  existing test relies on (zero cost for a session that never delegates). */
+  specialistStatus?: () => string | null;
+  /** Task 10 (plan 1b): directories checkPathGuard treats as internal to THIS
+   *  session — readable without an external_directory ask, the same way
+   *  Bash's own spillRoot() is (tools/guards.ts). Wired by NativeSessionHost
+   *  (toolWiring) to exactly one root: this project's own
+   *  sessions/<slug>/specialist-reports/ subdirectory (Important 5, final
+   *  review — narrowed from the whole sessions/<slug>/ artifact directory,
+   *  which also holds every OTHER conversation's transcript .jsonl and the
+   *  delegation ledger sidecars; a model exempted from the ask for its own
+   *  spill file must not get free read access to those too), where an
+   *  oversized specialist report's spill file (NativeHome.writeSessionArtifact) lands —
+   *  so the footer that tells the model "Read it if you need the rest"
+   *  points at a path the guard will actually let it open. Absent → no
+   *  exemption, which is the pre-Task-10 behavior every existing session (and
+   *  every specialist CHILD, which never gets this wired) still gets. */
+  internalReadRoots?: string[];
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -116,6 +244,14 @@ interface StepResult {
    *  first chunk) and everything outside the stream (tool execution, permission
    *  waits). 0 when the step produced no output. */
   generationMs: number;
+  /** Preparing cards this step put on screen whose tool call never COMPLETED
+   *  (tool-input-start with no matching 'tool-call' part — announced, then
+   *  dropped as malformed/truncated). Carried out of the stream so the
+   *  empty-step retry in the turn loop can withdraw them: the step re-runs
+   *  INSIDE the same turn, so endTurn's reaping never fires and an orphaned
+   *  card would spin beside the retry's own cards until the turn ends (the
+   *  same reason the manual-Retry and stall-retry paths withdraw theirs). */
+  pendingPreparing: { toolCallId: string; toolName: string; chars: number }[];
 }
 
 // v7 stream parts carry the chunk in .text (verified against ai@7.0.22:
@@ -136,14 +272,47 @@ function mapStopReason(finishReason: string | undefined): string {
     default: return finishReason ?? 'unknown';
   }
 }
-const APPROX_CHARS_PER_TOKEN = 4;
+
+// The finishReason shapes that mean "the provider claims an orderly finish" —
+// the only shapes eligible for the empty-step retry (spec 2026-08-21). Kept
+// HERE, next to mapStopReason, so the two finishReason vocabularies stay one
+// list: a reason added to the switch above must be classified here too, or
+// empty steps with that reason silently lose the retry.
+// 'tool-calls' is deliberately included: with ZERO parsed calls it means the
+// stream announced tool use but every call was dropped as malformed/truncated
+// (fragments are discarded at the tool-input part handlers) — nothing ran,
+// nothing rendered, so it is the same degenerate shape as a bare 'stop' and a
+// retry is exactly right. 'length' (truncation) and 'content-filter' (refusal)
+// stay excluded so their honest mappings are never masked by a retry.
+const ORDERLY_EMPTY_FINISHES = new Set(['stop', 'unknown', 'other', 'tool-calls']);
+
+/** Widening advice per tool, in that tool's OWN vocabulary.
+ *
+ *  WHY (2026-08-06, Task 18): this path appended "Re-run with offset/limit, or
+ *  use Grep" to EVERY oversized tool result, including Bash and WebSearch,
+ *  which accept neither parameter. It is the same defect the bounds contract
+ *  removed from the defineTool path (tools/registry.ts) — and it fires
+ *  precisely when output is largest, so it was the most likely advice a model
+ *  would ever act on. Two models testing the harness followed it into a dead
+ *  end. Tools absent from this map get a bare statement with no advice, which
+ *  is the honest fallback per docs/error-message-standards.md — never a guess. */
+const FIT_MORE_HINT: Record<string, string> = {
+  Read: 'Re-run with a narrower offset/limit window',
+  Bash: 'Re-run piping through head, tail, or wc -l',
+  Grep: 'Re-run with a narrower pattern or output_mode: "count"',
+  Glob: 'Re-run with a narrower glob pattern',
+  WebSearch: 'Re-run with a narrower query',
+  WebFetch: 'Fetch a more specific URL or section',
+};
 
 // Shrink a role:'tool' message's result text to fit `maxChars`, splitting the
 // allowance evenly when one message carries several results. Used only by
 // fitToContext's oversized-tail salvage — the ordinary path never rewrites
 // content. The trailing notice matters: without it a model reads a hard-cut
-// file as complete and confidently answers from a fragment.
-function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage {
+// file as complete and confidently answers from a fragment. Exported so Task
+// 18's tests can drive it directly without recreating a whole oversized
+// history through fitToContext.
+export function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage {
   if (msg.role !== 'tool' || !Array.isArray(msg.content)) return msg;
   const parts = msg.content as any[];
   const results = parts.filter((p) => p?.type === 'tool-result');
@@ -153,15 +322,35 @@ function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage 
     ...msg,
     content: parts.map((p: any) => {
       if (p?.type !== 'tool-result') return p;
+      // Sibling of pruneToolOutputs' content branch (compaction.ts) — this is
+      // the LAST-RESORT salvage path (fitToContext's oversized-tail fallback,
+      // the step immediately before a provider 400), and until this branch
+      // existed it was the one sizing path that could not reclaim anything
+      // from an image: the `typeof value !== 'string'` check below let a
+      // content-output tool result pass through completely untouched. Collapse
+      // it the same way prune does — text kept, file part dropped, a named
+      // note in its place — including the same guard (only claim an image was
+      // dropped when a file part is actually present), so the two paths can't
+      // silently drift on what counts as "an image output".
+      if (p.output?.type === 'content' && Array.isArray(p.output.value)) {
+        const text = p.output.value.filter((v: any) => v?.type === 'text').map((v: any) => v.text).join('\n');
+        const hasFile = p.output.value.some((v: any) => v?.type === 'file');
+        if (!hasFile) return { ...p, output: { type: 'text', value: text } };
+        const note = `[image dropped — this result alone exceeds the model's context window; re-run ${p.toolName ?? 'the tool'} if you need to see it again]`;
+        return { ...p, output: { type: 'text', value: text ? `${text}\n${note}` : note } };
+      }
       const value = p.output?.value;
       if (typeof value !== 'string' || value.length <= per) return p;
       const dropped = value.length - per;
+      // Derived from the RESULT'S OWN toolName, not a shared default — see
+      // FIT_MORE_HINT above. Nothing is appended when the tool isn't in the map.
+      const hint = FIT_MORE_HINT[p.toolName];
       return {
         ...p,
         output: {
           ...p.output,
           value: value.slice(0, per) +
-            `\n\n[truncated — ${dropped.toLocaleString()} more characters were dropped because this result alone exceeds the model's context window. Re-run with offset/limit, or use Grep, to see the rest.]`,
+            `\n\n[truncated — ${dropped.toLocaleString()} more characters were dropped because this result alone exceeds the model's context window.${hint ? ` ${hint}.` : ''}]`,
         },
       };
     }),
@@ -177,7 +366,25 @@ function truncateToolMessage(msg: ModelMessage, maxChars: number): ModelMessage 
 // user-fixable detail lives in the body. OpenRouter, for example, nests the
 // upstream reason at `error.metadata.raw` (e.g. "<model> is temporarily
 // rate-limited upstream. Please retry shortly, or add your own key…").
+// A "message" that is blank, or is the literal text '[object Object]', carries
+// zero information — the second case is what a naive `String(nonError)` or
+// `${nonError}` template interpolation produces (confirmed: runStreamOnce used
+// to do exactly that before the 2026-08-10 fix, and produced this literal
+// string as a real session-error's ENTIRE text). Treat both as "no message"
+// rather than parroting either back — error-message-standards.md requires
+// every user-facing error to be specific+accurate OR general+non-committal;
+// '[object Object]' is neither.
+function isUsableMessage(s: unknown): s is string {
+  return typeof s === 'string' && s.trim().length > 0 && s.trim() !== '[object Object]';
+}
+
 export function describeProviderError(err: any): string {
+  // A thrown value isn't always an object at all — `throw 'rate limited'` is
+  // legal JS and describeProviderError must not turn that into the generic
+  // fallback when the string itself is the real, useful detail.
+  if (typeof err === 'string') {
+    return isUsableMessage(err) ? err.trim() : 'The model request failed.';
+  }
   const api = err?.lastError ?? err;            // unwrap the retry wrapper
   const status = api?.statusCode ?? api?.status;
   let detail: string | undefined;
@@ -191,16 +398,55 @@ export function describeProviderError(err: any): string {
   })();
   const errObj = parsedBody?.error ?? parsedBody;
   detail = errObj?.metadata?.raw ?? errObj?.message ?? parsedBody?.message;
-  if (typeof detail === 'string' && detail.trim()) {
+  if (isUsableMessage(detail)) {
     return status ? `${detail.trim()} (provider error ${status})` : detail.trim();
   }
-  // No structured detail (network error, etc.) — the SDK message beats nothing.
-  return api?.message ?? err?.message ?? 'The model request failed.';
+  // No structured detail (network error, etc.) — the SDK message beats nothing,
+  // as long as it's not itself the poisoned '[object Object]' literal.
+  const sdkMessage = api?.message ?? err?.message;
+  return isUsableMessage(sdkMessage) ? sdkMessage.trim() : 'The model request failed.';
 }
 // Back-filled into a tool-result when a turn is interrupted mid-step (during a
 // permission ask). Every collected tool-call MUST get a matching tool-result or
 // the persisted history ends on a dangling tool_call that provider APIs reject.
 const CANCELED_TOOL_TEXT = 'Canceled: the user interrupted this action.';
+
+// Returned to the model when the user closes an AskUserQuestion card without
+// answering. The OLD copy ("Continue with your best judgment") invited the model
+// to guess and keep working — which is the behavior this replaces. This states
+// the outcome instead: the user has taken the turn back. It is a real tool
+// result (pairing holds); the driver stops the loop right after recording it.
+// Spec: youcoded-dev/docs/archive/specs/2026-08-13-dismiss-ends-turn-design.md
+const DISMISSED_TOOL_TEXT =
+  'The user closed this question without answering and took over. Stop here and wait for their next message.';
+
+// Returned when an interactive ask is refused by a POLICY rather than a person
+// (childAskPolicy, the harness evaluator's fixture jail). Unlike a human
+// dismissal this does NOT end the turn — the policy's meaning is "you may not
+// ask, carry on and finish", and the evaluator's wrap-up turn depends on the
+// model answering after exactly this refusal.
+const REFUSED_ASK_TEXT =
+  'The user dismissed the question without answering. Continue with your best judgment, or ask differently in plain text.';
+
+// Back-filled into the still-un-executed calls of a step that ended because the
+// user dismissed a question. Deliberately NOT CANCELED_TOOL_TEXT: that says "the
+// user interrupted this action", and the user did not interrupt — a wrong cause
+// in a message the model reads is worse than a vague one.
+const NOT_RUN_TOOL_TEXT = 'Not run: the turn ended when the user closed the question.';
+
+// stopReason for that orderly stop. AssistantTurnBubble maps it to the
+// "Question closed — waiting for you." footer, so a dismissed turn can't be
+// mistaken for a session that silently died.
+const DISMISSED_STOP_REASON = 'question_dismissed';
+
+/** Driver-private "record this result, THEN end the turn" wrapper.
+ *
+ *  WHY this is not a flag on ToolResultPayload: that type is what EVERY tool
+ *  returns, so an `endsTurn` field there would let any tool end a turn — a far
+ *  bigger promise than this change makes. Only runOneTool's interactive branch
+ *  constructs this, and ToolResultPayload has no `kind` property, so the loop
+ *  can narrow on `'kind' in payload` with no ambiguity. */
+type EndTurnResult = { kind: 'end-turn'; payload: ToolResultPayload };
 
 // Streaming inactivity watchdog (native runtime). The abort-race below only
 // breaks the stream on a USER interrupt — a provider that holds the socket open
@@ -211,9 +457,23 @@ const CANCELED_TOOL_TEXT = 'Canceled: the user interrupted this action.';
 // STALL_WARNING_MS, then act after a further STALL_RETRY_COUNTDOWN_MS grace.
 const STALL_WARNING_MS = 60_000;          // silence tolerated before we warn
 const STALL_RETRY_COUNTDOWN_MS = 15_000;  // grace after the warning before acting
-// consumeStep's retry sentinel: the stream stalled but NOTHING had streamed yet,
-// so the step can be safely re-run once (re-running after content streamed would
-// duplicate it — fixed partIds mean the retry's deltas can't merge with the old).
+/** Min gap between argument-progress emits, PER tool call. The preparing card
+ *  only has to prove the stream is alive; a per-chunk emit would spam desktop
+ *  IPC, the remote WebSocket, and the Android bridge for no extra information.
+ *  Same reasoning as the promptProcessing throttle (lastPrefillEmitAt). */
+const TOOL_PREPARING_EMIT_MS = 300;
+// consumeStep's retry sentinel. TWO producers return it, safe for different
+// reasons: (1) the AUTOMATIC retry, whose guard is `!emittedAny &&
+// isFirstAttempt` — nothing COUNTABLE (text, reasoning, or a completed tool
+// call) has streamed on the first attempt. NOT the same as "nothing has
+// streamed at all": tool-input-delta (argument fragments) deliberately never
+// sets emittedAny, so a first-attempt stall after minutes of tool-argument
+// text takes this branch too, even though real bytes did arrive — safe
+// anyway, because nothing has EXECUTED and nothing is on screen or in
+// emittedPartIds to collide with; (2) the MANUAL Retry, fired from a parked
+// step where content already streamed — safe ONLY because that branch emits
+// `dropPart` first, erasing the abandoned text before the re-run's deltas can
+// land on the same partIds and merge with it.
 const STALL_RETRY = Symbol('stall-retry');
 // Thrown when silence outlasts the countdown AND a retry isn't safe (content
 // already streamed, or the one allowed retry was already spent). Routes through
@@ -283,6 +543,13 @@ export class HarnessSession extends EventEmitter {
   private history: ModelMessage[] = [];
   private abort: AbortController | null = null;
   private interrupted = false;
+  // Task 3 — queued mid-run course corrections (postSteer), drained as
+  // history-only user messages at the top of the NEXT turn-loop iteration.
+  // Anything left here when a turn ends (posted during the final step, too
+  // late for another iteration to drain it) is a MISSED steer — surfaced via
+  // drainUnappliedSteers() so a caller (runDelegation, Task 6) can report it
+  // honestly instead of silently dropping it.
+  private pendingSteers: string[] = [];
   // Prompt tokens as of the PREVIOUS step of this turn. Used to report how much
   // context is genuinely NEW — llama.cpp reuses the cached prefix, so only the
   // appended messages actually get prefilled. Reset per turn; 0 means "next step
@@ -300,6 +567,11 @@ export class HarnessSession extends EventEmitter {
    *  starts. null → the session root. Session runtime like readRegistry/todos —
    *  never persisted to the transcript, so it resets on resume. */
   private shellCwd: string | null = null;
+  /** Opt-in env persistence (17/17 harness reviews, four rounds 2026-08-01
+   *  through 2026-08-09): vars a `persistent_env: true` Bash call captured.
+   *  Mirrors shellCwd exactly — same "session runtime, resets on resume"
+   *  contract, same reason (never persisted to the transcript). */
+  private shellEnv: Record<string, string> | null = null;
   private retryDelays: number[];
   // Resolved capability profile (Task 5). Drives the doom-loop window + tool
   // attachment; re-assigned by setBinding on a mid-session model swap.
@@ -307,10 +579,95 @@ export class HarnessSession extends EventEmitter {
   /** Trigger ids already injected in this session. Survives across turns on
    *  purpose — a rule is a standing instruction, not a per-turn reminder. */
   private readonly injectedTriggerIds = new Set<string>();
+  /** Delivered-image dedupe: canonical path → mtimeMs at delivery. A model that
+   *  re-Reads the SAME unchanged file gets "already visible" text, not a second
+   *  ~1.6k-token copy; a CHANGED file (new mtime) is delivered again. Cleared on
+   *  every site that DISCARDS entries from `this.history` itself — resume
+   *  (seedHistory, alongside readRegistry), /clear (clearHistory), compaction's
+   *  summarize step (maybeCompact/compactNow), and compaction's PRUNE step when
+   *  it actually collapses an image output (same two call sites, gated on a
+   *  countImageOutputs before/after diff so an ordinary text-only prune doesn't
+   *  pay for it) — because every one of those DROPS entries the cache is
+   *  vouching for. A stale entry after a drop doesn't just cost a redundant
+   *  re-Read: it makes the dedupe note ITSELF false ("already visible earlier
+   *  in this conversation" when it no longer is), permanently, until an
+   *  unrelated mtime change happens to reset it. The re-Read this forces after
+   *  a clear is not free — a second ~1.6k-token copy of an image that may still
+   *  be sitting in surviving history — but that is the safe failure direction:
+   *  over-delivery costs tokens, the bug it replaces cost correctness.
+   *
+   *  KNOWN GAP (2026-08-11 review, deliberately NOT fixed in this pass): the
+   *  list above is every site that discards from `this.history`. It is NOT
+   *  exhaustive over every way the MODEL's effective view of history can
+   *  shrink — fitToContext trims oldest messages for the OUTGOING REQUEST
+   *  only, leaving `this.history` itself untouched, so an image can scroll out
+   *  of what the model actually sees while this cache still vouches for it: a
+   *  permanently false "already visible" note plus silent permanent
+   *  non-delivery of that file.
+   *
+   *  Reachability, worked through so a future session doesn't have to re-derive
+   *  it: compaction's trigger uses REAL last-step input tokens, but that value
+   *  is 0 at the first step of every turn, so planCompaction falls back to
+   *  estimating the UN-TRIMMED history at that moment — meaning at each turn
+   *  boundary compaction sees the true size and fires. That's the load-bearing
+   *  mitigation. For large context windows the two mechanisms then agree:
+   *  anything old enough for fitToContext to trim is old enough that prune
+   *  already collapsed it, tripping the countImageOutputs clear above. They
+   *  disagree only when the prune-protected window is bigger than
+   *  fitToContext's budget, which needs a context window under roughly 8,500
+   *  tokens AND supportsVision: true — which for a local engine only happens
+   *  via an explicit registry entry. So the live exposure is narrow: a
+   *  registry-declared small local vision model with a very small context
+   *  window.
+   *
+   *  Intended eventual fix (deferred, not this pass): re-key this map to
+   *  Map<path, { mtime, toolCallId }> and reconcile against the FITTED window
+   *  after fitToContext runs, so the cache can only vouch for what the model
+   *  actually just saw. Two narrower fixes were considered and rejected
+   *  because fitToContext runs on EVERY request, not just ones near budget: an
+   *  unconditional clear there defeats dedupe entirely, and a count-diff there
+   *  (mirroring the prune sites) latches permanently true the moment history
+   *  outgrows the context window, which is ordinary steady-state for a long
+   *  conversation. */
+  private shownImages = new Map<string, number>();
   /** Read-only view of the resolved profile. The host needs the injection budget
    *  to size a /skill-name body, and re-resolving it there would risk drifting
    *  from what this session actually runs with (setBinding can have changed it). */
   get profileSnapshot(): Readonly<CapabilityProfile> { return this.profile; }
+
+  // How full this session's context window is right now, in tokens — the SAME
+  // number the turn-complete usage payload reports (see the emit site near the
+  // end of send()), kept on the instance so a caller can read it BETWEEN turns.
+  //
+  // WHY this exists (Task 7, specialists): sizing a specialist's report against
+  // the parent's remaining headroom needs the parent's occupancy, and main has
+  // no per-session usage cache — the old one was deliberately deleted
+  // (ipc-handlers.ts, near the noteModelUsed wiring) and the StatusBar's own
+  // context gauge is renderer-side, computed from the event it receives.
+  //
+  // WHY NOT usage.inputTokens: that field SUMS every step of the turn, so it
+  // re-counts the whole history once per step (a 5-step turn reports ~5x the
+  // real occupancy — Destin, 2026-07-28). The last step's prompt already
+  // contains everything, so lastIn + lastOut is the honest "how full".
+  private _contextUsedTokens: number | null = null;
+  /** Tokens occupying this session's window after its last COMPLETED step. Mid-
+   *  turn it is stale by at most one step, which is fine for a budget heuristic
+   *  — the alternative is a per-step event nobody else needs.
+   *
+   *  Fix (Task 7 review): this used to return raw `_contextUsedTokens`, which
+   *  stays null forever for a usage-silent provider (local models that don't
+   *  report token counts) — that made the headroom report cap silently never
+   *  fire for exactly the models that need it most. The turn-complete emit
+   *  site (near :1528, in send()) already falls back to estimateContextTokens()
+   *  in that case; mirror it here so this accessor and that payload never
+   *  disagree. Only returns null if the estimate itself were ever unavailable
+   *  (it isn't today — chars/4 always produces a number). */
+  get contextUsedTokens(): number | null { return this._contextUsedTokens ?? this.estimateContextTokens(); }
+  /** This session's resolved context window in tokens (null when no source
+   *  could answer). Paired with contextUsedTokens: "remaining" needs both, and
+   *  the session is the only place that tracks the CURRENT one — setBinding
+   *  re-resolves it on a mid-session model swap. */
+  get contextWindowTokens(): number | null { return this.opts.contextLength ?? null; }
 
   // Ids of MCP servers left off the LAST buildAiTools() pass for budget reasons
   // (Task 6) — recomputed every call, so a UI reading this after buildAiTools
@@ -352,8 +709,10 @@ export class HarnessSession extends EventEmitter {
     // a stale mtime (or a leftover todo list) from a prior process from wrongly
     // satisfying the read-before-edit gate on the first edit after resume.
     this.readRegistry.clear();
+    this.shownImages.clear();
     this.todos.length = 0;
     this.shellCwd = null; // a resumed session starts back at the workspace root
+    this.shellEnv = null; // same contract — a resumed session starts with a fresh env too
   }
 
   /** Mid-session model swap (next turn uses the new binding). A swap can cross
@@ -365,6 +724,14 @@ export class HarnessSession extends EventEmitter {
     if (profile) this.profile = profile;
   }
 
+  /** Task 5 (MOIM pattern): NativeSessionHost.wire() calls this on every ROOT
+   *  session right after construction — opts is already built by then, so this
+   *  is the same late-bind-onto-opts shape setBinding uses above, not a new
+   *  pattern. Never called for a specialist child (wire() isn't). */
+  setSpecialistStatus(fn: () => string | null): void {
+    this.opts.specialistStatus = fn;
+  }
+
   /** Effective system prompt: the assembled one (Task 11) or the harness's own. */
   private get systemText(): string { return this.opts.systemPrompt ?? this.opts.harness.systemPrompt; }
 
@@ -373,7 +740,7 @@ export class HarnessSession extends EventEmitter {
    *  a measured prompt-token count is always preferred. */
   private estimateContextTokens(): number {
     return Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN)
-      + Math.ceil(JSON.stringify(this.history).length / APPROX_CHARS_PER_TOKEN);
+      + messagesTokens(this.history);   // binary-aware — see message-size.ts
   }
 
   private emitEvent(type: TranscriptEvent['type'], data: TranscriptEvent['data']): void {
@@ -452,6 +819,33 @@ export class HarnessSession extends EventEmitter {
     // step discovering it doesn't exist.
     if (scoped.list().length === 0) return;
     this.toolByName.set('Skill', createSkillTool(scoped));
+  }
+
+  /** Add or remove the Task tool — and, since Task 14, ModelSearch alongside
+   *  it — to match the CURRENT profile + session kind (Task 6, spec decision 4).
+   *
+   *  Two independent gates, BOTH required:
+   *   - profile.canDelegate: a weak/unverified orchestrator serial-collapses
+   *     delegated work instead of actually parallelizing it — see
+   *     capability-profile.ts's own WHY comment on the field.
+   *   - !opts.isSpecialistChild: belt-and-suspenders against depth-2
+   *     delegation (see isSpecialistChild's own comment on HarnessSessionOpts).
+   *
+   *  ModelSearch rides the IDENTICAL gate and never attaches alone: it exists
+   *  to name a specific model for a Task delegation, so a session that
+   *  cannot delegate has nothing for it to do (Task 14).
+   *
+   *  Run per buildAiTools (not once in the constructor), same reason
+   *  syncSkillTool is: setBinding() re-resolves the profile on a model swap,
+   *  so Task must come back OFF when a session swaps down to a weak local
+   *  model and back ON when it swaps back up. The has()/delete() pair keeps
+   *  both directions idempotent.
+   */
+  private syncTaskTool(): void {
+    const wanted = this.profile.canDelegate && !this.opts.isSpecialistChild;
+    if (!wanted) { this.toolByName.delete('Task'); this.toolByName.delete('ModelSearch'); return; }
+    if (!this.toolByName.has('Task')) this.toolByName.set('Task', createTaskTool());
+    if (!this.toolByName.has('ModelSearch')) this.toolByName.set('ModelSearch', ModelSearchTool);
   }
 
   /** Add or remove MCP server tools to match the CURRENT profile's budget
@@ -541,6 +935,7 @@ export class HarnessSession extends EventEmitter {
     // old list around would misreport why MCP servers are unavailable.
     if (!this.profile.supportsTools) { this._droppedMcpServers = []; return {}; }
     this.syncSkillTool();
+    this.syncTaskTool();
     this.syncMcpTools();
     // Simplified presentation (spec §4.2): small local models get each tool's
     // compact shortDescription (falling back to the full description when a tool
@@ -551,7 +946,19 @@ export class HarnessSession extends EventEmitter {
     for (const t of this.toolByName.values()) {
       // MCP tools carry the server's own JSON Schema; everything else is zod.
       const schema = t.rawInputSchema ? jsonSchema(t.rawInputSchema as any) : zodSchema(t.inputSchema);
-      out[t.name] = tool({ description: simplified ? (t.shortDescription ?? t.description) : t.description, inputSchema: schema });
+      // descriptionFor lets a tool vary its wording by capability (Read + vision).
+      // Simplified presentation still wins for small local models — shortDescription
+      // stays the schema-size escape hatch.
+      const full = t.descriptionFor?.({ supportsVision: this.profile.supportsVision }) ?? t.description;
+      // Fix (2026-08-11 review): the simplified branch used to drop straight to the
+      // static shortDescription, discarding the vision-aware wording above. That
+      // silently reopened the Roo Code #10440 gap for exactly the tier — small
+      // local models — simplified presentation targets: a vision model never told
+      // Read handles images never tries. shortDescriptionFor mirrors descriptionFor
+      // at short-text length; only falls through to the static text/full when a
+      // tool doesn't define one (or the model has no vision).
+      const shortDesc = t.shortDescriptionFor?.({ supportsVision: this.profile.supportsVision }) ?? t.shortDescription ?? full;
+      out[t.name] = tool({ description: simplified ? shortDesc : full, inputSchema: schema });
     }
     return out;
   }
@@ -566,13 +973,40 @@ export class HarnessSession extends EventEmitter {
   }
 
   /** Tool-result history part. The `output: { type:'text', value }` shape is
-   *  pinned (Task 1) — `result`/other field names throw AI_InvalidPromptError. */
-  private toolResultPart(call: ToolCall, text: string): any {
-    return { type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: { type: 'text', value: text } };
+   *  pinned (Task 1) — `result`/other field names throw AI_InvalidPromptError.
+   *  `images` defaults to `[]` so every existing caller (including the interrupt
+   *  back-fill, which passes only `text`) keeps emitting the byte-identical
+   *  text-only shape. When images ARE present, the output becomes ai@7's
+   *  'content' shape — @ai-sdk/anthropic maps it to native tool_result image
+   *  blocks; every other wire is rewritten by adaptForWire (wire-adapter.ts). */
+  private toolResultPart(call: ToolCall, text: string, images: Array<{ mediaType: string; data: Buffer; filename?: string }> = []): any {
+    if (!images.length) {
+      return { type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName, output: { type: 'text', value: text } };
+    }
+    return {
+      type: 'tool-result', toolCallId: call.toolCallId, toolName: call.toolName,
+      output: {
+        type: 'content',
+        value: [
+          { type: 'text', text },
+          // Fix 3 (2026-08-11 review): filename rides through onto the file
+          // part. wire-adapter.ts labels every image `f.filename ?? toolName`
+          // — precisely so a multi-image result doesn't produce N identical
+          // placeholders naming only the tool. Without this every image was
+          // labelled "Read" regardless of which file it was.
+          ...images.map((i) => ({ type: 'file', mediaType: i.mediaType, data: { type: 'data', data: i.data }, ...(i.filename ? { filename: i.filename } : {}) })),
+        ],
+      },
+    };
   }
 
   /** Oldest-first truncation to fit the context window. Always keeps the
-   *  newest user message; chars/4 is a deliberate estimate, not a tokenizer. */
+   *  newest user message; chars/4 is a deliberate estimate, not a tokenizer.
+   *  WHY this matters for shownImages: this trims the OUTGOING REQUEST only —
+   *  `this.history` itself is untouched — so an image can drop out of what the
+   *  model actually sees while the dedupe cache still vouches for it. See the
+   *  shownImages field comment's KNOWN GAP section for the reachability
+   *  analysis and why that isn't fixed here. */
   private fitToContext(messages: ModelMessage[]): ModelMessage[] {
     const ctx = this.opts.contextLength ?? 32_768;
     const budgetTokens = ctx - (this.opts.harness.limits?.maxTokens ?? 4096) - 1024; // output + margin
@@ -586,7 +1020,7 @@ export class HarnessSession extends EventEmitter {
     let total = total0;
     const kept: ModelMessage[] = [];
     for (let i = messages.length - 1; i >= 0; i--) {
-      const size = Math.ceil(JSON.stringify(messages[i].content).length / APPROX_CHARS_PER_TOKEN);
+      const size = messageTokens(messages[i]);   // binary-aware — see message-size.ts
       if (kept.length > 0 && total + size > budgetTokens) break;
       kept.unshift(messages[i]);
       total += size;
@@ -652,7 +1086,7 @@ export class HarnessSession extends EventEmitter {
     // Whatever budget is left after the system prompt and the head goes to the
     // tool output. Floored at a usable amount so a hostile budget still yields a
     // readable fragment rather than an empty string.
-    const usedTokens = systemTokens + head.reduce((n, m) => n + Math.ceil(JSON.stringify(m.content).length / APPROX_CHARS_PER_TOKEN), 0);
+    const usedTokens = systemTokens + head.reduce((n, m) => n + messageTokens(m), 0);   // binary-aware
     const availableChars = Math.max(2_000, (budgetTokens - usedTokens) * APPROX_CHARS_PER_TOKEN);
     return [...head, truncateToolMessage(messages[toolIdx], availableChars)];
   }
@@ -686,7 +1120,14 @@ export class HarnessSession extends EventEmitter {
     const cfg = this.compactionConfig();
     const decision = planCompaction(this.history, cfg, lastInputTokens);
     if (decision.action === 'none') return;
+    // Prune can now collapse an image 'content' output to text (compaction.ts)
+    // outside its protected window — a THIRD path (besides /clear and
+    // summarize) that discards a delivered image. Diff the image count across
+    // the call to catch it regardless of what decision.action turns out to be
+    // below, including the plain 'prune' early-return two lines down.
+    const imagesBeforePrune = countImageOutputs(this.history);
     this.history = pruneToolOutputs(this.history, cfg);   // always prune first
+    if (countImageOutputs(this.history) < imagesBeforePrune) this.shownImages.clear();
     if (decision.action === 'prune') return;
     const cut = this.summarizeCutIndex();
     if (cut <= 0) return;                                  // nothing safely condensable → pruned history stands
@@ -709,6 +1150,17 @@ export class HarnessSession extends EventEmitter {
     // CC's own compact-summary events never carry it, so the manual path is
     // untouched.
     this.emitEvent('compact-summary', { summary, autoCompaction: true });
+    // Fix 2 (2026-08-11): the summarized-away span can still contain a
+    // delivered image. pruneToolOutputs (above) now DOES collapse 'content'
+    // (image) outputs too, but only ones OUTSIDE its own token-budget
+    // protected window — see the imagesBeforePrune diff above, which handles
+    // that case. An image can sit INSIDE that window (survive prune) yet
+    // still fall in THIS summarize span (older than the turn-based last-2
+    // cut) and get flattened into `summary` here. An un-cleared shownImages
+    // would then keep vouching for an image no longer in history — the same
+    // false "already visible" bug /clear had (Fix 1), reachable here
+    // automatically at 75% context instead of only on an explicit /clear.
+    this.shownImages.clear();
     this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
   }
 
@@ -728,6 +1180,22 @@ export class HarnessSession extends EventEmitter {
    *  RETRIED from scratch, which is what made progress appear to reset itself
    *  (Destin, 2026-07-26). */
   private rearmStallWatchdog: (() => void) | null = null;
+  /** True once THIS turn has parked on a stall the user was told about.
+   *  WHY it outlives the step: a manual Retry re-runs the step from the top,
+   *  which lands back on the FIRST-BYTE clock (Clock 1). Without this flag a
+   *  retry against a dead provider would sit for the full prefill budget and
+   *  then kill the turn with Clock 1's "didn't begin responding" error — the
+   *  exact ending this design exists to remove, arriving four minutes after the
+   *  user asked for the opposite. Cleared at the start of every turn.
+   *  Its one LIVE effect already, before any Retry button exists: inside a
+   *  turn that has already parked once, a LATER step's own Clock-1 stall
+   *  (e.g. a fresh tool-call step that never gets a first byte) parks too
+   *  instead of ending the turn — see the `willRetry` guard in armWatchdog. */
+  private turnEverParked = false;
+  /** Resolver for the CURRENT step's manual-retry signal, installed when the
+   *  step parks and cleared the moment it un-parks or the step ends. Null means
+   *  nothing is parked, which is the entire race guard for the Retry button. */
+  private resolveRetry: (() => void) | null = null;
   private emitPrefillProgress(p: PrefillProgress): void {
     // Prefill progress after the first token would be describing work the user
     // can already see the result of; the notice is a pre-output affordance only.
@@ -735,6 +1203,12 @@ export class HarnessSession extends EventEmitter {
     // Proof of life FIRST, before any throttling — a throttled-away report must
     // still reset the stall clock, or the throttle itself could cause a stall.
     this.rearmStallWatchdog?.();
+    // Same local-only gate as the opening estimate below — one rule for the
+    // whole affordance, so a hosted provider that ever started reporting
+    // progress still can't put a prefill readout on a cloud session. Deliberately
+    // BELOW the re-arm above: a report is proof of life whether or not we render
+    // it, and gating the re-arm too would let a healthy stream trip the watchdog.
+    if (!this.profile.announcePrefill) return;
     const report = toReport(p);
     const isFinal = report.newProcessed >= report.newTotal;
     const now = Date.now();
@@ -790,8 +1264,12 @@ export class HarnessSession extends EventEmitter {
     try {
       const cfg = this.compactionConfig();
       // Prune first — same order as the automatic path, and it shrinks the span
-      // the model has to read before we pay for a summary.
+      // the model has to read before we pay for a summary. Same image-collapse
+      // diff as maybeCompact's prune call — see its comment for why this is
+      // keyed on an actual count decrease, not on whether summarize runs next.
+      const imagesBeforePrune = countImageOutputs(this.history);
       this.history = pruneToolOutputs(this.history, cfg);
+      if (countImageOutputs(this.history) < imagesBeforePrune) this.shownImages.clear();
       const cut = this.summarizeCutIndex();
       // <2 user turns means there is no boundary we can cut on without risking
       // splitting a tool-call/result pair, so there is genuinely nothing to do.
@@ -813,6 +1291,11 @@ export class HarnessSession extends EventEmitter {
       // still gets a real (if smaller) reduction, and never a lost conversation.
       if (!summary.trim()) return { ok: false, reason: 'summary-failed' };
       this.emitEvent('compact-summary', { summary });
+      // Fix 2 (2026-08-11): same reasoning as maybeCompact above — the manual
+      // /compact path discards the summarized span exactly the same way, so
+      // the dedupe cache must be cleared here too or it keeps vouching for
+      // images this summary just removed.
+      this.shownImages.clear();
       this.history = [{ role: 'user', content: `[Earlier conversation summary]\n${summary}` } as ModelMessage, ...keep];
       return { ok: true };
     } finally {
@@ -836,6 +1319,14 @@ export class HarnessSession extends EventEmitter {
   clearHistory(): { ok: true } | { ok: false; reason: 'turn-in-flight' } {
     if (this.abort) return { ok: false, reason: 'turn-in-flight' };
     this.history = [];
+    // Fix 1 (CRITICAL, 2026-08-11): the dedupe cache must not outlive the
+    // history it was vouching for. Left alive, a model that re-Reads an
+    // unchanged file after /clear gets "already visible earlier in this
+    // conversation" — now FALSE, since that earlier delivery is gone — paired
+    // with no image ever being attached again for the rest of the session
+    // (barring an unrelated mtime change). Clearing here makes the next Read
+    // of that file deliver for real, matching what "already visible" claims.
+    this.shownImages.clear();
     // Emitted (not just persisted) so the store appends it through the host's
     // normal chain AND every attached surface — other windows, the remote web
     // client — learns the conversation was cleared. On replay this same event
@@ -845,10 +1336,28 @@ export class HarnessSession extends EventEmitter {
     return { ok: true };
   }
 
-  /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns). */
+  /** Index where the last 2 user-message-delimited turns begin (0 if <2 turns).
+   *  Injected rule messages are role:'user' but are NOT turns — counting them
+   *  shrank the protected window to "the last 2 injections" when a step
+   *  touched several rule-matched paths (2026-08-11, compaction accounting).
+   *  Detected by content shape rather than a flag: injectPathTriggers (above)
+   *  pushes them as `<project-rule source="...">...`, and that's the only
+   *  thing this method has to go on — synthetic wire messages never enter
+   *  history at all, so they were already immune by construction.
+   *
+   *  Task 5's `<specialists-status>` block gets the SAME exclusion for the
+   *  same reason: it is also role:'user', also synthetic, and — unlike the
+   *  one-shot rule injections above — it rides EVERY turn while a specialist
+   *  is live, so miscounting it would shrink the protected window on every
+   *  single turn of a long delegated run, not just an occasional one. */
   private summarizeCutIndex(): number {
     const userIdx: number[] = [];
-    this.history.forEach((m, i) => { if ((m as any).role === 'user') userIdx.push(i); });
+    this.history.forEach((m, i) => {
+      const c = (m as any).content;
+      const isSyntheticInjection = typeof c === 'string'
+        && (c.startsWith('<project-rule ') || c.startsWith('<specialists-status>'));
+      if ((m as any).role === 'user' && !isSyntheticInjection) userIdx.push(i);
+    });
     return userIdx.length < 2 ? 0 : userIdx[userIdx.length - 2];
   }
 
@@ -869,7 +1378,10 @@ export class HarnessSession extends EventEmitter {
     const cfg = this.compactionConfig();
     let bounded = span;
     while (estimateTokens(bounded) > cfg.contextLength * 0.6 && bounded.length > 1) bounded = bounded.slice(1);
-    const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...bounded, { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
+    // Summaries are text about text: images are ALWAYS stripped here, regardless
+    // of the session's actual profile — the summarizer may be a non-vision local
+    // model, and pixels add nothing to a compression prompt.
+    const result = streamText({ model, system: 'You compress conversation history. Be faithful and concise.', messages: [...adaptForWire(bounded, { nativeImageToolResults: false, supportsVision: false }), { role: 'user', content: summarizePrompt() } as ModelMessage], abortSignal: this.abort!.signal });
 
     // Race iterator.next() against the abort signal AND a 30s wall-clock floor —
     // the same hardening consumeStep uses, since a stalled local stream honors
@@ -924,14 +1436,139 @@ export class HarnessSession extends EventEmitter {
     }));
   }
 
-  async send(text: string): Promise<void> {
-    return this.beginTurn(text, () => this.emitEvent('user-message', { text }));
+  /** `attachments` are absolute paths to files the user attached in the composer.
+   *  Image ones become image parts on the user message when the model can see
+   *  them; everything else is ignored here and reaches the model as the path
+   *  text the composer already put in `text`.
+   *
+   *  WHY images ride ALONGSIDE the text rather than replacing it: `text` is the
+   *  dedup key. The renderer's optimistic bubble is confirmed by an EXACT match
+   *  against the `user-message` event's text (see native-send.ts), so the string
+   *  must stay byte-identical to what the composer built. The paths therefore
+   *  remain in the text AND the pixels are attached — the model gets both, and
+   *  the bubble still resolves. */
+  async send(text: string, attachments: string[] = []): Promise<void> {
+    // Attachments ride the persisted event (paths only — events carry no binary)
+    // so rebuildHistory can restore the pixels on resume. Emitted only when
+    // present to keep the no-attachment event byte-identical to before (#290
+    // follow-up fix 2).
+    return this.beginTurn(text, () => this.emitEvent('user-message', attachments.length ? { text, attachments } : { text }), attachments);
+  }
+
+  /** Task 4 (native specialists, background execution) — inject a background
+   *  specialist's finished report (or typed failure) as a full, real turn.
+   *  Same turn machinery as send()/runSkill(), with ONE difference: the
+   *  `user-message` event carries `data.injected: 'specialist-report'` — a
+   *  data-field extension (shared/types.ts), never a new event type, so a
+   *  renderer that doesn't know the field yet still shows a plain message.
+   *
+   *  WHY a real turn and not a history-only splice: the model needs to
+   *  actually SEE and reason about the report on its next step, which means
+   *  it has to go through the model exactly like any other turn — this is
+   *  not a status update, it is new information the parent must act on.
+   *  Callers (NativeSessionHost.runTurns) are responsible for only calling
+   *  this at an idle boundary — beginTurn's own re-entrancy guard would throw
+   *  if it were called mid-turn, by design (never splice into a running turn:
+   *  role alternation + the local prompt cache both depend on it). */
+  async runNotice(text: string, meta?: NonNullable<TranscriptEvent['data']>['injectedMeta']): Promise<void> {
+    return this.beginTurn(text, () => this.emitEvent('user-message', {
+      text, injected: 'specialist-report',
+      // Structured header data for the renderer's SpecialistReportCard —
+      // optional so every existing caller/test that passes text alone is
+      // unchanged; the card falls back to the prose when it's absent.
+      ...(meta ? { injectedMeta: meta } : {}),
+    }));
+  }
+
+  /** Image parts for a user message, or [] when the model cannot see images / none
+   *  were attached. Unreadable or oversized files are SKIPPED rather than thrown:
+   *  a turn must not die because one attachment went missing between the composer
+   *  and the send, and the path is still in the message text either way. */
+  private imagePartsFor(attachments: string[]): Array<{ type: 'file'; mediaType: string; data: Buffer }> {
+    if (!attachments.length || !this.profile.supportsVision) return [];
+    const parts: Array<{ type: 'file'; mediaType: string; data: Buffer }> = [];
+    for (const p of attachments) {
+      const img = readImageFromDisk(p);   // shared reader — one table, one cap (fix 3)
+      if (img) parts.push({ type: 'file', mediaType: img.mediaType, data: img.data });
+    }
+    return parts;
+  }
+
+  /** Resolve a tool's promised image paths into deliverable parts, charging the
+   *  per-turn budget and the per-session dedupe, and AMENDING the result text
+   *  with a named note for every skip — the note rides the same text the model
+   *  and the transcript see, so promise and delivery can never disagree.
+   *  `budget` is a beginTurn-scoped local shared across every tool call in the
+   *  turn (mutated in place), which is what makes the count/byte caps PER-TURN
+   *  rather than per-call.
+   *
+   *  No `!this.profile.supportsVision` check here, unlike imagePartsFor's
+   *  sibling gate above — deliberately, not an oversight (2026-08-11 review).
+   *  It's already double-covered: the Read tool gates on vision before it ever
+   *  PROMISES a path, and wire-adapter.ts strips/relabels images for
+   *  non-vision caps at request-build time. A third gate here would be
+   *  redundant, not safer. */
+  private resolveToolImages(
+    payload: ToolResultPayload,
+    budget: { count: number; bytes: number },
+  ): { text: string; images: Array<{ path: string; mediaType: string; data: Buffer; filename: string }> } {
+    const paths = payload.images ?? [];
+    if (!paths.length) return { text: payload.text, images: [] };
+    let text = payload.text;
+    const images: Array<{ path: string; mediaType: string; data: Buffer; filename: string }> = [];
+    for (const p of paths) {
+      // The tool already stat'd this file before promising it (resolve-before-
+      // promise, Task 4) — but time passed between that stat and this delivery,
+      // so it can have vanished. Re-stat rather than trust the promise. Kept
+      // (not just its mtime) so a later null-from-readImageFromDisk can be
+      // diagnosed against this SAME stat instead of a second, possibly-stale one.
+      let mtime: number;
+      let st: fs.Stats;
+      try { st = fs.statSync(p); mtime = st.mtimeMs; } catch {
+        text += `\n[image not attached: ${p} is no longer readable]`; continue;
+      }
+      if (this.shownImages.get(p) === mtime) {
+        text += `\n[image not re-attached: ${p} is unchanged and already visible earlier in this conversation]`; continue;
+      }
+      if (budget.count >= MAX_IMAGES_PER_TURN) {
+        text += `\n[image not attached: over the ${MAX_IMAGES_PER_TURN}-images-per-turn budget — ask again next turn if you still need it]`; continue;
+      }
+      const img = readImageFromDisk(p);
+      if (!img) {
+        // readImageFromDisk collapses three distinct causes to null. The old
+        // text guessed "vanished" for all of them — near-impossible here since
+        // the stat four lines up already succeeded — which is exactly the
+        // unverified-cause error message this repo's standard forbids. Name
+        // the real one instead: undeliverable FORMAT, oversized (the stat we
+        // already have is trustworthy for this), or — the one genuine
+        // "vanished/unreadable" case — a read that threw between the stat and
+        // here.
+        if (!deliverableImageMediaType(p)) {
+          text += `\n[image not attached: ${p} is not a deliverable image format]`;
+        } else if (st.size > MAX_ATTACHMENT_BYTES) {
+          text += `\n[image not attached: ${p} exceeds the ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB per-image size limit]`;
+        } else {
+          text += `\n[image not attached: ${p} could not be read]`;
+        }
+        continue;
+      }
+      if (budget.bytes + img.data.length > MAX_IMAGE_BYTES_PER_TURN) {
+        text += `\n[image not attached: over the ${MAX_IMAGE_BYTES_PER_TURN / (1024 * 1024)} MB-per-turn image budget]`; continue;
+      }
+      budget.count += 1; budget.bytes += img.data.length;
+      this.shownImages.set(p, mtime);
+      // Fix 3 (2026-08-11 review): carry the file's own basename through so
+      // toolResultPart can label the part with it instead of the tool's name —
+      // see that method for why an unset filename defeats the point.
+      images.push({ path: p, mediaType: img.mediaType, data: img.data, filename: path.basename(p) });
+    }
+    return { text, images };
   }
 
   /** The turn driver. `emit` names how this turn ENTERED the conversation — a
    *  typed message, or a skill invocation — which is the only thing that differs
    *  between send() and runSkill(). Everything downstream is identical. */
-  private async beginTurn(text: string, emit: () => void): Promise<void> {
+  private async beginTurn(text: string, emit: () => void, attachments: string[] = []): Promise<void> {
     // Re-entrancy guard: a non-null abort means a turn is already streaming.
     // Throw loudly rather than corrupt the single-slot turn state (see the
     // class-level CONCURRENCY PRECONDITION note).
@@ -940,8 +1577,54 @@ export class HarnessSession extends EventEmitter {
     }
     this.interrupted = false;
     emit();
-    this.history.push({ role: 'user', content: text });
+    // WHY (spec §3, MOIM pattern): the model never polls and never forgets a child
+    // exists — a compact status block rides every turn while specialists are live.
+    // History-only (no transcript event), so replay and the emit surface are untouched.
+    // Exactly ONE block lives in history: the previous turn's is removed first
+    // (external review 2026-08-12 — appending accumulates stale, contradictory
+    // blocks over a long child run). Accepted cost: removing a mid-history message
+    // invalidates local KV prefix cache from that point while specialists run.
+    //
+    // Fix pass, Finding 6: guarded on opts.specialistStatus being wired at all.
+    // That field stays permanently undefined for any session wire() never
+    // touched (every specialist child, per its own "NOT wire()" comment) — for
+    // those sessions there is never a block to remove or add, so the whole
+    // history scan below is skipped rather than run as an unconditional no-op
+    // every single turn.
+    if (this.opts.specialistStatus) {
+      const statusIdx = this.history.findIndex(
+        (m) => typeof m.content === 'string' && m.content.startsWith('<specialists-status>'),
+      );
+      if (statusIdx >= 0) this.history.splice(statusIdx, 1);
+      // Fix pass, Finding 4: opts.specialistStatus() reaches
+      // NativeSessionHost.buildSpecialistStatus -> DelegationLedger.listFor ->
+      // NativeHome.readJson, which deliberately RETHROWS any non-ENOENT I/O
+      // error (permissions, disk full, AV lock — see native-home.ts). Before
+      // this try/catch, that throw escaped beginTurn uncaught: it ran AFTER
+      // emit() had already announced the user's message but BEFORE this.abort
+      // was set and before the turn's own try block began, so the throw was
+      // never caught anywhere — no assistant reply, no error surfaced, and the
+      // re-entrancy guard never got set (stranding every later send() on this
+      // session). Degrade the same way this file's other fallible side-read
+      // already does (acquireMcp, above: log and continue with no MCP
+      // servers) — a missing status block must never cost the user a turn.
+      let status: string | null = null;
+      try {
+        status = this.opts.specialistStatus() ?? null;
+      } catch (err) {
+        log('ERROR', 'HarnessSession', 'specialist status callback threw — turn continues with no status block', { error: String(err) });
+      }
+      if (status) this.history.push({ role: 'user', content: `<specialists-status>\n${status}\n</specialists-status>` });
+    }
+    // A plain string when there are no image parts — that is the byte-identical
+    // shape every existing test and rebuildHistory() already assert on, so the
+    // no-attachment path must not become a one-element parts array.
+    const imageParts = this.imagePartsFor(attachments);
+    this.history.push(imageParts.length
+      ? { role: 'user', content: [{ type: 'text', text }, ...imageParts] } as any
+      : { role: 'user', content: text });
     this.abort = new AbortController();
+    this.turnEverParked = false;   // cleared at the start of every turn — see field WHY
     this.lastStepPromptTokens = 0;   // a new turn always begins with a full prefill
 
     const startedAt = Date.now();
@@ -952,15 +1635,22 @@ export class HarnessSession extends EventEmitter {
     // model's real one (found in the 2026-07-28 audit).
     let generationMs = 0;
     const recentCalls: string[] = [];           // doom-loop window (turn-level)
+    const imageBudget = { count: 0, bytes: 0 };  // per-turn image delivery budget (spec "Budgets")
     // Budget precedence: an explicit harness override wins; otherwise the step
     // ceiling is chosen by MODEL tier (frontier models sustain longer autonomous
     // runs than the conservative 25 — see model-step-budget.ts).
     const maxSteps = this.opts.harness.limits?.maxSteps ?? stepBudgetFor(this.binding.modelId);
     let stepsSinceApproval = 0;
+    // Consecutive contentless steps (empty-step recovery, spec 2026-08-21).
+    // The single silent retry is allowed only at count 1; any real step resets
+    // it, so an all-empty turn costs exactly two provider calls.
+    let consecutiveEmptySteps = 0;
     let stopReason = 'end_turn';
     // Latest step's partial text — the ONLY thing the catch pushes to history
     // (earlier steps already pushed their assistant + tool messages). Reset per
-    // step; on an immediate-error retry it stays '' so no duplicate is pushed.
+    // step; an immediate-error retry never touches it (it emits nothing before
+    // it throws), and a manual Retry (runStreamOnce's 'retry' branch) clears it
+    // itself via reportPartial('') — see that branch for why.
     let partialAssistantText = '';
 
     try {
@@ -989,14 +1679,24 @@ export class HarnessSession extends EventEmitter {
       // roughly 5x the real occupancy (Destin, 2026-07-28).
       let lastOutputTokens = 0;
       turnLoop: while (true) {
+        // WHY: steering (spec §3) applies at the child's next iteration boundary — a
+        // tool call is never cut. History-only, like injectPathTriggers: not a
+        // transcript event, so it costs nothing on the frozen emit surface.
+        if (this.pendingSteers.length > 0) {
+          for (const s of this.pendingSteers.splice(0)) {
+            this.history.push({ role: 'user', content: `<steer>\n${s}\n</steer>` });
+          }
+        }
         // Two-stage compaction FIRST (spec §4.4) — prune, then summarize only if
         // pruning can't get under budget. Inert (returns immediately) below the
         // trigger, so the existing loop behavior is unchanged for normal turns.
         await this.maybeCompact(model, lastInputTokens);
-        // Reset per STEP (not per retry attempt inside withRetry): a mid-stream
-        // retry after content was already emitted can cosmetically duplicate that
-        // partial in a session-error's history push — accepted, since the
-        // required immediate-error retry emits nothing before it throws.
+        // Reset per STEP (not per retry attempt inside withRetry): the required
+        // immediate-error retry never needs this reset itself, since it emits
+        // nothing before it throws. A manual Retry is the opposite case — it CAN
+        // emit before parking — so that branch clears this on its own
+        // (reportPartial('') in runStreamOnce's 'retry' case) rather than relying
+        // on this per-step reset to have caught it.
         partialAssistantText = '';
         // One step = one streamText consumption. withRetry wraps the whole
         // CONSUMPTION (not just the streamText call): the SDK surfaces provider
@@ -1008,6 +1708,13 @@ export class HarnessSession extends EventEmitter {
 
         lastInputTokens = step.usage.inputTokens;   // feed the NEXT compaction check
         lastOutputTokens = step.usage.outputTokens;
+        // Publish the same how-full number the turn-complete payload below
+        // reports, one step at a time, so `contextUsedTokens` is readable
+        // between turns (and mid-turn, stale by one step) instead of only
+        // existing inside this closure. Guarded on inputTokens > 0 for the same
+        // reason the emit site is: a provider that reports nothing must not
+        // overwrite a real reading with a zero.
+        if (lastInputTokens > 0) this._contextUsedTokens = lastInputTokens + lastOutputTokens;
 
         // Accumulate this step's usage into the turn total.
         turnUsage.inputTokens += step.usage.inputTokens;
@@ -1019,16 +1726,87 @@ export class HarnessSession extends EventEmitter {
         // v0 interrupt semantics: push the partial, emit user-interrupt, return.
         // (An interrupted turn NEVER completes as a normal turn-complete.)
         if (step.interrupted || this.interrupted || this.abort.signal.aborted) {
-          if (step.text) this.history.push({ role: 'assistant', content: step.text });
+          // trim() gate: same emptiness class as stepHasText below — a
+          // whitespace-only partial is no partial at all, and recording it
+          // leaves a junk assistant message in history for every later turn.
+          if (step.text && step.text.trim().length > 0) this.history.push({ role: 'assistant', content: step.text });
           this.emitEvent('user-interrupt', {});
           return;
         }
 
+        // ONE emptiness predicate for BOTH the history push and the retry gate
+        // below. Whitespace-only text counts as empty for both: if the push
+        // used truthiness while the retry used trim(), a '\n\n' step would be
+        // pushed to history AND retried — the re-run's request would end in a
+        // dangling whitespace assistant message (which Anthropic-shaped
+        // endpoints reject with a 400), breaking the "history gained nothing"
+        // invariant the retry rests on.
+        const stepHasText = !!step.text && step.text.trim().length > 0;
+
         // Record the assistant message (text + any tool-call parts). Skip an
-        // empty one (no text and no calls) so we never push a content-less turn.
-        if (step.text || step.toolCalls.length > 0) {
+        // empty one (no real text and no calls) so we never push a content-less
+        // turn.
+        if (stepHasText || step.toolCalls.length > 0) {
           this.history.push(this.assistantMessage(step.text, step.toolCalls));
         }
+
+        // Empty-step recovery (spec: docs/archive/specs/2026-08-21-empty-final-
+        // step-turn-recovery-design.md). A degenerate step — no text, no tool
+        // calls, yet an orderly finish — used to fall straight into the natural-
+        // stop break below and end the turn as a silent 'end_turn', which the
+        // user experiences as the assistant simply never answering (observed
+        // 3x live, 2026-08-20/21). Re-run it ONCE silently: the push above
+        // skipped an empty step, so HISTORY gained nothing and the re-run sends
+        // the same conversation — modulo the loop top, which may drain pending
+        // steers and run compaction first (deliberate: a steer posted during
+        // the dead step should reach the retry, and it stays in history for the
+        // next turn either way; tool-call/result pairing holds throughout).
+        // A SECOND consecutive empty step ends the turn honestly instead.
+        // Reasoning-only steps count as empty BY DECISION (StepResult carries
+        // no reasoning; the user-visible outcome is identical to silence).
+        const isEmptyStep =
+          !step.interrupted &&
+          step.toolCalls.length === 0 &&
+          !stepHasText;
+        // Gate on the "provider claims an orderly finish" shapes ONLY (single
+        // list next to mapStopReason — see ORDERLY_EMPTY_FINISHES for why
+        // 'tool-calls' is in and 'length'/'content-filter' are out). Without
+        // this gate the retry would mask real stop reasons behind
+        // 'empty_response'.
+        const orderlyFinish = step.finishReason === undefined
+          || ORDERLY_EMPTY_FINISHES.has(step.finishReason);
+        if (isEmptyStep && orderlyFinish) {
+          consecutiveEmptySteps++;
+          if (consecutiveEmptySteps === 1) {
+            // Withdraw any preparing card the dead step left on screen — the
+            // 'tool-calls' empty shape (announced call, dropped as malformed)
+            // almost always put one up. The step re-runs INSIDE the same turn,
+            // so endTurn's reaping never fires and the orphan would spin beside
+            // the retry's own cards until the turn ends. (Same reason the
+            // manual-Retry and stall-retry paths withdraw theirs; the
+            // empty_response break below needs no withdrawal — the turn ends
+            // there and endTurn reaps.)
+            for (const prep of step.pendingPreparing) {
+              this.emitEvent('assistant-thinking', {
+                toolPreparing: { toolCallId: prep.toolCallId, toolName: prep.toolName, chars: prep.chars, cleared: true },
+              });
+            }
+            // One structured log line so the silent retry is diagnosable from
+            // ~/.claude/desktop.log (console.error reaches nobody in a packaged
+            // build) — deliberately NOT a transcript event (emit surface frozen).
+            log('WARN', 'HarnessSession', 'empty step (no text, no tool calls) — retrying once', {
+              sessionId: this.opts.sessionId, finishReason: step.finishReason ?? 'undefined',
+            });
+            continue turnLoop;
+          }
+          // Second consecutive empty step: an orderly completion with an honest
+          // reason. Set HERE, not in mapStopReason — 'empty_response' is a
+          // loop-level judgment about two steps, not a mapping of one
+          // provider finishReason.
+          stopReason = 'empty_response';
+          break;
+        }
+        consecutiveEmptySteps = 0;   // any real step re-arms the single retry
 
         if (step.toolCalls.length === 0) {
           // Natural stop. finishReason 'length' (truncated output, including a
@@ -1078,12 +1856,41 @@ export class HarnessSession extends EventEmitter {
             this.emitEvent('user-interrupt', {});
             return;
           }
+          // The user dismissed a question → end the turn ORDERLY. Record THIS
+          // call's real result, then mark every remaining un-executed call in the
+          // step as not-run (same dangling-tool_call hazard the interrupt branch
+          // above guards against). `turn-complete` rather than `user-interrupt`
+          // on purpose: usage should be reported, and anything the user queued
+          // while the turn ran should drain — typing during the turn IS taking
+          // over. The max_steps gate below is the existing precedent for a
+          // driver-decided orderly stop.
+          if ('kind' in payload) {
+            this.emitEvent('tool-result', {
+              toolUseId: call.toolCallId, toolName: call.toolName,
+              toolResult: payload.payload.text, isError: true,
+            });
+            resultParts.push(this.toolResultPart(call, payload.payload.text));
+            for (let j = i + 1; j < step.toolCalls.length; j++) {
+              const rem = step.toolCalls[j];
+              this.emitEvent('tool-result', { toolUseId: rem.toolCallId, toolName: rem.toolName, toolResult: NOT_RUN_TOOL_TEXT, isError: true });
+              resultParts.push(this.toolResultPart(rem, NOT_RUN_TOOL_TEXT));
+            }
+            this.history.push({ role: 'tool', content: resultParts });
+            stopReason = DISMISSED_STOP_REASON;
+            break turnLoop;
+          }
+          // Turn the tool's promised image paths into deliverable parts, charging
+          // the per-turn budget/dedupe and amending the text with a named note
+          // for every skip (Task 5 — the driver never promises silently).
+          const delivered = this.resolveToolImages(payload, imageBudget);
           this.emitEvent('tool-result', {
             toolUseId: call.toolCallId, toolName: call.toolName,
-            toolResult: payload.text, isError: payload.isError ?? false,
+            toolResult: delivered.text, isError: payload.isError ?? false,
             ...(payload.structuredPatch ? { structuredPatch: payload.structuredPatch } : {}),
+            // Paths only — events carry no binary; resume re-reads (history-rebuild.ts).
+            ...(delivered.images.length ? { images: delivered.images.map((i) => i.path) } : {}),
           });
-          resultParts.push(this.toolResultPart(call, payload.text));
+          resultParts.push(this.toolResultPart(call, delivered.text, delivered.images));
         }
         this.history.push({ role: 'tool', content: resultParts });
         // Path-triggered content (M3 item 3): a project rule or a nested
@@ -1154,17 +1961,27 @@ export class HarnessSession extends EventEmitter {
     aiTools: Record<string, any>,
     reportPartial: (text: string) => void,
   ): Promise<StepResult> {
-    // At most ONE auto-retry: attempt 0 stalls with nothing streamed →
-    // runStreamOnce returns STALL_RETRY → we re-run. A stall on attempt 1 (or a
-    // stall after content streamed) is fatal (StreamStallError), so the loop can
-    // iterate at most twice — runStreamOnce only returns STALL_RETRY when it was
-    // told this is the first attempt.
+    // Attempt 0 stalls with nothing streamed → runStreamOnce returns
+    // STALL_RETRY → we re-run. That AUTOMATIC retry is available once per step:
+    // every attempt after the first passes isFirstAttempt=false, so a later
+    // silent stall never re-runs behind the user's back. What it does instead
+    // is decided by the park guard in armWatchdog, which parks when EITHER of
+    // these is true:
+    //   - this attempt streamed something before going quiet (sawFirstChunk) —
+    //     Clock 2, and it does NOT matter whether the turn parked before; or
+    //   - the turn has already parked once (turnEverParked), which is what
+    //     stops a manually-retried step from dying on the first-byte clock.
+    // Neither true → Clock 1 alone, and the turn still ends with the
+    // "didn't begin responding" error.
+    // The loop is no longer bounded at two iterations — a MANUAL Retry also
+    // returns STALL_RETRY, and the user may press it as often as they like.
     for (let attempt = 0; ; attempt++) {
       const outcome = await this.runStreamOnce(model, aiTools, reportPartial, attempt === 0);
       if (outcome !== STALL_RETRY) return outcome;
-      // Auto-retrying after a silent stall: clear the on-screen stall warning
-      // back to a plain "Thinking" heartbeat so the countdown doesn't linger at
-      // 0 while the fresh stream spins up.
+      // Re-running after EITHER a silent stall (nothing streamed) or a manual
+      // Retry (content streamed, then erased via dropPart): clear the on-screen
+      // stall warning back to a plain "Thinking" heartbeat so the countdown
+      // doesn't linger at 0 while the fresh stream spins up.
       this.emitEvent('assistant-thinking', {});
     }
   }
@@ -1182,9 +1999,31 @@ export class HarnessSession extends EventEmitter {
     const streamArgs: any = {
       model,
       system: this.systemText,
-      messages: this.fitToContext(this.history),
+      // Wire adaptation runs on the FITTED view, per request, not once at push
+      // time — this is what closes the mid-session model-swap leak: an image
+      // pushed to history under a vision model is stripped here at build time
+      // if the NEXT request targets a model that can't carry or can't see it,
+      // rather than riding along stale from whenever it was written.
+      messages: adaptForWire(this.fitToContext(this.history), {
+        nativeImageToolResults: this.profile.nativeImageToolResults,
+        supportsVision: this.profile.supportsVision,
+      }),
       maxOutputTokens: this.opts.harness.limits?.maxTokens,
       abortSignal: this.abort!.signal,
+      // Fix (2026-08-10 incident): streamText's DEFAULT onError is
+      // `({ error }) => console.error(error)` — Node's console.error on a raw
+      // Error/object prints its FULL shape (stack, statusCode, responseBody,
+      // and responseHeaders — which can include a set-cookie value) as a
+      // multi-line dump. That is exactly what the live roster run's CLI
+      // printed to the console for an OpenRouter 402: dozens of lines where
+      // one would do. describeProviderError() already extracts the real,
+      // bounded, actionable detail from ANY error shape (see below) — reuse
+      // it here so a stream failure logs ONE legible line instead of the
+      // SDK's raw dump. Not silenced: the failure is still visible, and the
+      // SAME error still reaches session-error via the 'error' case below.
+      onError: ({ error }: { error: unknown }) => {
+        console.error(`[harness] stream error: ${describeProviderError(error)}`);
+      },
     };
     // Only pass tools when there are any — keeps the no-tools path byte-identical
     // to v0 (no tool plumbing reaches the SDK).
@@ -1221,7 +2060,9 @@ export class HarnessSession extends EventEmitter {
     // prompt, which on a local model legitimately takes minutes. Only once tokens
     // have started does a 60s gap mean something is actually wrong. A test that
     // pins its own stallWarningMs opts out of the scaling and keeps its exact timing.
-    const promptTokens = Math.ceil(JSON.stringify(streamArgs.messages).length / APPROX_CHARS_PER_TOKEN)
+    // Binary-aware: JSON.stringify on a Buffer is ~4-5 chars per BYTE, so an image
+    // turn reported a ~700x inflated prompt-token count to the user.
+    const promptTokens = messagesTokens(streamArgs.messages as ModelMessage[])
       + Math.ceil(this.systemText.length / APPROX_CHARS_PER_TOKEN);
     // How much of that is genuinely NEW work. llama.cpp reuses the cached prefix,
     // so a step that appends a 100 KB tool result only prefills the tool result —
@@ -1247,18 +2088,77 @@ export class HarnessSession extends EventEmitter {
     let sawFirstChunk = false;
     let firstChunkAt = 0;   // when generation actually began (see StepResult.generationMs)
     let warned = false;
+    let parked = false;
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveStall: (v: 'stall') => void;
     const stallPromise = new Promise<'stall'>((resolve) => { resolveStall = resolve; });
+    // Manual-retry racer — a SEPARATE signal from abortSignal on purpose: abort
+    // ends the whole turn, which is the opposite of what Retry means.
+    let signalRetry!: () => void;
+    const retryPromise = new Promise<'retry'>((resolve) => { signalRetry = () => resolve('retry'); });
     const armWatchdog = () => {
       clearTimeout(stageTimer);
       stageTimer = setTimeout(() => {
         warned = true;
-        // willRetry: we can safely re-run only if nothing streamed AND this is
-        // the first attempt — otherwise the countdown ends in an error, not a retry.
+        // willRetry: safe to silently re-run only when nothing COUNTABLE has
+        // streamed (text, reasoning, or a completed tool call — see the
+        // `!emittedAny` expression this mirrors) AND this is the first
+        // attempt. Argument fragments deliberately don't count: a stall
+        // mid-tool-arguments still qualifies even though real bytes arrived.
+        // When false, the guard below decides what happens instead: a PARK
+        // once a real chunk has arrived this attempt (sawFirstChunk) or the
+        // turn has already parked once (turnEverParked) — otherwise (nothing
+        // has arrived THIS attempt, and the turn never parked) the countdown
+        // still ends the turn with a session-error.
         const willRetry = !emittedAny && isFirstAttempt;
         this.emitEvent('assistant-thinking', { stallWarning: { retryInMs: countdownMs, willRetry } });
-        stageTimer = setTimeout(() => resolveStall('stall'), countdownMs);
+        stageTimer = setTimeout(() => {
+          // PARK — but ONLY when `!willRetry` (the auto-retry guard above
+          // didn't already claim this stall) AND EITHER a real chunk has
+          // arrived this attempt (sawFirstChunk) or the turn has already
+          // parked once (turnEverParked: the user was shown the card and hit
+          // Retry, so that retry must never die on its own even if it lands
+          // back on a silent attempt). Note willRetry checks emittedAny, not
+          // sawFirstChunk: a FIRST-attempt stall after nothing but tool-
+          // argument fragments has sawFirstChunk===true (real bytes did
+          // arrive) but still takes the auto-retry branch above instead of
+          // parking here, because nothing COUNTABLE was emitted. Only once
+          // willRetry is false — attempt 2+, or something countable already
+          // streamed — does sawFirstChunk alone decide: real bytes THIS
+          // attempt → park; a genuinely silent attempt (sawFirstChunk still
+          // false) with a turn that never parked before stays OUT OF SCOPE
+          // for this project: a model that never sent a first byte hasn't
+          // "stalled" the way this feature means it, it just never began, so
+          // the turn still ends with the "didn't begin responding" session-error.
+          // Do NOT resolve the stall race for the park case: nothing is torn
+          // down, the reader stays open, and a chunk arriving minutes later
+          // still lands in the loop below and continues the turn. This
+          // return IS the feature.
+          //
+          // EXCEPT for a specialist child (Fix, C1 whole-branch review,
+          // 2026-08-16): a parked child has no UI to park INTO. wireChildLive
+          // re-emits only SUBAGENT_DISPLAY_TYPES (tool-use/tool-result/
+          // assistant-text) into the parent's view — the parked signal rides
+          // `assistant-thinking`, which is filtered out, so a stalled child
+          // shows no card, no red dot, no Retry, no Stop, just a spinning
+          // Agent card forever. Worse: the child's send() never settles, so
+          // the parent's Task tool call never returns, and nothing else caps
+          // a specialist run — the parent hangs too, invisibly. Falling
+          // through to the ordinary stall path below lets the child keep
+          // throwing StreamStallError, which the parent's Task tool already
+          // catches and reports as a failed run — the exact recovery this
+          // branch removed for children. Surfacing the stalled card inside
+          // the parent's own Agent card is a real feature; it is deliberately
+          // not attempted here.
+          if (!this.opts.isSpecialistChild && (sawFirstChunk || this.turnEverParked) && !willRetry) {
+            parked = true;
+            this.turnEverParked = true;
+            this.resolveRetry = signalRetry;
+            this.emitEvent('assistant-thinking', { stalled: true });
+            return;
+          }
+          resolveStall('stall');
+        }, countdownMs);
       }, sawFirstChunk ? warnMs : firstChunkMs);
     };
     this.rearmStallWatchdog = armWatchdog;
@@ -1268,17 +2168,31 @@ export class HarnessSession extends EventEmitter {
     // so ordinary turns keep their existing event sequence exactly.
     // Gate on the NEW tokens: a step that adds almost nothing to a huge cached
     // context returns instantly and needs no explanation, however big the total.
-    if (newTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
+    // AND on the provider: this whole affordance exists for local prefill, which
+    // is a minutes-long silence on the user's own hardware. A hosted model
+    // reaches first token in seconds and reports no progress to upgrade the
+    // notice with, so on cloud it was pure noise in place of the ordinary
+    // spinner (Destin, 2026-08-16). See CapabilityProfile.announcePrefill.
+    if (this.profile.announcePrefill && newTokens >= PROMPT_PROCESSING_NOTICE_TOKENS) {
       this.emitEvent('assistant-thinking', {
         promptProcessing: { promptTokens: newTokens, budgetMs: firstChunkMs, source },
       });
     }
     armWatchdog();
 
+    // Argument-generation progress, keyed by the provider's tool call id. Per
+    // STEP, not per session: a retry re-enters this function with a fresh map.
+    // Display-only — the card the renderer draws from this never reaches disk.
+    const preparing = new Map<string, { toolName: string; chars: number; lastEmitAt: number }>();
+    // Every streaming part id THIS attempt has written. A manual Retry hands
+    // these to the renderer and the store so the abandoned text is removed
+    // rather than appended to.
+    const emittedPartIds = new Set<string>();
+
     try {
       while (true) {
         const nextPromise = iterator.next();
-        const chunk = await Promise.race([nextPromise, abortPromise, stallPromise]);
+        const chunk = await Promise.race([nextPromise, abortPromise, stallPromise, retryPromise]);
         if (chunk === 'aborted') {
           // The abort won the race; swallow the pending read's late rejection and
           // release the underlying reader/socket (a provider that IGNORES the abort
@@ -1289,6 +2203,35 @@ export class HarnessSession extends EventEmitter {
           interrupted = true;
           break;
         }
+        if (chunk === 'retry') {
+          // Manual Retry from the stalled card. Same teardown as the stall path
+          // — the reader really is dead this time, the user said so.
+          nextPromise.catch(() => {});
+          iterator.return?.().catch(() => {});
+          void Promise.resolve(result.usage).catch(() => {});
+          void Promise.resolve(result.finishReason).catch(() => {});
+          this.resolveRetry = null;
+          // Retract the erased text from the model's own memory, not just the
+          // screen: partialAssistantText is reset per STEP (not per attempt), so
+          // without this, a re-run that throws before emitting anything would
+          // leave send()'s catch pushing the ABANDONED half-sentence — text the
+          // user just watched get erased via dropPart — silently back into
+          // this.history as an assistant message.
+          reportPartial('');
+          // Withdraw any preparing card: the step re-runs INSIDE the same turn,
+          // so endTurn's reaping never fires and the card would spin forever
+          // beside the one the re-run mints. (Same reason as the auto-retry path.)
+          for (const [prepId, entry] of preparing) {
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: prepId, toolName: entry.toolName, chars: entry.chars, cleared: true },
+            });
+          }
+          // Erase what the abandoned attempt put on screen BEFORE re-running.
+          if (emittedPartIds.size > 0) {
+            this.emitEvent('assistant-thinking', { dropPart: { partIds: [...emittedPartIds] } });
+          }
+          return STALL_RETRY;
+        }
         if (chunk === 'stall') {
           // No chunk for the full warn+countdown window. Release the dead reader
           // (same teardown as the abort path), then retry-or-fail. Cancelling the
@@ -1298,7 +2241,17 @@ export class HarnessSession extends EventEmitter {
           iterator.return?.().catch(() => {});
           void Promise.resolve(result.usage).catch(() => {});
           void Promise.resolve(result.finishReason).catch(() => {});
-          if (!emittedAny && isFirstAttempt) return STALL_RETRY;
+          if (!emittedAny && isFirstAttempt) {
+            // The step re-runs INSIDE the same turn, so endTurn's reaping never
+            // fires. Withdraw any preparing card explicitly or it spins for the
+            // rest of the turn while the retry mints a second card beside it.
+            for (const [prepId, entry] of preparing) {
+              this.emitEvent('assistant-thinking', {
+                toolPreparing: { toolCallId: prepId, toolName: entry.toolName, chars: entry.chars, cleared: true },
+              });
+            }
+            return STALL_RETRY;
+          }
           // Name the phase honestly: a model that never STARTED (prefill) has not
           // "stopped responding", and telling the user it did sends them chasing a
           // provider fault that isn't there.
@@ -1327,8 +2280,13 @@ export class HarnessSession extends EventEmitter {
           if (!sawFirstChunk) firstChunkAt = Date.now();
           sawFirstChunk = true;
         }
-        // A real chunk arrived → clear any shown warning and re-arm the watchdog.
-        if (warned) { warned = false; this.emitEvent('assistant-thinking', {}); }
+        // A real chunk arrived → clear any shown warning/card and re-arm.
+        if (warned || parked) {
+          warned = false;
+          parked = false;
+          this.resolveRetry = null;
+          this.emitEvent('assistant-thinking', {});
+        }
         armWatchdog();
         const part = chunk.value;
         switch (part.type) {
@@ -1341,6 +2299,7 @@ export class HarnessSession extends EventEmitter {
             // partId = the SDK's part id (fresh per streamText call). A tool-group
             // segment always separates consecutive text STEPS in the reducer, so a
             // repeated id across steps can't wrongly merge two bubbles.
+            emittedPartIds.add(part.id ?? 'text-0');
             this.emitEvent('assistant-text', { text: t, partId: part.id ?? 'text-0' });
             break;
           }
@@ -1351,7 +2310,51 @@ export class HarnessSession extends EventEmitter {
             outputChars += t.length;
             // assistant-thinking WITH data.text → the reducer's reasoning path;
             // payload-less would stay a heartbeat.
+            emittedPartIds.add(part.id ?? 'reasoning-0');
             this.emitEvent('assistant-thinking', { text: t, partId: part.id ?? 'reasoning-0' });
+            break;
+          }
+          case 'tool-input-start': {
+            // The model has begun COMPOSING a tool call — nothing has executed.
+            // Emitted unthrottled on purpose: this is the event that makes the
+            // card appear, and every ms of delay here is visible generic-spinner
+            // time, which is the entire problem this exists to fix.
+            //
+            // NOTE the field names: on fullStream this part is
+            // { id, toolName } (TextStreamToolInputStartPart) — NOT the
+            // { toolCallId, ... } UIMessageChunk variant of the same name.
+            // `id` is the same string the completed 'tool-call' below carries as
+            // toolCallId, which is what lets the card transition IN PLACE.
+            const prepId = typeof part.id === 'string' ? part.id : '';
+            const prepName = typeof part.toolName === 'string' ? part.toolName : '';
+            if (!prepId || !prepName) break;
+            preparing.set(prepId, { toolName: prepName, chars: 0, lastEmitAt: Date.now() });
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: prepId, toolName: prepName, chars: 0 },
+            });
+            break;
+          }
+          case 'tool-input-delta': {
+            // Argument fragments. Counted for the card's liveness counter and
+            // otherwise DISCARDED — the completed 'tool-call' part carries the
+            // real parsed input, and buffering a second copy of a whole file
+            // here would double the turn's peak memory for no gain.
+            //
+            // Deliberately does NOT set emittedAny: that flag gates whether a
+            // stall may auto-retry, and flipping it here would disable the retry
+            // for every turn whose stall lands mid-arguments. Nothing has
+            // executed at that point, so re-running the step is exactly the safe
+            // case the retry exists for.
+            const deltaId = typeof part.id === 'string' ? part.id : '';
+            const entry = preparing.get(deltaId);
+            if (!entry) break;
+            entry.chars += typeof part.delta === 'string' ? part.delta.length : 0;
+            const nowMs = Date.now();
+            if (nowMs - entry.lastEmitAt < TOOL_PREPARING_EMIT_MS) break;
+            entry.lastEmitAt = nowMs;
+            this.emitEvent('assistant-thinking', {
+              toolPreparing: { toolCallId: deltaId, toolName: entry.toolName, chars: entry.chars },
+            });
             break;
           }
           case 'tool-call':
@@ -1367,7 +2370,27 @@ export class HarnessSession extends EventEmitter {
             interrupted = true;
             break;
           case 'error':
-            throw part.error instanceof Error ? part.error : new Error(String(part.error));
+            // Fix (2026-08-10 Kimi K3 incident): a fullStream 'error' part's
+            // `.error` is NOT guaranteed to be an Error instance — the AI SDK
+            // hands back whatever the provider layer produced. The old
+            // fallback, `new Error(String(part.error))`, threw every useful
+            // field away: String() on a plain object always yields the
+            // literal text '[object Object]', which is exactly what reached
+            // the user as the session's ENTIRE error message that day — a
+            // real OpenRouter 402 ("This request requires more credits...")
+            // whose statusCode/message/data were already sitting on the
+            // object, just never read before being stringified into oblivion.
+            // Preserve them instead: copy the object's own fields onto a real
+            // Error (so downstream code that expects `instanceof Error` still
+            // works, e.g. withRetry's statusCode-based retry check) rather
+            // than collapsing it to a string first. describeProviderError()
+            // (send()'s catch, below) already knows how to read
+            // statusCode/responseBody/data/message off ANY shape.
+            throw part.error instanceof Error
+              ? part.error
+              : (part.error && typeof part.error === 'object'
+                ? Object.assign(new Error(), part.error as object)
+                : new Error(String(part.error)));
         }
       }
     } finally {
@@ -1376,19 +2399,41 @@ export class HarnessSession extends EventEmitter {
       // Stop late progress callbacks from re-arming a watchdog for a step that
       // has already ended (the tee outlives the iterator on an interrupt).
       this.rearmStallWatchdog = null;
+      // A step that has ended can never be retried — drop the resolver so a
+      // late click on a card the renderer has not torn down yet is a no-op.
+      this.resolveRetry = null;
+      // Fix (I3, whole-branch review 2026-08-16): `if (chunk.done) break;`
+      // sits ABOVE the "a real chunk arrived → clear the card" block, so a
+      // provider that closes the stream WHILE parked used to leave the red
+      // card up (and the countdown label live) even though the turn keeps
+      // going — reachable whenever the step had already emitted a complete
+      // tool call before going silent (that sets emittedAny, which routes the
+      // stall into a park instead of an auto-retry). Guaranteeing the
+      // clearing heartbeat HERE, in the finally, covers every exit from a
+      // parked state in one place (done/throw/interrupt alike) rather than
+      // duplicating the same emit on each of them. A no-op when `parked` is
+      // already false, which is every case except the one this fixes.
+      if (parked) this.emitEvent('assistant-thinking', {});
     }
 
     if (interrupted || this.interrupted || abortSignal.aborted) {
       // Don't await usage/finishReason on the interrupt path — the stream was
       // torn down; those promises may never settle.
-      return { text: assistantText, toolCalls, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, finishReason: undefined, interrupted: true, generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0 };
+      return { text: assistantText, toolCalls, usage: { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 }, finishReason: undefined, interrupted: true, generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0, pendingPreparing: [] };
     }
 
     const usage = await result.usage;
     const finishReason = await result.finishReason;
+    // `preparing` entries are NOT deleted when their call completes (the card
+    // transitions in place under the same id), so filter by completed
+    // toolCalls to find the truly orphaned ones. Empty in the common case.
+    const pendingPreparing = [...preparing]
+      .filter(([prepId]) => !toolCalls.some((c) => c.toolCallId === prepId))
+      .map(([prepId, entry]) => ({ toolCallId: prepId, toolName: entry.toolName, chars: entry.chars }));
     return {
       text: assistantText,
       toolCalls,
+      pendingPreparing,
       usage: {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? Math.ceil(outputChars / APPROX_CHARS_PER_TOKEN),
@@ -1405,14 +2450,32 @@ export class HarnessSession extends EventEmitter {
   /** Run one tool call through the EXACT permission sequence (spec §2.1/§2.4):
    *  validate → doom-loop → guards → decide → (ask) → execute. NEVER throws —
    *  every failure mode is a tool RESULT the model can repair from, except a
-   *  user cancel which returns the 'interrupted' sentinel so the loop can unwind. */
-  private async runOneTool(call: ToolCall, recentCalls: string[]): Promise<ToolResultPayload | 'interrupted'> {
+   *  user cancel which returns the 'interrupted' sentinel, and a dismissed
+   *  question which returns EndTurnResult — both let the loop unwind. */
+  private async runOneTool(call: ToolCall, recentCalls: string[]): Promise<ToolResultPayload | 'interrupted' | EndTurnResult> {
     const tool = this.toolByName.get(call.toolName);
     if (!tool) return { text: `Unknown tool ${call.toolName}. Available: ${[...this.toolByName.keys()].join(', ')}.`, isError: true };
 
     // 1. Validate (zod) — invalid args are a RESULT the model repairs from, not
     //    a crash, and precede permissions (never ask about garbage).
-    const parsed = tool.inputSchema.safeParse(call.input);
+    let parsed = tool.inputSchema.safeParse(call.input);
+    if (!parsed.success && typeof call.input === 'string') {
+      // Weak-model hardening (Task 12, spec §3): the ai@7 SDK already parses a
+      // provider tool-call's stringified args into an object for us (see
+      // harness-sdk-toolcall-contract.test.ts), but a weak local model
+      // sometimes puts its WHOLE args object as a STRING one level further in
+      // — e.g. it emits `"{\"prompt\": ...}"` where a real object belongs. If
+      // the raw string itself JSON.parses to an object, give it ONE recovery
+      // attempt before falling back to the normal arg error — never a general
+      // coercion layer (YAGNI: one attempt, then the ordinary failure path).
+      try {
+        const recovered: unknown = JSON.parse(call.input);
+        if (recovered && typeof recovered === 'object') {
+          const reparsed = tool.inputSchema.safeParse(recovered);
+          if (reparsed.success) parsed = reparsed;
+        }
+      } catch { /* not JSON — fall through to the normal arg error below */ }
+    }
     if (!parsed.success) {
       return { text: `Invalid arguments for ${call.toolName}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}. Fix the arguments and call again.`, isError: true };
     }
@@ -1448,7 +2511,14 @@ export class HarnessSession extends EventEmitter {
       if (!this.opts.askUser) return { text: `No user-interaction handler is wired for this session; ${call.toolName} cannot run. This is a configuration error.`, isError: true };
       const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: false });
       if (d.behavior === 'canceled') return 'interrupted';
-      if (d.behavior !== 'allow') return { text: 'The user dismissed the question without answering. Continue with your best judgment, or ask differently in plain text.', isError: true };
+      // A HUMAN dismissal ENDS THE TURN: closing the card is the user taking the
+      // turn back, not permission to guess. Still a real tool result so
+      // call/result pairing holds — the loop stops right after recording it.
+      // `dismissed` is stamped only by PermissionBroker.respond (see its WHY):
+      // the OTHER askUser implementations are policies with no human behind
+      // them, and for them a deny means "you may not ask, carry on and finish".
+      if (d.behavior === 'deny' && d.dismissed) return { kind: 'end-turn', payload: { text: DISMISSED_TOOL_TEXT, isError: true } };
+      if (d.behavior !== 'allow') return { text: REFUSED_ASK_TEXT, isError: true };
       return { text: formatAnswers(args as any, d.updatedInput) };
     }
 
@@ -1459,9 +2529,31 @@ export class HarnessSession extends EventEmitter {
     const subject = tool.permissionSubject(args);
     let externalAsk = false;
     if (subject !== undefined && !NON_PATH_SUBJECT_TOOLS.has(call.toolName)) {
-      const verdict = checkPathGuard(subject, this.opts.cwd);
+      const verdict = checkPathGuard(subject, this.opts.cwd, this.opts.internalReadRoots);
       if (verdict.kind === 'deny') return { text: verdict.reason, isError: true };
-      if (verdict.kind === 'external') externalAsk = true;   // external_directory → force an ask
+      if (verdict.kind === 'external') {
+        // Before raising the ask: did the model INVENT this outside path for a
+        // file that actually lives in the workspace? (2026-08-16 stuck-session
+        // investigation — a local model turned Glob's workspace-relative
+        // "ROADMAP.md" into "/youcoded-dev/ROADMAP.md" and the turn hung on an
+        // approval prompt for a location that exists nowhere.) Answering with
+        // the real path is both more useful and less alarming than asking the
+        // user to authorize fiction. Only fires for tools whose target must
+        // pre-exist, only when the outside path is confirmed absent, and only
+        // when the replacement is confirmed present INSIDE the cwd jail — so
+        // it can never widen what the model may reach.
+        const match = REQUIRES_EXISTING_TARGET.has(call.toolName)
+          ? workspaceMatchFor(subject, this.opts.cwd, isExistingFile)
+          : null;
+        if (match !== null) {
+          return {
+            text: `${call.toolName} rejected: nothing exists at ${subject}, and that path is outside the workspace. `
+              + `The file is at ${match} inside the workspace — retry with that path.`,
+            isError: true,
+          };
+        }
+        externalAsk = true;   // external_directory → force an ask
+      }
     }
 
     // 4. Configured decision. An external-directory path forces 'ask' regardless
@@ -1469,19 +2561,47 @@ export class HarnessSession extends EventEmitter {
     const decision: PermissionDecision = externalAsk
       ? { action: 'ask', denyListed: false }
       : await (this.opts.decide?.(call.toolName, subject) ?? Promise.resolve<PermissionDecision>({ action: 'ask', denyListed: false }));
-    if (decision.action === 'deny') return { text: `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
+    // A deny may carry its own model-facing reason (PermissionDecision.message):
+    // the specialist caps (child-permissions.ts) refuse with "not available to
+    // this specialist" / "read-only charter", which tells the model what to do
+    // instead. Without the reason a refused child reads the generic copy and
+    // retries the identical call until its step budget is gone. The generic
+    // sentence stays the default for every decide() that supplies no message.
+    if (decision.action === 'deny') return { text: decision.message ?? `The ${call.toolName} call was blocked by a permission rule.`, isError: true };
     if (decision.action === 'ask') {
       // An ABSENT handler is a WIRING gap, not a user cancel — surface it as a
       // decline RESULT (the model can't proceed) instead of the 'interrupted'
       // sentinel, so a misconfiguration never masquerades as an ESC/interrupt.
       if (!this.opts.askUser) return { text: `No approval handler is wired for this session; the ${call.toolName} call cannot be approved. This is a configuration error.`, isError: true };
-      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed });
+      // `external` tells the renderer this ask was forced by the path guard, so
+      // ToolCard hides "Always allow" (see the guarded emit below for why).
+      // `subject` (Task 11) is the SAME value the remember-rule emit below uses
+      // as `pattern` — threaded through so a routed CHILD ask (child-ask-
+      // router.ts, which has no other way to reach it) can persist the exact
+      // same rule a root session's own remember-rule listener would.
+      const d = await this.opts.askUser({ sessionId: this.opts.sessionId, toolName: call.toolName, toolInput: call.input as any, denyListed: decision.denyListed, external: externalAsk, subject });
       if (d.behavior === 'canceled') return 'interrupted';
-      if (d.behavior !== 'allow') return { text: 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
+      // Task 8: d.message carries specific copy for a deny that ISN'T a real
+      // user decline — e.g. a routed specialist ask that timed out with no
+      // answer (ASK_REDIRECT_MESSAGE), which must not read as "the user said
+      // no" when no user ever answered. Falls back to the real-decline copy
+      // (still accurate for an actual respond({behavior:'deny'})).
+      if (d.behavior !== 'allow') return { text: d.message ?? 'The user declined this action. Ask what they would like instead, or try a different approach.', isError: true };
       // "Always allow" → emit a rule for the host to persist (PermissionStore).
       // Plain EventEmitter event, NOT a transcript event — the frozen emit
       // surface is untouched.
-      if (d.always) this.emit('remember-rule', { tool: call.toolName, ...(subject !== undefined ? { pattern: subject } : {}), action: 'allow' });
+      //
+      // Only remember when the decision came from decide(). An external-directory
+      // path forced this ask and SKIPS decide() on every future call, so a stored
+      // rule can never fire — recording one promises the user something the
+      // engine will not honor. See spec 2026-08-11, finding 3.
+      if (d.always && !externalAsk) {
+        // The card sent a width, not a pattern — rememberedRuleFor derives the
+        // rule here, in main. null means this command may not be remembered at
+        // any width, so nothing is emitted.
+        const rule = rememberedRuleFor(call.toolName, subject, d.grantScope);
+        if (rule) this.emit('remember-rule', rule);
+      }
     }
 
     // 5. Execute (defineTool owns truncation + the actionable-error catch).
@@ -1489,12 +2609,27 @@ export class HarnessSession extends EventEmitter {
       sessionId: this.opts.sessionId,
       cwd: this.opts.cwd,
       signal: this.abort!.signal,
+      // Task 6/7: the Task tool's own call id, threaded through as
+      // createChild's future parentToolCallId so the host can stamp the
+      // child's display events with the launch card they belong under.
+      toolCallId: call.toolCallId,
+      // Task 14: this session's CURRENT binding — the `parent` fallback
+      // resolveDelegatedBinding needs for a tier that isn't set (or a bare
+      // "run on this conversation's model" request). Reads this.binding, not
+      // opts.binding, so a mid-session setBinding() swap is reflected on the
+      // very next tool call, same as every other live-state field here.
+      binding: this.binding,
       readRegistry: this.readRegistry,
       shellCwd: this.shellCwd ?? this.opts.cwd,
       setShellCwd: (next: string) => {
         this.shellCwd = next;
       },
+      shellEnv: this.shellEnv ?? {},
+      setShellEnv: (next: Record<string, string>) => {
+        this.shellEnv = next;
+      },
       todos: this.todos,
+      supportsVision: this.profile.supportsVision,
       ...(this.opts.toolServices ? { services: this.opts.toolServices } : {}),
     });
   }
@@ -1520,6 +2655,45 @@ export class HarnessSession extends EventEmitter {
   interrupt(): void {
     this.interrupted = true;
     this.abort?.abort();
+  }
+
+  /** Manual Retry from the stalled card. Re-runs the PARKED step — it does not
+   *  re-send the user's message, so every completed tool call and its result
+   *  earlier in this turn stays exactly where it is.
+   *
+   *  Returns false when nothing is parked: the stream resumed between the click
+   *  and this call, so the card is already gone and the click means nothing.
+   *  That is the whole race guard — a parked step is either still listening
+   *  (the resolver is live) or has moved on (the resolver is null). */
+  retryStalledStep(): boolean {
+    const resolve = this.resolveRetry;
+    if (!resolve) return false;
+    this.resolveRetry = null;
+    resolve();
+    return true;
+  }
+
+  /** Queue a mid-run course correction (spec §3). Drains as a history-only
+   *  user message at the top of the NEXT turn-loop iteration — never
+   *  mid-step, so an in-flight tool call is never cut. Returns whether a
+   *  turn is actually in flight to receive it (`this.abort !== null` is the
+   *  turn-in-flight invariant — set in beginTurn, nulled in its finally);
+   *  when false, nothing is queued and the caller should record a missed
+   *  steer itself (there is no turn for drainUnappliedSteers to report it
+   *  against). */
+  postSteer(text: string): boolean {
+    const inFlight = this.abort !== null;
+    if (inFlight) this.pendingSteers.push(text);
+    return inFlight;
+  }
+
+  /** Steers that were queued but never drained into history — posted during
+   *  a turn's FINAL step, after the last iteration-boundary check already
+   *  ran. Empties the queue. A later task (6) folds this into the
+   *  delegation ledger's missedSteers so a postSteer that returned `true`
+   *  is still honestly reported as un-applied when the turn ended first. */
+  drainUnappliedSteers(): string[] {
+    return this.pendingSteers.splice(0);
   }
 
   destroy(): void { this.abort?.abort(); this.removeAllListeners(); }

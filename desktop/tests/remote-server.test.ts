@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // Mock ws module — use require() inside vi.mock to avoid hoisting issues
 vi.mock('ws', async () => {
@@ -65,7 +68,13 @@ const mockSessionBrowser = {
   listPastSessions: vi.fn(async () => [] as any[]),
   loadHistory: vi.fn(async () => ({ events: [] })),
 };
-vi.mock('../src/main/session-browser', () => mockSessionBrowser);
+// Spread the REAL module first so remote-server's SAFE_ID_RE import is the
+// actual guard regex (not a test copy that could drift), then override just
+// the two functions these tests stub.
+vi.mock('../src/main/session-browser', async (importOriginal) => ({
+  ...(await importOriginal<any>()),
+  ...mockSessionBrowser,
+}));
 
 describe('RemoteServer', () => {
   let mockSessionManager: any;
@@ -591,6 +600,23 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
 
       await expect(sendAndCollect(server, msg())).rejects.toThrow('store exploded');
     });
+
+    it('broadcasts session:meta-changed after a successful write (parity with ipcMain SESSION_SET_TAG)', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set()));
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      const bSpy = vi.spyOn(server, 'broadcast');
+
+      await sendAndCollect(server, msg());
+
+      // Same frame shape the ipcMain path sends (ipc-handlers SESSION_SET_TAG):
+      // a second remote client viewing this session must refetch its meta.
+      expect(bSpy).toHaveBeenCalledWith({
+        type: 'session:meta-changed',
+        payload: { sessionId: 'desktop-1', flag: 'tag:tag_abc', value: true },
+      });
+    });
   });
 
   describe('session:set-note', () => {
@@ -679,6 +705,21 @@ describe('RemoteServer session meta + browse (Task 5 M2 wiring)', () => {
 
       // C1: passes the boolean isNativeSessionId result, not a provider string.
       expect(mockConversationsService.noteSessionNote).toHaveBeenCalledWith('native-1', 'note text', true);
+    });
+
+    it('broadcasts session:meta-changed after a successful write (parity with ipcMain SESSION_SET_NOTE)', async () => {
+      const { RemoteServer } = await import('../src/main/remote-server');
+      const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+      server.setNativeRuntime(fakeNativeRuntime(new Set()));
+      server.setSessionMetaWiring({ resolve: (id: string) => id, canWrite: () => true });
+      const bSpy = vi.spyOn(server, 'broadcast');
+
+      await sendAndCollect(server, msg());
+
+      expect(bSpy).toHaveBeenCalledWith({
+        type: 'session:meta-changed',
+        payload: { sessionId: 'desktop-1', note: 'hello' },
+      });
     });
   });
 
@@ -793,5 +834,219 @@ describe('RemoteServer account bridge', () => {
 
       expect(frames.some((m) => m.type === 'status:data')).toBe(false);
     });
+  });
+});
+
+// Security regression: the transcript:read-meta WS handler validated the
+// caller-supplied path with startsWith(claudeProjects) and NO trailing path
+// separator, so a SIBLING directory like ~/.claude/projects-evil/x.jsonl
+// passed the containment check and its contents leaked to remote clients.
+// The model:read-last case a few lines below already used the correct
+// `claudeProjects + path.sep` prefix — these tests pin transcript:read-meta
+// to the same rule.
+describe('RemoteServer transcript:read-meta path containment', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+  let tmpHome: string;
+  let homedirSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-rs-transcript-'));
+    // Point os.homedir() at the tmp dir so the handler's ~/.claude/projects
+    // containment root lives inside the fixture, not the real home.
+    homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+  });
+
+  afterEach(() => {
+    homedirSpy.mockRestore();
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  });
+
+  /** Drive handleMessage directly with a fake authenticated client and collect
+   *  everything the server writes back. */
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('rejects a transcript in a sibling dir like ~/.claude/projects-evil', async () => {
+    const evilDir = path.join(tmpHome, '.claude', 'projects-evil');
+    fs.mkdirSync(evilDir, { recursive: true });
+    const evilFile = path.join(evilDir, 'x.jsonl');
+    fs.writeFileSync(evilFile, JSON.stringify({ model: 'leaked-model' }) + '\n');
+
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-evil', payload: { path: evilFile } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toBeNull();
+  });
+
+  it('still reads a transcript inside ~/.claude/projects', async () => {
+    const okDir = path.join(tmpHome, '.claude', 'projects', 'some-project');
+    fs.mkdirSync(okDir, { recursive: true });
+    const okFile = path.join(okDir, 'x.jsonl');
+    fs.writeFileSync(okFile, JSON.stringify({ model: 'test-model' }) + '\n');
+
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-ok', payload: { path: okFile } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload?.model).toBe('test-model');
+  });
+});
+
+// Hardening regression (PR #294 adversarial review, nit A): transcript:read-meta
+// computed path.resolve(payload.path || payload) OUTSIDE its try block with no
+// type check, so a single malformed frame (non-string path) threw out of
+// handleMessage as an unhandled rejection and the request never got a response.
+// These tests pin the hardened shape: malformed payloads answer null, exactly
+// like the neighboring model:read-last case. If the handler regresses, the
+// sendAndCollect promise rejects and the await below fails the test.
+describe('RemoteServer transcript:read-meta malformed payloads', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+  });
+
+  /** Drive handleMessage directly with a fake authenticated client and collect
+   *  everything the server writes back. */
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('responds null to a non-string path instead of throwing', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-bad-path', payload: { path: { evil: 1 } } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toBeNull();
+  });
+
+  it('responds null to a bare object payload with no path key', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-bare-obj', payload: {} });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toBeNull();
+  });
+
+  it('responds null to a null payload', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'transcript:read-meta', id: 'req-null', payload: null });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toBeNull();
+  });
+});
+
+// Hardening regression (PR #294 adversarial review, nit B): session:history
+// probed ~/.claude/projects/<slug>/<id>.jsonl with fs.access using the
+// client-supplied sessionId BEFORE any validation — loadHistory's SAFE_ID_RE
+// guard only ran after the probe, so a traversal-shaped id ('../../x') turned
+// the probe loop into a file-existence oracle for arbitrary *.jsonl paths.
+// These tests pin that invalid ids are rejected with the same guard, and the
+// same empty-array shape, loadHistory uses — without touching the filesystem.
+describe('RemoteServer session:history id validation', () => {
+  let mockSessionManager: any;
+  let mockHookRelay: any;
+  let mockConfig: any;
+  let tmpHome: string;
+  let homedirSpy: ReturnType<typeof vi.spyOn>;
+  let accessSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockSessionManager = new EventEmitter();
+    Object.assign(mockSessionManager, { listSessions: vi.fn(() => []) });
+    mockHookRelay = new EventEmitter();
+    mockConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-rs-history-'));
+    // Point os.homedir() at the tmp dir so the handler's ~/.claude/projects
+    // probe root lives inside the fixture, not the real home. A slug dir must
+    // exist, otherwise the handler's readdir returns [] and the probe loop
+    // never runs — which would make the invalid-id tests pass vacuously.
+    fs.mkdirSync(path.join(tmpHome, '.claude', 'projects', 'my-project'), { recursive: true });
+    homedirSpy = vi.spyOn(os, 'homedir').mockReturnValue(tmpHome);
+    // Call-through spy: the valid-id test still needs real fs.access for the
+    // slug probe; the invalid-id tests assert it was never reached.
+    accessSpy = vi.spyOn(fs.promises, 'access');
+    mockSessionBrowser.loadHistory.mockClear();
+  });
+
+  afterEach(() => {
+    homedirSpy.mockRestore();
+    accessSpy.mockRestore();
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+  });
+
+  /** Drive handleMessage directly with a fake authenticated client and collect
+   *  everything the server writes back. */
+  function sendAndCollect(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('rejects a traversal-shaped sessionId without probing the filesystem', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'session:history', id: 'h1', payload: { sessionId: '../../../etc/passwd', count: 10 } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual([]);
+    expect(accessSpy).not.toHaveBeenCalled();
+    expect(mockSessionBrowser.loadHistory).not.toHaveBeenCalled();
+  });
+
+  it('rejects a slash-containing sessionId without probing the filesystem', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'session:history', id: 'h2', payload: { sessionId: 'foo/bar', count: 10 } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual([]);
+    expect(accessSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing sessionId (SAFE_ID_RE alone would pass the string "undefined")', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'session:history', id: 'h3', payload: { count: 10 } });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual([]);
+    expect(accessSpy).not.toHaveBeenCalled();
+  });
+
+  it('still loads history for a well-formed id', async () => {
+    const slugDir = path.join(tmpHome, '.claude', 'projects', 'my-project');
+    fs.writeFileSync(path.join(slugDir, 'abc-123.jsonl'), '');
+
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const sent = await sendAndCollect(server, { type: 'session:history', id: 'h4', payload: { sessionId: 'abc-123', count: 5 } });
+
+    expect(mockSessionBrowser.loadHistory).toHaveBeenCalledWith('abc-123', 'my-project', 5, undefined);
+    expect(sent).toHaveLength(1);
+    expect(sent[0].payload).toEqual({ events: [] });
   });
 });

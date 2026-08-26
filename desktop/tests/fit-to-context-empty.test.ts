@@ -18,7 +18,7 @@
 // So the code contradicts its own documented invariant. These tests pin the
 // invariant, not the current behavior.
 import { describe, it, expect } from 'vitest';
-import { HarnessSession } from '../src/main/harness/harness-session';
+import { HarnessSession, truncateToolMessage } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import { MockLanguageModelV4 } from 'ai/test';
 import type { ModelMessage } from 'ai';
@@ -111,5 +111,124 @@ describe('fitToContext — never returns an empty message list', () => {
     const value = (tool.content as any[])[0].output.value as string;
     expect(value).toContain('truncated');
     expect(value.length).toBeLessThan(100_000);
+  });
+});
+
+// Task 18: fitToContext's own trim notice (via truncateToolMessage, its salvage
+// helper) hardcoded "Re-run with offset/limit, or use Grep" for EVERY tool's
+// oversized result — including Bash and WebSearch, which accept neither
+// parameter. This is the same defect the bounds contract removed from the
+// defineTool pipeline (registry.ts), on the path that fires when a single
+// result alone blows the context window, i.e. when the advice is most likely
+// to be read and acted on. These pin that the advice is now derived from
+// toolName instead of copy-pasted onto every result.
+describe('truncateToolMessage — advice matches the tool that produced the result', () => {
+  it('does not advise offset/limit for a tool that has neither parameter', () => {
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'Bash',
+        output: { type: 'text', value: 'x'.repeat(50_000) },
+      }],
+    } as any;
+    const out = truncateToolMessage(msg, 1_000);
+    const value = (out as any).content[0].output.value;
+    expect(value).toContain('truncated');
+    expect(value).not.toContain('offset/limit');
+    expect(value).toMatch(/head|tail|narrower/i);
+  });
+
+  it('still advises offset for Read, which does accept it', () => {
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'Read',
+        output: { type: 'text', value: 'y'.repeat(50_000) },
+      }],
+    } as any;
+    const value = (truncateToolMessage(msg, 1_000) as any).content[0].output.value;
+    expect(value).toContain('offset');
+  });
+
+  it('states the true dropped count', () => {
+    const msg = {
+      role: 'tool',
+      content: [{ type: 'tool-result', toolName: 'Bash', output: { type: 'text', value: 'z'.repeat(10_000) } }],
+    } as any;
+    const value = (truncateToolMessage(msg, 2_000) as any).content[0].output.value;
+    // 10,000 in, `per` characters kept — the notice must name the real difference,
+    // never a rounded or invented figure.
+    expect(value).toMatch(/[\d,]+ more characters/);
+  });
+
+  it('says nothing extra for a tool absent from the hint map — a bare fact, not a guessed action', () => {
+    // docs/error-message-standards.md: specific+accurate or general+non-committal,
+    // never a plausible-sounding guess. A tool we don't have a real hint for must
+    // not get one invented for it.
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'SomeFutureTool',
+        output: { type: 'text', value: 'w'.repeat(50_000) },
+      }],
+    } as any;
+    const value = (truncateToolMessage(msg, 1_000) as any).content[0].output.value;
+    expect(value).toContain('truncated');
+    expect(value).not.toContain('offset/limit');
+    expect(value).not.toMatch(/re-run/i);
+  });
+});
+
+// Fix 2 (2026-08-11 review): truncateToolMessage never learned about the AI SDK
+// v7 'content' output shape (text + file parts) that image-bearing tool results
+// use — it fell through completely untouched, neither shrunk nor stripped, on
+// the LAST-RESORT salvage path right before a provider 400. pruneToolOutputs
+// (compaction.ts) already collapses this shape; these pin that
+// truncateToolMessage now mirrors it, including its "only claim an image was
+// dropped when a file part is actually present" guard.
+describe('truncateToolMessage — collapses image (content) outputs instead of passing them through', () => {
+  it('collapses a content output with a file part to text plus a named note', () => {
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'Read',
+        output: {
+          type: 'content',
+          value: [
+            { type: 'text', text: 'here is the screenshot' },
+            { type: 'file', mediaType: 'image/png', data: 'BASE64DATA'.repeat(10_000) },
+          ],
+        },
+      }],
+    } as any;
+    const out = truncateToolMessage(msg, 1_000) as any;
+    const output = out.content[0].output;
+    expect(output.type).toBe('text');
+    expect(output.value).toContain('here is the screenshot');
+    expect(output.value).toContain('[image dropped');
+    expect(output.value).toContain('Read');
+    // The point of the fix: the base64 payload is actually gone, not just
+    // sitting there untouched behind a note.
+    expect(output.value).not.toContain('BASE64DATA');
+  });
+
+  it('does not invent a dropped-image note when no file part is present', () => {
+    const msg = {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolName: 'Read',
+        output: { type: 'content', value: [{ type: 'text', text: 'just some tool text' }] },
+      }],
+    } as any;
+    const out = truncateToolMessage(msg, 1_000) as any;
+    const output = out.content[0].output;
+    expect(output.type).toBe('text');
+    expect(output.value).toBe('just some tool text');
+    expect(output.value).not.toContain('[image dropped');
   });
 });

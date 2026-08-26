@@ -10,10 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 // Real (pure) — used to compute the exact on-disk transcript path the service
 // derives, so the quiescence tests can grow the same file the loop stats.
-import { ccProjectSlug } from '../src/main/project-conversations';
+import { ccProjectSlug } from '../src/main/slug-encoding';
 // Real (pure) — mirrors localJsonlPath's native branch so Task 8 tests can
 // compute the exact ~/.youcoded/sessions/<slug>/<id>.jsonl path the service derives.
-import { cwdToProjectSlug } from '../src/main/transcript-watcher';
+import { nativeStoreSlug } from '../src/main/slug-encoding';
 
 // vi.mock factories are hoisted above imports, so shared fake state must be
 // created via vi.hoisted for the factories to close over it.
@@ -120,9 +120,18 @@ describe('conversations service composition root', () => {
     h.savedFolders = [];
     tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-svc-'));
     h.managedRoots = { personalRoot: path.join(tmpRoot, 'Personal'), listProjects: () => [] };
+    // Review fix (MINOR): service.ts's heldForkIds() calls resolve their
+    // default state file to ~/.youcoded/slug-repair-state.json with no seam
+    // plumbed through from here — without this override these tests read the
+    // DEVELOPER'S REAL state file (non-hermetic; this dev machine's file
+    // already holds a real fork id, which would silently change what a test
+    // observes). Points every heldForkIds() call in this suite at a tmp file
+    // instead. See slug-repair-state.ts's defaultStateFile.
+    process.env.YOUCODED_SLUG_REPAIR_STATE = path.join(tmpRoot, 'slug-repair-state.json');
   });
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.YOUCODED_SLUG_REPAIR_STATE;
     try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* best-effort */ }
   });
 
@@ -775,8 +784,8 @@ describe('conversations service composition root', () => {
       fs.mkdirSync(dir, { recursive: true });
       const id = '44444444-4444-4444-4444-444444444444';
       // Seed the local NATIVE transcript at the exact path localJsonlPath derives
-      // for provider:'native' — ~/.youcoded/sessions/<cwdToProjectSlug(cwd)>/<id>.jsonl.
-      const localPath = path.join(nativeHomeRoot, '.youcoded', 'sessions', cwdToProjectSlug(dir), `${id}.jsonl`);
+      // for provider:'native' — ~/.youcoded/sessions/<nativeStoreSlug(cwd)>/<id>.jsonl.
+      const localPath = path.join(nativeHomeRoot, '.youcoded', 'sessions', nativeStoreSlug(dir), `${id}.jsonl`);
       fs.mkdirSync(path.dirname(localPath), { recursive: true });
       fs.writeFileSync(localPath, 'native-final-turn');
 

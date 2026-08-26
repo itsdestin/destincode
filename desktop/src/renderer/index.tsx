@@ -31,6 +31,18 @@ if (
   document.documentElement.setAttribute('data-mode', __buddyMode);
 }
 
+// Mirror document visibility onto <html> so CSS keyframe loops can pause. JS
+// drivers gate themselves on visibilitychange directly; CSS animations have no
+// equivalent hook, so they key off this attribute (see mascot.css).
+const syncDocHidden = () => {
+  document.documentElement.setAttribute(
+    'data-doc-hidden',
+    document.visibilityState === 'visible' ? '0' : '1',
+  );
+};
+document.addEventListener('visibilitychange', syncDocHidden);
+syncDocHidden();
+
 // macOS traffic lights need left padding on the header bar.
 // In fullscreen the traffic lights disappear, so we remove the inset.
 if (navigator.platform === 'MacIntel' || navigator.platform === 'MacPPC') {

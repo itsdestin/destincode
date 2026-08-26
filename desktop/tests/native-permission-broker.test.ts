@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { PermissionBroker } from '../src/main/harness/permission-broker';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { PermissionBroker, ASK_REANNOUNCE_MS } from '../src/main/harness/permission-broker';
 
 // The emitted payload uses CC's snake_case field names because hook-dispatcher
 // reads payload._requestId / tool_name / tool_input (verified in Task 8 Step 1).
@@ -29,6 +29,22 @@ describe('PermissionBroker', () => {
     await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true });
   });
 
+  it('rides permissionMode along the PermissionRequest payload (full-auto safety stop keys on it)', () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'git push' }, denyListed: true, permissionMode: 'full-auto' });
+    expect(emitted[0].payload.permissionMode).toBe('full-auto');
+  });
+
+  it('omits permissionMode when the caller did not supply one (CC-path payload shape unchanged)', () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    expect('permissionMode' in emitted[0].payload).toBe(false);
+  });
+
   it('does NOT flag always when behavior is deny (guards against persisting an allow rule for a denied tool)', async () => {
     const broker = new PermissionBroker();
     const emitted: any[] = [];
@@ -39,6 +55,38 @@ describe('PermissionBroker', () => {
     const d = await p;
     expect(d.behavior).toBe('deny');
     expect(d.always).toBeFalsy();
+  });
+
+  it('stamps `dismissed` on a human deny — and ONLY on a deny', async () => {
+    // respond() is the only path a person's answer travels, so it is the only
+    // place that can honestly say "a human said no". The driver ends the turn on
+    // a dismissed AskUserQuestion; a POLICY askUser (childAskPolicy, the harness
+    // evaluator's jail) constructs its own decision, never sets this, and keeps
+    // the old carry-on semantics. Guard: harness-session-loop's POLICY-deny test.
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+
+    const denied = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    expect(broker.respond(emitted[0].payload._requestId as string, { decision: { behavior: 'deny' } })).toBe(true);
+    expect((await denied).dismissed).toBe(true);
+
+    const allowed = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    expect(broker.respond(emitted[1].payload._requestId as string, { decision: { behavior: 'allow' } })).toBe(true);
+    expect((await allowed).dismissed).toBeFalsy();
+  });
+
+  it('a canceled ask carries no `dismissed` (an interrupt is not a dismissal)', async () => {
+    // cancelSession resolves pending asks as 'canceled'; the driver unwinds that
+    // as an interrupt. It must not look like the user closed the card.
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's1', toolName: 'AskUserQuestion', toolInput: {}, denyListed: false });
+    broker.cancelSession('s1');
+    const d = await p;
+    expect(d.behavior).toBe('canceled');
+    expect(d.dismissed).toBeFalsy();
   });
 
   it('passes decision.updatedInput through to the resolver (AskUserQuestion answers)', async () => {
@@ -79,5 +127,300 @@ describe('PermissionBroker', () => {
     broker.cancelSession('s1');
     await expect(p).resolves.toMatchObject({ behavior: 'canceled' });
     expect(emitted.some((e) => e.type === 'PermissionExpired')).toBe(true); // clears the card
+  });
+
+  // --- Task 8: timeout + late-response + raisedBy cancellation ---
+
+  it('ask() with a timeout resolves onTimeout() at the deadline but leaves the entry answerable', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const p = broker.ask(
+        { sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: true },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(p).resolves.toEqual({ behavior: 'deny', message: 'redirect' });
+      const requestId = emitted[0].payload._requestId as string;
+      // Still answerable — respond() finds it and reports success, even though
+      // the promise above already settled.
+      expect(broker.respond(requestId, { behavior: 'allow' })).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a real respond() before the deadline clears the timer — no leaked timeout fires later', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const onTimeout = vi.fn(() => ({ behavior: 'deny' as const, message: 'redirect' }));
+      const p = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: true }, { timeoutMs: 1000, onTimeout });
+      const requestId = emitted[0].payload._requestId as string;
+      broker.respond(requestId, { behavior: 'allow' });
+      await expect(p).resolves.toMatchObject({ behavior: 'allow' });
+      await vi.advanceTimersByTimeAsync(5000); // well past the deadline
+      expect(onTimeout).not.toHaveBeenCalled(); // the timer was cleared on respond(), not merely raced
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a late respond() after timeout routes to the lateResponseHandler instead of dropping silently', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const late: any[] = [];
+      broker.setLateResponseHandler((entry, decision) => late.push({ entry, decision }));
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      broker.ask(
+        { sessionId: 'parent-1', toolName: 'Bash', toolInput: {}, denyListed: true, raisedBy: 'child-1', specialist: { childId: 'child-1', agentType: 'worker', title: 'W' } },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      const requestId = emitted[0].payload._requestId as string;
+      expect(broker.respond(requestId, { behavior: 'allow' })).toBe(true);
+      expect(late).toHaveLength(1);
+      expect(late[0].entry).toMatchObject({ sessionId: 'parent-1', toolName: 'Bash', raisedBy: 'child-1' });
+      expect(late[0].decision.behavior).toBe('allow');
+      // A THIRD respond() for the same (now fully consumed) id is unknown.
+      expect(broker.respond(requestId, { behavior: 'deny' })).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancelSession(childId) cancels a routed ask (raisedBy match) while still within its window', async () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 'parent-1', toolName: 'Bash', toolInput: {}, denyListed: true, raisedBy: 'child-1' });
+    broker.cancelSession('child-1'); // the CHILD's id, not the parent's — this is the routed-ask case
+    await expect(p).resolves.toMatchObject({ behavior: 'canceled' });
+    expect(emitted.some((e) => e.type === 'PermissionExpired')).toBe(true);
+  });
+
+  it('cancelSession(childId) does NOT cancel a routed ask that already timed out — it stays answerable for the parent', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const p = broker.ask(
+        { sessionId: 'parent-1', toolName: 'Bash', toolInput: {}, denyListed: true, raisedBy: 'child-1' },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await p; // settles with the redirect
+      broker.cancelSession('child-1'); // the child was torn down AFTER its ask already timed out
+      const requestId = emitted[0].payload._requestId as string;
+      // Still present: a real answer can still reach the parent (Task 8's late-answer path).
+      expect(broker.respond(requestId, { behavior: 'allow' })).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancelSession(parentId) cancels a routed, already-timed-out ask too — the parent's own teardown always wins", async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted: any[] = [];
+      broker.on('hook-event', (e) => emitted.push(e));
+      const p = broker.ask(
+        { sessionId: 'parent-1', toolName: 'Bash', toolInput: {}, denyListed: true, raisedBy: 'child-1' },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000);
+      await p;
+      broker.cancelSession('parent-1');
+      const requestId = emitted[0].payload._requestId as string;
+      expect(broker.respond(requestId, { behavior: 'allow' })).toBe(false); // gone — parent teardown removed it
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('PermissionBroker — grantScope', () => {
+  /** ask() + the id it emitted, so each case reads as one call. */
+  const askOnce = (broker: PermissionBroker) => {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const p = broker.ask({ sessionId: 's', toolName: 'Bash', toolInput: { command: 'npm run build' }, denyListed: false });
+    return { p, id: emitted[0].payload._requestId as string };
+  };
+
+  it('passes a valid selector through', async () => {
+    const broker = new PermissionBroker();
+    const { p, id } = askOnce(broker);
+    broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: 'wide' });
+    await expect(p).resolves.toMatchObject({ behavior: 'allow', always: true, grantScope: 'wide' });
+  });
+
+  it('fails NARROW on anything that is not the literal "wide"', async () => {
+    // This value is persisted, so it is validated here AND re-derived at the
+    // session. A renderer that could widen its own grant by sending junk would
+    // be writing the top precedence layer.
+    for (const bad of [undefined, 'WIDE', 'tool-wide', 42, { scope: 'wide' }, null]) {
+      const broker = new PermissionBroker();
+      const { p, id } = askOnce(broker);
+      broker.respond(id, { decision: { behavior: 'allow' }, updatedPermissions: ['x'], grantScope: bad });
+      await expect(p).resolves.toMatchObject({ grantScope: 'exact' });
+    }
+  });
+});
+
+// 2026-08-16 stuck-session investigation. A root ask has NO timeout — the turn
+// awaits it forever — so any delivery failure (a card the renderer never
+// rendered, one a later event overwrote, one lost to a transcript replay) is a
+// permanently hung turn with no error and no way to tell it from a slow model.
+// The heartbeat makes every such failure self-correcting: main keeps saying
+// "this ask is still open" until someone answers it. The renderer side is
+// idempotent-on-repeat (chat-reducer.test.ts → "re-delivered by the heartbeat").
+describe('PermissionBroker — pending-ask heartbeat', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  function emitterFor(broker: PermissionBroker) {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    return emitted;
+  }
+
+  it('re-announces a still-pending ask, identical except the timestamp', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p = broker.ask({ sessionId: 's1', toolName: 'Read', toolInput: { file_path: '/x' }, denyListed: false, external: true });
+    expect(emitted).toHaveLength(1);
+
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS);
+    expect(emitted).toHaveLength(2);
+    // Byte-identical payload — same _requestId is what lets the renderer treat
+    // a healthy repeat as a no-op instead of a second card.
+    expect(emitted[1].type).toBe('PermissionRequest');
+    expect(emitted[1].payload).toEqual(emitted[0].payload);
+    expect(emitted[1].sessionId).toBe(emitted[0].sessionId);
+
+    broker.respond(emitted[0].payload._requestId, { behavior: 'allow' });
+    await expect(p).resolves.toMatchObject({ behavior: 'allow' });
+  });
+
+  it('keeps re-announcing until answered, then stops', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS * 3);
+    expect(emitted).toHaveLength(4); // original + 3
+
+    broker.respond(emitted[0].payload._requestId, { behavior: 'allow' });
+    await expect(p).resolves.toMatchObject({ behavior: 'allow' });
+    const settled = emitted.length;
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS * 5);
+    expect(emitted).toHaveLength(settled);
+  });
+
+  it('stops on cancel (interrupt / session teardown)', async () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    const p = broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    broker.cancelSession('s1');
+    await expect(p).resolves.toMatchObject({ behavior: 'canceled' });
+    const settled = emitted.length;
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS * 5);
+    expect(emitted).toHaveLength(settled);
+  });
+
+  it('re-announces every open ask, across sessions', () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false });
+    void broker.ask({ sessionId: 's2', toolName: 'Read', toolInput: {}, denyListed: false });
+    emitted.length = 0;
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS);
+    expect(emitted.map((e) => e.sessionId).sort()).toEqual(['s1', 's2']);
+  });
+
+  it('does NOT re-announce an ask that already timed out — that turn is not hung', () => {
+    // A routed specialist ask (child-ask-router) is decided FOR the model at
+    // its deadline and deliberately left in `pending` so a late human answer is
+    // still delivered. Its promise has already settled, so nothing is stuck —
+    // re-rendering its card every few seconds would be noise about a decision
+    // that has already been made.
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    void broker.ask(
+      { sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: false },
+      { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny' }) },
+    );
+    vi.advanceTimersByTime(1000);   // hold expires; entry stays pending, timedOut
+    emitted.length = 0;
+    vi.advanceTimersByTime(ASK_REANNOUNCE_MS * 3);
+    expect(emitted).toHaveLength(0);
+  });
+});
+
+// Task 0 (2026-08-16 ROADMAP #permissions): TRANSCRIPT_REPLAY rebuilds cards
+// from the on-disk JSONL, but an open ask lives only in `pending` — nothing
+// re-sent the PermissionRequest, so a reloaded window's card came back with
+// no buttons and the turn hung forever (a root ask has no timeout). This is
+// the SAME idempotent-repeat mechanism the heartbeat above already proved
+// safe, just triggered by a replay instead of a timer.
+describe('PermissionBroker — pendingEventsFor', () => {
+  // Local — the heartbeat describe block above scopes its own `emitterFor` to
+  // itself; this block needs the identical "record every hook-event" helper.
+  function emitterFor(broker: PermissionBroker) {
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    return emitted;
+  }
+
+  it('re-emits every open ask for the session with the original requestId and payload', () => {
+    const broker = new PermissionBroker();
+    const emitted = emitterFor(broker);
+    void broker.ask({ sessionId: 's1', toolName: 'Bash', toolInput: { command: 'npm test' }, denyListed: false });
+    void broker.ask({ sessionId: 's1', toolName: 'Write', toolInput: { file_path: 'a.txt' }, denyListed: true });
+    void broker.ask({ sessionId: 's2', toolName: 'Read', toolInput: { file_path: 'b.txt' }, denyListed: false });
+    expect(emitted).toHaveLength(3);
+
+    const events = broker.pendingEventsFor('s1');
+    expect(events).toHaveLength(2); // s2's ask must not leak in
+    const ids = events.map((e) => e.payload._requestId).sort();
+    const expectedIds = [emitted[0].payload._requestId, emitted[1].payload._requestId].sort();
+    expect(ids).toEqual(expectedIds);
+    for (const e of events) {
+      expect(e.type).toBe('PermissionRequest');
+      expect(e.sessionId).toBe('s1');
+      const original = emitted.find((o) => o.payload._requestId === e.payload._requestId)!;
+      expect(e.payload).toEqual(original.payload); // byte-identical payload shape
+    }
+  });
+
+  it('includes a timed-out (held) ask — it is still answerable', async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new PermissionBroker();
+      const emitted = emitterFor(broker);
+      void broker.ask(
+        { sessionId: 's1', toolName: 'Bash', toolInput: {}, denyListed: true },
+        { timeoutMs: 1000, onTimeout: () => ({ behavior: 'deny', message: 'redirect' }) },
+      );
+      await vi.advanceTimersByTimeAsync(1000); // the hold expires — entry stays pending, timedOut
+      const events = broker.pendingEventsFor('s1');
+      expect(events).toHaveLength(1);
+      expect(events[0].payload._requestId).toBe(emitted[0].payload._requestId);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('returns an empty array for a session with no open asks', () => {
+    const broker = new PermissionBroker();
+    expect(broker.pendingEventsFor('nobody')).toEqual([]);
   });
 });

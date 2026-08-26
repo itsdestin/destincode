@@ -92,6 +92,85 @@ describe('SessionStore', () => {
     expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
   });
 
+  // The parked-turn card is display-only in exactly the same way the stall
+  // warning is: not persisted, and NOT a turn boundary. This matters more than
+  // it did before — a parked turn's stream may still resume into the same part.
+  it('a stalled card heartbeat is not persisted and does NOT flush the open part', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Hel', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { stalled: true }, 'w1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'lo!', partId: 'p1' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'Hello!', partId: 'p1' });
+  });
+
+  it('dropPart discards the buffered open part instead of writing it', async () => {
+    // Manual Retry: the abandoned half-sentence must never reach the JSONL, or
+    // a resume would replay text the user watched disappear.
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Now I will', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { dropPart: { partIds: ['p1'] } }, 'd1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'recovered', partId: 'p2' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'recovered', partId: 'p2' });
+  });
+
+  it('dropPart for a DIFFERENT partId leaves the open part alone', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'keep me', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { dropPart: { partIds: ['other'] } }, 'd1') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'keep me', partId: 'p1' });
+  });
+
+  // Reproduces the LIVE defect verbatim: a manual Retry re-runs the stalled
+  // step, and the SDK's fallback partId ('text-0') means the re-run's first
+  // delta usually arrives with the SAME partId as the abandoned attempt. Before
+  // the fix, dropPart hit the display-only early return without clearing the
+  // buffer, so this same-partId delta matched the stale buffered entry and got
+  // CONCATENATED onto it — on this commit, that persisted
+  // "Now I will dispatchrecovered" to disk. The buffer must be gone by the
+  // time this delta arrives, so the new delta starts a fresh part instead of
+  // merging into the abandoned one.
+  it('a same-partId delta after dropPart persists only the new text, not the concatenation (live defect repro)', async () => {
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Now I will dispatch', partId: 'p1' }, 'a1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', { dropPart: { partIds: ['p1'] } }, 'd1') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'recovered', partId: 'p1' }, 'a2') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', { stopReason: 'end_turn' }, 't1') as any);
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.map((e: any) => e.type)).toEqual(['assistant-text', 'turn-complete']);
+    expect((events[0] as any).data).toMatchObject({ text: 'recovered', partId: 'p1' });
+  });
+
+  it('never persists a toolPreparing heartbeat, and does not flush the open part', async () => {
+    // Partial tool arguments must not reach the JSONL — a resume would replay a
+    // half-written file. The filter this relies on keys off "assistant-thinking
+    // with no text and no partId", so ADDING A FIELD to that event is exactly
+    // how it would silently regress.
+    await store.create(HEADER);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: 'Writing', partId: 'p1' }, 'u-1') as any);
+    await store.append(HEADER.cwd, ev('assistant-thinking', {
+      toolPreparing: { toolCallId: 'c1', toolName: 'Write', chars: 512 },
+    }, 'u-2') as any);
+    await store.append(HEADER.cwd, ev('assistant-text', { text: ' a file', partId: 'p1' }, 'u-3') as any);
+    await store.append(HEADER.cwd, ev('turn-complete', {}, 'u-4') as any);
+
+    const events = store.readEvents('s-1', HEADER.cwd);
+    expect(events.some((e: any) => e.data?.toolPreparing)).toBe(false);
+    // The open p1 part was NOT flushed by the heartbeat: both halves coalesced
+    // into ONE persisted assistant-text.
+    const texts = events.filter((e: any) => e.type === 'assistant-text');
+    expect(texts).toHaveLength(1);
+    expect((texts[0] as any).data.text).toBe('Writing a file');
+  });
+
   it('a new partId flushes the previous open part', async () => {
     await store.create(HEADER);
     await store.append(HEADER.cwd, ev('assistant-thinking', { text: 'thi', partId: 'r1' }, 'r1a') as any);
@@ -238,18 +317,45 @@ describe('SessionStore', () => {
       expect(store.has('s-1')).toBe(false); // no create() call in this test
     });
   });
+
+  describe('specialist child headers (plan 1a)', () => {
+    const CHILD: NativeSessionHeader = {
+      ...HEADER, sessionId: 'child-1',
+      parentSessionId: 'root-1', sessionKind: 'specialist', agentType: 'explorer',
+    };
+    it('round-trips the additive child fields through create() and readHeader', async () => {
+      await store.create(CHILD);
+      const back = store.readHeader('child-1', HEADER.cwd);
+      expect(back?.parentSessionId).toBe('root-1');
+      expect(back?.agentType).toBe('explorer');
+    });
+    it('list() hides specialist children by default and includes them on request', async () => {
+      await store.create({ ...HEADER, sessionId: 'root-1' });
+      await store.create(CHILD);
+      const defaults = await store.list();
+      expect(defaults.map(e => e.sessionId)).toEqual(['root-1']);
+      const all = await store.list({ includeChildren: true });
+      expect(all.map(e => e.sessionId).sort()).toEqual(['child-1', 'root-1']);
+    });
+    it('a v1 header WITHOUT the new fields still validates (no migration)', async () => {
+      await store.create({ ...HEADER, sessionId: 'old-1' });   // exactly the pre-plan-1a field set
+      const back = store.readHeader('old-1', HEADER.cwd);
+      expect(back?.sessionId).toBe('old-1');
+      expect(back?.parentSessionId).toBeUndefined();
+      expect(back?.sessionKind).toBeUndefined();
+    });
+  });
 });
 
 // Task 3 (M2 plan) — pins the DELIBERATE divergence documented at the top of
-// session-store.ts: native sessions use the raw cwdToProjectSlug, while the CC
-// layer (project-conversations.ts) additionally uppercases a lowercase
-// Windows drive letter before slugifying. This is NOT a bug to unify — see
-// that file's comment for why (it would orphan existing native transcripts).
-describe('native/CC slug divergence', () => {
-  it('encodes the deliberate slug divergence: native uses raw cwdToProjectSlug, CC layer drive-normalizes', async () => {
-    const { cwdToProjectSlug } = await import('../src/main/transcript-watcher');
-    const { ccProjectSlug } = await import('../src/main/project-conversations');
-    expect(cwdToProjectSlug('c:\\Users\\d\\proj')).toBe('c--Users-d-proj');
+// slug-encoding.ts: native sessions use the FROZEN nativeStoreSlug, while the
+// CC mirror (ccProjectSlug) additionally uppercases a lowercase Windows drive
+// letter before slugifying. This is NOT a bug to unify — see that file's
+// comment for why (it would orphan existing native transcripts).
+describe('native/CC slug divergence — FREEZE PIN, do not delete', () => {
+  it('native uses the frozen rule; the CC mirror drive-normalizes', async () => {
+    const { nativeStoreSlug, ccProjectSlug } = await import('../src/main/slug-encoding');
+    expect(nativeStoreSlug('c:\\Users\\d\\proj')).toBe('c--Users-d-proj');
     expect(ccProjectSlug('c:\\Users\\d\\proj')).toBe('C--Users-d-proj');   // NOT equal — pinned
   });
 });

@@ -121,6 +121,11 @@ function makeTransport(): GitTransport {
       try { return (await getGithubClient()?.getToken())?.token ?? null; }
       catch { return null; }
     },
+    // Thread the service log into the transport so repair() traces (which tier
+    // ran, what it deleted) land in the same main-process log as the rest of
+    // sync-spaces. Late-bound on purpose: logFn is reassigned by
+    // startSyncSpaces, and a direct `log: logFn` would freeze the default.
+    log: (m) => logFn(m),
   });
 }
 

@@ -1,4 +1,15 @@
+import type { ArtifactContentInfo } from './ActiveArtifactView';
+
 export interface ArtifactViewProps {
+  /** Read metadata from artifacts:get. BinaryFallback needs sizeBytes to say
+   *  whether the reason it can't show the file is the FORMAT or the SIZE —
+   *  stating the wrong one is how a 2.3 MB PNG got "too large" (spec §4.5). */
+  contentInfo?: ArtifactContentInfo | null;
+  /** The file's EXTENSION says text (.md, .ts, .html) but its bytes sniffed
+   *  binary. The format is supported; this particular file is not text — so the
+   *  handoff must not claim "can't display .md files", which is false.
+   *  Computed by ActiveArtifactView, which owns the routing decision. */
+  sniffedBinaryTextFile?: boolean;
   path: string;
   content: string | null;
   absolutePath: string;

@@ -1,0 +1,2 @@
+{"type":"tool_use","id":"toolu_01Send","name":"SendUserFile","input":{"files":["/workspace/docs/summary.md","/workspace/out/chart.png"],"caption":"Summary and the chart it references.","status":"normal"}}
+{"tool_use_id":"toolu_01Send","type":"tool_result","content":"Sent 2 files to the user.","is_error":false}

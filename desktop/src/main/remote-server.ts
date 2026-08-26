@@ -25,10 +25,12 @@ import type { SearchKeyStore } from './harness/search/search-key-store';
 import type { SearchService } from './harness/search/search-service';
 import type { EngineManager } from './engine/engine-manager';
 import type { ModelManager } from './models/model-manager';
+import type { PermissionStore } from './harness/permission-store';
+import type { PermissionRule } from '../shared/permission-types';
 import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
-import { listPastSessions, loadHistory } from './session-browser';
+import { listPastSessions, loadHistory, SAFE_ID_RE } from './session-browser';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
@@ -105,7 +107,9 @@ export class RemoteServer {
   // native:* / provider:* WS cases no-op until then.
   // Merge note: nativeRuntime carries modelManager (Plan C) AND the leaseWiring
   // field (Plan 2b) — both were added independently on master and this branch.
-  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService } | null = null;
+  // permissionStore (M5 2a) is carried for the READ side only — permissions:list.
+  // The two revokes go through nativeHost, which also clears live in-memory state.
+  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore } | null = null;
   // Plan 2b Task 11: conversation-lease + device wiring, injected by ipc-handlers
   // via setLeaseWiring() AFTER main.ts builds the lease client/requester (they
   // live in the whenReady scope, not reachable at RemoteServer construction).
@@ -144,7 +148,7 @@ export class RemoteServer {
   /** Injected by ipc-handlers after it constructs the native stack, so remote
    *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
-  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService }): void {
+  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore }): void {
     this.nativeRuntime = rt;
   }
 
@@ -948,6 +952,37 @@ export class RemoteServer {
         this.respond(client.ws, type, id, res);
         break;
       }
+      // Remembered "Always allow" rules (M5 2a) — mirror the desktop IPC handlers
+      // so a remote client (a phone, typically) reaches the SAME permissionStore /
+      // nativeHost instances. There is no generic passthrough here: a channel with
+      // no explicit case gets no reply at all, which hangs the request instead of
+      // failing it. Payloads arrive object-wrapped from remote-shim (payload.slug /
+      // payload.rule), matching the search:* cases above.
+      case 'permissions:list': {
+        // Read-only: the store is the disk authority. No native runtime → no
+        // grants to show, same shape the renderer already handles for an empty list.
+        this.respond(client.ws, type, id, this.nativeRuntime ? await this.nativeRuntime.permissionStore.list() : []);
+        break;
+      }
+      case 'permissions:remove': {
+        // nativeHost.revokeRule, NEVER permissionStore.remove — the host also
+        // clears the live in-memory rule so an already-running session stops
+        // granting what was just revoked. false = nothing matched (stale list),
+        // which is also the honest answer when the runtime isn't wired.
+        const removed = this.nativeRuntime
+          ? await this.nativeRuntime.nativeHost.revokeRule(payload.slug, payload.rule as PermissionRule)
+          : false;
+        this.respond(client.ws, type, id, removed);
+        break;
+      }
+      case 'permissions:remove-project': {
+        // Same disk-plus-live-memory contract as permissions:remove above.
+        const removed = this.nativeRuntime
+          ? await this.nativeRuntime.nativeHost.revokeProject(payload.slug)
+          : false;
+        this.respond(client.ws, type, id, removed);
+        break;
+      }
       case 'tags:list': {
         const { getTagRegistry } = await import('./conversations/tag-registry-service');
         const reg = getTagRegistry();
@@ -1016,6 +1051,13 @@ export class RemoteServer {
         // never told chatsearch a tag changed, so a tag applied from a phone/
         // browser stayed invisible to the CLI until an unrelated refresh.
         emitConversationMetaChanged();
+        // ROADMAP 2026-07-23: the ipcMain twin broadcasts session:meta-changed
+        // after a successful persist; without this a SECOND remote client (or
+        // the same session on another device) stayed stale until a full
+        // refresh. Same frame shape as ipc-handlers SESSION_SET_TAG. The echo
+        // to the originating client is a harmless refetch (consumers ignore
+        // the payload and refetch meta).
+        this.broadcast({ type: 'session:meta-changed', payload: { sessionId: resolved, flag: tagFlagKey(tagId), value: !!payload?.value } });
         this.respond(client.ws, type, id, { ok: true });
         break;
       }
@@ -1036,6 +1078,8 @@ export class RemoteServer {
         // Same gap as session:set-tag above — the remote mirror of
         // session:set-note must also tell chatsearch a note changed.
         emitConversationMetaChanged();
+        // Same parity gap as session:set-tag above — see that comment.
+        this.broadcast({ type: 'session:meta-changed', payload: { sessionId: resolved, note: text } });
         this.respond(client.ws, type, id, { ok: true });
         break;
       }
@@ -1227,12 +1271,30 @@ export class RemoteServer {
         break;
       }
       case 'session:history': {
-        const { sessionId: histSessionId, count, all } = payload;
-        // Find the JSONL file across all project slugs
+        const { sessionId: histSessionId, projectSlug: histSlug, count, all } = payload;
+        // Fix: validate the client-supplied id BEFORE the fs.access probe loop
+        // below — loadHistory's SAFE_ID_RE guard only runs after the probe, so
+        // a traversal-shaped id ('../../x') made the loop a file-existence
+        // oracle for arbitrary *.jsonl paths. The typeof check matters too:
+        // SAFE_ID_RE.test(undefined) coerces to the string "undefined", which
+        // the regex would accept. Invalid ids get the same [] loadHistory returns.
+        if (typeof histSessionId !== 'string' || !SAFE_ID_RE.test(histSessionId)) {
+          this.respond(client.ws, type, id, []);
+          break;
+        }
+        // Find the JSONL file across all project slugs. The shim sends the
+        // caller's projectSlug (argument-order fix, same day as the SAFE_ID_RE
+        // hardening above) — probe it FIRST, parity with Android's handler,
+        // so the common case skips the O(projects) directory scan. A stale or
+        // invalid slug just falls through to the scan; SAFE_ID_RE gates it
+        // before it can shape a path.
         const projectsDir = path.join(os.homedir(), '.claude', 'projects');
         const slugs = await fs.promises.readdir(projectsDir).catch(() => [] as string[]);
+        const candidates = (typeof histSlug === 'string' && SAFE_ID_RE.test(histSlug))
+          ? [histSlug, ...slugs.filter((s) => s !== histSlug)]
+          : slugs;
         let foundSlug = '';
-        for (const slug of slugs) {
+        for (const slug of candidates) {
           const candidate = path.join(projectsDir, slug, histSessionId + '.jsonl');
           try {
             await fs.promises.access(candidate);
@@ -1679,14 +1741,27 @@ export class RemoteServer {
         break;
       }
       case 'transcript:read-meta': {
-        const transcriptPath = payload.path || payload;
-        const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
-        const resolvedPath = path.resolve(transcriptPath);
-        if (!resolvedPath.startsWith(claudeProjects)) {
+        // Fix: mirror model:read-last below — accept { path } or a raw string,
+        // and reject non-string values BEFORE touching path.resolve. The old
+        // `payload.path || payload` + resolve-outside-the-try shape meant one
+        // malformed frame ({ path: {...} }, a bare object, or a null payload)
+        // threw out of handleMessage as an unhandled rejection instead of
+        // answering null.
+        const transcriptPath = (payload && typeof payload === 'object' && 'path' in payload)
+          ? payload.path
+          : payload;
+        if (typeof transcriptPath !== 'string') {
           this.respond(client.ws, type, id, null);
           break;
         }
         try {
+          const claudeProjects = path.join(os.homedir(), '.claude', 'projects');
+          const resolvedPath = path.resolve(transcriptPath);
+          // Fix: + path.sep so a sibling dir like ~/.claude/projects-evil can't pass the prefix check
+          if (!resolvedPath.startsWith(claudeProjects + path.sep)) {
+            this.respond(client.ws, type, id, null);
+            break;
+          }
           const meta = await readTranscriptMeta(transcriptPath);
           this.respond(client.ws, type, id, meta);
         } catch {
@@ -2080,6 +2155,12 @@ export class RemoteServer {
       // Native runtime interrupt — fire-and-forget (no response). The host no-ops unknown ids.
       case 'native:interrupt': {
         this.nativeRuntime?.nativeHost.interrupt(payload.sessionId);
+        break;
+      }
+      // Stalled-turn Retry — fire-and-forget, same shape as interrupt above.
+      // The host no-ops when nothing is parked (stream already resumed).
+      case 'native:retry': {
+        this.nativeRuntime?.nativeHost.retryStalledStep(payload.sessionId);
         break;
       }
       case 'session:resize': {

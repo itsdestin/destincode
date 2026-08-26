@@ -90,7 +90,8 @@ export class IntegrationInstaller {
 
   writeManifest(data: Record<string, IntegrationState>): void {
     const content = JSON.stringify({ integrations: data }, null, 2);
-    const tmp = `${MANIFEST_PATH}.tmp`;
+    // pid-suffixed temp name: two processes sharing ~/.claude must not race the same .tmp
+    const tmp = `${MANIFEST_PATH}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, content);
     fs.renameSync(tmp, MANIFEST_PATH);
   }

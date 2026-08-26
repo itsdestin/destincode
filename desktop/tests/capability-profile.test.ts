@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { resolveProfile, effectiveContextForModel, CLOUD_DEFAULT, type DiscoveredModel } from '../src/main/harness/capability-profile';
 import type { KnownModelEntry } from '../src/main/harness/known-models';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
 
 const local = (modelId: string, contextLength: number | null): DiscoveredModel => ({ providerType: 'local-engine', modelId, contextLength });
 
@@ -73,6 +74,65 @@ describe('effectiveContextForModel', () => {
 // the Skill tool's catalog (which rides the tool schema on EVERY turn) is
 // affordable at all, and how many tokens a single injection may occupy.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Task 6b — nativeImageToolResults is a PROVIDER-TYPE fact (can this wire
+// carry an image inside a tool_result block?), not a model fact. Only the
+// direct-Anthropic provider can; every other provider type — including a
+// KNOWN local model, whose registry entry has no such field to override it
+// with — gets the wire-adapter split instead. Covers every ProfileProviderType
+// so a new provider type added later must be triaged here, not silently
+// default to whatever object spread happens to produce.
+// ---------------------------------------------------------------------------
+describe('nativeImageToolResults (Task 6b)', () => {
+  it('is true only for the direct Anthropic provider', () => {
+    expect(resolveProfile({ providerType: 'anthropic', modelId: 'claude-opus-5', contextLength: 200_000 }).nativeImageToolResults).toBe(true);
+    for (const providerType of ['openai', 'google', 'openrouter', 'openai-compatible', 'local-engine'] as const) {
+      expect(resolveProfile({ providerType, modelId: 'x', contextLength: 32_768 }).nativeImageToolResults, providerType).toBe(false);
+    }
+  });
+
+  it('a KNOWN local model cannot override it — the registry has no such field', () => {
+    const registry: KnownModelEntry[] = [
+      { match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true },
+    ];
+    expect(resolveProfile(local('qwen3.6-35b-moe-q4', 32_768), registry).nativeImageToolResults).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 6 — canDelegate gates whether the model-invoked Task tool is attached
+// at all (spec decision 4: a weak/unverified orchestrator serial-collapses
+// delegated work rather than parallelizing it, so the gate is on the TOOL,
+// never on NativeSessionHost.createChild directly).
+// ---------------------------------------------------------------------------
+describe('canDelegate (Task 6, spec decision 4)', () => {
+  it('frontier/cloud providers default to true', () => {
+    expect(CLOUD_DEFAULT.canDelegate).toBe(true);
+    expect(resolveProfile({ providerType: 'anthropic', modelId: 'claude-opus-5', contextLength: 200_000 }).canDelegate).toBe(true);
+    expect(resolveProfile({ providerType: 'openai', modelId: 'x', contextLength: 128_000 }).canDelegate).toBe(true);
+    expect(resolveProfile({ providerType: 'openrouter', modelId: 'x', contextLength: 128_000 }).canDelegate).toBe(true);
+  });
+
+  it('the conservative fallback for an UNKNOWN local model cannot delegate, even at a large window', () => {
+    expect(resolveProfile(local('mystery-3b', 8_192)).canDelegate).toBe(false);
+    expect(resolveProfile(local('mystery-120b', 131_072)).canDelegate).toBe(false);
+  });
+
+  it('a known local model tuned to simplified presentation cannot delegate', () => {
+    const registry: KnownModelEntry[] = [
+      { match: 'qwen3\\.5.*9b', label: 'Qwen 3.5 9B', maxToolPresentation: 'simplified', doomLoopThreshold: 2, supportsTools: true },
+    ];
+    expect(resolveProfile(local('qwen3.5-9b-q4', 32_768), registry).canDelegate).toBe(false);
+  });
+
+  it('a known local model tuned to full presentation CAN delegate', () => {
+    const registry: KnownModelEntry[] = [
+      { match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', doomLoopThreshold: 3, supportsTools: true },
+    ];
+    expect(resolveProfile(local('qwen3.6-35b-moe-q4', 32_768), registry).canDelegate).toBe(true);
+  });
+});
+
 describe('capability profile — injection sizing (M3 item 5)', () => {
   it('a large local window gets the skill catalog and a generous budget', () => {
     const p = resolveProfile(local('qwen3.6-122b', 128_000));
@@ -221,5 +281,149 @@ describe('mcpToolBudgetTokens ladder (Task 6 / fix pass 1, Finding 2)', () => {
     const p = resolveProfile({ providerType: 'openai-compatible', modelId: 'tiny-model-q4', contextLength: 131_072 }, reg);
     expect(p.mcpToolBudgetTokens).toBe(750);                 // clamped to the 8192 ceiling -> smallest tier
     expect(p.injectionBudgetTokens).toBeLessThan(10_000);     // the clamp injectionSizing already applied
+  });
+});
+
+// ---------------------------------------------------------------------------
+// supportsVision precedence — OpenRouter is a transport, so a discovered
+// per-model fact (from the catalog's architecture.input_modalities) must be
+// able to answer where the registry has none. Precedence, most to least
+// authoritative: (1) KNOWN_MODELS registry opinion, (2) DiscoveredModel's own
+// supportsVision (the catalog value, when defined), (3) VISION_PROVIDERS
+// fallback (today's provider-type-only behavior).
+// ---------------------------------------------------------------------------
+describe('supportsVision — three-level precedence (registry > discovered > provider default)', () => {
+  it('a discovered true from the catalog wins over the provider default (openrouter has no default)', () => {
+    const d: DiscoveredModel = { providerType: 'openrouter', modelId: 'some/vision-model', contextLength: 128_000, supportsVision: true };
+    expect(resolveProfile(d).supportsVision).toBe(true);
+  });
+
+  it('a discovered false from the catalog wins over the provider default', () => {
+    // Regression guard for a test that used to assert this same claim with an
+    // openrouter binding — whose VISION_PROVIDERS default is ALREADY false, so
+    // that version passed even with the whole discovered-value feature deleted.
+    // anthropic IS in VISION_PROVIDERS (default true), so only a real "discovered
+    // false overrides it" path can make this one pass.
+    const d: DiscoveredModel = { providerType: 'anthropic', modelId: 'some/model', contextLength: 128_000, supportsVision: false };
+    expect(resolveProfile(d).supportsVision).toBe(false);
+  });
+
+  it('an UNDEFINED discovered value leaves today\'s behavior exactly as it was (provider-default fallback)', () => {
+    const d: DiscoveredModel = { providerType: 'openrouter', modelId: 'some/unknown-model', contextLength: 128_000 };
+    // No registry opinion, no discovered opinion -> VISION_PROVIDERS.has('openrouter') -> false.
+    expect(resolveProfile(d).supportsVision).toBe(false);
+    // Same for a provider VISION_PROVIDERS DOES claim, to prove the fallback path is unchanged.
+    const anthropicD: DiscoveredModel = { providerType: 'anthropic', modelId: 'claude-opus-5', contextLength: 200_000 };
+    expect(resolveProfile(anthropicD).supportsVision).toBe(true);
+  });
+
+  it('the KNOWN_MODELS registry beats a discovered value in either direction', () => {
+    const registryVisionTrue: KnownModelEntry[] = [{ match: 'special-vision-model', label: 'X', supportsVision: true }];
+    const registryVisionFalse: KnownModelEntry[] = [{ match: 'special-novision-model', label: 'X', supportsVision: false }];
+    // Registry says true, discovered says false -> registry wins.
+    expect(resolveProfile(
+      { providerType: 'openrouter', modelId: 'special-vision-model', contextLength: 128_000, supportsVision: false },
+      registryVisionTrue,
+    ).supportsVision).toBe(true);
+    // Registry says false, discovered says true -> registry wins.
+    expect(resolveProfile(
+      { providerType: 'openrouter', modelId: 'special-novision-model', contextLength: 128_000, supportsVision: true },
+      registryVisionFalse,
+    ).supportsVision).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 13 — maxConcurrentSpecialists: the per-parent specialist concurrency
+// ceiling moves from the flat HOSTED_MAX_CONCURRENT_SPECIALISTS constant onto
+// the profile. Hosted/cloud stays the flat spec constant (CLOUD_DEFAULT); a
+// local session's ceiling is derived from the ENGINE's own measured slot
+// count (DiscoveredModel.totalSlots, read from the same /props call that
+// already supplies contextLength — see engine-dependencies.md § "Parallel
+// slots"), clamped to [1, 4]. An UNKNOWN local model (Layer 3) gets the
+// conservative floor unconditionally — same posture as canDelegate, which is
+// already false for it, so the Task tool is never even attached.
+// ---------------------------------------------------------------------------
+describe('maxConcurrentSpecialists (Task 13 — local concurrency from the engine, hosted from the profile)', () => {
+  it('hosted/cloud providers get the flat spec constant', () => {
+    // Final-review fix (Finding 5): `expect(CLOUD_DEFAULT.maxConcurrentSpecialists)
+    // .toBe(HOSTED_MAX_CONCURRENT_SPECIALISTS)` alone can never fail from a
+    // regression in the VALUE this feature is supposed to produce —
+    // capability-profile.ts sets CLOUD_DEFAULT.maxConcurrentSpecialists to
+    // exactly that same imported binding (line ~122), so the comparison is
+    // between a symbol and itself; it would keep passing even if
+    // HOSTED_MAX_CONCURRENT_SPECIALISTS's own value drifted to something
+    // nonsensical (0, -1, 9999), since both sides would still agree. Pin the
+    // actual spec number (limits.ts's own comment: "spec §5 Global
+    // Constraints", currently 4) so a change to the constant itself is a
+    // failure, not a silent pass. The symbol-equality check below is kept
+    // TOO — it still catches the OTHER real regression, a hardcoded literal
+    // replacing the import in capability-profile.ts.
+    expect(HOSTED_MAX_CONCURRENT_SPECIALISTS).toBe(4);
+    expect(CLOUD_DEFAULT.maxConcurrentSpecialists).toBe(HOSTED_MAX_CONCURRENT_SPECIALISTS);
+    for (const providerType of ['anthropic', 'openai', 'google', 'openrouter'] as const) {
+      expect(resolveProfile({ providerType, modelId: 'x', contextLength: 128_000 }).maxConcurrentSpecialists, providerType)
+        .toBe(HOSTED_MAX_CONCURRENT_SPECIALISTS);
+    }
+  });
+
+  it('an UNKNOWN local model gets the conservative floor of 1, even when a live slot count is provided', () => {
+    // Layer 3 is unconditional — an unvetted model's real behavior under
+    // concurrent load is unknown regardless of what the engine reports, the
+    // same reasoning canDelegate already applies to this layer.
+    expect(resolveProfile(local('mystery-3b', 8_192)).maxConcurrentSpecialists).toBe(1);
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'mystery-3b', contextLength: 8_192, totalSlots: 4 }).maxConcurrentSpecialists).toBe(1);
+  });
+
+  it('a KNOWN local model with a live slot reading clamps to it (within 1-4)', () => {
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: 4 }, registry).maxConcurrentSpecialists).toBe(4);
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: 2 }, registry).maxConcurrentSpecialists).toBe(2);
+  });
+
+  it('a KNOWN local model clamps a slot reading ABOVE 4 down to the ceiling', () => {
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: 8 }, registry).maxConcurrentSpecialists).toBe(4);
+  });
+
+  it('a KNOWN local model clamps a slot reading of 0 up to the floor of 1', () => {
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: 0 }, registry).maxConcurrentSpecialists).toBe(1);
+  });
+
+  it('a KNOWN local model with NO slot count on this build falls back to 1, not the ceiling', () => {
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    // totalSlots absent entirely (the DiscoveredModel never set it).
+    expect(resolveProfile(local('qwen3.6-35b-moe-q4', 32_768), registry).maxConcurrentSpecialists).toBe(1);
+    // totalSlots explicitly null (the /props read ran but reported nothing).
+    expect(resolveProfile({ providerType: 'local-engine', modelId: 'qwen3.6-35b-moe-q4', contextLength: 32_768, totalSlots: null }, registry).maxConcurrentSpecialists).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// announcePrefill (Destin, 2026-08-16) — the "Reading your prompt — N tokens"
+// heartbeat is for models running on the user's OWN hardware, where llama.cpp
+// prefill is a minutes-long silence that looks like a hang. It shipped on every
+// provider, so cloud/OpenRouter turns got it in place of the ordinary spinner.
+// A PROVIDER-TYPE fact: no registry entry may override it either way.
+// ---------------------------------------------------------------------------
+describe('announcePrefill — the prompt-reading notice is local-only', () => {
+  it('is false for every hosted provider', () => {
+    for (const providerType of ['anthropic', 'openai', 'google', 'openrouter'] as const) {
+      expect(resolveProfile({ providerType, modelId: 'x', contextLength: 128_000 }).announcePrefill, providerType).toBe(false);
+    }
+    expect(CLOUD_DEFAULT.announcePrefill).toBe(false);
+  });
+
+  it('is true for the local engine, known model or not', () => {
+    expect(resolveProfile(local('mystery-3b', 8_192)).announcePrefill).toBe(true);
+    const registry: KnownModelEntry[] = [{ match: 'qwen3\\.6.*35b.*moe', label: 'Qwen 3.6 35B MoE', maxToolPresentation: 'full', supportsTools: true }];
+    expect(resolveProfile(local('qwen3.6-35b-moe-q4', 131_072), registry).announcePrefill).toBe(true);
+  });
+
+  it('is true for openai-compatible — the Ollama / LM Studio shape is a local model in disguise', () => {
+    // Same reasoning FRONTIER_PROVIDERS uses to exclude this type from the
+    // "assume a roomy window" shortcut.
+    expect(resolveProfile({ providerType: 'openai-compatible', modelId: 'llama3.3:70b', contextLength: null }).announcePrefill).toBe(true);
   });
 });

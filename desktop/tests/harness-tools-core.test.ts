@@ -23,10 +23,11 @@ vi.mock('child_process', async (importActual) => {
 import { ReadTool, readSizeError, MAX_READ_BYTES } from '../src/main/harness/tools/read';
 import { WriteTool } from '../src/main/harness/tools/write';
 import { EditTool } from '../src/main/harness/tools/edit';
-import { BashTool } from '../src/main/harness/tools/bash';
+import { BashTool, rebaseReportedCwd } from '../src/main/harness/tools/bash';
 import { GlobTool } from '../src/main/harness/tools/glob';
 import { GrepTool, resolveRgPath } from '../src/main/harness/tools/grep';
 import { TodoWriteTool } from '../src/main/harness/tools/todo-write';
+import { shellCwdMissHint, workspaceRootMissHint } from '../src/main/harness/tools/guards';
 import type { ToolContext } from '../src/main/harness/tools/types';
 
 // Each test gets a fresh tmp sandbox + fresh ToolContext (readRegistry/todos maps),
@@ -108,7 +109,7 @@ describe('Read', () => {
     fs.writeFileSync(path.join(dir, 't.txt'), 'a\nb\nc\n'); // 3 real lines, trailing \n
     const r = await ReadTool.execute({ file_path: 't.txt', offset: 1, limit: 2 }, ctx);
     // 3 total, not 4 — the phantom empty split element is dropped.
-    expect(r.text).toContain('of 3 —');
+    expect(r.text).toContain('of 3 lines —');
     expect(r.text).not.toContain('of 4');
   });
 
@@ -117,6 +118,162 @@ describe('Read', () => {
     const r = await ReadTool.execute({ file_path: 't.txt', offset: 99 }, ctx);
     expect(r.isError).toBe(true);
     expect(r.text).toContain('offset 99 is past the end of the file (3 lines)');
+  });
+
+  // Regression pin (2026-08-10 review, Claim 10): Read's isError messages used
+  // THREE unreconciled shapes -- "Read failed: ..." (thrown exceptions, via
+  // registry.ts's catch-all), "Cannot read ...: ..." (binary/size refusals), and
+  // a bare "Read <path>: offset N is past the end..." (past-EOF, no "failed"/
+  // "Cannot" prefix at all). Opus flagged the last one specifically: the
+  // prefixes are "otherwise a reliable signal for 'did this succeed'". House
+  // pattern (from Edit: "rejected" for a guard declining to act at all, "failed"
+  // for a bad request against an otherwise-permitted action) maps size/binary to
+  // "Read rejected:" (we refuse to read this file, full stop) and past-EOF to
+  // "Read failed:" (the specific offset requested is invalid) -- unifying with
+  // the SAME two prefixes the thrown-exception path (registry.ts) already uses.
+  it('unifies Read refusals into two dialects: "Read rejected:" for a file we refuse to read at all, "Read failed:" for a bad request', async () => {
+    fs.writeFileSync(path.join(dir, 'bin'), Buffer.from([0x41, 0x00, 0x42]));
+    const binR = await ReadTool.execute({ file_path: 'bin' }, ctx);
+    expect(binR.isError).toBe(true);
+    expect(binR.text.startsWith('Read rejected:')).toBe(true);
+
+    fs.writeFileSync(path.join(dir, 't2.txt'), 'a\nb\nc\n');
+    const eofR = await ReadTool.execute({ file_path: 't2.txt', offset: 99 }, ctx);
+    expect(eofR.isError).toBe(true);
+    expect(eofR.text.startsWith('Read failed:')).toBe(true);
+
+    const sizeMsg = readSizeError(MAX_READ_BYTES + 1, 'huge.log');
+    expect(sizeMsg).toBeTruthy();
+    expect(sizeMsg!.startsWith('Read rejected:')).toBe(true);
+  });
+
+  it('Read declares bounds with an offset hint when a page is partial', async () => {
+    const f = path.join(dir, 'big.txt');
+    fs.writeFileSync(f, Array.from({ length: 100 }, (_, i) => `line ${i}`).join('\n'));
+    const r = await ReadTool.execute({ file_path: f, offset: 1, limit: 20 }, ctx);
+    expect(r.text).toContain('[showing 20 of 100 lines — use offset=21 to continue]');
+  });
+
+  it('Read declares no bounds when the whole file fits', async () => {
+    const f = path.join(dir, 'small.txt');
+    fs.writeFileSync(f, 'a\nb\nc');
+    const r = await ReadTool.execute({ file_path: f }, ctx);
+    expect(r.text).not.toContain('[showing');
+  });
+
+  // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max --
+  // see guards.ts's WHY block above shellCwdMissHint): Read always resolves a
+  // relative path from the workspace root; Bash's cwd persists across calls
+  // and `cd` moves it. Grok's half of the finding: a model that just `cd`-ed
+  // Bash elsewhere can wrongly assume Read followed it.
+  describe('shell-cwd miss hint (Grok 4.5 / Qwen 3.8 Max asymmetry)', () => {
+    it('names the path when it exists relative to the persisted shell cwd', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const target = path.join(shellCwd, 'note.txt');
+      fs.writeFileSync(target, 'hello');
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await ReadTool.execute({ file_path: 'note.txt' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text.startsWith('Read failed: ENOENT')).toBe(true);
+      expect(r.text).toContain(target);
+      expect(r.text).toContain(shellCwd);
+    });
+
+    it('adds no hint when the file exists nowhere', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await ReadTool.execute({ file_path: 'ghost.txt' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('adds no hint for an absolute-path miss', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const absGhost = path.join(dir, 'ghost-abs.txt');
+      const r = await ReadTool.execute({ file_path: absGhost }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('adds no hint when the shell cwd equals the workspace root', async () => {
+      const c: ToolContext = { ...ctx, shellCwd: dir };
+      const r = await ReadTool.execute({ file_path: 'ghost.txt' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+  });
+});
+
+describe('Read: image delivery (2026-08-11 spec)', () => {
+  it('returns the image path in payload.images for a vision model', async () => {
+    const p = path.join(dir, 'shot.png');
+    fs.writeFileSync(p, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBeFalsy();
+    expect(r.images).toEqual([p]);
+    expect(r.text).toContain('Read image');
+    expect(r.text).toContain('image/png');
+  });
+
+  it('refuses honestly for a non-vision model (no images field)', async () => {
+    const p = path.join(dir, 'shot2.png');
+    fs.writeFileSync(p, Buffer.from([1]));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: false });
+    expect(r.isError).toBe(true);
+    expect(r.images).toBeUndefined();
+    expect(r.text).toContain('cannot view images');
+  });
+
+  it('refuses an undeliverable image format by name, never promising it', async () => {
+    const p = path.join(dir, 'vector.svg');
+    fs.writeFileSync(p, '<svg/>');
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBe(true);
+    // Assert the actual refusal WORDING, not just that 'svg' appears somewhere —
+    // the echoed file path (".../vector.svg") alone would satisfy a bare
+    // `toContain('svg')` even with the format-named refusal deleted entirely
+    // (2026-08-11 review, Fix 2: the implementer's own RED evidence showed this
+    // test passing before the refusal branch existed).
+    expect(r.text).toMatch(/cannot be delivered/i);
+    expect(r.text).toContain('svg');
+    expect(r.images).toBeUndefined();
+  });
+
+  it('refuses an oversized image with the real size and limit', async () => {
+    const p = path.join(dir, 'huge.png');
+    fs.writeFileSync(p, Buffer.alloc(11 * 1024 * 1024));
+    const r = await ReadTool.execute({ file_path: p }, { ...makeCtx(dir), supportsVision: true });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/11(\.\d)? MB.*10 MB/s);
+    // A refusal must never also promise the image (2026-08-11 review, Fix 5) —
+    // the sibling refusal tests above pin this; this one didn't.
+    expect(r.images).toBeUndefined();
+  });
+
+  it('advertises image reading only to vision models', () => {
+    // Assert the LOAD-BEARING phrases, not the bare plural 'images' (2026-08-11
+    // review, Fix 3): the vivid "actual picture" framing and the "screenshot"
+    // example are what actually stop a vision model from never trying an image
+    // read — a substring check on 'images' alone would keep passing even if
+    // that framing were deleted.
+    expect(ReadTool.descriptionFor!({ supportsVision: true })).toMatch(/actual picture/);
+    expect(ReadTool.descriptionFor!({ supportsVision: true })).toMatch(/screenshot/);
+    expect(ReadTool.descriptionFor!({ supportsVision: false })).toBeUndefined();
+  });
+
+  it('advertises image reading in the SHORT description too, for simplified presentation', () => {
+    // Same failure mode as descriptionFor above, but for the small-local-model path
+    // (spec §4.2): a vision model that only ever sees shortDescription must still be
+    // told Read returns images, or the Roo Code #10440 gap reopens for that tier.
+    // Assert the specific clause added (2026-08-11), not the bare word 'images' —
+    // that alone could come from unrelated text and wouldn't catch the wording
+    // being deleted (2026-08-11 review, Fix 3's lesson applied here too).
+    expect(ReadTool.shortDescriptionFor!({ supportsVision: true })).toMatch(/come back as the actual picture/);
+    expect(ReadTool.shortDescriptionFor!({ supportsVision: false })).toBeUndefined();
   });
 });
 
@@ -137,7 +294,10 @@ describe('Edit', () => {
     fs.utimesSync(p, future, future);
     const r = await EditTool.execute({ file_path: 'a.txt', old_string: 'hello', new_string: 'bye' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toMatch(/changed since you read it/i);
+    // Must name the mtime as the mechanism, not just "changed" — the gate's
+    // invisibility is what four round-8 models misdiagnosed.
+    expect(r.text).toMatch(/changed on disk since you last Read or Wrote it/i);
+    expect(r.text).toMatch(/modification time/i);
   });
 
   it('non-unique old_string message includes the count', async () => {
@@ -218,6 +378,28 @@ describe('Edit', () => {
     expect(r.isError).toBeFalsy();
     expect(fs.readFileSync(p, 'utf8')).toBe('a$&b$1c$$d\n');
   });
+
+  // Regression pin (2026-08-10 review, Claim 6): Grok set old_string ===
+  // new_string with replace_all: true and got the generic 'Edited X.' text --
+  // textually identical to a real edit. structuredPatch already carried zero
+  // hunks (the true empty-diff signal), but the model only reads r.text. Surface
+  // the zero-change fact explicitly instead of a success message indistinguishable
+  // from a real edit.
+  it('reports zero changes explicitly for a no-op edit (old_string === new_string)', async () => {
+    const p = path.join(dir, 'a.txt');
+    fs.writeFileSync(p, 'shared token\n');
+    await ReadTool.execute({ file_path: 'a.txt' }, ctx);
+    const r = await EditTool.execute(
+      { file_path: 'a.txt', old_string: 'shared token', new_string: 'shared token', replace_all: true },
+      ctx,
+    );
+    expect(r.isError).toBeFalsy();
+    expect(r.text).not.toBe('Edited a.txt.');
+    expect(r.text).toMatch(/0 replacements|no changes|identical/i);
+    expect(r.structuredPatch).toEqual([]);
+    // The file's bytes are untouched -- no pointless rewrite of identical content.
+    expect(fs.readFileSync(p, 'utf8')).toBe('shared token\n');
+  });
 });
 
 describe('Write', () => {
@@ -239,6 +421,85 @@ describe('Write', () => {
     expect(r.structuredPatch).toBeDefined();
     expect(r.structuredPatch!.length).toBeGreaterThan(0);
   });
+
+  // Regression pin (2026-08-10 review, Claim 2 -- THE HEADLINE ITEM): Write's
+  // overwrite guard only checked registry PRESENCE ("was this path ever Read
+  // this session"), never freshness -- unlike Edit, which compares the recorded
+  // mtime against the current on-disk mtime. Opus 5's transcript demonstrated
+  // it: a Read at tool-call 11, an unrelated Write at tool-call 38 (27 calls
+  // later, file changed on disk in between) still succeeded with "no
+  // complaint". Mirrors Edit's existing mtime check (see the WHY comment in
+  // write.ts for why mtime over a content hash).
+  it('rejects overwriting a file that changed on disk since it was read (mtime mismatch, mirrors Edit)', async () => {
+    const p = path.join(dir, 'a.txt');
+    fs.writeFileSync(p, 'old\n');
+    await ReadTool.execute({ file_path: 'a.txt' }, ctx);
+    // Force a distinctly different mtime (+2s) -- coarse fs granularity safe,
+    // same technique as the Edit staleness test above.
+    const future = new Date(Date.now() + 2000);
+    fs.utimesSync(p, future, future);
+    const r = await WriteTool.execute({ file_path: 'a.txt', content: 'new\n' }, ctx);
+    expect(r.isError).toBe(true);
+    // Must name the mtime as the mechanism, not just "changed" — the gate's
+    // invisibility is what four round-8 models misdiagnosed.
+    expect(r.text).toMatch(/changed on disk since you last Read or Wrote it/i);
+    expect(r.text).toMatch(/modification time/i);
+    // The file on disk must be untouched by the rejected write.
+    expect(fs.readFileSync(p, 'utf8')).toBe('old\n');
+  });
+
+  it('allows overwriting when the read is still fresh (no intervening on-disk change)', async () => {
+    const p = path.join(dir, 'a.txt');
+    fs.writeFileSync(p, 'old\n');
+    await ReadTool.execute({ file_path: 'a.txt' }, ctx);
+    const r = await WriteTool.execute({ file_path: 'a.txt', content: 'new\n' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(fs.readFileSync(p, 'utf8')).toBe('new\n');
+  });
+
+  it('allows writing a brand-new file with no prior read (nothing to be stale about)', async () => {
+    const r = await WriteTool.execute({ file_path: 'brand-new.txt', content: 'hi\n' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(fs.readFileSync(path.join(dir, 'brand-new.txt'), 'utf8')).toBe('hi\n');
+  });
+
+  it('editing a just-Written file still works (Write plants a fresh read-registry entry)', async () => {
+    await WriteTool.execute({ file_path: 'w.txt', content: 'v1\n' }, ctx);
+    const r = await EditTool.execute({ file_path: 'w.txt', old_string: 'v1', new_string: 'v2' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(fs.readFileSync(path.join(dir, 'w.txt'), 'utf8')).toBe('v2\n');
+  });
+});
+
+// 2026-08-11 review round 8: the read-before-edit gate was correct in every
+// transcript, and four of six models still misdiagnosed it — as broken, as
+// Grep-transparent, as "inconsistent, priority fix". The gate's STATE is
+// invisible: nothing tells a model which paths are registered or with what
+// stamp. These pin the in-band signals that make it predictable. They assert on
+// message CONTENT deliberately — the content IS the fix here, not incidental.
+describe('the read gate explains itself (2026-08-11 review round 8)', () => {
+  it('the refusal names both tools that satisfy the gate, and says a shell view does not', async () => {
+    fs.writeFileSync(path.join(dir, 'ungated.txt'), 'hello\n');
+    const r = await EditTool.execute({ file_path: 'ungated.txt', old_string: 'hello', new_string: 'bye' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/Read or Written/);
+    expect(r.text).toMatch(/cat.*grep|grep.*cat/);
+    // The mechanism, not just the rule — this is what Opus 5 alone worked out.
+    expect(r.text).toMatch(/modification time/);
+  });
+
+  it('a successful Write says out loud that it counts as a Read', async () => {
+    const r = await WriteTool.execute({ file_path: 'fresh.txt', content: 'v1\n' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/counts as having Read it/);
+  });
+
+  it('both tools describe the same gate in the same terms', () => {
+    for (const d of [EditTool.description, WriteTool.description]) {
+      expect(d).toMatch(/Read or Written/);
+      expect(d).toMatch(/modification time/);
+    }
+  });
 });
 
 describe('Bash', () => {
@@ -251,7 +512,174 @@ describe('Bash', () => {
   it('a non-zero exit is an error and reports the code', async () => {
     const r = await BashTool.execute({ command: 'exit 3' }, ctx);
     expect(r.isError).toBe(true);
-    expect(r.text).toContain('(exit code 3)');
+    // The exit code now lives in the metadata line, not a leading prefix — it
+    // used to duplicate the same fact in two places once Task 4 added the line.
+    expect(r.text).toContain('· exit 3]');
+    expect(r.text).not.toContain('(exit code 3)');
+  });
+
+  it('Bash reports the TRUE output size, not the size of its retained buffer', async () => {
+    // 400k of output — past the old 200k accumulator ceiling. The old code
+    // reported the CAPPED buffer's length as "chars total", i.e. a number it
+    // invented. Regression pin for the 2026-08-01 review finding.
+    const r = await BashTool.execute(
+      { command: `node -e "process.stdout.write('z'.repeat(400000))"` },
+      ctx,
+    );
+    // Fix (2026-08-06): was labeled 'bytes' but always counted JS string
+    // length (UTF-16 code units) — see the two tests below for the mismatch
+    // this produced on multi-byte and coloured output.
+    expect(r.bounds?.unit).toBe('chars');
+    expect(r.bounds?.total).toBe(400_000);
+    expect(r.bounds?.moreHint).toContain('head');
+    expect(r.text).not.toContain('204800');
+  }, 30_000);
+
+  // Fix (2026-08-06 review, elevated minor's Bash sibling finding): the unit
+  // said 'bytes' but the code always counted `.length` on the JS string
+  // `String(d)` decodes stdout into — UTF-16 code units, not real UTF-8 bytes.
+  // For any character outside the ASCII range those two numbers diverge.
+  it('labels a multi-byte-character run in the currency it actually counted (chars, not inflated bytes)', async () => {
+    // U+4F60 ("you") is one UTF-16 code unit but three UTF-8 bytes: 60,000
+    // repeats is 60,000 chars but 180,000 real bytes. Reporting either number
+    // is defensible; reporting 60,000 while LABELING it "bytes" is not.
+    const r = await BashTool.execute(
+      { command: `node -e "process.stdout.write('\\u4f60'.repeat(60000))"` },
+      ctx,
+    );
+    expect(r.bounds?.unit).toBe('chars');
+    // Not an exact 60,000: a multi-byte character CAN straddle a pipe chunk
+    // boundary and decode to a stray replacement char, so pin a tight range
+    // instead of a brittle exact count. The number that matters is that it is
+    // nowhere near the real UTF-8 byte count (180,000) — a wire-byte number
+    // would be a lie under the label 'chars', and a char-count under the
+    // label 'bytes' (the pre-fix bug) is the lie this test guards against.
+    expect(r.bounds?.total).toBeGreaterThan(55_000);
+    expect(r.bounds?.total).toBeLessThan(65_000);
+    expect(r.text).toContain('chars output');
+    expect(r.text).not.toContain('bytes output');
+  }, 30_000);
+
+  // Fix (2026-08-06 review): `shown` used to be measured AFTER stripAnsi ran
+  // (on the text the model actually reads) while `total` (totalChars) was
+  // measured BEFORE it, as raw chunks streamed in — two different currencies
+  // in the same "showing N of M" line. A coloured 3,000-line run pinned the
+  // symptom directly: "showing 21491 of 117000 bytes", where 117000 counted
+  // escape sequences 21491 did not. This pins that shown and total are now
+  // measured at the SAME point (before the ANSI strip), by checking that
+  // `shown` is honest about still including the colour-code overhead — i.e.
+  // it is NOT silently equal to the length of the ANSI-free text the model
+  // actually sees, which is what the old post-strip `shown` was.
+  it('measures shown and total in the same currency for coloured output that crosses the retention window', async () => {
+    const r = await BashTool.execute(
+      {
+        command: `node -e "for(let i=0;i<3000;i++)process.stdout.write('\\u001b[32mline'+i+'\\u001b[39m\\n')"`,
+      },
+      ctx,
+    );
+    expect(r.bounds).toBeDefined();
+    expect(r.bounds?.unit).toBe('chars');
+    expect(r.bounds!.total as number).toBeGreaterThanOrEqual(r.bounds!.shown);
+    // The ANSI-free body the model actually reads (metadata line split off).
+    const visibleBody = r.text.split('\n[cwd:')[0];
+    expect(r.text).not.toMatch(/\x1b\[/); // colour codes never reach the model
+    // `shown` still counts the stripped-out escape sequences (same currency
+    // as `total`), so it must exceed the length of what's actually visible —
+    // the pre-fix bug was `shown === visibleBody.length` exactly.
+    expect(r.bounds!.shown).toBeGreaterThan(visibleBody.length);
+  }, 30_000);
+
+  it('Bash declares no bounds for small output', async () => {
+    const r = await BashTool.execute({ command: 'echo hi' }, ctx);
+    expect(r.bounds).toBeUndefined();
+  });
+
+  // Regression pin for the 30k-71.5k "dead zone" (2026-08-06 review): the old
+  // `if (head.length < HEAD_CHARS) head += s` guard checked BEFORE appending, so
+  // a chunk that crossed the boundary was retained whole — a single pipe read
+  // could push retention past 71k before Bash's own `dropped` flag ever tripped,
+  // while defineTool's pipeline cap (30_000) fired regardless. Everything in
+  // between landed in composeNotice's no-bounds fallback: a bare "[output
+  // truncated: showing N of M chars]" with NO moreHint. 50,000 chars sits
+  // squarely inside that old dead zone (above the 30k pipeline cap, below the
+  // ~71.5k the old accumulator actually retained) — this pins that Bash now
+  // declares its own bounds there instead of falling through to the pipeline's
+  // uninformative notice.
+  it('Bash declares bounds (not the bare pipeline notice) for output in the old 30k-71.5k dead zone', async () => {
+    const r = await BashTool.execute(
+      { command: `node -e "process.stdout.write('z'.repeat(50000))"` },
+      ctx,
+    );
+    expect(r.bounds).toBeDefined();
+    expect(r.bounds?.moreHint).toBeTruthy();
+    expect(r.bounds?.moreHint?.length).toBeGreaterThan(0);
+    // The bare no-bounds fallback string from composeNotice (truncate.ts) —
+    // must NOT appear once Bash declares its own bounds for this size.
+    expect(r.text).not.toContain('[output truncated: showing');
+  }, 30_000);
+
+  it('Bash always states the cwd and exit code', async () => {
+    const r = await BashTool.execute({ command: 'echo hi' }, ctx);
+    expect(r.text).toContain(`[cwd: ${dir} · exit 0]`);
+  });
+
+  it('Bash states a non-zero exit in the metadata line, not as a prefix', async () => {
+    const r = await BashTool.execute({ command: 'exit 42' }, ctx);
+    expect(r.text).toContain('· exit 42]');
+    expect(r.text).not.toContain('(exit code 42)');
+  });
+
+  // Regression pin: the original "(no output, exit N)" fallback text was lost
+  // when the unconditional metadata line replaced the old block — a command
+  // that produced NO stdout/stderr resolved to a bare leading blank line
+  // followed only by the metadata line, giving no positive signal that the
+  // command ran and simply produced nothing.
+  it('a command that exits non-zero with no output gets a readable "(no output)" body, not a leading blank line', async () => {
+    const r = await BashTool.execute({ command: 'exit 3' }, ctx);
+    expect(r.text).toContain('(no output)');
+    expect(r.text).not.toMatch(/^\n/);
+    expect(r.text.startsWith('(no output)')).toBe(true);
+  });
+
+  it('Bash reports the tracked cwd after a cd, so the model never has to guess', async () => {
+    fs.mkdirSync(path.join(dir, 'sub'));
+    let tracked: string | undefined;
+    const c: ToolContext = { ...makeCtx(dir), shellCwd: undefined, setShellCwd: (n) => { tracked = n; } };
+    const r = await BashTool.execute({ command: 'cd sub' }, c);
+    expect(tracked).toBe(path.join(dir, 'sub'));
+    expect(r.text).toContain(`[cwd: ${path.join(dir, 'sub')} · exit 0]`);
+  });
+
+  it('Bash still reports the cwd when the command timed out', async () => {
+    const r = await BashTool.execute({ command: 'sleep 5', timeout: 500 }, ctx);
+    expect(r.text).toContain('Command timed out after 500ms.');
+    expect(r.text).toContain('[cwd:');
+  }, 15_000);
+
+  it('Bash strips ANSI colour codes from output', async () => {
+    const r = await BashTool.execute(
+      { command: `node -e "process.stdout.write('\\u001b[32m✓\\u001b[39m passed')"` },
+      ctx,
+    );
+    expect(r.text).toContain('✓ passed');
+    expect(r.text).not.toContain('\x1b[');
+  });
+
+  it('Bash sets NO_COLOR so tools emit plain output in the first place', async () => {
+    const r = await BashTool.execute({ command: 'echo "NO_COLOR=$NO_COLOR FORCE_COLOR=$FORCE_COLOR"' }, ctx);
+    expect(r.text).toContain('NO_COLOR=1');
+    expect(r.text).toContain('FORCE_COLOR=0');
+  });
+
+  it('ANSI stripping does not disturb the cwd sentinel', async () => {
+    fs.mkdirSync(path.join(dir, 'coloured'));
+    let tracked: string | undefined;
+    const c: ToolContext = { ...makeCtx(dir), setShellCwd: (n) => { tracked = n; } };
+    await BashTool.execute(
+      { command: `node -e "process.stdout.write('\\u001b[31mred\\u001b[0m')" && cd coloured` },
+      c,
+    );
+    expect(tracked).toBe(path.join(dir, 'coloured'));
   });
 
   it('times out and reports it', async () => {
@@ -310,6 +738,13 @@ describe('Bash', () => {
       }
     };
 
+    // Task 4 appends an unconditional `\n[cwd: ... · exit N]` metadata line after
+    // the command's own output, so a raw `.trim()` on `r.text` is no longer just
+    // the command's stdout — it also swallows the metadata line, which broke
+    // every one of these tests' path comparisons (ENOENT on a two-line string).
+    // Split it back off so these tests keep checking the actual command output.
+    const cmdOutput = (text: string) => text.split('\n[cwd:')[0].trim();
+
     it('a cd carries to the next call and the sentinel never reaches the model', async () => {
       fs.mkdirSync(path.join(dir, 'sub'));
       const c = trackingCtx(dir);
@@ -323,7 +758,7 @@ describe('Bash', () => {
       // assertions below can't catch that alone — they expect the ROOT, which is
       // also what a fully broken persistence returns, so they passed vacuously.
       expect(first.text).not.toMatch(/Shell cwd was reset/);
-      expect(canon(second.text.trim())).toBe(canon(path.join(dir, 'sub')));
+      expect(canon(cmdOutput(second.text))).toBe(canon(path.join(dir, 'sub')));
     });
 
     it('a cd outside the workspace is reverted WITH a notice (never silent)', async () => {
@@ -331,13 +766,29 @@ describe('Bash', () => {
       const r = await BashTool.execute({ command: `cd ${JSON.stringify(os.tmpdir())}` }, c);
       expect(r.text).toMatch(/Shell cwd was reset to/);
       const after = await BashTool.execute({ command: PWD }, c);
-      expect(canon(after.text.trim())).toBe(canon(dir));
+      expect(canon(cmdOutput(after.text))).toBe(canon(dir));
+    });
+
+    // 2026-08-11 review round 8: the notice used to trail the output, so a model
+    // reading top-down acted on results from a directory it no longer sat in
+    // before reaching the line saying so. It must LEAD.
+    it('the reset notice comes before the command output, not after it', async () => {
+      const c = trackingCtx(dir);
+      const r = await BashTool.execute(
+        { command: `cd ${JSON.stringify(os.tmpdir())} && echo MARKER_AFTER_THE_CD` },
+        c,
+      );
+      const noticeAt = r.text.indexOf('Shell cwd was reset to');
+      const outputAt = r.text.indexOf('MARKER_AFTER_THE_CD');
+      expect(noticeAt).toBeGreaterThanOrEqual(0);
+      expect(outputAt).toBeGreaterThanOrEqual(0);
+      expect(noticeAt).toBeLessThan(outputAt);
     });
 
     it('the probe preserves the command exit code', async () => {
       const r = await BashTool.execute({ command: 'exit 3' }, trackingCtx(dir));
       expect(r.isError).toBe(true);
-      expect(r.text).toContain('(exit code 3)');
+      expect(r.text).toContain('· exit 3]');
     });
 
     it('falls back to the root when the tracked dir was deleted', async () => {
@@ -348,7 +799,7 @@ describe('Bash', () => {
       fs.rmSync(gone, { recursive: true });
       const r = await BashTool.execute({ command: PWD }, c);
       expect(r.isError).toBeFalsy();
-      expect(canon(r.text.trim())).toBe(canon(dir));
+      expect(canon(cmdOutput(r.text))).toBe(canon(dir));
     });
 
     // Regression (2026-07-18): without a trailing newline after the sentinel, a
@@ -376,7 +827,7 @@ describe('Bash', () => {
         c,
       );
       const after = await BashTool.execute({ command: PWD }, c);
-      expect(canon(after.text.trim())).toBe(canon(path.join(dir, 'sub')));
+      expect(canon(cmdOutput(after.text))).toBe(canon(path.join(dir, 'sub')));
     });
 
     // Regression (2026-07-18): a dangling `&&` absorbs the probe's `__yc_rc=$?`
@@ -389,7 +840,85 @@ describe('Bash', () => {
 
     it('a context without setShellCwd still works (stateless fallback)', async () => {
       const r = await BashTool.execute({ command: 'echo plain' }, makeCtx(dir));
-      expect(r.text).toBe('plain');
+      expect(cmdOutput(r.text)).toBe('plain');
+    });
+  });
+
+  // 17/17 harness reviews across four rounds (2026-08-01 through 2026-08-09)
+  // flagged the same thing: cwd persists between calls but env does not, and the
+  // failure is SILENT — the second call just runs without the state and nothing
+  // says why. Two fixes: a warning at the moment of the mistake, and an opt-in
+  // `persistent_env` escape hatch. Default behavior (env stays ephemeral) must
+  // not change — Opus 5 was the one dissenting voice defending that tradeoff.
+  describe('env-state warning + opt-in persistence (persistent_env)', () => {
+    function envTrackingCtx(root: string): ToolContext {
+      const c = makeCtx(root);
+      c.setShellCwd = (next) => {
+        c.shellCwd = next;
+      };
+      c.setShellEnv = (next) => {
+        c.shellEnv = next;
+      };
+      return c;
+    }
+
+    it('warns when an exported var is never used in the same call', async () => {
+      const r = await BashTool.execute({ command: 'export FOO=bar' }, ctx);
+      expect(r.text).toContain('export FOO');
+      expect(r.text).toMatch(/won't persist/);
+    });
+
+    it('does NOT warn when the exported var is consumed in the same call (correct usage, not a mistake)', async () => {
+      const r = await BashTool.execute({ command: 'export FOO=bar && echo $FOO' }, ctx);
+      expect(r.text).not.toMatch(/won't persist/);
+    });
+
+    it('does NOT warn when persistent_env is on for that call', async () => {
+      const r = await BashTool.execute(
+        { command: 'export FOO=bar', persistent_env: true },
+        envTrackingCtx(dir),
+      );
+      expect(r.text).not.toMatch(/won't persist/);
+    });
+
+    it('warns on a bare `source` (the venv case) when nothing after it consumes the activation', async () => {
+      // No real venv needed — the warning fires on the shape of the command
+      // (a bare source/. as the last statement), not on venv-specific detection.
+      fs.writeFileSync(path.join(dir, 'act.sh'), 'export ACTIVATED=1\n');
+      const r = await BashTool.execute({ command: 'source act.sh' }, ctx);
+      expect(r.text).toMatch(/won't persist/);
+    });
+
+    it('a persistent_env call carries an exported var to the NEXT call', async () => {
+      const c = envTrackingCtx(dir);
+      const first = await BashTool.execute(
+        { command: 'export MY_TOKEN=abc123', persistent_env: true },
+        c,
+      );
+      expect(first.isError).toBeFalsy();
+      const second = await BashTool.execute({ command: 'echo "got:$MY_TOKEN"' }, c);
+      expect(second.text).toContain('got:abc123');
+    });
+
+    it('a normal call (no persistent_env) does NOT carry an exported var to the next call — default behavior unchanged', async () => {
+      const c = envTrackingCtx(dir);
+      await BashTool.execute({ command: 'export MY_TOKEN=abc123' }, c);
+      const second = await BashTool.execute({ command: 'echo "got:$MY_TOKEN"' }, c);
+      expect(second.text).toContain('got:');
+      expect(second.text).not.toContain('abc123');
+    });
+
+    it('cwd persistence is unaffected by env persistence running in the same call', async () => {
+      fs.mkdirSync(path.join(dir, 'sub'));
+      const c = envTrackingCtx(dir);
+      await BashTool.execute(
+        { command: 'cd sub && export MY_TOKEN=abc123', persistent_env: true },
+        c,
+      );
+      const second = await BashTool.execute({ command: 'pwd -W 2>/dev/null || pwd' }, c);
+      const secondOutput = second.text.split('\n[cwd:')[0].trim();
+      expect(secondOutput.replace(/\\/g, '/')).toContain('/sub');
+      expect(second.text).not.toMatch(/Shell cwd was reset/);
     });
   });
 
@@ -401,6 +930,361 @@ describe('Bash', () => {
     const r = await promise;
     // Killed → non-zero/null exit surfaces as an error result, not a hang.
     expect(r.isError).toBe(true);
+  });
+
+  // Pin for the PowerShell fallback (Windows without Git Bash): probe === false,
+  // so the tool must be stateless — no __YC_CWD__ wrapping — and effectiveCwd
+  // must fall back to startCwd unconditionally, since PowerShell has no cwd
+  // tracking. Same fs/which-mocking technique as
+  // tests/harness-bash-shell-detect.test.ts, but scoped to THIS ONE test via
+  // vi.doMock + vi.resetModules + a dynamic import — a file-level vi.mock('fs')
+  // here would silently break every other test in this file that writes real
+  // fixtures with fs.writeFileSync (Read/Write/Edit/Glob/Grep all do). The
+  // statically-imported `BashTool` used by every other test in this file is
+  // bound at file-load time and is unaffected by resetModules mid-run.
+  describe('on Windows without Git Bash (probe === false)', () => {
+    const realPlatform = process.platform;
+    afterEach(async () => {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+      vi.doUnmock('fs');
+      vi.doUnmock('which');
+      vi.resetModules();
+    });
+
+    it('runs stateless: no cwd-probe wrapping, and the metadata line still reports the start directory', async () => {
+      vi.doMock('fs', async (importActual) => {
+        const actual = await importActual<typeof import('fs')>();
+        return { ...actual, existsSync: () => false }; // no Git Bash anywhere on the machine
+      });
+      vi.doMock('which', () => ({ sync: () => null })); // git itself not on PATH either
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      vi.resetModules();
+      vi.spyOn(console, 'warn').mockImplementation(() => {}); // detectShell's fallback warning
+      spawnSpy.mockClear();
+
+      const winBash = await import('../src/main/harness/tools/bash');
+      winBash.resetShellCache();
+      expect(winBash.getShell().label).toBe('PowerShell'); // confirms the fallback actually engaged
+
+      const r = await winBash.BashTool.execute({ command: 'echo hi' }, ctx);
+
+      // Stateless: the command must reach spawn() UNWRAPPED — no CWD_SENTINEL,
+      // no `pwd -W` probe appended. PowerShell has no $PWD-persistence story
+      // (tracksCwdFor() explicitly excludes it), so shipping it a bash-shaped
+      // wrapper would be a syntax error, not a no-op.
+      const call = spawnSpy.mock.calls.at(-1);
+      expect(call?.[1]?.at(-1)).toBe('echo hi');
+
+      // effectiveCwd falls back to startCwd unconditionally when !probe (the
+      // `if (probe) {...}` cwd-extraction block never runs) — the metadata line
+      // must still name the directory the command actually ran in, regardless of
+      // whether spawning powershell.exe itself succeeds on this machine.
+      expect(r.text).toContain(`[cwd: ${dir} ·`);
+    }, 30_000);
+    // ^ WHY the explicit timeout: on a real Windows runner this test genuinely
+    // spawns powershell.exe (spawnSpy is a passthrough), after resetModules +
+    // a cold re-import of the bash module. A cold PowerShell start on a CI box
+    // routinely blows vitest's 5,000ms default — Windows CI failed here as
+    // "Test timed out in 5000ms", never on an assertion. Same precedent as the
+    // wrap-up tests in harness-review-runner.test.ts (16a9adb5).
+  });
+
+  // 2026-08-10 review: reviewers measured a `seq 1 20000` costing ~7k tokens
+  // of pure noise at the OLD ~28,000-char cap ("more expensive than everything
+  // else combined"). New contract: ~4,000-char head+tail sandwich, line-aware
+  // cut, full output always spilled to disk on overflow, path named in the
+  // notice. See docs/active/investigations/2026-08-10-harness-output-truncation-prior-art.md.
+  describe('output cap tightening (2026-08-10 review)', () => {
+    const seqCmd = `node -e "for(let i=1;i<=20000;i++)console.log(i)"`;
+    const visibleBody = (text: string) => text.split('\n[cwd:')[0];
+
+    afterEach(() => {
+      // Best-effort: don't leave spill files behind between test runs.
+      try {
+        fs.rmSync(path.join(os.tmpdir(), 'youcoded-harness-bash-output', 'test'), { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    });
+
+    it('caps the visible slice at roughly 4,000 chars, not the old ~28,000', async () => {
+      const r = await BashTool.execute({ command: seqCmd }, ctx);
+      // Generous margin over the 4,000-char target (marker + minor overhead),
+      // but must be an order of magnitude below the old ~28,000-char body.
+      expect(visibleBody(r.text).length).toBeLessThan(4_500);
+    }, 30_000);
+
+    it('keeps BOTH ends — the head+tail sandwich, not tail-only or head-only', async () => {
+      const r = await BashTool.execute({ command: seqCmd }, ctx);
+      const body = visibleBody(r.text);
+      expect(body.startsWith('1\n')).toBe(true); // the very first line the command printed
+      expect(body.trimEnd().endsWith('20000')).toBe(true); // the very last line
+      expect(body).toContain('[...]'); // the elision marker sits between them
+    }, 30_000);
+
+    it('the cut is line-aware: no line at the boundary is corrupted mid-token', async () => {
+      const r = await BashTool.execute({ command: seqCmd }, ctx);
+      const body = visibleBody(r.text);
+      for (const line of body.split('\n')) {
+        if (line === '[...]' || line === '') continue;
+        // A character-based cut (the old bug) would produce a truncated
+        // numeral like '46' where '4621' should be — every surviving line
+        // must be a clean, complete integer.
+        expect(line).toMatch(/^\d+$/);
+      }
+    }, 30_000);
+
+    it('spills the full output to disk on overflow and names the real path in the result', async () => {
+      const r: any = await BashTool.execute({ command: seqCmd }, ctx);
+      expect(r.truncated).toBe(true);
+      expect(r.outputPath).toBeTruthy();
+      expect(fs.existsSync(r.outputPath)).toBe(true);
+      const spilled = fs.readFileSync(r.outputPath, 'utf8');
+      // The elided middle (e.g. line 10000) is NOT in the visible slice but
+      // MUST be present in the spill file — that's the whole point of spilling.
+      expect(visibleBody(r.text)).not.toContain('\n10000\n');
+      expect(spilled).toContain('10000');
+      expect(spilled).toContain('1\n2\n3'); // head survives in the file too
+      expect(r.text).toContain(r.outputPath); // the notice names the real path
+    }, 30_000);
+
+    it('does not spill and declares no bounds when output fits inline', async () => {
+      const r: any = await BashTool.execute({ command: 'echo hi' }, ctx);
+      expect(r.truncated).toBe(false);
+      expect(r.outputPath).toBeUndefined();
+      expect(r.bounds).toBeUndefined();
+    });
+
+    // 2026-08-11 review round 8: truncation trips on chars OR lines, but the
+    // metadata only ever quoted chars — a short, line-capped result announced
+    // "900 chars output, showing 900" and read as complete.
+    // The description is the ONLY place a model learns what "truncated" means
+    // before it sees one. It named the char cap and not the line cap, which is
+    // the one that usually fires first.
+    it('the description names BOTH truncation triggers', () => {
+      const d = BashTool.description;
+      expect(d).toContain('4,000 chars');
+      expect(d).toContain('100 lines');
+    });
+
+    it('a line-capped result reports the line dimension, not just chars', async () => {
+      // 120 short lines: ~700 chars total, nowhere near the 4,000-char cap, so
+      // LINES are the only reason this is truncated.
+      const r = await BashTool.execute(
+        { command: `node -e "for(let i=1;i<=120;i++)console.log('L'+i)"` },
+        ctx,
+      );
+      expect(r.truncated).toBe(true);
+      // Exactly 120 — not 121 (trailing-newline overcount) and not 123 (probe sentinel).
+      // The LINE count is pinned exactly (that is the fix); the char count is
+      // not, because it is platform-sensitive and pinning it would put this
+      // suite back on the Windows-red list it has been on twice this month.
+      expect(r.text).toMatch(/\d+ chars \/ 120 lines output, showing \d+ chars \/ 100 lines/);
+      // …and the elision hint must agree with it: 120 total - 100 shown.
+      expect(r.bounds?.moreHint).toContain('20 lines elided');
+    }, 30_000);
+
+    it('a single-huge-line result stays in chars and never claims "0 lines shown"', async () => {
+      // One 60,000-char line trips only the char cap; head/tail each take a
+      // partial line, so a line count here would read as "showing 0 lines"
+      // beside 4,000 visible chars.
+      const r = await BashTool.execute(
+        { command: `node -e "process.stdout.write('x'.repeat(60000))"` },
+        ctx,
+      );
+      expect(r.truncated).toBe(true);
+      expect(r.text).toContain('chars output, showing');
+      expect(r.text).not.toMatch(/showing \d+ chars \/ 0 lines/);
+    }, 30_000);
+
+    it('the notice names the elided line count, the total, and a next action', async () => {
+      const r = await BashTool.execute({ command: seqCmd }, ctx);
+      expect(r.bounds?.moreHint).toMatch(/lines elided/);
+      expect(r.bounds?.moreHint).toMatch(/head|tail|grep/);
+      expect(r.text).toMatch(/lines elided/);
+    }, 30_000);
+
+    // vi.spyOn cannot override an ESM named export directly ("Module namespace
+    // is not configurable"), so this uses the same vi.doMock + vi.resetModules +
+    // dynamic-import technique the "on Windows without Git Bash" suite below
+    // already relies on — scoped to THIS ONE test, restored in the finally, so
+    // it can't leak into any other test in this file that writes real fixtures.
+    it('is honest when the spill write itself fails, instead of claiming a fake path', async () => {
+      vi.doMock('fs', async (importActual) => {
+        const actual = await importActual<typeof import('fs')>();
+        return {
+          ...actual,
+          mkdirSync: () => {
+            throw new Error('EACCES: permission denied (simulated)');
+          },
+        };
+      });
+      vi.resetModules();
+      try {
+        const failing = await import('../src/main/harness/tools/bash');
+        const r: any = await failing.BashTool.execute({ command: seqCmd }, ctx);
+        expect(r.outputPath).toBeUndefined();
+        expect(r.text).toMatch(/could NOT be saved to disk/);
+        expect(r.text).toContain('EACCES');
+      } finally {
+        vi.doUnmock('fs');
+        vi.resetModules();
+      }
+    }, 30_000);
+  });
+
+  describe('timeout representation (2026-08-10 review)', () => {
+    it('reports a sentinel exit code (124), a typed timedOut flag, and SIGKILL-aware prose', async () => {
+      const r: any = await BashTool.execute({ command: 'sleep 5', timeout: 500 }, ctx);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain('· exit 124]');
+      expect(r.timedOut).toBe(true);
+      expect(r.text).toMatch(/force-killed|SIGKILL/);
+      expect(r.text).toMatch(/incomplete/);
+    }, 15_000);
+
+    it('a normal non-zero exit is NOT reported as timedOut', async () => {
+      const r: any = await BashTool.execute({ command: 'exit 3' }, ctx);
+      expect(r.timedOut).toBe(false);
+      expect(r.text).toContain('· exit 3]');
+    });
+  });
+
+  // Requirement B (2026-08-10, this fix) -- the harder mirror image of
+  // shellCwdMissHint (guards.ts): Bash resolves a relative path from its OWN
+  // persisted cwd, not the workspace root, so a `cd` several calls back can
+  // make a previously-safe relative path miss with no clue why. Qwen 3.8 Max
+  // hit exactly this: `cd config` several calls earlier, then `grep -n port
+  // config/app.toml` failed because the shell was already IN config/. The
+  // failure happens INSIDE the child process, so the harness only ever sees a
+  // non-zero exit and the child's own stderr -- deliberately narrow, per the
+  // review requirement: fires only on a genuine non-zero close whose own
+  // output names a missing path in the one unambiguous coreutils shape
+  // (`tool: path: No such file or directory`), confirmed to exist under the
+  // workspace root.
+  describe('workspace-root miss hint (Qwen 3.8 Max asymmetry)', () => {
+    it("names the workspace-root path when the shell has cd'd elsewhere and a command misses", async () => {
+      fs.mkdirSync(path.join(dir, 'config'));
+      fs.writeFileSync(path.join(dir, 'config', 'app.toml'), 'port = 1\n');
+      const c = makeCtx(dir);
+      c.setShellCwd = (next) => {
+        c.shellCwd = next;
+      };
+      await BashTool.execute({ command: 'cd config' }, c);
+      expect(c.shellCwd).toBe(path.join(dir, 'config'));
+      const r = await BashTool.execute({ command: 'cat config/app.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(path.join(dir, 'config', 'app.toml'));
+      expect(r.text).toContain('workspace root');
+    });
+
+    it('adds no hint when the missing path does not exist under the workspace root either', async () => {
+      fs.mkdirSync(path.join(dir, 'config'));
+      const c = makeCtx(dir);
+      c.setShellCwd = (next) => {
+        c.shellCwd = next;
+      };
+      await BashTool.execute({ command: 'cd config' }, c);
+      const r = await BashTool.execute({ command: 'cat config/ghost.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain('workspace root');
+    });
+
+    it('adds no hint when the shell cwd is still the workspace root', async () => {
+      const r = await BashTool.execute({ command: 'cat ghost.toml' }, ctx);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain('workspace root');
+    });
+  });
+});
+
+// Defect 1 (2026-08-11): `pwd` prints the PHYSICAL path, so on a symlinked
+// workspace root (macOS /var → /private/var; any symlinked project dir) or a
+// Windows 8.3 short root (RUNNER~1 → runneradmin) the shell named the same
+// directory a different way than ctx.cwd did. bash.ts compared the two with
+// path.resolve, which follows neither symlinks nor 8.3 names, so one directory
+// read as a change and the canonical spelling leaked into setShellCwd and the
+// [cwd: …] metadata line — handing the model a workspace root it was never
+// given, which is the exact confusion that line exists to remove.
+describe('Bash cwd vocabulary', () => {
+  let real: string;
+  let link: string;
+
+  beforeEach(() => {
+    real = fs.mkdtempSync(path.join(os.tmpdir(), 'cwd-real-'));
+    link = path.join(os.tmpdir(), `cwd-link-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    fs.symlinkSync(real, link);
+    fs.mkdirSync(path.join(real, 'sub'));
+  });
+
+  afterEach(() => {
+    try { fs.unlinkSync(link); } catch { /* best-effort */ }
+    try { fs.rmSync(real, { recursive: true, force: true }); } catch { /* best-effort */ }
+  });
+
+  it('rebaseReportedCwd returns the ROOT spelling when the shell reports the resolved one', () => {
+    expect(rebaseReportedCwd(link, real)).toBe(link);
+  });
+
+  it('rebaseReportedCwd keeps the root spelling for a subdirectory', () => {
+    expect(rebaseReportedCwd(link, path.join(real, 'sub'))).toBe(path.join(link, 'sub'));
+  });
+
+  it('rebaseReportedCwd returns null for a path outside the root, so the scope guard still fires', () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cwd-outside-'));
+    try {
+      expect(rebaseReportedCwd(link, outside)).toBeNull();
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('rebaseReportedCwd rejects a sibling directory whose name merely starts with the root name', () => {
+    // Fix: the containment check uses `+ path.sep` to prevent a sibling directory
+    // whose name is the root's real path with one character appended (e.g., real=/a/b,
+    // sibling=/a/bc) from passing the startsWith check and being treated as inside
+    // the workspace. Dropping `+ path.sep` would silently widen the scope guard,
+    // allowing the session to escape into that sibling. This test pins that invariant.
+    const sibling = real + 'c';
+    let created = false;
+    try {
+      fs.mkdirSync(sibling);
+      created = true;
+      expect(rebaseReportedCwd(link, sibling)).toBeNull();
+    } finally {
+      if (created) {
+        try {
+          fs.rmSync(sibling, { recursive: true, force: true });
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+  });
+
+  it('the metadata line names the workspace root the model was given, not the resolved one', async () => {
+    const r = await BashTool.execute({ command: 'echo hi' }, makeCtx(link));
+    expect(r.text).toContain(`[cwd: ${link} · exit 0]`);
+    expect(r.text).not.toContain(real);
+  });
+
+  it('a cd inside a symlinked root tracks in the root spelling, and emits no reset notice', async () => {
+    let tracked: string | undefined;
+    const c: ToolContext = { ...makeCtx(link), shellCwd: undefined, setShellCwd: (n) => { tracked = n; } };
+    const r = await BashTool.execute({ command: 'cd sub' }, c);
+    expect(tracked).toBe(path.join(link, 'sub'));
+    expect(r.text).not.toMatch(/Shell cwd was reset/);
+  });
+
+  it('a cd OUTSIDE a symlinked root is still reverted with a notice', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cwd-outside-'));
+    try {
+      const c: ToolContext = { ...makeCtx(link), shellCwd: undefined, setShellCwd: () => {} };
+      const r = await BashTool.execute({ command: `cd ${JSON.stringify(outside)}` }, c);
+      expect(r.text).toMatch(/Shell cwd was reset to/);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 
@@ -429,6 +1313,106 @@ describe('Glob', () => {
   it('reports no matches with friendly text', async () => {
     const r = await GlobTool.execute({ pattern: '**/*.nomatch' }, ctx);
     expect(r.text).toBe('No files matched.');
+  });
+
+  // Regression pin (2026-08-10 review, Claim 3): our hand-rolled glob->regex
+  // converter used to ESCAPE '{'/'}' as literal characters, so
+  // '**/*.{ts,kt,toml}' compiled to a regex requiring the literal substring
+  // ".{ts,kt,toml}" in the path -- no real file ever has that -- and the tool
+  // returned "No files matched." even though matching files existed. Two
+  // reviewing models hit this independently (Kimi K3, Grok 4.5); Kimi called
+  // it "the only result in the whole battery I'd call misleading" -- a false
+  // negative indistinguishable from a genuinely empty result. See
+  // docs/active/investigations/2026-08-10-harness-search-tools-prior-art.md item 1.
+  it('expands non-nested brace alternation ({a,b,c}), matching ripgrep/Claude Code semantics', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), '');
+    fs.writeFileSync(path.join(dir, 'b.kt'), '');
+    fs.writeFileSync(path.join(dir, 'c.toml'), '');
+    fs.writeFileSync(path.join(dir, 'd.json'), ''); // must NOT match
+    const r = await GlobTool.execute({ pattern: '**/*.{ts,kt,toml}' }, ctx);
+    expect(r.text).toContain('a.ts');
+    expect(r.text).toContain('b.kt');
+    expect(r.text).toContain('c.toml');
+    expect(r.text).not.toContain('d.json');
+  });
+
+  // Regression pin (2026-08-10 review, item 4 -- superseding the prior fix's
+  // fallback): nested braces are NOT expanded, matching ripgrep's own
+  // pre-15.0.0 restriction (the shape our converter follows) -- but a plain
+  // "No files matched." is EXACTLY the defect class the original brace finding
+  // was about: a syntax failure wearing the costume of an empty result. Kimi K3
+  // called that shape "the only result in the whole battery I'd call
+  // misleading." Glob must now detect the nested construct and say so
+  // specifically, rather than silently compiling a can't-ever-match regex and
+  // reporting a plausible-looking empty result.
+  it('rejects a nested brace group with a specific message instead of a misleading "No files matched."', async () => {
+    fs.writeFileSync(path.join(dir, 'x.ts'), '');
+    const r = await GlobTool.execute({ pattern: '**/*.{a,{b,c}}' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).not.toBe('No files matched.');
+    expect(r.text).toMatch(/nested/i);
+  });
+
+  // Two SEPARATE non-nested groups in one pattern must not false-positive the
+  // nested-brace detector (a naive "does the pattern contain more than one {"
+  // check would wrongly reject this).
+  it('does not flag two separate, non-nested brace groups as nested', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), '');
+    fs.writeFileSync(path.join(dir, 'b.spec.ts'), '');
+    const r = await GlobTool.execute({ pattern: '{a,b}*.{ts,tsx}' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('a.ts');
+  });
+
+  // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max --
+  // see guards.ts's WHY block above shellCwdMissHint): a missing search root
+  // used to fall silently through walk()'s per-directory catch and come back
+  // as "No files matched." -- indistinguishable from a genuinely empty, valid
+  // directory (the exact defect SHAPE the nested-brace fix above closed for
+  // glob syntax).
+  describe('shell-cwd miss hint (Grok 4.5 / Qwen 3.8 Max asymmetry)', () => {
+    it('a missing search root is now a named miss, not "No files matched."', async () => {
+      const r = await GlobTool.execute({ pattern: '*.ts', path: 'ghost-dir' }, ctx);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toBe('No files matched.');
+      expect(r.text).toContain('does not exist');
+    });
+
+    it('names the path when the search root exists relative to the persisted shell cwd', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const target = path.join(shellCwd, 'inner');
+      fs.mkdirSync(target);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await GlobTool.execute({ pattern: '*.ts', path: 'inner' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(target);
+      expect(r.text).toContain(shellCwd);
+    });
+
+    it('adds no hint when the directory exists nowhere', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await GlobTool.execute({ pattern: '*.ts', path: 'ghost-dir' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('adds no hint when the shell cwd equals the workspace root', async () => {
+      const c: ToolContext = { ...ctx, shellCwd: dir };
+      const r = await GlobTool.execute({ pattern: '*.ts', path: 'ghost-dir' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('still reports the friendly "No files matched." for a real, empty directory', async () => {
+      const emptyDir = path.join(dir, 'empty');
+      fs.mkdirSync(emptyDir);
+      const r = await GlobTool.execute({ pattern: '*.nomatch', path: 'empty' }, ctx);
+      expect(r.text).toBe('No files matched.');
+      expect(r.isError).toBeFalsy();
+    });
   });
 });
 
@@ -540,6 +1524,181 @@ describe('Grep', () => {
     expect(r.isError).toBe(true);
     expect(r.text).toMatch(/could not start ripgrep/);
     expect(r.text).toContain(fileCwd); // the offending path is surfaced, not hidden
+  });
+
+  // Regression pin (2026-08-10 review, Claim 4): grep.ts used to pass
+  // `--max-count 500` to ripgrep ITSELF for every output_mode, including
+  // count -- so ripgrep stopped counting at 500 and the true total was never
+  // computed anywhere in the pipeline. 2,400 mirrors fixture-workspace.ts's
+  // BIG_MODULE generator (`Array.from({ length: 2_400 }, ...)`), verified by
+  // reading that file, not assumed.
+  it('count mode reports the true exhaustive total, not the 500-per-file cap', async () => {
+    const lines = Array.from({ length: 2_400 }, (_, i) => `export const value${i} = ${i};`);
+    fs.writeFileSync(path.join(dir, 'big.ts'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'export const value', output_mode: 'count' }, ctx);
+    expect(r.text).toContain('2400');
+    expect(r.text).not.toContain(':500');
+  });
+
+  // Same shape as the filesAtMaxCount unit test in harness-tool-bounds.test.ts,
+  // exercised end-to-end: `path` naming a single FILE (not a directory) means
+  // ripgrep's single-file output format omits the filename column entirely, so
+  // the old parser silently never populated its per-file map and the "hit the
+  // limit" note never rendered -- same wrong number, minus the disclosure.
+  it('the cap-hit disclosure note fires for content mode even when path names a single file', async () => {
+    const lines = Array.from({ length: 600 }, (_, i) => `MATCH line ${i}`);
+    fs.writeFileSync(path.join(dir, 'single.ts'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', path: 'single.ts', output_mode: 'content' }, ctx);
+    expect(r.text).toContain('Note:');
+    expect(r.text).toContain('single.ts');
+  });
+
+  // Compatibility gap flagged independently by two reviewing models (2026-08-10
+  // review): Claude Code exposes -A/-B/-C verbatim and we had no context
+  // parameter at all, forcing a follow-up Read after every Grep hit. Wired
+  // straight through to ripgrep, matching CC's exact parameter names (not a
+  // synthesized `context` field).
+  it('context lines: -C adds symmetric context around a match', async () => {
+    const lines = ['one', 'two', 'MATCH', 'four', 'five'];
+    fs.writeFileSync(path.join(dir, 'ctx.txt'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', output_mode: 'content', '-C': 1 }, ctx);
+    expect(r.text).toContain('two');
+    expect(r.text).toContain('MATCH');
+    expect(r.text).toContain('four');
+    expect(r.text).not.toContain('one');
+    expect(r.text).not.toContain('five');
+  });
+
+  it('context lines: -A and -B are independently honored', async () => {
+    const lines = ['one', 'two', 'MATCH', 'four', 'five'];
+    fs.writeFileSync(path.join(dir, 'ctx2.txt'), lines.join('\n') + '\n');
+    const r = await GrepTool.execute({ pattern: 'MATCH', output_mode: 'content', '-A': 2, '-B': 0 }, ctx);
+    expect(r.text).toContain('four');
+    expect(r.text).toContain('five');
+    expect(r.text).not.toContain('two');
+  });
+
+  // Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max --
+  // see guards.ts's WHY block above shellCwdMissHint): grepErrorMessage
+  // already names the workspace root when a search path is missing; this adds
+  // the OTHER root to the same message, but only when the alternative is
+  // confirmed to exist on disk.
+  describe('shell-cwd miss hint (Grok 4.5 / Qwen 3.8 Max asymmetry)', () => {
+    it('names the path when the search target exists relative to the persisted shell cwd', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const target = path.join(shellCwd, 'app.toml');
+      fs.writeFileSync(target, 'port = 1\n');
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await GrepTool.execute({ pattern: 'port', path: 'app.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).toContain(target);
+      expect(r.text).toContain(shellCwd);
+    });
+
+    it('adds no hint when the search target exists nowhere', async () => {
+      const shellCwd = path.join(dir, 'sub');
+      fs.mkdirSync(shellCwd);
+      const c: ToolContext = { ...ctx, shellCwd };
+      const r = await GrepTool.execute({ pattern: 'port', path: 'ghost.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+
+    it('adds no hint when the shell cwd equals the workspace root', async () => {
+      const c: ToolContext = { ...ctx, shellCwd: dir };
+      const r = await GrepTool.execute({ pattern: 'port', path: 'ghost.toml' }, c);
+      expect(r.isError).toBe(true);
+      expect(r.text).not.toContain("It exists relative to the shell's current directory");
+    });
+  });
+});
+
+// Regression pin (2026-08-10 review): DeepSeek reported "`path` for Grep is a
+// directory, but `path` on Glob is a base" -- verification REFUTED this: the
+// parameter means the identical thing (search-root directory) in both tools'
+// code. The confusion came from neither schema having a description at all,
+// letting the model infer a difference that isn't there. Fix the cause
+// (describe both, with the SAME string) rather than the symptom.
+describe('Grep/Glob schema descriptions', () => {
+  it('path means the same thing on both tools and both schemas say so, in the same words', () => {
+    const grepPath = GrepTool.inputSchema.shape.path;
+    const globPath = GlobTool.inputSchema.shape.path;
+    expect(grepPath.description).toBeTruthy();
+    expect(globPath.description).toBeTruthy();
+    expect(grepPath.description).toBe(globPath.description);
+  });
+
+  it('every Grep parameter has a description', () => {
+    const shape = GrepTool.inputSchema.shape;
+    for (const key of Object.keys(shape)) {
+      expect((shape as any)[key].description, key).toBeTruthy();
+    }
+  });
+
+  it('every Glob parameter has a description', () => {
+    const shape = GlobTool.inputSchema.shape;
+    for (const key of Object.keys(shape)) {
+      expect((shape as any)[key].description, key).toBeTruthy();
+    }
+  });
+});
+
+// Fix (two independent 2026-08 harness reviews, Grok 4.5 + Qwen 3.8 Max):
+// direct unit coverage of the two guards.ts primitives that back the
+// per-tool integration tests above/below (Read/Glob/Grep's shell-cwd hint
+// describes, Bash's workspace-root hint describe). These pin the boundary
+// conditions precisely -- equal roots, absolute path, no persisted shell cwd
+// -- independent of any one tool's wiring.
+describe('shellCwdMissHint / workspaceRootMissHint (path-resolution asymmetry hint)', () => {
+  it('shellCwdMissHint names the path when it is confirmed to exist under the shell cwd', () => {
+    const shellCwd = path.join(dir, 'sub');
+    fs.mkdirSync(shellCwd);
+    const target = path.join(shellCwd, 'note.txt');
+    fs.writeFileSync(target, '');
+    const hint = shellCwdMissHint('note.txt', { cwd: dir, shellCwd }, (p) => fs.existsSync(p));
+    expect(hint).toContain(target);
+    expect(hint).toContain(shellCwd);
+  });
+
+  it('shellCwdMissHint returns nothing when the alternative does not exist either', () => {
+    const shellCwd = path.join(dir, 'sub');
+    fs.mkdirSync(shellCwd);
+    expect(shellCwdMissHint('ghost.txt', { cwd: dir, shellCwd }, (p) => fs.existsSync(p))).toBe('');
+  });
+
+  it('shellCwdMissHint returns nothing for an absolute path, even if exists() would say yes', () => {
+    // exists() is a constant `true` here specifically to prove the guard
+    // fires on path.isAbsolute() BEFORE ever asking the disk -- an absolute
+    // path does not depend on either cwd, so there is nothing to explain.
+    const shellCwd = path.join(dir, 'sub');
+    fs.mkdirSync(shellCwd);
+    const absGhost = path.join(dir, 'ghost-abs.txt');
+    expect(shellCwdMissHint(absGhost, { cwd: dir, shellCwd }, () => true)).toBe('');
+  });
+
+  it('shellCwdMissHint returns nothing when the shell cwd IS the workspace root', () => {
+    // exists() always true -- the equal-roots short circuit must fire before
+    // exists() is ever consulted, not because nothing happens to exist.
+    expect(shellCwdMissHint('note.txt', { cwd: dir, shellCwd: dir }, () => true)).toBe('');
+  });
+
+  it('shellCwdMissHint returns nothing when there is no persisted shell cwd', () => {
+    expect(shellCwdMissHint('note.txt', { cwd: dir }, () => true)).toBe('');
+  });
+
+  it('workspaceRootMissHint is the mirror image: names the path when confirmed under the workspace root', () => {
+    const shellCwd = path.join(dir, 'sub');
+    fs.mkdirSync(shellCwd);
+    const target = path.join(dir, 'app.toml');
+    fs.writeFileSync(target, '');
+    const hint = workspaceRootMissHint('app.toml', shellCwd, { cwd: dir }, (p) => fs.existsSync(p));
+    expect(hint).toContain(target);
+    expect(hint).toContain(dir);
+  });
+
+  it('workspaceRootMissHint returns nothing when the failed cwd already IS the workspace root', () => {
+    expect(workspaceRootMissHint('app.toml', dir, { cwd: dir }, () => true)).toBe('');
   });
 });
 

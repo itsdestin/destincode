@@ -8,8 +8,9 @@ import {
   createSessionChatState,
   deserializeChatState,
   HISTORY_EXPAND_PROMPT_ID,
+  abnormalStopReason,
 } from './chat-types';
-import { SubagentSegment, ToolCallState } from '../../shared/types';
+import { SubagentSegment, ToolCallState, ToolGroupState } from '../../shared/types';
 
 // Fix: message ids are used as React keys. A hydrated remote client restarts
 // this counter at 0 while its snapshot already holds msg-1..msg-N, so new live
@@ -26,6 +27,25 @@ function nextMessageId(): string {
 let groupCounter = 0;
 function nextGroupId(): string {
   return `group-${++groupCounter}`;
+}
+
+// Fix (Destin, 2026-08-16): CC writes a bare `/compact` line as a real user
+// prompt in its JSONL — verified present, with a promptId and no isMeta, in 12
+// lines across live transcripts — both when the user types it AND when
+// resume-from-summary runs compaction internally. The app already shows a
+// CompactingCard for that event, so the bubble is pure duplication sitting
+// right next to a card saying the same thing.
+//
+// Used at BOTH places a bubble can be built from CC's record of the past:
+// the live transcript append and the HISTORY_LOADED replay. Miss the second
+// and the bubble reappears on reload — a "where did that come from?" change
+// with no visible cause, which is worse than never having fixed it.
+//
+// Deliberately NOT applied to the optimistic-bubble confirm arm: the escape
+// hatch (`\/compact`) is passthrough text that DOES get a bubble, and hiding
+// its confirmation would strand it as permanently `pending`.
+function isCompactCommandEcho(text: string): boolean {
+  return /^\/compact(\s|$)/.test(text.trim());
 }
 
 let turnCounter = 0;
@@ -81,6 +101,105 @@ function getOrCreateTurn(session: SessionChatState): {
   });
   timeline = [...timeline, { kind: 'assistant-turn' as const, turnId: currentTurnId }];
   return { assistantTurns, timeline, currentTurnId };
+}
+
+/**
+ * Place a tool id in the session's current tool group, creating the turn and/or
+ * group if needed. IDEMPOTENT by tool id: an id already in a group leaves both
+ * the group and currentGroupId untouched, so a re-emit can never render a
+ * duplicate card or retarget where subsequent tools land.
+ *
+ * Shared by TRANSCRIPT_TOOL_USE and NATIVE_TOOL_PREPARING. It MUST stay one
+ * function: the whole preparing-card design rests on the two paths placing a
+ * card identically, so the real tool-use supersedes the preparing entry in
+ * place instead of adding a second card beside it.
+ */
+function placeToolInCurrentGroup(
+  session: SessionChatState,
+  toolUseId: string,
+): {
+  assistantTurns: Map<string, AssistantTurn>;
+  timeline: TimelineEntry[];
+  toolGroups: Map<string, ToolGroupState>;
+  currentGroupId: string | null;
+  currentTurnId: string;
+} {
+  const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
+  const toolGroups = new Map(session.toolGroups);
+  let currentGroupId = session.currentGroupId;
+
+  // The watcher deliberately re-emits tool-use on repeated uuids (CC rewrites
+  // the same JSONL line as the assistant message grows, and a rewrite may carry
+  // NEW tool_use blocks), relying on "the reducer dedupes by toolUseId" — true
+  // of the toolCalls Map, but a group append would add the id a second time,
+  // rendering a duplicate ToolCard. Symptom was most visible on
+  // AskUserQuestion: AssistantTurnBubble hides awaiting-approval tools from
+  // groups, so both copies only became visible once answered.
+  // See transcript-watcher.ts readNewLines (~line 679) for the emit contract.
+  let existingGroupId: string | null = null;
+  for (const [gid, group] of toolGroups) {
+    if (group.toolIds.includes(toolUseId)) { existingGroupId = gid; break; }
+  }
+
+  if (existingGroupId) {
+    // Already placed by an earlier emit of this same tool.
+  } else if (currentGroupId && toolGroups.has(currentGroupId)) {
+    const group = toolGroups.get(currentGroupId)!;
+    toolGroups.set(currentGroupId, { ...group, toolIds: [...group.toolIds, toolUseId] });
+  } else {
+    currentGroupId = nextGroupId();
+    toolGroups.set(currentGroupId, { id: currentGroupId, toolIds: [toolUseId] });
+    const turn = assistantTurns.get(currentTurnId)!;
+    assistantTurns.set(currentTurnId, {
+      ...turn,
+      segments: [...turn.segments, { type: 'tool-group', groupId: currentGroupId }],
+    });
+  }
+
+  return { assistantTurns, timeline, toolGroups, currentGroupId, currentTurnId };
+}
+
+/**
+ * Remove a PREPARING tool card: no tool was ever invoked, so it is deleted
+ * rather than failed. Prunes an emptied group and that group's turn segment —
+ * an empty group otherwise renders as a stray bar.
+ *
+ * Refuses to touch an entry that is not `preparing`, so a stall-retry clear can
+ * never delete a real tool card whose result is still coming (that would be the
+ * dangling tool_call the native runtime forbids).
+ *
+ * Shared by the `cleared` path and endTurn so the two removals cannot drift.
+ * Mutates the Maps it is handed — callers pass their own fresh copies.
+ */
+function removePreparingTool(
+  toolCalls: Map<string, ToolCallState>,
+  toolGroups: Map<string, ToolGroupState>,
+  assistantTurns: Map<string, AssistantTurn>,
+  toolUseId: string,
+): boolean {
+  const entry = toolCalls.get(toolUseId);
+  if (!entry?.preparing) return false;
+  toolCalls.delete(toolUseId);
+
+  for (const [gid, group] of toolGroups) {
+    if (!group.toolIds.includes(toolUseId)) continue;
+    const toolIds = group.toolIds.filter((id) => id !== toolUseId);
+    if (toolIds.length > 0) {
+      toolGroups.set(gid, { ...group, toolIds });
+    } else {
+      toolGroups.delete(gid);
+      for (const [tid, turn] of assistantTurns) {
+        const segments = turn.segments.filter(
+          (s) => !(s.type === 'tool-group' && s.groupId === gid),
+        );
+        if (segments.length !== turn.segments.length) {
+          assistantTurns.set(tid, { ...turn, segments });
+        }
+      }
+    }
+    break;
+  }
+  return true;
 }
 
 /**
@@ -171,16 +290,34 @@ function injectPlanSegment(
 function endTurn(
   session: SessionChatState,
   errorMessage: string = 'Turn ended',
+  // Callers that edit assistantTurns themselves (TURN_COMPLETE stamps usage,
+  // INTERRUPT stamps stopReason) MUST pass their edited map in: endTurn now
+  // returns an assistantTurns of its own to prune emptied preparing groups, and
+  // spreading it over their `...session, assistantTurns` would silently discard
+  // their edit — which is exactly how the interrupt footer lost 'Interrupted'.
+  baseAssistantTurns?: Map<string, AssistantTurn>,
 ): Partial<SessionChatState> {
   const toolCalls = new Map(session.toolCalls);
+  const toolGroups = new Map(session.toolGroups);
+  const assistantTurns = new Map(baseAssistantTurns ?? session.assistantTurns);
   for (const id of session.activeTurnToolIds) {
     const tool = toolCalls.get(id);
-    if (tool && (tool.status === 'running' || tool.status === 'awaiting-approval')) {
+    if (!tool) continue;
+    // A PREPARING card is deleted, not failed: the model was still composing
+    // the request, so no tool was ever invoked and "failed" would describe an
+    // event that did not happen (Destin, 2026-08-12).
+    if (tool.preparing) {
+      removePreparingTool(toolCalls, toolGroups, assistantTurns, id);
+      continue;
+    }
+    if (tool.status === 'running' || tool.status === 'awaiting-approval') {
       toolCalls.set(id, { ...tool, status: 'failed', error: errorMessage });
     }
   }
   return {
     toolCalls,
+    toolGroups,
+    assistantTurns,
     isThinking: false,
     // Prefill is over the moment the turn is. Leaving it set meant the next
     // generation pause longer than ThinkingIndicator's 2s streaming window
@@ -199,6 +336,8 @@ function endTurn(
     // Any turn end also dismisses a pending stall countdown (the give-up path
     // ends the turn via NATIVE_SESSION_ERROR, which spreads endTurn()).
     stallWarning: null,
+    // The turn cannot still be parked once it has ended.
+    stalledSince: null,
   };
 }
 
@@ -222,14 +361,54 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const parent = session.toolCalls.get(parentId);
   if (!parent) return state;
 
+  // Fix (external review, 2026-08-13): a subagent event used to skip the
+  // seenUuids dedup every other replay-fed entry point passes (see
+  // TRANSCRIPT_USER_MESSAGE and the main-timeline TRANSCRIPT_ASSISTANT_TEXT
+  // case, both above) — parentAgentToolUseId routed here BEFORE any uuid
+  // check ever ran. tool-use/tool-result are harmless regardless: they
+  // dedupe structurally by toolUseId below (Map/array overwrite), and CC's
+  // own subagent-JSONL replay (subagent-watcher.ts getHistory) can
+  // legitimately re-emit a repeat-uuid tool-use line to pick up a growing
+  // input as Claude Code rewrites the same line — gating those on uuid would
+  // freeze the segment at its first, possibly-partial input (mirrors
+  // TranscriptWatcher.getHistory's own assistant-text-only uuid skip, same
+  // reasoning). assistant-text has no such structural dedup — it merges by
+  // partId only — so a second delivery of the exact same delta (getHistory()
+  // card replay, Task 9, has no guard against being called twice against an
+  // already-populated reducer state: a live re-dock re-sends the same
+  // stamped events, not just a post-restart resume) appended the same
+  // specialist text again. Checked AFTER the parent-card-exists bail above,
+  // not before: a genuinely-missed live event (rare race — a child delta
+  // arriving before the parent's own Task tool-use is dispatched) must never
+  // be marked "seen" while it was in fact dropped, or a later delivery once
+  // the card exists could never apply it.
+  if (action.type === 'TRANSCRIPT_ASSISTANT_TEXT' && session.seenUuids.has(action.uuid)) {
+    return state;
+  }
+
   const segments: SubagentSegment[] = parent.subagentSegments ? [...parent.subagentSegments] : [];
 
   if (action.type === 'TRANSCRIPT_ASSISTANT_TEXT') {
-    segments.push({
-      type: 'text',
-      id: `sa-text-${action.uuid}`,
-      content: action.text,
-    });
+    // Fix: the native harness (harness-session.ts:1769) emits one
+    // assistant-text event per STREAM DELTA, not per whole message like CC's
+    // watcher — without coalescing, a specialist's report rendered as
+    // hundreds of separately-markdown-rendered blocks, breaking markdown
+    // that spans a chunk boundary. Mirror the main-timeline merge (below,
+    // TRANSCRIPT_ASSISTANT_TEXT case): same partId as the LAST segment →
+    // append into it; otherwise push a new segment. CC never sets partId,
+    // so its events keep today's one-segment-per-event behavior.
+    const lastIdx = segments.length - 1;
+    const last = lastIdx >= 0 ? segments[lastIdx] : null;
+    if (action.partId && last && last.type === 'text' && last.partId === action.partId) {
+      segments[lastIdx] = { ...last, content: last.content + action.text };
+    } else {
+      segments.push({
+        type: 'text',
+        id: `sa-text-${action.uuid}`,
+        content: action.text,
+        partId: action.partId,
+      });
+    }
   } else if (action.type === 'TRANSCRIPT_TOOL_USE') {
     const existingIdx = segments.findIndex(
       s => s.type === 'tool' && s.toolUseId === action.toolUseId,
@@ -270,8 +449,13 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const toolCalls = new Map(session.toolCalls);
   const updated: ToolCallState = { ...parent, subagentSegments: segments };
   toolCalls.set(parentId, updated);
+  // Only assistant-text needs to grow seenUuids — see the dedup check above
+  // for why tool-use/tool-result deliberately don't participate.
+  const seenUuids = action.type === 'TRANSCRIPT_ASSISTANT_TEXT'
+    ? new Set(session.seenUuids).add(action.uuid)
+    : session.seenUuids;
   const next = new Map(state);
-  next.set(action.sessionId, { ...session, toolCalls });
+  next.set(action.sessionId, { ...session, toolCalls, seenUuids });
   return next;
 }
 
@@ -353,6 +537,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         errorMessage: null,
         stallWarning: null,
+        // A new turn cannot start already parked.
+        stalledSince: null,
         // Parity with TRANSCRIPT_SKILL_INVOKED: a new turn must not inherit the
         // previous one's prefill percentage.
         promptProcessing: null,
@@ -538,28 +724,102 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
-    // Thinking blocks are genuine activity — bump lastActivityAt and clear
-    // any stale attention state back to 'ok'. No timeline change.
-    // A heartbeat carrying a `stallWarning` is the native watchdog firing: it
-    // SETS the countdown. A plain heartbeat means activity resumed → clears it.
     case 'TRANSCRIPT_THINKING_HEARTBEAT': {
       const session = next.get(action.sessionId);
       if (!session) return state;
+      // Three heartbeat shapes, in descending severity:
+      //   stalled     → the turn is parked. RED dot, card on screen.
+      //   stallWarning→ stage 1, "may be wrong, I don't know". AMBER dot.
+      //   plain       → activity resumed. Clears both.
+      //
+      // Fix (2026-08-16): the warning branch used to set 'ok', so the dot stayed
+      // GREEN for the whole countdown — the app asserting health while telling
+      // the user it may be hanging. 'stuck' is the state that means exactly
+      // "something may be wrong and I don't know", which is what a warning is.
+      const attentionState = action.stalled ? 'stalled'
+        : action.stallWarning ? 'stuck'
+        : 'ok';
       next.set(action.sessionId, {
         ...session,
         lastActivityAt: Date.now(),
-        attentionState: 'ok',
+        attentionState,
         stallWarning: action.stallWarning ?? null,
+        // Stamped once and held: a repeat heartbeat must not restart the
+        // count-up, so an already-parked session keeps its original stamp.
+        //
+        // Fix (M8, whole-branch review 2026-08-16): the held-stamp rule used to
+        // be `session.stalledSince ?? Date.now()` with no check on the state it
+        // was held FROM. `stalledSince` is only ever read while attentionState
+        // is 'stalled' (AttentionBanner is the sole consumer). Fourteen places
+        // in this file write `attentionState: 'ok'` and only five of them also
+        // clear the stamp — the other nine (both TRANSCRIPT_USER_MESSAGE
+        // branches, both NATIVE_TOOL_PREPARING branches, both TRANSCRIPT_TOOL_USE
+        // branches, TRANSCRIPT_TOOL_RESULT, and both PERMISSION_REQUEST
+        // branches) leave it set. Any of those landing between two parks left
+        // the SECOND card counting from the FIRST park, so a turn that parked,
+        // resumed, and parked again would read "no response for 6m 12s" three
+        // seconds in. Gating on the state the stamp belongs to fixes the whole
+        // family at the ONE place the field is written, instead of adding nine
+        // `stalledSince: null` lines and forgetting the tenth.
+        stalledSince: action.stalled
+          ? (session.attentionState === 'stalled' ? (session.stalledSince ?? Date.now()) : Date.now())
+          : null,
         // Same lifetime rule as stallWarning: present on the announcing heartbeat,
         // cleared by the next plain one (which the first real chunk triggers).
         //
-        // EXCEPT when this heartbeat is a stall WARNING: that carries no
-        // promptProcessing of its own, and nulling it there wiped the progress
-        // readout mid-prefill, so the percentage appeared to reset itself
-        // (Destin, 2026-07-26). A stall warning means "still waiting", not
+        // EXCEPT when this heartbeat is a stall warning or the stalled card:
+        // neither carries promptProcessing of its own, and nulling it there
+        // wiped the progress readout mid-prefill, so the percentage appeared to
+        // reset itself (Destin, 2026-07-26). A stall means "still waiting", not
         // "prefill ended" — the reading it was showing is still the truth.
-        promptProcessing: action.promptProcessing ?? (action.stallWarning ? session.promptProcessing : null),
+        promptProcessing: action.promptProcessing
+          ?? ((action.stallWarning || action.stalled) ? session.promptProcessing : null),
       });
+      return next;
+    }
+
+    // Manual stall Retry: erase the abandoned attempt's segments from the
+    // current turn BEFORE its re-run streams. Without this the re-run's deltas
+    // merge into the same segment by partId and the user reads the half
+    // sentence twice — which is exactly why the AUTOMATIC retry has always
+    // refused to run after content streamed.
+    case 'NATIVE_PARTS_DROPPED': {
+      const session = next.get(action.sessionId);
+      if (!session || !session.currentTurnId) return state;
+      const turn = session.assistantTurns.get(session.currentTurnId);
+      if (!turn) return state;
+      const drop = new Set(action.partIds);
+      // Fix (cross-task review defect): part ids are NOT unique within a turn.
+      // The AI SDK's part id falls back to the literal 'text-0' when the
+      // provider omits one, and a turn can span multiple steps (each tool
+      // call starts a new step), so the SAME id can legitimately appear on
+      // an earlier, already-finished step's text as well as on the abandoned
+      // attempt being retried. A plain `.filter()` over the whole segment
+      // list — the old approach — deletes every match, including finished
+      // paragraphs and tool calls the user already read/ran. That is worse
+      // than the duplicate-text bug this erase exists to prevent.
+      //
+      // The abandoned attempt's segments are always the MOST RECENT ones in
+      // the turn, so walk from the END and remove only the TRAILING run of
+      // matching segments, stopping at the first one that doesn't match.
+      // Everything before that boundary is earlier, finished work and must
+      // survive untouched — a tool-group (or plan) segment carries no
+      // partId at all, so it always counts as non-matching and stops the
+      // walk, which is what keeps this safe: a tool-group segment always
+      // separates one text step from the next.
+      let cut = turn.segments.length;
+      while (cut > 0) {
+        const seg = turn.segments[cut - 1];
+        const matches = (seg.type === 'text' || seg.type === 'reasoning')
+          && !!seg.partId && drop.has(seg.partId);
+        if (!matches) break;
+        cut--;
+      }
+      const segments = turn.segments.slice(0, cut);
+      if (segments.length === turn.segments.length) return state;
+      const assistantTurns = new Map(session.assistantTurns);
+      assistantTurns.set(session.currentTurnId, { ...turn, segments });
+      next.set(action.sessionId, { ...session, assistantTurns });
       return next;
     }
 
@@ -678,6 +938,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         return next;
       }
 
+      // Drop the redundant `/compact` echo (see isCompactCommandEcho) while
+      // keeping every other effect of the event — turn state, seenUuids, queue
+      // drain — since those are what tell the rest of the UI a turn is running.
+      // This sits BELOW the confirm arm on purpose: a bubble that already
+      // exists optimistically must still be confirmed, or it stays `pending`
+      // forever and useSubmitConfirmation fires a stray recovery keystroke.
+      const suppressBubble = isCompactCommandEcho(action.text);
+
       // No pending match — a queued message being drained (Task 12's true-
       // position confirm: this is the ONLY place its timeline entry gets
       // created, at the end), a remote/replay client, or the user typed
@@ -691,7 +959,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       next.set(action.sessionId, {
         ...session,
-        timeline: [...session.timeline, { kind: 'user', message, pending: false }],
+        // `injected` rides only this append path on purpose: a host-injected
+        // turn never has an optimistic pending bubble to confirm (nobody typed
+        // it), so it can only ever land here.
+        timeline: suppressBubble ? session.timeline : [...session.timeline, {
+          kind: 'user', message, pending: false,
+          ...(action.injected ? { injected: action.injected } : {}),
+          ...(action.injectedMeta ? { injectedMeta: action.injectedMeta } : {}),
+        }],
         seenUuids,
         queuedMessages,
         isThinking: true,
@@ -753,6 +1028,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         // Real answer text resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        stalledSince: null,
         // Output means PREFILL IS OVER. Leaving the readout set let it resurface
         // during any generation pause longer than the indicator's 2s streaming
         // window, showing "Reading your prompt — N%" mid-generation — the exact
@@ -802,8 +1078,64 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         // Real reasoning resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        stalledSince: null,
         // Same as the text path: reasoning IS output, so prefill has ended.
         promptProcessing: null,
+      });
+      return next;
+    }
+
+    case 'NATIVE_TOOL_PREPARING': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const toolCalls = new Map(session.toolCalls);
+      const existing = toolCalls.get(action.toolCallId);
+
+      if (action.cleared) {
+        // Withdraw a card the stall retry abandoned. No-op unless the entry is
+        // still preparing — a real tool card must never be removed here.
+        const toolGroups = new Map(session.toolGroups);
+        const assistantTurns = new Map(session.assistantTurns);
+        if (!removePreparingTool(toolCalls, toolGroups, assistantTurns, action.toolCallId)) {
+          return state;
+        }
+        const activeTurnToolIds = new Set(session.activeTurnToolIds);
+        activeTurnToolIds.delete(action.toolCallId);
+        next.set(action.sessionId, {
+          ...session, toolCalls, toolGroups, assistantTurns, activeTurnToolIds,
+          lastActivityAt: Date.now(),
+        });
+        return next;
+      }
+
+      if (existing) {
+        // Progress update only. Never touch status, group, or position — the
+        // card's identity and slot must survive until the real tool-use lands.
+        if (!existing.preparing) return state;
+        toolCalls.set(action.toolCallId, { ...existing, preparingChars: action.chars });
+        next.set(action.sessionId, { ...session, toolCalls, lastActivityAt: Date.now(), attentionState: 'ok' });
+        return next;
+      }
+
+      // input:{} because ToolCallState.input is non-optional; the real input
+      // arrives with TRANSCRIPT_TOOL_USE, which overwrites this entry wholesale.
+      toolCalls.set(action.toolCallId, {
+        toolUseId: action.toolCallId,
+        toolName: action.toolName,
+        input: {},
+        status: 'running',
+        preparing: true,
+        preparingChars: action.chars,
+      });
+      const { assistantTurns, timeline, toolGroups, currentGroupId, currentTurnId } =
+        placeToolInCurrentGroup(session, action.toolCallId);
+      const activeTurnToolIds = new Set(session.activeTurnToolIds);
+      activeTurnToolIds.add(action.toolCallId);
+      next.set(action.sessionId, {
+        ...session, toolCalls, toolGroups, assistantTurns, timeline,
+        currentGroupId, currentTurnId, activeTurnToolIds,
+        lastActivityAt: Date.now(),
+        attentionState: 'ok',
       });
       return next;
     }
@@ -820,10 +1152,39 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // When the hook arrives before the transcript, a synthetic entry is created
       // with awaiting-approval status. Replace it with the real tool, preserving
       // the permission state and group placement.
+      // Fix: a placeholder ANSWERED before the transcript caught up must still
+      // be reclaimed. PERMISSION_RESPONDED returns it to 'running', which used
+      // to make this merge condition false forever — the placeholder was never
+      // replaced, so no TRANSCRIPT_TOOL_RESULT (keyed on the real toolUseId)
+      // could ever close it, and it sat 'running' for the rest of the session
+      // catching every later PERMISSION_REQUEST of the same name via that
+      // matcher's tier-2 fallback and rendering ITS old input.
+      // Prefer an identical-input placeholder so two same-name asks in flight
+      // can't reclaim each other's card.
+      // An ANSWERED placeholder is only reclaimed on an exact input match. Its
+      // requestId is already spent, so name alone cannot tell "the tool_use I
+      // am still waiting for" from "a later same-name call" — and reclaiming
+      // the wrong one would delete the earlier card and drop the later tool
+      // into its timeline slot. A still-awaiting placeholder keeps the original
+      // name-only fallback: its requestId is live, so it IS the pending ask.
+      let syntheticFirst: string | null = null;
+      let syntheticExact: string | null = null;
+      const incomingInput = action.toolInput ? stableStringify(action.toolInput) : null;
+      for (const [synId, synTool] of toolCalls) {
+        if (!synId.startsWith('perm-')) continue;
+        if (synTool.toolName !== action.toolName) continue;
+        const answered = synTool.status === 'running';
+        if (synTool.status !== 'awaiting-approval' && !answered) continue;
+        const exact = incomingInput !== null && synTool.input
+          && stableStringify(synTool.input) === incomingInput;
+        if (exact) { syntheticExact = synId; break; }
+        if (!answered && syntheticFirst === null) syntheticFirst = synId;
+      }
+      const reclaimId = syntheticExact ?? syntheticFirst;
+
       let mergedSynthetic = false;
       for (const [synId, synTool] of toolCalls) {
-        if (synId.startsWith('perm-') && synTool.toolName === action.toolName
-            && synTool.status === 'awaiting-approval') {
+        if (synId === reclaimId) {
           // Replace synthetic with real tool, preserving permission state
           toolCalls.delete(synId);
           toolCalls.set(action.toolUseId, {
@@ -834,6 +1195,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             requestId: synTool.requestId,
             permissionSuggestions: synTool.permissionSuggestions,
             denyListed: synTool.denyListed,
+            // Carried for the same reason as denyListed: ToolCard gates the
+            // "Always allow" button on it, so losing it here would re-offer a
+            // grant the engine can never honor.
+            external: synTool.external,
+            // Carried so the full-auto safety-stop footer survives the
+            // synthetic→real tool-id handover (spec 2026-08-12, M5 2b).
+            permissionMode: synTool.permissionMode,
           });
           // Update the tool group to reference the real ID
           const toolGroups = new Map(session.toolGroups);
@@ -881,65 +1249,55 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       }
       if (mergedSynthetic) return next;
 
+      // Fix (2026-08-16, Specialists 1b Test 1 hang — a master bug from the
+      // preparing-card merge, not specialist-specific): a preparing card is
+      // placed under the REAL tool id with status 'running', and the ask for
+      // that very call can bind to it BEFORE this event lands — main emits
+      // tool-use then the ask, but the renderer batches transcript events into
+      // an animation frame while hook events dispatch immediately, so the
+      // reducer sees NATIVE_TOOL_PREPARING → PERMISSION_REQUEST →
+      // TRANSCRIPT_TOOL_USE. Overwriting wholesale here reset the card to
+      // 'running' and dropped its requestId: no Allow/Deny buttons ever
+      // rendered, and the turn hung on an ask nobody could answer. Carry the
+      // ask over exactly as the synthetic-reclaim branch above does; every
+      // other superseded card (no ask yet) still becomes a plain running tool.
+      const superseded = toolCalls.get(action.toolUseId);
+      const carriedAsk = superseded?.status === 'awaiting-approval' && superseded.requestId
+        ? {
+            status: 'awaiting-approval' as const,
+            requestId: superseded.requestId,
+            permissionSuggestions: superseded.permissionSuggestions,
+            denyListed: superseded.denyListed,
+            external: superseded.external,
+            permissionMode: superseded.permissionMode,
+          }
+        : { status: 'running' as const };
       toolCalls.set(action.toolUseId, {
         toolUseId: action.toolUseId,
         toolName: action.toolName,
         input: action.toolInput,
-        status: 'running',
+        ...carriedAsk,
       });
 
-      let { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
-      const toolGroups = new Map(session.toolGroups);
-      let currentGroupId = session.currentGroupId;
+      // Placement is idempotent by toolUseId (see placeToolInCurrentGroup), so
+      // a re-emit — or a preparing card the native runtime already placed under
+      // this same id — is superseded IN PLACE rather than duplicated.
+      const placed = placeToolInCurrentGroup(session, action.toolUseId);
+      let { assistantTurns } = placed;
+      const { timeline, toolGroups, currentGroupId, currentTurnId } = placed;
 
       // ExitPlanMode: inject plan markdown as its own bubble BEFORE the
       // tool-group, so the full plan is visible in chat view (not just the
-      // approval buttons).
+      // approval buttons). injectPlanSegment is idempotent by toolUseId, and
+      // splices before the group it is given, so placing first is safe.
       if (action.toolName === 'ExitPlanMode') {
         assistantTurns = injectPlanSegment(
           assistantTurns,
           currentTurnId,
           action.toolUseId,
           action.toolInput,
+          currentGroupId ?? undefined,
         );
-      }
-
-      // Fix: group placement must be IDEMPOTENT. The watcher deliberately
-      // re-emits tool-use on repeated uuids (CC rewrites the same JSONL line as
-      // the assistant message grows, and a rewrite may carry NEW tool_use
-      // blocks), relying on "the reducer dedupes by toolUseId" — true of the
-      // toolCalls Map above, but the group append below used to add the id a
-      // second time, rendering a duplicate ToolCard. Symptom was most visible
-      // on AskUserQuestion: AssistantTurnBubble hides awaiting-approval tools
-      // from groups, so both copies only became visible once answered.
-      // See transcript-watcher.ts readNewLines (~line 679) for the emit contract.
-      let existingGroupId: string | null = null;
-      for (const [gid, group] of toolGroups) {
-        if (group.toolIds.includes(action.toolUseId)) { existingGroupId = gid; break; }
-      }
-
-      if (existingGroupId) {
-        // Already placed by an earlier emit of this same tool — leave both the
-        // group and currentGroupId untouched, so a re-emit can't retarget where
-        // subsequent NEW tools land. (injectPlanSegment above is already
-        // idempotent by toolUseId, so ExitPlanMode needs no equivalent guard.)
-      } else if (currentGroupId && toolGroups.has(currentGroupId)) {
-        // Add to existing group (no new segment needed)
-        const group = toolGroups.get(currentGroupId)!;
-        toolGroups.set(currentGroupId, {
-          ...group,
-          toolIds: [...group.toolIds, action.toolUseId],
-        });
-      } else {
-        // Create new group and add as segment to current turn
-        currentGroupId = nextGroupId();
-        toolGroups.set(currentGroupId, { id: currentGroupId, toolIds: [action.toolUseId] });
-
-        const turn = assistantTurns.get(currentTurnId)!;
-        assistantTurns.set(currentTurnId, {
-          ...turn,
-          segments: [...turn.segments, { type: 'tool-group', groupId: currentGroupId }],
-        });
       }
 
       const activeTurnToolIds = new Set(session.activeTurnToolIds);
@@ -1011,6 +1369,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // stall warning would sit on top of a healthy new turn.
         errorMessage: null,
         stallWarning: null,
+        // A skill invocation is a new turn start — same reasoning as above.
+        stalledSince: null,
         // Belt-and-braces: a previous turn's prefill progress must not be
         // mistaken for this turn's (the next assistant-thinking event replaces it).
         promptProcessing: null,
@@ -1045,14 +1405,54 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       // Attach completion metadata to the completing turn before clearing
       // turn-scoped state via endTurn(). currentTurnId is the in-flight turn;
-      // if it's already null (edge case: turn-complete arrived before any
-      // assistant text), skip metadata attachment but still call endTurn.
-      const completingTurnId = session.currentTurnId;
-      const assistantTurns = new Map(session.assistantTurns);
-      if (completingTurnId) {
-        const turn = assistantTurns.get(completingTurnId);
+      // if it's already null (turn-complete arrived before any assistant
+      // content), an ABNORMAL stopReason mints a segment-less turn to carry
+      // it — see below. Resolve WHICH turn gets stamped first, then stamp
+      // once, so the mint path can never drift from the normal path's field
+      // policy (it did, briefly: `model: action.model` vs `?? turn.model`).
+      // Shared predicate (chat-types.ts): the mint below and the render gates
+      // must agree on what "abnormal" means, or a minted turn gets dropped —
+      // or a droppable one minted.
+      const abnormalStop = abnormalStopReason(action.stopReason);
+      let assistantTurns = new Map(session.assistantTurns);
+      let timeline = session.timeline;
+      let seenUuids = session.seenUuids;
+      let targetTurnId = session.currentTurnId;
+      let mintedTimestamp: number | null = null;
+      if (!targetTurnId && abnormalStop && !session.seenUuids.has(action.uuid)) {
+        // Empty-step recovery (spec 2026-08-21, decision 4): assistant turns
+        // are minted by CONTENT actions, so a turn whose every step was
+        // contentless has no entry to carry its honest stopReason — the
+        // worst-case shape of the empty_response bug would still render as
+        // unexplained silence. Create the (segment-less) turn here so the
+        // footer has something to attach to. Normal completions keep the
+        // long-standing skip: an end_turn with no content carries no signal
+        // worth a timeline row.
+        // The seenUuids guard keeps this branch IDEMPOTENT: the watcher's
+        // re-emit contract and re-dock replay both re-deliver turn-complete
+        // (readNewLines: "the reducer absorbs them"), and content actions are
+        // uuid-deduped on replay so currentTurnId stays null — without the
+        // guard every replay would append a fresh ghost turn + timeline row.
+        const created = getOrCreateTurn(session);
+        assistantTurns = created.assistantTurns;
+        timeline = created.timeline;
+        targetTurnId = created.currentTurnId;
+        // Replay delivers the original event: stamp the turn with the event's
+        // own time, not Date.now() (which would show the re-dock time).
+        mintedTimestamp = action.timestamp;
+      }
+      if (abnormalStop) {
+        // Recorded for BOTH the stamp and the mint path: a live abnormal
+        // completion stamped onto a content turn must not re-mint as a ghost
+        // when the same event replays into existing state (content actions get
+        // deduped, so the replayed turn-complete arrives with currentTurnId
+        // null). Normal end_turn completions never grow the set.
+        seenUuids = new Set(session.seenUuids).add(action.uuid);
+      }
+      if (targetTurnId) {
+        const turn = assistantTurns.get(targetTurnId);
         if (turn) {
-          assistantTurns.set(completingTurnId, {
+          assistantTurns.set(targetTurnId, {
             ...turn,
             stopReason: action.stopReason,
             // Preserve any model already captured on the turn (e.g. from
@@ -1061,11 +1461,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             model: action.model ?? turn.model,
             anthropicRequestId: action.anthropicRequestId,
             usage: action.usage,
+            ...(mintedTimestamp !== null ? { timestamp: mintedTimestamp } : {}),
           });
         }
       }
 
-      next.set(action.sessionId, { ...session, assistantTurns, ...endTurn(session) });
+      next.set(action.sessionId, { ...session, timeline, seenUuids, ...endTurn(session, undefined, assistantTurns) });
       return next;
     }
 
@@ -1093,8 +1494,39 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       next.set(action.sessionId, {
         ...session,
-        assistantTurns,
-        ...endTurn(session, 'Turn interrupted'),
+        ...endTurn(session, 'Turn interrupted', assistantTurns),
+      });
+      return next;
+    }
+
+    case 'TRANSCRIPT_REPLAY_COMPLETE': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      // A live re-dock replays the same history while a tool is genuinely
+      // running. Only main can tell the two apart, and only for native
+      // sessions (`entry.inFlight`); it reports false when it cannot affirm
+      // idleness, so an unknown session is left exactly as it was.
+      if (!action.sessionIdle) return state;
+      // Reuse endTurn rather than inventing a second notion of "tool that never
+      // finished" — it fails orphaned running/awaiting cards AND clears the
+      // in-flight turn state (isThinking, currentTurnId), which replay had left
+      // looking like a live turn.
+      // The message is deliberately not "complete": we do not know whether the
+      // tool finished before the process died, and a card claiming success for
+      // work that may never have run is the misleading-success failure
+      // docs/error-message-standards.md exists to prevent.
+      // NOTE the asymmetry with NATIVE_SESSION_ERROR, which spreads endTurn()
+      // and then RE-ASSERTS attentionState/errorMessage. This spread does not,
+      // so it resets attentionState to 'ok' and clears errorMessage — which
+      // would wipe an error banner and unblock the input gate
+      // (pty-input-gate.ts keys on attentionState !== 'ok').
+      // Safe today only because no replay lands on a session holding an error:
+      // onOwnershipLost dispatches SESSION_REMOVE, which deletes the state, so
+      // every re-dock replays into a fresh slot. If that ever changes, this
+      // needs the same re-assert NATIVE_SESSION_ERROR does.
+      next.set(action.sessionId, {
+        ...session,
+        ...endTurn(session, 'Session was closed while this was running'),
       });
       return next;
     }
@@ -1110,17 +1542,49 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       //      command.
       //   2. first running tool with the same name (hook payload and
       //      transcript input shapes can differ — degrade safely)
-      //   3. first running tool of any name
-      // (An older requestId pass between 2 and 3 was unreachable — a running
-      // tool never carries a requestId; PERMISSION_RESPONDED clears it.)
+      // There is deliberately NO name-agnostic third tier. Until 2026-08-09 an
+      // `anyRunningId` fallback bound the ask to the first running tool of ANY
+      // name, so an ask that arrived before its own tool_use event hijacked an
+      // unrelated card: the card kept saying "Bash" while its buttons approved
+      // Read (Destin, M1–M3 dogfood). That fallback was the ORIGINAL naive
+      // implementation — its own comment called it "the arbitrary
+      // first-running-tool fallback" — and tiers 1 and 2 were added in front of
+      // it without ever removing it, so it was vestigial, not load-bearing.
+      // Showing one tool's identity on a card that authorizes another is a
+      // CONSENT bug: the honest fallback is the synthetic card below, which
+      // describes the ask's own payload and is reclaimed by TRANSCRIPT_TOOL_USE
+      // when the real event lands.
+      // (An older requestId pass was unreachable — a running tool never carried
+      // a requestId; PERMISSION_RESPONDED clears it. That is no longer quite
+      // true: a card whose ask was overwritten keeps the requestId while
+      // reverting to 'running', which is exactly the stale binding the loop
+      // directly below detects and clears.)
       const toolCalls = new Map(session.toolCalls);
+
+      // This action is REPEATABLE (2026-08-16): main re-announces every
+      // still-pending ask on a heartbeat, so a card that never rendered — or
+      // that a later event overwrote — heals itself instead of hanging the turn
+      // forever on an ask nobody can answer. Two consequences, both handled
+      // here BEFORE the match loop, because the loop only ever looks at
+      // 'running' tools and cannot see either case:
+      //   • Already bound and awaiting → nothing to do. Return `state` itself
+      //     (not a rebuilt Map): a fresh object every few seconds would
+      //     re-render the timeline for no change.
+      //   • Held by a card in any OTHER status → that binding is stale, and
+      //     tier 2 (name-only) would otherwise hand this same requestId to a
+      //     SECOND running card, putting Allow/Deny on two cards for one ask.
+      //     Drop the dead requestId so the match below can re-bind cleanly.
+      for (const [id, tool] of toolCalls) {
+        if (tool.requestId !== action.requestId) continue;
+        if (tool.status === 'awaiting-approval') return state;
+        toolCalls.set(id, { ...tool, requestId: undefined });
+      }
+
       let inputMatchId: string | null = null;
       let nameMatchId: string | null = null;
-      let anyRunningId: string | null = null;
       const wantedInput = action.input ? stableStringify(action.input) : null;
       for (const [id, tool] of toolCalls) {
         if (tool.status !== 'running') continue;
-        if (anyRunningId === null) anyRunningId = id;
         if (tool.toolName === action.toolName) {
           if (nameMatchId === null) nameMatchId = id;
           if (wantedInput !== null && tool.input
@@ -1130,7 +1594,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           }
         }
       }
-      const targetId = inputMatchId ?? nameMatchId ?? anyRunningId;
+      const targetId = inputMatchId ?? nameMatchId;
       let found = false;
       if (targetId !== null) {
         const tool = toolCalls.get(targetId)!;
@@ -1138,22 +1602,37 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           ...tool,
           status: 'awaiting-approval',
           requestId: action.requestId,
+          // Fix: the card must show the input THIS request is about. Tier 2
+          // binds to a card matched only by NAME, so its input belongs to an
+          // earlier call — that is how the second AskUserQuestion of a session
+          // re-displayed the first one's question and options while the
+          // terminal showed the correct one. For AskUserQuestion this is a
+          // correctness bug, not just a cosmetic one: AskUserQuestionCard
+          // echoes tool.input.questions back in updatedInput.
+          // Both surviving tiers match on tool NAME, so this only ever refreshes
+          // the input of a card that already names the right tool. (This clause
+          // used to carry a carve-out for a name-agnostic third tier; that tier
+          // was deleted 2026-08-09 — see the match-order comment above.)
+          // hook-dispatcher defaults a missing tool_input to `{}`, so require a
+          // non-empty payload or we would blank out a good card.
+          ...(targetId === nameMatchId && inputMatchId === null
+              && action.input && Object.keys(action.input).length > 0
+                ? { input: action.input } : {}),
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
+          external: action.external,
+          permissionMode: action.permissionMode,
         });
         found = true;
       }
 
       if (!found) {
-        // Fix: never synthesize a SECOND placeholder for a requestId we already
-        // hold. The match loop above only considers 'running' tools, so a
-        // re-delivered PERMISSION_REQUEST for a tool already flipped to
-        // 'awaiting-approval' fell through to here and minted a duplicate card
-        // (the synthetic merge in TRANSCRIPT_TOOL_USE reclaims only one of
-        // them, orphaning the rest).
-        for (const tool of toolCalls.values()) {
-          if (tool.requestId === action.requestId) return state;
-        }
+        // (The "never synthesize a SECOND placeholder for a requestId we
+        // already hold" guard that used to live here moved ABOVE the match
+        // loop in the 2026-08-16 heartbeat change — it has to run before tier 2
+        // can bind a second card, not only when tier 2 misses. By this line
+        // nothing holds action.requestId: it was either returned early as an
+        // intact ask, or cleared as a stale binding.)
 
         // Permission hook arrived before transcript watcher — create synthetic tool entry
         const syntheticId = `perm-${action.requestId}`;
@@ -1165,6 +1644,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           requestId: action.requestId,
           permissionSuggestions: action.permissionSuggestions,
           denyListed: action.denyListed,
+          external: action.external,
+          permissionMode: action.permissionMode,
         });
 
         const groupId = nextGroupId();
@@ -1213,10 +1694,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         if (tool.status === 'awaiting-approval' && tool.requestId === action.requestId) {
           // Fix: native budget gates (max_steps / doom_loop) are synthetic asks
           // with NO real tool execution behind them — no TRANSCRIPT_TOOL_RESULT
-          // ever arrives to close the card. Leaving it 'running' orphans it: a
-          // same-turn re-trip of the gate matches it via PERMISSION_REQUEST's
-          // tier-3 "first running tool of any name" fallback and reuses the stale
-          // card, and endTurn() force-fails it 'Turn ended' on a normal finish.
+          // ever arrives to close the card. Leaving it 'running' orphans it, and
+          // endTurn() then force-fails it 'Turn ended' on a normal finish.
+          // (This used to also cite PERMISSION_REQUEST's tier-3 "first running
+          // tool of any name" fallback reusing the stale card. That tier was
+          // deleted 2026-08-09 — see the match-order comment in
+          // PERMISSION_REQUEST. The carve-out below is still needed for the
+          // endTurn reason alone.)
           // Close it 'complete' on any response instead (PERMISSION_RESPONDED
           // can't tell Yes from No — it carries only the requestId). Keyed on
           // toolName, not the perm- id prefix, which would wrongly close real
@@ -1284,6 +1768,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           });
 
       for (const msg of action.messages) {
+        // Same `/compact` echo the live path drops — loadHistory has no filter
+        // for it (it only gates on isMeta/promptId/non-empty), so without this
+        // a reloaded or resumed session grows back every bubble the live fix
+        // removed. Skipping before the counter is safe: it only ever advances
+        // on a push, so ids stay unique, and the same message list always
+        // regenerates the same ids for the hasMore=false `hist-` replacement.
+        if (msg.role === 'user' && isCompactCommandEcho(msg.content)) continue;
         const id = `hist-${++historyMsgCounter}`;
         if (msg.role === 'user') {
           historyTimeline.push({

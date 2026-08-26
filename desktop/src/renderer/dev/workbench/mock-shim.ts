@@ -1,10 +1,26 @@
 import type { MockStore } from './mock-store';
+import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
-  CONTENT as ARTIFACT_CONTENT, contextGroups,
+  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, contextGroups,
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
+import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
+
+// artifactId -> pretend on-disk size, for exercising the over-cap artifact
+// states (partial-view banner, handoff) against the fake backend.
+// artifactId -> pretend on-disk size for fixtures with no text body at all:
+// the handler answers binary:true (never orphan), which is how a real
+// unsupported format reaches the handoff view rather than "no longer on disk".
+const BINARY_FIXTURES: Record<string, number> = {
+  'a-clip-mp4': 18 * 1024 * 1024,
+};
+
+const OVERSIZE_FIXTURES: Record<string, number> = {
+  'a-big-log': 8.4 * 1024 * 1024,     // under FULL_READ_MAX_BYTES -> offers "Load the whole file"
+  'a-huge-dump': 500 * 1024 * 1024,   // above it -> no load action
+};
 
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
@@ -17,6 +33,10 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'session.list', 'session.create', 'session.browse', 'session.destroy',
   'session.setFlag', 'session.setTag', 'session.setNote', 'session.getMeta',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
+  // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
+  // contract test actually covers them; a channel absent from HAND_WRITTEN
+  // escapes the real-or-registered check entirely.
+  'permissions.list', 'permissions.remove', 'permissions.removeProject',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
@@ -26,6 +46,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'artifacts.listProjectsIndex', 'artifacts.listSession', 'artifacts.listProject',
   'artifacts.listAllFiles', 'artifacts.get', 'artifacts.checkExistence',
   'artifacts.searchContent', 'artifacts.watchProject', 'artifacts.unwatchProject',
+  'artifacts.readBinary',
   'syncSpaces.status', 'syncSpaces.syncNow', 'syncSpaces.stopProject',
   'syncSpaces.renameProject', 'syncSpaces.setProjectDescription',
   'folders.rename', 'folders.setDescription',
@@ -34,6 +55,8 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'account.signedIn', 'account.user', 'account.refresh',
   'appearance.getFavoriteThemes', 'appearance.favoriteTheme', 'appearance.get',
   'appearance.set', 'appearance.broadcast',
+  'skills.listMarketplace', 'skills.list', 'skills.getFavorites', 'skills.setFavorite', 'skills.getFeatured',
+  'marketplace.getPackages', 'theme.marketplace',
   // Real, but served by remote-shim.ts rather than preload.ts — Electron
   // clients get their timelines from the transcript watcher instead. The
   // contract test checks both files for exactly this reason.
@@ -118,6 +141,14 @@ function withCatchAll(namespace: string, impl: Record<string, unknown>): Record<
 
       if (Object.prototype.hasOwnProperty.call(impl, key)) {
         const value = impl[key];
+        // A nested hand-written namespace (`theme.marketplace = { list }`) gets
+        // the same catch-all as a top-level one, so the members it does NOT
+        // implement still resolve `[]` rather than being undefined — the
+        // synchronous-throw-inside-Promise.all bug workbench-shim-semantics pins.
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          if (!cache.has(key)) cache.set(key, withCatchAll(`${namespace}.${key}`, value as Record<string, unknown>));
+          return cache.get(key);
+        }
         if (typeof value !== 'function') return value;
         if (!cache.has(key)) cache.set(key, withLatency(value as (...a: any[]) => any));
         return cache.get(key);
@@ -468,6 +499,36 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     catalog: async () => store.getState().catalog,
   };
 
+  // M5 2a. NO real backend yet — registered in MOCK_ONLY. Removal matches on
+  // (tool, pattern, action) because remember() dedupes exact repeats, so that
+  // triple is unique within a project; no rule id is needed.
+  const permissions: Ns<'permissions'> = {
+    list: async () => store.getState().permissions,
+    remove: async (slug, rule) => {
+      if (store.refuseWrites) return false;
+      let hit = false;
+      store.setState((s) => ({
+        ...s,
+        permissions: s.permissions.map((p) => {
+          if (p.slug !== slug) return p;
+          const rules = p.rules.filter((r) => {
+            const match = r.tool === rule.tool && r.pattern === rule.pattern && r.action === rule.action;
+            if (match) hit = true;
+            return !match;
+          });
+          return { ...p, rules };
+        }),
+      }));
+      return hit;
+    },
+    removeProject: async (slug) => {
+      if (store.refuseWrites) return false;
+      const hit = store.getState().permissions.some((p) => p.slug === slug);
+      store.setState((s) => ({ ...s, permissions: s.permissions.filter((p) => p.slug !== slug) }));
+      return hit;
+    },
+  };
+
   const models: Ns<'models'> = {
     // RuntimeBinding.tsx only calls this for the local-engine provider. The
     // verdict union is checked by the compiler — useIpc.ts:329.
@@ -662,19 +723,54 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     listAllFiles: async (projectId: string) => ({
       ok: true, files: allFiles(projectId), truncated: false,
     }),
-    get: async (_projectRoot: string, artifactId: string) => {
+    get: async (_projectRoot: string, artifactId: string, opts?: { full?: boolean }) => {
       const content = ARTIFACT_CONTENT[artifactId];
+      const asBinary = BINARY_FIXTURES[artifactId];
+      if (asBinary !== undefined) {
+        return { ok: true, content: null, orphan: false, binary: true,
+                 truncated: false, sizeBytes: asBinary, mtimeMs: 1 };
+      }
       if (content === undefined) {
         // Honest miss rather than a fabricated body: the reader renders its
-        // own empty state, which is a state worth being able to see.
-        return { ok: true, content: null, binary: false, tooLarge: false, sizeBytes: 0 };
+        // own missing-file state, which is a state worth being able to see.
+        // orphan:true matches the real handler's not-found shape — without it
+        // the tri-state read lifecycle would classify this as a resolved read
+        // with no content (blank pane) instead of "no longer on disk".
+        return { ok: true, content: null, orphan: true, binary: false, sizeBytes: 0 };
+      }
+      // Over-cap fixtures: report a pretend on-disk size far larger than the
+      // body we serve, so the partial-view banner and the handoff states are
+      // reachable in the Workbench without a real 8 MB file (spec §5).
+      // `full` opts into a BIGGER read, not an unbounded one — main refuses it
+      // above FULL_READ_MAX_BYTES, so the mock has to refuse it too or the
+      // Workbench would show a state the real backend can never produce.
+      const fake = OVERSIZE_FIXTURES[artifactId];
+      const grantFull = opts?.full === true && fake !== undefined && fake <= FULL_READ_MAX_BYTES;
+      if (fake !== undefined && !grantFull) {
+        return {
+          ok: true, content: content.slice(0, content.lastIndexOf('\n', 400) + 1), orphan: false, binary: false,
+          truncated: true, sizeBytes: fake, mtimeMs: 1,
+        };
       }
       return {
-        ok: true, content, binary: false, tooLarge: false, sizeBytes: content.length,
+        ok: true, content, orphan: false, binary: false, truncated: false,
+        sizeBytes: fake ?? content.length, mtimeMs: 1,
       };
     },
     // Nothing is missing from disk here — every fixture "exists" by construction.
     checkExistence: async () => ({ ok: true, missingIds: [] as string[] }),
+    // Image bytes for ArtifactThumbnail / ImageView. Real handler shape
+    // (read-binary-access.ts): { ok, base64, mime } or { ok:false, reason }.
+    // Every image path gets the same sample PNG — the workbench reviews the
+    // CARD, not the picture. Non-images get an honest refusal so the glyph
+    // fallback stays reviewable.
+    readBinary: async (absolutePath: string) => {
+      const ext = absolutePath.split('.').pop()?.toLowerCase() ?? '';
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].includes(ext)) {
+        return { ok: true, base64: SAMPLE_PNG_BASE64, mime: 'image/png' };
+      }
+      return { ok: false, reason: 'not-an-image' };
+    },
     searchContent: async (_root: string, query: string) => ({
       ok: true,
       matches: Object.entries(ARTIFACT_CONTENT)
@@ -693,9 +789,15 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // `prerequisites.some(...)`. Any channel that gates app-level routing has to
   // return a real shape; the catch-all can only ever be right about SHAPE, not
   // MEANING. Shape from shared/first-run-types.ts.
+  // `?firstRun=<STEP>` renders the onboarding wizard at that step (e.g.
+  // DETECT_PREREQUISITES, INSTALL_PREREQUISITES, ENABLE_DEVELOPER_MODE,
+  // AUTHENTICATE, LAUNCH_WIZARD). WHY: the wizard is the first thing a new user
+  // sees and, until 2026-08-25, the only surface no review rig could reach —
+  // the mock always answered COMPLETE, so App routed straight past it.
+  const firstRunStep = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('firstRun')) || 'COMPLETE';
   const firstRun = {
     getState: async () => ({
-      currentStep: 'COMPLETE',
+      currentStep: firstRunStep,
       prerequisites: [],
       overallProgress: 100,
       statusMessage: '',
@@ -781,16 +883,52 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // fonts and the glass cascade are all faithful. Making assets load would mean
   // teaching theme-asset-resolver.ts a second scheme, which is a production
   // change for a dev-only gain; left undone deliberately.
+  // `?marketplace=empty` keeps the registry-less state reachable (the Marketplace
+  // and Library empty states are real surfaces too); default is the sampled
+  // registry in fixtures/marketplace/registry.ts.
+  const marketplaceEmpty = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('marketplace') === 'empty';
   const theme = {
     list: async () => Object.keys(THEME_FIXTURES),
     readFile: async (slug: string) => THEME_FIXTURES[slug] ?? '{}',
     // Writes never touch disk. Editing a fixture + Vite HMR is the reload path.
     writeFile: async () => ({ ok: true }),
     onReload: (_cb: (slug: string) => void) => () => {},
+    // Registry themes with their installed flag — what the Marketplace's Themes
+    // tab, Library › Themes and the theme-favourites strip read.
+    // A plain nested object: withCatchAll wraps object-valued members itself, so
+    // `theme.marketplace.detail` (unimplemented) still resolves `[]` instead of
+    // throwing synchronously inside marketplace-context's Promise.all.
+    marketplace: {
+      list: async () => (marketplaceEmpty ? [] : MARKETPLACE_THEMES.map((t) => ({ ...t }))),
+    },
+  };
+
+  // WHY these four and not the whole `skills` namespace: marketplace-context's
+  // fetchAll (state/marketplace-context.tsx) awaits exactly listMarketplace,
+  // list, getFavorites and getFeatured (+ marketplace.getPackages + the theme
+  // list above); every other skills channel keeps the catch-all `[]`. Before
+  // 2026-08-25 all of these answered `[]`, so Marketplace/Library/skills drawer
+  // rendered empty in the workbench and were unreviewable in any theme.
+  let skillFavourites: string[] = ['civic-report', 'superpowers'];
+  const skills = {
+    listMarketplace: async () => (marketplaceEmpty ? [] : MARKETPLACE_PLUGINS.map((p) => ({ ...p }))),
+    list: async () => (marketplaceEmpty ? [] : INSTALLED_SKILLS.map((s) => ({ ...s }))),
+    getFavorites: async () => [...skillFavourites],
+    setFavorite: async (id: string, favorited: boolean) => {
+      skillFavourites = favorited
+        ? [...new Set([...skillFavourites, id])]
+        : skillFavourites.filter((x) => x !== id);
+      return [...skillFavourites];
+    },
+    getFeatured: async () => (marketplaceEmpty ? { hero: [], rails: [] } : JSON.parse(JSON.stringify(FEATURED))),
+  };
+  const marketplace = {
+    getPackages: async () => (marketplaceEmpty ? {} : JSON.parse(JSON.stringify(INSTALLED_PACKAGES))),
   };
 
   return {
-    session, providers, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance, folders,
+    session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
+    terminal, artifacts, syncSpaces, project, account, appearance, skills, marketplace, folders,
   } as unknown as Record<string, Record<string, unknown>>;
 }

@@ -124,8 +124,10 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // streaming token/tool delta, just to watch two booleans. useStreamingGate
   // is a derived cached selector (useSessionAttention.ts idiom) whose
   // getSnapshot returns a primitive, so useSyncExternalStore skips the
-  // re-render whenever the gate itself hasn't flipped. Same visibility
-  // predicate Task 6 used in ChatView (isThinking && attentionState==='ok').
+  // re-render whenever the gate itself hasn't flipped. The predicate is
+  // "a turn is in flight and has not ended" — deliberately NOT
+  // `attentionState === 'ok'`, which used to hide the button for the whole
+  // stall countdown (see useStreamingGate.ts).
   const showStop = useStreamingGate(sessionId);
 
   // Per-session draft store — keeps input text and attachments separate
@@ -812,8 +814,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
           {/* Task 10: stop control moved here from ChatView (beside the
               ThinkingIndicator) per Destin's placement ruling — immediately
               left of send, same size="icon" scale, shrink-0 so it doesn't
-              squeeze the textarea. `visible` mirrors the exact gate Task 6
-              used: isThinking && attentionState === 'ok'. */}
+              squeeze the textarea.
+              `visible` is useStreamingGate(sessionId) — "a turn is in flight
+              and has not ENDED". It is NO LONGER `isThinking &&
+              attentionState === 'ok'` (that stale wording was corrected here
+              on 2026-08-16): the button deliberately stays through the amber
+              stall warning and the red parked card, because those turns are
+              still running and that is precisely when a user with no ESC key
+              needs a way out. See useStreamingGate.ts. */}
           <StopButton sessionId={sessionId} provider={provider} visible={showStop} />
           {/* The app's most-used control. Geometry is unchanged — 28x28 is exactly
               what size="icon" emits — and it keeps `bg-accent`, which matters:

@@ -31,8 +31,12 @@ icon-drafts/
 tmp-screenshots/
 screenshot.png
 
-# Git worktrees (isolated feature workspaces)
+# Git worktrees (isolated feature workspaces). BOTH spellings: the superpowers
+# skill defaults to the hidden `.worktrees/`, but run-dev.sh and every session
+# in this workspace actually use `worktrees/`. Only the dotted one was listed
+# here, so real worktrees showed up as untracked noise in every `git status`.
 .worktrees/
+worktrees/
 
 # Desktop app (Electron)
 # No trailing slash: also ignores a `node_modules` symlink (a dev worktree
@@ -49,4 +53,4 @@ terminal-emulator-vendored/build/
 # Built React UI bundle (copied from desktop build) — except placeholder
 app/src/main/assets/web/*
 !app/src/main/assets/web/index.html
-.worktrees/
+.superpowers/

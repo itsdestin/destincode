@@ -13,6 +13,9 @@ const FIXTURE_ROOT = join(__dirname, '../src/renderer/dev/workbench/fixtures');
 const KNOWN_KINDS = new Set([
   'text', 'user_message', 'assistant_text', 'tool_use', 'tool_result',
   'permission_request',
+  // 'stalled' (Task 6): parks the turn via TRANSCRIPT_THINKING_HEARTBEAT so the
+  // stalled card can be looked at in the workbench — no backend involved.
+  'stalled',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {
@@ -112,9 +115,38 @@ describe('shipped fixtures replay', () => {
       const dispatched = raw.split('\n')
         .map((l) => l.trim()).filter(Boolean)
         .filter((l) => JSON.parse(l).type !== 'text');
-      expect(loadFixture(name, raw).actions).toHaveLength(dispatched.length);
+      // includeStalled here so the count means what it says: EVERY dispatchable
+      // line really was dispatched. The parked-turn line is opt-in at the
+      // workbench level (see the default-off case below), not un-dispatchable.
+      expect(loadFixture(name, raw, undefined, { includeStalled: true }).actions)
+        .toHaveLength(dispatched.length);
     },
   );
+
+  // Fix (M9, whole-branch review 2026-08-16): native.jsonl's `{"type":"stalled"}`
+  // line used to replay unconditionally, so the shared native session sat under
+  // the red "Provider may have stalled" card in every single workbench
+  // scenario. It is now opt-in (`?stalled=1`). Both halves are pinned: off by
+  // default, and still reachable when asked for — a fix that made the card
+  // permanently unreachable would be its own regression.
+  const STALLED_FIXTURE = [
+    '{"type":"user_message","text":"go"}',
+    '{"type":"assistant_text","text":"Working on it."}',
+    '{"type":"stalled"}',
+  ].join('\n');
+
+  it('skips the stalled line by DEFAULT — the workbench is not parked unless asked', () => {
+    const r = loadFixture('stalled-fixture', STALLED_FIXTURE);
+    expect(r.error).toBeUndefined();
+    expect(r.actions.map((a) => a.type)).toEqual(['USER_PROMPT', 'TRANSCRIPT_ASSISTANT_TEXT']);
+  });
+
+  it('replays the stalled line when includeStalled is set', () => {
+    const r = loadFixture('stalled-fixture', STALLED_FIXTURE, undefined, { includeStalled: true });
+    expect(r.actions.map((a) => a.type)).toEqual([
+      'USER_PROMPT', 'TRANSCRIPT_ASSISTANT_TEXT', 'TRANSCRIPT_THINKING_HEARTBEAT',
+    ]);
+  });
 });
 
 // The hydrate payload is what App.tsx:1465 actually receives, so a payload that

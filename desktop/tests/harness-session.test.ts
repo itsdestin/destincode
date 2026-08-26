@@ -2,7 +2,7 @@
 // A plain Vercel AI SDK streamText call (NO tools) that emits the EXACT
 // transcript-event protocol the chat reducer already consumes. These tests pin
 // the emit surface — it's the contract Phase 2's tool agent must not move.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { HarnessSession, describeProviderError } from '../src/main/harness/harness-session';
 import { ASSISTANT_PRESET } from '../src/shared/harness-manifest';
 import type { TranscriptEvent } from '../src/shared/types';
@@ -133,6 +133,89 @@ describe('HarnessSession', () => {
     expect(err.data.text).toMatch(/502/);
     expect(events.some((e) => e.type === 'user-interrupt')).toBe(false);   // an error is not an interrupt
     expect(events.find((e) => e.type === 'turn-complete')).toBeUndefined();
+  });
+
+  // 2026-08-10 incident: the live roster run's Kimi K3 session died after 37
+  // tool calls with session-error text literally '[object Object]' — the
+  // ENTIRE error the user got, even though a *different* model's 402 (same
+  // run, same cause: OpenRouter out of credits) surfaced perfectly via the
+  // 'a wrapped provider error...' test below. Root cause: the AI SDK's
+  // fullStream can hand back an 'error' part whose `.error` is a plain object
+  // rather than an Error instance (confirmed via node_modules/ai's own
+  // eventProcessor, which treats `part.error` as opaque). The old handler did
+  // `new Error(String(part.error))` — String() on a plain object always
+  // yields the literal text '[object Object]', discarding statusCode/message/
+  // data before describeProviderError ever got a chance to read them.
+  it('an error PART carrying a plain (non-Error) object surfaces its real detail, not [object Object]', async () => {
+    const ERROR_MIDSTREAM_PLAIN_OBJECT = [
+      { type: 'stream-start', warnings: [] },
+      { type: 'text-start', id: 'p1' },
+      { type: 'text-delta', id: 'p1', delta: 'partial ' },
+      {
+        type: 'error',
+        // A plain object, NOT `new Error(...)` — this is the shape that broke.
+        error: {
+          name: 'AI_APICallError',
+          statusCode: 402,
+          message: 'This request requires more credits, or fewer max_tokens. '
+            + 'You requested up to 65536 tokens, but can only afford 29029.',
+          data: {
+            error: {
+              message: 'This request requires more credits, or fewer max_tokens. '
+                + 'You requested up to 65536 tokens, but can only afford 29029.',
+              code: 402,
+            },
+          },
+        },
+      },
+    ];
+    const session = new HarnessSession(opts, async () => mockModel(ERROR_MIDSTREAM_PLAIN_OBJECT) as any);
+    const events = collect(session);
+    await session.send('hi');
+    const err = events.find((e) => e.type === 'session-error')!;
+    expect(err.data.text).not.toBe('[object Object]');
+    expect(err.data.text).toMatch(/more credits/);
+    expect(err.data.text).toMatch(/402/);
+  });
+
+  // Same incident, second half: the AI SDK's streamText has a DEFAULT
+  // `onError` of `({ error }) => console.error(error)` — printing the raw
+  // error object (stack + statusCode + responseHeaders, which can include a
+  // set-cookie value, + responseBody) as a multi-line dump. Confirmed by
+  // reading node_modules/ai/dist/index.js: any fullStream 'error' part
+  // ALSO triggers `await onError({ error })` independent of the throw our
+  // switch/case does — the SAME event this file's HarnessSession never
+  // opted out of. This is "the CLI printed a giant raw error object" half of
+  // the bug report: the harness's streamText call passed no `onError`, so a
+  // stream failure — for EVERY model, not just the one whose text field
+  // showed '[object Object]' — dumped its full raw shape to the console
+  // instead of one bounded line.
+  it('a stream error never lets the SDK dump the raw object to console — logging stays bounded and string-only', async () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const ERROR_MIDSTREAM = [
+        { type: 'stream-start', warnings: [] },
+        {
+          type: 'error',
+          error: {
+            statusCode: 402,
+            message: 'This request requires more credits, or fewer max_tokens.',
+            responseHeaders: { 'set-cookie': 'sess=abc123; Path=/; HttpOnly; Secure' },
+          },
+        },
+      ];
+      const session = new HarnessSession(opts, async () => mockModel(ERROR_MIDSTREAM) as any);
+      await session.send('hi');
+      expect(spy).toHaveBeenCalled();   // still visible — never silenced entirely
+      for (const call of spy.mock.calls) {
+        expect(call.length).toBe(1);
+        expect(typeof call[0]).toBe('string');       // never the raw object
+        expect(call[0]).not.toContain('set-cookie');  // never a response header
+        expect(call[0].length).toBeLessThan(500);     // bounded, not a multi-line dump
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('a wrapped provider error surfaces the ACTIONABLE detail, not the generic wrapper', async () => {

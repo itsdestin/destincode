@@ -61,6 +61,14 @@ The Chat View timeline is built from four event sources:
 - `npm run lint` — ESLint. A **bug** gate, not a style gate: it carries only rules that catch real defects (conditional React hooks, floating promises in the main process, impossible comparisons), because tsc + vitest + knip were all green while exactly those classes shipped. Every enabled rule is at zero on the tree, so a failure means a NEW defect. The rules that are measured-but-not-yet-enabled — and what each would cost to adopt — are listed at the bottom of `desktop/eslint.config.mjs`; drive one to zero in the same commit that enables it.
 - `npm run knip` — Dead-code check. **This is the authority on "is X still used?" — do not answer that from a `grep`** (see the workspace `CLAUDE.md` → "Never assert a negative from a single search"). Config + the rationale for every ignore lives in `desktop/knip.jsonc`; it runs as its own step in `desktop-ci.yml`. It gates only on the categories that are clean today (`files`, `unresolved`, `duplicates`, `dependencies`) and reports the rest as warnings, so a green run does NOT mean zero findings — read the output.
 
+### `allowScripts` in package.json
+
+npm 12 (Node 26+) blocks dependency install scripts by default; CI is on Node 22 (npm 10) and never sees this. Without an entry, `npm ci` "succeeds" but leaves `node_modules/electron/` with **no binary inside**, and the failure surfaces much later as `Electron failed to install correctly` when `run-dev.sh` launches. Every fresh checkout and every new worktree hit it.
+
+Only `electron` is approved — its postinstall downloads the ~100 MB runtime, so nothing works without it. `node-pty`, `koffi`, and `electron-winstaller` are explicitly **denied**: the first two ship per-platform prebuilts (`node-pty/prebuilds/linux-x64/pty.node` is present with scripts blocked — verified 2026-08-11), and the third only packages Windows installers, which happens in CI. Denying rather than leaving them unlisted keeps `npm ci` warning-free, so a *new* blocked package is visible instead of buried.
+
+Entries are deliberately **unpinned** (`"electron": true`, not `"electron@41.10.3"`). npm's default pins to a version, which would silently re-block on the next Electron bump and reproduce the same cryptic launch failure. Re-approve with `npm install-scripts approve <pkg> --no-allow-scripts-pin`.
+
 ## Remote Access
 
 YouCoded includes a built-in remote access server that serves the UI to any web browser.
