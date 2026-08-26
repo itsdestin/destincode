@@ -127,6 +127,7 @@ const EXPLORER: SpecialistDefinition = {
   stepCap: 25,
   reportBudgetTokens: 2000,
   source: 'builtin',
+  grantScope: 'builtin',
 };
 
 const RESEARCHER: SpecialistDefinition = {
@@ -139,6 +140,7 @@ const RESEARCHER: SpecialistDefinition = {
   stepCap: 25,
   reportBudgetTokens: 2500,
   source: 'builtin',
+  grantScope: 'builtin',
 };
 
 const REVIEWER: SpecialistDefinition = {
@@ -151,6 +153,7 @@ const REVIEWER: SpecialistDefinition = {
   stepCap: 20,
   reportBudgetTokens: 2000,
   source: 'builtin',
+  grantScope: 'builtin',
 };
 
 const WORKER: SpecialistDefinition = {
@@ -163,6 +166,7 @@ const WORKER: SpecialistDefinition = {
   stepCap: 40,
   reportBudgetTokens: 1500,
   source: 'builtin',
+  grantScope: 'builtin',
 };
 
 export const BUILTIN_SPECIALISTS: SpecialistDefinition[] = [EXPLORER, RESEARCHER, REVIEWER, WORKER];

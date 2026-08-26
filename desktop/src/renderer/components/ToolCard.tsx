@@ -353,7 +353,7 @@ export function friendlyToolDisplay(
 // CC asks keep sending their real suggestion string. Task 13.
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-export function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed, bare = false }: {
+export function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, alwaysAllowNote, permissionMode, onResponded, onFailed, bare = false }: {
   requestId: string;
   /** Specialists 1c: render the generic row WITHOUT its own band (border/bg/
    *  padding) so a host can lay it out inline — the specialists popup puts the
@@ -377,6 +377,12 @@ export function PermissionButtons({ requestId, suggestions, denyListed, command,
    *  Also set for an external-directory ask, where a remembered rule could
    *  never be consulted (harness-session.ts, step 4). */
   suppressAlwaysAllow?: boolean;
+  /** D2: one line stating HOW WIDE this card's "Always allow" actually is.
+   *  Only the caller knows (a hire card reads the specialist's grantScope), and
+   *  the button label cannot carry it without becoming a sentence. Shown only
+   *  when the button is actually offered — a note about a control that is not
+   *  there is noise. */
+  alwaysAllowNote?: string;
   /** The session's mode when the ask fired (native broker only). 'full-auto'
    *  + denyListed renders the safety-stop footer instead of the generic row —
    *  Full auto's only rule-based ask IS the destructive-command stop, and a
@@ -702,6 +708,12 @@ export function PermissionButtons({ requestId, suggestions, denyListed, command,
           (compare R2·C). Shape-owned copy — see CommandShape.noGrantNote. */}
       {noGrantPossible && noGrantNote && (
         <p className="text-3xs text-fg-muted leading-relaxed">{noGrantNote}</p>
+      )}
+      {/* D2: the promise "Always allow" is about to make, in the user's words.
+          Gated on canAlwaysAllow so it never describes a button that isn't
+          rendered — the failure the noGrantNote above exists to avoid. */}
+      {canAlwaysAllow && alwaysAllowNote && (
+        <p className="text-3xs text-fg-muted leading-relaxed">{alwaysAllowNote}</p>
       )}
     </div>
   );
@@ -1196,17 +1208,35 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             // (plan 1b checklist, Test 10).
             //
             // Task 10 / Global Constraint (hire grants — two independent
-            // protections): "The renderer suppresses Always-allow on a hire
-            // whose definition source !== 'builtin', default-closed while the
-            // definition is unknown... (b) is what stops a NEW grant being
-            // minted for a file-defined id — an edit that widens that file's
-            // tools would still land under the same id." `hireDefinition` is
-            // undefined until the lookup POSITIVELY resolves (never shown-then-
-            // hidden), so an unresolved hire is treated the same as a
-            // non-builtin one — hidden, not offered optimistically.
+            // protections). Half (b) USED to hide Always-allow for every hire
+            // whose source !== 'builtin'. D2 (2026-08-26) replaces the reason it
+            // was hidden rather than removing the protection: the danger was
+            // never "a file-defined helper gets a grant", it was "a grant keyed
+            // by a NAME survives the file changing under it". The subject now
+            // carries the file's content hash (tools/task.ts), so an edit that
+            // widens the file's tools no longer matches the old grant — which
+            // means the option can safely be offered, and Destin gets the
+            // across-projects grant he asked for on helpers in his own folders.
+            //
+            // What half (b) still enforces, unchanged: DEFAULT-CLOSED while the
+            // definition is unknown. `hireDefinition` is undefined until the
+            // lookup POSITIVELY resolves (never shown-then-hidden), and an
+            // unresolved hire must never be offered a grant optimistically —
+            // we would not know which width it was even asking for.
             suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true
               || (tool.toolName === 'Task' && !!tool.input?.task_id)
-              || (tool.toolName === 'Task' && !tool.input?.task_id && hireDefinition?.source !== 'builtin')}
+              || (tool.toolName === 'Task' && !tool.input?.task_id && !hireDefinition)}
+            // D2: say what the grant covers. A built-in already behaved this way
+            // and its wording is unchanged from what shipped, so no existing
+            // card's copy moves. A file-defined helper gets the sentence that
+            // matches the subject tools/task.ts will actually build for it.
+            alwaysAllowNote={tool.toolName === 'Task' && !tool.input?.task_id && hireDefinition
+              ? (hireDefinition.grantScope === 'user'
+                  ? 'Always allow applies to this helper in every project. If you edit its file, you\u2019ll be asked again.'
+                  : hireDefinition.grantScope === 'project'
+                    ? `Always allow applies to this helper in ${sessionCwd ? basename(sessionCwd) : 'this project'} only, because it is defined inside the project. If you edit its file, you\u2019ll be asked again.`
+                    : undefined)
+              : undefined}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

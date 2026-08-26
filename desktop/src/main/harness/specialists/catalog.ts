@@ -287,7 +287,10 @@ export class SpecialistCatalog {
     const dir = this.claudeUserDir;
     const fp = fingerprintDir(dir);
     if (fp === this.globals.claudeUser.fingerprint) return false;
-    const { entries, skipped } = loadFolder(dir, 'claude-code', loadClaudeCodeDefinition);
+    // ~/.claude/agents is the USER's own folder -> a grant may travel across
+    // projects (D2). The project folder below is the untrusted case and does not.
+    const { entries, skipped } = loadFolder(dir, 'claude-code',
+      (f, raw) => loadClaudeCodeDefinition(f, raw, 'user'));
     this.globals.claudeUser = { entries, skipped, fingerprint: fp };
     return true;
   }
@@ -297,7 +300,11 @@ export class SpecialistCatalog {
     const fp = fingerprintDir(dir); // read-only — NEVER mkdir's inside a user's repo
     const existing = this.projects.get(cwd);
     if (existing && existing.fingerprint === fp) return false;
-    const { entries, skipped } = loadFolder(dir, 'claude-code', loadClaudeCodeDefinition);
+    // <cwd>/.claude/agents ships INSIDE a repo the user may not have written, and
+    // its ids collide freely across repos ('code-reviewer' in two projects is two
+    // different files). Grants here stay pinned to this work dir (D2).
+    const { entries, skipped } = loadFolder(dir, 'claude-code',
+      (f, raw) => loadClaudeCodeDefinition(f, raw, 'project'));
     this.projects.set(cwd, { entries, skipped, fingerprint: fp });
     return true;
   }
@@ -412,6 +419,9 @@ export function toListResult(snapshot: CatalogSnapshot): SpecialistsListResult {
       allowedTools: e.definition.allowedTools,
       modelPreference: e.definition.modelPreference,
       source: e.source,
+      // D2: from the DEFINITION, not re-derived from `path` here — one authority
+      // for how wide a grant may be (the folder the catalog actually read).
+      grantScope: e.definition.grantScope,
       path: e.path,
       warnings: e.warnings,
       offered: e.offered,

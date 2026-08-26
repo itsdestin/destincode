@@ -116,12 +116,20 @@ describe('Always-allow on a Task hire', () => {
       {
         id: 'explorer', displayName: 'Explorer', description: 'Finds things.',
         charter: 'read-only', allowedTools: ['Read'], source: 'builtin',
-        warnings: [], offered: true,
+        grantScope: 'builtin', warnings: [], offered: true,
       },
       {
         id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes docs.',
         charter: 'read-write', allowedTools: ['Write'], source: 'personal',
+        grantScope: 'user',
         path: '/home/d/.youcoded/specialists/docs-writer.md', warnings: [], offered: true,
+      },
+      {
+        // A helper the PROJECT ships — same shape, narrower grant.
+        id: 'repo-reviewer', displayName: 'Repo Reviewer', description: 'Reviews this repo.',
+        charter: 'read-only', allowedTools: ['Read'], source: 'claude-code',
+        grantScope: 'project',
+        path: '/work/proj/.claude/agents/repo-reviewer.md', warnings: [], offered: true,
       },
     ],
     skipped: [],
@@ -140,14 +148,39 @@ describe('Always-allow on a Task hire', () => {
     await waitFor(() => expect(screen.getByText(/always allow/i)).toBeTruthy());
   });
 
-  it('never offers Always allow for a personal (file-defined) hire', async () => {
+  // D2 (2026-08-26) — this REPLACES "never offers Always allow for a personal
+  // hire". The old rule hid the button because a grant keyed by a helper's NAME
+  // could outlive the file changing under it; the subject now carries the file's
+  // content hash (tools/task.ts), so that hazard is closed at the source and the
+  // button can be offered. What must NOT regress is the honesty of the promise:
+  // a helper in the user's own folder is granted everywhere, one shipped inside
+  // a repo is granted in that repo only, and the card has to SAY which.
+  it('offers Always allow for a helper in the user\'s own folder, and says it covers every project', async () => {
     mockSpecialistsList(roster);
     renderTaskCard(
       taskCall({ requestId: 'native-personal', input: { description: 'x', agent: 'docs-writer', prompt: 'y' } }),
       'cwd-personal',
     );
     await waitFor(() => expect(screen.getByTestId('specialist-envelope').textContent).toContain('Docs Writer'));
-    expect(screen.queryByText(/always allow/i)).toBeNull();
+    await waitFor(() => expect(screen.getByRole('button', { name: /always allow/i })).toBeTruthy());
+    expect(screen.getByText(/in every project/i)).toBeTruthy();
+    // The other half of the promise: an edit re-asks. If this sentence is ever
+    // dropped, the fingerprint behaviour becomes invisible to the person
+    // relying on it.
+    expect(screen.getByText(/asked again/i)).toBeTruthy();
+  });
+
+  it('offers Always allow for a project-shipped helper, but scoped to that project only', async () => {
+    mockSpecialistsList(roster);
+    renderTaskCard(
+      taskCall({ requestId: 'native-project', input: { description: 'x', agent: 'repo-reviewer', prompt: 'y' } }),
+      '/work/proj',
+    );
+    await waitFor(() => expect(screen.getByTestId('specialist-envelope').textContent).toContain('Repo Reviewer'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /always allow/i })).toBeTruthy());
+    // Names the folder, and never claims the wider grant.
+    expect(screen.getByText(/proj only/i)).toBeTruthy();
+    expect(screen.queryByText(/in every project/i)).toBeNull();
   });
 
   it('never offers Always allow for an unresolved (unknown) hire', async () => {

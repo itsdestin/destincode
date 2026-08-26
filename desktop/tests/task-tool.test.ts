@@ -393,6 +393,7 @@ describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
     id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes and edits project docs.',
     systemPrompt: 'Write docs.', allowedTools: ['Read', 'Write'], charter: 'read-write',
     stepCap: 10, reportBudgetTokens: 500, source: 'personal',
+    grantScope: 'user', fingerprint: 'aaaaaaaaaaaa',
   };
   const FAKE_ROSTER: SpecialistRoster = {
     list: () => [DOCS_WRITER],
@@ -423,7 +424,9 @@ describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
     // docs-writer's charter (read-write, from its allowedTools) drives the
     // subject prefix — this fake roster is the ONLY place that charter comes
     // from, since 'docs-writer' isn't a built-in.
-    expect(subject).toBe('read-write:/proj:file:docs-writer');
+    // D2: a PERSONAL-folder specialist is 'user'-scoped, so the work dir is
+    // deliberately absent — that is what makes one grant cover every project.
+    expect(subject).toBe('read-write:file:docs-writer@aaaaaaaaaaaa');
   });
 
   // The two-mechanism reasoning this pins (global-constraints.md, "Hire
@@ -439,6 +442,7 @@ describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
       id: 'repo-worker', displayName: 'Repo Worker', description: 'A worker a repo shipped.',
       systemPrompt: 'Do repo work.', allowedTools: ['Read', 'Write', 'Bash'], charter: 'read-write',
       stepCap: 25, reportBudgetTokens: 2000, source: 'claude-code',
+      grantScope: 'project', fingerprint: 'bbbbbbbbbbbb',
     };
     const MIXED_ROSTER: SpecialistRoster = {
       list: () => [BUILTIN_WORKER, FILE_WORKER],
@@ -448,13 +452,79 @@ describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
     const builtinSubject = tool.permissionSubject!({ agent: 'worker', work_dir: '/proj' } as any);
     const fileSubject = tool.permissionSubject!({ agent: 'repo-worker', work_dir: '/proj' } as any);
     expect(builtinSubject).toBe('read-write:/proj');                    // unchanged shape — old grants still match
-    expect(fileSubject).toBe('read-write:/proj:file:repo-worker');      // scoped to the file's own id
+    expect(fileSubject).toBe('read-write:/proj:file:repo-worker@bbbbbbbbbbbb'); // file's own id AND its contents
 
     // A user's PRE-EXISTING remembered grant for the built-in Worker at this
     // path (the exact shape harness-session.ts's remember-rule persists).
     const workerGrant: PermissionRule = { tool: 'Task', pattern: 'read-write:/proj', action: 'allow', match: 'exact' };
     expect(ruleMatches(workerGrant, builtinSubject!)).toBe(true);   // still covers the built-in it was granted for
     expect(ruleMatches(workerGrant, fileSubject!)).toBe(false);     // must NOT auto-approve a repo-shipped helper
+  });
+
+  // ---- D2 (2026-08-26): how wide an "Always allow" on a hire may be. ----
+  // These drive the REAL decision-path matcher (ruleMatches) against the REAL
+  // shape harness-session.ts's rememberedRuleFor persists, so they fail if
+  // either end drifts — a string comparison here would prove nothing.
+  describe('D2 — grant width follows grantScope, not the helper\'s name', () => {
+    const mk = (over: Partial<SpecialistDefinition>): SpecialistDefinition => ({
+      id: 'code-reviewer', displayName: 'code-reviewer', description: 'Reviews code.',
+      systemPrompt: 'Review.', allowedTools: ['Read', 'Grep'], charter: 'read-only',
+      stepCap: 10, reportBudgetTokens: 500, source: 'claude-code',
+      grantScope: 'project', fingerprint: 'f1f1f1f1f1f1', ...over,
+    });
+    const rosterOf = (d: SpecialistDefinition): SpecialistRoster =>
+      ({ list: () => [d], resolve: (id) => (id === d.id ? d : undefined) });
+    // Exactly what a remembered "Always allow" becomes on disk.
+    const grantFor = (subject: string): PermissionRule =>
+      ({ tool: 'Task', pattern: subject, action: 'allow', match: 'exact' });
+
+    it('a USER-folder helper: one grant covers every project (what Destin asked for)', () => {
+      const tool = createTaskTool(rosterOf(mk({ grantScope: 'user' })));
+      const inRepoX = tool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      const inRepoY = tool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoY' } as any)!;
+      expect(inRepoX).toBe(inRepoY);                      // no work dir in the subject at all
+      expect(ruleMatches(grantFor(inRepoX), inRepoY)).toBe(true);
+    });
+
+    it('a PROJECT helper: the grant stays in the repo it was given in', () => {
+      const tool = createTaskTool(rosterOf(mk({ grantScope: 'project' })));
+      const inRepoX = tool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      const inRepoY = tool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoY' } as any)!;
+      expect(inRepoX).not.toBe(inRepoY);
+      // THE hazard this exists for: repo Y ships its own code-reviewer.md under
+      // the same id. Always-allowing repo X's must never pre-approve it.
+      expect(ruleMatches(grantFor(inRepoX), inRepoY)).toBe(false);
+    });
+
+    it('editing the file revokes the grant — the fingerprint rides in the subject', () => {
+      const before = createTaskTool(rosterOf(mk({ grantScope: 'user', fingerprint: 'aaaa11112222' })));
+      const subjectBefore = before.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      const granted = grantFor(subjectBefore);
+      expect(ruleMatches(granted, subjectBefore)).toBe(true);
+
+      // Same id, same folder, same charter — only the file's CONTENTS changed
+      // (e.g. someone added Bash to its tools). The standing grant must not
+      // carry over to a definition the user never saw.
+      const after = createTaskTool(rosterOf(mk({ grantScope: 'user', fingerprint: 'bbbb33334444' })));
+      const subjectAfter = after.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      expect(ruleMatches(granted, subjectAfter)).toBe(false);
+    });
+
+    it('a user-folder grant never covers a project file of the same id, or vice versa', () => {
+      const userTool = createTaskTool(rosterOf(mk({ grantScope: 'user', fingerprint: 'cccc11112222' })));
+      const projTool = createTaskTool(rosterOf(mk({ grantScope: 'project', fingerprint: 'dddd33334444' })));
+      const userSubject = userTool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      const projSubject = projTool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      expect(ruleMatches(grantFor(userSubject), projSubject)).toBe(false);
+      expect(ruleMatches(grantFor(projSubject), userSubject)).toBe(false);
+    });
+
+    it('a built-in keeps its 1c subject exactly — no grant anyone already has is lost', () => {
+      const worker = resolveRealSpecialist('worker')!;
+      const tool = createTaskTool(rosterOf(worker));
+      expect(tool.permissionSubject!({ agent: 'worker', work_dir: '/proj' } as any))
+        .toBe('read-write:/proj');
+    });
   });
 
   it('an unknown agent id is refused naming the roster\'s ids', async () => {

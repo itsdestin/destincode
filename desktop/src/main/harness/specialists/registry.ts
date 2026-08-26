@@ -28,6 +28,23 @@ export interface SpecialistDefinition {
   // file's id, since the file's contents — and thus what it's trusted to do
   // — can change under a user without them re-approving).
   source: 'builtin' | 'personal' | 'claude-code';
+  // D2 (2026-08-26): WHERE the defining file lives, which is what decides how
+  // wide an "Always allow" on this specialist may be. `source` cannot answer
+  // this — 'claude-code' covers BOTH ~/.claude/agents (the user's own, reused
+  // across every project) and <cwd>/.claude/agents (shipped inside one repo,
+  // and the untrusted case). Only the catalog knows which folder a file came
+  // from, so it passes this in; nothing infers it from `path` at a decision
+  // site, because a path-prefix guess that gets it wrong widens a grant.
+  //   'builtin' -> stable id, subject unchanged from 1c (no existing grant lost)
+  //   'user'    -> grant subject omits the work dir  => applies in EVERY project
+  //   'project' -> grant subject keeps the work dir  => that project only
+  grantScope: 'builtin' | 'user' | 'project';
+  // D2: short content hash of the definition file's exact bytes, absent for
+  // built-ins. It rides INSIDE the permission subject, so editing the file to
+  // widen what it may do changes the subject, which means a standing grant
+  // stops matching and the user is asked again. This is the whole defence
+  // against "always-allowed as read-only, later edited to add Bash".
+  fingerprint?: string;
 }
 
 // Indexed once at module load rather than re-scanning BUILTIN_SPECIALISTS on

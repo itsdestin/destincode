@@ -8,6 +8,7 @@
 import * as path from 'path';
 import { parseFrontmatter, type FrontmatterValue } from './frontmatter';
 import { wrapSpecialistPrompt } from './builtins';
+import { createHash } from 'crypto';
 import { type SpecialistDefinition } from './registry';
 import { MAX_DESCRIPTION_CHARS } from './limits';
 
@@ -157,6 +158,17 @@ function mapModelPreference(
 // Personal format (~/.youcoded/specialists/*.md)
 // ---------------------------------------------------------------------------
 
+/** D2 (2026-08-26): the definition file's identity for permission purposes.
+ *  Hashed from the EXACT bytes that were parsed, not from mtime/size — a
+ *  touch must not invalidate a grant, and an edit that changes one character
+ *  of `tools:` must. Truncated to 12 hex chars: this is a change detector, not
+ *  a secret, and it has to sit inside a subject a human may read in Settings.
+ *  A collision would have to be deliberately constructed by someone who can
+ *  already write the file, at which point they can simply edit it in place. */
+export function definitionFingerprint(raw: string): string {
+  return createHash('sha256').update(raw, 'utf8').digest('hex').slice(0, 12);
+}
+
 export function loadPersonalDefinition(filePath: string, raw: string): DefinitionLoad {
   const parsed = parseFrontmatter(raw);
   if ('error' in parsed) {
@@ -268,6 +280,10 @@ export function loadPersonalDefinition(filePath: string, raw: string): Definitio
     stepCap,
     reportBudgetTokens,
     source: 'personal',
+    // ~/.youcoded/specialists/ is the user's own folder by construction, so a
+    // grant on it is allowed to travel across projects (D2).
+    grantScope: 'user',
+    fingerprint: definitionFingerprint(raw),
   };
 
   return { ok: true, value: { definition, warnings, fullDescription } };
@@ -277,7 +293,15 @@ export function loadPersonalDefinition(filePath: string, raw: string): Definitio
 // Claude Code format (.claude/agents/*.md, user-level and project-level)
 // ---------------------------------------------------------------------------
 
-export function loadClaudeCodeDefinition(filePath: string, raw: string): DefinitionLoad {
+// `grantScope` is REQUIRED and has no default on purpose: this one loader reads
+// both ~/.claude/agents (the user's own -> 'user') and <cwd>/.claude/agents
+// (shipped inside a repo -> 'project'), and only the caller knows which folder
+// it opened. A default here would silently pick a width for the wrong folder.
+export function loadClaudeCodeDefinition(
+  filePath: string,
+  raw: string,
+  grantScope: 'user' | 'project',
+): DefinitionLoad {
   const parsed = parseFrontmatter(raw);
   if ('error' in parsed) {
     return { ok: false, error: parsed.error };
@@ -381,6 +405,8 @@ export function loadClaudeCodeDefinition(filePath: string, raw: string): Definit
     stepCap,
     reportBudgetTokens,
     source: 'claude-code',
+    grantScope,
+    fingerprint: definitionFingerprint(raw),
   };
 
   return { ok: true, value: { definition, warnings, fullDescription } };

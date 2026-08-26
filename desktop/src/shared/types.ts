@@ -506,6 +506,13 @@ export interface SpecialistDefinitionView {
   // user-level folder (only `path` tells them apart); 'project' was never a
   // source the catalog actually produced.
   source: 'builtin' | 'personal' | 'claude-code';
+  /** D2: how wide an "Always allow" on this specialist may be — 'user' grants
+   *  travel across projects, 'project' grants are pinned to one work dir.
+   *  Distinct from `source` because 'claude-code' spans BOTH the user's folder
+   *  and a project's; see SpecialistDefinition.grantScope for the full why. The
+   *  card reads this only to LABEL the grant honestly; the width itself is
+   *  decided in the main process (tools/task.ts's permissionSubject). */
+  grantScope: 'builtin' | 'user' | 'project';
   /** Absolute path of the defining file (absent for built-ins). */
   path?: string;
   /** Tool grants the file asked for that were stripped as unmappable/unknown,

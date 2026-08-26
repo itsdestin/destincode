@@ -249,14 +249,39 @@ export function createTaskTool(roster: SpecialistRoster = BUILTIN_ROSTER): Nativ
     // matching remembered rule skips entirely (decide() answers before any
     // card renders). Built-ins keep the OLD shape so no grant a user already
     // has is lost.
+    // D2 (2026-08-26) — the subject is ALSO what an "Always allow" is remembered
+    // as, byte-exact (harness-session.ts's rememberedRuleFor). So the shape here
+    // is the entire definition of how wide such a grant is; there is no second
+    // place that widens or narrows it:
+    //   builtin -> `${charter}:${workDir}`                  (unchanged from 1c)
+    //   user    -> `${charter}:file:${id}@${fp}`            NO work dir, so one
+    //              grant covers every project — what Destin asked for, and safe
+    //              because the file lives in a folder only he writes to.
+    //   project -> `${charter}:${workDir}:file:${id}@${fp}` work-dir-pinned, so
+    //              always-allowing `code-reviewer` in repo X can never pre-approve
+    //              a DIFFERENT `code-reviewer.md` that repo Y happens to ship.
+    // `@${fp}` is the file's content hash: edit the file to widen its tools and
+    // the subject changes, so the standing grant stops matching and the user is
+    // asked again. Without it, "always allow" would be a promise about a name,
+    // not about the thing that was actually approved.
     permissionSubject: (a) => {
       if (!a.work_dir) return undefined;
       const specialist = a.agent ? roster.resolve(a.agent) : undefined;
       const workDir = toPosix(resolveP(a.work_dir, process.cwd()));
       if (!specialist) return workDir;
-      return specialist.source === 'builtin'
-        ? `${specialist.charter}:${workDir}`
-        : `${specialist.charter}:${workDir}:file:${specialist.id}`;
+      if (specialist.grantScope === 'builtin') return `${specialist.charter}:${workDir}`;
+      // Unreachable via the catalog — both file loaders always stamp a
+      // fingerprint (definition-files.ts) — so this only catches a definition
+      // built by hand in a test or a future code path. It does NOT make the
+      // grant un-rememberable (a rule minted from this subject would match it
+      // again); what it guarantees is SEPARATION: 'unverified' can never equal
+      // a real hash, so a grant approved for a fingerprinted file never covers
+      // an unverifiable one, and the reverse. Naming it in the subject also
+      // makes the odd case visible in Settings instead of silent.
+      const fp = specialist.fingerprint ?? 'unverified';
+      return specialist.grantScope === 'user'
+        ? `${specialist.charter}:file:${specialist.id}@${fp}`
+        : `${specialist.charter}:${workDir}:file:${specialist.id}@${fp}`;
     },
     moreHint: 'narrow the brief, pick a different specialist, or split the work across more than one Task call',
     async execute(args, ctx: ToolContext): Promise<ToolResultPayload> {

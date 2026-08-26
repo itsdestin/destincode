@@ -165,7 +165,19 @@ export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
         // below): under 'ask' mode, the Task call itself IS the one moment the
         // user consents to the whole delegated envelope — see permissionSubject
         // in tools/task.ts.
-        { tool: 'Task', action: 'allow' }];
+        { tool: 'Task', action: 'allow' },
+        // D1 (2026-08-26) — the allow above is pattern-less, so before this rule
+        // it covered EVERY hire, including a specialist defined by a file some
+        // repo shipped. In auto-edit that meant no card rendered at all, which
+        // silently bypassed BOTH halves of the plan-1c safety design (the
+        // file-scoped subject in tools/task.ts, and the renderer's consent card)
+        // — neither can protect anyone if the engine answers before either runs.
+        // Last-match-wins (permission-engine.ts) makes this narrower rule beat
+        // the broad allow just above for exactly the file-defined case.
+        // ':file:' is present in a file-defined hire's subject and in no
+        // built-in's; a work dir that somehow contained that literal text would
+        // only cause an EXTRA ask, which is the safe direction to be wrong in.
+        { tool: 'Task', pattern: '*:file:*', action: 'ask' }];
     case 'full-auto':
       return [{ tool: '*', action: 'allow' }];
   }
