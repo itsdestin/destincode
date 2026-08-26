@@ -80,4 +80,49 @@ describe('session totals', () => {
     expect(t.linesAdded).toBe(0);
     expect(t.linesRemoved).toBe(0);
   });
+
+  // Referential-identity tests: the reducer's next task calls
+  // addTurnUsage(session.totals, action.usage ?? {}) on every completed turn,
+  // and useSyncExternalStore requires an unchanged value to keep the SAME
+  // object reference or React re-render-loops. These pin that contract.
+  it('returns the same reference on a no-op addTurnUsage call', () => {
+    const t = emptyTotals();
+    const next = addTurnUsage(t, {});
+    expect(next).toBe(t);
+  });
+
+  it('returns the same reference on a no-op addPatchLines call', () => {
+    const t = emptyTotals();
+    const next = addPatchLines(t, []);
+    expect(next).toBe(t);
+  });
+
+  it('returns a different reference when a call actually changes something', () => {
+    const t = emptyTotals();
+    const next = addTurnUsage(t, { inputTokens: 1 });
+    expect(next).not.toBe(t);
+  });
+
+  it('returns a different reference for an explicitly unpriced turn (costUsd: null)', () => {
+    const t = emptyTotals();
+    const next = addTurnUsage(t, { costUsd: null });
+    expect(next).not.toBe(t);
+    expect(next.anyUnpriced).toBe(true);
+  });
+
+  it('addSubagentUsage always returns a different reference and counts the run, even with no usage', () => {
+    const t = emptyTotals();
+    const next = addSubagentUsage(t, {});
+    expect(next).not.toBe(t);
+    expect(next.specialistRuns).toBe(1);
+  });
+
+  it('never mutates the totals object handed to it', () => {
+    const t = emptyTotals();
+    const snapshot = { ...t };
+    addTurnUsage(t, { inputTokens: 5, outputTokens: 5, costUsd: 0.5 });
+    addSubagentUsage(t, { inputTokens: 5 });
+    addPatchLines(t, hunk(['+new', '-old']));
+    expect(t).toEqual(snapshot);
+  });
 });
