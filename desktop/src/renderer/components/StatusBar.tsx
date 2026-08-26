@@ -7,7 +7,7 @@ import type { NativePermissionMode } from '../../shared/permission-types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
-import { type WidgetId, type SessionRuntime, widgetApplies, widgetUnavailableReason } from '../state/status-widgets';
+import { type WidgetId, type SessionRuntime, type RelevanceContext, widgetApplies, widgetUnavailableReason } from '../state/status-widgets';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
 import ContextPopup from './ContextPopup';
@@ -835,11 +835,14 @@ function ProviderIcon({ icon, className = '' }: { icon: ProviderIconKey; classNa
 // --- Config Popup ---
 // Centered modal (matches SettingsPanel popup style) for customizing status bar widgets
 
-function WidgetConfigPopup({ open, onClose, visible, toggle }: {
+function WidgetConfigPopup({ open, onClose, visible, toggle, relevance }: {
   open: boolean;
   onClose: () => void;
   visible: Set<WidgetId>;
   toggle: (id: WidgetId) => void;
+  /** What this session can actually show — the SAME values the bar itself
+   *  gates on, so the menu can never offer a chip the bar refuses to draw. */
+  relevance: RelevanceContext;
 }) {
   useEscClose(open, onClose);
   // Track which widget's (i) tooltip is expanded
@@ -884,11 +887,25 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                     const isExpanded = expandedInfo === w.id;
                     const isThemeRow = w.id === 'theme';
                     const showCycleEditor = isThemeRow && cycleEditorOpen;
+                    const reason = widgetUnavailableReason(w.id, relevance);
                     return (
                       <div key={w.id}>
                         <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-inset transition-colors">
                           {/* Toggle checkbox — locked widgets (fixed controls)
-                              render always-checked and non-interactive. */}
+                              render always-checked and non-interactive. When the
+                              widget doesn't apply to this session's runtime,
+                              swap the button for a plain, non-focusable row: it
+                              is not a control here, so it must not look or
+                              behave like one. The saved on/off choice is
+                              untouched and returns when the user switches to a
+                              session where the widget applies. */}
+                          {reason ? (
+                            <div className="flex items-center gap-2 flex-1 text-left opacity-50">
+                              <span className="w-3.5 h-3.5 flex-shrink-0" />
+                              <span className="flex-1 text-2xs text-fg">{w.label}</span>
+                              <span className="text-3xs text-fg-muted italic">{reason}</span>
+                            </div>
+                          ) : (
                           <button
                             onClick={() => { if (!w.locked) toggle(w.id); }}
                             disabled={w.locked}
@@ -910,11 +927,15 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                             <span className="text-2xs text-fg">{w.label}</span>
                             {w.locked && <span className="text-4xs text-fg-muted">always on</span>}
                           </button>
+                          )}
 
                           {/* Pencil — Theme widget only. Opens the cycle editor
                               (which themes the pill rotates through). Moved here
-                              from per-card checkmarks in the Appearance popup. */}
-                          {isThemeRow && (
+                              from per-card checkmarks in the Appearance popup.
+                              Gated on !reason too (belt-and-braces: 'theme' never
+                              gets a reason today, but a dimmed row must never
+                              carry a focusable element, full stop). */}
+                          {isThemeRow && !reason && (
                             <button
                               onClick={() => {
                                 setCycleEditorOpen(v => !v);
@@ -932,19 +953,25 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                             </button>
                           )}
 
-                          {/* (i) info toggle */}
-                          <button
-                            onClick={() => {
-                              setExpandedInfo(isExpanded ? null : w.id);
-                              if (isThemeRow) setCycleEditorOpen(false);
-                            }}
-                            className={`flex-shrink-0 p-0.5 rounded-sm transition-colors ${
-                              isExpanded ? 'text-accent' : 'text-fg-faint hover:text-fg-muted'
-                            }`}
-                            title="More info"
-                          >
-                            <InfoIcon />
-                          </button>
+                          {/* (i) info toggle — hidden for a dimmed row. The row
+                              already isn't a control (it's just explained why),
+                              and the reason line itself is the info; a second
+                              focusable element here would be the same defect as
+                              leaving the checkbox tabbable. */}
+                          {!reason && (
+                            <button
+                              onClick={() => {
+                                setExpandedInfo(isExpanded ? null : w.id);
+                                if (isThemeRow) setCycleEditorOpen(false);
+                              }}
+                              className={`flex-shrink-0 p-0.5 rounded-sm transition-colors ${
+                                isExpanded ? 'text-accent' : 'text-fg-faint hover:text-fg-muted'
+                              }`}
+                              title="More info"
+                            >
+                              <InfoIcon />
+                            </button>
+                          )}
                         </div>
 
                         {/* Expanded info panel */}
@@ -1629,6 +1656,7 @@ export default function StatusBar({
         onClose={() => setPopupOpen(false)}
         visible={visible}
         toggle={toggle}
+        relevance={{ runtime, hasPricedWork: nativeTotals?.anyPriced ?? true }}
       />
 
       {/* Update panel — opened from the version pill. Guard on updateStatus
