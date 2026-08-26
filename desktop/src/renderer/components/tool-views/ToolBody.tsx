@@ -10,7 +10,7 @@ import { useExpandAllToggle, getInitialExpanded, isExpandModeActive } from '../.
 import { useArtifactOptional } from '../../state/ArtifactContext';
 import { ArtifactThumbnail } from '../ArtifactThumbnail';
 import { matchSessionArtifact } from '../filepath-match';
-import { SentFilesCard } from '../SentFilesCard';
+import { DeliverablesCard } from '../DeliverablesCard';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 // Fix: tool inputs are unknown-typed JSON from the model/provider. Every
 // `input.x as string` below was a lie-cast guarded only by truthiness — an
@@ -956,12 +956,12 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         return <WebFetchView tool={tool} />;
       case 'WebSearch':
         return <WebSearchView tool={tool} />;
-      // SendUserFile normally renders as the in-bubble SentFilesCard (pulled
+      // SendUserFile normally renders as the in-bubble DeliverablesCard (pulled
       // out of its tool group by AssistantTurnBubble). This case covers the
       // places that still render a bare ToolCard for it — the tool gallery,
       // the buddy window's strip — so it never falls to the raw JSON view.
       case 'SendUserFile':
-        return <SentFilesCard tools={[tool]} sessionId={sessionId ?? ''} />;
+        return <DeliverablesCard tools={[tool]} sessionId={sessionId ?? ''} />;
       default: {
         // MCP PowerShell is shell-like — reuse ShellView. Other MCP tools fall
         // through to the raw view.

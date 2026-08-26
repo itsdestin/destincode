@@ -4,7 +4,7 @@ import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/typ
 import { assistantName } from '../utils/assistant-name';
 import MarkdownContent from './MarkdownContent';
 import ToolCard from './ToolCard';
-import { SentFilesCard, isSentFilesTool } from './SentFilesCard';
+import { DeliverablesCard, isSentFilesTool } from './DeliverablesCard';
 import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
@@ -476,7 +476,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                   (Destin 2026-08-25). Its calls were filtered out of the groups
                   above, so this is the only place they render. */}
               {sentFiles.length > 0 && (
-                <SentFilesCard tools={sentFiles} sessionId={sessionId} />
+                <DeliverablesCard tools={sentFiles} sessionId={sessionId} />
               )}
               {/* Trailing-Skills row: Skills are reordered to the end of the turn's
                   last bubble so they read as a status footer rather than co-mingled
@@ -581,7 +581,7 @@ function ToolGroupInline({
     // standalone row outside any group via AssistantTurnBubble (see
     // collectTurnSkills + the trailing-skills div on the last bubble).
     // View-layer reorder; reducer state untouched.
-    // SendUserFile is ALSO pulled out: it renders as the SentFilesCard at the
+    // SendUserFile is ALSO pulled out: it renders as the DeliverablesCard at the
     // end of the bubble, after the tool cards (collectBubbleSentFiles).
     .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill' && !isSentFilesTool(t));
 

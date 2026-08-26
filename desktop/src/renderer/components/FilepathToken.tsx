@@ -66,7 +66,7 @@ export function FilepathToken({ path, sessionId, variant = 'pill', label }: Prop
   // Absolute path for the chat right-click menu (View in folder / Copy as path).
   const menuPath = resolveForMenu(path, artifactCtx?.state.sessionCwd?.[sessionId]);
 
-  // Resolve-and-open lives in useOpenFilepath, shared with SentFilesCard, so
+  // Resolve-and-open lives in useOpenFilepath, shared with DeliverablesCard, so
   // a pill and a sent-file tile can never disagree about what a click opens.
   const openFile = useOpenFilepath(sessionId);
   const onClick = () => { void openFile(path); };

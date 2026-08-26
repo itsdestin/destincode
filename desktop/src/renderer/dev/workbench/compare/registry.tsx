@@ -64,7 +64,7 @@ import { QuestionIcon } from '../../../components/Icons';
 // mounts without ArtifactProvider, so the tiles can't look them up.
 import ToolCard from '../../../components/ToolCard';
 import { ChevronIcon } from '../../../components/Icons';
-import { SentFileTile } from '../../../components/SentFilesCard';
+import { SentFileTile } from '../../../components/DeliverablesCard';
 import { sessionArtifacts } from '../fixtures/artifacts';
 import type { ToolCallState } from '../../../../shared/types';
 import type { ArtifactRecord } from '../../../../shared/artifacts/types';

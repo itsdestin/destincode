@@ -98,7 +98,7 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
     }
 
     case 'SendUserFile': {
-      // Files handed to the user. The chat renders these as the SentFilesCard,
+      // Files handed to the user. The chat renders these as the DeliverablesCard,
       // not a ToolCard; this label covers the gallery / buddy strip fallbacks.
       const raw = input.files;
       const files = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === 'string') : [];

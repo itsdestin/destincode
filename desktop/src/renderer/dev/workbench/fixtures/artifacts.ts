@@ -22,7 +22,7 @@ function version(sessionId: string, type: 'create' | 'edit' | 'read', ts: string
 const BY_PROJECT: Record<string, ArtifactRecord[]> = {
   '/home/destin/youcoded-dev/youcoded': [
     // --- Files the SendUserFile turn in conversations/claude-code.jsonl hands
-    // over. Tracked so the SentFilesCard's thumbnails have content to show
+    // over. Tracked so the DeliverablesCard's thumbnails have content to show
     // (markdown → first lines, html → scaled page, png → readBinary mock).
     {
       id: 'a-sent-report',

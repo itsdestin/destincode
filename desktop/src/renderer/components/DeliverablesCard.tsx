@@ -1,10 +1,13 @@
-// SentFilesCard — the in-bubble card for files the assistant hands to the user
+// DeliverablesCard — the in-bubble card for files the assistant hands to the user
 // via the SendUserFile tool (Claude Code's built-in, mirrored by the native
 // harness under the same name — spec 2026-08-25).
 //
 // Layout decisions (Destin, 2026-08-25 — workbench compare rounds 1–2, pick
 // "D + scroll-aware fades + collapsible"):
-//   - ONE "Files" card per bubble, LAST in the bubble after the tool cards. It
+//   - ONE "Deliverables" card per bubble, LAST in the bubble after the tool
+//     cards. Named "Deliverables", NOT "Files" (Destin 2026-08-25): other files
+//     show up in chat as pills and tool cards without being deliverables, and
+//     a card called "Files" would blur that line. It
 //     is the deliverable, not a log line, so it must stay visually distinct
 //     from a collapsed tool group: lifted bg-well card, a "Files · N" header
 //     with the caption, and previews instead of a status line. The
@@ -229,7 +232,7 @@ interface Props {
   sessionId: string;
 }
 
-export function SentFilesCard({ tools, sessionId }: Props) {
+export function DeliverablesCard({ tools, sessionId }: Props) {
   const narrow = useNarrowViewport();
   // Open by default — unlike a tool card — because the files ARE the reply.
   // Still collapsible, and Ctrl+O's expand/collapse-all applies, so the card
@@ -259,7 +262,7 @@ export function SentFilesCard({ tools, sessionId }: Props) {
   });
 
   return (
-    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="sent-files-card">
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="deliverables-card">
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -267,7 +270,7 @@ export function SentFilesCard({ tools, sessionId }: Props) {
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors"
       >
         <FilesGlyph className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
-        <span className="text-xs font-semibold text-fg-2">Files</span>
+        <span className="text-xs font-semibold text-fg-2">Deliverables</span>
         <span className="text-2xs font-mono text-fg-muted">{entries.length}</span>
         <span className="flex-1 min-w-0 text-2xs text-fg-muted truncate text-right">{headerCaption}</span>
         <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={open} />
@@ -275,7 +278,7 @@ export function SentFilesCard({ tools, sessionId }: Props) {
       {open && (
         <>
           <div className="relative">
-            <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="sent-files-strip">
+            <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="deliverables-strip">
               {entries.map((e) => (
                 <div key={e.key} className={`${narrow ? 'w-44' : 'w-56'} shrink-0`}>
                   <SentFileTile path={e.path} sessionId={sessionId} status={e.status} narrow={narrow} tileBg="bg-inset" compact />
@@ -285,8 +288,8 @@ export function SentFilesCard({ tools, sessionId }: Props) {
             {/* Edge fades: only while something is actually hidden past that
                 edge, so a strip that fits shows none and a fully-scrolled strip
                 shows only the left one. */}
-            {edges.left && <div className="pointer-events-none absolute top-0 bottom-2 left-0 w-10" style={fade('left')} data-testid="sent-files-fade-left" />}
-            {edges.right && <div className="pointer-events-none absolute top-0 bottom-2 right-0 w-10" style={fade('right')} data-testid="sent-files-fade-right" />}
+            {edges.left && <div className="pointer-events-none absolute top-0 bottom-2 left-0 w-10" style={fade('left')} data-testid="deliverables-fade-left" />}
+            {edges.right && <div className="pointer-events-none absolute top-0 bottom-2 right-0 w-10" style={fade('right')} data-testid="deliverables-fade-right" />}
           </div>
           {footCaptions.map((c, i) => (
             <p key={i} className="px-3 pb-2 -mt-0.5 text-2xs text-fg-muted">{c}</p>
