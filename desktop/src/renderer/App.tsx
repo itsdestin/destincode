@@ -23,6 +23,8 @@ import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-contex
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
 import { createArtifactToolUseTracker } from './state/artifact-tool-use-tracker';
+import { createDeliverableAutoOpen } from './state/deliverable-auto-open';
+import { openFilepath } from './hooks/useOpenFilepath';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand, type DispatcherResult } from './state/slash-command-dispatcher';
@@ -179,6 +181,10 @@ function AppInner() {
   // which needs to resolve cwd by sessionId).
   const sessionsRef = useRef<any[]>([]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  // The focused conversation, readable from mount-once effects (the
+  // deliverable auto-open rule needs it without re-subscribing per switch).
+  const focusedSessionIdRef = useRef<string | null>(null);
+  useEffect(() => { focusedSessionIdRef.current = sessionId; }, [sessionId]);
   // Multi-window detach state (desktop-only; remote-shim stubs these as no-ops).
   // `myWindowId` identifies this renderer's BrowserWindow so the switcher can
   // distinguish local sessions from sessions owned by peer windows. `directory`
@@ -1537,6 +1543,22 @@ function AppInner() {
       artifactTracker.handle(event);
     });
 
+    // Deliverables auto-open (spec 2026-08-25 §3): a SendUserFile result whose
+    // call asked for display:"render" opens the panel to its first file — once
+    // per reply, focused conversation only, desktop only, never for replayed
+    // history, and never over unsaved edits. Same raw event feed as the tracker.
+    const deliverableAutoOpen = createDeliverableAutoOpen({
+      getFocusedSessionId: () => focusedSessionIdRef.current,
+      canAutoOpen: () => getPlatform() === 'electron' && !window.matchMedia?.('(max-width: 639.98px)').matches,
+      guard: guardDirtyEditor,
+      open: (sid, path) => {
+        void openFilepath({ state: artifactStateRef.current, dispatch: dispatchArtifact }, sid, path);
+      },
+    });
+    const deliverableAutoOpenHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
+      deliverableAutoOpen.handle(event);
+    });
+
     // NOTE: the artifacts:changed push event is consumed directly by
     // ActiveArtifactView (edit-conflict banner). An earlier App-level
     // subscription here only set a pendingRefresh flag that nothing read —
@@ -1563,6 +1585,8 @@ function AppInner() {
       if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
       if (artifactToolUseHandler) window.claude.off('transcript:event', artifactToolUseHandler);
       artifactTracker.dispose();
+      if (deliverableAutoOpenHandler) window.claude.off('transcript:event', deliverableAutoOpenHandler);
+      deliverableAutoOpen.dispose();
     };
   }, [dispatch]);
 
