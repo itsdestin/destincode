@@ -804,4 +804,33 @@ produces a warning rather than a silent drop) lives entirely in
 (`specialist-definition-files.test.ts`) is the authoritative list of every mapped and stripped key;
 read the function before assuming a CC field carries over.
 
+**Hire grants for file-defined specialists (D1/D2, 2026-08-26).** `rememberedRuleFor`
+(`harness-session.ts`) persists a non-Bash "Always allow" as `{tool, pattern: subject, action:'allow',
+match:'exact'}` — byte-exact on the subject — so the subject `tools/task.ts` builds IS the entire
+definition of how wide the grant is. The catalog stamps `SpecialistDefinition.grantScope` because it
+is the only thing that knows which folder a file came from (`source: 'claude-code'` spans both
+`~/.claude/agents/` and `<cwd>/.claude/agents/`; `loadClaudeCodeDefinition` takes it as a required
+parameter, no default): built-in → `${charter}:${workDir}` (unchanged from 1b, so no existing grant
+is lost); `user` (`~/.youcoded/specialists/`, `~/.claude/agents/`) → `${charter}:file:${id}@${fp}`,
+no work dir, so one grant covers every project — these are the files the user owns and reuses;
+`project` (`<cwd>/.claude/agents/`) → `${charter}:${workDir}:file:${id}@${fp}`, pinned to the folder,
+because a repo's own helper is the untrusted case and a same-id file in another repo must not inherit
+it. `fp` is `definitionFingerprint(raw)` — sha256 of the file bytes, first 12 hex — so an edited file
+mints a new subject and re-asks (blind spot: the catalog only re-reads a file whose `mtime`/size
+changed, so a same-size same-second rewrite keeps the old hash AND the old cached definition — the
+grant and the behaviour stay consistent with each other). *D1:* `rulesForMode('auto-edit')` appends
+`{tool:'Task', pattern:'*:file:*', action:'ask'}` after the broad Task allow, so a file-defined hire
+still shows a card in auto-edit while a remembered exact grant still wins. *Resume:* a `task_id`
+call has no work dir, so no subject and no card — the delegation ledger records
+`definitionFingerprint` at spawn and `resumeSpecialist` answers `definition-changed` when the current
+file no longer matches; the Task tool reports that and tells the model to hire afresh. `createTaskTool`
+memoises `roster.resolve` per instance so `permissionSubject` and `execute` see the same definition
+even if the catalog reloads between them, and resolves `work_dir` against the session cwd (threaded
+from `harness-session.ts`), not `process.cwd()`. The card states the width in words under the buttons
+(`alwaysAllowNote`) and still offers no Always-allow while the definition is unknown; Settings →
+Permissions renders a `file:` subject in words via `describeRule` ("Let the docs-writer specialist
+edit files in every project"). Guards: `task-tool.test.ts` ("D2 — grant width follows grantScope"),
+`permission-engine.test.ts` (D1), `native-session-host.test.ts` (resume gate),
+`describe-rule.test.ts`, `specialist-envelope.test.tsx`.
+
 Rule: `.claude/rules/native-specialists.md` → "Specialists (plan 1c)".
