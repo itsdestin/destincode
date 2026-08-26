@@ -1133,6 +1133,9 @@ export const IPC = {
   FOLDERS_ADD: 'folders:add',
   FOLDERS_REMOVE: 'folders:remove',
   FOLDERS_RENAME: 'folders:rename',
+  // Local-only description on a saved folder — sibling of FOLDERS_RENAME, same
+  // store (saved-folders.ts), never syncs (see SavedFolder.description).
+  FOLDERS_SET_DESCRIPTION: 'folders:set-description',
   // Theme system
   THEME_RELOAD: 'theme:reload',   // Main -> Renderer: a theme file changed
   THEME_LIST: 'theme:list',       // Renderer -> Main: get list of user theme slugs
@@ -1193,6 +1196,10 @@ export const IPC = {
   SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
   SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
+  // Synced project description (Task 3). preload.ts keeps its own inlined copy
+  // of this constant (sandboxed preload can't import); this is the copy
+  // ipc-handlers.ts resolves IPC.SYNC_SPACES_SET_PROJECT_DESCRIPTION against.
+  SYNC_SPACES_SET_PROJECT_DESCRIPTION: 'syncspaces:set-project-description',
   SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
   // Conversation-lease takeover (Plan 2b Task 9). query = who holds this session;
   // takeover = ask-hand-off-then-poll-and-acquire; force = overwrite a stale lease.

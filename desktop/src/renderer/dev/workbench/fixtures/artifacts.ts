@@ -252,6 +252,8 @@ export function projects(): CentralIndexProject[] {
       lastSession: 'wb-1',
       contentTypes: ['artifacts', 'conversations'],
       stats: { artifactCount: 5 },
+      // MOCKUP: deliberately long — this is the case that decides truncate-vs-wrap.
+      description: 'The desktop and Android app itself — Electron shell, shared React renderer, and the Kotlin runtime that hosts it on a phone.',
     },
     {
       id: '/home/destin/youcoded-dev/wecoded-themes',
@@ -261,10 +263,13 @@ export function projects(): CentralIndexProject[] {
       lastSession: 'wb-2',
       contentTypes: ['artifacts', 'conversations'],
       stats: { artifactCount: 2 },
+      description: 'Community theme registry.',
     },
     {
       // Never indexed, no artifacts — the empty-project state inside an
       // otherwise-populated view, which is where layout usually breaks.
+      // MOCKUP: also the NO-description case, so the empty affordance and a
+      // described row are visible in the same screenshot.
       id: '/home/destin/youcoded-dev/wecoded-marketplace',
       name: 'wecoded-marketplace',
       path: '/home/destin/youcoded-dev/wecoded-marketplace',
@@ -272,6 +277,18 @@ export function projects(): CentralIndexProject[] {
       lastSession: null,
       contentTypes: [],
       stats: { artifactCount: 0 },
+    },
+    {
+      // MOCKUP: a STOPPED synced project. Exists so the sync tombstone copy —
+      // the longest string the pill has to survive — is reviewable.
+      id: '/home/destin/recipes',
+      name: 'recipes',
+      path: '/home/destin/recipes',
+      lastIndexed: '2026-06-02T10:00:00.000Z',
+      lastSession: null,
+      contentTypes: [],
+      stats: { artifactCount: 0 },
+      description: 'Grandma’s cards, scanned and typed up.',
     },
   ];
 }

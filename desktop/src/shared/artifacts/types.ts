@@ -76,6 +76,11 @@ export interface ProjectSidecar {
   manualIncludes: ManualInclude[];
 }
 
+// Max length of a user-written project description. Enforced in BOTH setters
+// (synced registry + saved folders) and as maxLength on the input, so a pasted
+// document can never bloat a file that syncs to every device.
+export const PROJECT_DESCRIPTION_MAX = 200;
+
 export interface CentralIndexProject {
   id: string;
   name: string;
@@ -98,6 +103,12 @@ export interface CentralIndexProject {
   // (home dir / drive root) get NO fileCount at all (no scan runs there).
   fileCountTruncated?: boolean;
   conversationCount?: number;
+  // The LOCAL-folder description, overlaid at list time from the saved-folders
+  // record exactly as `name` already is from `nickname` (saved-folder-projects.ts:53).
+  // A SYNCED project's description arrives instead on the syncSpaces status
+  // payload, mirroring how `displayName` is overlaid there — the hero prefers
+  // the synced one.
+  description?: string | null;
 }
 
 export interface CentralIndex {

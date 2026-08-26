@@ -156,6 +156,13 @@ export function ProjectSwitcher({
             // Prefer the synced display name (cross-device registry overlay,
             // 2026-07-12) over the folder name for a synced project.
             const shown = ((findSpaceFor(p.path, syncStatus ?? null) as any)?.displayName as string | undefined) || p.name;
+            // Same synced-wins precedence as the name above: registry overlay
+            // for a synced project, saved-folders record for a plain folder.
+            // WHY no `as any` here (unlike displayName above): SyncStatusData's
+            // spaces now declare `description` (2026-08-05), so this read
+            // type-checks without a cast — the type hole this feature opened
+            // is closed. displayName's cast is untouched/out of scope.
+            const desc = findSpaceFor(p.path, syncStatus ?? null)?.description || p.description || null;
             const avatar = shown.charAt(0).toUpperCase() || '?';
             return (
               // group/relative so the row can host a hover-revealed × delete
@@ -190,6 +197,18 @@ export function ProjectSwitcher({
                     <span className="block font-mono text-2xs text-fg-muted truncate" title={p.path}>
                       {p.path}
                     </span>
+                    {/* Description as a THIRD line — additive, so the path stays
+                        visible (it's what disambiguates two folders of the same
+                        name). Rows with no description keep their current
+                        height, so the list only grows where it's earning it.
+                        Single line + truncate: a wrapping description would let
+                        one verbose project set the row height for the whole
+                        list. Italic-in-quotes matches the hero. */}
+                    {desc && (
+                      <span className="block text-2xs italic text-fg-dim truncate" title={desc}>
+                        “{desc}”
+                      </span>
+                    )}
                   </span>
                   {/* Files · chats hint. "files" = ALL FILES (fileCount) — the
                       folder's on-disk files — falling back to the artifact

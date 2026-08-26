@@ -13,7 +13,7 @@ import { importProjectFolder } from './import-project';
 import { createSyncHubSocket } from '../sync-hub-socket';
 import { getGithubClient } from '../github-client';
 import type { LeaseResult, SyncHubEvent } from '../sync-hub-socket';
-import { readProjectRegistry, ensureProjectEntry, setProjectDisplayName, setProjectStopped } from './project-registry';
+import { readProjectRegistry, ensureProjectEntry, setProjectDisplayName, setProjectStopped, setProjectDescription } from './project-registry';
 import { planReconcile, activeManagedSpaces } from './materialization-planner';
 import type { SpaceSyncEvent, SyncSpace } from './types';
 
@@ -465,6 +465,11 @@ export async function syncSpacesStatus() {
         lastSyncAt: manager?.lastSyncFor(s.id) ?? null,
         // Read-time overlay (spec §8): synced display name + lifecycle state.
         displayName: rec?.displayName ?? name,
+        // Read-time overlay: peers pick up a description written on another
+        // device without any local write. UNLIKE displayName above (which
+        // falls back to the space's own name), an unset description falls
+        // back to null, not to any name-shaped default.
+        description: rec?.description ?? null,
         state: rec?.state ?? (s.kind === 'project' ? 'active' : undefined),
       };
     }) ?? [],
@@ -489,6 +494,15 @@ async function pushPersonal(): Promise<void> {
 export async function syncSpacesRenameProject(name: string, displayName: string) {
   if (!roots) return { ok: false as const, error: 'Sync is still starting up — try again in a moment' };
   await setProjectDisplayName(roots.personalRoot, name, repoNameFor(name), displayName);
+  await pushPersonal();
+  return { ok: true as const };
+}
+
+/** Describe = change the SYNCED description only. Propagates via the Personal
+ *  space; peers pick it up through the read-time overlay above. */
+export async function syncSpacesSetProjectDescription(name: string, description: string) {
+  if (!roots) return { ok: false as const, error: 'Sync is still starting up — try again in a moment' };
+  await setProjectDescription(roots.personalRoot, name, repoNameFor(name), description);
   await pushPersonal();
   return { ok: true as const };
 }

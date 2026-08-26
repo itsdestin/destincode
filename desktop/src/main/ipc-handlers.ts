@@ -68,7 +68,7 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
-  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled, getLastSyncByDevice,
+  syncSpacesRenameProject, syncSpacesStopProject, syncSpacesSetProjectDescription, getManagedRoots, isSyncSpacesEnabled, getLastSyncByDevice,
   getSelfLastSyncEpochMs, isSyncSpacesSyncing,
 } from './sync-spaces/service';
 // Self-row recency derivation (spec §4) — pure fn so the ms→wire-seconds
@@ -94,6 +94,9 @@ import { getChangelog } from './changelog-service';
 import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
 // Saved-folder store — extracted so sync-spaces/ can share the reader/writer.
 import { SavedFolder, readFolders, writeFolders } from './saved-folders';
+// Shared cap so a local folder's description can't drift from the synced
+// registry's limit (project-registry.ts uses the same constant).
+import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
@@ -1235,6 +1238,21 @@ export function registerIpcHandlers(
     const entry = folders.find(f => path.resolve(f.path) === normalized);
     if (!entry) return false;
     entry.nickname = nickname;
+    writeFolders(folders);
+    return true;
+  });
+
+  ipcMain.handle(IPC.FOLDERS_SET_DESCRIPTION, async (_event, folderPath: string, description: string) => {
+    const folders = readFolders();
+    const normalized = path.resolve(folderPath);
+    const entry = folders.find(f => path.resolve(f.path) === normalized);
+    if (!entry) return false;
+    // Trim + cap here as well as in the UI: the renderer is a mirror, never the
+    // boundary (same rule as the artifact write policy). String(… ?? '') matches
+    // the remote-server path's coercion: the renderer always sends a string
+    // today, but the two transports must be equally defensive so a future
+    // null/undefined caller throws on neither surface rather than only one.
+    entry.description = String(description ?? '').trim().slice(0, PROJECT_DESCRIPTION_MAX) || null;
     writeFolders(folders);
     return true;
   });
@@ -3252,6 +3270,9 @@ export function registerIpcHandlers(
     syncSpacesRenameProject(String(p?.name ?? ''), String(p?.displayName ?? '')));
   ipcMain.handle(IPC.SYNC_SPACES_STOP_PROJECT, (_e, p: { name: string }) =>
     syncSpacesStopProject(String(p?.name ?? '')));
+  // Synced project description (Task 3) — payload-object shape, matching renameProject.
+  ipcMain.handle(IPC.SYNC_SPACES_SET_PROJECT_DESCRIPTION, (_e, p: { name: string; description: string }) =>
+    syncSpacesSetProjectDescription(String(p?.name ?? ''), String(p?.description ?? '')));
 
   // Conversation-lease takeover (Plan 2b Task 9). Thin passthroughs to the lease
   // client (query) and the requester flow (takeover/force) built in main.ts.

@@ -23,6 +23,8 @@ export interface SavedFolderInput {
   nickname?: string;
   addedAt?: number;
   exists?: boolean;
+  // Local-only description (sibling of nickname — same store, same projection).
+  description?: string | null;
 }
 
 // Last path segment, separator-agnostic — used when a saved folder has no nickname.
@@ -49,12 +51,18 @@ export function buildSavedFolderProjects(
     const indexed = byCanonPath.get(canon);
     if (indexed) {
       // Reuse the real index entry (id + stats); prefer the user's nickname for
-      // display so the hero/switcher show what they named the folder.
-      out.push({ ...indexed, name: f.nickname?.trim() || indexed.name });
+      // display so the hero/switcher show what they named the folder. description
+      // is overlaid the same way — the saved-folders record is the source of
+      // truth for a LOCAL folder, same as nickname already is.
+      out.push({ ...indexed, name: f.nickname?.trim() || indexed.name, description: f.description?.trim() || null });
     } else {
       out.push({
         id: canon,                 // synth id = canonical path (LIST_PROJECT path-fallback)
         name: f.nickname?.trim() || basename(f.path),
+        // A folder that's never been indexed must still carry its description —
+        // otherwise saving a description on it before its first index would
+        // silently disappear from the project list.
+        description: f.description?.trim() || null,
         path: canon,
         lastIndexed: '',
         lastSession: null,

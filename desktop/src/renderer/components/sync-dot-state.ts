@@ -15,7 +15,11 @@ export interface SyncStatusData {
   // (null = this device has never synced that space). Optional so older
   // payloads (remote shim to an older host) still typecheck.
   spaces: Array<{
-    id: string; root: string; displayName?: string; state?: 'active' | 'stopped';
+    id: string; root: string; displayName?: string;
+    // Read-time overlay same as displayName (2026-08-05 project-description):
+    // null/absent means "no description set", not "unknown" — callers should
+    // NOT treat missing description as a reason to fall back to a stale cast.
+    description?: string | null; state?: 'active' | 'stopped';
     kind?: 'project' | 'personal'; remote?: string | null; lastSyncAt?: number | null;
   }>;
   // Engine events since app boot (last 50). `at` is stamped at broadcast time
