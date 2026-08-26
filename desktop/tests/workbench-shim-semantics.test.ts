@@ -15,16 +15,19 @@ describe('mock shim Proxy semantics', () => {
     // `const rows = await claude.x.list(); rows.map(...)` is the dominant
     // consumer shape — null turns a missing stub into a crash in the surface
     // under design.
-    const rows = await shim().skills.list();
+    // `skills.list` was the example here until 2026-08-25, when it gained a
+    // hand-written fixture (Marketplace/Library needed real cards to review);
+    // `getChips` is still catch-all.
+    const rows = await shim().skills.getChips();
     expect(Array.isArray(rows)).toBe(true);
     expect(rows).toEqual([]);
   });
 
   it('gives each caller its own array', async () => {
     const c = shim();
-    const a = await c.skills.list();
+    const a = await c.skills.getChips();
     a.push('poison');
-    expect(await c.skills.list()).toEqual([]);
+    expect(await c.skills.getChips()).toEqual([]);
   });
 
   it('warns once per channel, not once per call', async () => {
@@ -113,9 +116,13 @@ describe('mock shim Proxy semantics', () => {
   // favourites empty. The visible symptom was "Appearance offers one theme".
   it('nested namespaces resolve to any depth, including under a real impl', async () => {
     const c = shim();
-    await expect(c.theme.marketplace.list()).resolves.toEqual([]);
-    await expect(c.skills.getFeatured()).resolves.toEqual([]);
+    // `theme.marketplace.list` and `skills.getFeatured` have fixtures since
+    // 2026-08-25; `detail`/`getShareLink` are the still-unimplemented siblings.
+    await expect(c.theme.marketplace.detail()).resolves.toEqual([]);
+    await expect(c.skills.getShareLink()).resolves.toEqual([]);
     await expect(c.a.b.c.d()).resolves.toEqual([]);
+    // And the fixture-backed nested member returns real rows, not the catch-all.
+    await expect(c.theme.marketplace.list()).resolves.toContainEqual(expect.objectContaining({ slug: 'meadow-mist' }));
     // And the hand-written members of that same namespace still work.
     await expect(c.theme.list()).resolves.toContain('halftone-dimension');
   });

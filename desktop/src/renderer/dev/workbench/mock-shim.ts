@@ -5,6 +5,7 @@ import {
   CONTENT as ARTIFACT_CONTENT, contextGroups,
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
+import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
 
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
@@ -36,6 +37,8 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'account.signedIn', 'account.user', 'account.refresh',
   'appearance.getFavoriteThemes', 'appearance.favoriteTheme', 'appearance.get',
   'appearance.set', 'appearance.broadcast',
+  'skills.listMarketplace', 'skills.list', 'skills.getFavorites', 'skills.setFavorite', 'skills.getFeatured',
+  'marketplace.getPackages', 'theme.marketplace',
   // Real, but served by remote-shim.ts rather than preload.ts — Electron
   // clients get their timelines from the transcript watcher instead. The
   // contract test checks both files for exactly this reason.
@@ -120,6 +123,14 @@ function withCatchAll(namespace: string, impl: Record<string, unknown>): Record<
 
       if (Object.prototype.hasOwnProperty.call(impl, key)) {
         const value = impl[key];
+        // A nested hand-written namespace (`theme.marketplace = { list }`) gets
+        // the same catch-all as a top-level one, so the members it does NOT
+        // implement still resolve `[]` rather than being undefined — the
+        // synchronous-throw-inside-Promise.all bug workbench-shim-semantics pins.
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          if (!cache.has(key)) cache.set(key, withCatchAll(`${namespace}.${key}`, value as Record<string, unknown>));
+          return cache.get(key);
+        }
         if (typeof value !== 'function') return value;
         if (!cache.has(key)) cache.set(key, withLatency(value as (...a: any[]) => any));
         return cache.get(key);
@@ -751,16 +762,52 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // fonts and the glass cascade are all faithful. Making assets load would mean
   // teaching theme-asset-resolver.ts a second scheme, which is a production
   // change for a dev-only gain; left undone deliberately.
+  // `?marketplace=empty` keeps the registry-less state reachable (the Marketplace
+  // and Library empty states are real surfaces too); default is the sampled
+  // registry in fixtures/marketplace/registry.ts.
+  const marketplaceEmpty = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('marketplace') === 'empty';
   const theme = {
     list: async () => Object.keys(THEME_FIXTURES),
     readFile: async (slug: string) => THEME_FIXTURES[slug] ?? '{}',
     // Writes never touch disk. Editing a fixture + Vite HMR is the reload path.
     writeFile: async () => ({ ok: true }),
     onReload: (_cb: (slug: string) => void) => () => {},
+    // Registry themes with their installed flag — what the Marketplace's Themes
+    // tab, Library › Themes and the theme-favourites strip read.
+    // A plain nested object: withCatchAll wraps object-valued members itself, so
+    // `theme.marketplace.detail` (unimplemented) still resolves `[]` instead of
+    // throwing synchronously inside marketplace-context's Promise.all.
+    marketplace: {
+      list: async () => (marketplaceEmpty ? [] : MARKETPLACE_THEMES.map((t) => ({ ...t }))),
+    },
+  };
+
+  // WHY these four and not the whole `skills` namespace: marketplace-context's
+  // fetchAll (state/marketplace-context.tsx) awaits exactly listMarketplace,
+  // list, getFavorites and getFeatured (+ marketplace.getPackages + the theme
+  // list above); every other skills channel keeps the catch-all `[]`. Before
+  // 2026-08-25 all of these answered `[]`, so Marketplace/Library/skills drawer
+  // rendered empty in the workbench and were unreviewable in any theme.
+  let skillFavourites: string[] = ['civic-report', 'superpowers'];
+  const skills = {
+    listMarketplace: async () => (marketplaceEmpty ? [] : MARKETPLACE_PLUGINS.map((p) => ({ ...p }))),
+    list: async () => (marketplaceEmpty ? [] : INSTALLED_SKILLS.map((s) => ({ ...s }))),
+    getFavorites: async () => [...skillFavourites],
+    setFavorite: async (id: string, favorited: boolean) => {
+      skillFavourites = favorited
+        ? [...new Set([...skillFavourites, id])]
+        : skillFavourites.filter((x) => x !== id);
+      return [...skillFavourites];
+    },
+    getFeatured: async () => (marketplaceEmpty ? { hero: [], rails: [] } : JSON.parse(JSON.stringify(FEATURED))),
+  };
+  const marketplace = {
+    getPackages: async () => (marketplaceEmpty ? {} : JSON.parse(JSON.stringify(INSTALLED_PACKAGES))),
   };
 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance,
+    terminal, artifacts, syncSpaces, project, account, appearance, skills, marketplace,
   } as unknown as Record<string, Record<string, unknown>>;
 }
