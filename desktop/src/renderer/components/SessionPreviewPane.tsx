@@ -76,7 +76,20 @@ export default function SessionPreviewPane({ provider, id, title, onClose }: { p
   };
 
   return (
-    <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
+    // bg-canvas: the drawer's <aside> is bg-inset (SessionDrawer.tsx), and so is
+    // the assistant bubble ConversationTranscript renders (bg-inset — same
+    // token as its own background is exactly the invisible-bubble bug this
+    // pane shipped with). The real chat never has this collision because its
+    // bubbles sit on the app-shell's bg-canvas, not on another bg-inset
+    // surface (ChatView's .chat-pane paints no background of its own — see
+    // the comment on that rule in globals.css — so bg-canvas is what's
+    // actually behind a real assistant bubble). Painting THIS pane bg-canvas
+    // reproduces that same canvas-under-bubble relationship instead of
+    // recoloring the shared bubble, so ConversationPreview (which already
+    // sits on a contrasting bg-panel via ProjectDetailOverlay's OverlayPanel)
+    // doesn't need to change. Precedent for a bg-canvas "well" nested inside
+    // this same bg-inset aside: the rename input a few dozen lines up.
+    <div className="flex h-full min-h-0 w-full min-w-0 flex-col bg-canvas">
       <div className="flex items-center gap-2 border-b border-edge px-4 py-2">
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-fg">{title || COPY.untitled}</div>

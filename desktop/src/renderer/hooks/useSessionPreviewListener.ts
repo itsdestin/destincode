@@ -11,25 +11,29 @@ import type { ChatsearchProvider } from '../../shared/chatsearch-refs';
  * guardDirtyEditor: opening a preview must never silently discard an unsaved
  * artifact edit.
  *
- * WHY the `visible` gate: App.tsx mounts one ChatView PER OPEN SESSION TAB and
- * keeps background tabs mounted (sessions.map in App.tsx), so this hook runs
- * once per open tab. The `youcoded:preview-session` event is a plain window
- * event with no session id in it — every listener that's live hears every
- * click. Without the gate, clicking Preview in one tab dispatched
- * SESSION_REFERENCED/SESSION_PREVIEW_SET in EVERY open tab at once, force-
- * opening each one's drawer and nulling out whatever artifact it had open.
- * `visible` is true for exactly one ChatView at a time (the on-screen one),
- * so gating on it makes exactly one session respond — the same fix already
- * used for the Ctrl/Cmd+F find-bar listener a few dozen lines below in
- * ChatView.tsx ("Only the visible ChatView responds (one per session is
- * mounted)"). Do not remove this gate or key it on something else — it is
- * the whole fix.
+ * WHY the `sessionActive` gate (not `visible`): App.tsx mounts one ChatView
+ * PER OPEN SESSION TAB and keeps background tabs mounted (sessions.map in
+ * App.tsx), so this hook runs once per open tab. The `youcoded:preview-session`
+ * event is a plain window event with no session id in it — every listener
+ * that's live hears every click. Without a gate, clicking Preview in one tab
+ * dispatched SESSION_REFERENCED/SESSION_PREVIEW_SET in EVERY open tab at once,
+ * force-opening each one's drawer and nulling out whatever artifact it had
+ * open. This hook's actual job is "route the event to the active session" —
+ * the chat/terminal toggle is incidental to that. `visible` (App.tsx:
+ * `s.id === sessionId && viewMode === 'chat'`) used to gate this, but it goes
+ * false the moment the active session's tab is on Terminal, even though that
+ * session is still the one a Preview click (e.g. from the SessionDrawer
+ * TerminalRightSlot renders alongside the terminal) means to reach.
+ * `sessionActive` (App.tsx: `s.id === sessionId`) is true for exactly one
+ * ChatView regardless of chat/terminal — same "exactly one listener"
+ * guarantee, without the false coupling to which tab is on screen. Do not
+ * remove this gate or key it on `visible` again — it is the whole fix.
  */
-export function useSessionPreviewListener(sessionId: string, visible: boolean, dispatch: (a: any) => void): void {
+export function useSessionPreviewListener(sessionId: string, sessionActive: boolean, dispatch: (a: any) => void): void {
   useEffect(() => {
     // Hook itself always runs (rules of hooks); only the listener registration
     // is conditional, exactly like the Ctrl/Cmd+F effect this is patterned on.
-    if (!visible) return;
+    if (!sessionActive) return;
     const onPreview = (e: Event) => {
       const d = (e as CustomEvent).detail as { provider: ChatsearchProvider; id: string; title: string };
       if (!d?.id) return;
@@ -40,5 +44,5 @@ export function useSessionPreviewListener(sessionId: string, visible: boolean, d
     };
     window.addEventListener('youcoded:preview-session', onPreview);
     return () => window.removeEventListener('youcoded:preview-session', onPreview);
-  }, [sessionId, visible, dispatch]);
+  }, [sessionId, sessionActive, dispatch]);
 }

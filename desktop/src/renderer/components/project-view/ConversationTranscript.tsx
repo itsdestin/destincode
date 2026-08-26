@@ -32,7 +32,16 @@ export default function ConversationTranscript({ messages, olderHint, scrollToEn
             <div className="my-2 text-center text-[11.5px] text-fg-muted">— {COPY.toolsNotShown(m.droppedToolCalls)} —</div>
           )}
           <div className={`mb-3 flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`min-w-0 break-words rounded-2xl px-5 py-3 text-sm ${m.role === 'user' ? 'max-w-[80%] rounded-br-sm bg-accent text-on-accent' : 'max-w-[85%] rounded-bl-sm bg-inset text-fg'}`}>
+            {/* user-bubble / assistant-bubble: the SAME hook classes the real
+                chat's UserMessage.tsx / AssistantTurnBubble.tsx carry. Theme
+                packs' custom_css targets these names directly (they're on
+                theme-validator.ts's KNOWN_THEME_HOOKS allowlist) — without
+                them, a theme that restyles chat bubbles (border, glow, shadow)
+                silently skips this read-only preview, so the same conversation
+                looks like two different apps depending which surface it's
+                viewed from. This does not change layout/geometry, only which
+                selectors can reach these nodes. */}
+            <div className={`min-w-0 break-words rounded-2xl px-5 py-3 text-sm ${m.role === 'user' ? 'user-bubble max-w-[80%] rounded-br-sm bg-accent text-on-accent' : 'assistant-bubble max-w-[85%] rounded-bl-sm bg-inset text-fg'}`}>
               <MarkdownContent content={m.content} />
             </div>
           </div>
