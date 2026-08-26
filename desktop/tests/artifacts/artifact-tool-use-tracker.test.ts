@@ -175,10 +175,43 @@ describe('artifact tool-use tracker', () => {
     });
 
     it('refreshes the drawer ONCE after a multi-file delivery', async () => {
-      const { tracker, listSession } = makeTracker();
+      // A naive implementation that schedules the refresh inside the
+      // per-file .map() (one scheduleRefresh call per file) still collapses
+      // to a single listSession call here, because the mocked appendVersion
+      // resolves instantly — all three per-file "schedule" calls land in the
+      // same microtask and re-arm/cancel the same debounce timer before it
+      // ever fires. That made the old version of this test unable to fail
+      // for the bug it's named for.
+      //
+      // To actually discriminate "schedule once, after every file settles"
+      // from "schedule once per file", give each file's appendVersion call
+      // its own controllable promise and resolve them one at a time with a
+      // gap LARGER than the debounce window. The correct implementation
+      // (Promise.all(...).finally(() => scheduleRefresh(...))) does not
+      // schedule anything until every append has resolved, so listSession
+      // still fires exactly once regardless of how spread out those
+      // resolutions are. A per-file implementation would instead re-arm (and
+      // let fire) the debounce timer on each resolution, producing multiple
+      // listSession calls when the gaps exceed the debounce window.
+      const REFRESH_DELAY_MS = 50;
+      const GAP_MS = 100; // > REFRESH_DELAY_MS
+      const resolvers: Array<() => void> = [];
+      const appendVersion = vi.fn(() => new Promise((resolve) => {
+        resolvers.push(() => resolve({ ok: true }));
+      }));
+      const { tracker, listSession } = makeTracker({ appendVersion, refreshDelayMs: REFRESH_DELAY_MS });
+
       tracker.handle(sendUse('toolu_s', [`${ROOT}/a.md`, `${ROOT}/b.md`, `${ROOT}/c.md`]));
       tracker.handle(toolResult('toolu_s'));
-      await vi.advanceTimersByTimeAsync(300);
+      expect(resolvers).toHaveLength(3); // one appendVersion call queued per file
+
+      resolvers[0]();
+      await vi.advanceTimersByTimeAsync(GAP_MS);
+      resolvers[1]();
+      await vi.advanceTimersByTimeAsync(GAP_MS);
+      resolvers[2]();
+      await vi.advanceTimersByTimeAsync(GAP_MS);
+
       expect(listSession).toHaveBeenCalledTimes(1);
     });
   });
