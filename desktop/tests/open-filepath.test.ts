@@ -81,7 +81,7 @@ describe('openFilepath — default mode (click behaviour) is unchanged', () => {
     await p;
   });
 
-  it('still dispatches PILL_RESOLVE_FAILED on a total miss', async () => {
+  it('still dispatches PILL_RESOLVE_FAILED on a total miss (buildArtifactifyArgs rejects the path)', async () => {
     installClaudeArtifacts({
       listProject: async () => ({ ok: true, artifacts: [] }),
       listAllFiles: async () => ({ ok: true, files: [] }),
@@ -89,10 +89,62 @@ describe('openFilepath — default mode (click behaviour) is unchanged', () => {
     const state = makeState({ sessionCwd: { s1: '/proj' } });
     const { ctx, dispatched } = makeCtx(state);
 
-    await openFilepath(ctx, 's1', '~/no-such-file.md'); // fails buildArtifactifyArgs too if unresolved home dir
-    const types = dispatched.map((a) => a.type);
-    expect(types).toContain('DRAWER_OPENED');
-    expect(types).toContain('PILL_RESOLVE_FAILED');
+    // buildArtifactifyArgs (filepath-match.ts:80) returns null for ANY path
+    // starting with '~', unconditionally — no cwd or session-list matching
+    // ambiguity involved. So this fixture always takes the early-return branch
+    // at useOpenFilepath.ts's `if (!args) { failed(); return; }`, never the
+    // "artifactify ran but the refreshed list has no match" branch below it.
+    await openFilepath(ctx, 's1', '~/no-such-file.md');
+    expect(dispatched.map((a) => a.type)).toEqual([
+      'DRAWER_OPENED',
+      'PILL_ERROR_CLEARED',
+      'PILL_RESOLVE_FAILED',
+    ]);
+  });
+
+  it('dispatches PILL_RESOLVE_FAILED when artifactify runs but the refreshed session list still has no match', async () => {
+    installClaudeArtifacts({
+      listProject: async () => ({ ok: true, artifacts: [] }),
+      listAllFiles: async () => ({ ok: true, files: [] }),
+      // appendVersion succeeds (default stub), but listSession comes back with
+      // nothing findBestMatch can match against the clicked path — the miss
+      // branch at useOpenFilepath.ts's `if (added) {...} else if
+      // (drawerOpensImmediately) { dispatch(SESSION_ARTIFACTS_LOADED) }`,
+      // followed by `if (!selected) failed();`.
+      listSession: async () => ({ ok: true, artifacts: [] }),
+    });
+    const state = makeState({ sessionCwd: { s1: '/proj' } });
+    const { ctx, dispatched } = makeCtx(state);
+
+    await openFilepath(ctx, 's1', '/proj/orphan.md');
+    expect(dispatched.map((a) => a.type)).toEqual([
+      'DRAWER_OPENED',
+      'PILL_ERROR_CLEARED',
+      'SESSION_ARTIFACTS_LOADED',
+      'PILL_RESOLVE_FAILED',
+    ]);
+  });
+
+  it('dispatches SESSION_ARTIFACTS_LOADED then ACTIVE_ARTIFACT_SET on artifactify success', async () => {
+    installClaudeArtifacts({
+      listProject: async () => ({ ok: true, artifacts: [] }),
+      listAllFiles: async () => ({ ok: true, files: [] }),
+      // listSession's refreshed list now contains the just-artifactified file
+      // (suffix-matched: stored relative as 'new-doc.md', clicked as the
+      // absolute '/proj/new-doc.md' — findBestMatch's suffix pass covers this).
+      listSession: async () => ({ ok: true, artifacts: [record('art-5', 'new-doc.md')] }),
+    });
+    const state = makeState({ sessionCwd: { s1: '/proj' } });
+    const { ctx, dispatched } = makeCtx(state);
+
+    await openFilepath(ctx, 's1', '/proj/new-doc.md');
+    expect(dispatched.map((a) => a.type)).toEqual([
+      'DRAWER_OPENED',
+      'PILL_ERROR_CLEARED',
+      'SESSION_ARTIFACTS_LOADED',
+      'ACTIVE_ARTIFACT_SET',
+    ]);
+    expect((dispatched[3] as any).artifactId).toBe('art-5');
   });
 });
 
@@ -146,6 +198,30 @@ describe('openFilepath — deferred mode (drawerOpensImmediately: false)', () =>
 
     await openFilepath(ctx, 's1', '/proj/x.md', { drawerOpensImmediately: false });
     expect(dispatched.length).toBe(0);
+  });
+
+  it('artifactify success: no dispatch before the match, then DRAWER_OPENED, SESSION_ARTIFACTS_LOADED, ACTIVE_ARTIFACT_SET', async () => {
+    const state = makeState({ sessionCwd: { s1: '/proj' } });
+    installClaudeArtifacts({
+      listProject: async () => ({ ok: true, artifacts: [] }),
+      listAllFiles: async () => ({ ok: true, files: [] }),
+      listSession: async () => ({ ok: true, artifacts: [record('art-6', 'new-doc.md')] }),
+    });
+    const { ctx, dispatched } = makeCtx(state);
+
+    expect(dispatched.length).toBe(0); // nothing before the call
+    await openFilepath(ctx, 's1', '/proj/new-doc.md', { drawerOpensImmediately: false });
+    // Deferred mode skips the top-of-function PILL_ERROR_CLEARED entirely (it's
+    // inside `if (drawerOpensImmediately)`), and DRAWER_OPENED is dispatched
+    // only once the artifactify match is found (useOpenFilepath.ts:
+    // `if (!drawerOpensImmediately) dispatch({ type: 'DRAWER_OPENED', ... })`
+    // right before SESSION_ARTIFACTS_LOADED/ACTIVE_ARTIFACT_SET in the added-match branch).
+    expect(dispatched.map((a) => a.type)).toEqual([
+      'DRAWER_OPENED',
+      'SESSION_ARTIFACTS_LOADED',
+      'ACTIVE_ARTIFACT_SET',
+    ]);
+    expect((dispatched[2] as any).artifactId).toBe('art-6');
   });
 });
 
