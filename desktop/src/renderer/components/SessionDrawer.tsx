@@ -176,8 +176,8 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // phases) lives in the shared useArtifactContent hook — this drawer and
   // FilesTab used to carry duplicate effects that conflated "loading" with
   // "no longer on disk" (the flash bug).
-  const { content, setContent, contentInfo, contentState, retryRead } =
-    useArtifactContent(projectRoot, active?.id ?? null);
+  const { content, setContent, contentInfo, contentState, retryRead, applyDiskRead } =
+    useArtifactContent(projectRoot, active?.id ?? null, active?.path ?? null);
 
   // ── B2 panel UI state ──
   // The list stays open once toggled; it closes on the ☰ toggle, on selecting an
@@ -737,6 +737,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                   projectName={projectName}
                   sessionId={sessionId}
                   onContentChange={setContent}
+                  onDiskRead={applyDiskRead}
                   controlsInHeader
                   onEditStateChange={setEditState}
                 />
@@ -793,7 +794,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 <span>{statusWord}</span>
                 <span className="text-fg-faint">·</span>
                 <span>{formatRelativeTime(lastModifiedInSession(active, sessionId))}</span>
-                {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content)}</span></>}
+                {content !== null && <><span className="text-fg-faint">·</span><span>{formatSize(content, contentInfo?.sizeBytes)}</span></>}
                 <div className="flex-1" />
                 <GitFooterEntry
                   counts={gitFooter.counts}
@@ -957,8 +958,11 @@ function extOf(fileName: string): string {
   return dot > 0 ? fileName.slice(dot) : '';
 }
 
-function formatSize(content: string): string {
-  const bytes = new Blob([content]).size;
+// sizeBytes (from artifacts:get) wins over measuring the string: once a big
+// file is served as a PREFIX, the string in memory is 400 bytes and the file is
+// 8.4 MB. Measuring the string would state the wrong size with total confidence.
+function formatSize(content: string, sizeBytes?: number): string {
+  const bytes = sizeBytes ?? new Blob([content]).size;
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;

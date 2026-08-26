@@ -85,10 +85,32 @@ export function protectedReadPath(canonicalPath: string): boolean {
   return SENSITIVE_SUBPATHS.some((sub) => canonicalPath.includes(sub));
 }
 
-/** Files above this are not served inline by artifacts:get (tooLarge flag) —
- * a naked multi-MB readFile blocks the main thread, transits IPC/WS whole,
- * then blocks the renderer highlighting it (spec §2.3). Tunable. */
-export const EDIT_MAX_BYTES = 2 * 1024 * 1024;
+/** How much of a text file is served on the FIRST read. A naked multi-MB
+ * readFile blocks the main thread, transits IPC/WS whole, then blocks the
+ * renderer highlighting it (spec §2.3).
+ *
+ * This is no longer a wall: above it the file still opens, read-only, showing
+ * this much with the rest a click away (spec §4.3). So the number means "this
+ * much appears instantly", not "we refuse above this".
+ *
+ * 3 MB — Destin, 2026-08-25. The measurement (spec §2) put p99.5 of real text
+ * files at 206 KB, so any value in this range serves ~100% of first reads
+ * whole; the extra megabyte is headroom, not a fix for a measured miss. */
+export const EDIT_MAX_BYTES = 3 * 1024 * 1024;
+
+/** Ceiling on "Load the whole file" from the partial-view banner (spec §4.3).
+ * Deliberately expressed as a multiple of the cap rather than an independent
+ * magic number: it means "we will load at most four times what we promise to
+ * show instantly". A starting value, not a measurement. Past this the renderer
+ * blocks long enough to feel frozen -- which is what EDIT_MAX_BYTES exists to
+ * prevent in the first place. */
+export const FULL_READ_MAX_BYTES = 4 * EDIT_MAX_BYTES;
+
+/** Ceiling for artifacts:read-binary — base64 inflates 33% and it all transits
+ * IPC/WS. This is the limit that actually governs images, PDFs and Office docs;
+ * EDIT_MAX_BYTES governs only the text editor. Confusing the two is what made
+ * the pane refuse a 2.3 MB PNG (spec §1.1). */
+export const READ_BINARY_MAX_BYTES = 50 * 1024 * 1024;
 
 /** git-style binary sniff: a NUL byte in the head slice means not-text. The
  * caller passes at most the first 8KB — do not read whole files to decide. */

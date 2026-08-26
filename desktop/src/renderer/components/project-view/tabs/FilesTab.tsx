@@ -714,8 +714,8 @@ function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed 
   // Read lifecycle (fetch + loading/missing/error phases) — shared hook, same
   // as SessionDrawer, so a slow read shows a placeholder instead of flashing
   // "This file is no longer on disk."
-  const { content, setContent, contentInfo, contentState, retryRead } =
-    useArtifactContent(project.path, artifact.id);
+  const { content, setContent, contentInfo, contentState, retryRead, applyDiskRead } =
+    useArtifactContent(project.path, artifact.id, artifact.path);
   // Drive the viewer's edit lifecycle from the overlay header (controlsInHeader).
   // ActiveArtifactView still owns the edit/save/conflict logic; we only call into
   // it and mirror its edit state so the header can swap Edit ↔ Save/Cancel.
@@ -830,6 +830,7 @@ function ArtifactDetail({ artifact, project, initialLine, onInitialLineConsumed 
           projectName={project.name}
           sessionId="project-view"
           onContentChange={setContent}
+          onDiskRead={applyDiskRead}
           controlsInHeader
           onEditStateChange={setEditState}
         />

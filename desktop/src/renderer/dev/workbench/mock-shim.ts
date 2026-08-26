@@ -1,10 +1,25 @@
 import type { MockStore } from './mock-store';
+import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
   CONTENT as ARTIFACT_CONTENT, contextGroups,
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
+
+// artifactId -> pretend on-disk size, for exercising the over-cap artifact
+// states (partial-view banner, handoff) against the fake backend.
+// artifactId -> pretend on-disk size for fixtures with no text body at all:
+// the handler answers binary:true (never orphan), which is how a real
+// unsupported format reaches the handoff view rather than "no longer on disk".
+const BINARY_FIXTURES: Record<string, number> = {
+  'a-clip-mp4': 18 * 1024 * 1024,
+};
+
+const OVERSIZE_FIXTURES: Record<string, number> = {
+  'a-big-log': 8.4 * 1024 * 1024,     // under FULL_READ_MAX_BYTES -> offers "Load the whole file"
+  'a-huge-dump': 500 * 1024 * 1024,   // above it -> no load action
+};
 
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
@@ -623,18 +638,38 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     listAllFiles: async (projectId: string) => ({
       ok: true, files: allFiles(projectId), truncated: false,
     }),
-    get: async (_projectRoot: string, artifactId: string) => {
+    get: async (_projectRoot: string, artifactId: string, opts?: { full?: boolean }) => {
       const content = ARTIFACT_CONTENT[artifactId];
+      const asBinary = BINARY_FIXTURES[artifactId];
+      if (asBinary !== undefined) {
+        return { ok: true, content: null, orphan: false, binary: true,
+                 truncated: false, sizeBytes: asBinary, mtimeMs: 1 };
+      }
       if (content === undefined) {
         // Honest miss rather than a fabricated body: the reader renders its
         // own missing-file state, which is a state worth being able to see.
         // orphan:true matches the real handler's not-found shape — without it
         // the tri-state read lifecycle would classify this as a resolved read
         // with no content (blank pane) instead of "no longer on disk".
-        return { ok: true, content: null, orphan: true, binary: false, tooLarge: false, sizeBytes: 0 };
+        return { ok: true, content: null, orphan: true, binary: false, sizeBytes: 0 };
+      }
+      // Over-cap fixtures: report a pretend on-disk size far larger than the
+      // body we serve, so the partial-view banner and the handoff states are
+      // reachable in the Workbench without a real 8 MB file (spec §5).
+      // `full` opts into a BIGGER read, not an unbounded one — main refuses it
+      // above FULL_READ_MAX_BYTES, so the mock has to refuse it too or the
+      // Workbench would show a state the real backend can never produce.
+      const fake = OVERSIZE_FIXTURES[artifactId];
+      const grantFull = opts?.full === true && fake !== undefined && fake <= FULL_READ_MAX_BYTES;
+      if (fake !== undefined && !grantFull) {
+        return {
+          ok: true, content: content.slice(0, content.lastIndexOf('\n', 400) + 1), orphan: false, binary: false,
+          truncated: true, sizeBytes: fake, mtimeMs: 1,
+        };
       }
       return {
-        ok: true, content, orphan: false, binary: false, tooLarge: false, sizeBytes: content.length,
+        ok: true, content, orphan: false, binary: false, truncated: false,
+        sizeBytes: fake ?? content.length, mtimeMs: 1,
       };
     },
     // Nothing is missing from disk here — every fixture "exists" by construction.
