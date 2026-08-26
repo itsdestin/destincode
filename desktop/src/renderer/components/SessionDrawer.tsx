@@ -687,11 +687,14 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
       {/* top bar. The filename/rename cluster and the file-scoped actions
           (open-external, copy-path, reveal) only make sense for a real
           artifact — while a preview is showing, `active` is null (exclusivity
-          rule), so those collapse to just the list toggle + expand/close.
-          SessionPreviewPane renders its own title/subtitle/close in its body. */}
+          rule), so those collapse away. The conversation title takes the same
+          slot the filename does (below), and this is now the ONLY close
+          button for either case — SessionPreviewPane used to draw its own
+          second title/close row in its body; that was the "two X's" bug
+          Destin flagged, so it no longer renders one. Don't add one back. */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge shrink-0">
         <IconBtn name="list" title={listOpen ? 'Hide list' : 'Show list'} active={listOpen} onClick={() => setListOpen((v) => !v)} />
-        {active && (renaming ? (
+        {active ? (renaming ? (
           <div className="flex items-center gap-2 min-w-0 px-1 relative">
             <span className={`inline-flex items-center border rounded-md overflow-hidden ${renameError ? 'border-red-500' : 'border-accent'}`}>
               <input
@@ -724,7 +727,16 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             </span>
             <span className="text-fg-muted opacity-0 group-hover:opacity-100 shrink-0"><Ic name="pencil" size={12} /></span>
           </button>
-        ))}
+        )) : activePreview ? (
+          // Same slot the filename occupies above, plain (not a button) — a
+          // past conversation can't be renamed, so this carries none of the
+          // click-to-rename affordance.
+          <div className="min-w-0 px-2 py-1">
+            <span className="block text-sm-tight font-semibold text-fg truncate">
+              {activePreview.title || COPY.untitled}
+            </span>
+          </div>
+        ) : null}
         <div className="flex-1" />
         {/* Edit/Save moved to the floating button at the bottom-right of the
             doc pane (Destin, 2026-07-22) — see the cluster below the content div. */}
@@ -755,14 +767,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             the find bar (a sibling) isn't itself walked by the search. */}
         <div className="drawer-content flex-1 min-w-0 overflow-hidden relative flex flex-col">
           {activePreview ? (
-            // Preview replaces the whole content column — its own header
-            // carries the title/subtitle/close, so nothing below (find bar,
-            // metadata strip, git review) applies while it's showing.
+            // Preview replaces the whole content column — find bar, metadata
+            // strip, and git review don't apply to a read-only transcript.
+            // Title + close now live in the top bar above (same slot a file
+            // uses), so the pane itself no longer takes title/onClose props.
             <SessionPreviewPane
               provider={activePreview.provider}
               id={activePreview.id}
-              title={activePreview.title}
-              onClose={() => dispatch({ type: 'SESSION_PREVIEW_CLEARED', sessionId })}
             />
           ) : gitReviewOpen && active ? (
             // Standard top bar (above) stays; find bar, content, edit cluster, and

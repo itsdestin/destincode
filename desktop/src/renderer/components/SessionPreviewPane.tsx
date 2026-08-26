@@ -9,7 +9,7 @@ import { COPY, READ_TAIL_DEFAULT, type TranscriptMessage, type ChatsearchProvide
 
 type Phase = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; message: string };
 
-export default function SessionPreviewPane({ provider, id, title, onClose }: { provider: ChatsearchProvider; id: string; title: string; onClose: () => void }) {
+export default function SessionPreviewPane({ provider, id }: { provider: ChatsearchProvider; id: string }) {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
@@ -90,14 +90,16 @@ export default function SessionPreviewPane({ provider, id, title, onClose }: { p
     // doesn't need to change. Precedent for a bg-canvas "well" nested inside
     // this same bg-inset aside: the rename input a few dozen lines up.
     <div className="flex h-full min-h-0 w-full min-w-0 flex-col bg-canvas">
-      <div className="flex items-center gap-2 border-b border-edge px-4 py-2">
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-fg">{title || COPY.untitled}</div>
-          <div className="text-xs text-fg-muted">{COPY.paneSubtitle(provider)}</div>
-        </div>
-        <button type="button" className="rounded-md px-2 py-1 text-xs text-fg-muted hover:bg-well" onClick={onClose} aria-label={COPY.closePreviewLabel}>✕</button>
-      </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        {/* WHY: this pane deliberately has NO header/close of its own — the
+            drawer's top bar (SessionDrawer.tsx) already supplies the title
+            and the single close button, the same way it does for an open
+            file. This pane used to draw a second title/close row here, which
+            was the "two X's" bug Destin flagged; don't reintroduce one. The
+            read-only/lane info that row used to carry still matters, so it
+            gets a quiet caption line instead — no close control, no size
+            change to the drawer's own bar. */}
+        <div className="mb-2 text-xs text-fg-muted">{COPY.paneSubtitle(provider)}</div>
         {phase.kind === 'loading' && <p className="text-sm text-fg-muted">{COPY.loading}</p>}
         {/* First load has nothing to show behind it, so a full-pane error is correct here. */}
         {phase.kind === 'error' && <ErrorState mode="recoverable" message={`${COPY.errReadPrefix}${phase.message}`} onRetry={() => void loadNewest()} />}
