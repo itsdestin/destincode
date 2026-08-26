@@ -74,3 +74,17 @@ describe('buttonClasses end-to-end', () => {
     expect(t).toContain('px-6');
   });
 });
+
+describe('disabled is never a fill (UI audit 2026-08-25, P-12 decision)', () => {
+  // The dark built-ins are monochrome by design: "selected/primary" is signalled
+  // by the accent FILL, "disabled" by dimming with no fill. That only stays
+  // unambiguous while the disabled treatment never paints a background — the
+  // moment it does, a disabled control and a primary one become the same grey
+  // block. Destin rejected adding an accent colour to fix this (2026-08-25); the
+  // baseline convention is the rule, and this pins it.
+  it('Button disables by opacity only — no disabled:bg-* utility', () => {
+    const classes = buttonClasses({ variant: 'primary', size: 'md' });
+    expect(classes).toMatch(/\bdisabled:opacity-\d+\b/);
+    expect(classes).not.toMatch(/\bdisabled:bg-/);
+  });
+});
