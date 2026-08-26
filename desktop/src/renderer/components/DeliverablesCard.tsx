@@ -9,7 +9,7 @@
 //     show up in chat as pills and tool cards without being deliverables, and
 //     a card called "Files" would blur that line. It
 //     is the deliverable, not a log line, so it must stay visually distinct
-//     from a collapsed tool group: lifted bg-well card, a "Files · N" header
+//     from a collapsed tool group: lifted bg-well card, a "Deliverables · N" header
 //     with the caption, and previews instead of a status line. The
 //     SendUserFile calls are pulled out of their tool groups the same way
 //     Skill cards are (see AssistantTurnBubble → ToolGroupInline).
@@ -30,7 +30,7 @@ import type { ToolCallState } from '../../shared/types';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { useArtifactOptional } from '../state/ArtifactContext';
 import { useNarrowViewport } from '../hooks/use-narrow-viewport';
-import { useExpandAllToggle } from '../hooks/useExpandAllToggle';
+import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
 import { ChevronIcon } from './Icons';
 import { useOpenFilepath } from '../hooks/useOpenFilepath';
 import { ArtifactThumbnail } from './ArtifactThumbnail';
@@ -100,26 +100,22 @@ export interface SentFileTileProps {
   path: string;
   sessionId: string;
   status: ToolCallState['status'];
+  /** The tool's own error text when status is 'failed'. Shown verbatim (first
+   *  line under the strip, full text as the tooltip) — never a guessed reason:
+   *  a folder, a missing file and an unreadable file all fail differently and
+   *  the user has to be able to tell which (docs/error-message-standards.md). */
+  error?: string;
   narrow: boolean;
-  /** Workbench compare view only: hand the tile its record + project root
-   *  directly. The compare route mounts without ArtifactProvider, so the
-   *  session-artifact lookup below has nothing to match against. Never set
-   *  from production code — the lookup is the real path. */
-  record?: ArtifactRecord;
-  projectPath?: string;
   /** Tile background utility. Default bg-well lifts a tile off the bubble;
    *  a tile nested inside a bg-well card passes bg-inset to alternate. */
   tileBg?: string;
-  /** Let the filename wrap to two lines instead of truncating — for narrow
-   *  filmstrip tiles where "scroll-pe…" says nothing. */
-  wrapName?: boolean;
   /** Filmstrip tiles: the whole tile is the click target and width is scarce,
    *  so the "Open" button collapses to its arrow glyph and the name gets the
    *  full row. */
   compact?: boolean;
 }
 
-export function SentFileTile({ path, sessionId, status, narrow, record: recordOverride, projectPath: projectPathOverride, tileBg = 'bg-well', wrapName = false, compact = false }: SentFileTileProps) {
+export function SentFileTile({ path, sessionId, status, error, narrow, tileBg = 'bg-well', compact = false }: SentFileTileProps) {
   const artifactCtx = useArtifactOptional();
   const open = useOpenFilepath(sessionId);
   const cwd = artifactCtx?.state.sessionCwd?.[sessionId];
@@ -130,11 +126,11 @@ export function SentFileTile({ path, sessionId, status, narrow, record: recordOv
     () => matchSessionArtifact(sessionArts ?? [], abs),
     [sessionArts, abs],
   );
-  const tracked = recordOverride ?? matched;
+  const tracked = matched;
   const record = tracked ?? standInRecord(abs);
   // Internal records resolve relative to the session's project; externals
   // carry their own absolutePath and ignore projectPath.
-  const projectPath = projectPathOverride ?? (record.kind === 'internal' ? (cwd ?? '') : '');
+  const projectPath = record.kind === 'internal' ? (cwd ?? '') : '';
 
   const labelPath = tracked?.kind === 'internal' ? tracked.path : path;
   const name = basename(labelPath);
@@ -146,7 +142,7 @@ export function SentFileTile({ path, sessionId, status, narrow, record: recordOv
     <button
       type="button"
       onClick={() => { void open(path); }}
-      title={failed ? `${path} — could not be sent` : `Open ${name}`}
+      title={failed ? `${path} — ${error || 'could not be sent'}` : `Open ${name}`}
       // data-file-path (absolute) lets the chat right-click menu recover the
       // real path for View in folder / Copy as path — left-click opens the
       // in-app artifact viewer.
@@ -171,13 +167,13 @@ export function SentFileTile({ path, sessionId, status, narrow, record: recordOv
         )}
         {failed && (
           <div className="absolute inset-0 flex items-center justify-center bg-canvas/80 text-2xs font-semibold text-red-400">
-            Couldn’t send — not found
+            Couldn’t send
           </div>
         )}
       </div>
       <div className="flex items-center gap-2 px-2.5 py-2 min-w-0">
         <span className="flex-1 min-w-0">
-          <span className={`block text-sm-tight font-semibold text-fg ${wrapName ? 'line-clamp-2 leading-snug [overflow-wrap:anywhere]' : 'truncate'}`}>{name}</span>
+          <span className="block text-sm-tight font-semibold text-fg truncate">{name}</span>
           {dir && <span className="block text-2xs font-mono text-fg-muted truncate">{dir}/</span>}
         </span>
         <span className={`shrink-0 inline-flex items-center gap-1 text-2xs font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md transition-colors ${compact ? 'p-1 self-start' : 'px-2 py-1'}`} aria-label="Open">
@@ -237,11 +233,20 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
   // Open by default — unlike a tool card — because the files ARE the reply.
   // Still collapsible, and Ctrl+O's expand/collapse-all applies, so the card
   // behaves like the tool cards around it once the user starts managing space.
-  const [open, setOpen] = useState(true);
+  // Fix (review 2026-08-25): seed from the CURRENT Ctrl+O mode like ToolCard
+  // does — a card that mounts after a collapse-all must not come up open while
+  // everything around it is closed.
+  const [open, setOpen] = useState(() => getInitialExpanded(true));
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
 
   const entries = useMemo(
-    () => tools.flatMap((tool) => sentFilePaths(tool.input).map((path) => ({ path, status: tool.status, key: `${tool.toolUseId}:${path}` }))),
+    () => tools.flatMap((tool) => sentFilePaths(tool.input).map((path) => ({ path, status: tool.status, error: tool.error, key: `${tool.toolUseId}:${path}` }))),
+    [tools],
+  );
+  // Failed calls list their reason under the strip, in the tool's own words —
+  // one line per failed call (a multi-path error names every bad path).
+  const failures = useMemo(
+    () => tools.filter((t) => t.status === 'failed' && t.error).map((t) => ({ key: t.toolUseId, text: t.error as string })),
     [tools],
   );
   const captions = useMemo(
@@ -281,7 +286,7 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
             <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="deliverables-strip">
               {entries.map((e) => (
                 <div key={e.key} className={`${narrow ? 'w-44' : 'w-56'} shrink-0`}>
-                  <SentFileTile path={e.path} sessionId={sessionId} status={e.status} narrow={narrow} tileBg="bg-inset" compact />
+                  <SentFileTile path={e.path} sessionId={sessionId} status={e.status} error={e.error} narrow={narrow} tileBg="bg-inset" compact />
                 </div>
               ))}
             </div>
@@ -293,6 +298,9 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
           </div>
           {footCaptions.map((c, i) => (
             <p key={i} className="px-3 pb-2 -mt-0.5 text-2xs text-fg-muted">{c}</p>
+          ))}
+          {failures.map((f) => (
+            <p key={f.key} className="px-3 pb-2 -mt-0.5 text-2xs text-red-400 whitespace-pre-line">{f.text}</p>
           ))}
         </>
       )}
