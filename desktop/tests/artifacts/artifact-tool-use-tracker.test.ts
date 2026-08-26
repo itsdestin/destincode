@@ -193,8 +193,14 @@ describe('artifact tool-use tracker', () => {
       // resolutions are. A per-file implementation would instead re-arm (and
       // let fire) the debounce timer on each resolution, producing multiple
       // listSession calls when the gaps exceed the debounce window.
+      // LOAD-BEARING INVARIANT: GAP_MS must stay > REFRESH_DELAY_MS. The gap is what
+      // lets each file's refresh timer FIRE and clear before the next file resolves,
+      // so a once-per-FILE implementation books three separate listSession calls.
+      // Flip the inequality and each call merely cancel-and-rearms the same pending
+      // timer, both implementations collapse to one call, and this test silently
+      // reverts to the blind spot it was written to close (review 2026-08-25).
       const REFRESH_DELAY_MS = 50;
-      const GAP_MS = 100; // > REFRESH_DELAY_MS
+      const GAP_MS = 100;
       const resolvers: Array<() => void> = [];
       const appendVersion = vi.fn(() => new Promise((resolve) => {
         resolvers.push(() => resolve({ ok: true }));
