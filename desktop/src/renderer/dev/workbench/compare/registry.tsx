@@ -82,6 +82,11 @@ import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
 // reads like an attached item" is drawn with the same paperclip the app
 // already uses for attachments, not a new invented mark.
 import { QuestionIcon, ChatIcon, ChevronIcon, AttachIcon } from '../../../components/Icons';
+// present-inline-mentions (Round 7): the shared L4 .layer-surface shell — the
+// same panel class every anchored popup in the app already draws from
+// (AnchorTip, FileFilterPopover) — reused for the mention chip's popover so
+// it isn't a fourth hand-rolled "floating box" style.
+import { OverlayPanel } from '../../../components/overlays/Overlay';
 // Chat search results round: the real copy contract, the resolved-conversation
 // shape, and the seven-state fake index — same sources ChatsearchFindCard,
 // ChatsearchShowCard, and the fixtures module itself use, so a candidate here
@@ -3917,6 +3922,331 @@ function PresentTagsRow() {
   );
 }
 
+// ── Round 7: stop arranging the same five facts — four different ideas ──────
+// Six rounds in, the last three were all the same shape: a stacked list of
+// rows carrying title/date/project/tags/two-buttons, differing only in
+// density and where the tags sat. Rejected outright: "not a fan of any of
+// these. a few more creative options please." This round does not produce a
+// seventh row arrangement. Every conversation needs the same five facts and
+// two actions — the thing that has read as "busy" every time is showing all
+// of it, for every conversation, at once. Each candidate below escapes that
+// by deferring something and giving a specific way to get it back — stated
+// in the candidate's `note` below, and restated as the WHY comment on its
+// component.
+//
+// Fixture: R6_CONVERSATIONS (R6_TWO_TAGS / R6_FOUR_TAGS / R6_NO_TAGS, declared
+// above for Round 6) reused unmodified — a resumable two-tag case, a
+// four-tag case carrying a long multi-word label, and a no-tags case is
+// exactly the spread this round's brief asks for, so Round 6's set already
+// matches it rather than needing a new one. The first three candidates below
+// also reuse PresentCardR6 verbatim for their outer shell (deliverables-style
+// card, closed by default, Ctrl+O aware, "Referenced conversations" header) —
+// the brief keeps that part unchanged; only what sits inside is new. The
+// fourth candidate has no card, per the brief.
+
+// A · present-expand-in-place — DEFERS date, project, tags, and both buttons
+// for every conversation but one. GETS THEM BACK by making the title itself
+// the control: a real <button aria-expanded>, not a hover trick, that
+// expands that ONE row in place. Opening a second row collapses the first
+// (single `openId`, not a per-row boolean) — only ever one row is "busy" at
+// once, so N conversations cost N one-line rows at rest.
+function PresentExpandRowEntry({ r, tagIndex, open, onToggle }: {
+  r: PresentOk; tagIndex: Map<string, TagRecord>; open: boolean; onToggle: () => void;
+}) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  return (
+    <div className="rounded-md bg-inset/50 overflow-hidden">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        title={open ? COPY.presentHideDetails : COPY.presentShowDetails}
+        className="group flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-inset transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <ChevronIcon className="w-3 h-3 shrink-0 text-fg-muted" expanded={open} />
+        <span className="min-w-0 flex-1"><PresentRowTitle r={r} /></span>
+      </button>
+      {open && (
+        <div className="px-2.5 pb-2 pl-7">
+          <ChatsearchMetaLine
+            tags={chips}
+            blocked={blocked}
+            project={r.projectName || COPY.noProject}
+            date={formatRelativeTime(r.lastActive)}
+          />
+          <div className="flex justify-end mt-1.5">
+            <ChatsearchActions r={r} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function PresentExpandInPlace() {
+  const tagIndex = useTagLabelIndex();
+  const [openId, setOpenId] = React.useState<string | null>(null);
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => (
+            <PresentExpandRowEntry
+              key={r.id} r={r} tagIndex={tagIndex}
+              open={openId === r.id}
+              onToggle={() => setOpenId(openId === r.id ? null : r.id)}
+            />
+          ))}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// B · present-hover-actions — DEFERS the two buttons entirely: they claim no
+// layout width at rest, so the row is just a color stripe, a title, and a
+// date. GETS THEM BACK on hover or keyboard focus (group-hover /
+// group-focus-within, the same reveal MarketplaceCard.tsx's own info bubble
+// already uses), as an overlay over the row's right end rather than a
+// reserved slot. Tags are deferred too, down to a stripe of their own colors
+// with the real names in the row's `title` attribute. Hover doesn't exist on
+// a phone, so on narrow viewports (useNarrowViewport(), not asserted) the
+// buttons move back into the normal layout as a second line instead of
+// hiding — the one place this candidate does NOT defer them.
+function TagStripe({ chips }: { chips: ChipTag[] }) {
+  if (chips.length === 0) {
+    return <span className="w-1 h-8 rounded-full shrink-0 bg-edge-dim" aria-hidden="true" />;
+  }
+  return (
+    <span className="w-1 h-8 rounded-full shrink-0 overflow-hidden flex flex-col" aria-hidden="true">
+      {chips.map((t, i) => (
+        <span key={`${t.label}-${i}`} className="flex-1" style={{ background: `var(--${t.color})` }} />
+      ))}
+    </span>
+  );
+}
+// Fades the overlay's leading edge into the row's own fill instead of cutting
+// a hard edge across the date it covers — same technique as Round 4's
+// filmstrip scroll fades (presentFade above), pointed at one fixed edge.
+const HOVER_ACTIONS_FADE: React.CSSProperties = {
+  background: 'linear-gradient(to left, var(--inset) 65%, transparent)',
+};
+function PresentHoverActionsEntry({ r, tagIndex, narrow }: {
+  r: PresentOk; tagIndex: Map<string, TagRecord>; narrow: boolean;
+}) {
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  const tagNames = chips.map((t) => t.label).join(', ');
+  return (
+    <div
+      className={`group relative rounded-md bg-inset/50 hover:bg-inset transition-colors ${narrow ? 'px-2.5 py-2' : 'px-2.5 py-1.5'}`}
+      title={tagNames || undefined}
+    >
+      <div className="flex items-center gap-2">
+        <TagStripe chips={chips} />
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        <span className="shrink-0 text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+      </div>
+      {narrow ? (
+        <div className="flex justify-end mt-1.5">
+          <ChatsearchActions r={r} />
+        </div>
+      ) : (
+        <div
+          className="absolute inset-y-0 right-0 flex items-center gap-1.5 pl-8 pr-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+          style={HOVER_ACTIONS_FADE}
+        >
+          <ChatsearchActions r={r} />
+        </div>
+      )}
+    </div>
+  );
+}
+function PresentHoverActions() {
+  const tagIndex = useTagLabelIndex();
+  const narrow = useNarrowViewport();
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => (
+            <PresentHoverActionsEntry key={r.id} r={r} tagIndex={tagIndex} narrow={narrow} />
+          ))}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// C · present-one-at-a-time — DEFERS every conversation except the one on
+// screen: no title, tags, or actions render for the other two at all. GETS
+// THEM BACK with a pager (dots + prev/next + "n / total") that steps
+// through them one at a time; the conversation showing gets a full-size
+// title, the complete tag/project/date line with no two-tag cap (there's
+// finally room), and full-size Preview/Resume buttons. The cost is exactly
+// what the brief asked to see: the other conversations are invisible until
+// you page to them.
+function PresentOneAtATime() {
+  const tagIndex = useTagLabelIndex();
+  const [index, setIndex] = React.useState(0);
+  const count = R6_CONVERSATIONS.length;
+  const r = R6_CONVERSATIONS[index];
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  const native = r.provider === 'native';
+  const go = (delta: number) => setIndex((i) => (i + delta + count) % count);
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="px-3 pb-3 pt-1">
+          <div className="text-sm font-semibold text-fg truncate">
+            {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+          </div>
+          <ChatsearchMetaLine
+            tags={chips}
+            blocked={blocked}
+            project={r.projectName || COPY.noProject}
+            date={formatRelativeTime(r.lastActive)}
+            className="mt-1.5"
+          />
+          <div className="flex items-center gap-2 mt-3">
+            <Button
+              variant="secondary"
+              disabled={r.tombstone}
+              title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+            >
+              {COPY.preview}
+            </Button>
+            <Button
+              variant="primary"
+              disabled={!!blocked}
+              title={blocked ?? (native ? COPY.resumeNativeHint : COPY.resumeHint)}
+            >
+              {native ? COPY.resumeNative : COPY.resume}
+            </Button>
+          </div>
+          <div className="flex items-center justify-center gap-3 mt-3 pt-2 border-t border-edge-dim/60">
+            <button
+              type="button" onClick={() => go(-1)} aria-label={COPY.presentPagerPrev}
+              className="p-1 text-fg-muted hover:text-fg rounded-md hover:bg-inset transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              {/* ChevronIcon points down at rest; rotate-90 (clockwise) turns it to
+                  point left, the "previous" direction — no separate arrow glyph
+                  exists on this branch, so this reuses the one disclosure mark the
+                  app already has rather than adding a new SVG. */}
+              <ChevronIcon className="w-4 h-4 rotate-90" />
+            </button>
+            <div className="flex items-center gap-1.5" role="group" aria-label={COPY.presentPagerLabel}>
+              {R6_CONVERSATIONS.map((c, i) => (
+                <button
+                  key={c.id} type="button" onClick={() => setIndex(i)}
+                  aria-label={COPY.presentPagerGoTo(i + 1, count)} aria-current={i === index}
+                  className={`w-1.5 h-1.5 rounded-full transition-colors ${i === index ? 'bg-accent' : 'bg-edge-dim hover:bg-fg-muted'}`}
+                />
+              ))}
+            </div>
+            <span className="text-3xs font-mono text-fg-muted min-w-[2.5rem] text-center">
+              {COPY.presentPagerPosition(index + 1, count)}
+            </span>
+            <button
+              type="button" onClick={() => go(1)} aria-label={COPY.presentPagerNext}
+              className="p-1 text-fg-muted hover:text-fg rounded-md hover:bg-inset transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              {/* -rotate-90 (counter-clockwise) turns the same down chevron to
+                  point right, the "next" direction — see the prev button above. */}
+              <ChevronIcon className="w-4 h-4 -rotate-90" />
+            </button>
+          </div>
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// D · present-inline-mentions — DEFERS the entire block: there is no card and
+// no list. A past conversation becomes a small chip the assistant's own
+// sentence refers to mid-thought, styled like the app's inline filepath pill
+// (FilepathToken.tsx's `pill` variant classes, reused verbatim) with ChatIcon
+// standing in for the file glyph — the file pill's own glyph swap between
+// image/document types has no equivalent here, so one glyph covers every
+// chip. GETS EVERYTHING BACK behind a click: a popover anchored beneath the
+// chip, built from OverlayPanel (the same .layer-surface shell AnchorTip and
+// FileFilterPopover already float their own content from), holds the date,
+// project, tags, and both buttons — everything the other three candidates
+// keep in the row, deferred here down to a single word in a sentence. Two
+// chips only, on purpose — the brief's own example sentence names two; a
+// sentence mentioning three past conversations stops reading like a sentence.
+const PRESENT_INLINE_LEAD = 'We settled this in';
+const PRESENT_INLINE_MID = 'and again in';
+const PRESENT_INLINE_TAIL = '.';
+
+function InlineMentionChip({ r, open, onToggle }: { r: PresentOk; open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      title={r.title || COPY.untitled}
+      className="group inline-flex max-w-[11rem] items-center gap-1.5 align-middle px-2 py-0.5 rounded-md bg-well border border-edge hover:border-fg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <ChatIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+      <span className="truncate text-[0.85em] text-fg group-hover:underline underline-offset-2 decoration-fg-muted">
+        {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+      </span>
+    </button>
+  );
+}
+
+function InlineMentionPopover({ r, tagIndex }: { r: PresentOk; tagIndex: Map<string, TagRecord> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  return (
+    <OverlayPanel layer={4} className="mt-2 w-64 max-w-full p-3">
+      <div className="text-4xs uppercase tracking-wider text-fg-muted">{COPY.paneSubtitle(r.provider)}</div>
+      <div className="text-sm font-medium text-fg truncate mt-0.5">
+        {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+      </div>
+      <ChatsearchMetaLine
+        tags={chips} blocked={blocked} project={r.projectName || COPY.noProject}
+        date={formatRelativeTime(r.lastActive)} className="mt-1.5"
+      />
+      <div className="flex justify-end mt-2.5">
+        <ChatsearchActions r={r} />
+      </div>
+    </OverlayPanel>
+  );
+}
+
+function PresentInlineMentions() {
+  const tagIndex = useTagLabelIndex();
+  const mentioned = [R6_TWO_TAGS, R6_FOUR_TAGS];
+  // Opened by default on the first mention — the round's own report asks for
+  // the popover rendered in its open state so its contents can be judged
+  // without hovering or clicking first. Still real toggle state underneath:
+  // clicking either chip moves which one (if any) is open.
+  const [openId, setOpenId] = React.useState<string | null>(mentioned[0].id);
+  const open = mentioned.find((m) => m.id === openId) ?? null;
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <p className="leading-relaxed">
+          {PRESENT_INLINE_LEAD}{' '}
+          <InlineMentionChip
+            r={mentioned[0]} open={openId === mentioned[0].id}
+            onToggle={() => setOpenId(openId === mentioned[0].id ? null : mentioned[0].id)}
+          />
+          {' '}{PRESENT_INLINE_MID}{' '}
+          <InlineMentionChip
+            r={mentioned[1]} open={openId === mentioned[1].id}
+            onToggle={() => setOpenId(openId === mentioned[1].id ? null : mentioned[1].id)}
+          />
+          {PRESENT_INLINE_TAIL}
+        </p>
+        {open && <InlineMentionPopover r={open} tagIndex={tagIndex} />}
+      </div>
+    </div>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -4483,9 +4813,14 @@ const ALL_SURFACES: CompareSurface[] = [
     label: 'Presented conversation',
     question: 'When the assistant puts a past conversation in front of you, how much of it should you see?',
     frame: 'canvas',
-    // Same chat-column width as chatsearch-results — this renders inline in the
-    // assistant's own message, at the same column the search card sits in.
-    paneWidth: 420,
+    // Was 420 (the chat-column width) through Round 6, three panes at a time.
+    // Round 7 compares FOUR candidates — at 420 they don't fit side by side on
+    // a normal window, so this narrows to ~380 for the whole surface (there is
+    // no per-round override in CompareSurface) so four panes have a better
+    // chance of sitting in one row. Every candidate above still renders at its
+    // real chat-bubble width regardless of this value — panes never stretch
+    // wider than it, but nothing stops a candidate from being narrower.
+    paneWidth: 380,
     rounds: [
       {
         n: 1,
@@ -4627,6 +4962,36 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'Tags on their own line',
             note: 'Tags drop to a full third line beneath project and buttons, wrapping instead of being capped — every tag is always visible, however many there are. Costs real height: a heavily-tagged conversation in a list of several makes the whole block taller, and a conversation with no tags stays two lines so this cost is only paid when there is something to show.',
             render: () => <PresentTagsRow />,
+          },
+        ],
+      },
+      {
+        n: 7,
+        basis: 'R4–R6 rejected as a family: "not a fan of any of these. a few more creative options please." The last three rounds were all one shape — a stacked list of rows carrying title/date/project/tags/two-buttons, differing only in density and where the tags sat. This round does not add a fourth density; each candidate below shows LESS at once and gives a specific way to get the rest back, stated in its note.',
+        candidates: [
+          {
+            id: 'present-expand-in-place',
+            label: 'Click a title to expand it',
+            note: 'Defers everything but the title — date, project, tags, both buttons — for every conversation. Gets it back by making the title a real button: click it and that one row expands in place; click another and the first collapses, so only ever one row is "busy". At rest, N conversations cost N one-line rows.',
+            render: () => <PresentExpandInPlace />,
+          },
+          {
+            id: 'present-hover-actions',
+            label: 'Buttons appear on hover',
+            note: 'Defers the two buttons out of the layout entirely — they claim no row width at rest — and tags down to a color stripe on the left, with their names only in the row\'s tooltip. Gets the buttons back on hover or keyboard focus, floating over the row\'s right edge. Since a phone has no hover, narrow viewports put them back in the layout permanently instead — the one thing this candidate does not defer there.',
+            render: () => <PresentHoverActions />,
+          },
+          {
+            id: 'present-one-at-a-time',
+            label: 'One conversation, full size',
+            note: 'Defers every conversation except one — the other two render nothing at all. Gets them back via a pager (dots, prev/next, "n / total") that steps through the set; the one showing gets a full-size title, the full tag/project/date line with no cap, and full-size buttons. The trade-off the brief asked to see: the others are invisible until you page to them.',
+            render: () => <PresentOneAtATime />,
+          },
+          {
+            id: 'present-inline-mentions',
+            label: 'Chips inside the sentence',
+            note: 'Defers the entire block — no card, no list. A conversation becomes a small chip inside the assistant\'s own sentence, styled like the app\'s inline filepath pill. Gets everything back — date, project, tags, both buttons — in a popover that opens beneath the chip on click. The most radical option: it removes the block and makes a past conversation something the assistant can refer to mid-sentence, at the cost of being far less scannable than any list.',
+            render: () => <PresentInlineMentions />,
           },
         ],
       },

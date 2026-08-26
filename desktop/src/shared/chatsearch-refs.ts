@@ -47,6 +47,20 @@ export const COPY = {
   // e.g. "+2" standing in for two tags not shown. Kept terse on purpose: it
   // sits inside a chip-sized space next to real tag chips.
   presentTagsMore: (n: number) => `+${n}`,
+  // present-expand-in-place (Round 7): the collapsed row's own <button> title
+  // hint — this row shows only a title at rest; these two strings are the
+  // only text that says what clicking it does.
+  presentShowDetails: 'Show details',
+  presentHideDetails: 'Hide details',
+  // present-one-at-a-time (Round 7): the pager that steps through conversations
+  // shown one at a time. Accessible names for the prev/next arrows and the
+  // dot buttons — with only one conversation on screen at once, these are the
+  // only way a screen reader user finds out there are others.
+  presentPagerPrev: 'Previous conversation',
+  presentPagerNext: 'Next conversation',
+  presentPagerLabel: 'Conversations',
+  presentPagerGoTo: (n: number, total: number) => `Go to conversation ${n} of ${total}`,
+  presentPagerPosition: (n: number, total: number) => `${n} / ${total}`,
   // Phase B error strings (main process). Listed here so the gate can show them.
   errNotAnId: 'Not a conversation id',
   errNotIndexed: 'This conversation is not in the index on this device',
