@@ -64,7 +64,11 @@ import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
 // SpecialistReportCard, and ToolBody's AgentSection all use — an open/close
 // control here must draw the mark the owner already reads as "expand/collapse"
 // everywhere else, not a new one.
-import { QuestionIcon, ChatIcon, ChevronIcon } from '../../../components/Icons';
+// AttachIcon (chatsearch-present Round 2): the app's real paperclip glyph —
+// reused by the present-attachments candidate as its leading mark, so "this
+// reads like an attached item" is drawn with the same paperclip the app
+// already uses for attachments, not a new invented mark.
+import { QuestionIcon, ChatIcon, ChevronIcon, AttachIcon } from '../../../components/Icons';
 // Chat search results round: the real copy contract, the resolved-conversation
 // shape, and the seven-state fake index — same sources ChatsearchFindCard,
 // ChatsearchShowCard, and the fixtures module itself use, so a candidate here
@@ -2887,6 +2891,183 @@ function PresentMiniTranscript() {
   );
 }
 
+// ── Round 2: reset ────────────────────────────────────────────────────────
+// The owner rejected all three Round 1 candidates outright: "all way too busy
+// with unclear visual hierarchy and structure." That fault wasn't in any one
+// candidate's styling — it was the SHAPE every candidate copied:
+// PresentedConversationsBox (an accent-tinted border + fill) nested inside the
+// assistant bubble, with a second box per conversation inside that. Three
+// containers deep before a single word of real content rendered. R2 throws
+// that shape away rather than tweaking it.
+//
+// Every candidate below draws AT MOST one container of its own (a rule, a
+// hover fill, or nothing) inside the assistant bubble — never a bordered
+// accent box, never a per-row box — and cuts content to a title plus one
+// quiet line. What differs between the three is genuinely the structure
+// around that content, not how much got stuffed into a box, per the brief.
+//
+// Two more R1 faults, fixed identically here: (1) title, tags, project, date,
+// and the lane label all rendered at near-identical weight, so nothing was
+// the eye's first stop — every candidate below sets the title to
+// text-sm font-medium and drops everything else to text-3xs text-fg-muted,
+// including dropping R1's PresentedTitle eyebrow line entirely (that eyebrow
+// doubled as the lane/provider label the R2 brief says to cut, and at
+// text-4xs directly above the title it also crowded it). (2) two buttons per
+// conversation — R2 has none. The whole row is the click target that opens
+// the conversation: a real <button>, a visible hover state, and a focus
+// ring, the same contract ResumeBrowser.tsx's own rows use
+// (renderSessionRow, ResumeBrowser.tsx:917-927). Resume is not on this block
+// at all — it moves to the preview panel's header per the brief. Tag chips
+// are gone too; the brief named them explicitly as filling the box without
+// helping recognition.
+//
+// Every row stays INERT like R1's ChatsearchActions buttons were: no real
+// session backs a workbench fixture, so the buttons below are real,
+// focusable, and keyboard-operable, but fire nothing on click.
+
+/** Title only, no eyebrow line. R1's PresentedTitle rendered a "Past
+ *  conversation · read-only · Claude Code" line above the title — the lane
+ *  label the R2 brief says to cut, and it also visually competed with the
+ *  title it sat above. The title alone, at font-medium, is the only text in
+ *  this block at that weight — that's the entire hierarchy fix. */
+function PresentedTitleOnly({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <span className="block text-sm font-medium text-fg truncate">
+      {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+    </span>
+  );
+}
+
+/** The one quiet supporting line every candidate is allowed. Real
+ *  ChatsearchMetaLine with an empty tag list — project/date/blocked read
+ *  exactly as they do on the search-card surface above, just without the
+ *  chips the R2 brief says to drop, and without redrawing the layout by
+ *  hand. */
+function PresentedMetaQuiet({ r, className }: {
+  r: Extract<ResolvedConversation, { status: 'ok' }>; className?: string;
+}) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <ChatsearchMetaLine
+      tags={[]}
+      blocked={blocked}
+      project={r.projectName || COPY.noProject}
+      date={formatRelativeTime(r.lastActive)}
+      className={className}
+    />
+  );
+}
+
+/** Plain-text section label, shared by all three — NOT a box, so it does not
+ *  count against the one-container budget each candidate is held to. Kept so
+ *  the block still says "these are past conversations" without spending a
+ *  container to say it. */
+function PresentedHeading() {
+  return (
+    <div className="text-4xs uppercase tracking-wider text-fg-muted mb-2">
+      {COPY.referencedHeading}
+    </div>
+  );
+}
+
+// A · present-plain-list — "No container at all". Whitespace alone groups the
+// two entries — no border, no fill, no rule ever drawn at rest. The only
+// visual feedback is a soft hover fill that appears and disappears; nothing
+// is drawn when the pointer is elsewhere. The most restrained possible
+// answer, and the baseline the other two have to beat.
+function PresentPlainListEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group block w-full text-left rounded-md -mx-2 px-2 py-1.5 transition-colors hover:bg-well disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <PresentedTitleOnly r={r} />
+      <PresentedMetaQuiet r={r} className="mt-0.5" />
+    </button>
+  );
+}
+function PresentPlainList() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedHeading />
+        <div className="flex flex-col gap-3">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentPlainListEntry key={r.id} r={r} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// B · present-quoted — "Quoted, like a reference". One left accent rule spans
+// the WHOLE group; both entries stack against it. The rule is the entire
+// container — nothing else is drawn around either row — which is what makes
+// this a line rather than a box that happens to wear a border. Says "these
+// are things I'm referring to" the way a blockquote does.
+function PresentQuotedEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group block w-full rounded-sm px-1.5 py-1 text-left transition-colors hover:bg-well/60 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <PresentedTitleOnly r={r} />
+      <PresentedMetaQuiet r={r} className="mt-0.5" />
+    </button>
+  );
+}
+function PresentQuoted() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedHeading />
+        <div className="flex flex-col gap-2 border-l-2 border-accent/40 pl-3">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentQuotedEntry key={r.id} r={r} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// C · present-attachments — "Attached items". Each conversation collapses to
+// ONE row: a small leading mark (AttachIcon, the app's real paperclip glyph),
+// the title, and the time right-aligned on the SAME line — no second
+// metadata line at all. That is the structural difference from the other
+// two, not just a density choice: time alone is the whole supporting line, so
+// project name is dropped from this candidate specifically as the trade-off
+// for reading like a list of attached items rather than a list of summaries.
+function PresentAttachmentEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group flex w-full items-center gap-2 rounded-md -mx-2 px-2 py-2 transition-colors hover:bg-well disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <AttachIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" />
+      <span className="min-w-0 flex-1 truncate text-left text-sm font-medium text-fg">
+        {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+      </span>
+      <span className="shrink-0 text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+    </button>
+  );
+}
+function PresentAttachments() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedHeading />
+        <div className="divide-y divide-edge-dim/60">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentAttachmentEntry key={r.id} r={r} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -3477,6 +3658,30 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'A glimpse of the actual conversation',
             note: 'Shows a few real chat bubbles from the conversation, clipped to a fixed height so it can never grow past that no matter how long the real exchange was. The most recognisable of the three, and by far the tallest — with two conversations shown, this candidate is roughly triple the compact version\'s height.',
             render: () => <PresentMiniTranscript />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'R1 — all three rejected outright: "all way too busy with unclear visual hierarchy and structure." A reset, not a tweak — every candidate below drops the nested accent box, the tag chips, the lane label, and the second button, leaving one container at most (the bubble itself), a title that is clearly the heaviest thing in the block, and a single click target that opens the conversation. Resume is not on this block; it moves to the preview panel\'s header.',
+        candidates: [
+          {
+            id: 'present-plain-list',
+            label: 'No container at all',
+            note: 'Whitespace alone groups the conversations — no border, no fill, no rule, ever, at rest. The plainest possible answer; if a heavier candidate doesn\'t clearly earn its extra ink over this one, this is the one to ship.',
+            render: () => <PresentPlainList />,
+          },
+          {
+            id: 'present-quoted',
+            label: 'Quoted, like a reference',
+            note: 'One left accent line runs down the side of the whole group, the way a quoted reference does elsewhere — a line, not a box, so it says "these are things I\'m referring to" without adding a fourth kind of container to the app.',
+            render: () => <PresentQuoted />,
+          },
+          {
+            id: 'present-attachments',
+            label: 'Attached items',
+            note: 'Each conversation is one tight row — a small paperclip mark, the title, the time — closer to a list of attached files than to a card. Densest of the three, and it drops the project name entirely to keep each row to one line.',
+            render: () => <PresentAttachments />,
           },
         ],
       },
