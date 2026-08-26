@@ -181,6 +181,35 @@ describe('DeliverablesCard', () => {
     expect(screen.getByText(/out2 is a directory/)).toBeInTheDocument();
   });
 
+  it('a call RECOVERING (failed -> complete) while a sibling stays failed does not reopen a card the user collapsed', () => {
+    // Guards the ref gate itself: failedIdsKey changes value here too
+    // ("t1,t2" -> "t2"), since recovery removes an id from the failed list
+    // just as surely as a new failure adds one. Only the ref — which never
+    // "forgets" an id it already marked surfaced — knows this key change
+    // carries no NEW id, so it must not reopen the card. A version of this
+    // effect that fires on any key change (ignoring the ref) would reopen
+    // it here, which is exactly the bug this test exists to catch.
+    setViewport(false);
+    const err1 = 'SendUserFile failed — nothing was sent:\n- /tmp/out1 is a directory';
+    const err2 = 'SendUserFile failed — nothing was sent:\n- /tmp/out2 is a directory';
+    const { rerender } = render(<DeliverablesCard tools={[
+      call('t1', ['/tmp/out1'], { status: 'failed', error: err1 }),
+      call('t2', ['/tmp/out2'], { status: 'failed', error: err2 }),
+    ]} sessionId="s" />);
+    expect(screen.getByTestId('deliverables-strip')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Deliverables')); // user collapses it
+    expect(screen.queryByTestId('deliverables-strip')).toBeNull();
+
+    // t1 recovers (failed -> complete); t2 is still failed. Key changes
+    // from "t1,t2" to "t2" but introduces no id the ref hasn't seen.
+    rerender(<DeliverablesCard tools={[
+      call('t1', ['/tmp/out1'], { status: 'complete' }),
+      call('t2', ['/tmp/out2'], { status: 'failed', error: err2 }),
+    ]} sessionId="s" />);
+    expect(screen.queryByTestId('deliverables-strip')).toBeNull();
+  });
+
   // Run LAST: broadcastCollapseAll/broadcastExpandAll flip a module-level flag
   // in useExpandAllToggle.ts that persists for the rest of this file's test
   // run (by design — see that file's header comment), so a test earlier in

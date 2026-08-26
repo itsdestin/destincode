@@ -261,12 +261,16 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
   );
   const hasFailure = failedIds.length > 0;
   const [open, setOpen] = useState(() => getInitialExpanded(hasFailure));
-  // IDs already accounted for — either by the mount seed above (replay: the
-  // card mounted open with these already failed) or by the effect below
-  // (live: it already opened the card for them once). A ref, not state:
-  // updating it must not itself trigger a render, only recording what the
-  // effect has already reacted to.
-  const surfacedFailedIds = useRef<Set<string>>(new Set(hasFailure ? failedIds : []));
+  // IDs already accounted for — seeded from the mount state above (whatever
+  // `open` came out to, not necessarily open: a Ctrl+O collapse-all forces
+  // `getInitialExpanded` to false even with a failure already present, so
+  // the card can mount CLOSED with these ids marked surfaced — that's
+  // intentional, collapse-all is an explicit global instruction, see the
+  // effect below for the live case) or by the effect below (live: it
+  // already opened the card for them once). A ref, not state: updating it
+  // must not itself trigger a render, only recording what the effect has
+  // already reacted to.
+  const surfacedFailedIds = useRef<Set<string>>(new Set(failedIds));
   // A derived STRING key, not `failedIds` itself: an array is a new
   // reference every render even when its contents are identical (tools is
   // rebuilt upstream on every chat-reducer action), so using the array as
@@ -274,11 +278,12 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
   // re-assign the ref — on every unrelated render. It would not infinite
   // loop (setOpen(true) is a no-op once open is already true, and the ref
   // write triggers no render at all), but it would burn a diff every render
-  // for nothing. The string only changes VALUE when a call's failed-ness
-  // actually changes, so React's Object.is dependency check skips the
-  // effect on a caption arriving, a sibling tool finishing, or the same
-  // failed call re-rendering — which is exactly what keeps an explicit
-  // user collapse stuck.
+  // for nothing. The string can also change VALUE for reasons besides a
+  // call's failed-ness actually changing — a failed call entering or
+  // leaving `tools`, or the order of failed calls shifting — but the ref
+  // gate below is what makes those inert regardless: it only opens the
+  // card for an id it hasn't already seen, so a key change with no new id
+  // in it is a no-op. That's what keeps an explicit user collapse stuck.
   const failedIdsKey = failedIds.join(',');
   useEffect(() => {
     // failedIds here is the value captured at the moment failedIdsKey
