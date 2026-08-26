@@ -33,6 +33,9 @@ export interface UseArtifactContentResult {
   contentState: ArtifactContentState;
   /** Re-runs the read after an error — wired to ErrorState's Retry. */
   retryRead: () => void;
+  /** Deliver a WHOLE artifacts:get response — text AND the facts about the text
+   * in one call. Prefer this over setContent for anything that came off disk. */
+  applyDiskRead: (res: any) => void;
 }
 
 export function useArtifactContent(
@@ -87,7 +90,7 @@ export function useArtifactContent(
       if (cancelled) return;
       if (res && res.ok) {
         setContent(res.content ?? null);
-        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, truncated: res.truncated, sizeBytes: res.sizeBytes });
+        setContentInfo({ binary: res.binary, truncated: res.truncated, sizeBytes: res.sizeBytes });
         // orphan:true is the handler's genuine not-found signal (ENOENT /
         // orphaned record) — the ONLY thing allowed to render "no longer on
         // disk". Everything else that resolved ok is ready.
@@ -125,5 +128,17 @@ export function useArtifactContent(
     }
   }, []);
 
-  return { content, setContent: reconciledSetContent, contentInfo, contentState, retryRead };
+  // Content and its metadata, always together. Callers used to hand back only
+  // `res.content`, leaving contentInfo frozen at whatever the FIRST read said —
+  // so a file that grew past the cap while open kept its Edit button, and saving
+  // would have written the prefix over the whole file (spec §4.4). Editability
+  // is derived from sizeBytes, so a stale size is a data-loss bug, not cosmetics.
+  const applyDiskRead = useCallback((res: any) => {
+    if (!res || !res.ok || res.orphan) return;
+    setContent(res.content ?? null);
+    setContentInfo({ binary: res.binary, truncated: res.truncated, sizeBytes: res.sizeBytes });
+    setContentState({ phase: 'ready' });
+  }, []);
+
+  return { content, setContent: reconciledSetContent, contentInfo, contentState, retryRead, applyDiskRead };
 }

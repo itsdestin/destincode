@@ -10,11 +10,12 @@
 // 4. The concurrency token from startEdit's refresh rides into the save.
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, act, waitFor } from '@testing-library/react';
+import { render, act, waitFor, within } from '@testing-library/react';
 import { ActiveArtifactView, type ActiveArtifactHandle } from '../src/renderer/components/artifact-views/ActiveArtifactView';
 
 const save = vi.fn();
 const get = vi.fn();
+let changedCb: any = null;
 
 function mountView(overrides: Partial<React.ComponentProps<typeof ActiveArtifactView>> = {}) {
   const ref = React.createRef<ActiveArtifactHandle>();
@@ -36,7 +37,12 @@ beforeEach(() => {
   save.mockReset().mockResolvedValue({ ok: true, mtimeMs: 100 });
   get.mockReset().mockResolvedValue({ ok: true, content: 'hello', orphan: false, mtimeMs: 42 });
   (window as any).claude = {
-    artifacts: { save, get, onChanged: () => () => {} },
+    artifacts: {
+      save,
+      get,
+      // Capture the watcher callback so a test can fire an on-disk change.
+      onChanged: (cb: any) => { changedCb = cb; return () => { changedCb = null; }; },
+    },
   };
   vi.spyOn(window, 'confirm').mockReturnValue(true);
 });
@@ -165,5 +171,75 @@ describe('ActiveArtifactView save safety', () => {
     await act(async () => { ok = await ref.current!.saveEdit(); });
     expect(ok).toBe(false);
     expect(utils.getByText(/changed on disk while you were editing/i)).toBeTruthy();
+  });
+});
+
+// Content and the FACTS about content must travel together. Every editability
+// guard reads contentInfo; the watcher can swap the pane's text underneath it.
+// If the size does not ride along, a file that grew past the cap while open
+// keeps its Edit button and saving writes the prefix over the whole file.
+describe('content updates always carry their metadata', () => {
+  it('hands the whole read to onDiskRead when the file grows past the cap while open', async () => {
+    const onDiskRead = vi.fn();
+    const view = mountView({
+      content: 'small',
+      contentInfo: { sizeBytes: 100, binary: false },
+      onDiskRead,
+    });
+    get.mockResolvedValue({ ok: true, content: 'PREFIX', binary: false,
+                            truncated: true, sizeBytes: 9_000_000, mtimeMs: 2 });
+    await act(async () => {
+      changedCb!({ projectRoot: '/proj', artifactId: 'a1', kind: 'change' });
+    });
+    await waitFor(() => expect(onDiskRead).toHaveBeenCalled());
+    const res = onDiskRead.mock.calls[0][0];
+    expect(res.sizeBytes).toBe(9_000_000);
+    expect(res.truncated).toBe(true);
+    view.utils.unmount();
+  });
+
+  // The watcher's `disk !== content` guard used to wrap the metadata update
+  // too, so an append past the cap left the visible prefix byte-identical and
+  // the size stale — the exact shape that fails OPEN.
+  it('updates metadata even when the visible text is unchanged', async () => {
+    const onDiskRead = vi.fn();
+    const view = mountView({ content: 'same', contentInfo: { sizeBytes: 100 }, onDiskRead });
+    get.mockResolvedValue({ ok: true, content: 'same', binary: false,
+                            truncated: true, sizeBytes: 9_000_000, mtimeMs: 2 });
+    await act(async () => {
+      changedCb!({ projectRoot: '/proj', artifactId: 'a1', kind: 'change' });
+    });
+    await waitFor(() => expect(onDiskRead).toHaveBeenCalled());
+    expect(onDiskRead.mock.calls[0][0].sizeBytes).toBe(9_000_000);
+    view.utils.unmount();
+  });
+
+  // A blocked save must never be a silent no-op — the button would appear dead.
+  it('refuses an over-cap save and says why instead of doing nothing', async () => {
+    const { ref, utils } = mountView({
+      content: 'PREFIX',
+      contentInfo: { sizeBytes: 9_000_000, truncated: true },
+    });
+    let ok: boolean | undefined;
+    await act(async () => { ok = await ref.current!.saveEdit(); });
+    expect(ok).toBe(false);
+    expect(save).not.toHaveBeenCalled();
+    // Scoped to THIS view's container — renders from earlier tests in the file
+    // are never unmounted, and RTL's queries default to the whole document.
+    expect(within(utils.container).getAllByText(/only showing part of this file/i)).toHaveLength(1);
+  });
+
+  // Entering edit mode refreshes from disk. If THAT read reveals the file is
+  // now a prefix, the editor must close rather than hold a truncated buffer.
+  it('backs out of edit mode when the entry refresh reveals a prefix', async () => {
+    const onDiskRead = vi.fn();
+    const { ref } = mountView({
+      content: 'small', contentInfo: { sizeBytes: 100, binary: false }, onDiskRead,
+    });
+    get.mockResolvedValue({ ok: true, content: 'PREFIX', binary: false,
+                            truncated: true, sizeBytes: 9_000_000, mtimeMs: 2 });
+    await act(async () => { ref.current!.startEdit(); });
+    await waitFor(() => expect(ref.current!.editing).toBe(false));
+    expect(onDiskRead).toHaveBeenCalled();
   });
 });

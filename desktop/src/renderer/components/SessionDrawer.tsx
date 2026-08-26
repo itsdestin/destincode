@@ -176,7 +176,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // phases) lives in the shared useArtifactContent hook — this drawer and
   // FilesTab used to carry duplicate effects that conflated "loading" with
   // "no longer on disk" (the flash bug).
-  const { content, setContent, contentInfo, contentState, retryRead } =
+  const { content, setContent, contentInfo, contentState, retryRead, applyDiskRead } =
     useArtifactContent(projectRoot, active?.id ?? null, active?.path ?? null);
 
   // ── B2 panel UI state ──
@@ -737,6 +737,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                   projectName={projectName}
                   sessionId={sessionId}
                   onContentChange={setContent}
+                  onDiskRead={applyDiskRead}
                   controlsInHeader
                   onEditStateChange={setEditState}
                 />

@@ -7,7 +7,7 @@ import { PartialFileBanner } from './PartialFileBanner';
 import { canEditArtifact } from './edit-permission';
 import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
-import { editTier } from '../../../shared/artifacts/editable-path-policy';
+import { editTier, EDIT_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 import { canonicalize } from '../../../shared/artifacts/canonicalize';
 import { UnifiedDiff } from '../diff/UnifiedDiff';
 import { LoadingState, ErrorState } from '../ui/states';
@@ -69,7 +69,6 @@ export interface ActiveArtifactHandle {
  * too-large notice instead of a blank viewer. */
 export interface ArtifactContentInfo {
   binary?: boolean;
-  tooLarge?: boolean;
   /** The content is only the first EDIT_MAX_BYTES of a larger file — drives the
    *  partial-view banner. Does NOT gate saving; size does (Stage 2B). */
   truncated?: boolean;
@@ -255,17 +254,22 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
       (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
         if (!res || !res.ok || res.orphan) return;
         if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
+        // Metadata ALWAYS travels with the read, even when the visible text is
+        // unchanged and even mid-conflict — an append past the cap leaves the
+        // prefix byte-identical while the file's size, and therefore whether it
+        // may be saved at all, has changed underneath the pane.
+        if (onDiskRead) onDiskRead(res);
         const disk = res.content ?? '';
         if (dirty) {
           if (disk !== draft) setConflict({ disk });
-        } else if (disk !== content) {
-          // Refetch path: updating host content also resets the (clean) draft.
+        } else if (!onDiskRead && disk !== content) {
+          // Legacy host with no onDiskRead: text only, metadata stays stale.
           onContentChange(disk);
         }
       });
     });
     return typeof unsubFn === 'function' ? unsubFn : undefined;
-  }, [artifact.id, projectRoot, dirty, draft, content, onContentChange]);
+  }, [artifact.id, projectRoot, artifact.path, dirty, draft, content, onContentChange, onDiskRead]);
 
   // ── Edit lifecycle callbacks (passed down to MarkdownView as controlled props) ──
   const handleStartEdit = useCallback(() => {
@@ -282,15 +286,19 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // Refresh from disk on entering edit mode: picks up staleness the watcher
     // may have missed AND captures the concurrency token the save round-trips.
     (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
-      if (res && res.ok && !res.orphan && !res.tooLarge && typeof res.content === 'string') {
-        if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
-        if (res.content !== content) onContentChange(res.content);
-      }
+      if (!res || !res.ok || res.orphan) return;
+      if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
+      if (onDiskRead) onDiskRead(res);
+      else if (typeof res.content === 'string' && res.content !== content) onContentChange(res.content);
+      // The affordance was decided on the size we knew a moment ago. If THIS
+      // read says the file is now only partly loaded, back straight out — the
+      // editor would be holding a prefix and the save would truncate.
+      if (res.truncated) setEditing(false);
     }).catch(() => { /* stale content + no token — save falls back to unguarded */ });
     setEditing(true);
     setConflict(null);
     setSaveError(null);
-  }, [tier, absolutePath, projectRoot, artifact.id, content, contentInfo, onContentChange]);
+  }, [tier, absolutePath, projectRoot, artifact.id, content, contentInfo, onContentChange, onDiskRead]);
 
   // opts.force: skip the concurrency token — the deliberate "Keep mine"
   // overwrite. Shaped as an options object so accidental event-object args
@@ -304,7 +312,12 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // Saving a PREFIX would write 2 MB over the whole 8 MB file. Hard-blocked
     // here as well as at the affordance — main cannot detect truncation itself
     // (a shrinking file is legitimate), so this is a renderer-side guarantee.
-    if (!canEditArtifact(contentInfo, content, tier)) return false;
+    if (!canEditArtifact(contentInfo, content, tier)) {
+      // Never a silent no-op: the button would otherwise do nothing at all.
+      // Specific and accurate — this is the ONE reason this branch fires.
+      setSaveError(`YouCoded is only showing part of this file (it is over ${(EDIT_MAX_BYTES / (1024 * 1024)).toFixed(1)} MB), so saving would overwrite the rest. Copy your changes out before closing.`);
+      return false;
+    }
     const saveOpts: { baseMtimeMs?: number; confirmed?: boolean } = {};
     if (!opts?.force && mtimeRef.current !== null) saveOpts.baseMtimeMs = mtimeRef.current;
     if (tier === 'needs-confirm') saveOpts.confirmed = true; // dialog shown at startEdit
@@ -314,7 +327,15 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     if (res && res.ok) {
       if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
       clearDraft(draftKey(projectRoot, artifact.id));
-      onContentChange(draft);
+      // After a successful save the file IS the draft: definitively whole, not
+      // a prefix, and exactly this many bytes. Hand back the facts, not just
+      // the text, so the next editability check is right.
+      if (onDiskRead) {
+        onDiskRead({ ok: true, content: draft, binary: false, truncated: false,
+                     sizeBytes: new TextEncoder().encode(draft).length, mtimeMs: res.mtimeMs });
+      } else {
+        onContentChange(draft);
+      }
       setEditing(false);
       setConflict(null);
       setSaveError(null);
@@ -334,7 +355,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     }
     setSaveError(saveErrorMessage(res));
     return false;
-  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, tier, content, contentInfo]);
+  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, onDiskRead, tier, content, contentInfo]);
 
   const handleCancel = useCallback(() => {
     clearDraft(draftKey(projectRoot, artifact.id));
@@ -358,11 +379,21 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // file (git checkout, formatter, another editor), and naming Claude would
     // be a guessed cause in a user-facing string (spec §8.2).
     clearDraft(draftKey(projectRoot, artifact.id));
-    onContentChange(conflict.disk);
     setDraft(conflict.disk);
     setEditing(false);
     setConflict(null);
-  }, [conflict, onContentChange, projectRoot, artifact.id]);
+    // The conflict's `disk` string came from an artifacts:get and may ITSELF be
+    // a prefix. Re-read so the pane ends up holding content and metadata that
+    // agree — accepting a conflict must not be a way to end up with a prefix
+    // that still looks whole.
+    if (onDiskRead) {
+      (window.claude as any).artifacts.get(projectRoot, artifact.id)
+        .then((res: any) => onDiskRead(res))
+        .catch(() => { /* keep the disk string already in hand */ });
+    } else {
+      onContentChange(conflict.disk);
+    }
+  }, [conflict, onContentChange, onDiskRead, projectRoot, artifact.id]);
 
   // "Load the whole file" on the partial-view banner. Re-asks WITHOUT the cap;
   // main still refuses above FULL_READ_MAX_BYTES, so this can never become an
@@ -444,26 +475,6 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     && contentInfo?.truncated === true
     && typeof contentInfo.sizeBytes === 'number'
     && isTextContentViewer(ViewerComponent);
-
-  // Over the artifacts:get size cap: the content was deliberately not served
-  // (a multi-MB string would block main + renderer, spec §2.3/§4.2). Offer the
-  // OS default app instead of a broken editor.
-  if (contentInfo?.tooLarge) {
-    const mb = contentInfo.sizeBytes ? (contentInfo.sizeBytes / (1024 * 1024)).toFixed(1) : '?';
-    return (
-      <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-fg-muted p-6 text-center">
-        <div>
-          This file is {mb} MB — too large to open in the artifact pane.
-        </div>
-        <button
-          className="underline hover:no-underline text-fg-2"
-          onClick={() => (window.claude as any).shell?.openPath?.(absolutePath)}
-        >
-          Open in default app
-        </button>
-      </div>
-    );
-  }
 
   // ── Read-lifecycle gate (the "no longer on disk" flash fix) ──
   // Rendered HERE, once, instead of per-viewer null-content branches, so every
