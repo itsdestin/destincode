@@ -3068,6 +3068,157 @@ function PresentAttachments() {
   );
 }
 
+// ── Round 3: reset, again — stop inventing treatments ────────────────────────
+// R2 was rejected harder than R1: "that's worse. it def still needs the
+// preview/resume buttons and it needs to be consistent with other ui
+// elements." Two separate faults, fixed by two separate rules this round:
+//
+// 1. Preview/Resume come back as REAL Button primitives (ChatsearchActions,
+//    declared above — same variant="secondary"/"primary" size="sm" pair
+//    SessionRefActions.tsx uses on the shipped search card). R2's click-the-
+//    row design had no buttons at all.
+// 2. Every candidate below is a literal, verbatim reuse of ONE already-shipped
+//    app element — not a new arrangement inspired by one. That is the fix for
+//    "needs to be consistent with other ui elements": consistency isn't a
+//    style note anymore, it's the entire content of each candidate. If a
+//    className below isn't copied from the file it credits, that's a bug in
+//    the candidate.
+//
+// The three elements borrowed, one each: the search-results row
+// (ChatsearchFindCard.tsx's ChatsearchRow, the surface the owner already
+// approved one comparison up), the plan bubble (AssistantTurnBubble.tsx's
+// PlanBubbleContent, the app's only other mid-message element — reuses
+// PresentedConversationsBox from R1 verbatim, since that box was already
+// built to match PlanBubbleContent's own classes), and the Resume Browser
+// card (ResumeBrowser.tsx's renderSessionRow card shell). All three render
+// the title → tagged metadata line (project, date pinned right) exactly as
+// ChatsearchMetaLine already renders it on the approved search row — no
+// candidate re-types that composition by hand.
+
+/** Title line, verbatim from ChatsearchFindCard.tsx's ChatsearchRow (`text-xs
+ *  truncate text-fg`) — NOT R1/R2's text-sm title, which was never the
+ *  approved row's actual class. Shared by all three R3 candidates so the
+ *  title reads identically regardless of which container it sits in. */
+function PresentRowTitle({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div className="text-xs truncate text-fg">
+      {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+    </div>
+  );
+}
+
+/** The real ChatsearchMetaLine, fed the same three things every other surface
+ *  in this file feeds it — never rebuilt by hand, so tag/project/date order
+ *  can't drift between "found" and "presented". */
+function PresentRowMeta({ r, className }: {
+  r: Extract<ResolvedConversation, { status: 'ok' }>; className?: string;
+}) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <ChatsearchMetaLine
+      tags={r.tags.map((t, i) => chatsearchTagChip(t, i))}
+      blocked={blocked}
+      project={r.projectName || COPY.noProject}
+      date={formatRelativeTime(r.lastActive)}
+      className={className}
+    />
+  );
+}
+
+// A · present-as-search-row — borrows ChatsearchFindCard.tsx's ChatsearchRow
+// (lines 17-46) unchanged: the same `<li className="rounded-md bg-inset/50
+// px-2.5 py-2 flex items-center gap-2">`, the same title/meta stack on the
+// left, the same actions on the right — inside a bare `<ul className=
+// "space-y-1">`, no extra box around the group. This is the row the owner
+// already signed off on for search results; here it sits in the assistant's
+// own bubble instead of a tool card, which is the ONLY thing distinguishing
+// "presented" from "found" — everything else is identical on purpose.
+function PresentSearchRowEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <li className="rounded-md bg-inset/50 px-2.5 py-2 flex items-center gap-2">
+      <div className="min-w-0 flex-1">
+        <PresentRowTitle r={r} />
+        <PresentRowMeta r={r} className="mt-0.5" />
+      </div>
+      <ChatsearchActions r={r} />
+    </li>
+  );
+}
+function PresentSearchRow() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <ul className="space-y-1">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentSearchRowEntry key={r.id} r={r} />)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// B · present-as-plan-box — borrows PresentedConversationsBox from R1 above
+// UNCHANGED (that box was already built, before R1 shipped, to reproduce
+// PlanBubbleContent's own `border-accent/40 rounded-md bg-accent/5 px-3 py-2`
+// shell and its `text-xs font-medium text-fg-2` header line — see the box's
+// own comment). Reusing the function rather than re-authoring it is the
+// point: candidate B is not "styled like the plan bubble", it is drawn by
+// the exact box that already mimics it. Each entry inside is the row content
+// (title, meta line, actions right-aligned below) — no per-entry box, since
+// the plan bubble itself never nests a second box per line of its body.
+function PresentPlanBoxEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div>
+      <PresentRowTitle r={r} />
+      <PresentRowMeta r={r} className="mt-0.5" />
+      <div className="flex justify-end mt-1.5">
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentPlanBox() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedConversationsBox>
+          {PRESENT_CONVERSATIONS.map((r) => <PresentPlanBoxEntry key={r.id} r={r} />)}
+        </PresentedConversationsBox>
+      </div>
+    </div>
+  );
+}
+
+// C · present-as-resume-card — borrows the Resume Browser's own card shell
+// (ResumeBrowser.tsx renderSessionRow, ~line 908): `rounded-lg border bg-inset
+// overflow-hidden transition-colors`, with the row's own at-rest/hover pair
+// (`border-edge-dim hover:border-edge`) rather than the expanded/inert
+// variants, since a presented conversation is never expanded or unresumable
+// by construction. One card per conversation, stacked — not the single
+// multi-row card ResumeBrowser groups by project, since this block only ever
+// shows the two conversations being presented, not a whole list.
+function PresentResumeCardEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div className="rounded-lg border border-edge-dim hover:border-edge bg-inset overflow-hidden transition-colors p-3">
+      <PresentRowTitle r={r} />
+      <PresentRowMeta r={r} className="mt-0.5" />
+      <div className="flex justify-end mt-2">
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentResumeCard() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <div className="flex flex-col gap-2">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentResumeCardEntry key={r.id} r={r} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -3682,6 +3833,30 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'Attached items',
             note: 'Each conversation is one tight row — a small paperclip mark, the title, the time — closer to a list of attached files than to a card. Densest of the three, and it drops the project name entirely to keep each row to one line.',
             render: () => <PresentAttachments />,
+          },
+        ],
+      },
+      {
+        n: 3,
+        basis: 'R2 rejected, harder than R1: "that\'s worse. it def still needs the preview/resume buttons and it needs to be consistent with other ui elements." Two fixes, not one tweak: Preview/Resume are real buttons again on every entry, and every candidate below stops being a NEW arrangement — each one is a literal, verbatim copy of ONE thing that already ships elsewhere in the app, so "consistent with other ui elements" is the candidate, not a note about it.',
+        candidates: [
+          {
+            id: 'present-as-search-row',
+            label: 'Looks like search results',
+            note: 'The exact same row you already approved for search results (ChatsearchFindCard.tsx) — same title, same tag/project/date line, same Preview/Resume buttons — just sitting directly in the message instead of inside a results card. The only thing different is where it sits.',
+            render: () => <PresentSearchRow />,
+          },
+          {
+            id: 'present-as-plan-box',
+            label: 'Looks like the assistant\'s plan box',
+            note: 'The same tinted, bordered box the assistant already uses when it shows you a step-by-step plan mid-message, with a small heading on top the same way that box has one. A presented conversation reads as the same kind of thing as a plan.',
+            render: () => <PresentPlanBox />,
+          },
+          {
+            id: 'present-as-resume-card',
+            label: 'Looks like the Resume screen\'s cards',
+            note: 'Each conversation gets its own bordered card, the same shape as the cards on the "reopen a past conversation" screen you already use, stacked one after another. Consistent with the screen built for exactly this job.',
+            render: () => <PresentResumeCard />,
           },
         ],
       },
