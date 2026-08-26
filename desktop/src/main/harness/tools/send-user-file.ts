@@ -16,6 +16,17 @@ export const SEND_USER_FILE_DESCRIPTION = [
   'Paths resolve against the working directory; "~" is not expanded, so use absolute paths for files outside the project.',
 ].join(' ');
 
+/** Narrow an unknown catch value to a Node errno code without a blind cast —
+ *  `fs.statSync` throws `NodeJS.ErrnoException`, but the catch type is
+ *  `unknown` and nothing guarantees `code` is set (a non-fs error could reach
+ *  here too), so check shape before reading it. */
+function errnoCode(err: unknown): string | undefined {
+  if (err && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string') {
+    return (err as { code: string }).code;
+  }
+  return undefined;
+}
+
 export const SendUserFileTool = defineTool({
   name: 'SendUserFile',
   description: SEND_USER_FILE_DESCRIPTION,
@@ -42,12 +53,26 @@ export const SendUserFileTool = defineTool({
       let st: fs.Stats;
       try {
         st = fs.statSync(abs);            // follows symlinks: a link to a file is a file
-      } catch {
-        problems.push(`${toPosix(abs)} does not exist`);
+      } catch (err) {
+        // Surface the REAL errno, never a guessed cause (docs/error-message-
+        // standards.md): this tool has no cwd jail (see permissionSubject
+        // below), so the model routinely names paths outside the workspace,
+        // where a parent directory it can't traverse (EACCES) is normal and
+        // the file is NOT missing — telling the model "does not exist" would
+        // send it off to recreate a file that's already there.
+        const code = errnoCode(err);
+        if (code === 'ENOENT') {
+          problems.push(`${toPosix(abs)}: does not exist`);
+        } else if (code) {
+          problems.push(`${toPosix(abs)}: cannot be read (${code})`);
+        } else {
+          // No errno at all — admit we don't know rather than invent a cause.
+          problems.push(`${toPosix(abs)}: could not be checked`);
+        }
         continue;
       }
-      if (st.isDirectory()) { problems.push(`${toPosix(abs)} is a directory`); continue; }
-      if (!st.isFile()) problems.push(`${toPosix(abs)} is not a regular file`);
+      if (st.isDirectory()) { problems.push(`${toPosix(abs)}: is a directory`); continue; }
+      if (!st.isFile()) problems.push(`${toPosix(abs)}: is not a regular file`);
     }
     if (problems.length) {
       // The WHOLE call fails: half-delivering would leave the model believing
