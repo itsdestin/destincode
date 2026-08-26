@@ -20,27 +20,54 @@ export interface OpenFilepathCtx {
   dispatch: (action: ArtifactAction) => void;
 }
 
-export async function openFilepath(ctx: OpenFilepathCtx, sessionId: string, path: string): Promise<void> {
+export interface OpenFilepathOptions {
+  // Default true = today's exact click behaviour: open the drawer up front so
+  // a CLICK gets instant feedback while the lookup runs. Pass false for an
+  // auto-open nobody clicked — opening early there buys nothing (nobody is
+  // staring at the empty panel waiting) and guarantees a visible window where
+  // the viewer is open with nothing selected (SessionDrawer force-opens the
+  // file LIST when there's no active selection, so the user sees a list
+  // instead of their file). In that mode the drawer opens only once a match
+  // is found, right before it's shown; a total miss dispatches nothing at
+  // all — the user didn't ask for this, so a silent no-op beats a panel
+  // popping open onto an error about a file they never clicked.
+  drawerOpensImmediately?: boolean;
+}
+
+export async function openFilepath(
+  ctx: OpenFilepathCtx,
+  sessionId: string,
+  path: string,
+  options?: OpenFilepathOptions
+): Promise<void> {
   const { state, dispatch } = ctx;
+  const drawerOpensImmediately = options?.drawerOpensImmediately ?? true;
   const name = path.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? path;
 
   // Open the drawer first so there's an immediate response regardless of how
   // the lookup below resolves. If resolution fails, set a pill-error note —
   // otherwise the drawer's generic "no files yet" empty state would directly
-  // contradict the file the user just clicked.
-  dispatch({ type: 'DRAWER_OPENED', sessionId });
-  dispatch({ type: 'PILL_ERROR_CLEARED', sessionId });
-  const failed = () => dispatch({
-    type: 'PILL_RESOLVE_FAILED',
-    sessionId,
-    message: `Couldn’t open ${name} — the file wasn’t found in this project.`,
-  });
+  // contradict the file the user just clicked. Skipped entirely in deferred
+  // mode — see OpenFilepathOptions above.
+  if (drawerOpensImmediately) {
+    dispatch({ type: 'DRAWER_OPENED', sessionId });
+    dispatch({ type: 'PILL_ERROR_CLEARED', sessionId });
+  }
+  const failed = () => {
+    if (!drawerOpensImmediately) return; // deferred mode: silent no-op, nothing was ever shown
+    dispatch({
+      type: 'PILL_RESOLVE_FAILED',
+      sessionId,
+      message: `Couldn’t open ${name} — the file wasn’t found in this project.`,
+    });
+  };
 
   // 1. Already in this session's live list? Select it. findBestMatch prefers
   //    an exact path match over the suffix-tolerant fallback so a same-named
   //    file elsewhere can't shadow it.
   const sessMatch = findBestMatch(state.sessionArtifacts[sessionId] ?? [], path);
   if (sessMatch) {
+    if (!drawerOpensImmediately) dispatch({ type: 'DRAWER_OPENED', sessionId });
     dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: sessMatch.id });
     return;
   }
@@ -51,15 +78,23 @@ export async function openFilepath(ctx: OpenFilepathCtx, sessionId: string, path
   const cwd = state.sessionCwd?.[sessionId];
   if (!cwd) { failed(); return; } // nothing to resolve without a root — say so
   try {
-    const [projRes, filesRes] = await Promise.all([
-      (window.claude as any).artifacts.listProject(cwd),
-      (window.claude as any).artifacts.listAllFiles(cwd),
-    ]);
+    // Ask the cheap question first: listProject reads the sidecar (already in
+    // memory / a fast IPC round trip) and is checked BEFORE the expensive
+    // listAllFiles disk walk. findBestMatch always PREFERS the tracked match
+    // over the on-disk one, so firing both in parallel (the old code) paid
+    // for a full-project scan on every open even when the sidecar already had
+    // the answer — measured at ~4s on a large workspace. Sequential costs one
+    // extra round trip only on a miss, which is the uncommon case.
+    const projRes = await (window.claude as any).artifacts.listProject(cwd);
     const trackedList: ArtifactRecord[] = projRes?.ok ? (projRes.artifacts ?? []) : [];
-    const filesList: ArtifactRecord[] = filesRes?.ok ? (filesRes.files ?? []) : [];
-    const projMatch: ArtifactRecord | undefined =
-      findBestMatch(trackedList, path) ?? findBestMatch(filesList, path);
+    let projMatch: ArtifactRecord | undefined = findBestMatch(trackedList, path);
+    if (!projMatch) {
+      const filesRes = await (window.claude as any).artifacts.listAllFiles(cwd);
+      const filesList: ArtifactRecord[] = filesRes?.ok ? (filesRes.files ?? []) : [];
+      projMatch = findBestMatch(filesList, path);
+    }
     if (projMatch) {
+      if (!drawerOpensImmediately) dispatch({ type: 'DRAWER_OPENED', sessionId });
       dispatch({ type: 'SESSION_ARTIFACT_UPSERTED', sessionId, artifact: projMatch });
       dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: projMatch.id });
       return;
@@ -75,11 +110,17 @@ export async function openFilepath(ctx: OpenFilepathCtx, sessionId: string, path
     const refreshed = await (window.claude as any).artifacts.listSession(sessionId, cwd);
     let selected = false;
     if (refreshed?.ok && Array.isArray(refreshed.artifacts)) {
-      dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: refreshed.artifacts });
       const added = findBestMatch(refreshed.artifacts as ArtifactRecord[], path);
       if (added) {
+        // Deferred mode: hold SESSION_ARTIFACTS_LOADED back too — dispatching
+        // it without a match still reveals the panel via the drawer's list
+        // state, the exact half-open window this option exists to avoid.
+        if (!drawerOpensImmediately) dispatch({ type: 'DRAWER_OPENED', sessionId });
+        dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: refreshed.artifacts });
         dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId, artifactId: added.id });
         selected = true;
+      } else if (drawerOpensImmediately) {
+        dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: refreshed.artifacts });
       }
     }
     if (!selected) failed();

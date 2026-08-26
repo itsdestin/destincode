@@ -1552,7 +1552,17 @@ function AppInner() {
       canAutoOpen: () => getPlatform() === 'electron' && !window.matchMedia?.('(max-width: 639.98px)').matches,
       guard: guardDirtyEditor,
       open: (sid, path) => {
-        void openFilepath({ state: artifactStateRef.current, dispatch: dispatchArtifact }, sid, path);
+        // drawerOpensImmediately: false — nobody clicked this. Opening the
+        // panel before the lookup resolves just shows an empty/list-only
+        // viewer for however long resolution takes (measured ~4s on a large
+        // workspace); deferred mode reveals the panel already showing the
+        // file, or stays silent entirely on a miss.
+        void openFilepath(
+          { state: artifactStateRef.current, dispatch: dispatchArtifact },
+          sid,
+          path,
+          { drawerOpensImmediately: false }
+        );
       },
     });
     const deliverableAutoOpenHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
