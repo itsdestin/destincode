@@ -2495,6 +2495,42 @@ function SentCardC() {
   );
 }
 
+/** Round 2 — A + C. A's lifted card and header, C's filmstrip body. The knobs
+ *  are tile width (names vs. files-in-view), name wrapping, and how the strip
+ *  admits there is more to the right. */
+function SentCardAC({ tileW, wrapName, fade, captionBelow, preview }: {
+  tileW: string; wrapName: boolean; fade: boolean; captionBelow: boolean; preview: 'tall' | 'short';
+}) {
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden">
+      <div className="flex items-center gap-2 px-3 pt-2 pb-1.5">
+        <FilesGlyph className="w-3.5 h-3.5 text-fg-dim" />
+        <span className="text-xs font-semibold text-fg-2">Files</span>
+        <span className="text-2xs font-mono text-fg-muted">{SENT_FILES.length}</span>
+        <span className="flex-1" />
+        {!captionBelow && <span className="text-2xs text-fg-muted truncate">{SENT_CAPTION}</span>}
+      </div>
+      <div className="relative">
+        <div className="flex gap-2 overflow-x-auto px-2 pb-2">
+          {SENT_FILES.map((f) => (
+            <div key={f.id} className={`${tileW} shrink-0`}>
+              <SentFileTile path={f.path} sessionId="wb-1" status="complete" narrow={preview === 'short'}
+                record={sentRecord(f.id)} projectPath={SENT_PROJECT} tileBg="bg-inset" wrapName={wrapName} />
+            </div>
+          ))}
+        </div>
+        {fade && (
+          // Right-edge fade: says "more to the right" without a control. Uses
+          // the card's own --well so it reads as the card, in every theme.
+          <div className="pointer-events-none absolute top-0 bottom-2 right-0 w-10"
+            style={{ background: 'linear-gradient(to left, var(--well), transparent)' }} />
+        )}
+      </div>
+      {captionBelow && <p className="px-3 pb-2 -mt-0.5 text-2xs text-fg-muted">{SENT_CAPTION}</p>}
+    </div>
+  );
+}
+
 const SENT_FILES_SURFACE: CompareSurface = {
   id: 'sent-files-card',
   label: 'Sent files — Files card',
@@ -2509,6 +2545,15 @@ const SENT_FILES_SURFACE: CompareSurface = {
         { id: 'A-open', label: 'A · Always open', note: 'Lifted card, "Files · 4" header, no chevron — cannot collapse, so it never reads as a tool group.', render: () => <SentBubble files={<SentCardA />} /> },
         { id: 'B-collapsible', label: 'B · Collapsible', note: 'Accent left edge; open by default; collapsed header keeps mini file chips so the files stay one click away.', render: () => <SentBubble files={<SentCardB />} /> },
         { id: 'C-filmstrip', label: 'C · Filmstrip', note: 'One sideways-scrolling row of previews under a "Files" label — distinct by shape, half the height of a grid.', render: () => <SentBubble files={<SentCardC />} /> },
+      ],
+    },
+    {
+      n: 2,
+      basis: 'R1 · A + C (Destin): A\u2019s lifted card and header, C\u2019s filmstrip body. Varying tile width, name wrapping, and the "more to the right" cue.',
+      candidates: [
+        { id: 'D-wide', label: 'D · Wide tiles', note: '224px tiles, names on one line, right-edge fade. Two-and-a-bit in view — you scroll for the rest.', render: () => <SentBubble files={<SentCardAC tileW="w-56" wrapName={false} fade captionBelow={false} preview="tall" />} /> },
+        { id: 'E-narrow-wrap', label: 'E · Narrow, wrapped names', note: '160px tiles with shorter previews; filenames wrap to two lines; caption moves under the strip. Three-and-a-bit in view.', render: () => <SentBubble files={<SentCardAC tileW="w-40" wrapName fade captionBelow preview="short" />} /> },
+        { id: 'F-mid-nofade', label: 'F · Middle, no fade', note: '192px tiles, one-line names, NO fade — the cut-off fourth tile is the only scroll cue, as in C.', render: () => <SentBubble files={<SentCardAC tileW="w-48" wrapName={false} fade={false} captionBelow={false} preview="tall" />} /> },
       ],
     },
   ],

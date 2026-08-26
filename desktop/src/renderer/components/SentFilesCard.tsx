@@ -99,9 +99,12 @@ export interface SentFileTileProps {
   /** Tile background utility. Default bg-well lifts a tile off the bubble;
    *  a tile nested inside a bg-well card passes bg-inset to alternate. */
   tileBg?: string;
+  /** Let the filename wrap to two lines instead of truncating — for narrow
+   *  filmstrip tiles where "scroll-pe…" says nothing. */
+  wrapName?: boolean;
 }
 
-export function SentFileTile({ path, sessionId, status, narrow, record: recordOverride, projectPath: projectPathOverride, tileBg = 'bg-well' }: SentFileTileProps) {
+export function SentFileTile({ path, sessionId, status, narrow, record: recordOverride, projectPath: projectPathOverride, tileBg = 'bg-well', wrapName = false }: SentFileTileProps) {
   const artifactCtx = useArtifactOptional();
   const open = useOpenFilepath(sessionId);
   const cwd = artifactCtx?.state.sessionCwd?.[sessionId];
@@ -159,7 +162,7 @@ export function SentFileTile({ path, sessionId, status, narrow, record: recordOv
       </div>
       <div className="flex items-center gap-2 px-2.5 py-2 min-w-0">
         <span className="flex-1 min-w-0">
-          <span className="block text-sm-tight font-semibold text-fg truncate">{name}</span>
+          <span className={`block text-sm-tight font-semibold text-fg ${wrapName ? 'line-clamp-2 break-all leading-snug' : 'truncate'}`}>{name}</span>
           {dir && <span className="block text-2xs font-mono text-fg-muted truncate">{dir}/</span>}
         </span>
         <span className="shrink-0 inline-flex items-center gap-1 text-2xs font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md px-2 py-1 transition-colors">
