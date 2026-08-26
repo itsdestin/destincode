@@ -2,7 +2,7 @@
 // chatsearch:read and pages backwards on demand — there is deliberately no
 // "load everything" (a 42 MB transcript would cross IPC and be markdown-
 // rendered bubble by bubble, inside a 480px pane, on a phone).
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import ConversationTranscript from './project-view/ConversationTranscript';
 import { ErrorState } from './ui/states';
 import { COPY, READ_TAIL_DEFAULT, type TranscriptMessage, type ChatsearchProvider } from '../../shared/chatsearch-refs';
@@ -14,7 +14,22 @@ export default function SessionPreviewPane({ provider, id, title, onClose }: { p
   const [hasMore, setHasMore] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
   const [loadingOlder, setLoadingOlder] = useState(false);
+  // Fix 2: a failed "Load older" reports its error HERE, near the paging
+  // control, instead of through `phase` — `phase` stays 'ready' so the
+  // messages already on screen are never replaced by a full-pane error.
+  const [olderError, setOlderError] = useState<string | null>(null);
   const [scrollKey, setScrollKey] = useState(0);
+
+  // Fix 1: generation token guarding every in-flight read. Bumped by every
+  // loadNewest() call (mount, prop swap, or Retry); a response is applied
+  // only if the token it captured is still current. WHY: this pane can be
+  // reused for a NEW conversation without unmounting (the drawer swaps
+  // provider/id in place when the user previews a second conversation before
+  // the first finishes loading) — without this guard, the first request's
+  // late response would land after the second's and overwrite the correct
+  // conversation with the wrong one. Same pattern as ConversationPreview.tsx's
+  // `cancelled` flag, generalized to a counter so loadOlder can share it.
+  const genRef = useRef(0);
 
   const load = useCallback(async (before?: number) => {
     const req = before === undefined ? { provider, id, tail: READ_TAIL_DEFAULT } : { provider, id, tail: READ_TAIL_DEFAULT, before };
@@ -24,19 +39,40 @@ export default function SessionPreviewPane({ provider, id, title, onClose }: { p
   }, [provider, id]);
 
   const loadNewest = useCallback(() => {
-    setPhase({ kind: 'loading' }); setMessages([]);
-    return load().then((r) => { setMessages(r.messages); setHasMore(r.hasMore); setPhase({ kind: 'ready' }); setScrollKey((k) => k + 1); })
-      .catch((e) => setPhase({ kind: 'error', message: e?.message || String(e) }));
+    const myGen = ++genRef.current;
+    setPhase({ kind: 'loading' }); setMessages([]); setOlderError(null); setLoadingOlder(false);
+    return load().then((r) => {
+      if (genRef.current !== myGen) return; // superseded — see genRef comment above
+      setMessages(r.messages); setHasMore(r.hasMore); setPhase({ kind: 'ready' }); setScrollKey((k) => k + 1);
+    }).catch((e) => {
+      if (genRef.current !== myGen) return;
+      setPhase({ kind: 'error', message: e?.message || String(e) });
+    });
   }, [load]);
 
   useEffect(() => { void loadNewest(); }, [loadNewest]);
 
   const loadOlder = async () => {
     if (!messages.length) return;
+    const beforeSeq = messages[0].seq;
+    const myGen = genRef.current; // captured, not bumped: a swap bumps it via loadNewest, which invalidates this response too
     setLoadingOlder(true);
-    try { const r = await load(messages[0].seq); setMessages((m) => [...r.messages, ...m]); setHasMore(r.hasMore); }
-    catch (e: any) { setPhase({ kind: 'error', message: e?.message || String(e) }); }
-    finally { setLoadingOlder(false); }
+    setOlderError(null);
+    try {
+      const r = await load(beforeSeq);
+      if (genRef.current !== myGen) return;
+      setMessages((m) => [...r.messages, ...m]); setHasMore(r.hasMore);
+    } catch (e: any) {
+      if (genRef.current !== myGen) return;
+      // Fix 2: keep the already-loaded messages on screen and report the
+      // failure next to "Load older" instead of blowing away the pane. Retry
+      // re-runs loadOlder() with the SAME beforeSeq (messages[0] didn't
+      // change on failure), so it retries this backwards page, not the
+      // newest slice.
+      setOlderError(e?.message || String(e));
+    } finally {
+      if (genRef.current === myGen) setLoadingOlder(false);
+    }
   };
 
   return (
@@ -46,15 +82,24 @@ export default function SessionPreviewPane({ provider, id, title, onClose }: { p
           <div className="truncate text-sm font-medium text-fg">{title || COPY.untitled}</div>
           <div className="text-xs text-fg-muted">{COPY.paneSubtitle(provider)}</div>
         </div>
-        <button type="button" className="rounded-md px-2 py-1 text-xs text-fg-muted hover:bg-well" onClick={onClose} aria-label="Close preview">✕</button>
+        <button type="button" className="rounded-md px-2 py-1 text-xs text-fg-muted hover:bg-well" onClick={onClose} aria-label={COPY.closePreviewLabel}>✕</button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
-        {phase.kind === 'loading' && <p className="text-sm text-fg-muted">Loading…</p>}
+        {phase.kind === 'loading' && <p className="text-sm text-fg-muted">{COPY.loading}</p>}
+        {/* First load has nothing to show behind it, so a full-pane error is correct here. */}
         {phase.kind === 'error' && <ErrorState mode="recoverable" message={`${COPY.errReadPrefix}${phase.message}`} onRetry={() => void loadNewest()} />}
         {phase.kind === 'ready' && (
           <ConversationTranscript messages={messages} scrollToEndKey={scrollKey}
             olderHint={hasMore
-              ? <div className="py-2 text-center"><button type="button" className="rounded-md border border-edge bg-well px-3 py-1 text-xs text-fg hover:bg-inset disabled:opacity-50" disabled={loadingOlder} onClick={loadOlder}>{COPY.loadOlder}</button></div>
+              ? (
+                <div className="py-2 text-center">
+                  {olderError ? (
+                    <ErrorState mode="recoverable" variant="inline" message={`${COPY.errReadPrefix}${olderError}`} onRetry={() => void loadOlder()} />
+                  ) : (
+                    <button type="button" className="rounded-md border border-edge bg-well px-3 py-1 text-xs text-fg hover:bg-inset disabled:opacity-50" disabled={loadingOlder} onClick={loadOlder}>{COPY.loadOlder}</button>
+                  )}
+                </div>
+              )
               : <div className="py-2 text-center text-[11.5px] text-fg-muted">— {COPY.startOfConversation} —</div>} />
         )}
       </div>

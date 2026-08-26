@@ -40,6 +40,11 @@ export const COPY = {
   toolsNotShown: (n: number) => `${n} tool call${n === 1 ? '' : 's'} not shown`,
   startOfConversation: 'start of conversation',
   loadOlder: 'Load older',
+  // SessionPreviewPane's first-load spinner text. Deliberately terse (unlike
+  // states.tsx's LoadingState, which names what's loading) — the pane's header
+  // already shows the conversation title, so "Loading…" isn't ambiguous here.
+  loading: 'Loading…',
+  closePreviewLabel: 'Close preview',
   rawOutput: 'Raw output',
   referencedHeading: 'Referenced conversations',
   // The overflow chip a presented conversation's tag row shows once more than
