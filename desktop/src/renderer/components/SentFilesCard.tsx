@@ -2,25 +2,33 @@
 // via the SendUserFile tool (Claude Code's built-in, mirrored by the native
 // harness under the same name — spec 2026-08-25).
 //
-// Layout decisions (Destin, 2026-08-25):
-//   - Lives INSIDE the assistant bubble, after the message text and ABOVE that
-//     turn's tool cards. Not collapsible, no tool chrome — it is the deliverable,
-//     not a log line. The SendUserFile call is pulled out of its tool group the
-//     same way Skill cards are (see AssistantTurnBubble → ToolGroupInline).
-//   - Two columns of previews when the chat is wide, one column of shorter
-//     previews when narrow (useNarrowViewport — the same 640px boundary the
-//     rest of the app branches on).
+// Layout decisions (Destin, 2026-08-25 — workbench compare rounds 1–2, pick
+// "D + scroll-aware fades + collapsible"):
+//   - ONE "Files" card per bubble, LAST in the bubble after the tool cards. It
+//     is the deliverable, not a log line, so it must stay visually distinct
+//     from a collapsed tool group: lifted bg-well card, a "Files · N" header
+//     with the caption, and previews instead of a status line. The
+//     SendUserFile calls are pulled out of their tool groups the same way
+//     Skill cards are (see AssistantTurnBubble → ToolGroupInline).
+//   - Body is a FILMSTRIP: one row of fixed-width preview tiles that scrolls
+//     sideways. A fade on the right says "more this way" only while there IS
+//     more; a fade on the left appears once a tile has slid under that edge.
+//     Same strip on narrow screens (a sideways swipe is natural on a phone).
+//   - Collapsible like a tool card (chevron; Ctrl+O expand/collapse-all
+//     applies), but OPEN by default — the whole point is seeing the files.
 //   - Every tile opens the artifact viewer through useOpenFilepath, the same
 //     path a filepath pill takes — so untracked files (a scratchpad report)
 //     still open, and "Open" never lies.
 //   - Preview is ArtifactThumbnail: ONE preview mechanism app-wide (image /
 //     first lines of text / scaled HTML page / letter glyph). Nothing here
 //     re-implements a thumbnail.
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ToolCallState } from '../../shared/types';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
 import { useArtifactOptional } from '../state/ArtifactContext';
 import { useNarrowViewport } from '../hooks/use-narrow-viewport';
+import { useExpandAllToggle } from '../hooks/useExpandAllToggle';
+import { ChevronIcon } from './Icons';
 import { useOpenFilepath } from '../hooks/useOpenFilepath';
 import { ArtifactThumbnail } from './ArtifactThumbnail';
 import { matchSessionArtifact } from './filepath-match';
@@ -181,37 +189,110 @@ export function SentFileTile({ path, sessionId, status, narrow, record: recordOv
   );
 }
 
+// The document glyph FilepathToken draws, at header size.
+function FilesGlyph({ className = 'w-3.5 h-3.5' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+    </svg>
+  );
+}
+
+/** Tracks whether a horizontally scrolling element has content hidden past
+ *  either edge. Re-measured on scroll and on resize (a bubble that widens can
+ *  bring the last tile fully into view, at which point the right fade lies). */
+function useEdgeOverflow(ref: React.RefObject<HTMLDivElement | null>, deps: unknown[]) {
+  const [edges, setEdges] = useState({ left: false, right: false });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const left = el.scrollLeft > 2;
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+      setEdges((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+    };
+    measure();
+    el.addEventListener('scroll', measure, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', measure); ro.disconnect(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return edges;
+}
+
 interface Props {
-  /** Every SendUserFile call in this bubble, in invocation order. Each call
-   *  renders its own grid + caption; calls stack vertically. */
+  /** Every SendUserFile call in this bubble, in invocation order. They merge
+   *  into ONE card: files concatenate, each keeps its own call's status. */
   tools: ToolCallState[];
   sessionId: string;
 }
 
 export function SentFilesCard({ tools, sessionId }: Props) {
   const narrow = useNarrowViewport();
-  if (tools.length === 0) return null;
+  // Open by default — unlike a tool card — because the files ARE the reply.
+  // Still collapsible, and Ctrl+O's expand/collapse-all applies, so the card
+  // behaves like the tool cards around it once the user starts managing space.
+  const [open, setOpen] = useState(true);
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
+
+  const entries = useMemo(
+    () => tools.flatMap((tool) => sentFilePaths(tool.input).map((path) => ({ path, status: tool.status, key: `${tool.toolUseId}:${path}` }))),
+    [tools],
+  );
+  const captions = useMemo(
+    () => tools.map((t) => asString(t.input.caption)).filter((c): c is string => !!c),
+    [tools],
+  );
+
+  const stripRef = useRef<HTMLDivElement>(null);
+  const edges = useEdgeOverflow(stripRef, [open, entries.length, narrow]);
+
+  if (entries.length === 0 && captions.length === 0) return null;
+
+  // One caption rides the header; several stack under the strip so none is lost.
+  const headerCaption = captions.length === 1 ? captions[0] : '';
+  const footCaptions = captions.length > 1 ? captions : [];
+  const fade = (side: 'left' | 'right') => ({
+    background: `linear-gradient(to ${side === 'left' ? 'right' : 'left'}, var(--well), transparent)`,
+  });
+
   return (
-    <div className="mt-3 space-y-3" data-testid="sent-files-card">
-      {tools.map((tool) => {
-        const files = sentFilePaths(tool.input);
-        const caption = asString(tool.input.caption);
-        if (files.length === 0 && !caption) return null;
-        return (
-          <div key={tool.toolUseId}>
-            {files.length > 0 && (
-              <div className={`grid gap-2 ${narrow ? 'grid-cols-1' : 'grid-cols-2'}`}>
-                {files.map((fp) => (
-                  <SentFileTile key={fp} path={fp} sessionId={sessionId} status={tool.status} narrow={narrow} />
-                ))}
-              </div>
-            )}
-            {caption && (
-              <p className="mt-2 text-sm text-fg-2 leading-snug">{caption}</p>
-            )}
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="sent-files-card">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors"
+      >
+        <FilesGlyph className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        <span className="text-xs font-semibold text-fg-2">Files</span>
+        <span className="text-2xs font-mono text-fg-muted">{entries.length}</span>
+        <span className="flex-1 min-w-0 text-2xs text-fg-muted truncate text-right">{headerCaption}</span>
+        <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={open} />
+      </button>
+      {open && (
+        <>
+          <div className="relative">
+            <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="sent-files-strip">
+              {entries.map((e) => (
+                <div key={e.key} className={`${narrow ? 'w-44' : 'w-56'} shrink-0`}>
+                  <SentFileTile path={e.path} sessionId={sessionId} status={e.status} narrow={narrow} tileBg="bg-inset" compact />
+                </div>
+              ))}
+            </div>
+            {/* Edge fades: only while something is actually hidden past that
+                edge, so a strip that fits shows none and a fully-scrolled strip
+                shows only the left one. */}
+            {edges.left && <div className="pointer-events-none absolute top-0 bottom-2 left-0 w-10" style={fade('left')} data-testid="sent-files-fade-left" />}
+            {edges.right && <div className="pointer-events-none absolute top-0 bottom-2 right-0 w-10" style={fade('right')} data-testid="sent-files-fade-right" />}
           </div>
-        );
-      })}
+          {footCaptions.map((c, i) => (
+            <p key={i} className="px-3 pb-2 -mt-0.5 text-2xs text-fg-muted">{c}</p>
+          ))}
+        </>
+      )}
     </div>
   );
 }

@@ -182,8 +182,8 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
 }
 
 // Walks ONE bubble's tool groups and returns its SendUserFile calls in
-// invocation order. The card renders inside the bubble — after the text,
-// above the tool cards — so the hoist is per bubble, unlike Skills (per turn).
+// invocation order. The card renders inside the bubble — last, after the tool
+// cards — so the hoist is per bubble, unlike Skills (per turn).
 // View-layer reorder only; reducer state untouched.
 function collectBubbleSentFiles(
   bubble: VisualBubble,
@@ -459,9 +459,6 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                   allowedPrompts={bubble.plan.allowedPrompts}
                 />
               )}
-              {sentFiles.length > 0 && (
-                <SentFilesCard tools={sentFiles} sessionId={sessionId} />
-              )}
               {hasTools && (
                 <div className={bubble.text ? 'mt-1' : ''}>
                   {bubble.toolGroupIds.map((groupId) => (
@@ -474,6 +471,12 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                     />
                   ))}
                 </div>
+              )}
+              {/* Sent-files card: LAST in the bubble, after the tool cards
+                  (Destin 2026-08-25). Its calls were filtered out of the groups
+                  above, so this is the only place they render. */}
+              {sentFiles.length > 0 && (
+                <SentFilesCard tools={sentFiles} sessionId={sessionId} />
               )}
               {/* Trailing-Skills row: Skills are reordered to the end of the turn's
                   last bubble so they read as a status footer rather than co-mingled
@@ -578,8 +581,8 @@ function ToolGroupInline({
     // standalone row outside any group via AssistantTurnBubble (see
     // collectTurnSkills + the trailing-skills div on the last bubble).
     // View-layer reorder; reducer state untouched.
-    // SendUserFile is ALSO pulled out: it renders as the SentFilesCard between
-    // the bubble's text and its tool cards (collectBubbleSentFiles).
+    // SendUserFile is ALSO pulled out: it renders as the SentFilesCard at the
+    // end of the bubble, after the tool cards (collectBubbleSentFiles).
     .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill' && !isSentFilesTool(t));
 
   if (tools.length === 0) return null;
