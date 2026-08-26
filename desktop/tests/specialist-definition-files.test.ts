@@ -369,6 +369,10 @@ describe('both loaders', () => {
     const first = loadPersonalDefinition('/x/foo.md', a);
     const again = loadPersonalDefinition('/x/foo.md', a);
     const edited = loadPersonalDefinition('/x/foo.md', b);
+    // Every load must succeed FIRST: `first.ok && again.ok && fp` compared to
+    // `again.ok && fp` would pass as `false === false` if a load failed, and the
+    // whole "stable" claim below would be vacuous.
+    expect([first.ok, again.ok, edited.ok]).toEqual([true, true, true]);
     expect(first.ok && first.value.definition.fingerprint).toMatch(/^[0-9a-f]{12}$/);
     // Same bytes, same subject — otherwise a standing grant would expire on
     // every read and the user would be asked again forever.
@@ -383,6 +387,7 @@ describe('both loaders', () => {
     const named = '---\nname: Foo\ndescription: Test.\n---\nDo the thing.';
     const ccUser = loadClaudeCodeDefinition('/home/d/.claude/agents/foo.md', named, 'user');
     const ccProject = loadClaudeCodeDefinition('/work/proj/.claude/agents/foo.md', named, 'project');
+    expect([ccUser.ok, ccProject.ok]).toEqual([true, true]);
     expect(ccUser.ok && ccUser.value.definition.fingerprint).toMatch(/^[0-9a-f]{12}$/);
     expect(ccUser.ok && ccUser.value.definition.fingerprint)
       .toBe(ccProject.ok && ccProject.value.definition.fingerprint);
