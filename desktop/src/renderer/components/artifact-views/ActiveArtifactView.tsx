@@ -2,10 +2,12 @@
 // Extracted from SessionDrawer.tsx (Task 7.2) so both SessionDrawer and ProjectView
 // can use it identically without duplicating the edit state + conflict-detection logic.
 import { useCallback, useEffect, useRef, useState, forwardRef, useImperativeHandle, Suspense } from 'react';
-import { getViewer, getEditViewer } from './RendererRegistry';
+import { getViewer, getEditViewer, rendersFromBytesOnly, isTextContentViewer } from './RendererRegistry';
+import { PartialFileBanner } from './PartialFileBanner';
+import { canEditArtifact } from './edit-permission';
 import { ViewerErrorBoundary } from './ViewerErrorBoundary';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
-import { editTier } from '../../../shared/artifacts/editable-path-policy';
+import { editTier, EDIT_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 import { canonicalize } from '../../../shared/artifacts/canonicalize';
 import { UnifiedDiff } from '../diff/UnifiedDiff';
 import { LoadingState, ErrorState } from '../ui/states';
@@ -67,7 +69,9 @@ export interface ActiveArtifactHandle {
  * too-large notice instead of a blank viewer. */
 export interface ArtifactContentInfo {
   binary?: boolean;
-  tooLarge?: boolean;
+  /** The content is only the first EDIT_MAX_BYTES of a larger file — drives the
+   *  partial-view banner. Does NOT gate saving; size does (Stage 2B). */
+  truncated?: boolean;
   sizeBytes?: number;
 }
 
@@ -98,6 +102,10 @@ export interface ActiveArtifactViewProps {
   contentState?: ArtifactContentState;
   /** Re-runs the failed read — wired to the error state's Retry button. */
   onRetryRead?: () => void;
+  /** Hand a WHOLE artifacts:get response back to the host so the text and the
+   *  facts about the text (size, truncation) update together. Without this a
+   *  refetch can leave metadata frozen at whatever the first read said. */
+  onDiskRead?: (res: any) => void;
   projectRoot: string;
   projectId: string;
   projectName: string;
@@ -111,7 +119,7 @@ export interface ActiveArtifactViewProps {
 }
 
 export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifactViewProps>(function ActiveArtifactView({
-  artifact, content, contentInfo, contentState, onRetryRead, projectRoot, projectId, projectName, sessionId, onContentChange,
+  artifact, content, contentInfo, contentState, onRetryRead, projectRoot, projectId, projectName, sessionId, onContentChange, onDiskRead,
   controlsInHeader = false, onEditStateChange,
 }, ref) {
   // Legacy default: a caller that doesn't thread contentState keeps the OLD
@@ -132,10 +140,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   // mirror miss here fails safe: the save is still rejected.)
   const tier = editTier(canonicalize(absolutePath, null));
   // D4: ANY text file is editable — the old md/markdown/txt allowlist is gone.
-  // Not editable when: policy-denied, sniffed binary, over the size cap, or
-  // content has not resolved (null = loading/orphan — the §2.2 truncation guard).
-  const isEditable = content !== null && tier !== 'denied'
-    && !contentInfo?.binary && !contentInfo?.tooLarge;
+  // The four conditions (resolved content, policy, binary sniff, SIZE) live in
+  // one predicate so the affordance, entering edit mode, restoring a stashed
+  // draft, and the save call cannot disagree — see edit-permission.ts.
+  const isEditable = canEditArtifact(contentInfo, content, tier);
 
   // ── Task 6.4: controlled edit state (lifted from MarkdownView) ──
   // Owning edit state here lets the conflict banner read/reset it without
@@ -154,8 +162,11 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   const rootRef = useRef<HTMLDivElement>(null);
   // Mirrors for the unmount stash below — cleanup closures must read the
   // CURRENT values, not the ones captured when the effect last ran.
-  const stateRef = useRef({ editing: false, draft: '', content: null as string | null });
-  stateRef.current = { editing, draft, content };
+  // contentInfo rides along so the first-mount draft restore can ask the same
+  // editability question as every other entry point (edit-permission.ts).
+  const stateRef = useRef({ editing: false, draft: '', content: null as string | null,
+                            contentInfo: null as ArtifactContentInfo | null | undefined });
+  stateRef.current = { editing, draft, content, contentInfo };
   // A stashed draft waiting for content to resolve before it re-enters edit
   // mode (restoring before the fetch lands would fight the draft-reset effect).
   const pendingRestoreRef = useRef<ReturnType<typeof takeDraft>>(undefined);
@@ -171,7 +182,10 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // draft; the file is open again, so hand it back — edit mode, draft, and
     // concurrency token — once real content has resolved.
     const pending = pendingRestoreRef.current;
-    if (pending && content !== null) {
+    // A stashed draft must not re-enter edit mode on a file we could not save
+    // (over the size cap, binary, policy-denied). Without this the unmount
+    // stash is a way around the hidden Edit button.
+    if (pending && content !== null && canEditArtifact(contentInfo, content, tier)) {
       pendingRestoreRef.current = undefined;
       setDraft(pending.draft);
       mtimeRef.current = pending.mtimeMs;
@@ -199,7 +213,8 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     if (firstRunRef.current) {
       firstRunRef.current = false;
       const pending = pendingRestoreRef.current;
-      if (pending && stateRef.current.content !== null) {
+      if (pending && stateRef.current.content !== null
+          && canEditArtifact(stateRef.current.contentInfo, stateRef.current.content, tier)) {
         pendingRestoreRef.current = undefined;
         setDraft(pending.draft);
         mtimeRef.current = pending.mtimeMs;
@@ -231,41 +246,59 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     const unsubFn = (window.claude as any).artifacts?.onChanged?.((evt: any) => {
       if (evt.projectRoot !== projectRoot || evt.artifactId !== artifact.id) return;
       if (evt.kind === 'remove') return; // orphan handling is the host's concern
+      // These files render from their own bytes, never from `content`. Asking
+      // artifacts:get here would re-open the text path we just closed -- and its
+      // `res.content ?? ''` would set an IMAGE's content to the empty string,
+      // which downstream reads as an ordinary editable text file (spec §4.1).
+      if (rendersFromBytesOnly(artifact.path)) return;
       (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
         if (!res || !res.ok || res.orphan) return;
         if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
+        // Metadata ALWAYS travels with the read, even when the visible text is
+        // unchanged and even mid-conflict — an append past the cap leaves the
+        // prefix byte-identical while the file's size, and therefore whether it
+        // may be saved at all, has changed underneath the pane.
+        if (onDiskRead) onDiskRead(res);
         const disk = res.content ?? '';
         if (dirty) {
           if (disk !== draft) setConflict({ disk });
-        } else if (disk !== content) {
-          // Refetch path: updating host content also resets the (clean) draft.
+        } else if (!onDiskRead && disk !== content) {
+          // Legacy host with no onDiskRead: text only, metadata stays stale.
           onContentChange(disk);
         }
       });
     });
     return typeof unsubFn === 'function' ? unsubFn : undefined;
-  }, [artifact.id, projectRoot, dirty, draft, content, onContentChange]);
+  }, [artifact.id, projectRoot, artifact.path, dirty, draft, content, onContentChange, onDiskRead]);
 
   // ── Edit lifecycle callbacks (passed down to MarkdownView as controlled props) ──
   const handleStartEdit = useCallback(() => {
     // Confirm-tier paths get one deliberate click BEFORE editing starts, not a
     // surprise refusal at save time (D5 — mistake-prevention, not security; the
     // hard boundary is main's).
+    // Belt and braces: the Edit button is already hidden for these, but a
+    // keyboard path or a host ref must not open an editor on a file whose save
+    // we would have to refuse.
+    if (!canEditArtifact(contentInfo, content, tier)) return;
     if (tier === 'needs-confirm' && !window.confirm(confirmMessage(canonicalize(absolutePath, null)))) {
       return;
     }
     // Refresh from disk on entering edit mode: picks up staleness the watcher
     // may have missed AND captures the concurrency token the save round-trips.
     (window.claude as any).artifacts.get(projectRoot, artifact.id).then((res: any) => {
-      if (res && res.ok && !res.orphan && !res.tooLarge && typeof res.content === 'string') {
-        if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
-        if (res.content !== content) onContentChange(res.content);
-      }
+      if (!res || !res.ok || res.orphan) return;
+      if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
+      if (onDiskRead) onDiskRead(res);
+      else if (typeof res.content === 'string' && res.content !== content) onContentChange(res.content);
+      // The affordance was decided on the size we knew a moment ago. If THIS
+      // read says the file is now only partly loaded, back straight out — the
+      // editor would be holding a prefix and the save would truncate.
+      if (res.truncated) setEditing(false);
     }).catch(() => { /* stale content + no token — save falls back to unguarded */ });
     setEditing(true);
     setConflict(null);
     setSaveError(null);
-  }, [tier, absolutePath, projectRoot, artifact.id, content, onContentChange]);
+  }, [tier, absolutePath, projectRoot, artifact.id, content, contentInfo, onContentChange, onDiskRead]);
 
   // opts.force: skip the concurrency token — the deliberate "Keep mine"
   // overwrite. Shaped as an options object so accidental event-object args
@@ -276,6 +309,15 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // write here would truncate the file to the placeholder draft. This is the
     // single highest-risk regression in the workstream; keep it hard-blocked.
     if (content === null) return false;
+    // Saving a PREFIX would write 2 MB over the whole 8 MB file. Hard-blocked
+    // here as well as at the affordance — main cannot detect truncation itself
+    // (a shrinking file is legitimate), so this is a renderer-side guarantee.
+    if (!canEditArtifact(contentInfo, content, tier)) {
+      // Never a silent no-op: the button would otherwise do nothing at all.
+      // Specific and accurate — this is the ONE reason this branch fires.
+      setSaveError(`YouCoded is only showing part of this file (it is over ${(EDIT_MAX_BYTES / (1024 * 1024)).toFixed(1)} MB), so saving would overwrite the rest. Copy your changes out before closing.`);
+      return false;
+    }
     const saveOpts: { baseMtimeMs?: number; confirmed?: boolean } = {};
     if (!opts?.force && mtimeRef.current !== null) saveOpts.baseMtimeMs = mtimeRef.current;
     if (tier === 'needs-confirm') saveOpts.confirmed = true; // dialog shown at startEdit
@@ -285,7 +327,15 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     if (res && res.ok) {
       if (typeof res.mtimeMs === 'number') mtimeRef.current = res.mtimeMs;
       clearDraft(draftKey(projectRoot, artifact.id));
-      onContentChange(draft);
+      // After a successful save the file IS the draft: definitively whole, not
+      // a prefix, and exactly this many bytes. Hand back the facts, not just
+      // the text, so the next editability check is right.
+      if (onDiskRead) {
+        onDiskRead({ ok: true, content: draft, binary: false, truncated: false,
+                     sizeBytes: new TextEncoder().encode(draft).length, mtimeMs: res.mtimeMs });
+      } else {
+        onContentChange(draft);
+      }
       setEditing(false);
       setConflict(null);
       setSaveError(null);
@@ -305,7 +355,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     }
     setSaveError(saveErrorMessage(res));
     return false;
-  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, tier, content]);
+  }, [projectRoot, projectId, projectName, artifact.id, draft, sessionId, onContentChange, onDiskRead, tier, content, contentInfo]);
 
   const handleCancel = useCallback(() => {
     clearDraft(draftKey(projectRoot, artifact.id));
@@ -329,11 +379,31 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
     // file (git checkout, formatter, another editor), and naming Claude would
     // be a guessed cause in a user-facing string (spec §8.2).
     clearDraft(draftKey(projectRoot, artifact.id));
-    onContentChange(conflict.disk);
     setDraft(conflict.disk);
     setEditing(false);
     setConflict(null);
-  }, [conflict, onContentChange, projectRoot, artifact.id]);
+    // The conflict's `disk` string came from an artifacts:get and may ITSELF be
+    // a prefix. Re-read so the pane ends up holding content and metadata that
+    // agree — accepting a conflict must not be a way to end up with a prefix
+    // that still looks whole.
+    if (onDiskRead) {
+      (window.claude as any).artifacts.get(projectRoot, artifact.id)
+        .then((res: any) => onDiskRead(res))
+        .catch(() => { /* keep the disk string already in hand */ });
+    } else {
+      onContentChange(conflict.disk);
+    }
+  }, [conflict, onContentChange, onDiskRead, projectRoot, artifact.id]);
+
+  // "Load the whole file" on the partial-view banner. Re-asks WITHOUT the cap;
+  // main still refuses above FULL_READ_MAX_BYTES, so this can never become an
+  // unbounded read. Declared HERE with the other hooks — putting it lower would
+  // place it after the loading/missing/error early returns, making it a
+  // conditionally-called hook (React error + a lint failure).
+  const loadFull = useCallback(() => {
+    (window.claude as any).artifacts.get(projectRoot, artifact.id, { full: true })
+      .then((res: any) => { if (onDiskRead) onDiskRead(res); });
+  }, [projectRoot, artifact.id, onDiskRead]);
 
   // Expose edit control to the host header (SessionDrawer).
   useImperativeHandle(ref, () => ({
@@ -391,25 +461,20 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
         binaryHint: contentInfo?.binary === true,
       });
 
-  // Over the artifacts:get size cap: the content was deliberately not served
-  // (a multi-MB string would block main + renderer, spec §2.3/§4.2). Offer the
-  // OS default app instead of a broken editor.
-  if (contentInfo?.tooLarge) {
-    const mb = contentInfo.sizeBytes ? (contentInfo.sizeBytes / (1024 * 1024)).toFixed(1) : '?';
-    return (
-      <div className="h-full flex flex-col items-center justify-center gap-3 text-sm text-fg-muted p-6 text-center">
-        <div>
-          This file is {mb} MB — too large to open in the artifact pane.
-        </div>
-        <button
-          className="underline hover:no-underline text-fg-2"
-          onClick={() => (window.claude as any).shell?.openPath?.(absolutePath)}
-        >
-          Open in default app
-        </button>
-      </div>
-    );
-  }
+  // Only text viewers render from `content`, so only they can be showing a
+  // PREFIX. An over-cap .svg or .html takes the text path (SVG stays editable,
+  // D5) but renders from its own bytes / a srcDoc — a banner there would
+  // announce a partial view of something that is complete on screen.
+  // A text-EXTENSION file whose bytes sniffed binary: the format is supported,
+  // this file just isn't text. Told apart here (where the routing decision
+  // lives) so the handoff can say which of the two it is.
+  const sniffedBinaryTextFile = contentInfo?.binary === true
+    && isTextContentViewer(getViewer(artifact.path));
+
+  const showPartialBanner = !editing
+    && contentInfo?.truncated === true
+    && typeof contentInfo.sizeBytes === 'number'
+    && isTextContentViewer(ViewerComponent);
 
   // ── Read-lifecycle gate (the "no longer on disk" flash fix) ──
   // Rendered HERE, once, instead of per-viewer null-content branches, so every
@@ -443,7 +508,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
   }
 
   return (
-    <div ref={rootRef} className="h-full flex flex-col">
+    <div ref={rootRef} className="h-full flex flex-col relative">
       {/* Conflict banner — shown when the file changes on disk while the user
           has UNSAVED edits. Three actions: keep draft, accept the disk version,
           or view a real unified diff (shared UnifiedDiff renderer). */}
@@ -507,6 +572,8 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
           <ViewerComponent
             path={artifact.path}
             content={content}
+            contentInfo={contentInfo}
+            sniffedBinaryTextFile={sniffedBinaryTextFile}
             absolutePath={absolutePath}
             isEditable={isEditable}
             editing={editing}
@@ -520,6 +587,17 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
         </Suspense>
         </ViewerErrorBoundary>
       </div>
+      {/* Partial-view notice — floats over the BOTTOM of the doc pane, in the
+          spot the Edit pill would occupy (a file this large is read-only, so
+          that pill is gone). Outside the viewer's scroll container, so it
+          cannot scroll away and leave a partial view looking complete. */}
+      {showPartialBanner && (
+        <PartialFileBanner
+          sizeBytes={contentInfo!.sizeBytes!}
+          onLoadFull={loadFull}
+          onOpenExternally={() => (window.claude as any).shell?.openPath?.(absolutePath)}
+        />
+      )}
     </div>
   );
 });

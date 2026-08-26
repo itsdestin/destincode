@@ -239,6 +239,38 @@ describe('terminal:get-screen-text channel parity', () => {
   });
 });
 
+// Regression net for native:retry (stalled-turn design, 2026-08-16). Five
+// surfaces must carry identical type strings — drift would leave the stalled
+// card's Retry button dead on one platform, and a dead Retry on a red card is
+// worse than no card at all.
+describe('native:retry channel parity', () => {
+  const CHANNEL = 'native:retry';
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('is declared in shared/types.ts', () => {
+    expect(read('src', 'shared', 'types.ts')).toContain(`'${CHANNEL}'`);
+  });
+  it('is declared in preload.ts', () => {
+    expect(read('src', 'main', 'preload.ts')).toContain(`'${CHANNEL}'`);
+  });
+  it('is handled in ipc-handlers.ts', () => {
+    expect(read('src', 'main', 'ipc-handlers.ts')).toContain('NATIVE_RETRY');
+  });
+  it('is referenced in remote-shim.ts', () => {
+    expect(read('src', 'renderer', 'remote-shim.ts')).toContain(`'${CHANNEL}'`);
+  });
+  it('is handled in remote-server.ts', () => {
+    expect(read('src', 'main', 'remote-server.ts')).toContain(`'${CHANNEL}'`);
+  });
+  it('is answered not-implemented by SessionService.kt (Android)', () => {
+    const src = fs.readFileSync(path.join(
+      __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+      'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+    ), 'utf8');
+    expect(src).toContain(`"${CHANNEL}"`);
+  });
+});
+
 // Regression net for pty:raw-bytes. Tier 1 introduced the Android broadcaster;
 // Tier 2 (xterm-in-WebView) added the desktop-side consumer surfaces. Three
 // surfaces must carry identical type strings — drift would silently break the

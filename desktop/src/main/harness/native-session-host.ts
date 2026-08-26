@@ -2063,17 +2063,6 @@ export class NativeSessionHost extends EventEmitter {
     return this.broker.respond(requestId, decision);
   }
 
-  /** Raise a native permission ask (Task 12's decide() will call this). Resolves
-   *  when the user responds or the session is interrupted (→ 'canceled'). */
-  askPermission(req: {
-    sessionId: string;
-    toolName: string;
-    toolInput: Record<string, unknown>;
-    denyListed: boolean;
-  }): Promise<AskDecision> {
-    return this.broker.ask(req);
-  }
-
   /** Task 0 (ROADMAP #permissions): lets ipc-handlers re-send a session's open
    *  asks after TRANSCRIPT_REPLAY, so a reloaded window's card gets its
    *  buttons back instead of coming back inert. Pure delegate — see
@@ -3635,6 +3624,14 @@ export class NativeSessionHost extends EventEmitter {
     this.broker.cancelSession(sessionId);
     entry?.session.interrupt();
     return !!entry;
+  }
+
+  /** Manual Retry from the stalled card. Unlike interrupt(), this does NOT
+   *  cascade to specialist children and does NOT cancel pending asks: only the
+   *  ONE parked step re-runs, and everything else about the turn is untouched.
+   *  Returns false when nothing was parked (the stream resumed first). */
+  retryStalledStep(sessionId: string): boolean {
+    return this.live.get(sessionId)?.session.retryStalledStep() ?? false;
   }
 
   /** Takeover/teardown quiesce (Task 9). STRONGER than interrupt() and ONLY for

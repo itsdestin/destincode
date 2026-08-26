@@ -5,7 +5,7 @@ import type { ArtifactRecord, CentralIndexProject } from '../../../../shared/art
 //   listProjectsIndex -> { ok, projects: CentralIndexProject[] }  (projects-index.ts:102)
 //   listSession       -> { ok, artifacts: ArtifactRecord[] }      (SessionDrawer.tsx:295)
 //   listAllFiles      -> { ok, files: ArtifactRecord[], truncated } (ProjectView.tsx:557)
-//   get               -> { ok, content, binary?, tooLarge?, sizeBytes? }
+//   get               -> { ok, content, binary?, truncated?, sizeBytes? }
 //   checkExistence    -> { ok, missingIds: string[] }             (SessionDrawer.tsx:146)
 //
 // The extra fields on a project (fileCount, conversationCount) are only present
@@ -32,6 +32,43 @@ const BY_PROJECT: Record<string, ArtifactRecord[]> = {
         version('wb-1', 'create', '2026-07-28T15:00:00.000Z'),
         version('wb-1', 'edit', T),
       ],
+      comments: [],
+      tags: [],
+    },
+    {
+      // Over-cap TEXT, under FULL_READ_MAX_BYTES -> partial banner + "Load the
+      // whole file". mock-shim's OVERSIZE_FIXTURES supplies the pretend size.
+      id: 'a-big-log',
+      path: 'logs/server.log',
+      kind: 'internal',
+      absolutePath: null,
+      lastModified: T,
+      status: 'active',
+      versions: [version('wb-1', 'create', T)],
+      comments: [],
+      tags: [],
+    },
+    {
+      // Over-cap TEXT, ABOVE the ceiling -> partial banner with no load action.
+      id: 'a-huge-dump',
+      path: 'logs/memory-dump.txt',
+      kind: 'internal',
+      absolutePath: null,
+      lastModified: T,
+      status: 'active',
+      versions: [version('wb-1', 'create', T)],
+      comments: [],
+      tags: [],
+    },
+    {
+      // A format YouCoded has no viewer for -> the handoff state.
+      id: 'a-clip-mp4',
+      path: 'media/demo-clip.mp4',
+      kind: 'internal',
+      absolutePath: null,
+      lastModified: T,
+      status: 'active',
+      versions: [version('wb-1', 'create', T)],
       comments: [],
       tags: [],
     },
@@ -205,6 +242,10 @@ export function allFiles(projectId: string): ArtifactRecord[] {
  *  scroll and to exercise markdown rendering, since a two-line file makes every
  *  reader look fine. */
 export const CONTENT: Record<string, string> = {
+  // Over-cap fixtures: mock-shim slices these and reports a much larger
+  // sizeBytes, so the partial-view states are reachable without an 8 MB file.
+  'a-big-log': `2026-08-25T14:00:00Z  INFO  request 1000 handled in 0ms\n2026-08-25T14:01:01Z  INFO  request 1001 handled in 3ms\n2026-08-25T14:02:02Z  INFO  request 1002 handled in 6ms\n2026-08-25T14:03:03Z  INFO  request 1003 handled in 9ms\n2026-08-25T14:04:04Z  INFO  request 1004 handled in 12ms\n2026-08-25T14:05:05Z  INFO  request 1005 handled in 15ms\n2026-08-25T14:06:06Z  INFO  request 1006 handled in 18ms\n2026-08-25T14:07:07Z  INFO  request 1007 handled in 21ms\n2026-08-25T14:08:08Z  INFO  request 1008 handled in 24ms\n2026-08-25T14:09:09Z  INFO  request 1009 handled in 27ms\n2026-08-25T14:10:00Z  INFO  request 1010 handled in 30ms\n2026-08-25T14:11:01Z  INFO  request 1011 handled in 33ms\n2026-08-25T14:12:02Z  INFO  request 1012 handled in 36ms\n2026-08-25T14:13:03Z  INFO  request 1013 handled in 39ms\n2026-08-25T14:14:04Z  INFO  request 1014 handled in 42ms\n2026-08-25T14:15:05Z  INFO  request 1015 handled in 45ms\n2026-08-25T14:16:06Z  INFO  request 1016 handled in 48ms\n2026-08-25T14:17:07Z  INFO  request 1017 handled in 51ms\n2026-08-25T14:18:08Z  INFO  request 1018 handled in 54ms\n2026-08-25T14:19:09Z  INFO  request 1019 handled in 57ms\n2026-08-25T14:20:00Z  INFO  request 1020 handled in 60ms\n2026-08-25T14:21:01Z  INFO  request 1021 handled in 63ms\n2026-08-25T14:22:02Z  INFO  request 1022 handled in 66ms\n2026-08-25T14:23:03Z  INFO  request 1023 handled in 69ms\n2026-08-25T14:24:04Z  INFO  request 1024 handled in 72ms\n2026-08-25T14:25:05Z  INFO  request 1025 handled in 75ms\n2026-08-25T14:26:06Z  INFO  request 1026 handled in 78ms\n2026-08-25T14:27:07Z  INFO  request 1027 handled in 81ms\n2026-08-25T14:28:08Z  INFO  request 1028 handled in 84ms\n2026-08-25T14:29:09Z  INFO  request 1029 handled in 87ms\n2026-08-25T14:30:00Z  INFO  request 1030 handled in 90ms\n2026-08-25T14:31:01Z  INFO  request 1031 handled in 93ms\n2026-08-25T14:32:02Z  INFO  request 1032 handled in 96ms\n2026-08-25T14:33:03Z  INFO  request 1033 handled in 99ms\n2026-08-25T14:34:04Z  INFO  request 1034 handled in 102ms\n2026-08-25T14:35:05Z  INFO  request 1035 handled in 105ms\n2026-08-25T14:36:06Z  INFO  request 1036 handled in 108ms\n2026-08-25T14:37:07Z  INFO  request 1037 handled in 111ms\n2026-08-25T14:38:08Z  INFO  request 1038 handled in 114ms\n2026-08-25T14:39:09Z  INFO  request 1039 handled in 117ms`,
+  'a-huge-dump': `2026-08-25T14:00:00Z  INFO  request 1000 handled in 0ms\n2026-08-25T14:01:01Z  INFO  request 1001 handled in 3ms\n2026-08-25T14:02:02Z  INFO  request 1002 handled in 6ms\n2026-08-25T14:03:03Z  INFO  request 1003 handled in 9ms\n2026-08-25T14:04:04Z  INFO  request 1004 handled in 12ms\n2026-08-25T14:05:05Z  INFO  request 1005 handled in 15ms\n2026-08-25T14:06:06Z  INFO  request 1006 handled in 18ms\n2026-08-25T14:07:07Z  INFO  request 1007 handled in 21ms\n2026-08-25T14:08:08Z  INFO  request 1008 handled in 24ms\n2026-08-25T14:09:09Z  INFO  request 1009 handled in 27ms\n2026-08-25T14:10:00Z  INFO  request 1010 handled in 30ms\n2026-08-25T14:11:01Z  INFO  request 1011 handled in 33ms\n2026-08-25T14:12:02Z  INFO  request 1012 handled in 36ms\n2026-08-25T14:13:03Z  INFO  request 1013 handled in 39ms\n2026-08-25T14:14:04Z  INFO  request 1014 handled in 42ms\n2026-08-25T14:15:05Z  INFO  request 1015 handled in 45ms\n2026-08-25T14:16:06Z  INFO  request 1016 handled in 48ms\n2026-08-25T14:17:07Z  INFO  request 1017 handled in 51ms\n2026-08-25T14:18:08Z  INFO  request 1018 handled in 54ms\n2026-08-25T14:19:09Z  INFO  request 1019 handled in 57ms\n2026-08-25T14:20:00Z  INFO  request 1020 handled in 60ms\n2026-08-25T14:21:01Z  INFO  request 1021 handled in 63ms\n2026-08-25T14:22:02Z  INFO  request 1022 handled in 66ms\n2026-08-25T14:23:03Z  INFO  request 1023 handled in 69ms\n2026-08-25T14:24:04Z  INFO  request 1024 handled in 72ms\n2026-08-25T14:25:05Z  INFO  request 1025 handled in 75ms\n2026-08-25T14:26:06Z  INFO  request 1026 handled in 78ms\n2026-08-25T14:27:07Z  INFO  request 1027 handled in 81ms\n2026-08-25T14:28:08Z  INFO  request 1028 handled in 84ms\n2026-08-25T14:29:09Z  INFO  request 1029 handled in 87ms\n2026-08-25T14:30:00Z  INFO  request 1030 handled in 90ms\n2026-08-25T14:31:01Z  INFO  request 1031 handled in 93ms\n2026-08-25T14:32:02Z  INFO  request 1032 handled in 96ms\n2026-08-25T14:33:03Z  INFO  request 1033 handled in 99ms\n2026-08-25T14:34:04Z  INFO  request 1034 handled in 102ms\n2026-08-25T14:35:05Z  INFO  request 1035 handled in 105ms\n2026-08-25T14:36:06Z  INFO  request 1036 handled in 108ms\n2026-08-25T14:37:07Z  INFO  request 1037 handled in 111ms\n2026-08-25T14:38:08Z  INFO  request 1038 handled in 114ms\n2026-08-25T14:39:09Z  INFO  request 1039 handled in 117ms`,
   'a-scroll-notes': `# Scroll stick — working notes
 
 The chat view re-arms its stick-to-bottom check on **every** scroll event, so

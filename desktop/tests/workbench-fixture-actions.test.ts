@@ -18,6 +18,9 @@ const KNOWN_KINDS = new Set([
   // there is no separate line kind for it), and the folded background report.
   'subagent_text', 'subagent_thinking', 'subagent_tool_use', 'subagent_tool_result',
   'subagent_permission_request', 'specialist_run', 'specialist_report',
+  // 'stalled' (Task 6): parks the turn via TRANSCRIPT_THINKING_HEARTBEAT so the
+  // stalled card can be looked at in the workbench — no backend involved.
+  'stalled',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {
@@ -122,9 +125,38 @@ describe('shipped fixtures replay', () => {
         .map((l) => JSON.parse(l))
         .filter((p) => p.type !== 'text')
         .reduce((n, p) => n + (p.type === 'subagent_permission_request' && p.held === true ? 2 : 1), 0);
-      expect(loadFixture(name, raw).actions).toHaveLength(dispatched);
+      // includeStalled here so the count means what it says: EVERY dispatchable
+      // line really was dispatched. The parked-turn line is opt-in at the
+      // workbench level (see the default-off case below), not un-dispatchable.
+      expect(loadFixture(name, raw, undefined, { includeStalled: true }).actions)
+        .toHaveLength(dispatched);
     },
   );
+
+  // Fix (M9, whole-branch review 2026-08-16): native.jsonl's `{"type":"stalled"}`
+  // line used to replay unconditionally, so the shared native session sat under
+  // the red "Provider may have stalled" card in every single workbench
+  // scenario. It is now opt-in (`?stalled=1`). Both halves are pinned: off by
+  // default, and still reachable when asked for — a fix that made the card
+  // permanently unreachable would be its own regression.
+  const STALLED_FIXTURE = [
+    '{"type":"user_message","text":"go"}',
+    '{"type":"assistant_text","text":"Working on it."}',
+    '{"type":"stalled"}',
+  ].join('\n');
+
+  it('skips the stalled line by DEFAULT — the workbench is not parked unless asked', () => {
+    const r = loadFixture('stalled-fixture', STALLED_FIXTURE);
+    expect(r.error).toBeUndefined();
+    expect(r.actions.map((a) => a.type)).toEqual(['USER_PROMPT', 'TRANSCRIPT_ASSISTANT_TEXT']);
+  });
+
+  it('replays the stalled line when includeStalled is set', () => {
+    const r = loadFixture('stalled-fixture', STALLED_FIXTURE, undefined, { includeStalled: true });
+    expect(r.actions.map((a) => a.type)).toEqual([
+      'USER_PROMPT', 'TRANSCRIPT_ASSISTANT_TEXT', 'TRANSCRIPT_THINKING_HEARTBEAT',
+    ]);
+  });
 });
 
 // The hydrate payload is what App.tsx:1465 actually receives, so a payload that
@@ -136,7 +168,7 @@ describe('chat hydrate payload', () => {
 
     // Both seeded sessions from fixtures/sessions.ts must be present, keyed by
     // the ids the session list uses — a mismatch shows an empty chat view.
-    expect([...restored.keys()].sort()).toEqual(['wb-1', 'wb-2', 'wb-3']);
+    expect([...restored.keys()].sort()).toEqual(['wb-1', 'wb-11', 'wb-2']);
 
     for (const [sessionId, session] of restored) {
       expect(session.timeline.length, `${sessionId} timeline`).toBeGreaterThan(0);

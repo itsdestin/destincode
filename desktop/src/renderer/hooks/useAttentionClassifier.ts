@@ -76,7 +76,9 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
   const currentAttentionStateRef = useRef(currentAttentionState);
   currentAttentionStateRef.current = currentAttentionState;
 
-  // Classifier reads the xterm PTY buffer — only PTY sessions have one.
+  // Classifier reads the xterm PTY buffer — only PTY sessions have one. This
+  // is also the OWNERSHIP test: no buffer means this hook is not the author of
+  // the session's attention state and must neither set nor clear it.
   const hasBuffer = provider === undefined || provider === 'claude';
   const active = hasBuffer && isThinking && !hasRunningTools && !hasAwaitingApproval && visible;
 
@@ -84,7 +86,29 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
     if (!active) {
       // Clean up: if we left any non-ok state hanging, reset to 'ok' so the
       // banner disappears when Claude resumes or the user switches views.
-      if (currentAttentionStateRef.current !== 'ok') {
+      //
+      // Fix (F1, 2026-08-16): the `hasBuffer &&` guard is new. This branch used
+      // to fire for EVERY session, and for a native (harness) session `active`
+      // is constant-false, so it ran exactly once — at ChatView mount — and
+      // threw away whatever attention state was already there. That is a state
+      // this hook never set and does not own: a native session's attention is
+      // owned by the harness stall heartbeat, not by the PTY buffer this
+      // classifier reads. Clearing it is the classifier reaching outside its
+      // own subsystem.
+      //
+      // What it actually broke: `chat:hydrate` is remote-only (preload.ts:513
+      // deliberately does not serve it on desktop; remote-server.ts:729 is the
+      // only sender), so ordinary desktop use was unaffected — ChatView mounts
+      // long before any turn parks, with the state already 'ok'. The broken
+      // case is a phone or browser reconnecting over the remote WebSocket to a
+      // desktop session that is ALREADY parked: hydrate correctly delivers
+      // attentionState 'stalled', and this line immediately wiped it, so the
+      // phone showed a plain spinner with no red card, no Retry and no Stop.
+      // Spec §11 requires remote to work.
+      //
+      // Claude Code behaviour is byte-identical: hasBuffer is true for every
+      // PTY session (and for an unset provider), from mount onward.
+      if (hasBuffer && currentAttentionStateRef.current !== 'ok') {
         dispatch({ type: 'ATTENTION_STATE_CHANGED', sessionId, state: 'ok' });
       }
       return;
@@ -202,13 +226,22 @@ export function useAttentionClassifier(sessionId: string, args: HookArgs): void 
 
     return () => {
       clearInterval(interval);
-      // Reset to 'ok' on teardown so a stale banner doesn't persist.
-      if (currentAttentionStateRef.current !== 'ok') {
+      // Reset to 'ok' on teardown so a stale banner doesn't persist. Same
+      // ownership guard as the branch above (F1): only a session whose buffer
+      // we were actually reading may clear the banner. Unreachable-but-cheap
+      // today — getting here at all requires `active`, which requires
+      // hasBuffer — kept so the two dispatch sites can't drift apart.
+      if (hasBuffer && currentAttentionStateRef.current !== 'ok') {
         dispatch({ type: 'ATTENTION_STATE_CHANGED', sessionId, state: 'ok' });
       }
     };
-    // Intentionally excludes currentAttentionState — accessed via ref to avoid
-    // re-starting the classifier on every reducer dispatch.
+    // `hasBuffer` is a real dependency (F1) rather than a stale closure read.
+    // It costs nothing: it is derived from the session's provider, which is
+    // stamped once at session creation (App.tsx:2231 / :2346) and never
+    // mutated, so it is constant for a session's whole life and never causes
+    // an extra run. Listing it keeps the disable comment below honest — the
+    // ONLY thing deliberately excluded is currentAttentionState, accessed via
+    // ref to avoid re-starting the classifier on every reducer dispatch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, sessionId, dispatch]);
+  }, [active, hasBuffer, sessionId, dispatch]);
 }

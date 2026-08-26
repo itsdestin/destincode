@@ -1047,3 +1047,112 @@ describe('chatReducer NATIVE_TOOL_PREPARING', () => {
     expect(session.toolCalls.get('real-1')!.status).toBe('failed');
   });
 });
+
+// Empty-step recovery, spec 2026-08-21 decision 4: assistant turns are minted
+// by CONTENT actions, so a turn whose every step was contentless had no entry
+// to carry its honest stopReason — the footer had nothing to render on and the
+// worst-case empty_response turn stayed visually silent.
+describe('TRANSCRIPT_TURN_COMPLETE — fully-silent turn (empty-step recovery)', () => {
+  function initState(sessionId = 'sess-1'): ChatState {
+    return new Map([[sessionId, createSessionChatState()]]);
+  }
+
+  it('creates a footer-only turn when turn-complete carries an abnormal stopReason and no content streamed', () => {
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'empty_response', model: 'stealth/ox-alpha', anthropicRequestId: null,
+      usage: { inputTokens: 21, outputTokens: 5 },
+    } as any);
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(1);
+    const turn = [...session.assistantTurns.values()][0];
+    expect(turn.segments).toEqual([]);
+    expect(turn.stopReason).toBe('empty_response');
+    expect(turn.model).toBe('stealth/ox-alpha');
+    expect(turn.usage).toMatchObject({ inputTokens: 21, outputTokens: 5 });
+    // The turn is on the timeline (it must render), and the turn still ENDED.
+    expect(session.timeline.some((e: any) => e.kind === 'assistant-turn' && e.turnId === turn.id)).toBe(true);
+    expect(session.currentTurnId).toBeNull();
+    expect(session.isThinking).toBe(false);
+  });
+
+  it('end_turn with no content still creates no turn', () => {
+    // Pins today's skip: normal CC/native completions with no streamed content
+    // must not grow ghost turns on the timeline.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'end_turn', model: null, anthropicRequestId: null, usage: null,
+    } as any);
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(0);
+    expect(session.timeline).toEqual([]);
+  });
+
+  it('the mint is IDEMPOTENT by uuid: a replayed turn-complete never appends a second ghost turn', () => {
+    // The watcher's re-emit contract and re-dock replay both re-deliver
+    // turn-complete relying on the reducer absorbing duplicates (readNewLines:
+    // "the reducer absorbs them"). Content actions are uuid-deduped on replay,
+    // so the replayed turn-complete arrives with currentTurnId null — without
+    // a uuid guard EVERY replay appended a fresh ghost turn + timeline row.
+    const complete = {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'empty_response', model: null, anthropicRequestId: null,
+      usage: { inputTokens: 21, outputTokens: 5 },
+    } as any;
+    let state = initState();
+    state = chatReducer(state, complete);
+    state = chatReducer(state, complete);   // replay of the same event
+    state = chatReducer(state, complete);   // and again
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(1);
+    expect(session.timeline.filter((e: any) => e.kind === 'assistant-turn')).toHaveLength(1);
+  });
+
+  it('a replayed abnormal turn-complete for a turn that HAD content re-mints nothing', () => {
+    // Live pass: text creates the turn, turn-complete 'max_tokens' stamps it.
+    // Replay into EXISTING state: the text action is uuid-deduped (no turn is
+    // re-created, currentTurnId stays null), then the same turn-complete
+    // arrives again — it must be absorbed, not minted as a segment-less ghost
+    // beside the real turn.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: 'sess-1', uuid: 'text-1',
+      timestamp: 900, text: 'partial answer',
+    } as any);
+    const complete = {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 1000,
+      stopReason: 'max_tokens', model: null, anthropicRequestId: null, usage: null,
+    } as any;
+    state = chatReducer(state, complete);
+    // Re-dock replay: text drops via seenUuids, turn-complete re-delivers.
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: 'sess-1', uuid: 'text-1',
+      timestamp: 900, text: 'partial answer',
+    } as any);
+    state = chatReducer(state, complete);
+
+    const session = state.get('sess-1')!;
+    expect(session.assistantTurns.size).toBe(1);   // the real turn only — no ghost
+    expect(session.timeline.filter((e: any) => e.kind === 'assistant-turn')).toHaveLength(1);
+    expect([...session.assistantTurns.values()][0].stopReason).toBe('max_tokens');
+  });
+
+  it('a minted turn is stamped with the EVENT timestamp, not the replay-time clock', () => {
+    // getOrCreateTurn defaults to Date.now(); on a re-dock replay that is the
+    // dock time, which the footer row's timestamp would then display. The mint
+    // overrides it with the event's own timestamp.
+    let state = initState();
+    state = chatReducer(state, {
+      type: 'TRANSCRIPT_TURN_COMPLETE', sessionId: 'sess-1', uuid: 'u-1', timestamp: 12345,
+      stopReason: 'empty_response', model: null, anthropicRequestId: null, usage: null,
+    } as any);
+
+    const turn = [...state.get('sess-1')!.assistantTurns.values()][0];
+    expect(turn.timestamp).toBe(12345);
+  });
+});

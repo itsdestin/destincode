@@ -280,7 +280,7 @@ export function GitReviewView({
               onToggle={() => expandCommit(entry)}
               headerLeft={
                 <>
-                  <span className="font-mono text-2xs text-fg-faint">{entry.shortSha}</span>
+                  <span className="font-mono text-2xs text-fg-muted">{entry.shortSha}</span>
                   <span className="text-xs text-fg-2 truncate flex-1">{entry.subject}</span>
                 </>
               }
@@ -295,7 +295,7 @@ export function GitReviewView({
                       <span className="text-3xs font-mono text-red-400">−{entry.counts.removed}</span>
                     </>
                   )}
-                  <span className="text-2xs text-fg-faint whitespace-nowrap">{formatRelativeTime(entry.authorDate)}</span>
+                  <span className="text-2xs text-fg-muted whitespace-nowrap">{formatRelativeTime(entry.authorDate)}</span>
                 </>
               }
             >

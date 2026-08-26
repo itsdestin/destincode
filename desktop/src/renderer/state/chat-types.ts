@@ -77,6 +77,26 @@ export interface AssistantTurn {
   anthropicRequestId: string | null;
 }
 
+/** The single definition of "a stopReason worth surfacing" — `end_turn` is the
+ *  normal completion and carries no signal. Lives HERE (not in a component) so
+ *  the reducer's turn-complete mint gate and the render gates below share one
+ *  predicate: a minted turn the gates drop, or a droppable turn that mints,
+ *  is exactly the divergence that shipped the empty_response footer as dead
+ *  code once (PR #324 review). */
+export function abnormalStopReason(reason: string | null | undefined): boolean {
+  return !!reason && reason !== 'end_turn';
+}
+
+/** Timeline render gate shared by ChatView and the buddy BubbleFeed (which
+ *  MUST mirror each other): a segment-less turn renders only when it carries
+ *  an abnormal stopReason — its footer row is the whole fix for the
+ *  empty_response bug (a fully-contentless turn must not end in unexplained
+ *  silence). All other segment-less turns drop. */
+export function shouldRenderAssistantTurn(turn: AssistantTurn | undefined): turn is AssistantTurn {
+  if (!turn) return false;
+  return turn.segments.length > 0 || abnormalStopReason(turn.stopReason);
+}
+
 // Snapshot of session stats + rate limits captured when /cost or /usage was typed.
 // Point-in-time — never auto-updates. The live view lives in the status bar.
 export interface UsageSnapshot {
@@ -201,6 +221,11 @@ export interface SessionChatState {
    * subsequent activity (a plain heartbeat, reasoning/text delta) and by endTurn().
    */
   stallWarning: { retryInMs: number; willRetry: boolean } | null;
+  /** When the stalled card was first shown, on THIS client's clock — the
+   *  count-up's origin. Null whenever the turn is not parked. Stamped on the
+   *  first `stalled` heartbeat and left alone by later ones, so the elapsed
+   *  time never resets while the card is up. */
+  stalledSince: number | null;
   /**
    * Native runtime: the model is READING the prompt (prefill), not hanging. Set
    * by a `promptProcessing`-bearing heartbeat and cleared the moment prefill ends
@@ -304,6 +329,7 @@ export function createSessionChatState(): SessionChatState {
     attentionState: 'ok',
     errorMessage: null,
     stallWarning: null,
+    stalledSince: null,
     promptProcessing: null,
     lastOutputAt: null,
     lastBufferActivityAt: 0,
@@ -440,7 +466,18 @@ export type ChatAction =
       // ThinkingIndicator countdown. Absent → a normal heartbeat that CLEARS any
       // active stall warning (activity resumed).
       stallWarning?: { retryInMs: number; willRetry: boolean };
+      // Native watchdog stage 2: the turn is PARKED. Absent → a normal
+      // heartbeat that clears the park (the stream resumed).
+      stalled?: true;
       promptProcessing?: { promptTokens: number; budgetMs: number; source?: 'prompt' | 'tool-output'; processed?: number; cached?: number; etaMs?: number | null; timeMs?: number };
+    }
+  | {
+      // Native runtime only. A manual stall Retry abandoned an attempt: remove
+      // the segments it wrote from the current turn, or the re-run's deltas
+      // merge into the same bubble and the user reads the sentence twice.
+      type: 'NATIVE_PARTS_DROPPED';
+      sessionId: string;
+      partIds: string[];
     }
   | {
       // Native runtime only. The model is generating a tool call's arguments.
@@ -711,6 +748,12 @@ export interface SerializedSessionChatState {
   errorMessage: string | null;
   // Optional so a pre-field snapshot from an older host still deserializes.
   stallWarning?: { retryInMs: number; willRetry: boolean } | null;
+  // Optional so a pre-field snapshot from an older host still deserializes.
+  // Serialized (unlike promptProcessing) because a parked turn is a condition
+  // of the HOST that outlives any one client — a phone reconnecting to a
+  // stalled desktop session must still see the card. Cross-device clock skew
+  // makes the elapsed number approximate on remote; that is accepted.
+  stalledSince?: number | null;
   lastBufferActivityAt: number;
   compactionPending: { startedAt: number; beforeContextTokens: number | null } | null;
   modelState?: import('../../shared/engine-types').EngineModelState | null;
@@ -756,6 +799,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         attentionState: s.attentionState,
         errorMessage: s.errorMessage,
         stallWarning: s.stallWarning,
+        stalledSince: s.stalledSince,
         lastBufferActivityAt: s.lastBufferActivityAt,
         compactionPending: s.compactionPending,
         modelState: s.modelState,
@@ -790,6 +834,8 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       errorMessage: ser.errorMessage ?? null,
       // Older hosts predate stallWarning — default null so a pre-field snapshot hydrates.
       stallWarning: ser.stallWarning ?? null,
+      // Older hosts predate stalledSince — default null so a pre-field snapshot hydrates.
+      stalledSince: ser.stalledSince ?? null,
       // Deliberately NOT serialized: prefill is an in-flight condition of THIS
       // client's stream. A hydrating client (remote reconnect, window restore) is
       // not mid-prefill, and restoring a stale "Reading your prompt…" would be a

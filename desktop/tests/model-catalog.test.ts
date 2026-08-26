@@ -53,6 +53,20 @@ describe('ModelCatalog', () => {
     expect(fetchMock.mock.calls.length).toBe(callsAfterFirst); // cache hit — no new fetches
   });
 
+  it('serves repeat calls from the in-memory memo — no disk or network after a fresh fetch (ROADMAP 2026-08-11)', async () => {
+    // Session start calls contextLengthFor + get back-to-back; before the memo
+    // each call re-read and re-parsed the whole cache file synchronously on
+    // the main process. Deleting the file between calls proves the second
+    // call was served from memory: without the memo it would refetch.
+    const providers = [{ id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any;
+    await cat.get(providers);                       // fetches, writes cache, sets memo
+    const fetchCallsAfterPrime = fetchMock.mock.calls.length;
+    fs.rmSync(path.join(dir, 'provider-catalog-cache.json'));
+    const models = await cat.get(providers);        // must come from the memo
+    expect(fetchMock.mock.calls.length).toBe(fetchCallsAfterPrime);
+    expect(models.length).toBeGreaterThan(0);
+  });
+
   it('a failed fetch falls back to stale cache instead of throwing', async () => {
     const providers = [{ id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any;
     await cat.get(providers);                    // primes cache

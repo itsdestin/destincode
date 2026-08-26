@@ -67,8 +67,53 @@ object EditablePathPolicy {
         return protectedReadPath(canonicalPath) || isDotenvBasename(base)
     }
 
-    /** Files above this are not served inline by artifacts:get (tooLarge). */
-    const val EDIT_MAX_BYTES: Long = 2L * 1024 * 1024
+    /** Above this, artifacts:get serves a PREFIX rather than the whole file --
+     *  the text editor blocks on a multi-MB string. Governs text only; binary
+     *  viewers have their own ceiling. Mirrors desktop EDIT_MAX_BYTES. */
+    const val EDIT_MAX_BYTES: Long = 3L * 1024 * 1024
+
+    /** Mirrors desktop FULL_READ_MAX_BYTES -- ceiling on "Load the whole file". */
+    const val FULL_READ_MAX_BYTES: Long = 4L * EDIT_MAX_BYTES
+
+    /** Mirrors desktop READ_BINARY_MAX_BYTES. */
+    const val READ_BINARY_MAX_BYTES: Long = 50L * 1024 * 1024
+
+    /**
+     * Cut a byte array to at most maxBytes of text for the partial view.
+     * Prefer the last newline so no line is shown cut in half -- unless it
+     * would throw away more than half the window (a short header line then
+     * one enormous minified line), or there is no newline at all, in which
+     * case cut at the last complete UTF-8 character so a multi-byte character
+     * is never split. Mirrors desktop textPrefix() in over-cap-read.ts; the
+     * shared cases are pinned on both sides so the two cannot drift.
+     */
+    fun textPrefix(buf: ByteArray, len: Int, maxBytes: Int): String {
+        val n = minOf(len, maxBytes)
+        if (n <= 0) return ""
+        var nl = -1
+        for (i in n - 1 downTo 0) if (buf[i] == 0x0A.toByte()) { nl = i; break }
+        if (nl >= 0 && (nl + 1) * 2 >= n) return String(buf, 0, nl + 1, Charsets.UTF_8)
+        var start = n - 1
+        while (start > 0 && (buf[start].toInt() and 0xC0) == 0x80) start--
+        val lead = buf[start].toInt() and 0xFF
+        val need = when { lead >= 0xF0 -> 4; lead >= 0xE0 -> 3; lead >= 0xC0 -> 2; else -> 1 }
+        val end = if (start + need <= n) n else start
+        return String(buf, 0, end, Charsets.UTF_8)
+    }
+
+    /** Fill `out` from the file -- read() is only required to return SOME bytes,
+     *  not to fill the buffer. Returns how many were actually read. */
+    fun readFully(f: java.io.File, out: ByteArray): Int {
+        f.inputStream().use { s ->
+            var off = 0
+            while (off < out.size) {
+                val n = s.read(out, off, out.size - off)
+                if (n <= 0) break
+                off += n
+            }
+            return off
+        }
+    }
 
     /** git-style sniff: NUL byte in the head slice means not-text. */
     fun looksBinary(head: ByteArray): Boolean {

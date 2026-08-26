@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
-import { HISTORY_EXPAND_PROMPT_ID } from '../state/chat-types';
+import { HISTORY_EXPAND_PROMPT_ID, shouldRenderAssistantTurn } from '../state/chat-types';
 import UserMessage from './UserMessage';
 import SpecialistReportCard from './SpecialistReportCard';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
@@ -792,7 +792,10 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                   break;
                 case 'assistant-turn': {
                   const turn = state.assistantTurns.get(entry.turnId);
-                  if (!turn || turn.segments.length === 0) return null;
+                  // Shared gate (chat-types.ts): a segment-less turn renders
+                  // only when its abnormal stopReason gives the footer row
+                  // something to say — the empty_response fix.
+                  if (!shouldRenderAssistantTurn(turn)) return null;
                   key = entry.turnId;
                   content = (
                     <AssistantTurnBubble
@@ -915,8 +918,17 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                 gated on the thinking area. */}
             {(() => {
               const thinkingArea = state.isThinking && !hasAwaitingApproval && !hasRunningTools;
+              // 'stalled' joins the terminal states in this gate — NOT because
+              // it is terminal (the turn is alive), but because it must render
+              // even when a preparing tool card is up. A stall while the model
+              // is writing tool arguments leaves a card with status 'running',
+              // which turns thinkingArea false; without this the red card would
+              // be invisible in precisely the mid-tool stall this design exists
+              // for (2026-08-12 incident).
               const terminalAttention =
-                state.attentionState === 'error' || state.attentionState === 'session-died';
+                state.attentionState === 'error'
+                || state.attentionState === 'session-died'
+                || state.attentionState === 'stalled';
               // Native local-model: while the model isn't resident yet (cold load
               // / waking from sleep), the turn is waiting on the ENGINE, not the
               // model thinking — show a static "Loading…" instead of the animated
@@ -951,12 +963,22 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                     state={state.attentionState}
                     anthropicRequestId={lastTurnRequestId}
                     errorMessage={state.errorMessage}
+                    stalledSince={state.stalledSince}
                     // Provider-config errors (missing/disabled key) show an
                     // "Open Settings" button that deep-links to Model Providers.
                     onOpenProviderSettings={onOpenProviderSettings}
-                    // TODO(Task 12): wire onRetry to the provider-aware native
-                    // send helper (native-send.ts) to re-send the last user
-                    // message. Left unwired here so no "Try again" button shows yet.
+                    // Stalled card only. Retry re-runs the PARKED STEP — it is
+                    // deliberately NOT the native-send helper the old TODO here
+                    // pointed at, which sends a new user message and would fork
+                    // the conversation mid-turn.
+                    onRetry={state.attentionState === 'stalled'
+                      ? () => window.claude.native.retry(sessionId)
+                      : undefined}
+                    // Stop is ESC: the existing interrupt path, which already
+                    // ends the turn cleanly and flushes the partial text to disk.
+                    onStop={state.attentionState === 'stalled'
+                      ? () => window.claude.native.interrupt(sessionId)
+                      : undefined}
                   />
                 );
               }

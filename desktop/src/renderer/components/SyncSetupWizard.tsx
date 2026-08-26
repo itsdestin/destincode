@@ -755,7 +755,7 @@ function IcloudMissingHelp({ onRecheck }: { onRecheck: () => void }) {
             <button className="text-accent underline" onClick={() => claude.openExternal('https://apps.microsoft.com/detail/9PKTQ5699M62')}>
               Microsoft Store
             </button>
-            <span className="text-fg-faint">or</span>
+            <span className="text-fg-muted">or</span>
             <button className="text-accent underline" onClick={() => claude.openExternal('https://www.apple.com/icloud/setup/pc.html')}>
               apple.com/icloud
             </button>

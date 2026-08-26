@@ -8,6 +8,7 @@ import {
   createSessionChatState,
   deserializeChatState,
   HISTORY_EXPAND_PROMPT_ID,
+  abnormalStopReason,
 } from './chat-types';
 import { SubagentSegment, SpecialistNote, ToolCallState, ToolGroupState } from '../../shared/types';
 
@@ -335,6 +336,8 @@ function endTurn(
     // Any turn end also dismisses a pending stall countdown (the give-up path
     // ends the turn via NATIVE_SESSION_ERROR, which spreads endTurn()).
     stallWarning: null,
+    // The turn cannot still be parked once it has ended.
+    stalledSince: null,
   };
 }
 
@@ -664,6 +667,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         errorMessage: null,
         stallWarning: null,
+        // A new turn cannot start already parked.
+        stalledSince: null,
         // Parity with TRANSCRIPT_SKILL_INVOKED: a new turn must not inherit the
         // previous one's prefill percentage.
         promptProcessing: null,
@@ -849,28 +854,102 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
-    // Thinking blocks are genuine activity — bump lastActivityAt and clear
-    // any stale attention state back to 'ok'. No timeline change.
-    // A heartbeat carrying a `stallWarning` is the native watchdog firing: it
-    // SETS the countdown. A plain heartbeat means activity resumed → clears it.
     case 'TRANSCRIPT_THINKING_HEARTBEAT': {
       const session = next.get(action.sessionId);
       if (!session) return state;
+      // Three heartbeat shapes, in descending severity:
+      //   stalled     → the turn is parked. RED dot, card on screen.
+      //   stallWarning→ stage 1, "may be wrong, I don't know". AMBER dot.
+      //   plain       → activity resumed. Clears both.
+      //
+      // Fix (2026-08-16): the warning branch used to set 'ok', so the dot stayed
+      // GREEN for the whole countdown — the app asserting health while telling
+      // the user it may be hanging. 'stuck' is the state that means exactly
+      // "something may be wrong and I don't know", which is what a warning is.
+      const attentionState = action.stalled ? 'stalled'
+        : action.stallWarning ? 'stuck'
+        : 'ok';
       next.set(action.sessionId, {
         ...session,
         lastActivityAt: Date.now(),
-        attentionState: 'ok',
+        attentionState,
         stallWarning: action.stallWarning ?? null,
+        // Stamped once and held: a repeat heartbeat must not restart the
+        // count-up, so an already-parked session keeps its original stamp.
+        //
+        // Fix (M8, whole-branch review 2026-08-16): the held-stamp rule used to
+        // be `session.stalledSince ?? Date.now()` with no check on the state it
+        // was held FROM. `stalledSince` is only ever read while attentionState
+        // is 'stalled' (AttentionBanner is the sole consumer). Fourteen places
+        // in this file write `attentionState: 'ok'` and only five of them also
+        // clear the stamp — the other nine (both TRANSCRIPT_USER_MESSAGE
+        // branches, both NATIVE_TOOL_PREPARING branches, both TRANSCRIPT_TOOL_USE
+        // branches, TRANSCRIPT_TOOL_RESULT, and both PERMISSION_REQUEST
+        // branches) leave it set. Any of those landing between two parks left
+        // the SECOND card counting from the FIRST park, so a turn that parked,
+        // resumed, and parked again would read "no response for 6m 12s" three
+        // seconds in. Gating on the state the stamp belongs to fixes the whole
+        // family at the ONE place the field is written, instead of adding nine
+        // `stalledSince: null` lines and forgetting the tenth.
+        stalledSince: action.stalled
+          ? (session.attentionState === 'stalled' ? (session.stalledSince ?? Date.now()) : Date.now())
+          : null,
         // Same lifetime rule as stallWarning: present on the announcing heartbeat,
         // cleared by the next plain one (which the first real chunk triggers).
         //
-        // EXCEPT when this heartbeat is a stall WARNING: that carries no
-        // promptProcessing of its own, and nulling it there wiped the progress
-        // readout mid-prefill, so the percentage appeared to reset itself
-        // (Destin, 2026-07-26). A stall warning means "still waiting", not
+        // EXCEPT when this heartbeat is a stall warning or the stalled card:
+        // neither carries promptProcessing of its own, and nulling it there
+        // wiped the progress readout mid-prefill, so the percentage appeared to
+        // reset itself (Destin, 2026-07-26). A stall means "still waiting", not
         // "prefill ended" — the reading it was showing is still the truth.
-        promptProcessing: action.promptProcessing ?? (action.stallWarning ? session.promptProcessing : null),
+        promptProcessing: action.promptProcessing
+          ?? ((action.stallWarning || action.stalled) ? session.promptProcessing : null),
       });
+      return next;
+    }
+
+    // Manual stall Retry: erase the abandoned attempt's segments from the
+    // current turn BEFORE its re-run streams. Without this the re-run's deltas
+    // merge into the same segment by partId and the user reads the half
+    // sentence twice — which is exactly why the AUTOMATIC retry has always
+    // refused to run after content streamed.
+    case 'NATIVE_PARTS_DROPPED': {
+      const session = next.get(action.sessionId);
+      if (!session || !session.currentTurnId) return state;
+      const turn = session.assistantTurns.get(session.currentTurnId);
+      if (!turn) return state;
+      const drop = new Set(action.partIds);
+      // Fix (cross-task review defect): part ids are NOT unique within a turn.
+      // The AI SDK's part id falls back to the literal 'text-0' when the
+      // provider omits one, and a turn can span multiple steps (each tool
+      // call starts a new step), so the SAME id can legitimately appear on
+      // an earlier, already-finished step's text as well as on the abandoned
+      // attempt being retried. A plain `.filter()` over the whole segment
+      // list — the old approach — deletes every match, including finished
+      // paragraphs and tool calls the user already read/ran. That is worse
+      // than the duplicate-text bug this erase exists to prevent.
+      //
+      // The abandoned attempt's segments are always the MOST RECENT ones in
+      // the turn, so walk from the END and remove only the TRAILING run of
+      // matching segments, stopping at the first one that doesn't match.
+      // Everything before that boundary is earlier, finished work and must
+      // survive untouched — a tool-group (or plan) segment carries no
+      // partId at all, so it always counts as non-matching and stops the
+      // walk, which is what keeps this safe: a tool-group segment always
+      // separates one text step from the next.
+      let cut = turn.segments.length;
+      while (cut > 0) {
+        const seg = turn.segments[cut - 1];
+        const matches = (seg.type === 'text' || seg.type === 'reasoning')
+          && !!seg.partId && drop.has(seg.partId);
+        if (!matches) break;
+        cut--;
+      }
+      const segments = turn.segments.slice(0, cut);
+      if (segments.length === turn.segments.length) return state;
+      const assistantTurns = new Map(session.assistantTurns);
+      assistantTurns.set(session.currentTurnId, { ...turn, segments });
+      next.set(action.sessionId, { ...session, assistantTurns });
       return next;
     }
 
@@ -1118,6 +1197,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         // Real answer text resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        stalledSince: null,
         // Output means PREFILL IS OVER. Leaving the readout set let it resurface
         // during any generation pause longer than the indicator's 2s streaming
         // window, showing "Reading your prompt — N%" mid-generation — the exact
@@ -1169,6 +1249,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         attentionState: 'ok',
         // Real reasoning resumed → dismiss any pending stall countdown.
         stallWarning: null,
+        stalledSince: null,
         // Same as the text path: reasoning IS output, so prefill has ended.
         promptProcessing: null,
       });
@@ -1459,6 +1540,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // stall warning would sit on top of a healthy new turn.
         errorMessage: null,
         stallWarning: null,
+        // A skill invocation is a new turn start — same reasoning as above.
+        stalledSince: null,
         // Belt-and-braces: a previous turn's prefill progress must not be
         // mistaken for this turn's (the next assistant-thinking event replaces it).
         promptProcessing: null,
@@ -1493,14 +1576,54 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
       // Attach completion metadata to the completing turn before clearing
       // turn-scoped state via endTurn(). currentTurnId is the in-flight turn;
-      // if it's already null (edge case: turn-complete arrived before any
-      // assistant text), skip metadata attachment but still call endTurn.
-      const completingTurnId = session.currentTurnId;
-      const assistantTurns = new Map(session.assistantTurns);
-      if (completingTurnId) {
-        const turn = assistantTurns.get(completingTurnId);
+      // if it's already null (turn-complete arrived before any assistant
+      // content), an ABNORMAL stopReason mints a segment-less turn to carry
+      // it — see below. Resolve WHICH turn gets stamped first, then stamp
+      // once, so the mint path can never drift from the normal path's field
+      // policy (it did, briefly: `model: action.model` vs `?? turn.model`).
+      // Shared predicate (chat-types.ts): the mint below and the render gates
+      // must agree on what "abnormal" means, or a minted turn gets dropped —
+      // or a droppable one minted.
+      const abnormalStop = abnormalStopReason(action.stopReason);
+      let assistantTurns = new Map(session.assistantTurns);
+      let timeline = session.timeline;
+      let seenUuids = session.seenUuids;
+      let targetTurnId = session.currentTurnId;
+      let mintedTimestamp: number | null = null;
+      if (!targetTurnId && abnormalStop && !session.seenUuids.has(action.uuid)) {
+        // Empty-step recovery (spec 2026-08-21, decision 4): assistant turns
+        // are minted by CONTENT actions, so a turn whose every step was
+        // contentless has no entry to carry its honest stopReason — the
+        // worst-case shape of the empty_response bug would still render as
+        // unexplained silence. Create the (segment-less) turn here so the
+        // footer has something to attach to. Normal completions keep the
+        // long-standing skip: an end_turn with no content carries no signal
+        // worth a timeline row.
+        // The seenUuids guard keeps this branch IDEMPOTENT: the watcher's
+        // re-emit contract and re-dock replay both re-deliver turn-complete
+        // (readNewLines: "the reducer absorbs them"), and content actions are
+        // uuid-deduped on replay so currentTurnId stays null — without the
+        // guard every replay would append a fresh ghost turn + timeline row.
+        const created = getOrCreateTurn(session);
+        assistantTurns = created.assistantTurns;
+        timeline = created.timeline;
+        targetTurnId = created.currentTurnId;
+        // Replay delivers the original event: stamp the turn with the event's
+        // own time, not Date.now() (which would show the re-dock time).
+        mintedTimestamp = action.timestamp;
+      }
+      if (abnormalStop) {
+        // Recorded for BOTH the stamp and the mint path: a live abnormal
+        // completion stamped onto a content turn must not re-mint as a ghost
+        // when the same event replays into existing state (content actions get
+        // deduped, so the replayed turn-complete arrives with currentTurnId
+        // null). Normal end_turn completions never grow the set.
+        seenUuids = new Set(session.seenUuids).add(action.uuid);
+      }
+      if (targetTurnId) {
+        const turn = assistantTurns.get(targetTurnId);
         if (turn) {
-          assistantTurns.set(completingTurnId, {
+          assistantTurns.set(targetTurnId, {
             ...turn,
             stopReason: action.stopReason,
             // Preserve any model already captured on the turn (e.g. from
@@ -1509,11 +1632,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             model: action.model ?? turn.model,
             anthropicRequestId: action.anthropicRequestId,
             usage: action.usage,
+            ...(mintedTimestamp !== null ? { timestamp: mintedTimestamp } : {}),
           });
         }
       }
 
-      next.set(action.sessionId, { ...session, ...endTurn(session, undefined, assistantTurns) });
+      next.set(action.sessionId, { ...session, timeline, seenUuids, ...endTurn(session, undefined, assistantTurns) });
       return next;
     }
 

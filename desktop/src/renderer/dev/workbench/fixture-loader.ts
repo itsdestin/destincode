@@ -45,6 +45,22 @@ export interface LoadResult {
   error?: string;
 }
 
+export interface LoadOptions {
+  /**
+   * Replay `{"type":"stalled"}` lines. **Off by default**, and that default is
+   * the fix for M9 (whole-branch review, 2026-08-16): the stalled line lived
+   * unconditionally in `native.jsonl`, which is the SHARED native-session
+   * fixture every workbench scenario shows, so every scenario opened with the
+   * red "Provider may have stalled" card sitting over the one native
+   * conversation — including the scenarios being reviewed for something else
+   * entirely. The parked card is now something you switch ON (the workbench
+   * toolbar's "Stalled turn" toggle → `?stalled=1`) when you want to look at
+   * it. A skipped stalled line leaves the rest of the fixture intact, so the
+   * default view is the same conversation, just not parked.
+   */
+  includeStalled?: boolean;
+}
+
 // Fixed base timestamp, not Date.now(): fixtures must replay identically on
 // every load, and a moving clock makes bubble grouping non-reproducible.
 const FIXTURE_T0 = 1_753_800_000_000;
@@ -57,7 +73,12 @@ const FIXTURE_T0 = 1_753_800_000_000;
  *   well-typed member of the ChatAction union — a `{...a, sessionId}` spread
  *   widens it into something TS will not accept.
  */
-export function loadFixture(name: string, raw: string, sessionId: string = SANDBOX_SESSION_ID): LoadResult {
+export function loadFixture(
+  name: string,
+  raw: string,
+  sessionId: string = SANDBOX_SESSION_ID,
+  opts: LoadOptions = {},
+): LoadResult {
   const lines = raw.split('\n').map((l) => l.trim()).filter(Boolean);
 
   try {
@@ -91,6 +112,22 @@ export function loadFixture(name: string, raw: string, sessionId: string = SANDB
           uuid: `${name}-txt-${actions.length}`,
           text: parsed.text,
           timestamp: FIXTURE_T0 + actions.length * 1000,
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'stalled') {
+        // Parks the turn so the stalled card can be looked at in the workbench.
+        // No backend involved — this is the same action the native heartbeat
+        // produces, replayed through the real reducer.
+        //
+        // OPT-IN (see LoadOptions.includeStalled). Skipped rather than removed
+        // from the fixture so the parked turn stays one toolbar toggle away
+        // instead of needing the fixture edited back in by hand.
+        if (!opts.includeStalled) continue;
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_THINKING_HEARTBEAT',
+          sessionId,
+          stalled: true,
         };
         state = chatReducer(state, action);
         actions.push(action);

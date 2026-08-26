@@ -5,13 +5,14 @@ interface StopButtonProps {
   /** Same provider union ChatView threads down — determines which IPC call
    *  actually interrupts the turn. */
   provider?: 'claude' | 'native';
-  /** Caller-computed visibility. ChatView passes `thinkingArea &&
-   *  state.attentionState === 'ok'` — the exact same guard that decides
-   *  whether the ThinkingIndicator (or the native cold-load "Loading…" text)
-   *  renders, so the stop control only ever appears while a turn is both
-   *  in flight AND healthy. Extracted as a prop (rather than computed here)
-   *  so this component stays a pure function of its inputs and is testable
-   *  without mounting ChatView's provider tree. */
+  /** Caller-computed visibility. The only caller is InputBar, which passes
+   *  `useStreamingGate(sessionId)` — true while a turn is in flight and has
+   *  not ENDED. Note it stays true through the stall warning and the parked
+   *  "Provider may have stalled" card: those turns are still running, and a
+   *  phone user with no ESC key needs the way out most precisely then (see
+   *  useStreamingGate.ts for the full reasoning). Extracted as a prop (rather
+   *  than computed here) so this component stays a pure function of its inputs
+   *  and is testable without mounting a provider tree. */
   visible: boolean;
 }
 

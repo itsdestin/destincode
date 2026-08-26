@@ -603,6 +603,168 @@ surface: `harness/specialists/delegation-ledger.ts`, `child-ask-router.ts` (repl
   per-conversation spawn budget (`SPECIALIST_SPAWN_BUDGET_PER_SESSION`, 30) is a runaway backstop,
   not a normal-use limit.
 
+## A stalled turn parks instead of dying (2026-08-16, youcoded master `28d3f82e`)
+
+Spec: `youcoded-dev/docs/archive/specs/2026-08-16-stalled-turn-never-dies-design.md`.
+Plan + build ledger: `docs/archive/plans/2026-08-16-stalled-turn-never-dies.md` and
+`.superpowers/sdd/progress.md`. Terse always-loaded layer: rule `native-runtime.md` →
+"Stall watchdog & the park" and rule `chat-reducer.md`.
+
+**What changed for the user.** A provider that holds the socket open but stops sending
+(an OpenRouter keep-alive while an upstream stalls, a half-open connection after a
+network or suspend blip) used to kill the turn at the 75s mark with a `session-error`,
+throwing away whatever had already streamed. It now **parks**: a red "Provider may have
+stalled" card counts up in place, offering **Retry** and **Stop**, and a chunk arriving
+minutes later still lands in the loop and finishes the turn as if nothing happened.
+
+- **The park works by NOT resolving the stall race — that `return` IS the feature.**
+  `consumeStep`'s loop awaits `Promise.race([nextPromise, abortPromise, stallPromise,
+  retryPromise])`. The two-stage watchdog's stage 2 normally calls `resolveStall('stall')`,
+  which wins the race and runs the teardown path (`iterator.return()`, swallow the
+  terminal promises, then retry-or-throw). In the park branch it instead emits
+  `assistant-thinking {stalled:true}` and **returns without resolving anything**. Nothing
+  is torn down, the stream reader and socket stay open, and the loop simply keeps awaiting
+  the same `nextPromise`. Adding a `resolveStall` call to that branch silently restores
+  the old kill-the-turn behaviour while leaving every visible symptom of the feature
+  (the card still appears) intact — which is exactly why it is pinned by a test rather
+  than by a comment. Guard: `tests/harness-stall-watchdog.test.ts`.
+- **The park guard, and the clock split it encodes.** Read it off the expression in
+  `harness-session.ts`, never off prose — this one boundary was **mis-stated five times**
+  during the build, four of them in code comments, and the fifth statement was the first
+  accurate one:
+
+  ```ts
+  const willRetry = !emittedAny && isFirstAttempt;
+  …
+  if (!this.opts.isSpecialistChild && (sawFirstChunk || this.turnEverParked) && !willRetry) {
+  ```
+
+  The subtlety that keeps getting lost is that **`willRetry` tests `emittedAny`, not
+  `sawFirstChunk`.** `sawFirstChunk` flips on *any* real chunk, including
+  `tool-input-delta` (tool-argument fragments); `emittedAny` flips only on something
+  COUNTABLE — text, reasoning, or a completed tool call. So a first-attempt stall after
+  minutes of nothing but tool-argument text has `sawFirstChunk === true` and
+  `emittedAny === false`, and therefore takes the **silent auto-retry** branch rather
+  than parking. That is deliberate and safe: nothing executed, nothing is on screen, and
+  nothing is in `emittedPartIds` for the re-run's deltas to collide with.
+- **Clock 1 is deliberately out of scope.** When nothing streamed on this attempt
+  (`sawFirstChunk === false`) and the turn has never parked, the countdown still ends the
+  turn with the prefill `StreamStallError` ("didn't begin responding within N seconds").
+  A model that never sent a first byte has not *stalled* in the sense this feature means —
+  it never began, which on a local model usually means it is still doing prefill on a long
+  prompt. Spec §8 records the decision; `harness-stall-watchdog.test.ts` pins it with
+  "a stall with NOTHING ever streamed still ENDS the turn — Clock 1 is out of scope".
+- **`turnEverParked` is per-TURN, not per-step.** It is cleared once at the top of
+  `send()` (the only turn entry point — `compactNow`'s own `AbortController` never touches
+  the watchdog) and set the first time a step parks. Consequence: once a turn has parked
+  and the user has pressed Retry, a LATER step of that same turn that goes silent before
+  streaming anything **parks again** instead of dying on Clock 1. A retry the user asked
+  for must never die on its own.
+- **A specialist child must never park.** A specialist is a full `HarnessSession`, so it
+  would inherit parking for free — and that is a trap. `wireChildLive` re-emits only
+  `SUBAGENT_DISPLAY_TYPES` (`tool-use` / `tool-result` / `assistant-text`) into the
+  parent's view; the parked signal rides `assistant-thinking`, which is filtered out. So a
+  parked child would show **no card, no red dot, no Retry, no Stop** — just a spinning
+  Agent card forever. Worse, the child's `send()` would never settle, so the parent's
+  `Task` tool call would never return, and **nothing else caps a specialist run on
+  wall-clock**: the parent hangs too, invisibly. Falling through to the ordinary stall
+  path lets the child keep throwing `StreamStallError`, which the parent's `Task` tool
+  already catches and reports as a failed run. Found as a Critical by the whole-branch
+  review, landed with no test at first, then pinned — delete the `isSpecialistChild`
+  clause and `harness-stall-watchdog.test.ts` fails. Surfacing a stalled child's card
+  *inside* the parent's Agent card is a real follow-up feature; it is not attempted here.
+- **Retry erases the abandoned text in THREE places, and all three are load-bearing.**
+  (1) **Screen** — `assistant-thinking {dropPart:{partIds}}` → `NATIVE_PARTS_DROPPED` in
+  the reducer, emitted BEFORE `consumeStep` returns the retry sentinel so the ordered
+  event stream guarantees the erase precedes the re-run's first delta. (2) **Disk** —
+  `SessionStore.append` matches `dropPart` and DISCARDS the buffered open part instead of
+  flushing it; this is the only path in the store that drops a buffered part, and it must
+  sit ABOVE the display-only early return or the abandoned text gets flushed by the next
+  event anyway. (3) **The model's own memory** — `reportPartial('')`, because
+  `partialAssistantText` is reset per STEP, not per attempt: without it a re-run that
+  throws before emitting anything leaves `send()`'s catch pushing the abandoned
+  half-sentence — text the user just watched get erased — back into `this.history` as a
+  real assistant message.
+- **Timing did not move.** `STALL_WARNING_MS` (60s) and `STALL_RETRY_COUNTDOWN_MS` (15s)
+  are byte-identical to their pre-feature values, and `tests/prefill-watchdog.test.ts` is
+  unchanged — both were hard constraints on the branch and were verified by diffing
+  against master on the merge commit. The prefill budget (`prefillBudgetMs`) still governs
+  the FIRST-chunk deadline; `warnMs` only governs gaps after a chunk has arrived.
+- **`native:retry` is a new fire-and-forget channel** carrying `{sessionId}`, mirroring
+  `native:interrupt` across all five surfaces (`ipc-handlers.ts`, `preload.ts`,
+  `remote-shim.ts`, `remote-server.ts` WS, `SessionService.kt` not-implemented-on-mobile).
+  Parity is pinned by `tests/ipc-channels.test.ts`. Retry is NOT interrupt:
+  `retryStalledStep` resolves one promise, while `interrupt` cascades to foreground
+  specialist children and calls `broker.cancelSession`. Android hosts Claude Code sessions
+  only, so the channel no-ops there exactly as `native:send` already does; **remote
+  (phone → parked desktop) is fully live and must work.**
+
+### Accepted limitations (declared, not bugs)
+
+Each of these was found during the build, judged, and deliberately left. They are
+recorded here so they are not rediscovered as defects.
+
+- **Already-flushed text can duplicate ON DISK after a Retry.** The store buffers exactly
+  one open part and flushes it the moment any different part opens — a tool call, or a
+  reasoning block giving way to visible text (the ordinary shape on the model in the
+  2026-08-16 incident, so this is the common case, not the exotic one). If the abandoned
+  attempt had already opened a second part, its earlier text was committed to the
+  append-only JSONL before the stall and `dropPart` cannot reach back and unwrite it. The
+  live screen stays correct; a reload can show that earlier text twice. Rewriting
+  committed transcript lines is out of scope.
+- **The trailing-run erase can leave one duplicate on a text → tool → text attempt.**
+  See rule `chat-reducer.md` and `youcoded/docs/chat-reducer.md`: the reducer stops the
+  walk at the first non-matching segment, and a tool-group segment carries no `partId`, so
+  it stops the walk. If one attempt produced text, then a tool-preparing card, then more
+  text before stalling, the earlier text survives the erase and the re-run re-emits it.
+  Strictly better than the alternative — whole-list filtering DELETED finished work, and
+  duplicated text beats deleted text. Needs a model that resumes prose after starting a
+  tool call and then stalls.
+- **A retried attempt suppresses the "reading your prompt" prefill notice.**
+  `lastStepPromptTokens` was already stamped by the abandoned attempt, so a local model
+  shows a bare spinner right after a stall scare instead of the progress readout.
+  Pre-existing for the silent auto-retry; the manual Retry button makes it user-visible.
+- **A first-attempt stall after nothing but tool-argument fragments auto-retries silently
+  rather than parking.** This is the `emittedAny`-vs-`sawFirstChunk` split above, and it
+  is the existing safety property, not an oversight: nothing user-visible streamed, so
+  re-running is safe. Do not "fix" it.
+- **Quitting the app while a turn is parked loses the trailing partial.** Today the same
+  stall ends in `session-error`, which IS a turn boundary and flushes, so this is a narrow
+  regression for users who quit instead of pressing Stop. The card is red with both
+  buttons visible, and the loss window matches the hard-crash window the store already
+  accepts. The general fix (flush open parts on shutdown) is separable and out of scope.
+- **Declared behaviour change against spec §12:** the composer Stop button is now
+  reachable while a CLAUDE CODE session is `'stuck'`, where master hid it. `'stuck'` is
+  CC-only via the PTY classifier, and the stall warning newly maps to `'stuck'` for native
+  sessions, so gating `useStreamingGate` on `'ok'` alone would have made a phone turn
+  un-stoppable during the countdown (a phone has no ESC key). Kept on the safety argument
+  and pinned in both directions; spec §12 was amended rather than the behaviour reverted.
+
+### Rule-overflow additions (2026-08-16, migrated from the path-scoped rule)
+
+Room for the section above was made in `.claude/rules/native-runtime.md` by dropping or
+compressing bullets whose full text this document already carried:
+
+- **Above, "Native chat sessions":** AI SDK v7 / `part.text`, `ModelCatalog`'s `fetchedAt`
+  stamping, and `TRANSCRIPT_REPLAY`'s `getHistory` fallback.
+- **Above, "Local reliability":** constrained decoding (`--jinja` + no top-level
+  `json_schema`), the two-stage-compaction detail (abort-race, 30s bound, pruned-history
+  fallback), `data.autoCompaction`, capability profiles' three resolution layers, and the
+  StatusBar-chip bullet. That last one's rule wording had **DRIFTED**: it described
+  `native:usage-report` as a live status channel, but the channel was built and DELETED
+  once the reducer path existed (`rg usage-report` finds only three comments saying so).
+  It was removed rather than migrated, because the accurate version is already here.
+- **Above, "Conversation store, resume & auto-title participation":** `lastUsedModel`
+  portability (also in rule `conversations.md`), resume always offering `ModelPicker`,
+  auto-titling firing once, and "Android has none of this".
+- **Above, "Web tools, AskUserQuestion & presets":** the preset `modeFor` SEED bullet.
+- **Above, "Agent loop, core tools & permissions":** `PERMISSION_RESPOND`'s `native-`
+  prefix routing (its file, `ipc-handlers.ts`, is not even in the rule's `paths:` globs).
+- **Above, "Provider seam" / "Agent loop":** reasoning-segment dormancy on the CC path,
+  and `adaptForWire`'s per-wire image split.
+
+Every one was grep-verified present in this document before removal; no claim was lost.
+
 ## Specialists (plan 1c — files, chat UI backend, Settings)
 
 Design: workspace `docs/active/specs/2026-08-16-native-specialists-plan-1c-design.md`. Fourteen

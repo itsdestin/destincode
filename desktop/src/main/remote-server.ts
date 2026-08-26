@@ -1169,6 +1169,13 @@ export class RemoteServer {
         // never told chatsearch a tag changed, so a tag applied from a phone/
         // browser stayed invisible to the CLI until an unrelated refresh.
         emitConversationMetaChanged();
+        // ROADMAP 2026-07-23: the ipcMain twin broadcasts session:meta-changed
+        // after a successful persist; without this a SECOND remote client (or
+        // the same session on another device) stayed stale until a full
+        // refresh. Same frame shape as ipc-handlers SESSION_SET_TAG. The echo
+        // to the originating client is a harmless refetch (consumers ignore
+        // the payload and refetch meta).
+        this.broadcast({ type: 'session:meta-changed', payload: { sessionId: resolved, flag: tagFlagKey(tagId), value: !!payload?.value } });
         this.respond(client.ws, type, id, { ok: true });
         break;
       }
@@ -1189,6 +1196,8 @@ export class RemoteServer {
         // Same gap as session:set-tag above — the remote mirror of
         // session:set-note must also tell chatsearch a note changed.
         emitConversationMetaChanged();
+        // Same parity gap as session:set-tag above — see that comment.
+        this.broadcast({ type: 'session:meta-changed', payload: { sessionId: resolved, note: text } });
         this.respond(client.ws, type, id, { ok: true });
         break;
       }
@@ -2235,6 +2244,12 @@ export class RemoteServer {
       // Native runtime interrupt — fire-and-forget (no response). The host no-ops unknown ids.
       case 'native:interrupt': {
         this.nativeRuntime?.nativeHost.interrupt(payload.sessionId);
+        break;
+      }
+      // Stalled-turn Retry — fire-and-forget, same shape as interrupt above.
+      // The host no-ops when nothing is parked (stream already resumed).
+      case 'native:retry': {
+        this.nativeRuntime?.nativeHost.retryStalledStep(payload.sessionId);
         break;
       }
       case 'session:resize': {

@@ -218,7 +218,7 @@ export function Select({
         onKeyDown={onKeyDown}
         className={fieldClasses(size, `flex items-center justify-between gap-2 w-full text-left ${className}`)}
       >
-        <span className={`truncate ${selected ? '' : 'text-fg-faint'}`}>
+        <span className={`truncate ${selected ? '' : 'text-fg-muted'}`}>
           {selected?.label ?? placeholder}
         </span>
         <svg

@@ -53,3 +53,45 @@ export function useNativeSessionUsage(sessionId: string | null): TurnUsage | nul
   const subscribe = useCallback((cb: () => void) => store.subscribeAll(cb), [store]);
   return useSyncExternalStore(subscribe, getSnapshot);
 }
+
+/** How many completed turns in this session carry usage, saturating at 2.
+ *
+ *  Why it exists: the cache-reuse chip needs to tell "nothing to reuse YET"
+ *  (the session's first turn — expected, and not worth alarming anyone about)
+ *  from "nothing was reused" later on (the cache stopped being hit, which IS
+ *  worth surfacing). Both look identical from a single turn's usage numbers.
+ *
+ *  Why it saturates at 2: the chip only ever asks "is this the first one?", so
+ *  counting further would walk the whole timeline on every store change for an
+ *  answer nothing reads. Two is "two or more".
+ *
+ *  Why a number and not an object: useSyncExternalStore requires a referentially
+ *  stable snapshot, and a primitive is stable by construction — no cache needed
+ *  (contrast the sibling hook above, which returns a store-OWNED object). */
+export function useTurnsWithUsage(sessionId: string | null): 0 | 1 | 2 {
+  const store = useChatStore();
+  const sidRef = useRef(sessionId);
+  sidRef.current = sessionId;
+
+  const getSnapshot = useCallback((): 0 | 1 | 2 => {
+    const sid = sidRef.current;
+    if (!sid) return 0;
+    const session = store.getState().get(sid);
+    if (!session) return 0;
+
+    let seen = 0;
+    // Backward, like the sibling hook: the turns we care about are the most
+    // recent ones, so the loop normally exits after a couple of entries.
+    for (let i = session.timeline.length - 1; i >= 0; i--) {
+      const entry = session.timeline[i];
+      if (entry.kind !== 'assistant-turn') continue;
+      if (!session.assistantTurns.get(entry.turnId)?.usage) continue;
+      seen++;
+      if (seen === 2) return 2;
+    }
+    return seen as 0 | 1;
+  }, [store]);
+
+  const subscribe = useCallback((cb: () => void) => store.subscribeAll(cb), [store]);
+  return useSyncExternalStore(subscribe, getSnapshot);
+}

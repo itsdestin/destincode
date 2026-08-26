@@ -110,7 +110,8 @@ import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { searchProjectContent } from './artifacts/content-search';
-import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
+import { looksBinary, EDIT_MAX_BYTES, FULL_READ_MAX_BYTES, READ_BINARY_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
+import { decideOverCapRead } from '../shared/artifacts/over-cap-read';
 import { authorizeArtifactRead, authorizeArtifactWrite, isAbsoluteRecorded } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { importFile } from './artifacts/import-file';
@@ -2603,6 +2604,11 @@ export function registerIpcHandlers(
   ipcMain.on(IPC.NATIVE_INTERRUPT, (_e, { sessionId }: { sessionId: string }) => {
     nativeHost.interrupt(sessionId);
   });
+  // Stalled-turn Retry — fire-and-forget, same shape as interrupt above. The
+  // host no-ops when nothing is parked (stream already resumed).
+  ipcMain.on(IPC.NATIVE_RETRY, (_e, { sessionId }: { sessionId: string }) => {
+    nativeHost.retryStalledStep(sessionId);
+  });
   // User-initiated /compact for a native session. Never throws across IPC: a
   // failure returns a coded reason so the renderer can surface a specific,
   // accurate message instead of a guessed one (docs/error-message-standards.md).
@@ -2747,6 +2753,12 @@ export function registerIpcHandlers(
   modelManager.on('download-progress', (p) => {
     send(IPC.MODELS_DOWNLOAD_PROGRESS, p);
     remoteServer?.broadcast({ type: 'models:download-progress', payload: p });
+    // A finished download is invisible to a RUNNING router until it re-scans —
+    // its own rescan flag only fires for downloads IT started, and ours are
+    // app-side. Without this the model is a selectable picker row (K2's listing
+    // union) that 400s on first send. Fire-and-forget: the pick-time
+    // ensureServable is the safety net if this refresh fails or never ran.
+    if (p.state === 'done') void engineManager.refreshModels().catch(() => { /* pick-time retry covers it */ });
   });
   ipcMain.handle(IPC.ENGINE_SET_BACKEND, async (_e, backend: string) => { await engineManager.setBackend(backend as any); return engineManager.status(); });
   ipcMain.handle(IPC.ENGINE_SET_CONTEXT, async (_e, contextSize: number) => { await engineManager.setContext(contextSize); return engineManager.status(); });
@@ -3754,7 +3766,13 @@ export function registerIpcHandlers(
     return { ok: true, files: r.files, truncated: r.truncated };
   });
 
-  ipcMain.handle(ARTIFACT_IPC.GET, async (_e, projectRoot: string, artifactId: string) => {
+  ipcMain.handle(ARTIFACT_IPC.GET, async (
+    _e, projectRoot: string, artifactId: string,
+    // full: the user clicked "Load the whole file" on the partial-view bar. Still
+    // refused above FULL_READ_MAX_BYTES — the flag opts into a BIGGER read, not an
+    // unbounded one.
+    opts?: { full?: boolean },
+  ) => {
     const sidecar = await readSidecar(projectRoot);
     const artifact = (sidecar && !('corrupted' in sidecar))
       ? sidecar.artifacts.find((a) => a.id === artifactId)
@@ -3796,11 +3814,37 @@ export function registerIpcHandlers(
       if (e.code !== 'ENOENT') throw e;
       return { ok: true, artifact: artifact ?? null, content: null, orphan: true };
     }
-    if (st.size > EDIT_MAX_BYTES) {
-      return {
-        ok: true, artifact: artifact ?? null, content: null, orphan: false,
-        tooLarge: true, sizeBytes: st.size, mtimeMs: st.mtimeMs,
-      };
+    // Over the cap we no longer refuse blind. Sniff the head first: an over-cap
+    // IMAGE used to get the TEXT editor's error message, which is the bug this
+    // whole workstream exists to fix. Text comes back as a readable prefix.
+    const wantsFull = opts?.full === true && st.size <= FULL_READ_MAX_BYTES;
+    if (st.size > EDIT_MAX_BYTES && !wantsFull) {
+      const fh = await fs.promises.open(realPath, 'r');
+      try {
+        // fs.read is only contractually required to return SOME bytes, not to
+        // fill the buffer — so loop until the window is full or the file ends.
+        const readFully = async (len: number) => {
+          const buf = Buffer.allocUnsafe(len);
+          let off = 0;
+          while (off < len) {
+            const { bytesRead } = await fh.read(buf, off, len - off, off);
+            if (bytesRead === 0) break;
+            off += bytesRead;
+          }
+          return buf.subarray(0, off);
+        };
+        // Head first, so a file that turns out to be binary is decided on 8 KB.
+        const head = await readFully(8192);
+        const win = await readFully(EDIT_MAX_BYTES);
+        const d = decideOverCapRead(head, win);
+        return {
+          ok: true, artifact: artifact ?? null, orphan: false,
+          content: d.content, binary: d.binary, truncated: d.truncated,
+          sizeBytes: st.size, mtimeMs: st.mtimeMs,
+        };
+      } finally {
+        await fh.close();
+      }
     }
 
     let content: string | null = null;
@@ -3819,7 +3863,10 @@ export function registerIpcHandlers(
     // mtimeMs is the optimistic-concurrency token: round-trip it into
     // artifacts:save as baseMtimeMs and the save is rejected when the file
     // changed underneath (spec §12.9 — last-write-wins fix).
-    return { ok: true, artifact: artifact ?? null, content, orphan: false, binary, mtimeMs: st.mtimeMs };
+    // sizeBytes and truncated ride EVERY response: the renderer derives
+    // editability from the size, and a `full` read must clear the partial bar.
+    return { ok: true, artifact: artifact ?? null, content, orphan: false, binary,
+             truncated: false, sizeBytes: st.size, mtimeMs: st.mtimeMs };
   });
 
   // Read a file as base64 for the binary viewers (xlsx/docx/pdf/image). The
@@ -3834,7 +3881,6 @@ export function registerIpcHandlers(
   // session drawer legitimately shows), with well-known secret locations
   // (.ssh, .netrc, .credentials.json, …) refused even inside those roots.
   // Pure decision logic + tests live in artifacts/read-binary-access.ts.
-  const READ_BINARY_MAX_BYTES = 50 * 1024 * 1024; // 50 MB — base64 inflates 33%, and it all transits IPC/WS
   ipcMain.handle(ARTIFACT_IPC.READ_BINARY, async (_e, absolutePath: string) => {
     if (typeof absolutePath !== 'string' || absolutePath.length === 0) {
       return { ok: false, error: 'no path' };

@@ -82,6 +82,36 @@ export class SessionStore {
       return;
     }
 
+    // Manual stall Retry: the attempt that wrote these parts is being abandoned
+    // and its text is being erased on screen. Discard the buffer WITHOUT
+    // writing it — this is the only path that drops a buffered part instead of
+    // flushing it, and it must run BEFORE the display-only filter below, which
+    // would otherwise return early and leave the abandoned text to be flushed
+    // by the next event.
+    //
+    // KNOWN LIMITATION (deliberate, not an oversight): this can only discard a
+    // part still BUFFERED here — and only ONE part is ever buffered, because
+    // the coalescing branch below flushes the moment ANY different part opens.
+    // Two shapes therefore commit earlier text to the JSONL before the stall:
+    //   1. the attempt emitted a tool call (a non-delta event → flush), or
+    //   2. the attempt switched parts mid-prose — most commonly a reasoning
+    //      block giving way to visible text, which is the ordinary shape on
+    //      the model in the 2026-08-16 incident, so this is the COMMON case,
+    //      not the exotic one. (The buffer keys off type AND partId, so
+    //      reasoning→text flushes on both counts.)
+    // In either shape dropPart can't reach back and unwrite the committed
+    // line. A re-run can then duplicate that earlier text ON DISK even though
+    // the live screen (which erased via the renderer's own dropPart handling)
+    // stays correct. The transcript is append-only; rewriting already-committed
+    // lines is out of scope here.
+    if (event.type === 'assistant-thinking' && event.data?.dropPart) {
+      const open = this.open.get(event.sessionId);
+      if (open && event.data.dropPart.partIds.includes(String(open.event.data?.partId))) {
+        this.open.delete(event.sessionId);
+      }
+      return;
+    }
+
     // Streaming-watchdog heartbeats (the stall warning and its clear) are
     // transient UI signals — an assistant-thinking with NO text and NO partId.
     // Display-only: never persisted (a replayed stall countdown on a long-since

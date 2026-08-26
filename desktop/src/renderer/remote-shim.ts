@@ -268,7 +268,10 @@ function handleMessage(data: string): void {
       dispatchEvent('session:moved', payload);
       break;
     case 'session:meta-changed':
-      dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value });
+      // Forward note too — set-note broadcasts {sessionId, note} (no flag), and
+      // narrowing to {flag, value} silently dropped it. Preload forwards the
+      // raw payload; this now matches.
+      dispatchEvent('session:meta-changed', payload.sessionId, { flag: payload.flag, value: payload.value, note: payload.note });
       break;
     case 'tags:changed':
       dispatchEvent('tags:changed', undefined, payload || {});
@@ -1231,10 +1234,14 @@ export function installShim(): void {
         invoke('artifacts:list-all-files', { projectId, opts }),
       listProjectsIndex: (opts?: { withCounts?: boolean }) =>
         invoke('artifacts:list-projects-index', opts ?? {}),
-      get: (projectRoot: string, artifactId: string) =>
-        invoke('artifacts:get', { projectRoot, artifactId }),
-      // Routed to the host (desktop/Android) over WS — the host has filesystem
-      // access, so binary viewers work for remote browsers too.
+      // This transport sends an OBJECT payload, not positional args — `full`
+      // has to be spread in by name or it is dropped silently.
+      get: (projectRoot: string, artifactId: string, opts?: { full?: boolean }) =>
+        invoke('artifacts:get', { projectRoot, artifactId, full: opts?.full }),
+      // NOT bridged by remote-server.ts — this and artifacts:get both fall to
+      // its `default:` case and answer { unsupported: true }, so the artifact
+      // pane opens nothing at all from a remote browser against a desktop host.
+      // Kept wired for when that bridge lands (ROADMAP #remote).
       readBinary: (absolutePath: string) =>
         invoke('artifacts:read-binary', { absolutePath }),
       save: (projectRoot: string, projectId: string, projectName: string,
@@ -1550,6 +1557,8 @@ export function installShim(): void {
       queueRemove: (sessionId: string, queueId: string) => invoke('native:queue-remove', { sessionId, queueId }),
       // Fire-and-forget: no response expected
       interrupt: (sessionId: string) => fire('native:interrupt', { sessionId }),
+      // Fire-and-forget like interrupt above — the stalled card needs no answer.
+      retry: (sessionId: string) => fire('native:retry', { sessionId }),
       // Request/response (mirrors preload.ts) — the remote UI needs the same
       // {ok, reason} so a refused compaction explains itself over remote too.
       compact: (sessionId: string) => invoke('native:compact', { sessionId }),

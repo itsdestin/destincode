@@ -952,7 +952,10 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
             chunks: [toolCallChunk('c1', 'Read', { file_path: 'README.md' }), finishChunk('tool-calls')],
           }) };
         }
-        if (call === 2) return { stream: simulateReadableStream({ chunks: [finishChunk('stop')] }) };
+        // Calls 2 AND 3 are empty: the harness silently retries a single empty
+        // step (empty-step recovery, spec 2026-08-21), so "a bare stop" now
+        // takes a consecutive pair to actually end the testing turn.
+        if (call === 2 || call === 3) return { stream: simulateReadableStream({ chunks: [finishChunk('stop')] }) };
         return { stream: simulateReadableStream({
           chunks: [...textChunks('t', 'The review.'), finishChunk('stop')],
         }) };
@@ -1110,6 +1113,10 @@ describe('runCase salvage', () => {
       // testing turn. It has to be here: the driver keeps looping inside one
       // send() until the model stops calling tools, so a text step here would
       // simply finish the first turn and there would be nothing to rescue.
+      // TWO of them, because the harness silently retries the first (empty-step
+      // recovery, spec 2026-08-21) — a single {} would hand the retry the
+      // review script and finish the testing turn WITH a review.
+      {},
       {},
       // Reached only by the SECOND send() the trigger issues.
       { text: 'Asked, so here is my review.' },
@@ -1148,7 +1155,10 @@ describe('runCase salvage', () => {
     // decline to ask, missing the exact case the trigger exists for.
     const model = scriptModel([
       { text: 'Now let me check the config…', toolCalls: [{ name: 'Read', input: { file_path: 'a.toml' } }] },
-      {},   // testing turn stops here, having emitted narration but no review
+      // Doubled: the harness retries one empty step (empty-step recovery,
+      // spec 2026-08-21); the pair ends the testing turn narration-only.
+      {},
+      {},
       { text: 'Asked anyway.' },
     ]);
     const run = await runCase({

@@ -1,5 +1,7 @@
 import React from 'react';
 import { useArtifactBytes } from './useArtifactBytes';
+import { getPlatform } from '../../platform';
+import { Button } from '../ui';
 
 // Shared loading/error shell for every binary viewer (pdf/docx/xlsx/image).
 // Each viewer previously re-wired useArtifactBytes + its own loading/error
@@ -11,13 +13,16 @@ import { useArtifactBytes } from './useArtifactBytes';
 // sheets, rendered html, selection, parse errors) resets when the user
 // switches files — no stale-content flash from the previous document.
 
-/** Map the read-binary error codes to a human message. */
-function describeBytesError(error: string, noun: string): string {
+/** Map the read-binary error codes to a human message. Exported so a test can
+ *  pin that no message names a control this component does not render. */
+export function describeBytesError(error: string, noun: string): string {
   switch (error) {
     case 'orphan':
       return `This ${noun} no longer exists on disk.`;
     case 'too-large':
-      return `This ${noun} is too large to preview — use “Open externally”.`;
+      // Was: "…use “Open externally”" — a control this component never rendered.
+      // The button below is that control, finally present.
+      return `This ${noun} is larger than YouCoded can display.`;
     case 'not-allowed':
       return `This ${noun} is outside your project folders and can’t be previewed.`;
     case 'unavailable':
@@ -39,6 +44,23 @@ export function BinaryContent({ absolutePath, noun, children }: {
 }) {
   const { bytes, loading, error } = useArtifactBytes(absolutePath);
   if (loading) return <CenterNote>Loading {noun}…</CenterNote>;
-  if (error || !bytes) return <CenterNote>{describeBytesError(error ?? 'read-failed', noun)}</CenterNote>;
+  if (error || !bytes) {
+    // The action the old copy pointed at but never rendered. Desktop-only for
+    // the same reason BinaryFallback gates it: shell.openPath is a no-op on
+    // remote and absent on Android, so the button would silently do nothing.
+    const isElectron = getPlatform() === 'electron';
+    return (
+      <CenterNote>
+        <div className="flex flex-col items-center gap-3">
+          <span>{describeBytesError(error ?? 'read-failed', noun)}</span>
+          {isElectron && (
+            <Button size="sm" onClick={() => (window.claude as any).shell?.openPath?.(absolutePath)}>
+              Open in default app
+            </Button>
+          )}
+        </div>
+      </CenterNote>
+    );
+  }
   return <React.Fragment key={absolutePath}>{children(bytes)}</React.Fragment>;
 }

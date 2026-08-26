@@ -40,7 +40,7 @@ import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
-import { useNativeSessionUsage } from './hooks/useNativeSessionUsage';
+import { useNativeSessionUsage, useTurnsWithUsage } from './hooks/useNativeSessionUsage';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -1265,12 +1265,25 @@ function AppInner() {
                 cleared: event.data.toolPreparing.cleared,
               });
             }
+            // Fix: erase an abandoned half-written sentence BEFORE the heartbeat
+            // below parks/clears the turn — if this ran after a retry's new text
+            // landed, it would erase the wrong (retried) content instead of the
+            // stale one. MUST mirror BubbleFeed.tsx, and must stay in this order.
+            if (event.data?.dropPart) {
+              batchTranscriptDispatch({
+                type: 'NATIVE_PARTS_DROPPED',
+                sessionId: event.sessionId,
+                partIds: event.data.dropPart.partIds,
+              });
+            }
             batchTranscriptDispatch({
               type: 'TRANSCRIPT_THINKING_HEARTBEAT',
               sessionId: event.sessionId,
-              // Native watchdog: a stall-warning payload drives the countdown; a
-              // plain heartbeat (no payload) clears it. MUST mirror BubbleFeed.tsx.
+              // Native watchdog: a stall-warning payload drives the countdown,
+              // `stalled` parks the turn, a plain heartbeat clears both.
+              // MUST mirror BubbleFeed.tsx.
               stallWarning: event.data?.stallWarning,
+              stalled: event.data?.stalled,
               promptProcessing: event.data?.promptProcessing,
             });
           }
@@ -2545,6 +2558,9 @@ function AppInner() {
   // the memo no longer compiles and a ref would never re-render the chips. It is
   // re-expressed here as a cached store selector, mirroring useActiveSessionModel.
   const nativeStatusUsage = useNativeSessionUsage(isNativeSession ? sessionId : null);
+  // NOT gated on isNativeSession — CC turns carry usage too (the transcript
+  // watcher stamps it), and the reuse chip serves both runtimes.
+  const turnsWithUsage = useTurnsWithUsage(sessionId);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -3001,6 +3017,7 @@ function AppInner() {
                   onOpenOpenTasks={() => setOpenTasksPopupOpen(true)}
                   nativeUsage={nativeStatusUsage}
                   nativeContextLength={nativeStatusUsage?.contextLength ?? null}
+                  turnsWithUsage={turnsWithUsage}
                 />
               </div>
           </>
