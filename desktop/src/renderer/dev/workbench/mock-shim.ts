@@ -1,4 +1,5 @@
 import type { MockStore } from './mock-store';
+import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
@@ -655,8 +656,12 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       // Over-cap fixtures: report a pretend on-disk size far larger than the
       // body we serve, so the partial-view banner and the handoff states are
       // reachable in the Workbench without a real 8 MB file (spec §5).
+      // `full` opts into a BIGGER read, not an unbounded one — main refuses it
+      // above FULL_READ_MAX_BYTES, so the mock has to refuse it too or the
+      // Workbench would show a state the real backend can never produce.
       const fake = OVERSIZE_FIXTURES[artifactId];
-      if (fake !== undefined && !opts?.full) {
+      const grantFull = opts?.full === true && fake !== undefined && fake <= FULL_READ_MAX_BYTES;
+      if (fake !== undefined && !grantFull) {
         return {
           ok: true, content: content.slice(0, content.lastIndexOf('\n', 400) + 1), orphan: false, binary: false,
           truncated: true, sizeBytes: fake, mtimeMs: 1,
