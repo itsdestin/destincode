@@ -18,7 +18,7 @@ import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import type { NativeSessionHost } from './harness/native-session-host';
-import type { NativeSendResult, SessionProvider } from '../shared/types';
+import type { NativeSendResult, SessionProvider, HookEvent, SpecialistsEvent } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
@@ -27,6 +27,8 @@ import type { EngineManager } from './engine/engine-manager';
 import type { ModelManager } from './models/model-manager';
 import type { PermissionStore } from './harness/permission-store';
 import type { PermissionRule } from '../shared/permission-types';
+import type { SpecialistCatalog } from './harness/specialists/catalog';
+import { toListResult } from './harness/specialists/catalog';
 import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
@@ -87,6 +89,12 @@ export class RemoteServer {
   private warnedChannels = new Set<string>();
   private ptyBuffers = new Map<string, string>(); // sessionId → rolling PTY output
   private hookBuffers = new Map<string, any[]>(); // sessionId → rolling hook events
+  // Task 9 (plan 1c) — mirrors hookBuffers, but keyed sessionId → childId,
+  // holding only the LATEST specialists:event per helper (never an
+  // append-only log — a card shows one current status, not a history of
+  // every intermediate one). Filled by bufferSpecialistRun(), called from
+  // the same ipc-handlers.ts listener that broadcasts 'specialists-event'.
+  private specialistRunBuffers = new Map<string, Map<string, SpecialistsEvent>>();
   // statusInterval removed — status data now fed by ipc-handlers.ts via broadcastStatusData()
   private failedAttempts = new Map<string, { count: number; resetAt: number }>();
   // Last-known topic names, fed by ipc-handlers.ts via setLastTopic()
@@ -109,7 +117,7 @@ export class RemoteServer {
   // field (Plan 2b) — both were added independently on master and this branch.
   // permissionStore (M5 2a) is carried for the READ side only — permissions:list.
   // The two revokes go through nativeHost, which also clears live in-memory state.
-  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore } | null = null;
+  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore; specialistCatalog: SpecialistCatalog } | null = null;
   // Plan 2b Task 11: conversation-lease + device wiring, injected by ipc-handlers
   // via setLeaseWiring() AFTER main.ts builds the lease client/requester (they
   // live in the whenReady scope, not reachable at RemoteServer construction).
@@ -148,7 +156,7 @@ export class RemoteServer {
   /** Injected by ipc-handlers after it constructs the native stack, so remote
    *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
-  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore }): void {
+  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore; specialistCatalog: SpecialistCatalog }): void {
     this.nativeRuntime = rt;
   }
 
@@ -450,19 +458,72 @@ export class RemoteServer {
   };
 
   private onHookEvent = (event: any) => {
-    const sessionId = event.sessionId || '';
+    this.bufferHookEvent(event);
+    // Broadcast live
+    this.broadcast({ type: 'hook:event', payload: event });
+  };
 
-    // Append to rolling buffer
+  /** Push one hook event onto the rolling per-session replay buffer, WITHOUT
+   *  broadcasting it — split out of onHookEvent (which still does both, for
+   *  the legacy hookRelay path) so ipc-handlers.ts can feed this SAME buffer
+   *  for NATIVE hook events, which reach remote clients through a direct
+   *  broadcast() call in ipc-handlers.ts, never through this class's own
+   *  onHookEvent (that listener is wired only to hookRelay.on('hook-event',
+   *  ...) — see the call site's own comment for the gap this closes: without
+   *  it, a phone reconnecting while a native permission ask was HELD got
+   *  nothing, because PermissionHeld is one-shot and the reannounce heartbeat
+   *  stops once an ask is held). Reusing hookBuffers — rather than a parallel
+   *  native-only map — means the existing replay loop in replayBuffers()
+   *  picks these up for free, in the same push order (request, then held). */
+  bufferHookEvent(event: HookEvent): void {
+    const sessionId = event.sessionId || '';
+    // Fix pass (2026-08-16 review finding, "the catch-up replays asks that
+    // were already answered"): PermissionBroker's one removal chokepoint
+    // (permission-broker.ts's removeEntry) now emits this the moment an ask
+    // stops being open — respond() in time, respond() late, or a cancel.
+    // Before this, a PermissionRequest sat in the buffer FOREVER once
+    // answered (nothing ever removed it, and the buffer holds 10,000
+    // events), so a reconnecting phone was replayed a dead question with
+    // live-looking Yes/No buttons; tapping either returned false and the
+    // card showed a "socket closed" error that was simply untrue — no
+    // socket had closed. This is a purge signal, not a replayable card: it
+    // drops the matching PermissionRequest/PermissionHeld pair (same
+    // _requestId) instead of being appended itself. hook-dispatcher.ts's
+    // switch defaults to null on this unknown type, so even if a live client
+    // saw it broadcast, it is a harmless no-op — nothing here required a
+    // renderer change.
+    if (event.type === 'PermissionResolved') {
+      const requestId = (event.payload as Record<string, unknown> | undefined)?._requestId;
+      const buf = this.hookBuffers.get(sessionId);
+      if (buf && typeof requestId === 'string') {
+        const filtered = buf.filter((e) => (e.payload as Record<string, unknown> | undefined)?._requestId !== requestId);
+        if (filtered.length !== buf.length) this.hookBuffers.set(sessionId, filtered);
+      }
+      return;
+    }
     let buf = this.hookBuffers.get(sessionId) || [];
     buf.push(event);
     if (buf.length > HOOK_BUFFER_SIZE) {
       buf = buf.slice(buf.length - HOOK_BUFFER_SIZE);
     }
     this.hookBuffers.set(sessionId, buf);
+  }
 
-    // Broadcast live
-    this.broadcast({ type: 'hook:event', payload: event });
-  };
+  /** Task 9 (plan 1c) — the remote-client counterpart to
+   *  NativeSessionHost.specialistRunsFor: a reconnecting phone hydrates over
+   *  this WebSocket, never through TRANSCRIPT_REPLAY, so it needs its own
+   *  connect-time catch-up for a helper's run status. Called from the SAME
+   *  ipc-handlers.ts listener that broadcasts 'specialists-event' live.
+   *  Latest-per-child, not append-only — see specialistRunBuffers' own
+   *  comment for why overwriting the previous entry is correct here. */
+  bufferSpecialistRun(event: SpecialistsEvent): void {
+    let byChild = this.specialistRunBuffers.get(event.sessionId);
+    if (!byChild) {
+      byChild = new Map();
+      this.specialistRunBuffers.set(event.sessionId, byChild);
+    }
+    byChild.set(event.run.childId, event);
+  }
 
   private onSessionCreated = (info: any) => {
     this.broadcast({ type: 'session:created', payload: info });
@@ -472,6 +533,10 @@ export class RemoteServer {
     this.ptyBuffers.delete(sessionId);
     this.hookBuffers.delete(sessionId);
     this.lastTopics.delete(sessionId);
+    // Task 9: a destroyed parent's helpers are gone with it — nothing will
+    // ever reconnect asking for this session's run status again, so clear it
+    // the same way the buffers above already do.
+    this.specialistRunBuffers.delete(sessionId);
     // Forward exitCode so the remote shim can surface 'session-died' banners
     // when Claude's process dies mid-turn on the host machine.
     this.broadcast({ type: 'session:destroyed', payload: { sessionId, exitCode } });
@@ -752,10 +817,22 @@ export class RemoteServer {
         }
       }
 
-      // Hook event buffers
+      // Hook event buffers (also carries buffered NATIVE hook events now —
+      // see bufferHookEvent's own comment for why those need to ride this
+      // same map instead of a parallel one).
       for (const [_sessionId, events] of this.hookBuffers) {
         for (const event of events) {
           ws.send(JSON.stringify({ type: 'hook:event', payload: event }));
+        }
+      }
+
+      // Task 9 (plan 1c): latest specialist run per helper, so a reconnecting
+      // client's card comes back with a status instead of blank. Same
+      // ordering position as the hook buffers just above — catch-up replay,
+      // then live events resume.
+      for (const [_sessionId, byChild] of this.specialistRunBuffers) {
+        for (const event of byChild.values()) {
+          ws.send(JSON.stringify({ type: 'specialists:event', payload: event }));
         }
       }
 
@@ -981,6 +1058,51 @@ export class RemoteServer {
           ? await this.nativeRuntime.nativeHost.revokeProject(payload.slug)
           : false;
         this.respond(client.ws, type, id, removed);
+        break;
+      }
+      // Specialists 1c (Task 8) — mirrors the desktop IPC handlers so a
+      // remote client (a phone, typically) reaches the SAME specialistCatalog
+      // / nativeHost instances. NOT gated on native.supported — a phone must
+      // still be able to see the roster and answer a hire's ask. A
+      // disconnected runtime answers the general-non-committal message
+      // (error-message-standards.md) rather than hanging or guessing why.
+      case 'specialists:list': {
+        if (!this.nativeRuntime) {
+          this.respond(client.ws, type, id, { definitions: [], skipped: [], folders: { personal: '', claudeUser: '' } });
+          break;
+        }
+        const { specialistCatalog } = this.nativeRuntime;
+        if (payload?.ensurePersonalFolder) await specialistCatalog.ensurePersonalFolder();
+        await specialistCatalog.reload(payload?.cwd);
+        this.respond(client.ws, type, id, toListResult(specialistCatalog.snapshot(payload?.cwd)));
+        break;
+      }
+      case 'specialists:delegated-get': {
+        const result = this.nativeRuntime
+          ? await this.nativeRuntime.nativeHost.getDelegatedModels()
+          : { budget: null, frontier: null };
+        this.respond(client.ws, type, id, result);
+        break;
+      }
+      case 'specialists:delegated-set': {
+        const result = this.nativeRuntime
+          ? await this.nativeRuntime.nativeHost.setDelegatedModel(payload.tier, payload.binding)
+          : { ok: false, error: 'The assistant runtime isn’t connected.' };
+        this.respond(client.ws, type, id, result);
+        break;
+      }
+      case 'specialists:steer': {
+        const result = this.nativeRuntime
+          ? this.nativeRuntime.nativeHost.steerFromUser(payload.sessionId, payload.childId, payload.text)
+          : { ok: false, error: 'The assistant runtime isn’t connected.' };
+        this.respond(client.ws, type, id, result);
+        break;
+      }
+      case 'specialists:interrupt': {
+        const result = this.nativeRuntime
+          ? this.nativeRuntime.nativeHost.interruptFromUser(payload.sessionId, payload.childId)
+          : { ok: false, error: 'The assistant runtime isn’t connected.' };
+        this.respond(client.ws, type, id, result);
         break;
       }
       case 'tags:list': {

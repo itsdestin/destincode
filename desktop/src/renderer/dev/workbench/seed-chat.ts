@@ -15,6 +15,7 @@
 import { chatReducer } from '../../state/chat-reducer';
 import { serializeChatState, type ChatState, type SerializedChatState } from '../../state/chat-types';
 import { loadFixture } from './fixture-loader';
+import { RUNS } from './specialist-runs';
 
 // @ts-ignore TS1343 — Vite rewrites import.meta.glob statically at build time.
 const convos = import.meta.glob('./fixtures/conversations/*.jsonl', {
@@ -27,6 +28,7 @@ const convos = import.meta.glob('./fixtures/conversations/*.jsonl', {
 const SESSION_FOR: Record<string, string> = {
   'claude-code': 'wb-1',
   native: 'wb-2',
+  specialists: 'wb-11',
 };
 
 /** `?stalled=1` replays the fixture's parked-turn line so the red
@@ -64,7 +66,12 @@ export function buildHydratePayload(): SerializedChatState {
     if (error) { console.warn(`[workbench] ${error}`); continue; }
 
     state = chatReducer(state, { type: 'SESSION_INIT', sessionId });
-    for (const action of actions) state = chatReducer(state, action);
+    for (const action of actions) {
+      state = chatReducer(state, action);
+      // Specialists 1c: remember each declared run so the mock's stop action
+      // can flip the right record (mock-shim.ts `specialists.interrupt`).
+      if (action.type === 'SPECIALIST_RUN_CHANGED') RUNS.set(action.run.childId, action.run);
+    }
   }
 
   cached = serializeChatState(state);

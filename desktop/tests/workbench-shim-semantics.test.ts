@@ -191,6 +191,23 @@ describe('mock shim Proxy semantics', () => {
     expect(() => raw.split('\n')).not.toThrow();
   });
 
+  // Fix (final review): SpecialistsSection's "Open folder" button reads
+  // shell.openPath's resolved value as an error message whenever it is truthy
+  // (real openPath resolves '' on success, an error string on failure). Before
+  // this fix `shell` had no hand-written entry, so the call fell through to the
+  // catch-all, which resolves EVERY unknown member to `[]` — truthy, so the
+  // button always showed a blank error box. A unit test stubbing the IPC
+  // channel directly would not catch this; it has to exercise the mock shim's
+  // own resolution path the way the component actually calls it.
+  it('shell.openPath resolves to the empty-string success value, not []', async () => {
+    const result = await shim().shell.openPath('/home/destin/.youcoded/specialists');
+    expect(result).toBe('');
+    // The exact assertion SpecialistsSection.tsx's openFolder handler makes —
+    // pin the READING, not just the value, so a future change that keeps the
+    // value '' but breaks the type (e.g. wrapping it in an object) still fails.
+    expect(Boolean(result)).toBe(false);
+  });
+
   it('defaults to non-zero latency so loading states are visible', () => {
     expect(DEFAULT_LATENCY).toBeGreaterThan(0);
   });

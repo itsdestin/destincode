@@ -8,6 +8,7 @@ import * as fs from 'fs'; import * as os from 'os'; import * as path from 'path'
 import { NativeHome } from '../src/main/native-home';
 import {
   DelegatedModels, resolveDelegatedBinding, resolveRequestedModel, DelegatedModelRefused,
+  delegatedModelsView,
 } from '../src/main/harness/specialists/delegated-models';
 import type { CatalogModel } from '../src/shared/provider-types';
 
@@ -52,6 +53,32 @@ describe('DelegatedModels — storage', () => {
     expect(designated.get('budget')).toEqual(BUDGET_BINDING);
     await designated.set('budget', null);
     expect(designated.get('budget')).toBeNull();
+  });
+});
+
+describe('delegatedModelsView — Task 8', () => {
+  it('delegatedModelsView resolves labels from the catalog and falls back to the model id', async () => {
+    await designated.set('budget', BUDGET_BINDING); // { providerId: 'openrouter', modelId: 'cheap-model' } — no catalog row for it
+    await designated.set('frontier', FRONTIER_BINDING); // { providerId: 'anthropic', modelId: 'claude-opus-5' }
+    const catalog: CatalogModel[] = [
+      { id: 'claude-opus-5', providerId: 'anthropic', label: 'Claude Opus 5' },
+    ];
+    const view = delegatedModelsView(designated, catalog);
+    // frontier's binding has a matching catalog row — label comes from it.
+    expect(view.frontier).toEqual({ providerId: 'anthropic', modelId: 'claude-opus-5', label: 'Claude Opus 5' });
+    // budget's binding has NO matching catalog row — label falls back to the raw modelId.
+    expect(view.budget).toEqual({ providerId: 'openrouter', modelId: 'cheap-model', label: 'cheap-model' });
+  });
+
+  it('an unset tier stays null regardless of the catalog', () => {
+    const view = delegatedModelsView(designated, [{ id: 'x', providerId: 'openrouter', label: 'X' }]);
+    expect(view).toEqual({ budget: null, frontier: null });
+  });
+
+  it('a null catalog (not loaded) falls back to the raw modelId for every set tier', async () => {
+    await designated.set('budget', BUDGET_BINDING);
+    const view = delegatedModelsView(designated, null);
+    expect(view.budget).toEqual({ providerId: 'openrouter', modelId: 'cheap-model', label: 'cheap-model' });
   });
 });
 

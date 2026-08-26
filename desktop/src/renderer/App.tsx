@@ -1045,6 +1045,20 @@ function AppInner() {
       });
     });
 
+    // Specialists 1c: the host's delegation feed — a hire's ledger record
+    // changed (status/steps/stale/model/notes). Lands on the launching Task
+    // card. MUST mirror BubbleFeed.tsx. Task 10: typed bridge — `on.specialistEvent`
+    // RETURNS the unsubscribe function directly (it does not hand back a raw
+    // listener for `.off()`, unlike most of this file's other `on.X` calls);
+    // there is also no separate 'note' event kind any more — a note is a
+    // field on the run record, so the SAME 'run' event carries it and
+    // SPECIALIST_RUN_CHANGED's reducer case derives the Activity-trail row.
+    const specialistHandler = window.claude.on.specialistEvent((event) => {
+      if (event.kind === 'run') {
+        dispatch({ type: 'SPECIALIST_RUN_CHANGED', sessionId: event.sessionId, run: event.run });
+      }
+    });
+
     const hookHandler = window.claude.on.hookEvent((event) => {
       const action = hookEventToAction(event);
       if (action) {
@@ -1237,6 +1251,9 @@ function AppInner() {
               text: event.data.text,
               timestamp: event.timestamp,
               partId: event.data.partId,
+              // Specialists 1c: a child's stamped reasoning routes into its
+              // Task card, not the parent's bubble. MUST mirror BubbleFeed.tsx.
+              parentAgentToolUseId: event.data.parentAgentToolUseId,
             });
           } else {
             // Argument-generation progress: draw/update the preparing tool card.
@@ -1583,6 +1600,12 @@ function AppInner() {
       window.claude.off('session:created', createdHandler);
       window.claude.off('session:destroyed', destroyedHandler);
       window.claude.off('hook:event', hookHandler);
+      // Task 10 fix: specialistHandler IS the unsubscribe function
+      // (on.specialistEvent's return type), not a listener reference — the
+      // old `window.claude.off('specialists:event', specialistHandler)` call
+      // passed that function where `.off` expects the ORIGINAL callback, so
+      // it silently unsubscribed nothing and the feed kept running per mount.
+      specialistHandler();
       window.claude.off('session:renamed', renamedHandler);
       if (movedHandler) window.claude.off('session:moved', movedHandler);
       window.claude.off('status:data', statusHandler);
@@ -3232,6 +3255,12 @@ function AppInner() {
           }
         }}
         hasActiveSession={!!sessionId}
+        // Task 10: Settings → Specialists needs the active session's cwd to
+        // show that project's OWN .claude/agents specialists, not just the
+        // two global sources — sourced from the same artifactState this
+        // ArtifactProvider tree already holds (SpecialistEnvelope reads the
+        // same field for the same reason).
+        activeSessionCwd={sessionId ? artifactState.sessionCwd[sessionId] : undefined}
         onOpenThemeMarketplace={() => { setSettingsOpen(false); openMarketplace('themes'); }}
         onPublishTheme={(slug) => { setSettingsOpen(false); setPublishThemeSlug(slug); }}
         // Model Providers popup → Claude Code section → opens the /config prefs popup.

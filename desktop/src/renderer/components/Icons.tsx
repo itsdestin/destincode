@@ -108,6 +108,17 @@ export function FailIcon({ className = 'w-4 h-4' }: IconProps) {
 }
 
 /** Status: awaiting approval — subtle rounded ? */
+/** Specialists 1c: a helper that was stopped (interrupted) — circle + square,
+ *  the universal "stop" glyph, at the same weight as Check/Fail. */
+export function StoppedIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" opacity="0.6">
+      <circle cx="12" cy="12" r="9" strokeWidth="1.5" />
+      <rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function QuestionIcon({ className = 'w-4 h-4' }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" opacity="0.6">

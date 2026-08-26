@@ -1,4 +1,4 @@
-import type { StoredProject } from '../../../../shared/permission-types';
+import { CROSS_PROJECT_SLUG, type StoredProject } from '../../../../shared/permission-types';
 
 // Fixed timestamps, not Date.now(): a seed that moves with the clock makes
 // "granted 3 days ago" non-reproducible between design reviews (same reason
@@ -11,6 +11,16 @@ const at = (daysAgo: number) => new Date(T0 - daysAgo * 86_400_000).toISOString(
  *  recorded cwd — a design that only works on tidy data looks fine without them. */
 export function permissions(): StoredProject[] {
   return [
+    {
+      // The one non-folder bucket (D2): "Always allow" on the user's OWN
+      // file-defined specialist applies in every project, so the store files it
+      // under CROSS_PROJECT_SLUG with no cwd. Settings must render it FIRST as
+      // "All projects" — keep it here so the card is on every review sheet.
+      slug: CROSS_PROJECT_SLUG,
+      rules: [
+        { tool: 'Task', pattern: 'read-write:file:docs-writer@3f9a1c77be02', action: 'allow', match: 'exact', grantedAt: at(4) },
+      ],
+    },
     {
       slug: '-home-destin-youcoded-dev-youcoded',
       cwd: '/home/destin/youcoded-dev/youcoded',

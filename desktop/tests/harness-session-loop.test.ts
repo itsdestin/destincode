@@ -507,15 +507,23 @@ describe('HarnessSession — multi-step turn driver', () => {
   // look like a path outside cwd would force the 'external directory' ask
   // above if Task were still running through the path guard — this proves it
   // isn't, mirroring the sibling test one case up.
+  // Task 4 (plan 1c): syncTaskTool now rebuilds 'Task' from the roster
+  // UNCONDITIONALLY every turn (no has()-guard), so a fake tool injected
+  // under the name 'Task' via opts.tools no longer survives past the first
+  // buildAiTools() call — the REAL createTaskTool() output takes its place,
+  // same as production. This test now drives THAT real tool (profile.canDelegate
+  // defaults to true — CLOUD_DEFAULT) with an absolute work_dir chosen to
+  // reproduce the exact subject the old fake hardcoded ('read-write:/etc/x' —
+  // 'worker' is read-write, and '/etc/x' is already absolute, so resolveP
+  // returns it unchanged regardless of cwd).
   it('tool-layer guard: Task is exempt (NON_PATH_SUBJECT_TOOLS) — its subject is a consent key, not a path', async () => {
-    const task = fakeTool('Task', { permissionSubject: () => 'read-write:/etc/x', schema: z.object({ agent: z.string() }) });
     const decide = vi.fn(async () => ALLOW);
     const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
     const model = scriptedModel([
-      stream(toolCallChunk('c1', 'Task', { agent: 'worker' }), finishChunk('tool-calls')),
+      stream(toolCallChunk('c1', 'Task', { agent: 'worker', work_dir: '/etc/x' }), finishChunk('tool-calls')),
       stream(...textChunks('b', 'ok'), finishChunk('stop')),
     ]);
-    const session = new HarnessSession(makeOpts({ tools: [task], decide, askUser }), async () => model as any);
+    const session = new HarnessSession(makeOpts({ decide, askUser }), async () => model as any);
     collect(session);
     await session.send('go');
     // Consulted DIRECTLY (never short-circuited to a forced ask) — the guard

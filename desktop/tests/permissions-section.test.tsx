@@ -29,6 +29,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import PermissionsSection from '../src/renderer/components/PermissionsSection';
+import { CROSS_PROJECT_SLUG } from '../src/shared/permission-types';
 
 const list = vi.fn();
 const remove = vi.fn();
@@ -521,5 +522,61 @@ describe('PermissionsSection — when the list is re-read', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Revoke all 2 permissions for p' }));
     fireEvent.click(screen.getByRole('button', { name: /^Confirm removing everything approved for/ }));
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  });
+});
+
+// D2 (2026-08-26) — permissions.json grew ONE key that is not a folder: the
+// bucket holding grants on the user's own file-defined specialists, which are
+// in force wherever they are working. It arrives from permissions:list looking
+// like any other StoredProject, and everything about how it READS has to say it
+// is not a place — or the screen goes back to filing an everywhere-grant under
+// one folder's name, which is the false claim this whole fix exists to end.
+describe('PermissionsSection — the "All projects" card', () => {
+  const taskRule = { tool: 'Task', pattern: 'read-write:file:docs-writer@a1b2c3d4e5f6', action: 'allow', match: 'exact' };
+  const otherTaskRule = { tool: 'Task', pattern: 'read-only:file:notes@0f1e2d3c4b5a', action: 'allow', match: 'exact' };
+
+  it('reads first, is titled in words, and explains itself instead of apologising for a missing path', async () => {
+    list.mockResolvedValue([
+      { slug: '-home-d-alpha', cwd: '/home/d/alpha', rules: commands(2) },
+      { slug: CROSS_PROJECT_SLUG, rules: [taskRule] },
+    ]);
+    render(<PermissionsSection />);
+
+    // The bucket arrives SECOND from the backend and must still read first.
+    const headers = await screen.findAllByRole('button', { expanded: false });
+    expect(headers).toHaveLength(2);
+    expect(headers[0].textContent).toContain('All projects');
+    expect(headers[1].textContent).toContain('alpha');
+
+    expect(headers[0].textContent).toContain('These apply in every folder');
+    // Never the raw storage key, and never the wording for a folder whose path
+    // was lost — nothing is missing here, this card never had a path.
+    expect(screen.queryByText(CROSS_PROJECT_SLUG)).toBeNull();
+    expect(screen.queryByText(/wasn't recorded/i)).toBeNull();
+  });
+
+  it('takes one approval back with the reserved slug, like any other card', async () => {
+    list.mockResolvedValue([{ slug: CROSS_PROJECT_SLUG, rules: [taskRule] }]);
+    remove.mockResolvedValue(true);
+    render(<PermissionsSection />);
+    await openFolder(/All projects/);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Revoke permission:/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Confirm revoking permission:/ }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+      CROSS_PROJECT_SLUG,
+      expect.objectContaining({ tool: 'Task', pattern: taskRule.pattern }),
+    ));
+  });
+
+  it('routes its "revoke all" with the reserved slug too', async () => {
+    list.mockResolvedValue([{ slug: CROSS_PROJECT_SLUG, rules: [taskRule, otherTaskRule] }]);
+    removeProject.mockResolvedValue(true);
+    render(<PermissionsSection />);
+    await openFolder(/All projects/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke all 2 permissions for All projects' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Confirm removing everything approved for/ }));
+    await waitFor(() => expect(removeProject).toHaveBeenCalledWith(CROSS_PROJECT_SLUG));
   });
 });

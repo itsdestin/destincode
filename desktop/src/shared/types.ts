@@ -373,9 +373,15 @@ export interface StructuredPatchHunk {
 
 /**
  * One entry in a subagent's nested timeline rendered inside AgentView.
- * Narrower than ToolCallState — no awaiting-approval, no tool groups,
- * no turn tracking (subagents don't hit the permission hook flow and
- * don't have user-typed messages).
+ * Narrower than ToolCallState — no tool groups, no turn tracking.
+ *
+ * Specialists 1c (2026-08-16): a NATIVE specialist's ask now reaches a real
+ * user (plan 1b's child-ask-router routes it to the parent's own card), so a
+ * tool segment CAN be 'awaiting-approval' and carries the same ask fields the
+ * top-level ToolCallState does — the ask renders INSIDE the launching Task
+ * card's Activity, buttons and all (Destin's 1b hands-on directive: a
+ * background hire looks exactly like a foreground one). CC subagents still
+ * never hit the ask flow; their segments never take that status.
  */
 export type SubagentSegment =
   | {
@@ -395,11 +401,161 @@ export type SubagentSegment =
       toolUseId: string;
       toolName: string;
       input: Record<string, unknown>;
-      status: 'running' | 'complete' | 'failed';
+      status: 'running' | 'complete' | 'failed' | 'awaiting-approval';
       response?: string;
       error?: string;
       structuredPatch?: StructuredPatchHunk[];
+      /** Set while status is 'awaiting-approval' — the broker request the
+       *  nested Yes/No/Always buttons answer. Same fields as ToolCallState. */
+      requestId?: string;
+      denyListed?: boolean;
+      external?: boolean;
+      permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
+      /** The 5-minute hold elapsed (child-ask-router's ASK_REDIRECT): the
+       *  specialist was told to carry on without this and the ask is STILL
+       *  answerable — a late answer becomes a follow-up. The row says so. */
+      askHeld?: boolean;
+    }
+  | {
+      /** A steer — "send a note" — from the user (card action) or the parent
+       *  model (Task tool, task_id). Shown in the Activity trail so the user
+       *  can see what the helper was told mid-run. */
+      type: 'note';
+      id: string;
+      content: string;
+      from: 'user' | 'assistant';
+      timestamp: number;
+    }
+  | {
+      /** The specialist's own reasoning (local reasoning models emit it with
+       *  text). Rendered as a collapsed "Thinking" row inside the card — never
+       *  in the parent's own thinking bubble. */
+      type: 'thinking';
+      id: string;
+      content: string;
+      partId?: string;
     };
+
+/** Specialists 1c — one mid-run steering message, kept on the ledger record so
+ *  a card replay (reattach, restart) shows the same steer history the live
+ *  run saw, not just whatever survived in the model's own transcript. */
+export interface SpecialistNote {
+  text: string;
+  from: 'user' | 'assistant';
+  at: number;
+}
+
+/**
+ * Specialists 1c — what the renderer knows about one hire, keyed by the Task
+ * call that started it. Mirrors the host's DelegationRecord (delegation-
+ * ledger.ts) minus the delivery/lease bookkeeping the UI never needs. Pushed
+ * over `specialists:event` on every ledger write and replayed on
+ * session (re)attach, so a card's status never depends on the model's prose.
+ */
+export interface SpecialistRunView {
+  childId: string;
+  parentToolCallId: string;
+  /** Definition id (explorer / worker / a custom file's id). */
+  agentType: string;
+  /** "Nadia the Rambling Researcher" — minted at spawn. */
+  title: string;
+  description?: string;
+  background: boolean;
+  status: 'running' | 'completed' | 'failed' | 'interrupted';
+  startedAt: number;
+  endedAt?: number;
+  steps?: number;
+  /** Heartbeat watchdog flagged no activity past the idle/in-tool threshold. */
+  stale?: boolean;
+  /** Which model actually ran it, once resolved (tier fallback stated honestly). */
+  model?: { label: string; via?: 'budget' | 'frontier' | 'named' | 'parent'; fallback?: boolean };
+  /** Mid-run steers sent to this hire, in order. Absent on a pre-1c record —
+   *  the ledger reads that as []. */
+  notes?: SpecialistNote[];
+}
+
+/** Task 5 (plan 1c) — the push event `specialists:event` carries: one
+ *  ledger write, one event, one changed hire. `kind` is a discriminant with
+ *  exactly ONE member today ('run') — kept, rather than dropped down to a
+ *  bare `SpecialistRunView`, so a later kind (e.g. a one-off toast) can be
+ *  added without every existing listener's shape changing underneath it.
+ *  There is no separate "note" event: a note is a field ON the run record
+ *  (SpecialistRunView.notes), so the SAME 'run' event that carries a status
+ *  change also carries a newly-added note — the card never needs to merge
+ *  two event kinds to know what a hire's note history looks like. */
+export type SpecialistsEvent = { kind: 'run'; sessionId: string; run: SpecialistRunView };
+
+/** A background specialist's delivered report, folded into its Task card. */
+export interface SpecialistReportView {
+  text: string;
+  status: 'completed' | 'failed';
+  steps?: number;
+  timestamp: number;
+}
+
+/**
+ * Specialists 1c — one row of the roster the renderer shows (Settings →
+ * Specialists, and the Task card's consent block). Comes from
+ * `specialists:list`; the CHARTER and TOOLS are the MAPPED result the child
+ * will actually get, never what a source file claimed (spec §2: CC-format
+ * compatibility is safety-relevant).
+ */
+export interface SpecialistDefinitionView {
+  id: string;
+  displayName: string;
+  description: string;
+  charter: 'read-only' | 'read-write';
+  allowedTools: string[];
+  modelPreference?: 'parent' | 'budget' | 'frontier';
+  // Task 8 fix: narrowed from the earlier 'builtin' | 'personal' | 'project' |
+  // 'claude-code' — SpecialistCatalog (harness/specialists/catalog.ts) tags a
+  // PROJECT'S .claude/agents/ file the same 'claude-code' source as the
+  // user-level folder (only `path` tells them apart); 'project' was never a
+  // source the catalog actually produced.
+  source: 'builtin' | 'personal' | 'claude-code';
+  /** D2: how wide an "Always allow" on this specialist may be — 'user' grants
+   *  travel across projects, 'project' grants are pinned to one work dir.
+   *  Distinct from `source` because 'claude-code' spans BOTH the user's folder
+   *  and a project's; see SpecialistDefinition.grantScope for the full why. The
+   *  card reads this only to LABEL the grant honestly; the width itself is
+   *  decided in the main process (tools/task.ts's permissionSubject). */
+  grantScope: 'builtin' | 'user' | 'project';
+  /** Absolute path of the defining file (absent for built-ins). */
+  path?: string;
+  /** Tool grants the file asked for that were stripped as unmappable/unknown,
+   *  plus any other narrowing the loader applied. Empty = loaded verbatim. */
+  warnings: string[];
+  // Task 8 fix: `shadows` REMOVED — the catalog's load-order rule is "first
+  // loaded wins, a later colliding id is SKIPPED" (resolveOffered's own WHY),
+  // never a layering one definition displaces another. A collision now shows
+  // up in SpecialistsListResult.skipped, not as a per-definition flag here.
+  /** False past the offered cap (MAX_OFFERED_SPECIALISTS) — still listed in
+   *  Settings, with a warning, but never handed to the Task tool. Built-ins
+   *  are always true. */
+  offered: boolean;
+  /** The file's full, unclamped description — Settings shows this; the
+   *  Task-tool-facing `description` above is clamped to MAX_DESCRIPTION_CHARS. */
+  fullDescription?: string;
+}
+
+/** Specialists 1c — `specialists:list`'s exact response shape: the resolved
+ *  roster (every definition, offered or not) plus what the loader could NOT
+ *  place (parse failure or id collision) and the three folder paths an "Open
+ *  folder" control needs. Mirrors SpecialistCatalog's CatalogSnapshot
+ *  (harness/specialists/catalog.ts) field-for-field on purpose — one shape,
+ *  never two that could drift. */
+export interface SpecialistsListResult {
+  definitions: SpecialistDefinitionView[];
+  skipped: { path: string; source: 'personal' | 'claude-code'; error: string }[];
+  folders: { personal: string; claudeUser: string; project?: string };
+}
+
+/** Specialists 1c — the two user-designated model tiers (spec §2 amendment,
+ *  Destin 2026-08-12). `null` = unset → falls back to the conversation's model. */
+export interface DelegatedModelsView {
+  budget: { providerId: string; modelId: string; label: string } | null;
+  frontier: { providerId: string; modelId: string; label: string } | null;
+}
 
 export interface ToolCallState {
   toolUseId: string;
@@ -420,6 +576,10 @@ export interface ToolCallState {
    *  'full-auto' + denyListed swaps the generic button row for the safety-stop
    *  footer (spec 2026-08-12, M5 2b). Absent on CC asks. */
   permissionMode?: 'ask' | 'auto-edit' | 'full-auto';
+  /** Specialists 1c: set on a TOP-LEVEL card only when a child's routed ask
+   *  could not be nested (its Task card is not on this timeline) — the card
+   *  then labels who asked instead of reading as the parent's own ask. */
+  specialist?: { childId: string; agentType: string; title: string };
   /**
    * Native runtime only. The model is still GENERATING this call's arguments —
    * nothing has executed, and `input` is an empty object until the real
@@ -449,6 +609,21 @@ export interface ToolCallState {
   subagentSegments?: SubagentSegment[];
   agentType?: string;
   agentId?: string;
+  /**
+   * Native specialists (1c): the live run record for the hire THIS Task call
+   * started, keyed to the card by parentToolCallId. Drives the card's real
+   * status — a background hire's tool result is only the launch acknowledgment,
+   * so `status: 'complete'` alone would read "done" while the child still
+   * works (Destin's 1b hands-on, Test 4). Absent on CC Agent cards.
+   */
+  specialistRun?: SpecialistRunView;
+  /**
+   * Native specialists (1c): a BACKGROUND hire's delivered report, folded back
+   * into the launching card so background and foreground render alike (the
+   * foreground report is simply `response`). The parent model still reads the
+   * report as its next turn; only the bubble moved here.
+   */
+  specialistReport?: SpecialistReportView;
 }
 
 export interface ToolGroupState {
@@ -1378,6 +1553,19 @@ export const IPC = {
   PERMISSIONS_LIST: 'permissions:list',
   PERMISSIONS_REMOVE: 'permissions:remove',
   PERMISSIONS_REMOVE_PROJECT: 'permissions:remove-project',
+  // ---- Specialists 1c (Task 8): roster + tier reads/writes + card actions ----
+  // list ALWAYS re-reads the three definition folders (never a cached
+  // snapshot) so a file dropped in a moment ago shows up without a Refresh
+  // click; delegated-get/set are the two model-tier reads/writes; steer/
+  // interrupt are the card's user-facing "send a note" / "stop" actions.
+  // specialists:event is a PUSH (no request) — the delegation ledger's own
+  // write is what triggers it, never a direct emit from a handler here.
+  SPECIALISTS_LIST: 'specialists:list',
+  SPECIALISTS_DELEGATED_GET: 'specialists:delegated-get',
+  SPECIALISTS_DELEGATED_SET: 'specialists:delegated-set',
+  SPECIALISTS_STEER: 'specialists:steer',
+  SPECIALISTS_INTERRUPT: 'specialists:interrupt',
+  SPECIALISTS_EVENT: 'specialists:event',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',

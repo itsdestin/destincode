@@ -1120,3 +1120,62 @@ describe('permissions:* channel parity', () => {
     for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
   });
 });
+
+// Five-surface parity for the specialists roster/tier/card-action UI (Task 8,
+// plan 1c). Cloned from the permissions:* block above — same gap it closes:
+// a channel missing from remote-shim.ts or SessionService.kt would silently
+// break the roster/tier pickers or a card's steer/stop button on remote or
+// Android, the exact failure mode native:* had until 2026-07-28.
+describe('specialists:* channel parity', () => {
+  const NEW_TYPES = [
+    'specialists:list',
+    'specialists:delegated-get',
+    'specialists:delegated-set',
+    'specialists:steer',
+    'specialists:interrupt',
+  ];
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'specialists:list': 'IPC.SPECIALISTS_LIST',
+    'specialists:delegated-get': 'IPC.SPECIALISTS_DELEGATED_GET',
+    'specialists:delegated-set': 'IPC.SPECIALISTS_DELEGATED_SET',
+    'specialists:steer': 'IPC.SPECIALISTS_STEER',
+    'specialists:interrupt': 'IPC.SPECIALISTS_INTERRUPT',
+  };
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from ipc-handlers.ts`).toBe(true);
+  });
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`'${t}'`);
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+  });
+  // specialists:event is a PUSH, not a request — it is exempt from the
+  // ipc-handlers.ts (no `ipcMain.handle`, only a `.on()` forwarder) and
+  // Kotlin/remote-server "request" surfaces the same way native:model-state
+  // is (see the native:* describe block above). It still needs to exist on
+  // BOTH client surfaces (preload + remote-shim) so a subscriber compiles and
+  // actually receives it on either platform.
+  it('specialists:event push channel present in preload + remote-shim only', () => {
+    const preload = read('src', 'main', 'preload.ts');
+    const shim = read('src', 'renderer', 'remote-shim.ts');
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    expect(preload).toContain(`'specialists:event'`);
+    expect(shim).toContain(`'specialists:event'`);
+    // Never a request stub: unlike the five channels above, this is push-only
+    // and must not appear in Kotlin's not-implemented list at all.
+    expect(kt).not.toContain(`"specialists:event"`);
+  });
+});

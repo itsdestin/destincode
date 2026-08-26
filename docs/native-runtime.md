@@ -505,12 +505,12 @@ lives; `child-ask-policy.ts` named above no longer exists on disk (replaced by
 
 **Plan 1b (below) shipped everything deferred here:** background/non-blocking delegation, a
 persistent run ledger, heartbeats for a long-running child, and subagent-card replay after resume.
-File-based custom specialists and CC-compat with Claude Code's own subagent file format are still
-open — folded into the **plan 1c** deferred list next to pretty launch/report cards in the
-renderer, a specialist badge, and hidden-utility built-ins beyond the four
-(explorer/researcher/reviewer/worker) shipped here. Two items 1b did NOT ship — a user-visible
-deletion/GC path for child transcripts, and consent-card copy adapted for a `task_id` management
-call — are tracked in the workspace `ROADMAP.md` under `#specialists`, not here.
+File-based custom specialists and CC-compat with Claude Code's own subagent file format shipped in
+**plan 1c** below — see "Specialists (plan 1c — files, chat UI backend, Settings)". Plan 1c also
+closed 1b's consent-card copy gap for a `task_id` management call. Still open — a user-visible
+deletion/GC path for child transcripts, plus a handful of ideas (promote foreground → background,
+a transcript viewer, per-helper cost) — are tracked in the workspace `ROADMAP.md` under
+`#specialists`, not here.
 
 ## Specialists (plan 1b — background, durability, steering)
 
@@ -766,3 +766,82 @@ compressing bullets whose full text this document already carried:
   and `adaptForWire`'s per-wire image split.
 
 Every one was grep-verified present in this document before removal; no claim was lost.
+
+## Specialists (plan 1c — files, chat UI backend, Settings)
+
+Design: workspace `docs/active/specs/2026-08-16-native-specialists-plan-1c-design.md`. Fourteen
+tasks let a specialist be defined by a file (personal or Claude-Code-compatible), wired the run
+ledger's live state onto the chat card, and gave Settings a real management surface. New surface:
+`harness/specialists/catalog.ts`, `definition-files.ts`, `frontmatter.ts`.
+
+**Channel contract** — six new `specialists:*` IPC channels ride all five surfaces (`ipc-handlers`
+· `preload` · `remote-shim` · `remote-server` WS · `SessionService.kt` not-implemented), parity
+pinned by `ipc-channels.test.ts`, **not** gated on `native.supported` (a phone must still answer an
+ask): `specialists:list` (→ `{ definitions, folders: { personal, claudeUser?, project? } }`, always
+re-reads the three folders — this is also Settings' Refresh; `{ ensurePersonalFolder: true }` from
+Settings only, creating the personal folder + its starter file if absent), `specialists:delegated-get`
+/ `-set` (the `budget`/`frontier` tier bindings), `specialists:steer` / `specialists:interrupt` (own-
+children-only, checked host-side). The run record itself pushes as `specialists:event { kind:'run',
+sessionId, run }` — one emission point (`delegation-ledger.ts`'s private `mutate()`), replayed on
+session attach and after a transcript replay. Nested asks ride the existing `hook:event
+PermissionRequest`, now carrying `specialist.parentToolCallId`; the 5-minute hold flip adds a new
+`PermissionHeld` hook event, itself replayed to a reconnecting client (`pendingEventsFor`) alongside
+a `PermissionResolved` purge signal that stops a stale answered ask from replaying with live buttons.
+
+**File formats.** A personal specialist is frontmatter (`name`, `description`, `tools:`, `model:
+budget|frontier|parent`, `stepCap`, `reportBudgetTokens`) + a system-prompt body, in
+`~/.youcoded/specialists/*.md`; `charter` (`read-only`/`read-write`) is always DERIVED from the
+mapped tools, never declared. A Claude Code agent file (`~/.claude/agents/*.md` or
+`<cwd>/.claude/agents/*.md`) maps through the same pipeline — see the mapping table below. Ids are
+unique across all three folders; built-in ids are reserved and a collision is skipped with a
+warning rather than shadowing anything. At most 20 non-built-in specialists are offered to the
+model per cwd (load order); the catalog is re-read only at conversation open, at turn start when a
+per-file fingerprint changed, or on Settings Refresh — there is no directory watcher.
+
+**Claude Code `.claude/agents/*.md` mapping table** — the safety-relevant translation from CC's
+frontmatter to a native `SpecialistDefinition` (`Task`/`Agent` always stripped; an omitted `tools:`
+maps to read-only; `model: haiku/sonnet/opus` map to `budget`/parent/`frontier`; anything unmappable
+produces a warning rather than a silent drop) lives entirely in
+`harness/specialists/definition-files.ts`'s `loadClaudeCodeDefinition` — its test file
+(`specialist-definition-files.test.ts`) is the authoritative list of every mapped and stripped key;
+read the function before assuming a CC field carries over.
+
+**Hire grants for file-defined specialists (D1/D2, 2026-08-26).** `rememberedRuleFor`
+(`harness-session.ts`) persists a non-Bash "Always allow" as `{tool, pattern: subject, action:'allow',
+match:'exact'}` — byte-exact on the subject — so the subject `tools/task.ts` builds IS the entire
+definition of how wide the grant is. The catalog stamps `SpecialistDefinition.grantScope` because it
+is the only thing that knows which folder a file came from (`source: 'claude-code'` spans both
+`~/.claude/agents/` and `<cwd>/.claude/agents/`; `loadClaudeCodeDefinition` takes it as a required
+parameter, no default): built-in → `${charter}:${workDir}` (unchanged from 1b, so no existing grant
+is lost); `user` (`~/.youcoded/specialists/`, `~/.claude/agents/`) → `${charter}:file:${id}@${fp}`,
+no work dir, so one grant covers every project — these are the files the user owns and reuses;
+`project` (`<cwd>/.claude/agents/`) → `${charter}:${workDir}:file:${id}@${fp}`, pinned to the folder,
+because a repo's own helper is the untrusted case and a same-id file in another repo must not inherit
+it. `fp` is `definitionFingerprint(raw)` — sha256 of the file bytes, first 12 hex — so an edited file
+mints a new subject and re-asks (blind spot: the catalog only re-reads a file whose `mtime`/size
+changed, so a same-size same-second rewrite keeps the old hash AND the old cached definition — the
+grant and the behaviour stay consistent with each other). *D1:* `rulesForMode('auto-edit')` appends
+`{tool:'Task', pattern:'*:file:*', action:'ask'}` after the broad Task allow, so a file-defined hire
+still shows a card in auto-edit while a remembered exact grant still wins. *Resume:* a `task_id`
+call has no work dir, so no subject and no card — the delegation ledger records
+`definitionFingerprint` at spawn and `resumeSpecialist` answers `definition-changed` when the current
+file no longer matches; the Task tool reports that and tells the model to hire afresh. `createTaskTool`
+memoises `roster.resolve` per instance so `permissionSubject` and `execute` see the same definition
+even if the catalog reloads between them, and resolves `work_dir` against the session cwd (threaded
+from `harness-session.ts`), not `process.cwd()`. The card states the width in words under the buttons
+(`alwaysAllowNote`) and still offers no Always-allow while the definition is unknown (nor for a hire
+with no `work_dir`, which has no subject to grant); Settings →
+Permissions renders a `file:` subject in words via `describeRule` ("Let the docs-writer specialist
+edit files in every project"). *Where "every project" actually lives:* `isCrossProjectRule`
+(`shared/permission-types.ts`) routes exactly the `user` subject shape into the reserved
+`CROSS_PROJECT_SLUG` (`'all projects'`) bucket of `permissions.json` — a key no cwd can ever slug to,
+because `nativeStoreSlug` collapses its space — which `PermissionStore.rulesFor` unions into EVERY
+project's remembered rules, `NativeSessionHost.revokeRule`/`revokeProject` clear from every live
+session (project grants untouched), and Settings lists first as "All projects". Guards: `task-tool.test.ts` ("D2 — grant width follows grantScope"),
+`permission-engine.test.ts` (D1), `native-session-host.test.ts` (resume gate + the cross-project
+bucket's revoke behaviour), `permission-store.test.ts` (bucket routing and reads),
+`specialist-catalog.test.ts` / `specialist-definition-files.test.ts` (folder → `grantScope`),
+`permissions-section.test.tsx` ("All projects" card), `describe-rule.test.ts`,
+`specialist-envelope.test.tsx`.
+
+Rule: `.claude/rules/native-specialists.md` → "Specialists (plan 1c)".

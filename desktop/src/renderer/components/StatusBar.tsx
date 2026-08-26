@@ -13,6 +13,7 @@ import ContextPopup from './ContextPopup';
 import OpenTasksChip from './OpenTasksChip';
 import { isAndroid } from '../platform';
 import { SessionTagsChip } from './tags/SessionTagsChip';
+import SpecialistsChip from './SpecialistsChip';
 import { Dialog } from './ui';
 import { resolveModelBrand, type ProviderIconKey } from './provider-brand';
 
@@ -1160,6 +1161,9 @@ export default function StatusBar({
           onOpen={onOpenOpenTasks}
         />
       )}
+
+      {/* Specialists (1c) — hidden when the conversation has no helpers. */}
+      <SpecialistsChip sessionId={sessionId} />
 
       {/* Rate limits */}
       {show('usage-5h') && usage?.five_hour != null && (

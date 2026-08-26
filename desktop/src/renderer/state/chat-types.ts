@@ -1,4 +1,4 @@
-import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState } from '../../shared/types';
+import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState, type SpecialistRunView } from '../../shared/types';
 // Re-export so test files and future consumers can import these types from
 // chat-types directly, without reaching into the shared/types boundary.
 export type { ToolCallState, AttentionState };
@@ -506,6 +506,11 @@ export type ChatAction =
       text: string;
       timestamp: number;
       partId?: string;
+      // Specialists 1c: set when the reasoning belongs to a specialist child
+      // (stamped by the host like its text/tool events). The reducer routes it
+      // into the launching Task card as a 'thinking' segment instead of the
+      // parent's own reasoning bubble.
+      parentAgentToolUseId?: string;
     }
   | {
       type: 'PERMISSION_REQUEST';
@@ -514,6 +519,11 @@ export type ChatAction =
       input: Record<string, unknown>;
       requestId: string;
       permissionSuggestions?: string[];
+      // Specialists 1c: the ask was raised by a specialist CHILD and routed to
+      // this (parent) session by child-ask-router. The reducer nests it under
+      // the launching Task card (found by parentToolCallId, else by childId)
+      // instead of minting a top-level card. Absent on the parent's own asks.
+      specialist?: { childId: string; agentType: string; title: string; parentToolCallId?: string };
       // Native broker only: winning rule came from the destructive deny-list →
       // ToolCard shows the consequence-gated "Always allow" warning. Task 13.
       denyListed?: boolean;
@@ -529,6 +539,25 @@ export type ChatAction =
       type: 'PERMISSION_EXPIRED';
       sessionId: string;
       requestId: string;
+    }
+  | {
+      // Specialists 1c: the child-ask-router's 5-minute hold elapsed. The ask
+      // stays answerable (the broker keeps the entry); the specialist was told
+      // to continue without it. Flags the nested segment so the row can say so.
+      type: 'PERMISSION_HELD';
+      sessionId: string;
+      requestId: string;
+    }
+  | {
+      // Specialists 1c: the host's delegation ledger changed for one hire
+      // (`specialists:event`, also replayed on attach). Lands on the Task
+      // card keyed by run.parentToolCallId. A steer ("send a note") rides on
+      // `run.notes` — there is no separate note action; the reducer derives
+      // the Activity-trail 'note' segments from the run record itself
+      // (chat-reducer.ts's SPECIALIST_RUN_CHANGED case).
+      type: 'SPECIALIST_RUN_CHANGED';
+      sessionId: string;
+      run: SpecialistRunView;
     }
   | {
       type: 'PERMISSION_RESPONDED';

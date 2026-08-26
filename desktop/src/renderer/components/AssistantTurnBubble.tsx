@@ -2,10 +2,11 @@ import React, { useState } from 'react';
 import { AssistantTurn, abnormalStopReason } from '../state/chat-types';
 import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/types';
 import { assistantName } from '../utils/assistant-name';
+import { hasNestedAsk } from '../utils/specialist-cards';
 import MarkdownContent from './MarkdownContent';
 import ToolCard from './ToolCard';
 import { DeliverablesCard, isSentFilesTool } from './DeliverablesCard';
-import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
+import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
 import { useTheme } from '../state/theme-context';
@@ -132,9 +133,15 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
   const [expanded, setExpanded] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
 
-  const runningCount = tools.filter((t) => t.status === 'running').length;
-  const completedCount = tools.filter((t) => t.status === 'complete').length;
+  // Specialists 1c: a Task card whose helper is still working counts as
+  // running even though its tool result (the launch ack) already landed —
+  // otherwise a group of background hires read "all complete" while one of
+  // them was mid-job. A helper waiting on the user is called out too.
+  const stillWorking = (t: ToolCallState) => t.specialistRun?.status === 'running';
+  const runningCount = tools.filter((t) => t.status === 'running' || stillWorking(t)).length;
+  const completedCount = tools.filter((t) => t.status === 'complete' && !stillWorking(t)).length;
   const failedCount = tools.filter((t) => t.status === 'failed').length;
+  const askingCount = tools.filter(hasNestedAsk).length;
 
   // Build name summary: "Read, Grep, Grep" → "Read, Grep ×2"
   const nameCounts = new Map<string, number>();
@@ -151,7 +158,9 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors"
       >
-        {runningCount > 0 ? (
+        {askingCount > 0 ? (
+          <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+        ) : runningCount > 0 ? (
           <BrailleSpinner size="sm" />
         ) : failedCount > 0 ? (
           <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
@@ -164,6 +173,7 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
           {completedCount === tools.length && ' — all complete'}
           {runningCount > 0 && ` — ${runningCount} running`}
           {failedCount > 0 && ` — ${failedCount} failed`}
+          {askingCount > 0 && <span className="text-amber-500">{` — ${askingCount} waiting on you`}</span>}
         </span>
         <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={expanded} />
       </button>
@@ -587,7 +597,9 @@ function ToolGroupInline({
 
   if (tools.length === 0) return null;
 
-  // Skip awaiting-approval tools — they render as standalone bubbles at the bottom of the timeline
+  // Skip awaiting-approval tools — they render as standalone bubbles at the bottom of the timeline.
+  // (A Task card whose HELPER is asking stays put: those asks are managed from
+  // the specialists popup — SpecialistsChip — not by moving the card. Destin, 1c round 1.)
   const restTools = tools.filter((t) => t.status !== 'awaiting-approval');
   if (restTools.length === 0) return null;
 

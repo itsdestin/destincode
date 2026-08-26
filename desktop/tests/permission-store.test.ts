@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs'; import * as os from 'os'; import * as path from 'path';
 import { NativeHome } from '../src/main/native-home';
 import { PermissionStore } from '../src/main/harness/permission-store';
+import { CROSS_PROJECT_SLUG, isCrossProjectRule } from '../src/shared/permission-types';
+import { nativeStoreSlug } from '../src/main/slug-encoding';
 
 let home: NativeHome; let store: PermissionStore; let dir: string;
 beforeEach(() => {
@@ -229,5 +231,98 @@ describe('PermissionStore — legacy normalization and sameRule identity', () =>
     const after = (await store.list())[0].rules;
     expect(after).toHaveLength(1);
     expect(after[0].grantedAt).toBe(first);
+  });
+
+  // ── The cross-project bucket (D2, 2026-08-26) ──────────────────────────────
+  // A grant on a specialist defined in a folder the USER owns was promised —
+  // by the card, by describeRule and by the docs — to apply "in every project".
+  // Before this bucket it was filed under whichever folder happened to be open,
+  // so the next project asked again and the promise was simply false.
+
+  // The Task subject IS the grant width (tools/task.ts), so these two shapes are
+  // the whole discriminator and each test below uses the real ones.
+  const userRule = { tool: 'Task', pattern: 'read-write:file:docs-writer@a1b2c3d4e5f6', action: 'allow' as const, match: 'exact' as const };
+  const projectRule = { tool: 'Task', pattern: 'read-only:/work/alpha:file:repo-reviewer@0f1e2d3c4b5a', action: 'allow' as const, match: 'exact' as const };
+
+  it("a user-scoped specialist grant lands in the reserved bucket, with no cwd", async () => {
+    await store.remember('/work/alpha', userRule);
+    const bucket = (await store.list()).find((p) => p.slug === CROSS_PROJECT_SLUG);
+    expect(bucket).toBeDefined();
+    expect(bucket!.rules).toMatchObject([{ tool: 'Task', pattern: userRule.pattern }]);
+    // The bucket is not a place. Recording the folder that happened to be open
+    // would put a path under a card that applies everywhere.
+    expect(bucket!.cwd).toBeUndefined();
+    // And it is filed nowhere else — the folder it was approved in has nothing.
+    expect((await store.list()).map((p) => p.slug)).toEqual([CROSS_PROJECT_SLUG]);
+  });
+
+  it('reads back in a DIFFERENT project — the actual "every project" promise', async () => {
+    await store.remember('/work/alpha', userRule);
+    expect(await store.rulesFor('/work/beta')).toMatchObject([{ pattern: userRule.pattern }]);
+  });
+
+  it("unions the bucket with the project's own rules, bucket first", async () => {
+    await store.remember('/work/alpha', userRule);
+    await store.remember('/work/alpha', { tool: 'Bash', pattern: 'npm test', action: 'allow' });
+    const rules = await store.rulesFor('/work/alpha');
+    expect(rules.map((r) => r.pattern)).toEqual([userRule.pattern, 'npm test']);
+    // Two separate slices on disk, not one merged folder entry — that is what
+    // lets Settings show them as two cards and revoke them independently.
+    expect((await store.list()).map((p) => p.slug).sort())
+      .toEqual([CROSS_PROJECT_SLUG, nativeStoreSlug('/work/alpha')].sort());
+  });
+
+  it('a PROJECT-scoped specialist grant stays under its own folder, never the bucket', async () => {
+    // The subject carries a work dir before ':file:', which is exactly what must
+    // keep a repo-shipped helper's grant from travelling to another repo.
+    expect(isCrossProjectRule(projectRule)).toBe(false);
+    await store.remember('/work/alpha', projectRule);
+    const slugs = (await store.list()).map((p) => p.slug);
+    expect(slugs).not.toContain(CROSS_PROJECT_SLUG);
+    expect(await store.rulesFor('/work/beta')).toEqual([]);
+    expect(await store.rulesFor('/work/alpha')).toMatchObject([{ pattern: projectRule.pattern }]);
+  });
+
+  it('remove() takes the bucket back, by its reserved slug like any other', async () => {
+    await store.remember('/work/alpha', userRule);
+    const listed = (await store.list()).find((p) => p.slug === CROSS_PROJECT_SLUG)!;
+    expect(await store.remove(CROSS_PROJECT_SLUG, listed.rules[0])).toBe(true);
+    expect(await store.rulesFor('/work/beta')).toEqual([]);
+  });
+
+  it('removeProject() clears the whole bucket and leaves a folder alone', async () => {
+    await store.remember('/work/alpha', userRule);
+    await store.remember('/work/alpha', { tool: 'Bash', pattern: 'npm test', action: 'allow' });
+    expect(await store.removeProject(CROSS_PROJECT_SLUG)).toBe(true);
+    expect(await store.rulesFor('/work/alpha')).toMatchObject([{ pattern: 'npm test' }]);
+  });
+
+  it('a v1 file with no bucket still reads fine', async () => {
+    // The bucket is a new KEY, not a new file format — nothing migrates, so a
+    // file written before it existed must read exactly as it always did.
+    seedPermissionsFile(JSON.stringify({ v: 1, projects: { '-p': { rules: [{ tool: 'Bash', pattern: 'ls', action: 'allow' }] } } }));
+    expect(await store.rulesFor('/p')).toMatchObject([{ tool: 'Bash', pattern: 'ls', match: 'exact' }]);
+  });
+});
+
+// The one function that decides whether a grant travels. Its input is the
+// SUBJECT tools/task.ts builds, so these are the three real shapes.
+describe('isCrossProjectRule', () => {
+  it('is true only for a Task subject with no work dir before file:', () => {
+    expect(isCrossProjectRule({ tool: 'Task', pattern: 'read-write:file:docs-writer@a1b2c3d4e5f6' })).toBe(true);
+    expect(isCrossProjectRule({ tool: 'Task', pattern: 'read-only:file:notes@0f1e2d3c4b5a' })).toBe(true);
+  });
+
+  it('is false for a project-scoped subject — the work dir sits before file:', () => {
+    expect(isCrossProjectRule({ tool: 'Task', pattern: 'read-only:/work/alpha:file:repo-reviewer@0f1e2d3c4b5a' })).toBe(false);
+    // A Windows work dir, which contains a colon of its own.
+    expect(isCrossProjectRule({ tool: 'Task', pattern: 'read-write:C:/work/alpha:file:repo-reviewer@0f1e2d3c4b5a' })).toBe(false);
+  });
+
+  it("is false for a built-in hire's subject and for anything that is not a hire", () => {
+    expect(isCrossProjectRule({ tool: 'Task', pattern: 'read-only:/work/alpha' })).toBe(false);
+    expect(isCrossProjectRule({ tool: 'Task' })).toBe(false);
+    // Not a Task at all: a Bash command that merely looks like the shape.
+    expect(isCrossProjectRule({ tool: 'Bash', pattern: 'read-write:file:docs-writer@a1b2c3d4e5f6' })).toBe(false);
   });
 });

@@ -8,6 +8,7 @@
 // resolveDelegatedBinding's own comment for why the two failure modes differ).
 import type { CatalogModel, ModelBinding } from '../../../shared/provider-types';
 import type { NativeHome } from '../../native-home';
+import type { DelegatedModelsView } from '../../../shared/types';
 
 export type DelegatedTier = 'budget' | 'frontier';
 
@@ -51,6 +52,22 @@ export class DelegatedModels {
       return { ...data, v: 1, [tier]: binding };
     });
   }
+}
+
+/** Task 8 — Settings' two tier rows read this. Resolves each set tier's
+ *  binding to a display LABEL from the live catalog (never a bare id); a row
+ *  whose catalog entry can no longer be found (model removed/renamed since
+ *  it was designated) still shows something readable, falling back to the
+ *  raw modelId rather than an empty label. An unset tier stays null — the
+ *  renderer already reads that as "falls back to the conversation's model". */
+export function delegatedModelsView(designated: DelegatedModels, catalog: CatalogModel[] | null): DelegatedModelsView {
+  const rowFor = (tier: DelegatedTier): DelegatedModelsView['budget'] => {
+    const binding = designated.get(tier);
+    if (!binding) return null;
+    const label = catalog?.find((m) => m.id === binding.modelId && m.providerId === binding.providerId)?.label ?? binding.modelId;
+    return { providerId: binding.providerId, modelId: binding.modelId, label };
+  };
+  return { budget: rowFor('budget'), frontier: rowFor('frontier') };
 }
 
 /** Priority ordering for what a Task call runs on: the Task-call arg (a user

@@ -66,6 +66,10 @@ declare global {
         // Optional — desktop stub returns no-op unsubscribe; Android remote-shim
         // dispatches base64-encoded raw PTY bytes for xterm.js consumption (Tier 2).
         ptyRawBytesForSession?: (sessionId: string, cb: (data: string) => void) => () => void;
+        // Specialists 1c (Task 8) — one hire's ledger record changed. Push-only,
+        // fed by the delegation ledger's own mutate() chokepoint (never a direct
+        // emit per host method). Returns an unsubscribe fn.
+        specialistEvent: (cb: (e: import('../../shared/types').SpecialistsEvent) => void) => () => void;
       };
       dialog: {
         openFile: () => Promise<string[]>;
@@ -77,6 +81,11 @@ declare global {
       shell: {
         openChangelog: () => Promise<void>;
         openExternal: (url: string) => Promise<void>;
+        // Task 10: typed so Settings → Specialists' "Open folder" (and every
+        // existing (window.claude as any).shell.openPath call site) can drop
+        // the cast. Already real — preload.ts's shell.openPath, unrelated to
+        // this feature.
+        openPath: (filePath: string) => Promise<string>;
       };
       // Task 9: preload bridge for reading the xterm screen buffer from the main
       // process (used by useAttentionClassifier and the Android terminal-data parity
@@ -304,6 +313,25 @@ declare global {
         list: () => Promise<import('../../shared/permission-types').StoredProject[]>;
         remove: (slug: string, rule: import('../../shared/permission-types').PermissionRule) => Promise<boolean>;
         removeProject: (slug: string) => Promise<boolean>;
+      };
+      // Specialists 1c (Task 8) — roster + tier reads/writes + card actions.
+      // list ALWAYS re-reads the three definition folders; ensurePersonalFolder
+      // is opt-in (only "Open folder" needs the folder to exist before any
+      // file has ever been written there).
+      specialists: {
+        // Fix: omitting `cwd` when a project folder IS known silently returns
+        // a roster missing that project's OWN specialists — no error, the
+        // user's files just don't appear. Always pass the active session's
+        // cwd when one exists (see useSpecialistRoster/useSpecialistDefinition
+        // in hooks/useSpecialists.ts, which every caller should go through).
+        list: (opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => Promise<import('../../shared/types').SpecialistsListResult>;
+        getDelegatedModels: () => Promise<import('../../shared/types').DelegatedModelsView>;
+        setDelegatedModel: (
+          tier: 'budget' | 'frontier',
+          binding: { providerId: string; modelId: string } | null,
+        ) => Promise<{ ok: true } | { ok: false; error: string }>;
+        steer: (sessionId: string, childId: string, text: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+        interrupt: (sessionId: string, childId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
       };
       // Local llama.cpp engine (Plan B). install() streams progress via
       // onInstallProgress; onStatusChanged pushes state transitions
