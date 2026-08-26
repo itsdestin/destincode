@@ -250,3 +250,35 @@ describe('StatusBar — a Claude Code measurement of zero is a real reading, not
     expect(screen.getAllByText('0')).toHaveLength(2);
   });
 });
+
+describe('Session Cost chip', () => {
+  const costTotals = (over: Partial<ReturnType<typeof emptyTotals>>) => ({ ...emptyTotals(), ...over });
+
+  it('shows a cost when priced work happened', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 1.3749, anyPriced: true })} />);
+    expect(screen.getByText('$1.37')).toBeInTheDocument();
+  });
+
+  it('renders NOTHING — never $0.00 — when nothing was priced', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 0, anyUnpriced: true })} />);
+    expect(screen.queryByText(/\$/)).toBeNull();
+  });
+
+  it('shows the cost of a metered SPECIALIST under a free local parent', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 0.42, anyPriced: true, anyUnpriced: true, specialistRuns: 1 })} />);
+    expect(screen.getByText('$0.42')).toBeInTheDocument();
+  });
+
+  it('says the figure is partial when some work had no price', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 0.42, anyPriced: true, anyUnpriced: true })} />);
+    expect(screen.getByTitle(/no published price are not included/i)).toBeInTheDocument();
+  });
+});

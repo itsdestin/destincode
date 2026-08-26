@@ -1326,18 +1326,34 @@ export default function StatusBar({
         </>
       )}
 
-      {/* Session cost — estimated USD cost for this session */}
-      {show('session-cost') && (
-        <span
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title="Estimated session cost (informational for Pro/Max subscribers)"
-        >
-          <span>Cost:</span>
-          <span className="text-fg-2">
-            {ss?.costUsd != null ? `$${ss.costUsd < 0.01 ? '<0.01' : ss.costUsd.toFixed(2)}` : '--'}
+      {/* Session cost.
+          CC sessions show Claude Code's own figure. Native sessions show the
+          sum of per-turn costs priced in main, specialists included.
+          The chip renders only when SOME counted work had a published price —
+          not when "the session's model is metered": a free local session that
+          delegated to an OpenRouter specialist really is spending money
+          (spec §5). Nothing priced → no chip, never "$0.00". */}
+      {show('session-cost') && (() => {
+        const ccCost = ss?.costUsd ?? null;
+        const nativeCost = nativeTotals?.anyPriced ? nativeTotals.costUsd : null;
+        const cost = ccCost ?? nativeCost;
+        if (cost == null) return null;
+        const partial = ccCost == null && nativeTotals?.anyUnpriced;
+        const title = ccCost != null
+          ? 'Estimated cost of this session, as counted by Claude Code.'
+          : `${SCOPE_NOTE} Priced from published rates, prompt-cache discounts included.`
+            + (partial ? ' Models with no published price are not included in this total.' : '')
+            + ' Not exact — a few models charge more above very large prompts.';
+        return (
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+            title={title}
+          >
+            <span className="text-fg-muted">Cost:</span>
+            <span className="text-fg-2">${cost.toFixed(2)}</span>
           </span>
-        </span>
-      )}
+        );
+      })()}
 
       {/* Session duration — wall time and API thinking time.
           Rule 1 (spec §3): no value, no chip. This used to render a literal
