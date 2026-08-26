@@ -1087,13 +1087,23 @@ export default function StatusBar({
   // one label mean two different measurements depending on the runtime — the
   // defect this change exists to remove (spec §6). Totals include specialists;
   // input is counted per request, because that is what a provider bills for.
-  const inTokens = ss?.inputTokens ?? nativeTotals?.inputTokens ?? null;
-  const outTokens = ss?.outputTokens ?? nativeTotals?.outputTokens ?? null;
-  // Cached/Reuse get the identical treatment: CC's statusline first, then
-  // session totals for native — never the last-turn nativeChips, which would
+  //
+  // Fix: the "zero means nothing measured yet" collapse belongs ONLY to the
+  // native branch, not to the shared variable. A statusline zero (ss?.xxx) is
+  // a REAL measurement — e.g. a cold or expired prompt cache genuinely reads 0
+  // cached tokens — and must pass through untouched, including a literal 0.
+  // A native zero is ambiguous (emptyTotals() starts every session at all-zero,
+  // before any turn has run), so ONLY nativeTotals collapses 0 -> null here;
+  // the render gates below then use `!= null` to hide just that null, not a
+  // real measured 0 from the statusline.
+  const inTokens = ss?.inputTokens ?? (nativeTotals && nativeTotals.inputTokens > 0 ? nativeTotals.inputTokens : null);
+  const outTokens = ss?.outputTokens ?? (nativeTotals && nativeTotals.outputTokens > 0 ? nativeTotals.outputTokens : null);
+  // Cached/Reuse get the identical treatment: CC's statusline first (real
+  // measurement, 0 included), then session totals for native (0 -> null,
+  // nothing measured yet) — never the last-turn nativeChips, which would
   // blend "this session so far" and "the last turn" under one label again.
-  const cacheReadTotal = ss?.cacheReadTokens ?? nativeTotals?.cacheReadTokens ?? null;
-  const cacheCreationTotal = ss?.cacheCreationTokens ?? nativeTotals?.cacheCreationTokens ?? null;
+  const cacheReadTotal = ss?.cacheReadTokens ?? (nativeTotals && nativeTotals.cacheReadTokens > 0 ? nativeTotals.cacheReadTokens : null);
+  const cacheCreationTotal = ss?.cacheCreationTokens ?? (nativeTotals && nativeTotals.cacheCreationTokens > 0 ? nativeTotals.cacheCreationTokens : null);
   // Speed had the identical problem: a CC chip stuck at "--" for native sessions
   // beside a native chip that duplicated it AND ignored show('output-speed'), so
   // hiding Speed in settings didn't hide it. CC derives it from the statusline's
@@ -1354,13 +1364,13 @@ export default function StatusBar({
           across many turns and grows well past the point where a raw digit
           string is glanceable, which is exactly why the abbreviation exists.
           The exact count moves to the tooltip instead, where there's room.
-          Fix: gate on truthy, not just non-null. createSessionChatState()
+          Gate is `!= null`, not truthy: a native zero is already collapsed to
+          null above (nothing measured yet, since createSessionChatState()
           seeds a brand-new native session's totals at emptyTotals() — all
-          ZERO, not null — so a `!= null` check alone rendered "In: 0" from
-          the instant the session was created. 0 input tokens is
-          indistinguishable from "no turn has run yet", so we hide rather
-          than show a number nothing has actually measured. */}
-      {show('tokens-in') && !!inTokens && (
+          ZERO), so `!= null` correctly hides it — but a REAL statusline
+          measurement of 0 input tokens must still render, and a truthy check
+          would wrongly swallow it too. */}
+      {show('tokens-in') && inTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss == null && nativeTotals != null
@@ -1375,12 +1385,12 @@ export default function StatusBar({
       {/* Output tokens. Rule 1 (spec §3): no value, no chip. Session total for
           native (spec §6); see the In chip above for why this stays
           abbreviated with the exact count in the tooltip.
-          Fix: gate on truthy like In, above — same emptyTotals() defect. A
-          turn producing genuinely 0 output tokens and a session that has
-          run no turns are both 0 here and cannot be told apart from the
-          number alone, so — same as In — we hide rather than risk showing
-          a number nothing measured. */}
-      {show('tokens-out') && !!outTokens && (
+          Gate is `!= null`, same reasoning as In above: a native zero is
+          already collapsed to null (nothing measured yet), so `!= null`
+          hides it correctly — but a statusline 0 (a real measured turn that
+          genuinely produced no output tokens) must still render, and a
+          truthy check would wrongly hide that real measurement too. */}
+      {show('tokens-out') && outTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss == null && nativeTotals != null
@@ -1400,14 +1410,16 @@ export default function StatusBar({
           cr/cc are resolved ONCE so the title, the value and the hit-rate math can
           never disagree about which source they came from.
           Rule 1 (spec §3): no value, no chip — bail before rendering.
-          Fix: bail on falsy (null OR 0), not just null — same emptyTotals()
-          defect as In/Out above: a brand-new native session's cache totals
-          start at 0, and 0 cache reads ever is indistinguishable from "no
-          turn has run yet to read from cache", so this hides rather than
-          show a number nothing measured. */}
+          Bail on null, not on falsy: a native zero is already collapsed to
+          null above (a brand-new native session's cache totals start at 0,
+          indistinguishable from "no turn has run yet to read from cache"),
+          so bailing on null hides that case correctly — but a statusline 0
+          (a real cold or expired prompt cache genuinely reading 0 cached
+          tokens, which is common) is a measured value and must still render;
+          bailing on falsy would wrongly hide that real 0 too. */}
       {show('cache-stats') && (() => {
         const cr = cacheReadTotal;
-        if (!cr) return null;
+        if (cr == null) return null;
         const cc = cacheCreationTotal;
         return (
           <span

@@ -212,3 +212,41 @@ describe('StatusBar — a brand-new native session has measured nothing (Finding
     )).toBeInTheDocument();
   });
 });
+
+describe('StatusBar — a Claude Code measurement of zero is a real reading, not an unmeasured native zero (regression)', () => {
+  // The fix above (gating on a NATIVE-only zero-collapse) sits on the SAME
+  // shared variable (inTokens/outTokens/cacheReadTotal) as the Claude Code
+  // statusline path. A reviewer caught that an earlier version of the fix
+  // collapsed truthiness on that shared variable, which also swallowed a
+  // genuine Claude Code statusline reading of 0 — e.g. Out: 0 tokens on a
+  // turn that produced none, or Cached: 0 on a cold/expired prompt cache
+  // (common, not an edge case). Before that regression these chips rendered
+  // correctly; this pins them back.
+  it('renders Out: 0 and Cached: 0 for a Claude Code session with real statusline zeros', () => {
+    withWidgets(['tokens-in', 'tokens-out', 'cache-stats']);
+    const withStats = {
+      ...statusData,
+      sessionStats: {
+        costUsd: null,
+        inputTokens: 1500,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        contextTokens: null,
+        duration: null,
+        apiDuration: null,
+        linesAdded: null,
+        linesRemoved: null,
+      },
+    };
+    render(<StatusBar statusData={withStats} provider="claude" sessionId="s1" />);
+    // Non-zero In still renders (sanity — proves the fixture is wired right).
+    expect(screen.getByText('In:')).toBeInTheDocument();
+    expect(screen.getByText('1.5k')).toBeInTheDocument();
+    // The regression: Out: 0 and Cached: 0 are REAL measurements and must show.
+    expect(screen.getByText('Out:')).toBeInTheDocument();
+    expect(screen.getByText('Cached:')).toBeInTheDocument();
+    // Both chips display the literal measured value: 0.
+    expect(screen.getAllByText('0')).toHaveLength(2);
+  });
+});
