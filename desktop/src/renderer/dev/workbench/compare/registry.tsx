@@ -71,6 +71,10 @@ import { QuestionIcon, ChatIcon, ChevronIcon } from '../../../components/Icons';
 // can never say something the shipped card wouldn't.
 import { COPY, providerLabel, type ResolvedConversation } from '../../../../shared/chatsearch-refs';
 import { formatRelativeTime } from '../../../utils/format-time';
+// Presented-conversation round (chatsearch-present): the real metadata-line
+// component search rows already share, reused rather than re-laid-out so the
+// "tags · project · date" composition can never drift between the two surfaces.
+import { ChatsearchMetaLine } from '../../../components/tool-views/ChatsearchMetaLine';
 import {
   CHATSEARCH_FIXTURE,
   CS_RESUMABLE,
@@ -2678,6 +2682,211 @@ function ChatsearchPanelB2({ defaultOpen }: { defaultOpen: boolean }) {
   );
 }
 
+// ── chatsearch-present — "the assistant puts a conversation in front of you" ──
+// Distinct question from chatsearch-results above: that surface is a TOOL CARD
+// (a search result the assistant found). This one is the assistant PRESENTING
+// one it already has, mid-reply — the same relationship a `plan` segment has to
+// its assistant bubble (AssistantTurnBubble.tsx: splitIntoBubbles ~204-282,
+// PlanBubbleContent ~487-524). Every candidate below reproduces that bubble's
+// own chrome (`assistant-bubble … rounded-2xl rounded-bl-sm bg-inset`,
+// AssistantTurnBubble.tsx:421) around a nested box styled like
+// PlanBubbleContent's own (`border-accent/40 … bg-accent/5`), so the owner
+// judges these as they'd really sit in his chat — a presented conversation is a
+// sibling of the plan bubble, not a card floating on the canvas. Reuses
+// ChatsearchActions and chatsearchTagChip (declared above, for the search-card
+// surface) and the real ChatsearchMetaLine component, so a presented
+// conversation and a search-result row read as the same family of object,
+// differing only in how much of the conversation shows.
+
+// Always a SERIES of two: the owner asked for "a single conversation or a
+// series," and a design that only works for one is not an answer. The
+// resumable Claude-lane fixture plus the assistant-lane (native) one, so a
+// candidate that only reads right for one lane can't sneak through.
+const PRESENT_CONVERSATIONS: Extract<ResolvedConversation, { status: 'ok' }>[] = [
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_RESUMABLE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NATIVE)!,
+];
+
+// Placeholder copy for the two content-bearing candidates below (present-excerpt,
+// present-minitranscript). WHERE a real excerpt/transcript slice would come
+// from — the user's last message, an assistant-written summary, a highlighted
+// exchange — is NOT decided; this is invented, realistic-looking fixture text
+// only, so the owner is judging the LAYOUT, not reading real conversation
+// content. Called out again in the round's candidate notes and in the report.
+const PRESENT_EXCERPT: Record<string, string> = {
+  [CS_RESUMABLE]: '"…turned out to be the permission-ask timeout, not the disk read — bumping it from 3s to 8s should cover the slow-disk case too."',
+  [CS_NATIVE]: '"The newsletter draft reads a little formal for this list — can you loosen the second paragraph and drop the opening line?"',
+};
+const PRESENT_TRANSCRIPT: Record<string, { role: 'user' | 'assistant'; text: string }[]> = {
+  [CS_RESUMABLE]: [
+    { role: 'user', text: 'Permission ask keeps timing out on the big repo scan — expected?' },
+    { role: 'assistant', text: 'Shouldn’t be — that’s the ask timeout, not disk I/O. Checking the default now.' },
+    { role: 'user', text: 'Bumping it from 3s to 8s fixed it. Want a PR?' },
+    { role: 'assistant', text: 'Yes — note the slow-disk case in the commit message.' },
+  ],
+  [CS_NATIVE]: [
+    { role: 'user', text: 'Draft the August newsletter intro?' },
+    { role: 'assistant', text: 'First pass attached — three short paragraphs, casual tone.' },
+    { role: 'user', text: 'Good start — loosen the second paragraph a bit.' },
+  ],
+};
+
+/** The nested box every candidate below puts inside the assistant-bubble
+ *  chrome — same shape as PlanBubbleContent's own box (border-accent/40,
+ *  bg-accent/5), so a presented conversation reads as a sibling of the plan
+ *  bubble rather than a new kind of thing. `children` is the per-candidate
+ *  body (compact / excerpt / mini-transcript). */
+function PresentedConversationsBox({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="border border-accent/40 rounded-md bg-accent/5 px-3 py-2 my-0.5">
+      <div className="flex items-center gap-2 mb-1.5 text-xs font-medium text-fg-2">
+        <ChatIcon className="w-3.5 h-3.5" />
+        <span>{COPY.referencedHeading}</span>
+      </div>
+      <div className="space-y-2.5">{children}</div>
+    </div>
+  );
+}
+
+/** Title + lane eyebrow, shared by all three candidates. `COPY.paneSubtitle`
+ *  already interpolates `providerLabel()` internally, which is how the lane
+ *  gets named without any candidate touching the raw `provider` string. */
+function PresentedTitle({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <>
+      <div className="text-4xs uppercase tracking-wider text-fg-muted">{COPY.paneSubtitle(r.provider)}</div>
+      <div className="text-sm text-fg truncate mt-0.5">
+        {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+      </div>
+    </>
+  );
+}
+
+/** Real Preview/Resume, right-aligned under each entry — same component the
+ *  search-card surface above uses, so the button row can never say something
+ *  different between the two. */
+function PresentedActions({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div className="flex justify-end mt-1.5">
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+
+/** The metadata line every candidate shares — real ChatsearchMetaLine
+ *  component, same tag rendering (chatsearchTagChip → TagChip) the search-card
+ *  surface above uses. */
+function PresentedMeta({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <ChatsearchMetaLine
+      tags={r.tags.map((t, i) => chatsearchTagChip(t, i))}
+      blocked={r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null}
+      project={r.projectName || COPY.noProject}
+      date={formatRelativeTime(r.lastActive)}
+      className="mt-1"
+    />
+  );
+}
+
+// A · present-compact — "Just the essentials": title, metadata, actions. No
+// message content at all — the baseline the other two candidates have to
+// justify their extra height against.
+function PresentCompactEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div>
+      <PresentedTitle r={r} />
+      <PresentedMeta r={r} />
+      <PresentedActions r={r} />
+    </div>
+  );
+}
+function PresentCompact() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedConversationsBox>
+          {PRESENT_CONVERSATIONS.map((r) => <PresentCompactEntry key={r.id} r={r} />)}
+        </PresentedConversationsBox>
+      </div>
+    </div>
+  );
+}
+
+// B · present-excerpt — "With a line or two from it": compact, plus one quoted
+// line beneath the metadata, quieter and smaller than the title on purpose —
+// it's a taste of the conversation, not a second headline. Clamped to ~2 lines
+// so one long placeholder can't push this candidate past the mini-transcript one.
+function PresentExcerptEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div>
+      <PresentedTitle r={r} />
+      <p className="text-3xs text-fg-muted/80 italic leading-snug mt-1 line-clamp-2">
+        {PRESENT_EXCERPT[r.id]}
+      </p>
+      <PresentedMeta r={r} />
+      <PresentedActions r={r} />
+    </div>
+  );
+}
+function PresentExcerpt() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedConversationsBox>
+          {PRESENT_CONVERSATIONS.map((r) => <PresentExcerptEntry key={r.id} r={r} />)}
+        </PresentedConversationsBox>
+      </div>
+    </div>
+  );
+}
+
+// C · present-minitranscript — "A glimpse of the actual conversation": compact,
+// plus a few real-looking chat bubbles — user right (bg-accent), assistant left
+// (bg-canvas, so it reads against the box's own bg-accent/5 tint) — matching
+// how the app draws chat bubbles elsewhere (project-view/ConversationPreview.tsx
+// uses the same accent/inset split at full size). Fixed max-height +
+// overflow-hidden means a long real conversation gets clipped, never grows the
+// block; the fade at the bottom signals "there's more" instead of cutting a
+// bubble off mid-sentence with a hard edge.
+function PresentMiniTranscriptEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div>
+      <PresentedTitle r={r} />
+      <div className="relative max-h-28 overflow-hidden mt-1.5">
+        <div className="space-y-1">
+          {PRESENT_TRANSCRIPT[r.id].map((m, i) => (
+            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div
+                className={`max-w-[80%] break-words rounded-lg px-2 py-1 text-3xs ${
+                  m.role === 'user'
+                    ? 'rounded-br-sm bg-accent text-on-accent'
+                    : 'rounded-bl-sm bg-canvas text-fg'
+                }`}
+              >
+                {m.text}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-accent/5 to-transparent" />
+      </div>
+      <PresentedMeta r={r} />
+      <PresentedActions r={r} />
+    </div>
+  );
+}
+function PresentMiniTranscript() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedConversationsBox>
+          {PRESENT_CONVERSATIONS.map((r) => <PresentMiniTranscriptEntry key={r.id} r={r} />)}
+        </PresentedConversationsBox>
+      </div>
+    </div>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -3239,13 +3448,47 @@ const ALL_SURFACES: CompareSurface[] = [
       },
     ],
   },
+  {
+    id: 'chatsearch-present',
+    label: 'Presented conversation',
+    question: 'When the assistant puts a past conversation in front of you, how much of it should you see?',
+    frame: 'canvas',
+    // Same chat-column width as chatsearch-results — this renders inline in the
+    // assistant's own message, at the same column the search card sits in.
+    paneWidth: 420,
+    rounds: [
+      {
+        n: 1,
+        candidates: [
+          {
+            id: 'present-compact',
+            label: 'Just the essentials',
+            note: 'Title, tags, project, date, and the two buttons — nothing about what was actually said. The tightest of the three; the other two have to earn their extra height against this one.',
+            render: () => <PresentCompact />,
+          },
+          {
+            id: 'present-excerpt',
+            label: 'With a line or two from it',
+            note: 'Adds one quoted, quieter line under the title so you can recognise the conversation without opening it. Costs one more line per conversation than the compact version — and where that quoted line would really come from is not decided yet, see the report.',
+            render: () => <PresentExcerpt />,
+          },
+          {
+            id: 'present-minitranscript',
+            label: 'A glimpse of the actual conversation',
+            note: 'Shows a few real chat bubbles from the conversation, clipped to a fixed height so it can never grow past that no matter how long the real exchange was. The most recognisable of the three, and by far the tallest — with two conversations shown, this candidate is roughly triple the compact version\'s height.',
+            render: () => <PresentMiniTranscript />,
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 // CompareView opens on COMPARE_SURFACES[0] and has no URL param for the surface,
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'chatsearch-results';
+const ACTIVE_FIRST = 'chatsearch-present';
 
 export const COMPARE_SURFACES: CompareSurface[] = [
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),
