@@ -1322,31 +1322,35 @@ export default function StatusBar({
 
       {/* Input tokens. Rule 1 (spec §3): no value, no chip. In a native session
           this is a SESSION TOTAL (nativeTotals), not the last turn — see the
-          inTokens derivation above (spec §6). Fix: switched the displayed
-          value from formatTokens' abbreviated "12.3k" to toLocaleString's exact
-          "12,345" — a SESSION total compounds across many turns and can run
-          well past the point where an abbreviation reads as precise, unlike
-          the single-turn figure this chip used to show. */}
+          inTokens derivation above (spec §6). Fix: the chip's DISPLAYED value
+          stays formatTokens' abbreviated "12.3k" — a session total compounds
+          across many turns and grows well past the point where a raw digit
+          string is glanceable, which is exactly why the abbreviation exists.
+          The exact count moves to the tooltip instead, where there's room. */}
       {show('tokens-in') && inTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss == null && nativeTotals != null ? `${SCOPE_NOTE} ${INPUT_NOTE}` : `Input tokens: ${inTokens.toLocaleString()}`}
+          title={ss == null && nativeTotals != null
+            ? `Input tokens: ${inTokens.toLocaleString()}. ${SCOPE_NOTE} ${INPUT_NOTE}`
+            : `Input tokens: ${inTokens.toLocaleString()}`}
         >
           <span className="text-fg-muted">In:</span>
-          <span className="text-fg-2">{inTokens.toLocaleString()}</span>
+          <span className="text-fg-2">{formatTokens(inTokens)}</span>
         </span>
       )}
 
       {/* Output tokens. Rule 1 (spec §3): no value, no chip. Session total for
-          native (spec §6); see the In chip above for why this shows the exact
-          count rather than formatTokens' abbreviation. */}
+          native (spec §6); see the In chip above for why this stays
+          abbreviated with the exact count in the tooltip. */}
       {show('tokens-out') && outTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss == null && nativeTotals != null ? SCOPE_NOTE : `Output tokens: ${outTokens.toLocaleString()}`}
+          title={ss == null && nativeTotals != null
+            ? `Output tokens: ${outTokens.toLocaleString()}. ${SCOPE_NOTE}`
+            : `Output tokens: ${outTokens.toLocaleString()}`}
         >
           <span className="text-fg-muted">Out:</span>
-          <span className="text-fg-2">{outTokens.toLocaleString()}</span>
+          <span className="text-fg-2">{formatTokens(outTokens)}</span>
         </span>
       )}
 
@@ -1365,7 +1369,9 @@ export default function StatusBar({
         return (
           <span
             className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-            title={ss == null && nativeTotals != null ? SCOPE_NOTE : `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}`}
+            title={ss == null && nativeTotals != null
+              ? `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}. ${SCOPE_NOTE}`
+              : `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}`}
           >
             <span className="text-fg-muted">Cached:</span>
             <span className="text-[#4CAF50]">{formatTokens(cr)}</span>
@@ -1388,7 +1394,7 @@ export default function StatusBar({
         const prompt = (reuse.promptTokens ?? 0).toLocaleString();
         const usingTotals = ss == null && nativeTotals != null;
         const title = usingTotals
-          ? SCOPE_NOTE
+          ? `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this session's ${prompt} prompt tokens from cache. ${SCOPE_NOTE}`
           : display.kind === 'first-turn'
           ? `Nothing to reuse yet — this is the session's first turn, so all ${prompt} prompt tokens were read fresh.`
           : display.pct === 0
@@ -1427,20 +1433,14 @@ export default function StatusBar({
       {/* Output speed — derived: outputTokens / apiDuration. Rule 1 (spec §3):
           no value, no chip. Deliberately stays LAST-TURN for both runtimes (see
           the speedTokPerSec comment above) — never fed by nativeTotals.
-          Fix (task-7 review): this title used to be a ternary keyed on
-          `ss?.outputTokens != null && ss?.apiDuration != null`, but that
-          condition does NOT follow from the render guard — sessionStats (ss) is
-          only ever written by Claude Code's statusline, so it is always null in
-          a native session, and speedTokPerSec there comes from nativeChips
-          instead. That made the "specific" branch unreachable for native
-          sessions and, if collapsed onto that branch instead of this one, would
-          dereference a null ss on every native render. The generic text is the
-          only branch that is actually valid regardless of source, so it is the
-          one kept. */}
+          WHY the ternary's fallback branch is NOT dead: ss (sessionStats) is
+          always null in a native session, so speedTokPerSec there falls back to
+          nativeChips and this chip renders with the generic string below — do
+          not "simplify" this back to one branch. */}
       {show('output-speed') && speedTokPerSec != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title="Output tokens per second on the last turn"
+          title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output tokens per second on the last turn'}
         >
           <span className="text-fg-muted">Speed:</span>
           <span className="text-fg-2">

@@ -119,12 +119,18 @@ const withWidgets = (ids: string[]) =>
   window.localStorage.setItem('youcoded-statusbar-widgets', JSON.stringify(ids));
 
 describe('StatusBar session totals', () => {
-  it('renders cumulative In/Out from totals in a native session', () => {
+  it('renders cumulative In/Out from totals in a native session, abbreviated, with the exact count in the tooltip', () => {
     withWidgets(['tokens-in', 'tokens-out']);
     const totals = { ...emptyTotals(), inputTokens: 12_345, outputTokens: 678 };
     render(<StatusBar statusData={statusData} provider="native" nativeTotals={totals} sessionId="s1" />);
-    expect(screen.getByText('12,345')).toBeInTheDocument();
+    // The chip's displayed value stays abbreviated (formatTokens) even though
+    // this is now a whole-session total that can run much larger than a
+    // single turn — a status-bar chip must not read "1,234,567".
+    expect(screen.getByText('12.3k')).toBeInTheDocument();
     expect(screen.getByText('678')).toBeInTheDocument();
+    // The exact count is still pinned somewhere: the tooltip.
+    expect(screen.getByTitle(/Input tokens: 12,345\./)).toBeInTheDocument();
+    expect(screen.getByTitle(/Output tokens: 678\./)).toBeInTheDocument();
   });
 
   it('renders a derived Code Changes count in a native session', () => {
