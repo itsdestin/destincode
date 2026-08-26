@@ -2770,7 +2770,16 @@ export class NativeSessionHost extends EventEmitter {
           parentDecide: this.buildDecide(parentId, parent.cwd, preset.presetRules, { specialistScope: specialist.id }),
           charter: specialist.charter,
           allowedTools: specialist.allowedTools,
-          envelopeGranted: true,   // the Task-tool ask (a new spawn) or the ORIGINAL spawn's ask (a resume) was the consent
+          // envelopeGranted: true means the hire was PERMITTED, not that the user was necessarily
+          // asked. Two ways that happens: (1) a Task-tool ask card (new spawn) or the original
+          // spawn's ask card (resume) was answered — real consent; or (2) the active permission
+          // mode allows Task outright with no pattern (auto-edit — see rulesForMode() in
+          // permission-types.ts), so harness-session.ts resolves the hire straight to 'allow' and
+          // no card is ever rendered. Path (2) has no explicit consent event; downstream
+          // child-permissions.ts reads this flag to auto-allow the child's own tool calls either
+          // way. Rewritten because this comment used to claim "the ask was the consent" as if
+          // that were always true — it isn't on path (2).
+          envelopeGranted: true,
         }),
         // ASKS (plan 1b Task 8): routed through the PARENT's broker under the
         // PARENT's sessionId — never the child's own (no window owns a raw

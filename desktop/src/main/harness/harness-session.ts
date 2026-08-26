@@ -833,9 +833,26 @@ export class HarnessSession extends EventEmitter {
     // what the model reads. An UNCHANGED roster produces an identical
     // description string, so this costs nothing extra in the prompt cache;
     // a changed one produces a new one, with no version counter anywhere
-    // that could drift out of sync with reality. buildAiTools() only ever
-    // runs at the START of a turn, never mid-turn (see its own call site),
-    // so "every turn" here still means "never mid-turn".
+    // that could drift out of sync with reality.
+    //
+    // WHY this comment was rewritten: the description string IS frozen for
+    // the turn (buildAiTools only runs at the start of a turn), but the
+    // roster it describes is NOT. `roster.resolve()`/`roster.list()`
+    // (catalog.ts) read the catalog's in-memory state at CALL time, not at
+    // buildAiTools time — and that state can change mid-turn: the renderer
+    // calls `specialists:list`, which calls `specialistCatalog.reload()`,
+    // on every hire-card mount and every Settings open, and the catalog
+    // instance is shared across the host, the IPC handler, and the WS case.
+    // So a model can read a description listing specialist X, then have its
+    // `Task` call for X resolve against a roster where X was just removed.
+    // This is safe, not merely tidy: an id that vanished from the live
+    // roster falls back to `roster.resolve()` returning undefined, which
+    // `task.ts` refuses outright ("Unknown specialist...") before doing
+    // anything else — it never reaches a stale permission grant, because the
+    // permission subject for an unresolved Task call is a bare path that
+    // cannot match any remembered Task rule (see harness-session.ts's own
+    // comment on Task's subject, above). Nothing here should be read as "the
+    // roster is stable for the turn" — it isn't.
     this.toolByName.set('Task', createTaskTool(this.opts.specialistRoster ?? BUILTIN_ROSTER));
     if (!this.toolByName.has('ModelSearch')) this.toolByName.set('ModelSearch', ModelSearchTool);
   }

@@ -29,6 +29,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // fixture data to serve instead of a real filesystem/ledger.
   'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
   'specialists.steer', 'specialists.interrupt', 'on.specialistEvent',
+  'shell.openPath',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
@@ -529,6 +530,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   const native: Ns<'native'> = { supported: true };
 
+  // Fix (final review): SpecialistsSection's "Open folder" button reads
+  // shell.openPath's resolved value as an error message whenever it's truthy —
+  // correct against the real Electron API, which resolves '' on success and an
+  // error string on failure (see that component's own comment). With no `shell`
+  // entry here at all, the call used to fall through to the catch-all proxy,
+  // which resolves every unknown member to `[]` — and `[]` is truthy, so
+  // clicking "Open folder" in the workbench always showed an error box with no
+  // text. openPath has nothing to do in a browser tab (there is no OS file
+  // manager to hand off to), so '' — the real success value — is the honest
+  // stand-in. Other shell.* members called from renderer code (openExternal,
+  // openChangelog, showItemInFolder) discard their return value at every call
+  // site, so the same truthy-[] bug never surfaces for them; left on the
+  // catch-all rather than hand-written for no behavioural gain.
+  const shell: Ns<'shell'> = {
+    openPath: async () => '',
+  };
+
   // Specialists 1c — roster, model tiers, and the two card actions. Real
   // backend as of Task 8; this is fixture data standing in for a filesystem
   // read + ledger. Tier writes go through `write` so the refused scenario
@@ -822,6 +840,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance, specialists,
+    terminal, artifacts, syncSpaces, project, account, appearance, specialists, shell,
   } as unknown as Record<string, Record<string, unknown>>;
 }
