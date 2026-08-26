@@ -33,6 +33,11 @@ describe('decidePermission', () => {
     expect(d.action).toBe('ask');
     expect(d.denyListed).toBe(true);
   });
+  it('SendUserFile is allowed in every mode baseline — it reads and writes nothing', () => {
+    for (const mode of ['ask', 'auto-edit', 'full-auto'] as const) {
+      expect(decidePermission('SendUserFile', '', layers(mode))).toMatchObject({ action: 'allow', denyListed: false });
+    }
+  });
   it('an explicit remembered rule beats the deny-list (spec ruling #2)', () => {
     const d = decidePermission('Bash', 'git push origin master',
       layers('full-auto', [{ tool: 'Bash', pattern: 'git push*', action: 'allow' }]));

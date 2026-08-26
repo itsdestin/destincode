@@ -1,6 +1,6 @@
 // The shareable harness unit (marketplace item kind 'harness' arrives in
 // Phase 3). Phase 2 ships TWO built-in presets — personality profiles, not
-// capability tiers (spec decision 8): both carry the full ten-tool suite;
+// capability tiers (spec decision 8): both carry the full eleven-tool suite;
 // they differ in prompt personality and permission posture. The Chat preset
 // is CUT — legacy harnessId:'chat' headers resolve to Assistant on resume
 // (preset-registry.ts). tools[] stays in the schema for Phase 3 custom harnesses.
@@ -34,7 +34,7 @@ export interface HarnessManifest {
 
 export const NATIVE_TOOL_NAMES = [
   'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
-  'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion',
+  'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'SendUserFile',
 ] as const;
 
 /** Tools attached at RUNTIME, per session, when conditions allow — deliberately

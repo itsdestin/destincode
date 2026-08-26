@@ -149,6 +149,10 @@ export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
     // keys, no session state) and attaches only alongside Task — same
     // "narrow read, never worth an ask" reasoning as Skill just above.
     { tool: 'ModelSearch', action: 'allow' },
+    // SendUserFile (2026-08-25) reads and writes nothing: it names files the
+    // user should look at, and the viewer's own read guards apply when they
+    // open. Nothing to ask about, in any mode.
+    { tool: 'SendUserFile', action: 'allow' },
   ];
   switch (mode) {
     case 'ask':

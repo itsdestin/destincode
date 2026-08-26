@@ -33,6 +33,10 @@ describe('specialist registry', () => {
     }
   });
 
+  it('no builtin specialist is granted SendUserFile — a specialist reports to its parent, not the user', () => {
+    for (const d of listSpecialists()) expect(d.allowedTools).not.toContain('SendUserFile');
+  });
+
   it('listSpecialists returns all four built-ins', () => {
     const ids = listSpecialists().map((d) => d.id).sort();
     expect(ids).toEqual(['explorer', 'researcher', 'reviewer', 'worker']);
