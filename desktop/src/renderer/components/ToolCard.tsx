@@ -18,7 +18,7 @@ import { asString } from '../utils/tool-input';
 import { fullAutoStopCopy } from './permissions/deny-list-copy';
 import { PERMISSION_DISPLAY } from './StatusBar';
 // Same parser ToolBody uses to pick the card body, so header and body agree.
-import { describeChatsearchCall, isChatsearchCommand, COPY } from '../../shared/chatsearch-refs';
+import { describeChatsearchCall, COPY } from '../../shared/chatsearch-refs';
 
 // --- Helpers for friendly display ---
 
@@ -960,11 +960,12 @@ interface Props {
 export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }: Props) {
   // Seed from the module-level mode so a card that mounts AFTER Ctrl+O fired
   // (e.g. when its parent tool group just opened) starts in the right state.
-  // Chatsearch cards open expanded: their whole point is the Preview/Resume
-  // buttons, which a collapsed header would hide. Decided from the command so
-  // the card is already open when the output arrives. (Task 4 lets Destin
-  // reverse this.)
-  const [expanded, setExpanded] = useState(() => getInitialExpanded() || (tool.toolName === 'Bash' && isChatsearchCommand(asString(tool.input.command))));
+  // Chatsearch cards used to force-open here (their whole point was the
+  // Preview/Resume buttons, hidden by a collapsed header) — reversed by the
+  // owner (Task 4, compare surface 'chatsearch-results' R2 'b-closed'):
+  // search results are skimmed once and scrolled past, so they now behave
+  // like every other tool card and start collapsed same as anything else.
+  const [expanded, setExpanded] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
   const dispatch = useChatDispatch();
   // Optional: the workbench tool gallery (?mode=workbench&view=tools) renders

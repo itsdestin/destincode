@@ -14,7 +14,10 @@ const ok = (over: Partial<Extract<ResolvedConversation, { status: 'ok' }>> = {})
   tags: ['perm'], complete: true, tombstone: false, projectSlug: '-p-youcoded', projectPath: '/p/youcoded', missingProject: false, notSyncedYet: false, ...over,
 });
 
-beforeEach(() => { (window as any).claude = { chatsearch: { resolve: vi.fn() } }; });
+// Fix: the cards resolve tag labels against the tag registry (chatsearch-tags.tsx)
+// via window.claude.tags.list() — without this mock, useTagRegistry's reload()
+// throws synchronously on the undefined `.tags` before rendering gets anywhere.
+beforeEach(() => { (window as any).claude = { chatsearch: { resolve: vi.fn() }, tags: { list: vi.fn().mockResolvedValue([]) }, on: {} }; });
 // Fix: this suite mounts several cards; auto-cleanup isn't configured
 // globally (see tool-card-preparing.test.tsx), so a leftover DOM tree from
 // one test made getByRole find duplicates in the next.

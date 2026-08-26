@@ -1,5 +1,6 @@
 // The Preview / Resume pair, shared by the find rows, the show card, and the
 // drawer's Referenced list, so no surface can word a disabled state differently.
+import { Button } from '../ui';
 import { COPY, type ResolvedConversation } from '../../../shared/chatsearch-refs';
 
 type Ok = Extract<ResolvedConversation, { status: 'ok' }>;
@@ -18,20 +19,34 @@ export function requestResume(c: Ok): void {
   window.dispatchEvent(new CustomEvent('youcoded:resume-session', { detail: { claudeSessionId: c.id, projectSlug: c.projectSlug, projectPath: c.projectPath, provider: c.provider } }));
 }
 
+// Task 4 (defect 1 from the compare rounds): these used to hand-roll their own
+// button classes from raw utility strings. Now they go through the real
+// Button primitive — same variant/size vocabulary as everything else in the
+// app — with `size` threaded through as-is (Button's own sm/md map directly
+// onto what this component already offered).
 export default function SessionRefActions({ conversation, size = 'sm' }: { conversation: Ok; size?: 'sm' | 'md' }) {
   const blocked = resumeBlockedReason(conversation);
   const native = conversation.provider === 'native';
-  const pad = size === 'md' ? 'px-3 py-1.5 text-sm' : 'px-2 py-1 text-xs';
   return (
     <div className="flex items-center gap-1.5 shrink-0">
-      <button type="button" className={`rounded-md border border-edge bg-well text-fg hover:bg-inset disabled:opacity-50 disabled:cursor-not-allowed ${pad}`}
-        disabled={conversation.tombstone} title={conversation.tombstone ? COPY.previewTombstone : COPY.previewHint} onClick={() => requestPreview(conversation)}>
+      <Button
+        variant="secondary"
+        size={size}
+        disabled={conversation.tombstone}
+        title={conversation.tombstone ? COPY.previewTombstone : COPY.previewHint}
+        onClick={() => requestPreview(conversation)}
+      >
         {COPY.preview}
-      </button>
-      <button type="button" className={`rounded-md bg-accent text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed ${pad}`}
-        disabled={!!blocked} title={blocked ?? (native ? COPY.resumeNativeHint : COPY.resumeHint)} onClick={() => requestResume(conversation)}>
+      </Button>
+      <Button
+        variant="primary"
+        size={size}
+        disabled={!!blocked}
+        title={blocked ?? (native ? COPY.resumeNativeHint : COPY.resumeHint)}
+        onClick={() => requestResume(conversation)}
+      >
         {native ? COPY.resumeNative : COPY.resume}
-      </button>
+      </Button>
     </div>
   );
 }

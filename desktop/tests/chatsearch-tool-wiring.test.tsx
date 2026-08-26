@@ -52,11 +52,19 @@ const okResult = (over: Partial<Extract<ResolvedConversation, { status: 'ok' }>>
 });
 
 beforeEach(() => {
-  (window as any).claude = { chatsearch: { resolve: vi.fn() } };
+  // Fix: the cards resolve tag labels against the tag registry (chatsearch-tags.tsx)
+  // via window.claude.tags.list() — without this mock, useTagRegistry's reload()
+  // throws synchronously on the undefined `.tags` before the resolve() mock ever
+  // gets a chance to matter.
+  (window as any).claude = { chatsearch: { resolve: vi.fn() }, tags: { list: vi.fn().mockResolvedValue([]) }, on: {} };
 });
 // Several tests mount cards in the same run; without this a leftover DOM tree
 // from one test makes the next test's queries find duplicates.
 afterEach(cleanup);
+
+function openCard() {
+  fireEvent.click(screen.getByTestId('tool-card-chevron').closest('button')!);
+}
 
 describe('chatsearch wiring — ToolBody + ToolCard', () => {
   it('renders the find card (not the plain shell view) for a finished find call, and the collapsed header reads the chatsearch label', async () => {
@@ -64,8 +72,14 @@ describe('chatsearch wiring — ToolBody + ToolCard', () => {
     render(<ChatProvider><ToolCard tool={finishedBash(FIND_CMD, FIND_OUT)} sessionId="s1" /></ChatProvider>);
     // Header label: friendlyToolDisplay must read the chatsearch header text
     // (3 rows parsed from FIND_OUT), never the raw "Running node" shell label.
+    // This is visible whether or not the card is expanded — ToolCard's header
+    // renders unconditionally.
     expect(screen.getByText(COPY.headerFind(3))).toBeTruthy();
     expect(screen.queryByText(/Running node/)).toBeNull();
+    // Chatsearch cards now start COLLAPSED like every other tool card (Task 4)
+    // — open it before looking for body content.
+    expect(screen.queryByTestId('tool-card-body')).toBeNull();
+    openCard();
     // Body: the find card's own content — Preview/Resume buttons — is what
     // actually proves ToolBody picked the card over ShellView.
     await screen.findByText('Permission ask timeout');
@@ -76,24 +90,36 @@ describe('chatsearch wiring — ToolBody + ToolCard', () => {
     (window as any).claude.chatsearch.resolve.mockResolvedValue({ ok: true, results: [okResult({ id: '773634bb-621e-4d84-8d51-903093478ee8', title: 'Chat Search Workstream Status' })] });
     render(<ChatProvider><ToolCard tool={finishedBash(SHOW_CMD, SHOW_OUT)} sessionId="s1" /></ChatProvider>);
     expect(screen.getByText(COPY.headerShow)).toBeTruthy();
+    openCard();
     expect(await screen.findByRole('heading', { name: 'Chat Search Workstream Status' })).toBeTruthy();
     expect(screen.getByRole('button', { name: COPY.preview })).toBeTruthy();
   });
 
-  it('starts a chatsearch card expanded, while an ordinary Bash call in the same run still starts collapsed', () => {
+  // Was "starts a chatsearch card expanded, while an ordinary Bash call in the
+  // same run still starts collapsed" — INVERTED by the owner's Task 4 decision
+  // (compare surface 'chatsearch-results', Round 2 'b-closed'): a chatsearch
+  // card's whole point used to be forcing the Preview/Resume buttons open, but
+  // the owner picked closed-by-default, so it must now behave EXACTLY like an
+  // ordinary tool card. Keeping the ordinary-Bash control alongside it so this
+  // still guards a real distinction (both start collapsed) rather than a
+  // vacuous one.
+  it('starts a chatsearch card collapsed, same as an ordinary Bash call — and it still opens on click', () => {
     // Never resolves — this test only cares about the SYNCHRONOUS initial
-    // expanded state, decided by ToolCard from the command shape alone
-    // (isChatsearchCommand), before any resolve response can arrive.
+    // expanded state, decided by ToolCard the same way for every tool now
+    // (getInitialExpanded alone, no chatsearch special case).
     (window as any).claude.chatsearch.resolve.mockImplementation(() => new Promise(() => {}));
     render(<ChatProvider><ToolCard tool={finishedBash(FIND_CMD, FIND_OUT)} sessionId="s1" /></ChatProvider>);
-    // Positive: the chatsearch card's body is already mounted with no click.
+    // Negative: the chatsearch card's body is NOT mounted with no click.
+    expect(screen.queryByTestId('tool-card-body')).toBeNull();
+    // Positive: it still opens like any other card — this isn't a broken chevron.
+    openCard();
     expect(screen.getByTestId('tool-card-body')).toBeTruthy();
 
     cleanup();
 
-    // Negative control, same test: an ordinary Bash call must NOT be expanded
-    // by default — if this ever also passed, it'd mean the assertion above is
-    // vacuous (ToolCard always starts expanded) rather than chatsearch-specific.
+    // Control, same test: an ordinary Bash call starts collapsed too — proves
+    // the assertion above is chatsearch behaving like everything else, not a
+    // symptom of ToolCard never expanding anything.
     render(<ChatProvider><ToolCard tool={finishedBash(ORDINARY_CMD, 'file1\nfile2')} sessionId="s2" /></ChatProvider>);
     expect(screen.queryByTestId('tool-card-body')).toBeNull();
   });
@@ -102,7 +128,7 @@ describe('chatsearch wiring — ToolBody + ToolCard', () => {
     render(<ChatProvider><ToolCard tool={finishedBash(ORDINARY_CMD, 'file1\nfile2')} sessionId="s1" /></ChatProvider>);
     // Normal header: friendlyToolDisplay's non-chatsearch Bash branch.
     expect(screen.getByText('Running ls')).toBeTruthy();
-    fireEvent.click(screen.getByTestId('tool-card-chevron').closest('button')!);
+    openCard();
     // Positive: the plain shell view's own content — the full command in a <pre>.
     expect(screen.getByText(ORDINARY_CMD)).toBeTruthy();
     // Negative control: chatsearch-only content must be absent here.
@@ -112,6 +138,7 @@ describe('chatsearch wiring — ToolBody + ToolCard', () => {
   it('falls back to the plain shell view when the resolve backend answers not-implemented-on-mobile (Android)', async () => {
     (window as any).claude.chatsearch.resolve.mockResolvedValue({ ok: false, error: 'not-implemented-on-mobile' });
     render(<ChatProvider><ToolCard tool={finishedBash(FIND_CMD, FIND_OUT)} sessionId="s1" /></ChatProvider>);
+    openCard();
     // Positive, BEFORE the resolve promise settles: the card view is up, with
     // its "Raw output" disclosure — the same raw command text sits nested
     // inside <details> here, so text presence alone can't prove the fallback;
