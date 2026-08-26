@@ -21,6 +21,14 @@ export interface ArtifactState {
   activeArtifactBySession: Record<string, string | null>;
   /** Per-session: the drawer is showing the git review sub-view for the active file. */
   gitReviewBySession: Record<string, boolean>;
+  // Session references (spec 2026-08-10 §D). A previewed past conversation
+  // occupies the drawer's content pane INSTEAD of an artifact. Two fields, one
+  // rule: setting either clears the other (pinned by artifact-tracker-preview
+  // test), so the pane never has two things to show.
+  activeSessionPreviewBySession: Record<string, { provider: 'claude' | 'native'; id: string; title: string } | null>;
+  // Every conversation previewed during this session, newest first — the
+  // drawer's "Referenced conversations" list. Not persisted (v1).
+  referencedSessionsBySession: Record<string, Array<{ provider: 'claude' | 'native'; id: string; title: string; lastActive: string }>>;
 }
 
 export const initialArtifactState: ArtifactState = {
@@ -33,6 +41,8 @@ export const initialArtifactState: ArtifactState = {
   projectViewOpen: false,
   activeArtifactBySession: {},
   gitReviewBySession: {},
+  activeSessionPreviewBySession: {},
+  referencedSessionsBySession: {},
 };
 
 export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactState {
@@ -67,6 +77,10 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
         activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: null },
         pillError: { ...s.pillError, [a.sessionId]: null },
         gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: false },
+        // Closing the drawer must also drop a live preview — the exclusivity
+        // rule (only one of active-artifact/preview at a time) still applies
+        // once neither is showing.
+        activeSessionPreviewBySession: { ...s.activeSessionPreviewBySession, [a.sessionId]: null },
       };
     case 'DRAWER_EXPAND_TOGGLED':
       return { ...s, drawerExpanded: !s.drawerExpanded };
@@ -79,6 +93,9 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
         // Clicking a file in the list always lands on the file view — the review
         // view belongs to the file it was opened from, not the newly selected one.
         gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: false },
+        // Opening a real artifact always wins over a live preview — the pane
+        // and the artifact view never both show at once.
+        activeSessionPreviewBySession: { ...s.activeSessionPreviewBySession, [a.sessionId]: null },
       };
     // Back gesture in detail view: return to list without closing the drawer.
     case 'ACTIVE_ARTIFACT_CLEARED':
@@ -91,6 +108,27 @@ export function artifactReducer(s: ArtifactState, a: ArtifactAction): ArtifactSt
       return { ...s, gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: true } };
     case 'GIT_REVIEW_CLOSED':
       return { ...s, gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: false } };
+    // Preview a past conversation in the drawer's content pane. Opens the
+    // drawer (so a Preview click from anywhere in the chat, before the
+    // drawer exists, still shows something) and clears any real artifact +
+    // git-review sub-view so the pane is the only thing on screen.
+    case 'SESSION_PREVIEW_SET':
+      return {
+        ...s,
+        drawerOpenBySession: { ...s.drawerOpenBySession, [a.sessionId]: true },
+        activeArtifactBySession: { ...s.activeArtifactBySession, [a.sessionId]: null },
+        activeSessionPreviewBySession: { ...s.activeSessionPreviewBySession, [a.sessionId]: { provider: a.provider, id: a.id, title: a.title } },
+        gitReviewBySession: { ...s.gitReviewBySession, [a.sessionId]: false },
+      };
+    case 'SESSION_PREVIEW_CLEARED':
+      return { ...s, activeSessionPreviewBySession: { ...s.activeSessionPreviewBySession, [a.sessionId]: null } };
+    // Dedupe by provider+id (the same conversation re-previewed moves to the
+    // top rather than appearing twice), newest first.
+    case 'SESSION_REFERENCED': {
+      const prev = s.referencedSessionsBySession[a.sessionId] ?? [];
+      const rest = prev.filter((r) => !(r.provider === a.ref.provider && r.id === a.ref.id));
+      return { ...s, referencedSessionsBySession: { ...s.referencedSessionsBySession, [a.sessionId]: [a.ref, ...rest] } };
+    }
     default:
       return s;
   }
