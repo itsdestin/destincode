@@ -536,6 +536,130 @@ describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// D2 (2026-08-26, review Major — check-then-use). permissionSubject and
+// execute() each called roster.resolve() independently, and the catalog's
+// resolve reads LIVE state: `specialists:list` calls catalog.reload(), which
+// the renderer fires while a consent card is on screen. So the definition
+// whose fingerprint the user approved could be a DIFFERENT object from the one
+// that then spawned — the "the hash pins what you approved" promise is about
+// resolution TIME, and there were two of those. createTaskTool now resolves
+// once per id and reuses it for the life of that tool instance (= one turn).
+// ---------------------------------------------------------------------------
+describe('Task tool — one roster lookup per id, per tool instance (D2)', () => {
+  const BASE: SpecialistDefinition = {
+    id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes and edits project docs.',
+    systemPrompt: 'Write docs.', allowedTools: ['Read', 'Write'], charter: 'read-write',
+    stepCap: 10, reportBudgetTokens: 500, source: 'claude-code',
+    grantScope: 'project', fingerprint: 'aaaaaaaaaaaa',
+  };
+  const ARGS = { agent: 'docs-writer', work_dir: '/proj', description: 'd', prompt: 'a'.repeat(60) };
+
+  /** A roster whose resolve() hands back a FRESH object every call — exactly
+   *  what SpecialistCatalog does after a reload, and the only way a second
+   *  lookup is observable at all (identical field values would hide it). */
+  function freshRoster() {
+    const handedOut: SpecialistDefinition[] = [];
+    const resolve = vi.fn((id: string) => {
+      if (id !== BASE.id) return undefined;
+      const copy: SpecialistDefinition = { ...BASE };
+      handedOut.push(copy);
+      return copy;
+    });
+    return { handedOut, resolve, roster: { list: () => [{ ...BASE }], resolve } as SpecialistRoster };
+  }
+
+  it('permissionSubject then execute() look the id up ONCE, and spawn gets the very object the subject was built from', async () => {
+    const { handedOut, resolve, roster } = freshRoster();
+    const tool = createTaskTool(roster);
+    // The card the user sees is built from this subject...
+    const subject = tool.permissionSubject!(ARGS as any);
+    expect(subject).toBe('read-write:/proj:file:docs-writer@aaaaaaaaaaaa');
+
+    const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    const ctx: ToolContext = {
+      sessionId: 'parent-1', cwd: '/work', signal: new AbortController().signal,
+      readRegistry: new Map(), todos: [],
+      services: {
+        specialists: {
+          reserve: () => ({ ok: true, token: { parentId: 'parent-1', writer: true } }),
+          release: vi.fn(), trySpendSpawnBudget: () => true, spawn,
+        },
+      },
+    };
+    const r = await tool.execute(ARGS as any, ctx);
+    expect(r.isError).toBeFalsy();
+
+    // ...and this is what actually ran. One lookup, one object: there is no
+    // window between approval and spawn for a reload to swap the definition.
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(handedOut).toHaveLength(1);
+    expect(spawn.mock.calls[0][1].specialist).toBe(handedOut[0]);
+  });
+
+  it('memoises per id, not per tool — a second id still costs its own single lookup', () => {
+    const { resolve, roster } = freshRoster();
+    const tool = createTaskTool(roster);
+    tool.permissionSubject!(ARGS as any);
+    tool.permissionSubject!({ ...ARGS, agent: 'nobody-here' } as any);
+    tool.permissionSubject!({ ...ARGS, agent: 'nobody-here' } as any);
+    expect(resolve).toHaveBeenCalledTimes(2);           // one per distinct id
+    expect(resolve.mock.calls.map((c) => c[0])).toEqual(['docs-writer', 'nobody-here']);
+  });
+
+  it('a NEW tool instance looks the id up again — the memo is per-turn, never a permanent cache', () => {
+    const { resolve, roster } = freshRoster();
+    // harness-session.ts rebuilds the Task tool at the start of EVERY turn, so
+    // an edited definition still takes effect at the next turn. A memo that
+    // outlived the instance would freeze the roster for the whole session.
+    createTaskTool(roster).permissionSubject!(ARGS as any);
+    createTaskTool(roster).permissionSubject!(ARGS as any);
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D2 (2026-08-26, review Major): permissionSubject resolved a relative
+// `work_dir` against `process.cwd()` — the Electron process's own directory,
+// which has nothing to do with the conversation. Two consequences, both bad
+// once a grant is pinned to that path: the remembered rule named a folder the
+// user was never in (so the grant they were told was saved never fired again),
+// and `work_dir: '.'` produced the SAME subject in every project, letting a
+// project-scoped grant travel between projects — exactly what D2 prevents.
+// ---------------------------------------------------------------------------
+describe('Task tool — work_dir resolves against the SESSION folder (D2)', () => {
+  const posix = (p: string) => p.replace(/\\/g, '/');
+
+  it('a relative work_dir resolves against the session folder the host passes', () => {
+    const tool = createTaskTool(undefined, '/sess/root');
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: 'sub' } as any)).toBe('read-only:/sess/root/sub');
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: '.' } as any)).toBe('read-only:/sess/root');
+  });
+
+  it('an absolute work_dir is unaffected by the session folder', () => {
+    const tool = createTaskTool(undefined, '/sess/root');
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: '/elsewhere' } as any)).toBe('read-only:/elsewhere');
+  });
+
+  // THE hazard: two conversations in two different projects, both hiring with
+  // the natural `work_dir: '.'`. Driven through the REAL decision-path matcher,
+  // never a string comparison, so this fails if either end drifts.
+  it('the same work_dir "." in two projects mints two DIFFERENT keys — a grant cannot travel', () => {
+    const inA = createTaskTool(undefined, '/work/projA').permissionSubject!({ agent: 'explorer', work_dir: '.' } as any)!;
+    const inB = createTaskTool(undefined, '/work/projB').permissionSubject!({ agent: 'explorer', work_dir: '.' } as any)!;
+    expect(inA).not.toBe(inB);
+    const grant: PermissionRule = { tool: 'Task', pattern: inA, action: 'allow', match: 'exact' };
+    expect(ruleMatches(grant, inA)).toBe(true);
+    expect(ruleMatches(grant, inB)).toBe(false);
+  });
+
+  it('with no session folder it still falls back to process.cwd() — every pre-existing caller is unchanged', () => {
+    const tool = createTaskTool();
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: 'sub' } as any))
+      .toBe(`read-only:${posix(path.resolve(process.cwd(), 'sub'))}`);
+  });
+});
+
 describe('Task tool — model resolution (Task 14)', () => {
   const PARENT_BINDING: ModelBinding = { providerId: 'openrouter', modelId: 'parent-model' };
 
@@ -839,5 +963,78 @@ describe('Task tool — task_id management surface (Task 6)', () => {
       await host.destroyAll();
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // ---- D2 (2026-08-26, review Critical): a resume rebuilds the child from
+  // the definition file AS IT IS NOW, while the consent the user gave was for
+  // the file as it was at the hire. A task_id call carries no work_dir, so it
+  // has no permission subject, so no consent card can render for it — under
+  // auto-edit the pattern-less Task allow answers first. The host catches this
+  // and returns a typed 'definition-changed'; these pin that the tool turns
+  // that into an error the model can ACT on, naming the one path that re-asks
+  // the user, on BOTH resume branches. ----
+  describe('a resume whose definition file changed since the hire (D2)', () => {
+    // Only a file-defined helper can ever hit this — a built-in has nothing on
+    // disk to change, so it carries no fingerprint to compare.
+    const DOCS_WRITER: SpecialistDefinition = {
+      id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes and edits project docs.',
+      systemPrompt: 'Write docs.', allowedTools: ['Read', 'Write'], charter: 'read-write',
+      stepCap: 10, reportBudgetTokens: 500, source: 'claude-code',
+      grantScope: 'project', fingerprint: 'bbbbbbbbbbbb',
+    };
+    const ROSTER: SpecialistRoster = {
+      list: () => [DOCS_WRITER],
+      resolve: (id) => (id === 'docs-writer' ? DOCS_WRITER : undefined),
+    };
+    // 'not-running' means "this parent's own child, already finished" — the
+    // one answer that routes a task_id call into the resume path.
+    const notRunning = () => vi.fn(() => ({ status: 'not-running', agentType: 'docs-writer' }));
+
+    function expectRefusal(text: string) {
+      expect(text).toContain('"docs-writer"');
+      expect(text).toContain('has changed since this specialist was hired');
+      expect(text).toContain('never approved');
+      // Names the ONE path that goes through the user's consent card again.
+      expect(text).toContain('Hire it again');
+      expect(text).toContain('no task_id');
+    }
+
+    it('foreground: refuses, says what changed, and points at the path that re-asks the user', async () => {
+      const tool = createTaskTool(ROSTER);
+      const token = { parentId: 'parent-1', writer: true };
+      const reserve = vi.fn(() => ({ ok: true, token }));
+      const release = vi.fn();
+      const resumeSpecialist = vi.fn(async () => ({ status: 'definition-changed', agentType: 'docs-writer' }));
+      const r = await tool.execute(
+        { task_id: 'child-1', prompt: 'continue from where you left off' } as any,
+        manageCtx({ steerSpecialist: notRunning(), reserve, release, resumeSpecialist }),
+      );
+      // docs-writer is read-write, so the resume re-takes the writer lock —
+      // and must hand it straight back when the resume is refused.
+      expect(reserve).toHaveBeenCalledWith('parent-1', { writer: true });
+      expect(r.isError).toBe(true);
+      expectRefusal(r.text);
+      expect(release).toHaveBeenCalledWith(token);
+    });
+
+    it('background: refuses identically AND releases the reservation it took', async () => {
+      const tool = createTaskTool(ROSTER);
+      const token = { parentId: 'parent-1', writer: true };
+      const reserve = vi.fn(() => ({ ok: true, token }));
+      const release = vi.fn();
+      const resumeSpecialist = vi.fn(async () => ({ status: 'definition-changed', agentType: 'docs-writer' }));
+      const r = await tool.execute(
+        { task_id: 'child-1', prompt: 'pick up the refactor', background: true } as any,
+        manageCtx({ steerSpecialist: notRunning(), reserve, release, resumeSpecialist }),
+      );
+      expect(r.isError).toBe(true);
+      expectRefusal(r.text);
+      // The background branch owns its own release on every refusal — nothing
+      // downstream took ownership of this reservation, so a leak here would
+      // silently burn a concurrency slot for the rest of the conversation.
+      expect(release).toHaveBeenCalledWith(token);
+      // Never the launch ack: a refusal must not read as "it started".
+      expect(r.text).not.toMatch(/working in the background/);
+    });
   });
 });

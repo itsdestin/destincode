@@ -183,6 +183,39 @@ describe('Always-allow on a Task hire', () => {
     expect(screen.queryByText(/in every project/i)).toBeNull();
   });
 
+  // D2 follow-up (2026-08-26, review): the note must name the folder the grant
+  // is ACTUALLY pinned to. The subject is built from the call's `work_dir`
+  // resolved against the session folder (tools/task.ts), so naming the session
+  // folder is only right when the call did not narrow to a subdirectory — and
+  // a note naming the WRONG folder is worse than one naming none.
+  it('names the session folder when the hire did not narrow (work_dir ".")', async () => {
+    mockSpecialistsList(roster);
+    renderTaskCard(
+      taskCall({
+        requestId: 'native-project-dot',
+        input: { description: 'x', agent: 'repo-reviewer', prompt: 'y', work_dir: '.' },
+      }),
+      '/work/proj',
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /always allow/i })).toBeTruthy());
+    expect(screen.getByText(/in proj only/i)).toBeTruthy();
+  });
+
+  it('names the work_dir folder when the hire narrowed to one — trailing slash and all', async () => {
+    mockSpecialistsList(roster);
+    renderTaskCard(
+      taskCall({
+        requestId: 'native-project-elsewhere',
+        input: { description: 'x', agent: 'repo-reviewer', prompt: 'y', work_dir: '/other/place/' },
+      }),
+      '/work/proj',
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /always allow/i })).toBeTruthy());
+    expect(screen.getByText(/in place only/i)).toBeTruthy();
+    // The session folder is NOT what this grant covers, so it must not be named.
+    expect(screen.queryByText(/in proj only/i)).toBeNull();
+  });
+
   it('never offers Always allow for an unresolved (unknown) hire', async () => {
     const list = mockSpecialistsList(roster);
     renderTaskCard(

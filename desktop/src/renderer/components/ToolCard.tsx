@@ -351,6 +351,20 @@ export function friendlyToolDisplay(
 // array + behavior:allow (it ignores the array's CONTENTS — the host derives the
 // remembered rule from the tool call itself), so any single-element marker works.
 // CC asks keep sending their real suggestion string. Task 13.
+/** D2: the folder a project-scoped grant is actually pinned to. The subject is
+ *  built from the call's `work_dir` resolved against the session folder
+ *  (tools/task.ts), so naming the session folder is only right when the call
+ *  did not narrow to a subdirectory — and a note that names the wrong folder
+ *  is worse than one that names none. Falls back to a folder-less phrase
+ *  rather than guessing. */
+function grantFolderName(workDir: unknown, sessionCwd?: string): string {
+  const raw = typeof workDir === 'string' && workDir.trim() && workDir.trim() !== '.'
+    ? workDir.trim()
+    : sessionCwd;
+  const name = raw ? basename(raw.replace(/[\\/]+$/, '')) : '';
+  return name || 'this project';
+}
+
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
 export function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, alwaysAllowNote, permissionMode, onResponded, onFailed, bare = false }: {
@@ -1234,7 +1248,7 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
               ? (hireDefinition.grantScope === 'user'
                   ? 'Always allow applies to this helper in every project. If you edit its file, you\u2019ll be asked again.'
                   : hireDefinition.grantScope === 'project'
-                    ? `Always allow applies to this helper in ${sessionCwd ? basename(sessionCwd) : 'this project'} only, because it is defined inside the project. If you edit its file, you\u2019ll be asked again.`
+                    ? `Always allow applies to this helper in ${grantFolderName(tool.input?.work_dir, sessionCwd)} only, because it is defined inside the project. If you edit its file, you\u2019ll be asked again.`
                     : undefined)
               : undefined}
             onResponded={onRespondedCb}

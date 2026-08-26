@@ -3070,6 +3070,148 @@ describe('NativeSessionHost', () => {
 
       await h.destroyAll();
     });
+
+    // ---- D2 (2026-08-26, review Critical): a resume rebuilds the child from
+    // the definition file AS IT IS NOW (buildSpecialistSession reads
+    // specialist.allowedTools / charter / systemPrompt), while the consent the
+    // user gave was for the file as it was at the hire. A task_id call carries
+    // no work_dir, so it has no permission subject, so no consent card can
+    // render for it — under auto-edit the pattern-less Task allow answers
+    // first. Without the fingerprint check, editing a read-only helper to add
+    // Bash and then resuming it ran write-capable with no consent at all.
+    //
+    // The comparison is deliberately narrow: only two fingerprints that are
+    // BOTH present and DIFFERENT refuse. Either side absent means "no claim to
+    // check" — built-ins have nothing on disk, and rows written before this
+    // field existed have nothing recorded — and refusing those would make
+    // every pre-existing hire unresumable. All four combinations are pinned. ----
+    describe('resume refuses a definition file that changed since the hire (D2)', () => {
+      let projectDir: string;
+      beforeEach(() => { projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-resume-fp-')); });
+      afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true }); });
+
+      /** A real project-shipped helper file, so its fingerprint is the REAL
+       *  content hash the loader stamps — never a hand-written string that
+       *  could agree with a broken loader. */
+      function writeHelperFile(): void {
+        const dir = path.join(projectDir, '.claude', 'agents');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'doc-helper.md'),
+          '---\nname: Doc Helper\ndescription: A project-defined helper.\ntools: [Read]\n---\nHelp with reading files.\n',
+        );
+      }
+
+      async function boot(catalog: SpecialistCatalog) {
+        const home = new NativeHome(projectDir);
+        const h = new NativeSessionHost(
+          new SessionStore(home), factory, NO_CONTEXT, async () => null, async () => null,
+          undefined, undefined, undefined, undefined, undefined, home, undefined, catalog,
+        );
+        // create() awaits catalog.ensureFresh(cwd), so the roster below is
+        // loaded by the time any test reads it.
+        await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+        return h;
+      }
+
+      /** Hire `specialist`, stamp its ledger row with `recordedFingerprint`,
+       *  tear the child down (not live + own ledger row IS resumeSpecialist's
+       *  whole eligibility bar), then try to resume it. */
+      async function hireThenResume(h: NativeSessionHost, specialist: any, recordedFingerprint: string | undefined) {
+        const { childId, title } = await h.createChild('root-1', {
+          specialist, prompt: 'p', workDir: projectDir, parentToolCallId: 'tc-1',
+        });
+        await (h as any).ledger.recordStart(projectDir, 'root-1', {
+          childId, parentToolCallId: 'tc-1', agentType: specialist.id, title, workDir: projectDir,
+          description: specialist.description, background: false, status: 'running', startedAt: Date.now(),
+          delivered: false, owner: OWNER, missedSteers: [], definitionFingerprint: recordedFingerprint,
+        });
+        await h.destroy(childId);
+        const reservation = h.reserveSpecialist('root-1', { writer: false });
+        if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+        const result = await h.resumeSpecialist('root-1', {
+          childId, prompt: 'continue the investigation', background: false,
+          parentToolCallId: 'tc-2', reservation: reservation.token,
+        });
+        return { result, childId };
+      }
+
+      /** Did the resumed brief actually reach the child? The child's OWN
+       *  transcript is the only honest answer — a status code alone would not
+       *  prove the run never started. */
+      function briefDelivered(h: NativeSessionHost, childId: string): boolean {
+        return (h as any).store.readEvents(childId, projectDir)
+          .some((e: any) => e.type === 'user-message' && String(e.data?.text ?? '').includes('continue the investigation'));
+      }
+
+      // The other half of the fix, and the one that makes the rest reachable at
+      // all: the HIRE has to record which version of the file was consented to.
+      // Without this write every record's fingerprint is absent, which the
+      // comparison correctly reads as "no claim to check" — so no resume could
+      // ever be refused, and the four cases below would all pass vacuously.
+      it('the hire records WHICH version of the definition file was consented to', async () => {
+        writeHelperFile();
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const helper = catalog.roster(projectDir).list().find((d) => d.fingerprint)!;
+        const reservation = h.reserveSpecialist('root-1', { writer: false });
+        if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+        const { childId } = await h.spawnSpecialist('root-1', {
+          specialist: helper, prompt: 'find the config loader', workDir: projectDir,
+          parentToolCallId: 'tc-1', token: reservation.token, description: helper.description,
+        });
+        const rec = (h as any).ledger.listFor(projectDir, 'root-1').find((r: any) => r.childId === childId);
+        expect(rec.definitionFingerprint).toBe(helper.fingerprint);
+        await h.destroyAll();
+      });
+
+      it('refuses when the recorded fingerprint and the file\'s current one differ — and never resumes', async () => {
+        writeHelperFile();
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const helper = catalog.roster(projectDir).list().find((d) => d.fingerprint)!;
+        expect(helper.fingerprint).toBeTruthy();   // sanity: the file loader always stamps one
+
+        const { result, childId } = await hireThenResume(h, helper, 'aaaaaaaaaaaa');
+        expect(result).toEqual({ status: 'definition-changed', agentType: helper.id });
+        expect((h as any).live.has(childId)).toBe(false);   // no session was rebuilt
+        expect(briefDelivered(h, childId)).toBe(false);     // and the brief never ran
+        await h.destroyAll();
+      });
+
+      it('a legacy row with no recorded fingerprint is NOT refused — every pre-existing hire stays resumable', async () => {
+        writeHelperFile();
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const helper = catalog.roster(projectDir).list().find((d) => d.fingerprint)!;
+        const { result, childId } = await hireThenResume(h, helper, undefined);
+        expect(result.status).toBe('ok');
+        expect(briefDelivered(h, childId)).toBe(true);
+        await h.destroyAll();
+      });
+
+      it('a built-in (nothing on disk to change) is NOT refused, even against a recorded fingerprint', async () => {
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const builtin = catalog.roster(projectDir).resolve('explorer')!;
+        expect(builtin.fingerprint).toBeUndefined();   // sanity: this is the "specialist side absent" case
+        const { result, childId } = await hireThenResume(h, builtin, 'aaaaaaaaaaaa');
+        expect(result.status).toBe('ok');
+        expect(briefDelivered(h, childId)).toBe(true);
+        await h.destroyAll();
+      });
+
+      it('an unchanged file resumes normally — the check costs nothing when nothing changed', async () => {
+        writeHelperFile();
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const helper = catalog.roster(projectDir).list().find((d) => d.fingerprint)!;
+        const { result, childId } = await hireThenResume(h, helper, helper.fingerprint);
+        expect(result.status).toBe('ok');
+        expect(briefDelivered(h, childId)).toBe(true);
+        await h.destroyAll();
+      });
+    });
   });
 
   // Task 5 (plan 1c) — the ledger's own change listener (wired once at
@@ -4320,6 +4462,29 @@ describe('NativeSessionHost', () => {
       // Present on the VERY FIRST turn — proves ensureFresh(cwd) was awaited
       // BEFORE toolWiring() built this tool, not raced against it.
       expect(taskTool.description).toContain('foo-helper');
+      await h.destroyAll();
+    });
+
+    // D2 (2026-08-26, review Major) — the WIRING half of "work_dir resolves
+    // against the session folder": task.ts can only do it if harness-session.ts
+    // actually hands createTaskTool the session's cwd. Driven through a real
+    // session so a dropped argument fails HERE, rather than silently in
+    // production, where the remembered rule would name the Electron process's
+    // own directory — a folder the user was never in.
+    it("the Task tool's permission subject resolves work_dir against the SESSION's folder, never process.cwd()", async () => {
+      const catalog = new SpecialistCatalog({ claudeUserDir: null });
+      const h = bootWithCatalog(catalog);
+      await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+      h.send('root-1', 'hi');
+      await waitForTurnComplete(h, 1);
+      const taskTool = (h as any).live.get('root-1').session.toolByName.get('Task');
+      const posix = projectDir.replace(/\\/g, '/');
+      expect(taskTool.permissionSubject({ agent: 'explorer', work_dir: '.' })).toBe(`read-only:${posix}`);
+      expect(taskTool.permissionSubject({ agent: 'explorer', work_dir: 'sub' })).toBe(`read-only:${posix}/sub`);
+      // The bug this pins: the subject used to be built from the Electron
+      // process's own directory, which has nothing to do with this session.
+      expect(taskTool.permissionSubject({ agent: 'explorer', work_dir: '.' }))
+        .not.toContain(process.cwd().replace(/\\/g, '/'));
       await h.destroyAll();
     });
 

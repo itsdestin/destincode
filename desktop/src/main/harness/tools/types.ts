@@ -82,7 +82,13 @@ export type SpecialistResumeOutcome =
   | { status: 'ok'; childId: string; report: string }
   | { status: 'ok-background'; childId: string; title: string }
   | { status: 'not-yours' }
-  | { status: 'still-running' };
+  | { status: 'still-running' }
+  /** D2 fix (review Critical): the definition FILE changed since this child was
+   *  spawned, so resuming would run tools the user never approved. A resume
+   *  carries no work_dir and therefore no permission subject, which means no
+   *  consent card can render for it — refusing here is the only place this can
+   *  be caught. The parent is told to hire again, which DOES go through a card. */
+  | { status: 'definition-changed'; agentType: string };
 
 // Runtime services injected into tools that need process-level collaborators
 // (spec §3.2). WebSearch reads services.search — the chain-walking SearchService.

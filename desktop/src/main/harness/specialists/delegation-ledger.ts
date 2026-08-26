@@ -84,6 +84,19 @@ export interface DelegationRecord {
    *  stated honestly). Referenced from SpecialistRunView's own field type
    *  (rather than a duplicated literal) so the two can never silently drift. */
   model?: SpecialistRunView['model'];
+  /** D2 fix (2026-08-26, review Critical) — the content hash of the definition
+   *  file this child was SPAWNED from, i.e. the one the user actually saw and
+   *  consented to. Absent for a built-in (nothing on disk to change) and for a
+   *  1b/1c record written before this field existed; both are treated as "no
+   *  claim to check", never as a mismatch.
+   *
+   *  WHY it has to be recorded rather than re-derived: a `task_id` resume
+   *  re-resolves the specialist from the LIVE roster and rebuilds the child
+   *  from its current tools/charter. Without this, a helper approved as
+   *  read-only could be edited to add Bash and then resumed straight into a
+   *  write-capable run — in auto-edit with no card at all, because a task_id
+   *  call carries no work_dir and so has no permission subject to match. */
+  definitionFingerprint?: string;
 }
 
 // Full body cap for the copy that rides IN the ledger file. mutateJson is a

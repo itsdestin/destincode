@@ -827,6 +827,21 @@ export class NativeSessionHost extends EventEmitter {
     const specialist = this.specialistCatalog.roster(parent.cwd).resolve(agentType);
     if (!specialist) throw new Error(`Cannot resume specialist ${opts.childId}: its specialist type "${agentType}" is no longer available (it may have been removed from the roster).`);
 
+    // D2 fix (2026-08-26, review Critical) — a resume rebuilds the child from
+    // the specialist as it is RIGHT NOW (buildSpecialistSession below reads
+    // specialist.allowedTools / charter / systemPrompt), while the consent the
+    // user gave was for the file as it was at spawn. A resume call carries no
+    // work_dir, so it has no permission subject, so no card can be shown for
+    // it — under auto-edit the pattern-less Task allow answers first. That made
+    // resume a way to run an edited definition with no consent at all. Compare
+    // fingerprints and refuse instead. Both sides absent (built-ins, and rows
+    // written before this field existed) means "no claim to check" — never a
+    // mismatch, or every pre-existing hire would become unresumable.
+    if (record.definitionFingerprint && specialist.fingerprint
+        && record.definitionFingerprint !== specialist.fingerprint) {
+      return { status: 'definition-changed', agentType };
+    }
+
     const preset = resolvePreset(this.presetIdFor.get(parentId));
     const binding = header.binding;
     const { contextLength, profile } = await this.resolveContextAndProfile(binding);
@@ -1000,6 +1015,9 @@ export class NativeSessionHost extends EventEmitter {
         childId,
         parentToolCallId: opts.parentToolCallId,
         agentType: opts.specialist.id,
+        // D2 fix: pin WHICH VERSION of the definition file was consented to,
+        // so a later resume can refuse if the file has changed underneath it.
+        definitionFingerprint: opts.specialist.fingerprint,
         title,
         workDir: opts.workDir,
         // Task 4: the Task tool's own per-call `description` argument — the

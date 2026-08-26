@@ -16,7 +16,7 @@ import { z } from 'zod';
 import { defineTool } from './registry';
 import type { NativeTool, ToolContext, ToolResultPayload } from './types';
 import { resolveP, toPosix } from './guards';
-import { BUILTIN_ROSTER, type SpecialistRoster } from '../specialists/registry';
+import { BUILTIN_ROSTER, type SpecialistRoster, type SpecialistDefinition } from '../specialists/registry';
 import { SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../specialists/limits';
 import {
   resolveDelegatedBinding, resolveRequestedModel, DelegatedModelRefused, type DelegatedTier,
@@ -190,7 +190,40 @@ const TASK_ID_DOCTRINE =
 // EVERY turn — never once at module load — because the roster can change
 // between turns (a file dropped into a specialists folder) and a stale
 // module-level tool would keep offering the OLD list forever.
-export function createTaskTool(roster: SpecialistRoster = BUILTIN_ROSTER): NativeTool<TaskArgs> {
+// `sessionCwd` is the SESSION's folder. D2 fix (2026-08-26, review Major):
+// permissionSubject resolved a relative `work_dir` against `process.cwd()` —
+// the Electron process's own directory, which has nothing to do with the
+// conversation. Two consequences, both bad once a grant is pinned to that
+// path: the remembered rule named a folder the user was never in (so the
+// grant they were told was saved never fired again), and `work_dir: '.'`
+// produced the SAME subject in every project, which let a project-scoped
+// grant travel between projects — exactly what D2 exists to prevent.
+// createChild already resolves against the parent session's cwd
+// (native-session-host.ts), so this makes the two agree.
+export function createTaskTool(
+  rawRoster: SpecialistRoster = BUILTIN_ROSTER,
+  sessionCwd?: string,
+): NativeTool<TaskArgs> {
+  // D2 fix (2026-08-26, review Major — check-then-use). permissionSubject and
+  // execute() each resolved the specialist independently, and `resolve` reads
+  // the catalog's LIVE state: `specialists:list` calls catalog.reload(), which
+  // the renderer fires while a consent card is on screen. So the definition
+  // whose fingerprint the user approved could be a different object from the
+  // one that then spawned — the whole "the hash pins what you approved"
+  // guarantee is about resolution time, and there were two of those.
+  //
+  // Resolve once per id and reuse it for the life of THIS tool instance. That
+  // is exactly one turn (the Task tool is rebuilt at every turn start), which
+  // is already the granularity the catalog's own no-watcher design promises:
+  // a definition change takes effect at the next turn, never mid-turn.
+  const memo = new Map<string, SpecialistDefinition | undefined>();
+  const roster: SpecialistRoster = {
+    list: () => rawRoster.list(),
+    resolve: (id) => {
+      if (!memo.has(id)) memo.set(id, rawRoster.resolve(id));
+      return memo.get(id);
+    },
+  };
   return defineTool<TaskArgs>({
     name: 'Task',
     description:
@@ -267,7 +300,7 @@ export function createTaskTool(roster: SpecialistRoster = BUILTIN_ROSTER): Nativ
     permissionSubject: (a) => {
       if (!a.work_dir) return undefined;
       const specialist = a.agent ? roster.resolve(a.agent) : undefined;
-      const workDir = toPosix(resolveP(a.work_dir, process.cwd()));
+      const workDir = toPosix(resolveP(a.work_dir, sessionCwd ?? process.cwd()));
       if (!specialist) return workDir;
       if (specialist.grantScope === 'builtin') return `${specialist.charter}:${workDir}`;
       // Unreachable via the catalog — both file loaders always stamp a
@@ -370,6 +403,12 @@ export function createTaskTool(roster: SpecialistRoster = BUILTIN_ROSTER): Nativ
               services.release(reservation.token);
               return { text: `${taskId} started running again before this resume could take effect — nothing to do.`, isError: true };
             }
+            // D2 fix (review Critical): the definition changed since consent.
+            // Says exactly what happened and names the ONE path that re-asks.
+            if (result.status === 'definition-changed') {
+              services.release(reservation.token);
+              return { text: `The definition file for "${result.agentType}" has changed since this specialist was hired, so resuming would run a version the user never approved. Hire it again with a fresh Task call (no task_id) — that goes through the user's consent card — or continue the work yourself.`, isError: true };
+            }
             // result.status === 'ok-background' (the only remaining case,
             // since this call requested background: true) — ownership of the
             // reservation transferred to the detached chain, same as a fresh
@@ -397,6 +436,9 @@ export function createTaskTool(roster: SpecialistRoster = BUILTIN_ROSTER): Nativ
           if (result.status === 'not-yours') return { text: REFUSED_NOT_OWN_CHILD, isError: true };
           if (result.status === 'still-running') {
             return { text: `${taskId} started running again before this resume could take effect — nothing to do.`, isError: true };
+          }
+          if (result.status === 'definition-changed') {
+            return { text: `The definition file for "${result.agentType}" has changed since this specialist was hired, so resuming would run a version the user never approved. Hire it again with a fresh Task call (no task_id) — that goes through the user's consent card — or continue the work yourself.`, isError: true };
           }
           // result.status === 'ok' (the only remaining case, since this call
           // requested background: false) — belt-and-suspenders throw for the

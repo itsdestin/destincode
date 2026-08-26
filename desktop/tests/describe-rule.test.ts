@@ -74,6 +74,50 @@ describe('describeRule', () => {
     });
   });
 
+  // D2 (2026-08-26): a grant on a FILE-DEFINED helper carries the helper's own
+  // id and its file's content hash — `read-only:file:code-reviewer@a1b2c3d4e5f6`
+  // (everywhere) or `read-write:/work/proj:file:repo-worker@…` (that folder
+  // only). Rendered by the plain charter branches these read as a DIRECTORY
+  // literally named "file:code-reviewer@a1b2c3…": internal syntax on a screen
+  // written for non-developers, naming no helper the user recognises, and
+  // describing the everywhere-grant as if it were pinned to a place. The words
+  // ARE the feature here, so they are what these pin.
+  describe('file-defined helper grants (D2)', () => {
+    it('a user-folder grant reads as covering every project, with no subject to imply a place', () => {
+      expect(describeRule({ tool: 'Task', pattern: 'read-write:file:docs-writer@aaaaaaaaaaaa', action: 'allow' }))
+        .toEqual({ verb: 'Let the docs-writer specialist edit files in every project', subject: undefined, width: 'exact' });
+    });
+
+    it('a project-scoped grant names the folder it is pinned to', () => {
+      expect(describeRule({ tool: 'Task', pattern: 'read-only:/work/proj:file:repo-reviewer@bbbbbbbbbbbb', action: 'allow' }))
+        .toEqual({ verb: 'Let the repo-reviewer specialist work in', subject: '/work/proj', width: 'exact' });
+    });
+
+    // The new branch runs FIRST, ahead of the two charter-prefix branches, so
+    // this is the regression that matters: a built-in's grant (no `file:`
+    // segment) must render exactly as it did before the branch existed.
+    it('a built-in grant is untouched by the new branch', () => {
+      expect(describeRule({ tool: 'Task', pattern: 'read-write:/work/proj', action: 'allow' }))
+        .toEqual({ verb: 'Let a specialist edit files in', subject: '/work/proj', width: 'exact' });
+      expect(describeRule({ tool: 'Task', pattern: 'read-only:/work/proj', action: 'allow' }))
+        .toEqual({ verb: 'Let a read-only specialist work in', subject: '/work/proj', width: 'exact' });
+    });
+
+    // The whole point of the branch: nothing the user reads may carry the
+    // content hash or the internal `file:` marker.
+    it('never leaks the hash or the file: marker into what the screen shows', () => {
+      const patterns = [
+        'read-write:file:docs-writer@aaaaaaaaaaaa',
+        'read-only:/work/proj:file:repo-reviewer@bbbbbbbbbbbb',
+      ];
+      for (const pattern of patterns) {
+        const d = describeRule({ tool: 'Task', pattern, action: 'allow' });
+        expect(`${d.verb} ${d.subject ?? ''}`).not.toContain('file:');
+        expect(`${d.verb} ${d.subject ?? ''}`).not.toMatch(/@[0-9a-f]{4}/);
+      }
+    });
+  });
+
   // Task 11: a specialist-keyed rule must read as what it actually is — the
   // assistant itself never gets this permission, only a specialist working
   // under it does. Plain language, no jargon (project constraint).

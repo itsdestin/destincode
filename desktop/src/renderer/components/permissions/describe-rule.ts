@@ -113,6 +113,27 @@ function describeRuleBody(rule: PermissionRule): RuleDescription {
     if (rule.pattern === undefined) {
       return { verb: 'Let specialists work anywhere in this project', width: 'tool-wide' };
     }
+    // D2 (2026-08-26): a grant on a FILE-DEFINED helper carries the helper's
+    // own id and a content hash — `read-only:file:code-reviewer@a1b2c3d4e5f6`
+    // (grants everywhere) or `read-write:/home/x/proj:file:repo-worker@…`
+    // (that folder only). Rendered by the two branches below it read as a
+    // DIRECTORY named "file:code-reviewer@a1b2c3…", which named no helper the
+    // user recognises, leaked hash syntax onto this screen, and described the
+    // everywhere-grant as if it were scoped to a place. Handled first, since
+    // both shapes still start with a charter prefix.
+    const filed = /^(read-only|read-write):(?:(.*):)?file:([^@]+)@[0-9a-f]+$/.exec(rule.pattern);
+    if (filed) {
+      const [, charter, dir, id] = filed;
+      const verb = charter === 'read-write'
+        ? `Let the ${id} specialist edit files`
+        : `Let the ${id} specialist work`;
+      // No directory in the pattern IS the cross-project grant — that is what
+      // omitting the work dir means (tools/task.ts). Say so, rather than
+      // leaving the sentence to trail off into nothing.
+      return dir
+        ? { verb: `${verb} in`, subject: dir, width: 'exact' }
+        : { verb: `${verb} in every project`, width: 'exact' };
+    }
     if (rule.pattern.startsWith('read-only:')) {
       return { verb: 'Let a read-only specialist work in', subject: rule.pattern.slice('read-only:'.length), width: 'exact' };
     }

@@ -883,7 +883,7 @@ export class HarnessSession extends EventEmitter {
     // cannot match any remembered Task rule (see harness-session.ts's own
     // comment on Task's subject, above). Nothing here should be read as "the
     // roster is stable for the turn" — it isn't.
-    this.toolByName.set('Task', createTaskTool(this.opts.specialistRoster ?? BUILTIN_ROSTER));
+    this.toolByName.set('Task', createTaskTool(this.opts.specialistRoster ?? BUILTIN_ROSTER, this.opts.cwd));
     if (!this.toolByName.has('ModelSearch')) this.toolByName.set('ModelSearch', ModelSearchTool);
   }
 
