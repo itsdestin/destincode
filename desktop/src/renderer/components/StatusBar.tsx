@@ -420,6 +420,10 @@ interface Props {
    *  auto-detect the brand color when the model id alone is ambiguous. Unused
    *  for CC sessions (they use MODEL_DISPLAY keyed on the alias). */
   modelProviderType?: string | null;
+  /** The session's runtime. Gates the two Claude-subscription chips and the
+   *  Fast toggle — see status-widgets.ts. Absent → treated as 'claude', so a
+   *  caller that hasn't been wired yet hides nothing (spec §11). */
+  provider?: SessionRuntime;
   // No onCycleModel: the model chip opens the picker (onOpenModelPicker) and
   // click-to-cycle now lives on Shift+Space in App.tsx. The prop was still declared
   // and passed but never called, so it read as a working affordance that did nothing.
@@ -1007,7 +1011,7 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 // --- Main StatusBar component ---
 
 export default function StatusBar({
-  statusData, onRunSync, onOpenSync, model, modelProviderType,
+  statusData, onRunSync, onOpenSync, model, modelProviderType, provider,
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
@@ -1027,7 +1031,11 @@ export default function StatusBar({
   const [updatePanelOpen, setUpdatePanelOpen] = useState(false);
   const [contextPopupOpen, setContextPopupOpen] = useState(false);
 
-  const show = (id: WidgetId) => visible.has(id);
+  // Runtime gate (spec §3, Rule 2): a widget that belongs to the OTHER runtime
+  // never renders here, whatever the user's saved on/off choice says. The choice
+  // itself is untouched and returns the moment they switch back.
+  const runtime: SessionRuntime = provider ?? 'claude';
+  const show = (id: WidgetId) => visible.has(id) && widgetApplies(id, runtime);
   const ss = sessionStats; // shorthand
 
   // Native-runtime chips (Task 12). Non-null only for native sessions that have
@@ -1107,8 +1115,11 @@ export default function StatusBar({
         })()
       ))}
 
-      {/* Fast mode chip — only rendered when on. Click opens the ModelPickerPopup. */}
-      {fast && (
+      {/* Fast mode is a Claude Code toggle read from the app-wide model-modes
+          file — nothing in a native session honours it, so rendering it there
+          is a control that lies (spec §1). Not a registry widget, so it takes
+          the runtime gate directly rather than going through show(). */}
+      {fast && runtime === 'claude' && (
         <button
           onClick={onOpenModelPicker}
           className="flex items-center px-1.5 py-0.5 rounded-sm border border-yellow-500/40 bg-yellow-500/15 text-yellow-500 cursor-pointer hover:brightness-125 transition-colors"
@@ -1273,38 +1284,43 @@ export default function StatusBar({
         </span>
       )}
 
-      {/* Session duration — wall time and API thinking time */}
-      {show('session-time') && (
+      {/* Session duration — wall time and API thinking time.
+          Rule 1 (spec §3): no value, no chip. This used to render a literal
+          '--' — forever in a native session, where the statusline that feeds
+          it never runs, and briefly in a CC session before the first stats
+          arrive. An empty chip is furniture that teaches the user to ignore
+          the bar. */}
+      {show('session-time') && ss?.duration != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.duration != null && ss?.apiDuration != null ? `Wall: ${formatDuration(ss.duration)} | API: ${formatDuration(ss.apiDuration)}` : 'Session duration'}
+          title={ss.apiDuration != null ? `Wall: ${formatDuration(ss.duration)} | API: ${formatDuration(ss.apiDuration)}` : 'Session duration'}
         >
-          <span>{ss?.duration != null ? formatDuration(ss.duration) : '--'}</span>
-          {ss?.duration != null && ss?.apiDuration != null && (
+          <span>{formatDuration(ss.duration)}</span>
+          {ss.apiDuration != null && (
             <span className="text-fg-muted hidden sm:inline">({formatDuration(ss.apiDuration)} API)</span>
           )}
         </span>
       )}
 
-      {/* Input tokens */}
-      {show('tokens-in') && (
+      {/* Input tokens. Rule 1 (spec §3): no value, no chip. */}
+      {show('tokens-in') && inTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={inTokens != null ? `Input tokens: ${inTokens.toLocaleString()}` : 'Input tokens'}
+          title={`Input tokens: ${inTokens.toLocaleString()}`}
         >
           <span className="text-fg-muted">In:</span>
-          <span className="text-fg-2">{inTokens != null ? formatTokens(inTokens) : '--'}</span>
+          <span className="text-fg-2">{formatTokens(inTokens)}</span>
         </span>
       )}
 
-      {/* Output tokens */}
-      {show('tokens-out') && (
+      {/* Output tokens. Rule 1 (spec §3): no value, no chip. */}
+      {show('tokens-out') && outTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={outTokens != null ? `Output tokens: ${outTokens.toLocaleString()}` : 'Output tokens'}
+          title={`Output tokens: ${outTokens.toLocaleString()}`}
         >
           <span className="text-fg-muted">Out:</span>
-          <span className="text-fg-2">{outTokens != null ? formatTokens(outTokens) : '--'}</span>
+          <span className="text-fg-2">{formatTokens(outTokens)}</span>
         </span>
       )}
 
@@ -1313,41 +1329,44 @@ export default function StatusBar({
           chips sat at '--' forever while the harness shipped the numbers on every
           turn-complete. Same fix the In/Out and Speed chips got on 2026-07-28.
           cr/cc are resolved ONCE so the title, the value and the hit-rate math can
-          never disagree about which source they came from. */}
+          never disagree about which source they came from.
+          Rule 1 (spec §3): no value, no chip — bail before rendering. */}
       {show('cache-stats') && (() => {
         const cr = ss?.cacheReadTokens ?? nativeChips?.cacheReadTokens ?? null;
+        if (cr == null) return null;
         const cc = ss?.cacheCreationTokens ?? nativeChips?.cacheCreationTokens ?? null;
         return (
           <span
             className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-            title={cr != null ? `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}` : 'Cache efficiency'}
+            title={`Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}`}
           >
             <span className="text-fg-muted">Cached:</span>
-            <span className="text-[#4CAF50]">{cr != null ? formatTokens(cr) : '--'}</span>
+            <span className="text-[#4CAF50]">{formatTokens(cr)}</span>
           </span>
         );
       })()}
 
       {/* Context reuse — how much of the prompt came from cache instead of being
-          re-read. See selectCacheReuse for why this is NOT reads/(reads+writes). */}
+          re-read. See selectCacheReuse for why this is NOT reads/(reads+writes).
+          Rule 1 (spec §3): 'unknown' means no data to report — bail before
+          rendering. 'first-turn' is a real, known state (nothing to reuse yet)
+          and keeps rendering "New", same as before. */}
       {show('cache-hit-rate') && (() => {
         const reuse = selectCacheReuse(ss, nativeChips);
         const display = selectReuseDisplay(reuse, turnsWithUsage);
+        if (display.kind === 'unknown') return null;
         const prompt = (reuse.promptTokens ?? 0).toLocaleString();
-        const title = display.kind === 'unknown'
-          ? 'How much of the prompt was reused from cache'
-          : display.kind === 'first-turn'
-            ? `Nothing to reuse yet — this is the session's first turn, so all ${prompt} prompt tokens were read fresh.`
-            : display.pct === 0
-              ? `None of this turn's prompt came from cache; all ${prompt} tokens were read fresh. Caches expire after a few minutes idle, and reset when the model or tool list changes.`
-              : `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this turn's ${prompt} prompt tokens from cache — that part was cheaper and faster than re-reading it.`;
+        const title = display.kind === 'first-turn'
+          ? `Nothing to reuse yet — this is the session's first turn, so all ${prompt} prompt tokens were read fresh.`
+          : display.pct === 0
+            ? `None of this turn's prompt came from cache; all ${prompt} tokens were read fresh. Caches expire after a few minutes idle, and reset when the model or tool list changes.`
+            : `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this turn's ${prompt} prompt tokens from cache — that part was cheaper and faster than re-reading it.`;
         return (
           <span
             className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
             title={title}
           >
             <span className="text-fg-muted">Reuse:</span>
-            {display.kind === 'unknown' && <span className="text-fg-2">--</span>}
             {display.kind === 'first-turn' && <span className="text-fg-muted">New</span>}
             {display.kind === 'percent' && (
               <span className={display.pct >= 80 ? 'text-[#4CAF50]' : display.pct >= 50 ? 'text-[#FF9800]' : 'text-[#DD4444]'}>
@@ -1358,30 +1377,30 @@ export default function StatusBar({
         );
       })()}
 
-      {/* Active ratio — derived: apiDuration / duration */}
-      {show('active-ratio') && (
+      {/* Active ratio — derived: apiDuration / duration. Rule 1 (spec §3): no
+          value, no chip. */}
+      {show('active-ratio') && ss?.duration != null && ss?.apiDuration != null && ss.duration > 0 && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.duration != null && ss?.apiDuration != null ? `Claude thinking: ${formatDuration(ss.apiDuration)} of ${formatDuration(ss.duration)} total` : 'Active ratio'}
+          title={`Claude thinking: ${formatDuration(ss.apiDuration)} of ${formatDuration(ss.duration)} total`}
         >
           <span className="text-fg-muted">Active:</span>
           <span className="text-fg-2">
-            {ss?.duration != null && ss?.apiDuration != null && ss.duration > 0
-              ? `${Math.round((ss.apiDuration / ss.duration) * 100)}%`
-              : '--'}
+            {Math.round((ss.apiDuration / ss.duration) * 100)}%
           </span>
         </span>
       )}
 
-      {/* Output speed — derived: outputTokens / apiDuration */}
-      {show('output-speed') && (
+      {/* Output speed — derived: outputTokens / apiDuration. Rule 1 (spec §3):
+          no value, no chip. */}
+      {show('output-speed') && speedTokPerSec != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output tokens per second on the last turn'}
         >
           <span className="text-fg-muted">Speed:</span>
           <span className="text-fg-2">
-            {speedTokPerSec != null ? `${speedTokPerSec} tok/s` : '--'}
+            {speedTokPerSec} tok/s
           </span>
         </span>
       )}
