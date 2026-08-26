@@ -1,4 +1,5 @@
 import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState } from '../../shared/types';
+import { emptyTotals, type SessionTotals } from './session-totals';
 // Re-export so test files and future consumers can import these types from
 // chat-types directly, without reaching into the shared/types boundary.
 export type { ToolCallState, AttentionState };
@@ -312,6 +313,11 @@ export interface SessionChatState {
    * have shown, so the drain-side removal can content-match it.
    */
   queuedMessages: Array<{ queueId: string; content: string; timestamp: number }>;
+
+  /** Session-so-far totals for the status bar and /usage (spec §2). Accumulated
+   *  as events arrive rather than walked on demand — see session-totals.ts for
+   *  why, and for exactly what is counted. */
+  totals: SessionTotals;
 }
 
 export function createSessionChatState(): SessionChatState {
@@ -340,6 +346,7 @@ export function createSessionChatState(): SessionChatState {
     modelEverResident: false,
     seenUuids: new Set(),
     queuedMessages: [],
+    totals: emptyTotals(),
   };
 }
 
@@ -739,6 +746,10 @@ export interface SerializedSessionChatState {
   // mid-session. Optional so a pre-field snapshot from an older host still
   // deserializes.
   queuedMessages?: Array<{ queueId: string; content: string; timestamp: number }>;
+  // Optional so a pre-field snapshot from an older host still deserializes —
+  // it comes back as empty totals, which read as "nothing counted yet" rather
+  // than as a crash or a wrong number.
+  totals?: SessionTotals;
 }
 
 export interface SerializedChatState {
@@ -779,6 +790,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         modelEverResident: s.modelEverResident,
         seenUuids: Array.from(s.seenUuids),
         queuedMessages: s.queuedMessages,
+        totals: s.totals,
       },
     ]);
   }
@@ -826,6 +838,9 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       seenUuids: new Set(ser.seenUuids ?? []),
       // Older hosts predate queuedMessages — default to an empty list.
       queuedMessages: ser.queuedMessages ?? [],
+      // Older hosts (and a pre-field snapshot) predate totals — default to
+      // empty totals rather than undefined.
+      totals: ser.totals ?? emptyTotals(),
     });
   }
   return result;

@@ -11,6 +11,7 @@ import {
   abnormalStopReason,
 } from './chat-types';
 import { SubagentSegment, ToolCallState, ToolGroupState } from '../../shared/types';
+import { addTurnUsage, addPatchLines } from './session-totals';
 
 // Fix: message ids are used as React keys. A hydrated remote client restarts
 // this counter at 0 while its snapshot already holds msg-1..msg-N, so new live
@@ -387,6 +388,10 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   }
 
   const segments: SubagentSegment[] = parent.subagentSegments ? [...parent.subagentSegments] : [];
+  // Captured only on the TOOL_RESULT branch below — the pre-update segment,
+  // read before it's overwritten, so the once-only patch guard after the
+  // if-chain can see whether THIS call already had a structuredPatch.
+  let existingToolSegment: Extract<SubagentSegment, { type: 'tool' }> | undefined;
 
   if (action.type === 'TRANSCRIPT_ASSISTANT_TEXT') {
     // Fix: the native harness (harness-session.ts:1769) emits one
@@ -435,6 +440,7 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
     );
     if (idx >= 0 && segments[idx].type === 'tool') {
       const existing = segments[idx] as Extract<SubagentSegment, { type: 'tool' }>;
+      existingToolSegment = existing;
       segments[idx] = action.isError
         ? { ...existing, status: 'failed', error: action.result }
         : {
@@ -454,8 +460,19 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const seenUuids = action.type === 'TRANSCRIPT_ASSISTANT_TEXT'
     ? new Set(session.seenUuids).add(action.uuid)
     : session.seenUuids;
+  // A specialist's edits are the parent session's edits (spec §7). They live in
+  // subagentSegments, NOT session.toolCalls, so a count over toolCalls alone
+  // would miss every edit made by delegation — i.e. undercount hardest on the
+  // biggest sessions. Same once-only guard as the main path: existingToolSegment
+  // is the pre-update segment (only set inside the TOOL_RESULT branch above),
+  // so a duplicate delivery with a patch already recorded is a no-op.
+  const totals = action.type === 'TRANSCRIPT_TOOL_RESULT'
+      && action.structuredPatch
+      && !existingToolSegment?.structuredPatch
+    ? addPatchLines(session.totals, action.structuredPatch)
+    : session.totals;
   const next = new Map(state);
-  next.set(action.sessionId, { ...session, toolCalls, seenUuids });
+  next.set(action.sessionId, { ...session, toolCalls, seenUuids, totals });
   return next;
 }
 
@@ -1337,8 +1354,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
       }
 
+      // Count edited lines ONCE. A tool-result can be delivered twice (a
+      // renderer reload replays the transcript while the live stream is still
+      // arriving — see seenUuids' comment), and Map.set absorbs the duplicate
+      // silently, so the guard is "this call had no patch yet", not a uuid.
+      const totals = action.structuredPatch && !existing?.structuredPatch
+        ? addPatchLines(session.totals, action.structuredPatch)
+        : session.totals;
+
       next.set(action.sessionId, {
-        ...session, toolCalls, lastActivityAt: Date.now(),
+        ...session, toolCalls, totals, lastActivityAt: Date.now(),
         attentionState: 'ok',
       });
       return next;
@@ -1466,7 +1491,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
       }
 
-      next.set(action.sessionId, { ...session, timeline, seenUuids, ...endTurn(session, undefined, assistantTurns) });
+      // Session totals (spec §2). A SUBAGENT's turn-complete is skipped on
+      // purpose: a specialist's spend arrives once, as a subagent-usage event
+      // carrying the whole run (native-session-host.ts), and counting both
+      // would double it. Everything else — including a Claude Code turn,
+      // which carries no costUsd and so contributes tokens only — accumulates.
+      const totals = action.parentAgentToolUseId
+        ? session.totals
+        : addTurnUsage(session.totals, action.usage ?? {});
+
+      next.set(action.sessionId, { ...session, timeline, seenUuids, totals, ...endTurn(session, undefined, assistantTurns) });
       return next;
     }
 
