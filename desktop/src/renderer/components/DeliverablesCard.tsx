@@ -18,7 +18,8 @@
 //     more; a fade on the left appears once a tile has slid under that edge.
 //     Same strip on narrow screens (a sideways swipe is natural on a phone).
 //   - Collapsible like a tool card (chevron; Ctrl+O expand/collapse-all
-//     applies), but OPEN by default — the whole point is seeing the files.
+//     applies), CLOSED by default like the tool cards around it (Destin,
+//     2026-08-25, after seeing it open on a real screen).
 //   - Every tile opens the artifact viewer through useOpenFilepath, the same
 //     path a filepath pill takes — so untracked files (a scratchpad report)
 //     still open, and "Open" never lies.
@@ -230,13 +231,13 @@ interface Props {
 
 export function DeliverablesCard({ tools, sessionId }: Props) {
   const narrow = useNarrowViewport();
-  // Open by default — unlike a tool card — because the files ARE the reply.
-  // Still collapsible, and Ctrl+O's expand/collapse-all applies, so the card
-  // behaves like the tool cards around it once the user starts managing space.
-  // Fix (review 2026-08-25): seed from the CURRENT Ctrl+O mode like ToolCard
-  // does — a card that mounts after a collapse-all must not come up open while
-  // everything around it is closed.
-  const [open, setOpen] = useState(() => getInitialExpanded(true));
+  // Closed by default (Destin, 2026-08-25 — asked for this after seeing the
+  // card open on a real screen): it now matches the tool cards around it
+  // instead of dominating the bubble. getInitialExpanded still seeds from an
+  // ACTIVE Ctrl+O expand/collapse-all first, so a card that mounts mid
+  // expand-all still comes up open, and mid collapse-all still comes up
+  // closed — only the plain-mount default changed, from true to false.
+  const [open, setOpen] = useState(() => getInitialExpanded(false));
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
 
   const entries = useMemo(
@@ -275,6 +276,7 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
         className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors"
       >
         <FilesGlyph className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        <span className="text-fg-faint text-xs select-none">|</span>
         <span className="text-xs font-semibold text-fg-2">Deliverables</span>
         <span className="text-2xs font-mono text-fg-muted">{entries.length}</span>
         <span className="flex-1 min-w-0 text-2xs text-fg-muted truncate text-right">{headerCaption}</span>

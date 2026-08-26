@@ -76,6 +76,7 @@ describe('Deliverables card in the bubble', () => {
       [send('send1', ['/p/a.md']), send('send2', ['/p/b.md', '/p/c.md']), bash('bash1')],
     );
     expect(screen.getAllByTestId('deliverables-card')).toHaveLength(1);
+    fireEvent.click(screen.getByText('Deliverables')); // card mounts closed now — open it to see the tiles
     expect(screen.getAllByTestId('sent-file-tile')).toHaveLength(3);
   });
 });
