@@ -3,7 +3,6 @@
 // Uses the shared <Dialog> shell so the popup
 // picks up theme tokens automatically — no hardcoded colors, blur, or z-indexes
 // (PITFALLS overlay invariant).
-import { createPortal } from 'react-dom';
 import { Dialog, SettingRow } from '../ui';
 import { useEscClose } from '../../hooks/use-esc-close';
 
@@ -24,10 +23,12 @@ const KNOWN_ISSUES_URL = 'https://github.com/itsdestin/youcoded/issues';
 export function DevelopmentPopup({ open, onClose, onOpenBug, onOpenContribute }: Props) {
   useEscClose(open, onClose);
   if (!open) return null;
-  return createPortal(
-    <>
-      <Dialog open onClose={onClose} size="prompt" aria-label="Development" scrollBody={false} className="p-4">
-        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Development</h3>
+  // P-15: the shared Dialog header supplies the title and the ✕ — the old
+  // hand-rolled uppercase <h3> gave this popup a label but no close button.
+  // Dialog already portals itself, so the createPortal wrapper is gone too.
+  return (
+    <Dialog open onClose={onClose} size="prompt" title="Development" scrollBody={false}>
+      <div className="p-4">
         {/* K2: these are nav rows — each one opens something — so they take the
             nav density (text-sm/text-2xs) rather than the smaller in-menu size
             they used to hand-roll. A row that navigates now looks the same here
@@ -52,9 +53,8 @@ export function DevelopmentPopup({ open, onClose, onOpenBug, onOpenContribute }:
             onClick={() => { window.open(KNOWN_ISSUES_URL, '_blank'); onClose(); }}
           />
         </div>
-      </Dialog>
-    </>,
-    document.body,
+      </div>
+    </Dialog>
   );
 }
 
