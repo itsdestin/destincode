@@ -28,8 +28,8 @@ export const CS_UNTITLED = 'c0deffff-6666-4666-8666-666666666666';
 export const CS_ERR_READ = 'ee0011aa-7777-4777-8777-777777777777';
 
 export const CHATSEARCH_FIXTURE: Ok[] = [
-  base({ id: CS_RESUMABLE, title: 'Permission ask timeout', tags: ['perm', 'ui'], complete: true }),
-  base({ id: CS_MISSING_PROJECT, title: 'Native runtime parity program', projectName: 'youcoded-dev', originalPath: '/Users/destin/youcoded-dev', lastActive: '2026-07-22T10:00:00.000Z', tags: ['native'], missingProject: true, projectSlug: '', projectPath: '' }),
+  base({ id: CS_RESUMABLE, title: 'Permission ask timeout', tags: ['Follow-Up Needed', 'UI'], complete: true }),
+  base({ id: CS_MISSING_PROJECT, title: 'Native runtime parity program', projectName: 'youcoded-dev', originalPath: '/Users/destin/youcoded-dev', lastActive: '2026-07-22T10:00:00.000Z', tags: ['Native Runtime'], missingProject: true, projectSlug: '', projectPath: '' }),
   base({ id: CS_NOT_SYNCED, title: 'Remote hydration hardening', lastActive: '2026-07-19T10:00:00.000Z', notSyncedYet: true }),
   base({ id: CS_TOMBSTONE, title: 'Old theme experiment', lastActive: '2026-05-02T10:00:00.000Z', tombstone: true }),
   base({ id: CS_NATIVE, title: 'Draft the newsletter', provider: 'native', projectName: 'writing', lastActive: '2026-08-01T10:00:00.000Z' }),
