@@ -104,7 +104,8 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       const files = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === 'string') : [];
       const names = files.map(basename);
       return {
-        label: files.length === 1 ? 'Sent a file' : `Sent ${files.length} files`,
+        // Fix: a non-array `files` (malformed input) used to read "Sent 0 files".
+        label: files.length === 1 ? 'Sent a file' : files.length ? `Sent ${files.length} files` : 'Sent files',
         detail: names.length ? `↳ ${names.join(', ')}` : '',
       };
     }
