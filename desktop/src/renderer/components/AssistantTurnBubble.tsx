@@ -4,6 +4,7 @@ import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/typ
 import { assistantName } from '../utils/assistant-name';
 import MarkdownContent from './MarkdownContent';
 import ToolCard from './ToolCard';
+import { DeliverablesCard, isSentFilesTool } from './DeliverablesCard';
 import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
@@ -178,6 +179,27 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
       )}
     </div>
   );
+}
+
+// Walks ONE bubble's tool groups and returns its SendUserFile calls in
+// invocation order. The card renders inside the bubble — last, after the tool
+// cards — so the hoist is per bubble, unlike Skills (per turn).
+// View-layer reorder only; reducer state untouched.
+function collectBubbleSentFiles(
+  bubble: VisualBubble,
+  toolGroups: Map<string, ToolGroupState>,
+  toolCalls: Map<string, ToolCallState>,
+): ToolCallState[] {
+  const out: ToolCallState[] = [];
+  for (const groupId of bubble.toolGroupIds) {
+    const group = toolGroups.get(groupId);
+    if (!group) continue;
+    for (const id of group.toolIds) {
+      const t = toolCalls.get(id);
+      if (isSentFilesTool(t)) out.push(t);
+    }
+  }
+  return out;
 }
 
 /**
@@ -410,8 +432,11 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
   return (
     <>
       {bubbles.map((bubble, i) => {
+        const sentFiles = collectBubbleSentFiles(bubble, toolGroups, toolCalls);
         const hasTools = bubble.toolGroupIds.length > 0;
-        const hasContent = !!(bubble.text || bubble.plan);
+        // A sent-files card counts as content: a bubble holding only that card
+        // must get the prose padding, not the tight tools-only padding.
+        const hasContent = !!(bubble.text || bubble.plan || sentFiles.length);
         const hasReasoning = !!bubble.reasoning;
         const toolsOnly = hasTools && !hasContent && !hasReasoning;
         const reasoningOnly = hasReasoning && !hasContent && !hasTools;
@@ -446,6 +471,12 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                     />
                   ))}
                 </div>
+              )}
+              {/* Sent-files card: LAST in the bubble, after the tool cards
+                  (Destin 2026-08-25). Its calls were filtered out of the groups
+                  above, so this is the only place they render. */}
+              {sentFiles.length > 0 && (
+                <DeliverablesCard tools={sentFiles} sessionId={sessionId} />
               )}
               {/* Trailing-Skills row: Skills are reordered to the end of the turn's
                   last bubble so they read as a status footer rather than co-mingled
@@ -550,7 +581,9 @@ function ToolGroupInline({
     // standalone row outside any group via AssistantTurnBubble (see
     // collectTurnSkills + the trailing-skills div on the last bubble).
     // View-layer reorder; reducer state untouched.
-    .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill');
+    // SendUserFile is ALSO pulled out: it renders as the DeliverablesCard at the
+    // end of the bubble, after the tool cards (collectBubbleSentFiles).
+    .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill' && !isSentFilesTool(t));
 
   if (tools.length === 0) return null;
 

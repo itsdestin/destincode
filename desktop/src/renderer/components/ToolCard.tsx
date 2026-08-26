@@ -97,6 +97,19 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       return { label, detail };
     }
 
+    case 'SendUserFile': {
+      // Files handed to the user. The chat renders these as the DeliverablesCard,
+      // not a ToolCard; this label covers the gallery / buddy strip fallbacks.
+      const raw = input.files;
+      const files = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === 'string') : [];
+      const names = files.map(basename);
+      return {
+        // Fix: a non-array `files` (malformed input) used to read "Sent 0 files".
+        label: files.length === 1 ? 'Sent a file' : files.length ? `Sent ${files.length} files` : 'Sent files',
+        detail: names.length ? `↳ ${names.join(', ')}` : '',
+      };
+    }
+
     case 'Write': {
       // Fix: a non-string file_path crashed basename().
       const fp = asString(input.file_path);

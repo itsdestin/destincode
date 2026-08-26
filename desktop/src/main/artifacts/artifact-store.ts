@@ -97,7 +97,7 @@ export interface AppendVersionInput {
   kind: 'internal' | 'external';
   absolutePath: string | null;
   sessionId: string;
-  type: 'create' | 'edit' | 'delete' | 'read';
+  type: 'create' | 'edit' | 'delete' | 'read' | 'delivered';
   author: 'agent' | 'user';
   /** The transcript tool_use id behind this version, when the caller has one
    *  (the App.tsx tracker always does). It is the dedupe key: a record that
@@ -264,9 +264,10 @@ export async function appendVersionsDirect(
         existing.versions.push(versionEvent);
         // A 'read' is not a modification — bumping lastModified for a view
         // reordered "recently modified" sorting every time a pill was clicked.
-        // (New records below still get lastModified = now: that's record
-        // creation, and the UI labels read-only records "viewed".)
-        if (input.type !== 'read') existing.lastModified = now;
+        // 'delivered' is the same: handing over an old file must not jump it to
+        // the top. (New records below still get lastModified = now: that's
+        // record creation, and the UI labels read-only records "viewed".)
+        if (input.type !== 'read' && input.type !== 'delivered') existing.lastModified = now;
         existing.status = input.type === 'delete' ? 'deleted' : 'active';
         artifactId = existing.id;
       } else {

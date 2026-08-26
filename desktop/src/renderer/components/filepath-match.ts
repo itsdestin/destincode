@@ -43,6 +43,20 @@ export interface ArtifactifyArgs {
   author: 'user';
 }
 
+/** Suffix-tolerant lookup of a tool's absolute file path in a session's artifact
+ *  list. Moved from ToolBody (2026-08-25) so the SendUserFile card and the
+ *  Write/Edit/Read preview card share ONE matcher. Internal records compare by
+ *  relative path (suffix of the absolute), externals by absolutePath. */
+export function matchSessionArtifact(arts: ArtifactRecord[], absPath: string): ArtifactRecord | undefined {
+  if (!absPath) return undefined;
+  const norm = absPath.replace(/\\/g, '/');
+  return arts.find((a) => {
+    const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
+    const an = aPath.replace(/\\/g, '/');
+    return an === norm || norm.endsWith('/' + an) || an.endsWith('/' + norm);
+  });
+}
+
 /**
  * Build the appendVersion args for "artifactifying" a clicked path that isn't
  * tracked or discovered anywhere (e.g. a file Claude created via a Bash/python
