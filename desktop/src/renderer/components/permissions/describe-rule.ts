@@ -121,7 +121,14 @@ function describeRuleBody(rule: PermissionRule): RuleDescription {
     // user recognises, leaked hash syntax onto this screen, and described the
     // everywhere-grant as if it were scoped to a place. Handled first, since
     // both shapes still start with a charter prefix.
-    const filed = /^(read-only|read-write):(?:(.*):)?file:([^@]+)@[0-9a-f]+$/.exec(rule.pattern);
+    // The hash part is `[^@]+`, not `[0-9a-f]+`: tools/task.ts substitutes the
+    // literal 'unverified' when a definition somehow carries no fingerprint, and
+    // under the tighter regex that subject fell through to the plain-charter
+    // branch below and rendered as a DIRECTORY literally named
+    // "file:docs-writer@unverified" — raw syntax on a screen for non-developers.
+    // Anything after the final '@' is the fingerprint; it is never shown, only
+    // used to end the id, so widening it costs nothing and keeps the sentence.
+    const filed = /^(read-only|read-write):(?:(.*):)?file:([^@]+)@[^@]+$/.exec(rule.pattern);
     if (filed) {
       const [, charter, dir, id] = filed;
       const verb = charter === 'read-write'

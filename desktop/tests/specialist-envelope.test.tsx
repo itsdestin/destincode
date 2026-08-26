@@ -139,7 +139,7 @@ describe('Always-allow on a Task hire', () => {
   it('offers Always allow for a built-in hire, once resolved — never optimistically', async () => {
     mockSpecialistsList(roster);
     renderTaskCard(
-      taskCall({ requestId: 'native-builtin', input: { description: 'x', agent: 'explorer', prompt: 'y' } }),
+      taskCall({ requestId: 'native-builtin', input: { description: 'x', agent: 'explorer', prompt: 'y', work_dir: '.' } }),
       'cwd-builtin',
     );
     // Default-closed: not shown before the lookup resolves (built-ins are in
@@ -158,7 +158,7 @@ describe('Always-allow on a Task hire', () => {
   it('offers Always allow for a helper in the user\'s own folder, and says it covers every project', async () => {
     mockSpecialistsList(roster);
     renderTaskCard(
-      taskCall({ requestId: 'native-personal', input: { description: 'x', agent: 'docs-writer', prompt: 'y' } }),
+      taskCall({ requestId: 'native-personal', input: { description: 'x', agent: 'docs-writer', prompt: 'y', work_dir: '.' } }),
       'cwd-personal',
     );
     await waitFor(() => expect(screen.getByTestId('specialist-envelope').textContent).toContain('Docs Writer'));
@@ -173,7 +173,7 @@ describe('Always-allow on a Task hire', () => {
   it('offers Always allow for a project-shipped helper, but scoped to that project only', async () => {
     mockSpecialistsList(roster);
     renderTaskCard(
-      taskCall({ requestId: 'native-project', input: { description: 'x', agent: 'repo-reviewer', prompt: 'y' } }),
+      taskCall({ requestId: 'native-project', input: { description: 'x', agent: 'repo-reviewer', prompt: 'y', work_dir: '.' } }),
       '/work/proj',
     );
     await waitFor(() => expect(screen.getByTestId('specialist-envelope').textContent).toContain('Repo Reviewer'));
@@ -214,6 +214,69 @@ describe('Always-allow on a Task hire', () => {
     expect(screen.getByText(/in place only/i)).toBeTruthy();
     // The session folder is NOT what this grant covers, so it must not be named.
     expect(screen.queryByText(/in proj only/i)).toBeNull();
+  });
+
+  // Review-2 minor 4: the note names the folder the grant is PINNED to, so it
+  // has to resolve the work_dir the way tools/task.ts does rather than take the
+  // last segment of whatever was typed. './' used to read as a folder called
+  // "." and '..' as one called ".." — names that exist nowhere.
+  it('resolves "./" to the session folder, not a folder named "."', async () => {
+    mockSpecialistsList(roster);
+    renderTaskCard(
+      taskCall({
+        requestId: 'native-project-dot-slash',
+        input: { description: 'x', agent: 'repo-reviewer', prompt: 'y', work_dir: './' },
+      }),
+      '/work/proj',
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /always allow/i })).toBeTruthy());
+    expect(screen.getByText(/in proj only/i)).toBeTruthy();
+    expect(screen.queryByText(/in \. only/)).toBeNull();
+  });
+
+  it('walks ".." up from the session folder instead of naming a folder ".."', async () => {
+    mockSpecialistsList(roster);
+    renderTaskCard(
+      taskCall({
+        requestId: 'native-project-dotdot',
+        input: { description: 'x', agent: 'repo-reviewer', prompt: 'y', work_dir: '..' },
+      }),
+      '/work/proj',
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /always allow/i })).toBeTruthy());
+    expect(screen.getByText(/in work only/i)).toBeTruthy();
+  });
+
+  it('resolves a relative sibling path against the session folder', async () => {
+    mockSpecialistsList(roster);
+    renderTaskCard(
+      taskCall({
+        requestId: 'native-project-sibling',
+        input: { description: 'x', agent: 'repo-reviewer', prompt: 'y', work_dir: '../other' },
+      }),
+      '/work/proj',
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: /always allow/i })).toBeTruthy());
+    expect(screen.getByText(/in other only/i)).toBeTruthy();
+    expect(screen.queryByText(/in proj only/i)).toBeNull();
+  });
+
+  // Review-2 minor 5: a hire with no work_dir has NO permission subject
+  // (task.ts permissionSubject returns undefined), so rememberedRuleFor mints
+  // nothing and execute() refuses the call outright. Offering the button — with
+  // a note stating a width — promises a grant nothing can keep.
+  it('never offers Always allow for a hire with no work_dir', async () => {
+    mockSpecialistsList(roster);
+    renderTaskCard(
+      taskCall({ requestId: 'native-no-workdir', input: { description: 'x', agent: 'docs-writer', prompt: 'y' } }),
+      'cwd-personal',
+    );
+    // The definition DOES resolve — this is not the default-closed case — so
+    // wait for the envelope before asserting the button's absence.
+    await waitFor(() => expect(screen.getByTestId('specialist-envelope').textContent).toContain('Docs Writer'));
+    expect(screen.queryByRole('button', { name: /always allow/i })).toBeNull();
+    // …and no note promising a width either.
+    expect(screen.queryByText(/in every project/i)).toBeNull();
   });
 
   it('never offers Always allow for an unresolved (unknown) hire', async () => {

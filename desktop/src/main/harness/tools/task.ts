@@ -309,8 +309,10 @@ export function createTaskTool(
       // grant un-rememberable (a rule minted from this subject would match it
       // again); what it guarantees is SEPARATION: 'unverified' can never equal
       // a real hash, so a grant approved for a fingerprinted file never covers
-      // an unverifiable one, and the reverse. Naming it in the subject also
-      // makes the odd case visible in Settings instead of silent.
+      // an unverifiable one, and the reverse. Settings renders such a subject in
+      // the same sentence as any other filed grant (describe-rule.ts reads
+      // everything after the final '@' as the hash) — it does not call the case
+      // out, it just does not leak raw syntax.
       const fp = specialist.fingerprint ?? 'unverified';
       return specialist.grantScope === 'user'
         ? `${specialist.charter}:file:${specialist.id}@${fp}`

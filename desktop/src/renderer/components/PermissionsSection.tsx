@@ -17,6 +17,7 @@ import {
   RULE_KIND_LABEL,
   type RuleKind,
 } from './permissions/describe-rule';
+import { CROSS_PROJECT_SLUG } from '../../shared/permission-types';
 import type {
   NativePermissionMode,
   PermissionRule,
@@ -364,6 +365,13 @@ export default function PermissionsSection() {
 
   const names = projects ? folderNames(projects) : new Map<string, string>();
   const withRules = (projects ?? []).filter((project) => project.rules.length > 0);
+  // D2 (2026-08-26): the cross-project bucket is not a folder and it outranks
+  // every folder — the grants in it are in force wherever the user is working,
+  // so it reads first rather than sorted in among places it does not belong to.
+  const ordered = [
+    ...withRules.filter((project) => project.slug === CROSS_PROJECT_SLUG),
+    ...withRules.filter((project) => project.slug !== CROSS_PROJECT_SLUG),
+  ];
 
   return (
     // No opening paragraph. The dialog is titled "Permissions", the section
@@ -492,7 +500,7 @@ export default function PermissionsSection() {
               // effect above). A card that begins directly under its label is
               // the family's normal rhythm, not an absence.
               <div className="space-y-2">
-                {withRules.map((project) => (
+                {ordered.map((project) => (
                   <FolderCard
                     key={project.slug}
                     project={project}
@@ -537,7 +545,11 @@ function FolderCard({
   const [note, setNote] = useState<string | null>(null);
 
   const count = project.rules.length;
-  const label = name ?? project.slug;
+  // D2: the bucket's slug is a storage key ('all projects'), never a folder
+  // name — printing it raw would put a place-shaped label on something that is
+  // not a place. Its title and its one-line description are fixed copy.
+  const everyProject = project.slug === CROSS_PROJECT_SLUG;
+  const label = everyProject ? 'All projects' : (name ?? project.slug);
   const groups = groupByKind(project.rules);
 
   const confirmClear = async () => {
@@ -582,7 +594,14 @@ function FolderCard({
               unique — the path is supporting detail, and letting it wrap would
               make a list of collapsed folders tall again. The never-recorded
               line is a sentence, not data, so it wraps. */}
-          {project.cwd ? (
+          {everyProject ? (
+            // NOT the never-recorded sentence below: nothing is missing here.
+            // This card has no path because it never had one, so it says what it
+            // holds instead of apologising for an absence that isn't one.
+            <p className="text-3xs -mt-0.5 text-fg-muted">
+              Your own specialists you chose to always allow. These apply in every folder.
+            </p>
+          ) : project.cwd ? (
             <p className="text-3xs -mt-0.5 text-fg-muted truncate">{project.cwd}</p>
           ) : (
             // Says the path is missing rather than inventing one — it just does

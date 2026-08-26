@@ -5,6 +5,7 @@ import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost, SUBAGENT_DISPLAY_TYPES, mergeChildEvents } from '../src/main/harness/native-session-host';
 import { PermissionStore } from '../src/main/harness/permission-store';
 import { nativeStoreSlug } from '../src/main/slug-encoding';
+import { CROSS_PROJECT_SLUG } from '../src/shared/permission-types';
 import type { PermissionRule } from '../src/shared/permission-types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
@@ -1139,6 +1140,93 @@ describe('NativeSessionHost', () => {
       const p = revokeHost(new PermissionStore(new NativeHome(root)));
       await expect(p.revokeProject('-never-granted')).resolves.toBe(false);
       await p.destroyAll();
+    });
+
+    // D2 (2026-08-26) — the cross-project bucket. A grant on a specialist the
+    // user defined in a folder THEY own is promised, on the card and in
+    // Settings, to apply "in every project". It only does if the store files it
+    // under CROSS_PROJECT_SLUG and every project's decide unions that in — and
+    // if revoking reaches every live session, since no session's cwd slugs to a
+    // key containing a space. These drive the REAL buildDecide, so the whole
+    // union (disk bucket + this session's memory) is what answers.
+    describe('a grant that applies in every project', () => {
+      // The exact subject shapes tools/task.ts builds. `fp` is the definition
+      // file's content hash: edit the file and the subject changes, which is
+      // what makes the standing grant stop matching.
+      const SUBJECT = 'read-write:file:docs-writer@a1b2c3d4e5f6';
+      const EDITED_SUBJECT = 'read-write:file:docs-writer@ffffffffffff';
+      const userRule: PermissionRule = { tool: 'Task', pattern: SUBJECT, action: 'allow', match: 'exact' };
+      const memoryOnlyStore = () => ({
+        rulesFor: async () => [] as any[],
+        remember: async () => { /* no-op */ },
+        remove: async () => true,
+        removeProject: async () => true,
+      });
+
+      /** Two real, distinct project folders under the temp root. */
+      function twoProjects(): [string, string] {
+        const a = path.join(root, 'alpha'); const b = path.join(root, 'beta');
+        fs.mkdirSync(a, { recursive: true }); fs.mkdirSync(b, { recursive: true });
+        return [a, b];
+      }
+
+      it('approved in one project, in force in another — and an EDITED file still asks', async () => {
+        const store = new PermissionStore(new NativeHome(root));
+        const [cwdA, cwdB] = twoProjects();
+        const p = revokeHost(store);
+        await p.create({ sessionId: 'a', cwd: cwdA, binding });
+
+        // Exactly what the "Always allow" path does (host owns the scoping).
+        (p as any).rememberRule('a', cwdA, userRule);
+        // The persist is fire-and-forget, so wait for it to land before reading
+        // from a session that has no in-memory copy of its own.
+        for (let i = 0; i < 100 && (await store.rulesFor(cwdB)).length === 0; i++) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+
+        const decideB = (p as any).buildDecide('b', cwdB, []);
+        expect((await decideB('Task', SUBJECT)).action).toBe('allow');
+        // The other half of the promise the card makes: edit the file and you
+        // are asked again, in every project, because the subject moved.
+        expect((await decideB('Task', EDITED_SUBJECT)).action).toBe('ask');
+        await p.destroyAll();
+      });
+
+      it('revoking the bucket clears it from a live session whose cwd is a real folder', async () => {
+        // Memory-only store: the ONLY thing that can still grant after the disk
+        // delete is the session's in-memory copy — which a cwd-slug comparison
+        // would never have reached, because no cwd slugs to 'all projects'.
+        const [cwdA] = twoProjects();
+        const p = revokeHost(memoryOnlyStore());
+        await p.create({ sessionId: 'a', cwd: cwdA, binding });
+        (p as any).rememberRule('a', cwdA, userRule);
+
+        const decideA = (p as any).buildDecide('a', cwdA, []);
+        expect((await decideA('Task', SUBJECT)).action).toBe('allow');
+
+        await p.revokeRule(CROSS_PROJECT_SLUG, userRule);
+        expect((await decideA('Task', SUBJECT)).action).toBe('ask');
+        await p.destroyAll();
+      });
+
+      it("clearing the whole bucket leaves that session's own project grants alone", async () => {
+        const [cwdA] = twoProjects();
+        const p = revokeHost(memoryOnlyStore());
+        await p.create({ sessionId: 'a', cwd: cwdA, binding });
+        const projectGrant: PermissionRule = { tool: 'Write', pattern: 'note.txt', action: 'allow', match: 'exact' };
+        (p as any).rememberRule('a', cwdA, userRule);
+        (p as any).rememberRule('a', cwdA, projectGrant);
+
+        await p.revokeProject(CROSS_PROJECT_SLUG);
+
+        const decideA = (p as any).buildDecide('a', cwdA, []);
+        expect((await decideA('Task', SUBJECT)).action).toBe('ask');       // the bucket went
+        // Deleting the session's whole memory here would have taken this with
+        // it — a grant the user never asked to revoke, still listed in Settings
+        // under its own folder.
+        expect((await decideA('Write', 'note.txt')).action).toBe('allow');
+        await p.destroyAll();
+      });
     });
   });
 

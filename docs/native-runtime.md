@@ -827,10 +827,19 @@ file no longer matches; the Task tool reports that and tells the model to hire a
 memoises `roster.resolve` per instance so `permissionSubject` and `execute` see the same definition
 even if the catalog reloads between them, and resolves `work_dir` against the session cwd (threaded
 from `harness-session.ts`), not `process.cwd()`. The card states the width in words under the buttons
-(`alwaysAllowNote`) and still offers no Always-allow while the definition is unknown; Settings →
+(`alwaysAllowNote`) and still offers no Always-allow while the definition is unknown (nor for a hire
+with no `work_dir`, which has no subject to grant); Settings →
 Permissions renders a `file:` subject in words via `describeRule` ("Let the docs-writer specialist
-edit files in every project"). Guards: `task-tool.test.ts` ("D2 — grant width follows grantScope"),
-`permission-engine.test.ts` (D1), `native-session-host.test.ts` (resume gate),
-`describe-rule.test.ts`, `specialist-envelope.test.tsx`.
+edit files in every project"). *Where "every project" actually lives:* `isCrossProjectRule`
+(`shared/permission-types.ts`) routes exactly the `user` subject shape into the reserved
+`CROSS_PROJECT_SLUG` (`'all projects'`) bucket of `permissions.json` — a key no cwd can ever slug to,
+because `nativeStoreSlug` collapses its space — which `PermissionStore.rulesFor` unions into EVERY
+project's remembered rules, `NativeSessionHost.revokeRule`/`revokeProject` clear from every live
+session (project grants untouched), and Settings lists first as "All projects". Guards: `task-tool.test.ts` ("D2 — grant width follows grantScope"),
+`permission-engine.test.ts` (D1), `native-session-host.test.ts` (resume gate + the cross-project
+bucket's revoke behaviour), `permission-store.test.ts` (bucket routing and reads),
+`specialist-catalog.test.ts` / `specialist-definition-files.test.ts` (folder → `grantScope`),
+`permissions-section.test.tsx` ("All projects" card), `describe-rule.test.ts`,
+`specialist-envelope.test.tsx`.
 
 Rule: `.claude/rules/native-specialists.md` → "Specialists (plan 1c)".

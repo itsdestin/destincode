@@ -84,6 +84,38 @@ describe('SpecialistCatalog', () => {
     expect(projectEntry?.path).toBe(path.join(projectAgentsDir(), 'project-helper.md'));
   });
 
+  // D2 (2026-08-26) — THE decision that keeps a repo-shipped helper's grant from
+  // travelling. Only the catalog knows which folder a file came from
+  // ('claude-code' spans two), so it is the only place the literals live. This
+  // test is what makes swapping them at catalog.ts (refreshClaudeUser /
+  // refreshProject) fail instead of passing 393 other tests.
+  it('the FOLDER a file came from decides its grantScope', async () => {
+    fs.mkdirSync(personalDir(), { recursive: true });
+    fs.writeFileSync(path.join(personalDir(), 'mine.md'), personalFile('mine'));
+    fs.writeFileSync(path.join(claudeUserDir, 'user-helper.md'), ccFile('User Helper'));
+    fs.mkdirSync(projectAgentsDir(), { recursive: true });
+    fs.writeFileSync(path.join(projectAgentsDir(), 'project-helper.md'), ccFile('Project Helper'));
+
+    const catalog = new SpecialistCatalog({ home, claudeUserDir });
+    await catalog.ensureFresh(cwd);
+    const roster = catalog.roster(cwd);
+
+    // The two folders the user owns: a grant may travel to every project.
+    expect(roster.resolve('mine')!.grantScope).toBe('user');
+    expect(roster.resolve('user-helper')!.grantScope).toBe('user');
+    // Inside the repo: the untrusted case, pinned to this work dir.
+    expect(roster.resolve('project-helper')!.grantScope).toBe('project');
+    // Built-ins keep the 1b subject shape, so no existing grant is lost.
+    expect(roster.resolve('worker')!.grantScope).toBe('builtin');
+
+    // Every file-defined one carries the content hash that makes an edit re-ask;
+    // a built-in has no file, so it has none.
+    for (const id of ['mine', 'user-helper', 'project-helper']) {
+      expect(roster.resolve(id)!.fingerprint).toMatch(/^[0-9a-f]{12}$/);
+    }
+    expect(roster.resolve('worker')!.fingerprint).toBeUndefined();
+  });
+
   it('a personal file named worker.md is SKIPPED with a collision error — built-in ids are reserved', async () => {
     fs.mkdirSync(personalDir(), { recursive: true });
     fs.writeFileSync(path.join(personalDir(), 'worker.md'), personalFile('worker'));

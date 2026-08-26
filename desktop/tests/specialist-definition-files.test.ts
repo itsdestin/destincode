@@ -138,7 +138,7 @@ describe('loadPersonalDefinition', () => {
 describe('loadClaudeCodeDefinition', () => {
   it('cc: comma-separated tools parse', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: Read, Grep, Bash\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.allowedTools).toEqual(['Read', 'Grep', 'Bash']);
@@ -146,7 +146,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: MultiEdit → Edit warning', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: Read, MultiEdit\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.allowedTools).toEqual(['Read']);
@@ -155,7 +155,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: a single unavailable tool uses singular grammar', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: Read, mcp__foo__bar\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.warnings).toContain(
@@ -165,7 +165,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: mcp__* stripped', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: Read, NotebookEdit, mcp__foo__bar\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.allowedTools).toEqual(['Read']);
@@ -176,7 +176,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: Task/Agent always stripped', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: Read, Task, Agent\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.allowedTools).toEqual(['Read']);
@@ -185,7 +185,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: omitted tools → read-only + warning', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.allowedTools).toEqual(READ_ONLY_DEFAULT_TOOLS);
@@ -196,7 +196,7 @@ describe('loadClaudeCodeDefinition', () => {
   // scalar in a CC-style file must not resolve to a silent empty list.
   it('cc: a blank tools: line falls back to read-only + warning, not a silent empty list', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools:\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.allowedTools).toEqual(READ_ONLY_DEFAULT_TOOLS);
@@ -207,7 +207,7 @@ describe('loadClaudeCodeDefinition', () => {
   // loader's, but only the personal path had a test for it.
   it('cc: empty body → error', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\n---\n   \n';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('no instructions below the frontmatter');
@@ -217,7 +217,7 @@ describe('loadClaudeCodeDefinition', () => {
   // personal loader's, but only the personal format had a regression test.
   it('cc: an explicit tools: [] still yields an empty list, no fallback', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: []\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.allowedTools).toEqual([]);
@@ -226,18 +226,18 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: disallowedTools subtracts after mapping', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ntools: Read, Write, Edit, Bash\ndisallowedTools: Bash\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.allowedTools).toEqual(['Read', 'Write', 'Edit']);
   });
 
   it('cc: model haiku→budget, opus→frontier, sonnet→parent, weird→parent+warning', () => {
-    const haiku = loadClaudeCodeDefinition('/agents/a.md', '---\nname: A\ndescription: Test.\nmodel: haiku\n---\nDo it.');
-    const opus = loadClaudeCodeDefinition('/agents/b.md', '---\nname: B\ndescription: Test.\nmodel: opus\n---\nDo it.');
-    const sonnet = loadClaudeCodeDefinition('/agents/c.md', '---\nname: C\ndescription: Test.\nmodel: sonnet\n---\nDo it.');
-    const inherit = loadClaudeCodeDefinition('/agents/e.md', '---\nname: E\ndescription: Test.\nmodel: inherit\n---\nDo it.');
-    const weird = loadClaudeCodeDefinition('/agents/d.md', '---\nname: D\ndescription: Test.\nmodel: gpt-5\n---\nDo it.');
+    const haiku = loadClaudeCodeDefinition('/agents/a.md', '---\nname: A\ndescription: Test.\nmodel: haiku\n---\nDo it.', 'user');
+    const opus = loadClaudeCodeDefinition('/agents/b.md', '---\nname: B\ndescription: Test.\nmodel: opus\n---\nDo it.', 'user');
+    const sonnet = loadClaudeCodeDefinition('/agents/c.md', '---\nname: C\ndescription: Test.\nmodel: sonnet\n---\nDo it.', 'user');
+    const inherit = loadClaudeCodeDefinition('/agents/e.md', '---\nname: E\ndescription: Test.\nmodel: inherit\n---\nDo it.', 'user');
+    const weird = loadClaudeCodeDefinition('/agents/d.md', '---\nname: D\ndescription: Test.\nmodel: gpt-5\n---\nDo it.', 'user');
     expect(haiku.ok && haiku.value.definition.modelPreference).toBe('budget');
     expect(opus.ok && opus.value.definition.modelPreference).toBe('frontier');
     expect(sonnet.ok && sonnet.value.definition.modelPreference).toBe('parent');
@@ -256,7 +256,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: maxTurns → stepCap', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\nmaxTurns: 12\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.stepCap).toBe(12);
@@ -264,7 +264,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: permissionMode → warning, never a failure', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\npermissionMode: bypassPermissions\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.warnings).toContain(
@@ -274,7 +274,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: hooks/skills → warning, never a failure', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\nhooks:\n  pre:\n    command: foo\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.warnings).toContain('hooks/skills in this file don’t run for helpers');
@@ -282,14 +282,14 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: color/memory ignored silently', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\ncolor: blue\nmemory: something\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.warnings.some((w) => w.toLowerCase().includes('color') || w.toLowerCase().includes('memory'))).toBe(false);
   });
 
   it('cc: missing name → error', () => {
-    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', '---\ndescription: Test.\n---\nDo the thing.');
+    const result = loadClaudeCodeDefinition('/agents/docs-writer.md', '---\ndescription: Test.\n---\nDo the thing.', 'user');
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toBe('Claude Code agent files need a `name:`');
@@ -297,7 +297,7 @@ describe('loadClaudeCodeDefinition', () => {
 
   it('cc: id is the slug of name', () => {
     const raw = '---\nname: Docs Writer\ndescription: Test.\n---\nDo the thing.';
-    const result = loadClaudeCodeDefinition('/agents/some-file-name.md', raw);
+    const result = loadClaudeCodeDefinition('/agents/some-file-name.md', raw, 'user');
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.definition.id).toBe('docs-writer');
@@ -308,7 +308,7 @@ describe('both loaders', () => {
   it('both: prompt is wrapped in the shared prefix/suffix', () => {
     const sharedPrefix = BUILTIN_SPECIALISTS[0].systemPrompt.split('\n\n')[0];
     const personal = loadPersonalDefinition('/x/foo.md', '---\ndescription: Test.\n---\nDo the thing.');
-    const cc = loadClaudeCodeDefinition('/agents/foo.md', '---\nname: Foo\ndescription: Test.\n---\nDo the thing.');
+    const cc = loadClaudeCodeDefinition('/agents/foo.md', '---\nname: Foo\ndescription: Test.\n---\nDo the thing.', 'user');
     expect(personal.ok && personal.value.definition.systemPrompt.startsWith(sharedPrefix)).toBe(true);
     expect(cc.ok && cc.value.definition.systemPrompt.startsWith(sharedPrefix)).toBe(true);
   });
@@ -339,9 +339,53 @@ describe('both loaders', () => {
 
   it('both: source is stamped', () => {
     const personal = loadPersonalDefinition('/x/foo.md', '---\ndescription: Test.\n---\nDo the thing.');
-    const cc = loadClaudeCodeDefinition('/agents/foo.md', '---\nname: Foo\ndescription: Test.\n---\nDo the thing.');
+    const cc = loadClaudeCodeDefinition('/agents/foo.md', '---\nname: Foo\ndescription: Test.\n---\nDo the thing.', 'user');
     expect(personal.ok && personal.value.definition.source).toBe('personal');
     expect(cc.ok && cc.value.definition.source).toBe('claude-code');
+  });
+
+  // D2 (2026-08-26) — grantScope decides how wide an "Always allow" on this
+  // helper may be, and the fingerprint is what makes that grant expire when the
+  // file changes. Both ride INSIDE the permission subject (tools/task.ts), so
+  // neither had a test before this one: `tsconfig.json` includes only `src/**`,
+  // so a two-argument call in this file compiled fine and simply ran with
+  // grantScope: undefined.
+  it('both: the personal folder is always the USER\'s own — grantScope is not a parameter there', () => {
+    const personal = loadPersonalDefinition('/x/foo.md', '---\ndescription: Test.\n---\nDo the thing.');
+    expect(personal.ok && personal.value.definition.grantScope).toBe('user');
+  });
+
+  it('cc: grantScope is whatever the CALLER (the catalog) says the folder was', () => {
+    const raw = '---\nname: Foo\ndescription: Test.\n---\nDo the thing.';
+    const user = loadClaudeCodeDefinition('/home/d/.claude/agents/foo.md', raw, 'user');
+    const project = loadClaudeCodeDefinition('/work/proj/.claude/agents/foo.md', raw, 'project');
+    expect(user.ok && user.value.definition.grantScope).toBe('user');
+    expect(project.ok && project.value.definition.grantScope).toBe('project');
+  });
+
+  it('both: the fingerprint is 12 hex characters, stable for the same bytes and different for different ones', () => {
+    const a = '---\ndescription: Test.\n---\nDo the thing.';
+    const b = '---\ndescription: Test.\n---\nDo the thing, plus Bash.';
+    const first = loadPersonalDefinition('/x/foo.md', a);
+    const again = loadPersonalDefinition('/x/foo.md', a);
+    const edited = loadPersonalDefinition('/x/foo.md', b);
+    expect(first.ok && first.value.definition.fingerprint).toMatch(/^[0-9a-f]{12}$/);
+    // Same bytes, same subject — otherwise a standing grant would expire on
+    // every read and the user would be asked again forever.
+    expect(first.ok && again.ok && first.value.definition.fingerprint)
+      .toBe(again.ok && again.value.definition.fingerprint);
+    // Different bytes, different subject — this IS the "edit the file and you
+    // are asked again" promise the card makes.
+    expect(first.ok && edited.ok && first.value.definition.fingerprint)
+      .not.toBe(edited.ok && edited.value.definition.fingerprint);
+    // The PATH is not part of it: the same bytes hash the same wherever the file
+    // sits, and only grantScope decides how wide the grant is.
+    const named = '---\nname: Foo\ndescription: Test.\n---\nDo the thing.';
+    const ccUser = loadClaudeCodeDefinition('/home/d/.claude/agents/foo.md', named, 'user');
+    const ccProject = loadClaudeCodeDefinition('/work/proj/.claude/agents/foo.md', named, 'project');
+    expect(ccUser.ok && ccUser.value.definition.fingerprint).toMatch(/^[0-9a-f]{12}$/);
+    expect(ccUser.ok && ccUser.value.definition.fingerprint)
+      .toBe(ccProject.ok && ccProject.value.definition.fingerprint);
   });
 });
 

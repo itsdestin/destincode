@@ -68,6 +68,36 @@ export function sameRule(a: PermissionRule, b: PermissionRule): boolean {
     x.match === y.match && x.specialist === y.specialist;
 }
 
+/** The ONE bucket key in permissions.json that is not a project folder.
+ *
+ *  Its key contains a SPACE, and nativeStoreSlug (src/main/slug-encoding.ts)
+ *  ALWAYS collapses ':', '\\', '/' and spaces to '-'. So no real cwd can ever
+ *  slug to this string — the reservation is structural, not a naming
+ *  convention someone could collide with by opening a folder called
+ *  "all projects". */
+export const CROSS_PROJECT_SLUG = 'all projects';
+
+/** True for a remembered rule that must apply in EVERY project, not just the
+ *  one it was approved in.
+ *
+ *  WHY the pattern is the discriminator: for a hire, the Task SUBJECT *is* the
+ *  grant width (tools/task.ts). A `user`-scoped file-defined specialist — one
+ *  living in a folder the user owns (`~/.youcoded/specialists/`,
+ *  `~/.claude/agents/`) — gets `${charter}:file:${id}@${fp}`, with no work dir
+ *  in it at all. That shape, and only that shape, belongs in the cross-project
+ *  bucket. A PROJECT-scoped helper's subject is `${charter}:${workDir}:file:…`,
+ *  where `file:` is NOT immediately after the charter, so it does not match and
+ *  stays filed under its own folder — which is the whole point of the
+ *  distinction (a repo's own helper must never travel).
+ *
+ *  Read the pattern, not a separately-threaded flag: the store, the revoke
+ *  path and Settings all handle rules that were read back off disk, where a
+ *  flag would have to have been persisted and could disagree with the subject
+ *  it sits next to. The subject cannot disagree with itself. */
+export function isCrossProjectRule(rule: Pick<PermissionRule, 'tool' | 'pattern'>): boolean {
+  return rule.tool === 'Task' && /^(read-only|read-write):file:/.test(rule.pattern ?? '');
+}
+
 /** A remembered rule as STORED — the engine's PermissionRule plus provenance
  *  the engine never reads. `grantedAt` is absent on every rule written before
  *  the management UI existed; the UI shows no date rather than inventing one. */

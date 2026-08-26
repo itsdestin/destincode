@@ -25,7 +25,7 @@ import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision, type LateResponseEntry } from './permission-broker';
 import { resolvePreset, type ResolvedPreset } from './preset-registry';
 import { decidePermission } from './permission-engine';
-import { rulesForMode, sameRule, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
+import { rulesForMode, sameRule, isCrossProjectRule, CROSS_PROJECT_SLUG, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
 import { assembleSystemPrompt } from './prompt-assembly';
 import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
@@ -2148,7 +2148,13 @@ export class NativeSessionHost extends EventEmitter {
    *  revokeRule / revokeProject are disk PLUS live memory. IPC handlers must call
    *  these, never the store's — "fixing the inconsistency" reintroduces the bug.
    *
-   *  Matching is by SLUG, never by path equality: nativeStoreSlug collapses ':',
+   *  ONE SLUG IS NOT A FOLDER: CROSS_PROJECT_SLUG ('all projects') is the bucket
+   *  holding grants on the user's OWN file-defined specialists, which apply in
+   *  every project (shared/permission-types.ts → isCrossProjectRule). Revoking
+   *  from it must reach every live session, not the ones whose cwd matches — see
+   *  the branch below.
+   *
+   *  Matching is otherwise by SLUG, never by path equality: nativeStoreSlug collapses ':',
    *  '\', '/' AND spaces all to '-', so two differently-spelled cwds ('/home/d/my
    *  project' and '/home/d/my-project') genuinely share one entry on disk — and
    *  must therefore both be cleared in memory too.
@@ -2165,7 +2171,11 @@ export class NativeSessionHost extends EventEmitter {
   async revokeRule(slug: string, rule: PermissionRule): Promise<boolean> {
     const hit = await this.permissionStore.remove(slug, rule);
     for (const [sessionId, entry] of this.live) {
-      if (nativeStoreSlug(entry.cwd) !== slug) continue;
+      // The cross-project bucket is not a folder, so no session's cwd slugs to
+      // it (its key contains a space, which nativeStoreSlug always collapses) —
+      // a cwd comparison would clear it from NOBODY. It was granted everywhere,
+      // so it has to be revoked everywhere: every live session, whatever its cwd.
+      if (slug !== CROSS_PROJECT_SLUG && nativeStoreSlug(entry.cwd) !== slug) continue;
       const mem = this.rememberedFor.get(sessionId);
       if (!mem) continue;
       this.rememberedFor.set(sessionId, mem.filter((r) => !sameRule(r, rule)));
@@ -2175,10 +2185,25 @@ export class NativeSessionHost extends EventEmitter {
 
   /** Revoke EVERY remembered rule for a project (the "clear all for this folder"
    *  control). Same disk-plus-live-memory contract and same slug matching as
-   *  revokeRule — see its comment for why both halves are mandatory. */
+   *  revokeRule — see its comment for why both halves are mandatory.
+   *
+   *  CROSS_PROJECT_SLUG is the exception, in BOTH directions: it matches every
+   *  live session (no cwd slugs to it), but it may only remove that session's
+   *  cross-project rules — its own project grants are a different card in
+   *  Settings and were not what the user cleared. */
   async revokeProject(slug: string): Promise<boolean> {
     const hit = await this.permissionStore.removeProject(slug);
     for (const [sessionId, entry] of this.live) {
+      // "Clear all" on the cross-project bucket clears the CROSS-PROJECT grants
+      // out of every live session — and nothing else. Dropping each session's
+      // whole memory here would silently take that session's own project grants
+      // with it, which the user never asked to revoke and Settings still shows
+      // under its own folder card.
+      if (slug === CROSS_PROJECT_SLUG) {
+        const mem = this.rememberedFor.get(sessionId);
+        if (mem) this.rememberedFor.set(sessionId, mem.filter((r) => !isCrossProjectRule(r)));
+        continue;
+      }
       // delete, not set([]): an absent entry and an empty one read identically in
       // buildDecide (`?? []`), and deleting keeps the map from accumulating empties.
       if (nativeStoreSlug(entry.cwd) === slug) this.rememberedFor.delete(sessionId);

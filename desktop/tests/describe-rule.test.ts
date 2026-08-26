@@ -103,12 +103,26 @@ describe('describeRule', () => {
         .toEqual({ verb: 'Let a read-only specialist work in', subject: '/work/proj', width: 'exact' });
     });
 
+    // Review-2 minor 3: the hash part was `[0-9a-f]+`, so the one non-hex value
+    // tools/task.ts can actually substitute — the literal 'unverified', used
+    // when a definition somehow carries no fingerprint — fell through to the
+    // plain-charter branch and rendered as a directory literally named
+    // "file:docs-writer@unverified". Nothing after the final '@' is ever shown,
+    // so the sentence is the same one; only the syntax leak is gone.
+    it('reads in words even when the fingerprint is the literal "unverified"', () => {
+      expect(describeRule({ tool: 'Task', pattern: 'read-write:file:docs-writer@unverified', action: 'allow' }))
+        .toEqual({ verb: 'Let the docs-writer specialist edit files in every project', subject: undefined, width: 'exact' });
+      expect(describeRule({ tool: 'Task', pattern: 'read-only:/work/proj:file:repo-reviewer@unverified', action: 'allow' }))
+        .toEqual({ verb: 'Let the repo-reviewer specialist work in', subject: '/work/proj', width: 'exact' });
+    });
+
     // The whole point of the branch: nothing the user reads may carry the
     // content hash or the internal `file:` marker.
     it('never leaks the hash or the file: marker into what the screen shows', () => {
       const patterns = [
         'read-write:file:docs-writer@aaaaaaaaaaaa',
         'read-only:/work/proj:file:repo-reviewer@bbbbbbbbbbbb',
+        'read-write:file:docs-writer@unverified',
       ];
       for (const pattern of patterns) {
         const d = describeRule({ tool: 'Task', pattern, action: 'allow' });

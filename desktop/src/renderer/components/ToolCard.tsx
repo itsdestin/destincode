@@ -358,11 +358,25 @@ export function friendlyToolDisplay(
  *  is worse than one that names none. Falls back to a folder-less phrase
  *  rather than guessing. */
 function grantFolderName(workDir: unknown, sessionCwd?: string): string {
-  const raw = typeof workDir === 'string' && workDir.trim() && workDir.trim() !== '.'
-    ? workDir.trim()
-    : sessionCwd;
-  const name = raw ? basename(raw.replace(/[\\/]+$/, '')) : '';
-  return name || 'this project';
+  const given = typeof workDir === 'string' ? workDir.trim() : '';
+  // Resolve the way tools/task.ts does (work_dir against the session cwd)
+  // instead of taking the last segment of whatever was typed. Without this,
+  // './' read as the folder literally named "." and '..' as one named "..",
+  // so the note said "in . only" — a folder name that exists nowhere.
+  // Hand-rolled because the renderer bundle has no Node `path`: split on both
+  // separators, drop '' and '.', pop on '..'. Only the LAST segment is ever
+  // shown, so this needs to be right about the name, not about the whole path.
+  const raw = given.replace(/\\/g, '/');
+  const absolute = raw.startsWith('/') || /^[A-Za-z]:\//.test(raw);
+  const parts = absolute ? [] : (sessionCwd ?? '').replace(/\\/g, '/').split('/').filter(Boolean);
+  for (const segment of raw.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') { parts.pop(); continue; }
+    parts.push(segment);
+  }
+  // Never invent a name: an empty result (no session cwd, or '..' walked past
+  // the root) falls back to the folder-less phrase, as it did before.
+  return parts[parts.length - 1] || 'this project';
 }
 
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
@@ -1239,7 +1253,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             // we would not know which width it was even asking for.
             suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true
               || (tool.toolName === 'Task' && !!tool.input?.task_id)
-              || (tool.toolName === 'Task' && !tool.input?.task_id && !hireDefinition)}
+              || (tool.toolName === 'Task' && !tool.input?.task_id && !hireDefinition)
+              // A hire with no work_dir has NO permission subject at all
+              // (tools/task.ts permissionSubject returns undefined), so
+              // rememberedRuleFor mints nothing and execute() refuses the call
+              // outright. Offering "Always allow" there — with a note promising
+              // a width — promises a grant that nothing can keep.
+              || (tool.toolName === 'Task' && !tool.input?.task_id && !tool.input?.work_dir)}
             // D2: say what the grant covers. A built-in already behaved this way
             // and its wording is unchanged from what shipped, so no existing
             // card's copy moves. A file-defined helper gets the sentence that

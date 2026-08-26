@@ -38,6 +38,9 @@ export interface SpecialistDefinition {
   //   'builtin' -> stable id, subject unchanged from 1c (no existing grant lost)
   //   'user'    -> grant subject omits the work dir  => applies in EVERY project
   //   'project' -> grant subject keeps the work dir  => that project only
+  // NOT the `GrantScope` type in shared/bash-grant-shapes.ts: that one is a Bash
+  // grant's WIDTH ('exact' | 'wide'). This is WHERE the defining file lives.
+  // Same word, different question — do not merge or rename one into the other.
   grantScope: 'builtin' | 'user' | 'project';
   // D2: short content hash of the definition file's exact bytes, absent for
   // built-ins. It rides INSIDE the permission subject, so editing the file to
