@@ -60,7 +60,11 @@ import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
 // ChatIcon is the app's real "this is a conversation" mark (SessionStrip tabs,
 // ChatView header) — reused below so a search-result row can say "past
 // conversation" with the same glyph the rest of the app uses for that idea.
-import { QuestionIcon, ChatIcon } from '../../../components/Icons';
+// ChevronIcon (Round 2): the SAME disclosure mark ToolCard's own header,
+// SpecialistReportCard, and ToolBody's AgentSection all use — an open/close
+// control here must draw the mark the owner already reads as "expand/collapse"
+// everywhere else, not a new one.
+import { QuestionIcon, ChatIcon, ChevronIcon } from '../../../components/Icons';
 // Chat search results round: the real copy contract, the resolved-conversation
 // shape, and the seven-state fake index — same sources ChatsearchFindCard,
 // ChatsearchShowCard, and the fixtures module itself use, so a candidate here
@@ -2595,6 +2599,85 @@ function ChatsearchResultsC() {
   );
 }
 
+// ── Round 2: B (titled-panel) with the owner's three changes ────────────────
+// He picked B and asked for three things: (1) a real open/close control, (2)
+// drop the leading ChatIcon mark now that the panel header alone says "these
+// are past conversations", (3) move tags off their own line and onto the
+// project/date line. Row anatomy below is B's row with only those three
+// changes — no other layout decision reopened.
+function ChatsearchRowB2({ r }: { r: ResolvedConversation }) {
+  if (r.status !== 'ok') {
+    // Change 2: no leading ChatIcon — the panel header now carries that signal.
+    return (
+      <div className="rounded-md bg-inset/50 px-2.5 py-2">
+        <div className="text-xs font-mono text-fg-muted truncate">{r.query}</div>
+        <div className="text-3xs text-fg-muted">
+          {r.status === 'ambiguous' ? COPY.ambiguousId(r.candidates.length) : COPY.unknownId}
+        </div>
+      </div>
+    );
+  }
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2 flex items-center gap-2">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs truncate">
+          {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+        </div>
+        {/* Change 3: tags join project/date here instead of sitting under the
+            title. Order chosen as tags → project/blocked-reason → date: tags
+            are the chips that used to sit immediately right of the title, so
+            keeping them FIRST on this line is the smallest visual jump from
+            R1; date stays pinned right (ml-auto) exactly as it was. When the
+            row is blocked, the blocked sentence still replaces project+date
+            (ResumeBrowser's house rule — plain words explain why nothing can
+            be resumed), but tags stay visible since they're independent of
+            resume eligibility. */}
+        <div className="flex flex-wrap items-center gap-1 text-3xs text-fg-muted mt-0.5 min-w-0">
+          {r.tags.map((t, i) => <TagChip key={t} tag={chatsearchTagChip(t, i)} />)}
+          {blocked ? (
+            <span className="truncate">{blocked}</span>
+          ) : (
+            <>
+              <span className="truncate">{r.projectName || COPY.noProject}</span>
+              <span className="shrink-0 ml-auto">{formatRelativeTime(r.lastActive)}</span>
+            </>
+          )}
+        </div>
+      </div>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+
+/** Change 1: the panel header IS the open/close control. Shape copied from
+ *  ToolBody's AgentSection / ToolCard's own header (border+rounded shell,
+ *  `px-3 py-1.5` button, ChevronIcon pinned right with `expanded`) rather than
+ *  invented, so this reads as the SAME disclosure the rest of the app already
+ *  uses. `defaultOpen` is the only difference between the two candidates below
+ *  — see their `note`s for the open-vs-closed trade-off. */
+function ChatsearchPanelB2({ defaultOpen }: { defaultOpen: boolean }) {
+  const [expanded, setExpanded] = React.useState(defaultOpen);
+  return (
+    <div className="rounded-lg border border-edge bg-well overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="w-full flex items-center gap-1.5 text-2xs uppercase tracking-wider text-fg-muted px-3 py-2 text-left hover:bg-inset/50 transition-colors"
+      >
+        <span className="flex-1 truncate">{COPY.headerFind(CHATSEARCH_RESULTS.length)}</span>
+        <ChevronIcon className="w-3.5 h-3.5 text-fg-muted shrink-0" expanded={expanded} />
+      </button>
+      {expanded && (
+        <div className="p-2 space-y-1 border-t border-edge">
+          {CHATSEARCH_RESULTS.map((r, i) => <ChatsearchRowB2 key={i} r={r} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -3133,6 +3216,24 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'Every result is its own conversation card',
             note: 'Reuses the exact card the single-conversation card already shows, so a search hit and a conversation you opened on purpose look like the same kind of thing — including its "Past conversation" label, which is the most explicit of the three about what these rows are. Cost: the most vertical space by far; six results pushes everything else in the chat well down the page.',
             render: () => <ChatsearchResultsC />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'R1 · B (titled-panel), with the owner\'s three changes applied: the panel header is now the open/close control, each row drops its leading ChatIcon (the header already says "past conversations"), and tags moved off their own line onto the project/date line. Open: only whether the panel should start open or closed — everything else about B is settled.',
+        candidates: [
+          {
+            id: 'b-open',
+            label: 'Open by default',
+            note: 'Starts expanded, showing all six rows. The card\'s whole purpose is the Preview/Resume buttons, and a closed card hides them until clicked.',
+            render: () => <ChatsearchPanelB2 defaultOpen />,
+          },
+          {
+            id: 'b-closed',
+            label: 'Closed by default',
+            note: 'Starts collapsed to a single header line. Search results are often skimmed once and scrolled past, and a closed card keeps the conversation compact until you ask to see them.',
+            render: () => <ChatsearchPanelB2 defaultOpen={false} />,
           },
         ],
       },
