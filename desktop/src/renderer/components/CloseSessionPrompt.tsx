@@ -319,43 +319,31 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               </>
             )}
           </div>
-          {/* P-15: the footer used to put a bespoke pill toggle BESIDE the two
-              buttons, and at the prompt width (340px) both the toggle label and
-              "Close session" wrapped onto two lines. Now "Don't show again" is
-              its own row above the buttons, built on the shared Toggle
-              primitive (a real switch, so it announces its state), and the
-              buttons sit right-aligned on one line. */}
-          <div className="px-4 pb-4 flex flex-col gap-3">
+          {/* P-15 (review 2026-08-26): the dialog has a ✕ now, so "Cancel" is
+              redundant and gone. "Don't show again" stays bottom-left where it
+              always was, on the shared Toggle (a real switch), and with only one
+              button on the right nothing wraps at the prompt width any more. */}
+          <div className="px-4 pb-4 flex items-center justify-between gap-3">
             {/* Don't show again — persists suppress flag to localStorage so App.tsx
                 skips this prompt on future closes and destroys sessions directly. */}
-            {/* A label with a switch beside it IS a SettingRow item — the guard
-                (setting-row-authority.test.tsx) refuses a hand-rolled one. */}
-            <SettingRow
-              variant="item"
-              title="Don't show again"
-              control={
-                <Toggle checked={dontShowAgain} onChange={setDontShowAgain} aria-label="Don't show again" />
-              }
-            />
-            <div className="flex gap-2 justify-end">
-              <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={onCancel}>
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                className="whitespace-nowrap"
-                onClick={() => {
-                  // Persist suppress preference before confirming so the caller
-                  // can immediately skip the prompt on the next close.
-                  if (dontShowAgain) {
-                    localStorage.setItem(SUPPRESS_KEY, '1');
-                  }
-                  onConfirm(buildResult());
-                }}
-              >
-                Close session
-              </Button>
-            </div>
+            <label className="flex items-center gap-2 text-2xs text-fg-muted whitespace-nowrap cursor-pointer">
+              <Toggle checked={dontShowAgain} onChange={setDontShowAgain} aria-label="Don't show again" />
+              Don't show again
+            </label>
+            <Button
+              size="sm"
+              className="whitespace-nowrap"
+              onClick={() => {
+                // Persist suppress preference before confirming so the caller
+                // can immediately skip the prompt on the next close.
+                if (dontShowAgain) {
+                  localStorage.setItem(SUPPRESS_KEY, '1');
+                }
+                onConfirm(buildResult());
+              }}
+            >
+              Close session
+            </Button>
           </div>
       </Dialog>
       <TagManagerPopup open={manageOpen} onClose={() => setManageOpen(false)} registry={registry} layer={3} />
