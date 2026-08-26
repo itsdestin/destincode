@@ -1658,6 +1658,9 @@ function AppInner() {
   // crash/reload, where main kept every session alive but this is a brand-new React tree).
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
+      // Perf lab: boot-time session fetch has resolved (catches pre-existing
+      // sessions on mount — see comment above this effect).
+      performance.mark('yc:sessions-listed');
       if (!list || list.length === 0) return;
 
       // Fix: this per-session seeding used to run INSIDE the setSessions updater
@@ -3625,6 +3628,9 @@ function AppInnerProfiler({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // Perf lab: React has mounted the app shell (first commit).
+  useEffect(() => { performance.mark('yc:app-mounted'); }, []);
+
   // Auto-show buddy on launch if the user previously enabled it. The effect
   // is called unconditionally (React rules-of-hooks) but no-ops inside
   // buddy windows themselves — only the main window should re-open the

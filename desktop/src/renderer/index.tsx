@@ -2,6 +2,8 @@
 // so module-level isAndroid()/isRemoteMode() reads in imported files see the
 // right value. See platform-bootstrap.ts for why.
 import './platform-bootstrap';
+// Perf lab startup marks (read over CDP by youcoded-dev/scripts/perf-lab). Free.
+performance.mark('yc:index-start');
 import React, { useState, useEffect, useCallback } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles/globals.css';
@@ -258,5 +260,7 @@ if (import.meta.env.DEV && __buddyMode === 'workbench') {
     __mount.render(<WorkbenchFrame />);
   });
 } else {
+  // Perf lab: last renderer-side mark before the root component tree renders.
+  performance.mark('yc:root-render');
   __mount.render(<Root />);
 }
