@@ -16,6 +16,9 @@
 //     stale "active + renamed" write from a device that hasn't pulled the stop
 //     can never un-stop it. (Consequence: no Resume — spec §15.)
 //   - displayName: last-writer-wins by updatedAt (content-tiebroken).
+//   - description: last-writer-wins by its OWN clock (descriptionUpdatedAt),
+//     NOT updatedAt — a shared clock would let a description write on one
+//     device silently revert a rename made on another (§4a addendum).
 // FOLD-ON-READ IS LOAD-BEARING: the transport's remote-wins conflict policy can
 // leave the WRONG winner as the canonical file, so a stopped project could
 // otherwise read active and resurrect. We fold in memory ONLY (no writeback);
@@ -26,6 +29,7 @@ import path from 'path';
 import { mutateFileUnderLock } from '../artifacts/cas-write';
 import { laterOf, isConflictCopyName, extractConflictBase } from '../conversations/store-core';
 import { validateSyncName } from './guards';
+import { PROJECT_DESCRIPTION_MAX } from '../../shared/artifacts/types';
 
 export const PROJECT_REGISTRY_SCHEMA = 1;
 
@@ -38,6 +42,11 @@ export interface ProjectRegistryEntry {
   displayName: string; // synced, user-visible label; defaults to name
   state: ProjectState; // 'stopped' is a tombstone
   updatedAt: number;   // ms epoch — last-writer-wins for displayName
+  // User-written description. Its OWN clock, deliberately NOT updatedAt: the
+  // merge below picks the newer entry WHOLESALE, so a shared clock would make a
+  // description write on one device silently revert a rename made on another.
+  description: string | null;
+  descriptionUpdatedAt: number; // ms epoch — last-writer-wins for description
 }
 
 function registryDir(personalRoot: string): string {
@@ -64,16 +73,44 @@ function parseEntry(json: string): ProjectRegistryEntry | null {
     displayName: typeof raw.displayName === 'string' && raw.displayName ? raw.displayName : raw.name,
     state: raw.state === 'stopped' ? 'stopped' : 'active',
     updatedAt: typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : 0,
+    // Tolerant, NOT schema-gated: a record written by an older build simply has
+    // no description. Bumping the schema instead would make THIS build reject
+    // every record an older build wrote, and vice versa.
+    description: typeof raw.description === 'string' && raw.description.trim()
+      ? raw.description.trim().slice(0, PROJECT_DESCRIPTION_MAX)
+      : null,
+    descriptionUpdatedAt: typeof raw.descriptionUpdatedAt === 'number' && Number.isFinite(raw.descriptionUpdatedAt)
+      ? raw.descriptionUpdatedAt
+      : 0,
   };
 }
 
 // PURE. Field-wise merge (§4a). Commutative + associative (a lattice join over
-// state × (updatedAt, displayName)), so a plain reduce over any copy order
-// converges. UNLIKE the Conversation Store's title rule, every field here is a
-// clean join, so no special fold accumulator is needed.
+// state × (updatedAt, displayName) × (descriptionUpdatedAt, description)), so a
+// plain reduce over any copy order converges. UNLIKE the Conversation Store's
+// title rule, every field here is a clean join, so no special fold accumulator
+// is needed.
+//
+// THE TRAP that makes associativity true rather than merely claimed: `laterOf`
+// breaks an EQUAL-clock tie on `JSON.stringify(x) >= JSON.stringify(y)`, so
+// whatever you hand it becomes the tiebreak key. Each dimension must therefore
+// be passed a wrapper containing ONLY that dimension's own value + clock. Hand
+// it the whole entry and the tiebreak reads displayName/state/updatedAt first —
+// fields chosen by DIFFERENT rules, so the key mutates as the fold accumulates
+// and the answer starts depending on `fs.readdirSync` order (measured: 2,116 of
+// 32,768 triples diverged before this wrapper was added). Guard:
+// sync-spaces-project-registry.test.ts → "converges on the same record for
+// every fold order". Same shape as `notePick` in conversations/store-core.ts.
 export function mergeProjectEntries(a: ProjectRegistryEntry, b: ProjectRegistryEntry): ProjectRegistryEntry {
   const state: ProjectState = a.state === 'stopped' || b.state === 'stopped' ? 'stopped' : 'active';
   const newer = laterOf(a, b, a.updatedAt, b.updatedAt); // displayName LWW, content-tiebroken
+  // SEPARATE join for the description — see the trap note above. Wrapped to
+  // {v, at} so an equal-clock tie can ONLY be broken by the description itself.
+  const descPick = laterOf(
+    { v: a.description, at: a.descriptionUpdatedAt },
+    { v: b.description, at: b.descriptionUpdatedAt },
+    a.descriptionUpdatedAt, b.descriptionUpdatedAt,
+  );
   return {
     schemaVersion: PROJECT_REGISTRY_SCHEMA,
     name: newer.name,
@@ -81,6 +118,8 @@ export function mergeProjectEntries(a: ProjectRegistryEntry, b: ProjectRegistryE
     displayName: newer.displayName,
     state,
     updatedAt: Math.max(a.updatedAt, b.updatedAt),
+    description: descPick.v,
+    descriptionUpdatedAt: Math.max(a.descriptionUpdatedAt, b.descriptionUpdatedAt),
   };
 }
 
@@ -165,6 +204,7 @@ export function ensureProjectEntry(personalRoot: string, input: { name: string; 
     schemaVersion: PROJECT_REGISTRY_SCHEMA,
     name: input.name, repoName: input.repoName,
     displayName: input.name, state: 'active', updatedAt: Date.now(),
+    description: null, descriptionUpdatedAt: 0,
   });
 }
 
@@ -192,15 +232,16 @@ async function mutateCanonical(
   if (!committed) throw new Error(`project-registry: could not write ${name} (lock timeout)`);
 }
 
-/** Rename: set displayName + bump updatedAt, PRESERVE state. Seeds an active
- *  record if somehow absent (repoName supplied by the caller). Skips the write
- *  when displayName is already the target (review #5 — no watcher churn). */
+/** Rename: set displayName + bump updatedAt, PRESERVE state AND description.
+ *  Spreading `cur` is load-bearing: rebuilding from explicit fields is exactly
+ *  how an older build silently drops a field a newer build wrote. */
 export function setProjectDisplayName(
   personalRoot: string, name: string, repoName: string, displayName: string,
 ): Promise<void> {
   return mutateCanonical(personalRoot, name, (cur) => {
     if (cur && cur.displayName === displayName) return null; // no change — skip
     return {
+      ...(cur ?? { description: null, descriptionUpdatedAt: 0 }),
       schemaVersion: PROJECT_REGISTRY_SCHEMA, name, repoName,
       state: cur?.state ?? 'active',
       displayName, updatedAt: Date.now(),
@@ -208,17 +249,38 @@ export function setProjectDisplayName(
   });
 }
 
-/** Stop: set state=stopped + bump updatedAt, PRESERVE displayName. Skips the
- *  write when already stopped (review #5 — no watcher churn). */
+/** Stop: set state=stopped + bump updatedAt, PRESERVE displayName + description. */
 export function setProjectStopped(
   personalRoot: string, name: string, repoName: string,
 ): Promise<void> {
   return mutateCanonical(personalRoot, name, (cur) => {
     if (cur && cur.state === 'stopped') return null; // already a tombstone — skip
     return {
+      ...(cur ?? { description: null, descriptionUpdatedAt: 0 }),
       schemaVersion: PROJECT_REGISTRY_SCHEMA, name, repoName,
       displayName: cur?.displayName ?? name,
       state: 'stopped', updatedAt: Date.now(),
+    };
+  });
+}
+
+/** Describe: set description + bump ONLY descriptionUpdatedAt, PRESERVE
+ *  displayName, its clock, and state. Trims + caps; empty becomes null so
+ *  "cleared" and "never set" are the same state everywhere. */
+export function setProjectDescription(
+  personalRoot: string, name: string, repoName: string, description: string,
+): Promise<void> {
+  const next = description.trim().slice(0, PROJECT_DESCRIPTION_MAX) || null;
+  return mutateCanonical(personalRoot, name, (cur) => {
+    if (cur && (cur.description ?? null) === next) return null; // no change — skip
+    return {
+      ...(cur ?? {}),
+      schemaVersion: PROJECT_REGISTRY_SCHEMA, name, repoName,
+      displayName: cur?.displayName ?? name,
+      state: cur?.state ?? 'active',
+      updatedAt: cur?.updatedAt ?? 0,   // NOT touched — that clock is displayName's
+      description: next,
+      descriptionUpdatedAt: Date.now(),
     };
   });
 }

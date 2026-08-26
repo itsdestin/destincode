@@ -128,6 +128,10 @@ const BOUNDS_EXEMPT: Record<string, string> = {
   Write: 'returns a one-line confirmation; the diff rides structuredPatch',
   // text is `Edited ${file_path}.` — same shape as Write.
   Edit: 'returns a one-line confirmation; the diff rides structuredPatch',
+  // text is `Sent N file(s) to the user.` or a per-path error list — same
+  // one-line-confirmation shape as Write/Edit; it names files, it never
+  // returns their contents.
+  SendUserFile: 'returns a one-line confirmation or a per-path error list; never file or process output',
   // The brief also exempted Skill here ("returns catalog text already bounded
   // by the injection budget"). That description belongs to a DIFFERENT code
   // path: native-session-host.ts's invokeSkill() (the /skill-name slash

@@ -597,6 +597,7 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     ['syncspaces:create-project', 'IPC.SYNC_SPACES_CREATE_PROJECT'],
     ['syncspaces:import-project', 'IPC.SYNC_SPACES_IMPORT_PROJECT'],
     ['syncspaces:rename-project', 'IPC.SYNC_SPACES_RENAME_PROJECT'],
+    ['syncspaces:set-project-description', 'IPC.SYNC_SPACES_SET_PROJECT_DESCRIPTION'],
     ['syncspaces:stop-project', 'IPC.SYNC_SPACES_STOP_PROJECT'],
     // Plan 2b Task 11 — conversation leases + device registry. Full four-surface
     // desktop parity (preload / remote-shim / ipc-handlers constant / remote-server).
@@ -635,6 +636,12 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     'syncspaces:list-devices',
     'syncspaces:rename-device',
     'syncspaces:remove-device',
+    // Synced project description (project-description spec, Task 3). Desktop-only
+    // for now, so it rides the SAME not-implemented-on-mobile stub arm. Without
+    // it the phone's description editor waits ~30s for a response that never
+    // arrives instead of rejecting immediately — delete the Kotlin arm and this
+    // assertion is the only thing that notices.
+    'syncspaces:set-project-description',
   ];
   if (fs.existsSync(kotlinPath)) {
     const kotlin = fs.readFileSync(kotlinPath, 'utf8');
@@ -654,6 +661,47 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     expect(preload).toContain('session:moved');
     expect(shim).toContain('session:moved');
   });
+});
+
+// Local-folder description (project-description spec, Task 4). Saved folders are
+// local-only — no sync surface — so parity is desktop-only, same four surfaces and
+// same "ipc-handlers carries the constant, everyone else carries the literal"
+// pattern as the syncspaces:* block above. NOTE: there was no pre-existing
+// folders:* parity block to add a row to (unlike syncspaces:*) — folders:list/
+// add/remove/rename were never covered here, so this new describe block is
+// scoped to the one channel this task adds rather than backfilling the rest.
+describe('folders:set-description channel parity (desktop surfaces)', () => {
+  const channels: Array<[string, string]> = [
+    ['folders:set-description', 'IPC.FOLDERS_SET_DESCRIPTION'],
+  ];
+  const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
+  const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
+  const handlers = fs.readFileSync(path.join(__dirname, '../src/main/ipc-handlers.ts'), 'utf8');
+  const remoteServer = fs.readFileSync(path.join(__dirname, '../src/main/remote-server.ts'), 'utf8');
+  for (const [ch, constant] of channels) {
+    it(`${ch} present in preload, remote-shim, ipc-handlers, remote-server`, () => {
+      expect(preload).toContain(ch);
+      expect(shim).toContain(ch);
+      expect(handlers).toContain(constant);
+      expect(remoteServer).toContain(ch);
+    });
+  }
+
+  // Android carries a REAL handler for this one (not a stub): folders:rename
+  // already has a native implementation, so its description sibling needs one
+  // too — without the `"folders:set-description" ->` arm the phone silently
+  // no-ops, the card refreshes, and the user's text is gone with no error.
+  // Guarded by existsSync so a moved Kotlin path degrades to a skip rather
+  // than exploding, same as the syncspaces stub block above.
+  const kotlinFolderPath = path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  if (fs.existsSync(kotlinFolderPath)) {
+    const kotlin = fs.readFileSync(kotlinFolderPath, 'utf8');
+    it('folders:set-description has a real Android handler arm in SessionService.kt', () => {
+      expect(kotlin).toContain('"folders:set-description" ->');
+    });
+  } else {
+    it.skip('SessionService.kt not found — skipping Android folders:set-description check', () => {});
+  }
 });
 
 // Connect-GitHub modal (device-flow auth, 2026-07-14). The four REQUEST channels

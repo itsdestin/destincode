@@ -717,10 +717,19 @@ export function ProjectView(props: ProjectViewProps) {
           {/* px-2 on narrow: stacked gutters (this px-4 plus the hero's own p-5)
               ate 18% of a 390px viewport before any content rendered. */}
           <div className="w-full max-w-[1100px] mx-auto px-2 sm:px-4 pt-4 shrink-0 flex flex-col gap-3 sm:gap-4">
+            {/* `description`: the SYNCED description wins when this project
+                syncs; a plain local folder falls back to the saved-folders one
+                carried on the index entry. Same precedence as displayName over
+                the folder name. */}
             {activeProject ? (
               <ProjectHero
                 project={activeProject}
                 displayName={(heroSpace as any)?.displayName ?? null}
+                // WHY no `as any` here (unlike displayName above): SyncStatusData's
+                // spaces now declare `description` (2026-08-05), so this read
+                // type-checks directly — displayName's cast is untouched/out of
+                // scope for this fix.
+                description={heroSpace?.description ?? activeProject.description ?? null}
                 stats={heroStats}
                 repo={heroRepo}
                 onOpenSwitcher={() => setSwitcherOpen(true)}

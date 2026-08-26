@@ -1,6 +1,10 @@
 import http from 'http';
 import zlib from 'zlib';
 import { listProjectsIndex } from './artifacts/projects-index';
+// Shared cap so a local folder's description (set via a remote browser client)
+// can't drift from the synced registry's limit — same constant project-registry.ts
+// and ipc-handlers.ts use.
+import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { staticAssetPolicy } from './remote-static-policy';
 import fs from 'fs';
 import path from 'path';
@@ -32,7 +36,7 @@ import { listPastSessions, loadHistory, SAFE_ID_RE } from './session-browser';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
-import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots } from './sync-spaces/service';
+import { syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject, syncSpacesRenameProject, syncSpacesStopProject, syncSpacesSetProjectDescription, getManagedRoots } from './sync-spaces/service';
 import { readDevices, renameDevice, removeDevice } from './sync-spaces/device-registry';
 import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGithub, createGithubRepo } from './sync-setup-handlers';
 // Connect-GitHub modal (device-flow auth). status/install are stateless direct
@@ -1797,6 +1801,29 @@ export class RemoteServer {
         }
         break;
       }
+      // Sibling of folders:rename above. DELIBERATELY duplicates that case's
+      // inline read/find/write instead of importing saved-folders.ts — this
+      // file already re-implements the folders store rather than sharing it,
+      // and unifying that is out of scope for a description-only change to a
+      // shipped, uncovered code path. Only the length cap is shared (imported
+      // above), so it can't drift from the other setters.
+      case 'folders:set-description': {
+        const foldersPrefPath = path.join(os.homedir(), '.claude', 'youcoded-folders.json');
+        try {
+          let folders: any[] = [];
+          try { folders = JSON.parse(await fs.promises.readFile(foldersPrefPath, 'utf8')); } catch {}
+          if (!Array.isArray(folders)) folders = [];
+          const normalized = path.resolve(payload.folderPath);
+          const entry = folders.find((f: any) => path.resolve(f.path) === normalized);
+          if (!entry) { this.respond(client.ws, type, id, false); break; }
+          entry.description = String(payload.description ?? '').trim().slice(0, PROJECT_DESCRIPTION_MAX) || null;
+          await fs.promises.writeFile(foldersPrefPath, JSON.stringify(folders, null, 2));
+          this.respond(client.ws, type, id, true);
+        } catch {
+          this.respond(client.ws, type, id, false);
+        }
+        break;
+      }
       case 'favorites:get': {
         const favPath = path.join(os.homedir(), '.claude', 'youcoded-favorites.json');
         try {
@@ -2020,6 +2047,12 @@ export class RemoteServer {
       }
       case 'syncspaces:stop-project': {
         this.respond(client.ws, type, id, await syncSpacesStopProject(String(payload?.name ?? '')));
+        break;
+      }
+      // Synced project description (Task 3) — payload-object shape, matching rename-project.
+      case 'syncspaces:set-project-description': {
+        this.respond(client.ws, type, id, await syncSpacesSetProjectDescription(
+          String(payload?.name ?? ''), String(payload?.description ?? '')));
         break;
       }
       // Conversation-lease takeover (Plan 2b Task 9/11). Thin passthroughs to the

@@ -23,6 +23,8 @@ import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-contex
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
 import { createArtifactToolUseTracker } from './state/artifact-tool-use-tracker';
+import { createDeliverableAutoOpen } from './state/deliverable-auto-open';
+import { openFilepath } from './hooks/useOpenFilepath';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand, type DispatcherResult } from './state/slash-command-dispatcher';
@@ -96,6 +98,7 @@ import { BuddyOverlayApp } from './components/buddy/BuddyOverlayApp';
 import { EscCloseProvider, useEscStackEmpty, useDismissTop } from './hooks/use-esc-close';
 // Pure guard for the chat-focused ESC -> PTY forwarding listener below.
 import { shouldForwardEscToPty } from './state/should-forward-esc-to-pty';
+import { NARROW_VIEWPORT_QUERY } from './hooks/use-narrow-viewport';
 
 type ViewMode = 'chat' | 'terminal';
 
@@ -179,6 +182,10 @@ function AppInner() {
   // which needs to resolve cwd by sessionId).
   const sessionsRef = useRef<any[]>([]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  // The focused conversation, readable from mount-once effects (the
+  // deliverable auto-open rule needs it without re-subscribing per switch).
+  const focusedSessionIdRef = useRef<string | null>(null);
+  useEffect(() => { focusedSessionIdRef.current = sessionId; }, [sessionId]);
   // Multi-window detach state (desktop-only; remote-shim stubs these as no-ops).
   // `myWindowId` identifies this renderer's BrowserWindow so the switcher can
   // distinguish local sessions from sessions owned by peer windows. `directory`
@@ -1554,6 +1561,32 @@ function AppInner() {
       artifactTracker.handle(event);
     });
 
+    // Deliverables auto-open (spec 2026-08-25 §3): a SendUserFile result whose
+    // call asked for display:"render" opens the panel to its first file — once
+    // per reply, focused conversation only, desktop only, never for replayed
+    // history, and never over unsaved edits. Same raw event feed as the tracker.
+    const deliverableAutoOpen = createDeliverableAutoOpen({
+      getFocusedSessionId: () => focusedSessionIdRef.current,
+      canAutoOpen: () => getPlatform() === 'electron' && !window.matchMedia?.(NARROW_VIEWPORT_QUERY).matches,
+      guard: guardDirtyEditor,
+      open: (sid, path) => {
+        // drawerOpensImmediately: false — nobody clicked this. Opening the
+        // panel before the lookup resolves just shows an empty/list-only
+        // viewer for however long resolution takes (measured ~4s on a large
+        // workspace); deferred mode reveals the panel already showing the
+        // file, or stays silent entirely on a miss.
+        void openFilepath(
+          { state: artifactStateRef.current, dispatch: dispatchArtifact },
+          sid,
+          path,
+          { drawerOpensImmediately: false }
+        );
+      },
+    });
+    const deliverableAutoOpenHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
+      deliverableAutoOpen.handle(event);
+    });
+
     // NOTE: the artifacts:changed push event is consumed directly by
     // ActiveArtifactView (edit-conflict banner). An earlier App-level
     // subscription here only set a pendingRefresh flag that nothing read —
@@ -1586,6 +1619,8 @@ function AppInner() {
       if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
       if (artifactToolUseHandler) window.claude.off('transcript:event', artifactToolUseHandler);
       artifactTracker.dispose();
+      if (deliverableAutoOpenHandler) window.claude.off('transcript:event', deliverableAutoOpenHandler);
+      deliverableAutoOpen.dispose();
     };
   }, [dispatch]);
 

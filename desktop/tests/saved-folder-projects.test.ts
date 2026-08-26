@@ -58,4 +58,29 @@ describe('buildSavedFolderProjects', () => {
     );
     expect(result.map((p) => p.name)).toEqual(['A', 'B']);
   });
+
+  it('carries a saved folder description onto the project record', () => {
+    const out = buildSavedFolderProjects(
+      [{ path: '/home/d/proj', nickname: 'Proj', description: 'my notes' }],
+      [],
+    );
+    expect(out[0].description).toBe('my notes');
+  });
+
+  // PRECEDENCE, not just overlay-when-absent: the indexed fixture carries its
+  // OWN conflicting description, so this fails if the overlay ever flips to
+  // "keep the indexed value when one exists". The saved-folders record is the
+  // source of truth for a local folder, exactly as nickname already is.
+  it('prefers the saved folder description over an indexed entry', () => {
+    const indexedWithDescription = {
+      id: '/home/d/proj', name: 'proj', path: '/home/d/proj', lastIndexed: '',
+      lastSession: null, contentTypes: [], stats: { artifactCount: 0 },
+      description: 'stale indexed description',
+    } as any;
+    const out = buildSavedFolderProjects(
+      [{ path: '/home/d/proj', nickname: 'Proj', description: 'mine' }],
+      [indexedWithDescription],
+    );
+    expect(out[0].description).toBe('mine');
+  });
 });

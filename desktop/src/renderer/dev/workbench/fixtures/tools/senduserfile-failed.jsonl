@@ -1,0 +1,2 @@
+{"type":"tool_use","id":"toolu_03Send","name":"SendUserFile","input":{"files":["/workspace/docs/missing.md"],"status":"normal"}}
+{"tool_use_id":"toolu_03Send","type":"tool_result","content":"SendUserFile failed: /workspace/docs/missing.md does not exist","is_error":true}

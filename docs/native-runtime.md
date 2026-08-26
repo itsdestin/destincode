@@ -222,8 +222,9 @@ mode this contract removes.
 - Pipeline cap only (no tool `bounds` this call) → `[output truncated: showing X of
   Y chars — <static moreHint>]`, or no advice suffix at all if the tool declared
   none.
-- Tool `bounds` only → `[showing S of T <unit> — <bounds.moreHint>]`, where `T`
-  renders as `at least S` when `total` is `null`.
+- Tool `bounds` only → `[showing S of T <unit> — <bounds.moreHint>]`. When `total`
+  is `null` the line reads `[showing S <unit> (more may exist — exact total unknown) — …]`
+  instead — "S of at least S" was a tautology, not a warning (`truncate.ts`, `composeNotice`).
 - Both → one line naming the pipeline cap first, then the tool's own bound, then
   the tool's `moreHint` once — never two competing notices.
 
@@ -248,7 +249,8 @@ exemption behind.
 
 **What each bounded tool actually withholds**, briefly:
 - **Bash** counts every stdout/stderr byte with an unconditional counter and
-  retains a bounded head (22,000 chars) plus a rolling tail (6,000 chars), so the
+  retains a bounded head (4,000 chars) plus a rolling tail (4,000 chars) — of which
+  the model sees ~2,000 + ~2,000 (50 + 50 lines), the rest spilling to a file — so the
   reported total is the real command output size rather than the length of an
   already-capped buffer (the earlier version reported the capped buffer's own
   length as the "total", which was fabricated).
