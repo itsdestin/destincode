@@ -115,7 +115,9 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
   // Preview cards (SessionRefActions, deep in the chat tree) ask for a past
   // conversation by event. Mounted here — not in SessionDrawer, which is
   // unmounted until it opens — so it hears the very first Preview click.
-  useSessionPreviewListener(sessionId, artifactDispatch);
+  // `visible` gates which of the many mounted ChatViews actually responds —
+  // see the WHY comment inside the hook.
+  useSessionPreviewListener(sessionId, visible, artifactDispatch);
   // Drawer open/closed is per-session — read this session's flag (absent → closed).
   const drawerOpen = artifactState.drawerOpenBySession[sessionId] ?? false;
   const drawerExpanded = artifactState.drawerExpanded;
