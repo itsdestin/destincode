@@ -397,10 +397,6 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
 
   // 1. data-theme attribute (drives existing [data-theme] CSS blocks as fallback)
   root.setAttribute('data-theme', theme.slug);
-  // data-theme-scheme lets CSS pick per-scheme treatments without naming
-  // themes — the user bubble is inset-grey on light schemes (P-13) because a
-  // solid-black bubble was the heaviest object on a light screen.
-  root.setAttribute('data-theme-scheme', theme.dark ? 'dark' : 'light');
 
   // 2. Color tokens as CSS custom properties on :root
   for (const [prop, value] of Object.entries(buildTokenCSS(theme.tokens))) {

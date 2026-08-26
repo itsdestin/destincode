@@ -81,7 +81,7 @@
   --panel: #191919;
   --inset: #222222;
   --well: #1C1C1C;
-  --accent: #8DA6C9;
+  --accent: #D4D4D4;
   --on-accent: #111111;
   --fg: #E0E0E0;
   --fg-2: #B0B0B0;
@@ -129,7 +129,7 @@
   --panel: #161B22;
   --inset: #21262D;
   --well: #0D1117;
-  --accent: #6CA0DC;
+  --accent: #B1BAC4;
   --on-accent: #0D1117;
   --fg: #C9D1D9;
   --fg-2: #A0AAB4;
@@ -1021,18 +1021,6 @@ body[data-mode="buddy-chat"] #theme-bg {
 }
 [data-wallpaper] .bg-accent {
   background-color: color-mix(in srgb, var(--accent) calc(var(--bubble-opacity, 1) * 100%), transparent);
-}
-/* P-13: on light schemes the user's bubble is inset-grey with body text, not a
-   solid accent block (in light/creme the accent is near-black, so the user's own
-   messages were the darkest thing on screen). Dark schemes keep the accent
-   bubble. Same opacity expression as [data-wallpaper] .bg-inset so wallpaper
-   packs stay translucent; the timestamp follows fg instead of on-accent. */
-[data-theme-scheme='light'] .user-bubble {
-  background-color: color-mix(in srgb, var(--inset) calc(var(--bubble-opacity, 1) * 100%), transparent);
-  color: var(--fg);
-}
-[data-theme-scheme='light'] .user-bubble .bubble-timestamp {
-  color: color-mix(in srgb, var(--fg) 50%, transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
