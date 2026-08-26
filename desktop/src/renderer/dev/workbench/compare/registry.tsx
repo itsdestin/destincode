@@ -58,6 +58,16 @@ import type { CompareSurface } from './types';
 import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
 // The ask card's status glyph — same mark ToolCard's awaiting-approval header draws.
 import { QuestionIcon } from '../../../components/Icons';
+// Sent-files card round (2026-08-25): the REAL tile and the REAL tool card, so
+// the only thing under comparison is the arrangement of the Files card inside
+// the bubble. Fixture records give the tiles real previews — the compare route
+// mounts without ArtifactProvider, so the tiles can't look them up.
+import ToolCard from '../../../components/ToolCard';
+import { ChevronIcon } from '../../../components/Icons';
+import { SentFileTile } from '../../../components/SentFilesCard';
+import { sessionArtifacts } from '../fixtures/artifacts';
+import type { ToolCallState } from '../../../../shared/types';
+import type { ArtifactRecord } from '../../../../shared/artifacts/types';
 
 const WORK_TAG = { label: 'work', color: 'tag-blue' } as const;
 const NOTE = 'blocked on the gh dead-end';
@@ -2339,7 +2349,173 @@ function GrantWidthPane({ variant, copy }: {
   );
 }
 
+
+// ── Sent-files card (SendUserFile) ───────────────────────────────────────────
+// Round 1 sat loose tiles between the text and the tool cards (branch
+// feat/send-user-file-card, first pass). Destin (2026-08-25): collapse them into
+// ONE "Files" card that stays visually distinct from a grouped tool card, and
+// put it LAST in the bubble, after the tool calls. These candidates all do
+// that; they differ in how the card announces itself and whether it collapses.
+
+const SENT_PROJECT = '/home/destin/youcoded-dev/youcoded';
+const SENT_FILES: { path: string; id: string }[] = [
+  { path: '/home/destin/youcoded-dev/youcoded/docs/reports/scroll-perf-report.md', id: 'a-sent-report' },
+  { path: '/home/destin/youcoded-dev/youcoded/docs/mockups/settings-mockup.html', id: 'a-sent-mockup' },
+  { path: '/tmp/youcoded-scratch/latency-chart.png', id: 'a-sent-chart' },
+  { path: '/home/destin/Downloads/scroll-perf-report.pdf', id: 'a-sent-pdf' },
+];
+const SENT_CAPTION = 'Report + mockup for review; the chart is the raw data behind §2.';
+
+function sentRecord(id: string): ArtifactRecord | undefined {
+  return sessionArtifacts('wb-1').find((a) => a.id === id);
+}
+
+// Two finished tool calls so the Files card is judged against the thing it
+// must stay distinct from — a collapsed tool group directly above it.
+const SENT_TOOLS: ToolCallState[] = [
+  { toolUseId: 'cmp-bash', toolName: 'Bash', status: 'complete',
+    input: { command: 'node scripts/perf-sample.mjs --seconds 20' }, response: 'master: 38% · throttled: 6%' },
+  { toolUseId: 'cmp-write', toolName: 'Write', status: 'complete',
+    input: { file_path: '/home/destin/youcoded-dev/youcoded/docs/reports/scroll-perf-report.md', content: '# Scroll performance report\n' }, response: 'File created successfully.' },
+];
+
+/** The bubble every candidate sits in — the same classes AssistantTurnBubble
+ *  uses for a text + tools bubble. Text, then the tool group, then `files`. */
+function SentBubble({ files }: { files: React.ReactNode }) {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 pt-4 pb-3">
+        <p className="mb-1">Done. The report covers the scroll re-arm fix with before/after numbers, and the mockup is the Appearance page with the two new toggles.</p>
+        {/* Collapsed tool group, exactly as CollapsedToolGroup draws it (that
+            component isn't exported; the wrapper is three lines of classes). */}
+        <div className="my-0.5 border border-edge rounded-lg overflow-hidden">
+          <div className="px-2 py-1.5 space-y-0.5">
+            {SENT_TOOLS.map((t) => <ToolCard key={t.toolUseId} tool={t} inGroup />)}
+          </div>
+        </div>
+        {files}
+        <div className="bubble-timestamp text-4xs text-fg-muted/60 text-right mt-1 -mb-0.5 select-none leading-none">6:12 PM</div>
+      </div>
+    </div>
+  );
+}
+
+function SentGrid({ narrow, tileBg }: { narrow: boolean; tileBg: string }) {
+  return (
+    <div className={`grid gap-2 ${narrow ? 'grid-cols-1' : 'grid-cols-2'}`}>
+      {SENT_FILES.map((f) => (
+        <SentFileTile key={f.id} path={f.path} sessionId="wb-1" status="complete" narrow={narrow}
+          record={sentRecord(f.id)} projectPath={SENT_PROJECT} tileBg={tileBg} />
+      ))}
+    </div>
+  );
+}
+
+// The document glyph FilepathToken draws, at header size.
+function FilesGlyph({ className = 'w-3.5 h-3.5' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+    </svg>
+  );
+}
+
+/** A — always open. Lifted bg-well card with a plain header ("Files · 4") and
+ *  no chevron: it can't collapse, so it never looks like a tool group. */
+function SentCardA() {
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden">
+      <div className="flex items-center gap-2 px-3 pt-2 pb-1.5">
+        <FilesGlyph className="w-3.5 h-3.5 text-fg-dim" />
+        <span className="text-xs font-semibold text-fg-2">Files</span>
+        <span className="text-2xs font-mono text-fg-muted">{SENT_FILES.length}</span>
+        <span className="flex-1" />
+        <span className="text-2xs text-fg-muted truncate">{SENT_CAPTION}</span>
+      </div>
+      <div className="px-2 pb-2">
+        <SentGrid narrow={false} tileBg="bg-inset" />
+      </div>
+    </div>
+  );
+}
+
+/** B — collapsible, open by default. Accent left edge marks it as the
+ *  deliverable; collapsed, the header keeps a row of mini previews so the
+ *  files stay visible and clickable without the grid. */
+function SentCardB() {
+  const [open, setOpen] = React.useState(true);
+  return (
+    <div className="mt-2 rounded-lg border border-edge border-l-2 border-l-accent overflow-hidden">
+      <button type="button" onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-well/60 transition-colors">
+        <FilesGlyph className="w-3.5 h-3.5 text-accent" />
+        <span className="text-xs font-semibold text-fg-2">{SENT_FILES.length} files</span>
+        {!open && (
+          <span className="flex items-center gap-1 ml-1">
+            {SENT_FILES.map((f) => (
+              <span key={f.id} className="inline-flex items-center justify-center w-6 h-6 rounded border border-edge bg-well text-4xs font-mono text-fg-muted overflow-hidden">
+                {f.path.split('.').pop()?.toUpperCase()}
+              </span>
+            ))}
+          </span>
+        )}
+        <span className="flex-1 min-w-0 text-2xs text-fg-muted truncate">{open ? SENT_CAPTION : ''}</span>
+        <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={open} />
+      </button>
+      {open && (
+        <div className="px-2 pb-2">
+          <SentGrid narrow={false} tileBg="bg-well" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** C — filmstrip. One horizontal row of fixed-width previews that scrolls
+ *  sideways, under a small "Files" label. Distinct by SHAPE, not by chrome —
+ *  nothing else in the bubble is a strip. Costs less height than a grid. */
+function SentCardC() {
+  return (
+    <div className="mt-2">
+      <div className="flex items-center gap-2 px-0.5 mb-1.5">
+        <FilesGlyph className="w-3.5 h-3.5 text-fg-dim" />
+        <span className="text-xs font-semibold text-fg-2">Files</span>
+        <span className="text-2xs text-fg-muted truncate">{SENT_CAPTION}</span>
+      </div>
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
+        {SENT_FILES.map((f) => (
+          <div key={f.id} className="w-44 shrink-0">
+            <SentFileTile path={f.path} sessionId="wb-1" status="complete" narrow={false}
+              record={sentRecord(f.id)} projectPath={SENT_PROJECT} tileBg="bg-well" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const SENT_FILES_SURFACE: CompareSurface = {
+  id: 'sent-files-card',
+  label: 'Sent files — Files card',
+  question: 'One "Files" card at the END of the bubble, after the tool calls: how does it stay distinct from a tool group?',
+  frame: 'canvas',
+  paneWidth: 760,
+  rounds: [
+    {
+      n: 1,
+      basis: 'First pass (loose tiles between text and tools) → Destin: one card, distinct from tool groups, last in the bubble',
+      candidates: [
+        { id: 'A-open', label: 'A · Always open', note: 'Lifted card, "Files · 4" header, no chevron — cannot collapse, so it never reads as a tool group.', render: () => <SentBubble files={<SentCardA />} /> },
+        { id: 'B-collapsible', label: 'B · Collapsible', note: 'Accent left edge; open by default; collapsed header keeps mini file chips so the files stay one click away.', render: () => <SentBubble files={<SentCardB />} /> },
+        { id: 'C-filmstrip', label: 'C · Filmstrip', note: 'One sideways-scrolling row of previews under a "Files" label — distinct by shape, half the height of a grid.', render: () => <SentBubble files={<SentCardC />} /> },
+      ],
+    },
+  ],
+};
+
 const ALL_SURFACES: CompareSurface[] = [
+  SENT_FILES_SURFACE,
   {
     id: 'close-prompt-body',
     label: 'Close session — body',
@@ -2854,7 +3030,7 @@ const ALL_SURFACES: CompareSurface[] = [
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'bash-grant-width';
+const ACTIVE_FIRST = 'sent-files-card';
 
 export const COMPARE_SURFACES: CompareSurface[] = [
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),

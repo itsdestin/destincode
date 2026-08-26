@@ -85,28 +85,38 @@ function standInRecord(absPath: string): ArtifactRecord {
   };
 }
 
-interface TileProps {
+export interface SentFileTileProps {
   path: string;
   sessionId: string;
   status: ToolCallState['status'];
   narrow: boolean;
+  /** Workbench compare view only: hand the tile its record + project root
+   *  directly. The compare route mounts without ArtifactProvider, so the
+   *  session-artifact lookup below has nothing to match against. Never set
+   *  from production code — the lookup is the real path. */
+  record?: ArtifactRecord;
+  projectPath?: string;
+  /** Tile background utility. Default bg-well lifts a tile off the bubble;
+   *  a tile nested inside a bg-well card passes bg-inset to alternate. */
+  tileBg?: string;
 }
 
-function SentFileTile({ path, sessionId, status, narrow }: TileProps) {
+export function SentFileTile({ path, sessionId, status, narrow, record: recordOverride, projectPath: projectPathOverride, tileBg = 'bg-well' }: SentFileTileProps) {
   const artifactCtx = useArtifactOptional();
   const open = useOpenFilepath(sessionId);
   const cwd = artifactCtx?.state.sessionCwd?.[sessionId];
   const sessionArts = artifactCtx?.state.sessionArtifacts?.[sessionId];
   const abs = resolveAbsolute(path, cwd);
 
-  const tracked = useMemo(
+  const matched = useMemo(
     () => matchSessionArtifact(sessionArts ?? [], abs),
     [sessionArts, abs],
   );
+  const tracked = recordOverride ?? matched;
   const record = tracked ?? standInRecord(abs);
   // Internal records resolve relative to the session's project; externals
   // carry their own absolutePath and ignore projectPath.
-  const projectPath = record.kind === 'internal' ? (cwd ?? '') : '';
+  const projectPath = projectPathOverride ?? (record.kind === 'internal' ? (cwd ?? '') : '');
 
   const labelPath = tracked?.kind === 'internal' ? tracked.path : path;
   const name = basename(labelPath);
@@ -124,7 +134,7 @@ function SentFileTile({ path, sessionId, status, narrow }: TileProps) {
       // in-app artifact viewer.
       data-file-path={abs || undefined}
       data-testid="sent-file-tile"
-      className={`group flex flex-col w-full min-w-0 text-left rounded-lg bg-well border border-edge hover:border-fg-muted overflow-hidden transition-colors ${failed ? 'opacity-70' : ''}`}
+      className={`group flex flex-col w-full min-w-0 text-left rounded-lg ${tileBg} border border-edge hover:border-fg-muted overflow-hidden transition-colors ${failed ? 'opacity-70' : ''}`}
     >
       <div className={`relative w-full ${narrow ? 'h-16' : 'h-28'} border-b border-edge`}>
         <ArtifactThumbnail
