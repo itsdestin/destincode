@@ -58,6 +58,14 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // clients get their timelines from the transcript watcher instead. The
   // contract test checks both files for exactly this reason.
   'on.chatHydrate',
+  // Task 9 (status-bar relevance review): the CC scenario needs the 5h/7d
+  // usage chips and the statusline-sourced cost/token/line-change numbers,
+  // both of which ride status:data — previously unwired here, so they sat at
+  // their empty defaults forever regardless of scenario. Fast mode's chip
+  // needs `modes.get` for the same reason. Both are real preload channels
+  // (main/preload.ts), not unbuilt features, so they belong here and not in
+  // mock-only.ts.
+  'on.statusData', 'modes.get', 'modes.set',
 ];
 
 const warned = new Set<string>();
@@ -373,8 +381,51 @@ function mergeMeta(
   return { ...s.meta, [sessionId]: patch(current) };
 }
 
+// Task 9 (status-bar relevance review): 'statusbar-cc' is the ONLY scenario
+// that needs a status:data fixture — it is the CC session, and CC's chips
+// (5h/7d usage, cost/tokens/lines) read the statusline mock below instead of
+// SessionTotals. Every other scenario (the 4 native ones, and everything that
+// existed before this task) gets `null`, so `on.statusData`'s cb is simply
+// never called for them — the exact same "nothing ever arrives" behavior the
+// workbench had before this channel was wired at all. That keeps this change
+// from touching any sheet outside the status-bar plan.
+//
+// Numbers here are the brief's linesAdded/linesRemoved/costUsd verbatim; the
+// rest (tokens, cache, duration, usage %) are plausible fixture data made up
+// for this dev-only mock, internally consistent (cacheReadTokens < inputTokens).
+function statusBarFixtureFor(scenario: string): { usage: unknown; sessionStatsMap: Record<string, unknown> } | null {
+  if (scenario !== 'statusbar-cc') return null;
+  return {
+    usage: {
+      five_hour: { utilization: 42, resets_at: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+      seven_day: { utilization: 61, resets_at: new Date(Date.now() + 4 * 86_400_000).toISOString() },
+    },
+    sessionStatsMap: {
+      'wb-1': {
+        costUsd: 0.42,
+        inputTokens: 48_000,
+        outputTokens: 6_200,
+        cacheReadTokens: 39_000,
+        cacheCreationTokens: 1_200,
+        contextTokens: 61_000,
+        duration: 2_280,
+        apiDuration: 340,
+        linesAdded: 120,
+        linesRemoved: 34,
+      },
+    },
+  };
+}
+
 /** Hand-written channel implementations, backed by the store. */
 function handWritten(store: MockStore): Record<string, Record<string, unknown>> {
+  // `location` is guarded the same way latencyFromQuery() above guards it —
+  // this module has no node-test importer today, but the pattern is load-
+  // bearing everywhere else in the workbench and cheap to keep consistent.
+  const activeScenario = typeof location === 'undefined'
+    ? 'default'
+    : new URLSearchParams(location.search).get('scenario') ?? 'default';
+
   // Subscriber sets, one per real event the renderer listens for. These are the
   // channels the UI actually re-fetches on — see the WHY on the emits below.
   const subs = {
@@ -783,6 +834,39 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       cb(buildHydratePayload());
       return () => {};
     },
+
+    // Fires once, synchronously, same reasoning as chatHydrate above — App's
+    // subscribe happens in an effect, so this lands in the same commit instead
+    // of a flash of "no usage data yet". Only ever has something to say for
+    // 'statusbar-cc' (see statusBarFixtureFor); every other scenario's cb is
+    // simply never invoked, matching this channel's unwired-before-Task-9
+    // behavior exactly.
+    statusData: (cb) => {
+      const fixture = statusBarFixtureFor(activeScenario);
+      if (fixture) {
+        cb({
+          usage: fixture.usage,
+          announcement: null,
+          updateStatus: null,
+          syncWarnings: [],
+          contextMap: {},
+          gitBranchMap: {},
+          sessionStatsMap: fixture.sessionStatsMap,
+        });
+      }
+      return () => {};
+    },
+  };
+
+  // Fast mode + effort — /fast and /effort UI, and (Task 9) the StatusBar Fast
+  // chip, which only renders when `fast` is true AND the session is Claude
+  // Code. True only for 'statusbar-cc'; every other scenario gets `fast: false,
+  // effort: 'auto'`, which is exactly what App.tsx read before this namespace
+  // existed (the untyped `(window.claude as any).modes` access resolved to the
+  // catch-all's `[]`, so `m?.fast` was always undefined -> false).
+  const modes = {
+    get: async () => ({ fast: activeScenario === 'statusbar-cc', effort: 'auto' }),
+    set: async () => ({ ok: true }),
   };
 
   // `theme` is absent from useIpc.ts entirely, so NONE of this is
@@ -843,6 +927,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance, skills, marketplace,
+    terminal, artifacts, syncSpaces, project, account, appearance, skills, marketplace, modes,
   } as unknown as Record<string, Record<string, unknown>>;
 }

@@ -5,6 +5,7 @@
 import { createStore } from './mock-store';
 import { createMockShim } from './mock-shim';
 import { SCENARIO_IDS, type ScenarioId } from './scenarios';
+import type { WidgetId } from '../../state/status-widgets';
 
 /** Scenario comes from ?scenario= so a reload lands on the same seed. An
  *  unrecognised value falls back to 'default' rather than throwing — a typo in
@@ -15,6 +16,41 @@ function currentScenario(): ScenarioId {
   return (SCENARIO_IDS as readonly string[]).includes(raw ?? '')
     ? (raw as ScenarioId)
     : 'default';
+}
+
+// Task 9 (status-bar relevance review): the five opt-in-widget chips
+// (StatusBar.tsx's WIDGET_CATEGORIES, `defaultVisible: false`) are exactly
+// what these scenarios exist to show off, so a scenario that left them off
+// would render an almost-empty bar and prove nothing. This is every WidgetId
+// StatusBar.tsx defines — the defaultVisible:true ones so the bar looks like
+// a normally-configured one, plus every opt-in one (In/Out/Cached/Reuse,
+// Session Cost, Code Changes, Session Duration, Active Ratio, Output Speed).
+// Session Duration and Active Ratio are included on the NATIVE scenarios too
+// on purpose: their own render gate (StatusBar.tsx — `ss?.duration != null`)
+// hides them for native regardless of this setting, since a native session
+// carries no `sessionStats`. Leaving them ON here is what makes that contrast
+// (CC has the chip; native's Customize menu explains why it can't) visible
+// side by side instead of looking like an oversight in one scenario's setup.
+//
+// The key is StatusBar.tsx's own STORAGE_KEY (not exported — hardcoded here,
+// same as the existing localStorage-seeding tests do: tests/statusbar-widget-
+// menu.test.tsx, tests/statusbar-session-relevance.test.tsx).
+const STATUSBAR_WIDGETS_KEY = 'youcoded-statusbar-widgets';
+const STATUSBAR_REVIEW_WIDGET_IDS: readonly WidgetId[] = [
+  'usage-5h', 'usage-7d', 'context', 'git-branch', 'sync-warnings', 'theme', 'version',
+  'session-cost', 'tokens-in', 'tokens-out', 'cache-stats', 'code-changes', 'session-time',
+  'cache-hit-rate', 'active-ratio', 'output-speed', 'announcement', 'open-tasks',
+];
+
+/** Overwrites the widget-visibility localStorage key on every load of a
+ *  `statusbar-*` scenario, so the sheet is reproducible from a bookmarked URL
+ *  rather than depending on whatever a previous session left toggled. Every
+ *  other scenario is untouched — this never runs for them. */
+function presetStatusBarWidgets(scenario: ScenarioId): void {
+  if (!scenario.startsWith('statusbar-')) return;
+  try {
+    localStorage.setItem(STATUSBAR_WIDGETS_KEY, JSON.stringify(STATUSBAR_REVIEW_WIDGET_IDS));
+  } catch { /* private mode — StatusBar's own loadVisibility() falls back the same way */ }
 }
 
 /** Assigns the mock bridge. No-op when a real bridge is already present —
@@ -50,7 +86,9 @@ function declarePlatform(): void {
 export function installMock(): void {
   if ((window as any).claude) return;
   declarePlatform();
-  const store = createStore(currentScenario());
+  const scenario = currentScenario();
+  presetStatusBarWidgets(scenario);
+  const store = createStore(scenario);
   // Read by the toolbar (Task 7) so it can reseed and inspect without the
   // app's provider tree having to thread the store through.
   (window as any).__workbenchStore = store;

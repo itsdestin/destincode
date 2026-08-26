@@ -15,6 +15,8 @@
 import { chatReducer } from '../../state/chat-reducer';
 import { serializeChatState, type ChatState, type SerializedChatState } from '../../state/chat-types';
 import { loadFixture } from './fixture-loader';
+import type { SessionTotals } from '../../state/session-totals';
+import type { ScenarioId } from './scenarios';
 
 // @ts-ignore TS1343 — Vite rewrites import.meta.glob statically at build time.
 const convos = import.meta.glob('./fixtures/conversations/*.jsonl', {
@@ -40,11 +42,51 @@ function stalledRequested(): boolean {
   return new URLSearchParams(location.search).get('stalled') === '1';
 }
 
+/** `?scenario=` reader, mirroring `stalledRequested()` above — same node-test
+ *  guard, since this module is imported by workbench-fixture-actions.test.ts
+ *  where `location` does not exist. */
+function currentScenario(): ScenarioId | null {
+  if (typeof location === 'undefined') return null;
+  return new URLSearchParams(location.search).get('scenario') as ScenarioId | null;
+}
+
+// Task 9 (status-bar relevance review): the four native scenarios all target
+// wb-2 — same session the 'native' fixture already hydrates — so the ONLY
+// thing that has to change per scenario is its totals. Values are exactly the
+// brief's table (task-9-brief.md Step 1), not invented here. Tokens repeat
+// across statusbar-local/-metered/-unpriced (the "same tokens" note in the
+// brief); statusbar-delegated additionally folds in 3 specialist runs.
+const NATIVE_TOKENS = {
+  inputTokens: 84_000, outputTokens: 3_200, cacheReadTokens: 61_000, cacheCreationTokens: 900,
+} as const;
+
+const STATUSBAR_TOTALS_OVERRIDE: Partial<Record<ScenarioId, { sessionId: string; totals: SessionTotals }>> = {
+  'statusbar-local': {
+    sessionId: 'wb-2',
+    totals: { ...NATIVE_TOKENS, costUsd: 0, anyPriced: false, anyUnpriced: true, linesAdded: 210, linesRemoved: 45, specialistRuns: 0 },
+  },
+  'statusbar-metered': {
+    sessionId: 'wb-2',
+    totals: { ...NATIVE_TOKENS, costUsd: 1.37, anyPriced: true, anyUnpriced: false, linesAdded: 210, linesRemoved: 45, specialistRuns: 0 },
+  },
+  'statusbar-unpriced': {
+    sessionId: 'wb-2',
+    totals: { ...NATIVE_TOKENS, costUsd: 0, anyPriced: false, anyUnpriced: true, linesAdded: 210, linesRemoved: 45, specialistRuns: 0 },
+  },
+  'statusbar-delegated': {
+    sessionId: 'wb-2',
+    totals: { ...NATIVE_TOKENS, costUsd: 0.61, anyPriced: true, anyUnpriced: true, linesAdded: 480, linesRemoved: 96, specialistRuns: 3 },
+  },
+};
+
 let cached: SerializedChatState | null = null;
 
 /** The hydrate payload for every mapped conversation fixture, merged into one
  *  state the way a real multi-session snapshot arrives. Cached because the
- *  fixtures are static and the reducer replay is pure. */
+ *  fixtures are static and the reducer replay is pure — `cached` lives for the
+ *  lifetime of one page load, and a scenario switch is always a full
+ *  navigation (WorkbenchToolbar's `reloadWith`), so it is never stale across
+ *  scenarios despite being read once here. */
 export function buildHydratePayload(): SerializedChatState {
   if (cached) return cached;
 
@@ -65,6 +107,15 @@ export function buildHydratePayload(): SerializedChatState {
 
     state = chatReducer(state, { type: 'SESSION_INIT', sessionId });
     for (const action of actions) state = chatReducer(state, action);
+  }
+
+  const override = STATUSBAR_TOTALS_OVERRIDE[currentScenario() ?? 'default'];
+  if (override) {
+    const existing = state.get(override.sessionId);
+    // Guard rather than throw: a missing session here means SESSION_FOR above
+    // stopped mapping wb-2, which would already have warned loudly — this just
+    // avoids compounding that with a second failure.
+    if (existing) state.set(override.sessionId, { ...existing, totals: override.totals });
   }
 
   cached = serializeChatState(state);
