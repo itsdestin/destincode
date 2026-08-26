@@ -3566,6 +3566,148 @@ function PresentStackedRows() {
   );
 }
 
+// ── Round 5: drop the quote, tighten the row ─────────────────────────────
+// The owner picked R4's C (present-stacked-rows): "i like c (stacked) but we
+// should drop the full quote and try to improve space efficiency/layout a
+// bit." Two instructions, two changes: the OpeningMessagePreview quote/
+// thumbnail is gone from every candidate below — there is no file to preview
+// a stand-in for any more, so nothing replaces the square it sat in, the
+// whole row just gets narrower — and padding drops from R4's `p-2` (sized
+// around a 64px-tall thumbnail) to what a one- or two-line text row actually
+// needs.
+//
+// Card shell and header are UNCHANGED from R4's PresentCard/PresentCardHeader
+// (deliverables-card chrome), except for open state: this round starts
+// CLOSED (getInitialExpanded(), the plain tool-card default) rather than R4's
+// getInitialExpanded(true). Two independent decisions already point the same
+// way — the owner chose closed-by-default for this feature's own search card
+// (chatsearch-results R2, `b-closed`), and DeliverablesCard.tsx, the very
+// card this shell copies, flipped from open to closed on its own branch
+// after Destin saw it open on a real screen (see that file's header comment,
+// 2026-08-25). PresentCard itself is left untouched (never edit an earlier
+// round) — PresentCardClosed below is a new sibling, not an edit.
+//
+// With the thumbnail gone, a presented-conversation row is now built from
+// exactly the same three things a search-result row is (ChatsearchFindCard.tsx):
+// title, a project/date line, and the Preview/Resume buttons. So every
+// candidate below is built from PresentRowTitle and PresentedMetaQuiet — both
+// already declared above, for R3 and R2 respectively — never re-typed, so the
+// two surfaces can't drift on what a "title" or a "date" looks like even
+// though this round rearranges them three different ways. Tags stay dropped,
+// same reversible call R4 made (flagged again here): none of the three
+// layouts the owner asked for name a tag chip.
+//
+// Rows are plain, non-interactive containers (`rounded-md bg-inset/50`, the
+// search row's own fill) rather than R4's whole-row `<button>` — R4's button
+// existed so the thumbnail was clickable; with no thumbnail, Preview/Resume
+// are the only affordance (per the brief), so a second, redundant click
+// target on the row itself would just be a lie about what clicking it does.
+
+function PresentCardClosed({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="present-card-r5">
+      <PresentCardHeader open={open} onToggle={() => setOpen(!open)} count={PRESENT_CONVERSATIONS.length} />
+      {open && children}
+    </div>
+  );
+}
+
+// A · present-row-single — one line per conversation: title, then project ·
+// date as one quiet clause, then the buttons. NOT ChatsearchMetaLine here —
+// that component's own `ml-auto` date assumes it owns the full row width; in
+// a single line shared with a title and two buttons it has none, so project
+// and date are joined into one clause and given a max-width instead. The
+// blocked sentence (missingProject/notSyncedYet) still replaces that clause
+// wholesale, same house rule ChatsearchMetaLine documents for the two-line
+// candidates below.
+function PresentRowSingleEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const meta = blocked ?? `${r.projectName || COPY.noProject} · ${formatRelativeTime(r.lastActive)}`;
+  return (
+    <div className="flex items-center gap-2 rounded-md bg-inset/50 px-2.5 py-1.5">
+      <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+      <span className="shrink-0 max-w-[9rem] truncate text-3xs text-fg-muted" title={meta}>{meta}</span>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+function PresentRowSingle() {
+  return (
+    <PresentInBubble>
+      <PresentCardClosed>
+        <div className="flex flex-col gap-1 px-2 pb-2">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentRowSingleEntry key={r.id} r={r} />)}
+        </div>
+      </PresentCardClosed>
+    </PresentInBubble>
+  );
+}
+
+// B · present-row-two-line — title on its own line, PresentedMetaQuiet
+// (project/date or blocked, verbatim from R2) on a second line beneath it,
+// buttons at the right and vertically centred across both by the row's own
+// `items-center`. The most conventional list row of the three.
+function PresentRowTwoLineEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div className="flex items-center gap-3 rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="min-w-0 flex-1">
+        <PresentRowTitle r={r} />
+        <PresentedMetaQuiet r={r} className="mt-0.5" />
+      </div>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+function PresentRowTwoLine() {
+  return (
+    <PresentInBubble>
+      <PresentCardClosed>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentRowTwoLineEntry key={r.id} r={r} />)}
+        </div>
+      </PresentCardClosed>
+    </PresentInBubble>
+  );
+}
+
+// C · present-row-split — two lines that each use the full row width: title
+// left / date pinned right (`shrink-0 ml-auto`, the same date-pinning class
+// ChatsearchMetaLine itself uses) on line one, project left / buttons right
+// on line two. When blocked, the date on line one is withheld and the
+// blocked sentence takes project's place on line two — the same "blocked
+// replaces project+date as a pair" house rule ChatsearchMetaLine documents,
+// just spread across two lines instead of composited into one span.
+function PresentRowSplitEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        {!blocked && (
+          <span className="shrink-0 ml-auto text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        <span className="min-w-0 flex-1 truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentRowSplit() {
+  return (
+    <PresentInBubble>
+      <PresentCardClosed>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentRowSplitEntry key={r.id} r={r} />)}
+        </div>
+      </PresentCardClosed>
+    </PresentInBubble>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -4228,6 +4370,30 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'Stacked rows, text buttons',
             note: 'Drops the sideways scrolling entirely — each conversation is a full-width row with a small square preview, the title and details in the middle, and the two buttons on the right. Nothing is ever hidden off the edge of the screen, but it takes more vertical space than a filmstrip once there are more than two or three.',
             render: () => <PresentStackedRows />,
+          },
+        ],
+      },
+      {
+        n: 5,
+        basis: 'R4 · C (Stacked rows, text buttons) — the owner\'s pick: "i like c (stacked) but we should drop the full quote and try to improve space efficiency/layout a bit." Same card shell and header; the preview square is gone from every row below (there is no file to stand in for any more) and each candidate reclaims that width a different way. Also switched to closed-by-default, matching both this feature\'s own search card and the Deliverables card this shell is copied from.',
+        candidates: [
+          {
+            id: 'present-row-single',
+            label: 'One line',
+            note: 'Title, project · date, and the two buttons all share one line per conversation — the tightest of the three. The trade-off: once the buttons and the date claim their share, the title has the least room left to stay readable.',
+            render: () => <PresentRowSingle />,
+          },
+          {
+            id: 'present-row-two-line',
+            label: 'Two lines, stacked',
+            note: 'Title on its own line, project and date quietly beneath it, buttons centred at the right. The most ordinary list row — a little taller than the single-line version, but nothing has to fight for space.',
+            render: () => <PresentRowTwoLine />,
+          },
+          {
+            id: 'present-row-split',
+            label: 'Two lines, full width',
+            note: 'Title and date share the top line, project and the buttons share the bottom one — nothing is squeezed into a leftover sliver, but your eye has to travel corner to corner to read one conversation.',
+            render: () => <PresentRowSplit />,
           },
         ],
       },
