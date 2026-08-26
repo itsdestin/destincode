@@ -6,7 +6,7 @@ import { join } from 'path';
 
 describe('perfMark', () => {
   let dir: string;
-  afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); if (dir) rmSync(dir, { recursive: true, force: true }); });
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.resetModules(); if (dir) rmSync(dir, { recursive: true, force: true }); });
 
   it('appends one JSON line per mark when YOUCODED_PERF_LOG is set', async () => {
     dir = mkdtempSync(join(tmpdir(), 'perf-marks-'));
@@ -20,9 +20,16 @@ describe('perfMark', () => {
     expect(lines[0].pid).toBe(process.pid);
   });
 
-  it('is a no-op when the env var is unset', async () => {
-    vi.stubEnv('YOUCODED_PERF_LOG', '');
+  // Not just "doesn't throw": that passes even if the guard is replaced by a
+  // write to some default path. Spy on the only syscall the module can make and
+  // assert it never happens.
+  it('writes NOTHING when YOUCODED_PERF_LOG is unset', async () => {
+    vi.stubEnv('YOUCODED_PERF_LOG', undefined);
+    const fs = await import('fs');
+    const appendSpy = vi.spyOn(fs.default, 'appendFileSync').mockImplementation(() => {});
     const { perfMark } = await import('../src/main/perf-marks');
     expect(() => perfMark('main:x')).not.toThrow();
+    expect(appendSpy).toHaveBeenCalledTimes(0);
+    appendSpy.mockRestore();
   });
 });

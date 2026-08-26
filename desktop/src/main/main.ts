@@ -80,7 +80,13 @@ import { perfMark } from './perf-marks';
 // wire contract with youcoded-dev/scripts/perf-lab, which parses them verbatim
 // and derives each boot chore's duration from the gap between consecutive
 // marks — so keep them in execution order and don't rename one in isolation.
-perfMark('main:module-start');
+//
+// WHY "imports-done" and not "module-start": tsconfig sets "module": "commonjs",
+// so TypeScript emits all 46 import declarations above as require() calls at the
+// top of the file, in source order. Every transitive main-process dependency has
+// therefore already been loaded and evaluated by the time this line runs — this
+// mark is the END of the import phase, not the start of the module.
+perfMark('main:imports-done');
 
 // Last-resort safety net for async work nobody awaited. The main process runs
 // a lot of fire-and-forget I/O (watchers, poll timers, disk caches, loadURL);
@@ -703,12 +709,6 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     }).catch(() => {});
   }
 
-  // Perf lab: when the renderer bundle has finished loading (not yet mounted).
-  // Main window only — buddy windows are not part of the startup measurement.
-  if (!opts?.buddy) {
-    win.webContents.once('did-finish-load', () => perfMark('main:main-window:did-finish-load'));
-  }
-
   // Auto-open DevTools in dev — the app's menu is nulled so F12/Ctrl+Shift+I
   // don't work by default. Opens detached so it doesn't steal window width.
   // Directory snapshot is pulled by the renderer via WINDOW_GET_DIRECTORY
@@ -799,6 +799,15 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
 
 function createWindow(firstRunManager?: FirstRunManager) {
   mainWindow = createAppWindow({ maximize: true });
+  // Perf lab: the renderer bundle has finished loading (not yet mounted).
+  // Registered HERE, not in createAppWindow: createAppWindow also builds the
+  // three detached/tear-off windows (and the buddy floaters), and the rig's log
+  // parse is last-occurrence-wins — so a window detached hours later would
+  // overwrite this mark and drag blankWindowMs with it. createWindow runs once, from
+  // the app.whenReady() block. createAppWindow is synchronous and returns before
+  // its loadURL/loadFile promise can settle, so this listener is still attached
+  // in the same tick as the load call and cannot miss the event.
+  mainWindow.webContents.once('did-finish-load', () => perfMark('main:main-window:did-finish-load'));
 
   // Plan 2b Task 8: construct the conversation-lease client. Lazy accessors —
   // the hub socket + managed roots don't exist yet at this point (they're wired
@@ -1340,6 +1349,13 @@ void app.whenReady().then(async () => {
     log('ERROR', 'Main', 'First-run detection failed, skipping', { error: String(e) });
     isFirstRun = false;
   }
+  // Perf lab: everything between rotate-log and here — kicking off
+  // runAnalyticsOnLaunch() (whose readState + deviceIdHash run synchronously on
+  // this stack, before its first await), the app.getGPUInfo('complete') call, and
+  // first-run detection's up-to-two readFileSync + JSON.parse — used to be billed
+  // to the install-hooks chore, because the rig measures each chore as
+  // mark[n] − mark[n−1]. This mark makes that prelude work show up as itself.
+  perfMark('main:chore:prelude:done');
 
   // Install hook relay entries in Claude Code settings.
   //
@@ -1534,6 +1550,12 @@ void app.whenReady().then(async () => {
   // Remove the default menu bar (File, Edit, View, Window, Help)
   Menu.setApplicationMenu(null);
 
+  // Perf lab: the FAVORITES_PATH setup, the five game/favorites/home-path
+  // ipcMain.handle registrations above and Menu.setApplicationMenu(null) all sat
+  // inside the theme-protocol chore's measured window (each chore is measured as
+  // mark[n] − mark[n−1]). This mark separates them from registerThemeProtocol().
+  perfMark('main:chore:ipc-prefs:done');
+
   registerThemeProtocol();
   perfMark('main:chore:theme-protocol:done');
 
@@ -1552,7 +1574,10 @@ void app.whenReady().then(async () => {
   // remoteServer let the presence relay (Task 6) reach every local window and
   // any connected remote browser.
   registerSocialHandlers(marketplaceAuthStore, windowRegistry, remoteServer);
-  perfMark('main:chore:auth-store:done');
+  // Named "accounts", not "auth-store": this window covers four registrations —
+  // createAuthStore, registerMarketplaceApiHandlers, remoteServer.setAccountStore
+  // and registerSocialHandlers — not just the store.
+  perfMark('main:chore:accounts:done');
 
   perfMark('main:create-window:start');
   createWindow(isFirstRun ? firstRunManager : undefined);
