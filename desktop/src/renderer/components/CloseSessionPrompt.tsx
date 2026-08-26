@@ -328,14 +328,15 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
           <div className="px-4 pb-4 flex flex-col gap-3">
             {/* Don't show again — persists suppress flag to localStorage so App.tsx
                 skips this prompt on future closes and destroys sessions directly. */}
-            <label className="flex items-center gap-2 text-2xs text-fg-muted whitespace-nowrap cursor-pointer">
-              <Toggle
-                checked={dontShowAgain}
-                onChange={setDontShowAgain}
-                aria-label="Don't show again"
-              />
-              Don't show again
-            </label>
+            {/* A label with a switch beside it IS a SettingRow item — the guard
+                (setting-row-authority.test.tsx) refuses a hand-rolled one. */}
+            <SettingRow
+              variant="item"
+              title="Don't show again"
+              control={
+                <Toggle checked={dontShowAgain} onChange={setDontShowAgain} aria-label="Don't show again" />
+              }
+            />
             <div className="flex gap-2 justify-end">
               <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={onCancel}>
                 Cancel
