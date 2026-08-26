@@ -844,3 +844,21 @@ describe('startWatching path source (spec §5.0)', () => {
     expect(subagentToolUse!.data.agentId).toBe('hook');
   });
 });
+
+describe('parseTranscriptLine — recordedAt on tool results', () => {
+  const line = (extra: Record<string, unknown>) => JSON.stringify({
+    type: 'user', uuid: 'u-1', ...extra,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'Sent 1 file to the user.' }] },
+  });
+
+  it("carries the line's own timestamp so the renderer can tell replayed history from a live result", () => {
+    const events = parseTranscriptLine(line({ timestamp: '2026-08-25T10:00:00.000Z' }), 'sess');
+    const result = events.find((e) => e.type === 'tool-result');
+    expect(result?.data.recordedAt).toBe(Date.parse('2026-08-25T10:00:00.000Z'));
+  });
+
+  it('fails CLOSED when the line has no usable timestamp (recordedAt 0 = never fresh)', () => {
+    const events = parseTranscriptLine(line({}), 'sess');
+    expect(events.find((e) => e.type === 'tool-result')?.data.recordedAt).toBe(0);
+  });
+});

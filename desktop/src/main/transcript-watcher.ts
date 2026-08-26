@@ -33,6 +33,10 @@ export function parseTranscriptLine(line: string, sessionId: string): Transcript
 
   const uuid: string = parsed.uuid || '';
   const timestamp = Date.now();
+  // The line's own time. Fail closed (0) when absent/unparseable — a result
+  // with no recorded time is treated as history, never as fresh.
+  const parsedTs = Date.parse(parsed.timestamp);
+  const recordedAt = Number.isFinite(parsedTs) ? parsedTs : 0;
   const message = parsed.message;
   const events: TranscriptEvent[] = [];
 
@@ -90,6 +94,7 @@ export function parseTranscriptLine(line: string, sessionId: string): Transcript
                 toolUseId: block.tool_use_id,
                 toolResult: extractToolResultContent(block.content),
                 isError: block.is_error ?? false,
+                recordedAt,
                 ...(structuredPatch ? { structuredPatch } : {}),
               },
             });

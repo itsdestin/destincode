@@ -168,6 +168,13 @@ export interface TranscriptEvent {
     /** Native tool-result events: absolute paths of images the tool delivered
      *  (Read on an image). Resume re-reads them; the UI may render a chip. */
     images?: string[];
+    /** Claude Code tool-result events only: the JSONL line's OWN timestamp
+     *  (epoch ms), 0 when the line has none. `timestamp` above is stamped at
+     *  PARSE time, which is "now" for a whole transcript read from offset 0 on
+     *  resume — so it cannot tell replayed history from a live result. The
+     *  Deliverables auto-open rule (deliverable-auto-open.ts) reads this; native
+     *  events keep their original `timestamp` through replay and need no field. */
+    recordedAt?: number;
     // Task 1.1: widened turn-complete payload so the reducer can attach the
     // per-turn model, token/cache usage, and the Anthropic requestId to the
     // completing AssistantTurn for UI surfacing. All optional — the field is
