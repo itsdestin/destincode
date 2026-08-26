@@ -362,7 +362,7 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
       {/* Skip link */}
       <button
         onClick={handleSkip}
-        className="mt-10 text-xs text-fg-faint hover:text-fg-muted transition-colors"
+        className="mt-10 text-xs text-fg-muted hover:text-fg-2 transition-colors"
       >
         Skip setup (I installed via terminal)
       </button>

@@ -430,7 +430,7 @@ function LifecyclePill({ status }: { status?: TaskStatus }) {
             <span className={
               active ? 'text-fg font-bold'
               : done ? 'text-fg-muted'
-              : 'text-fg-faint'
+              : 'text-fg-muted'
             }>
               <span className={
                 active ? 'inline-block w-2 h-2 rounded-full bg-fg mr-1 align-middle'

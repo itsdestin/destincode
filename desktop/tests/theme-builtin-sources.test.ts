@@ -127,3 +127,26 @@ describe('built-ins declare their own link colors', () => {
     }
   });
 });
+
+describe('built-in text ladder (P-11, 2026-08-25 UI audit)', () => {
+  // fg-muted is the smallest text people are meant to READ (status bar, hints,
+  // timestamps) and it sits on raised surfaces, so it must clear AA there; the
+  // audit found every built-in at 3.0–3.3:1 on inset. fg-faint stays at ~2:1 on
+  // purpose — it is decorative-only (dividers, disabled glyphs), never words.
+  // The ladder order pins that the bump did not fold two steps into one.
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const rules = require('../scripts/vendor/contrast-rules.js');
+  const ratio = (a: string, b: string) =>
+    rules.contrastRatio(rules.luminance(rules.parseHex(a)), rules.luminance(rules.parseHex(b)));
+
+  for (const theme of loadBuiltins()) {
+    it(`${theme.slug}: fg-muted ≥ 4.5:1 on inset and well, ladder stays ordered`, () => {
+      const t = theme.tokens;
+      expect(ratio(t['fg-muted'], t.inset)).toBeGreaterThanOrEqual(4.5);
+      expect(ratio(t['fg-muted'], t.well)).toBeGreaterThanOrEqual(4.5);
+      expect(ratio(t['fg-dim'], t.inset)).toBeGreaterThan(ratio(t['fg-muted'], t.inset) + 0.5);
+      expect(ratio(t['fg-2'], t.inset)).toBeGreaterThan(ratio(t['fg-dim'], t.inset) + 0.5);
+      expect(ratio(t['fg-faint'], t.inset)).toBeLessThan(3);
+    });
+  }
+});

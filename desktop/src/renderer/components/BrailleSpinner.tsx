@@ -8,8 +8,9 @@ function getThemeColors(): string[] {
   const fg2 = style.getPropertyValue('--fg-2').trim() || '#D0D0D0';
   const fgDim = style.getPropertyValue('--fg-dim').trim() || '#B0B0B0';
   const fgMuted = style.getPropertyValue('--fg-muted').trim() || '#A8D8A8';
-  const fgFaint = style.getPropertyValue('--fg-faint').trim() || '#D4A5D4';
-  return [fgDim, fg2, accent, fgMuted, fgFaint];
+  // fg-faint is decorative-only (2:1 — dividers, disabled glyphs); a spinner is
+  // a signal the user is meant to see, so the cycle stops at fg-muted (P-11).
+  return [fgDim, fg2, accent, fgMuted];
 }
 
 // Shared animation driver — ONE timer for all mounted spinners.
