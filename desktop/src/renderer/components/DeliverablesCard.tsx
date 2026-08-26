@@ -238,36 +238,56 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
   // expand-all still comes up open, and mid collapse-all still comes up
   // closed — only the plain-mount default changed, from true to false.
   //
-  // WHY hasFailure feeds BOTH the mount seed and a live effect below: both
-  // the per-tile "Couldn't send" overlay and the failures paragraph only
-  // render while `open` is true, and the header's count treats a failed call
-  // identically to a sent one — so a card that stayed collapsed could fail
-  // outright and look like an ordinary one-liner. A delivery failure is an
-  // error the user must see without clicking anything
-  // (docs/error-message-standards.md); it must never be able to hide behind
-  // a collapsed card.
-  //
-  // The seed alone only covers REPLAY: a transcript loaded from disk already
-  // has status: 'failed' on first render, so getInitialExpanded sees it. A
-  // LIVE delivery does not — chat-reducer creates the tool call as
-  // status: 'running' the moment it starts streaming and flips the SAME
-  // entry to 'failed' only when the result arrives, long after this
-  // component (unkeyed, one instance for the whole turn) already mounted
-  // collapsed. useState's initializer runs once at first render, so it can
-  // never see a failure that shows up in a later re-render — only the effect
-  // below, watching the live value, can react to that transition.
-  const hasFailure = tools.some((t) => t.status === 'failed');
+  // WHY this tracks WHICH calls have failed, not merely WHETHER any has:
+  // one card merges every SendUserFile call in the bubble
+  // (AssistantTurnBubble → collectBubbleSentFiles), so a card routinely holds
+  // 2+ concurrent deliveries. Both the per-tile "Couldn't send" overlay and
+  // the failures paragraph only render while `open` is true, and the
+  // header's count treats a failed call identically to a sent one — so a
+  // card that stayed collapsed could fail outright and look like an
+  // ordinary one-liner. A delivery failure is an error the user must see
+  // without clicking anything (docs/error-message-standards.md); it must
+  // never be able to hide behind a collapsed card — including a SECOND
+  // failure arriving after the user has already read the first one and
+  // collapsed the card. An aggregate `tools.some(failed)` boolean can only
+  // transition false→true ONCE per card's lifetime, so it goes stale the
+  // moment a second call fails while the first failure is still recorded —
+  // that was attempt #2's gap. Tracking failed call IDs individually lets a
+  // second (third, ...) newly-failed id reopen the card even though
+  // "something has failed" was already true.
+  const failedIds = useMemo(
+    () => tools.filter((t) => t.status === 'failed').map((t) => t.toolUseId),
+    [tools],
+  );
+  const hasFailure = failedIds.length > 0;
   const [open, setOpen] = useState(() => getInitialExpanded(hasFailure));
-  // Open on the false→true transition of hasFailure, i.e. exactly when a
-  // failure ARRIVES mid-flight. Guarded by wasFailed so this only fires once
-  // per failure: without the guard, a re-render for any other reason (a
-  // caption change, a sibling tool finishing) while hasFailure is already
-  // true would force `open` back on and undo a user's manual collapse-click.
-  const wasFailed = useRef(hasFailure);
+  // IDs already accounted for — either by the mount seed above (replay: the
+  // card mounted open with these already failed) or by the effect below
+  // (live: it already opened the card for them once). A ref, not state:
+  // updating it must not itself trigger a render, only recording what the
+  // effect has already reacted to.
+  const surfacedFailedIds = useRef<Set<string>>(new Set(hasFailure ? failedIds : []));
+  // A derived STRING key, not `failedIds` itself: an array is a new
+  // reference every render even when its contents are identical (tools is
+  // rebuilt upstream on every chat-reducer action), so using the array as
+  // the effect's dependency would re-run — and by extension re-diff and
+  // re-assign the ref — on every unrelated render. It would not infinite
+  // loop (setOpen(true) is a no-op once open is already true, and the ref
+  // write triggers no render at all), but it would burn a diff every render
+  // for nothing. The string only changes VALUE when a call's failed-ness
+  // actually changes, so React's Object.is dependency check skips the
+  // effect on a caption arriving, a sibling tool finishing, or the same
+  // failed call re-rendering — which is exactly what keeps an explicit
+  // user collapse stuck.
+  const failedIdsKey = failedIds.join(',');
   useEffect(() => {
-    if (hasFailure && !wasFailed.current) setOpen(true);
-    wasFailed.current = hasFailure;
-  }, [hasFailure]);
+    // failedIds here is the value captured at the moment failedIdsKey
+    // last changed, i.e. it always matches the key that triggered this run.
+    const hasNewFailure = failedIds.some((id) => !surfacedFailedIds.current.has(id));
+    if (hasNewFailure) setOpen(true);
+    surfacedFailedIds.current = new Set(failedIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failedIdsKey]);
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
 
   const entries = useMemo(

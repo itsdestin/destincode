@@ -144,6 +144,43 @@ describe('DeliverablesCard', () => {
     expect(screen.queryByTestId('deliverables-strip')).toBeNull();
   });
 
+  it('a SECOND call failing after the user collapsed the card (from the first failure) reopens it — an aggregate "any failed?" boolean cannot change value twice', () => {
+    // Reproduces the exact trace from the finding: one card merges every
+    // SendUserFile call in the bubble, so it routinely holds 2+ concurrent
+    // deliveries. call1 and call2 both start running, call1 fails and opens
+    // the card, the user reads it and collapses it, then call2 ALSO fails —
+    // that must reopen the card and show call2's error with no click.
+    setViewport(false);
+    const err1 = 'SendUserFile failed — nothing was sent:\n- /tmp/out1 is a directory';
+    const err2 = 'SendUserFile failed — nothing was sent:\n- /tmp/out2 is a directory';
+    const { rerender } = render(<DeliverablesCard tools={[
+      call('t1', ['/tmp/out1'], { status: 'running' }),
+      call('t2', ['/tmp/out2'], { status: 'running' }),
+    ]} sessionId="s" />);
+    expect(screen.queryByTestId('deliverables-strip')).toBeNull();
+
+    // call1 fails -> card opens with no click.
+    rerender(<DeliverablesCard tools={[
+      call('t1', ['/tmp/out1'], { status: 'failed', error: err1 }),
+      call('t2', ['/tmp/out2'], { status: 'running' }),
+    ]} sessionId="s" />);
+    expect(screen.getByTestId('deliverables-strip')).toBeInTheDocument();
+    expect(screen.getByText(/out1 is a directory/)).toBeInTheDocument();
+
+    // User reads call1's error and collapses the card.
+    fireEvent.click(screen.getByText('Deliverables'));
+    expect(screen.queryByTestId('deliverables-strip')).toBeNull();
+
+    // call2 ALSO fails while call1 is still failed (hasFailure stays true
+    // the whole time) -> the card must reopen and show call2's error.
+    rerender(<DeliverablesCard tools={[
+      call('t1', ['/tmp/out1'], { status: 'failed', error: err1 }),
+      call('t2', ['/tmp/out2'], { status: 'failed', error: err2 }),
+    ]} sessionId="s" />);
+    expect(screen.getByTestId('deliverables-strip')).toBeInTheDocument();
+    expect(screen.getByText(/out2 is a directory/)).toBeInTheDocument();
+  });
+
   // Run LAST: broadcastCollapseAll/broadcastExpandAll flip a module-level flag
   // in useExpandAllToggle.ts that persists for the rest of this file's test
   // run (by design — see that file's header comment), so a test earlier in
