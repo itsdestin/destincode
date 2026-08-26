@@ -45,6 +45,13 @@ import { PRIORITY_TAG, PRIORITY_HINT } from '../../../components/tags/built-in-t
 // app does, or the comparison is against something that doesn't exist.
 import { TagGlyph, NotePageGlyph, PencilGlyph } from '../../../components/tags/glyphs';
 import type { TagRecord } from '../../../../shared/tags';
+// chatsearch-present Round 6: the real label→color resolver ChatsearchFindCard
+// uses — reused (not re-derived) so a tag rendered here can never disagree
+// with a tag rendered on the search-result row about what color it gets, and
+// an unmatched label always falls back to the same neutral color rather than
+// a candidate-invented one.
+import { DEFAULT_TAG_COLOR } from '../../../../shared/tags';
+import { useTagLabelIndex, resolveChatsearchTags, type ChipTag } from '../../../components/tool-views/chatsearch-tags';
 import type { NativePermissionMode } from '../../../../shared/permission-types';
 // The mode copy, reproduced verbatim from the shipping screen — the candidate
 // these rounds called VariantC, which is now components/PermissionsSection.tsx.
@@ -3708,6 +3715,208 @@ function PresentRowSplit() {
   );
 }
 
+// ── Round 6: the owner's pick, plus tags ──────────────────────────────────────
+// "more like c, try to keep tags." The skeleton is UNCHANGED from R5's C
+// (present-row-split): line 1 is title left / date pinned right, line 2 is
+// project left / Preview+Resume right. All three candidates below share that
+// exact skeleton — PresentRowTitle, ChatsearchActions, and the same two-line
+// division — and answer only one question: where do the tags go.
+//
+// Round 5's pair of fixture conversations (CS_RESUMABLE, CS_NATIVE) carry at
+// most two tags between them, which would let every placement look tidy no
+// matter how bad it actually is under load. This round's own fixture set
+// exists so the comparison can't flatter itself: a normal two-tag case, a
+// heavy four-tag case with a long multi-word label (real tags in this app
+// read like "Follow-Up Needed", never "perf"), and a bare no-tags case, so
+// the empty state is visible too. Built as fresh literals rather than
+// mutating CHATSEARCH_FIXTURE, so Rounds 1-5 (which read CS_RESUMABLE/
+// CS_NATIVE straight from that shared table via PRESENT_CONVERSATIONS) keep
+// rendering exactly what they always have.
+type PresentOk = Extract<ResolvedConversation, { status: 'ok' }>;
+const R6_TWO_TAGS: PresentOk = {
+  status: 'ok', id: 'r6-two-tags', provider: 'claude', title: 'Permission ask timeout',
+  projectName: 'youcoded', originalPath: '/home/destin/youcoded-dev/youcoded',
+  lastActive: '2026-07-26T03:14:09.000Z', createdAt: '2026-07-25T18:02:11.000Z',
+  tags: ['work', 'bug'], complete: true, tombstone: false,
+  projectSlug: '-home-destin-youcoded-dev-youcoded', projectPath: '/home/destin/youcoded-dev/youcoded',
+  missingProject: false, notSyncedYet: false,
+};
+// Four tags, two of which ('Follow-Up Needed', 'Launch Blocker') are the long
+// multi-word labels the brief calls for; 'idea' is a label the fixture tag
+// registry (dev/workbench/fixtures/tags.ts) actually resolves, and 'UI Copy'
+// is not — so this one row exercises a resolved chip, an unresolved
+// (neutral-color) chip, AND the two-then-overflow cap in a single case.
+const R6_FOUR_TAGS: PresentOk = {
+  status: 'ok', id: 'r6-four-tags', provider: 'native', title: 'Draft the newsletter',
+  projectName: 'writing', originalPath: '/home/destin/writing',
+  lastActive: '2026-08-01T10:00:00.000Z', createdAt: '2026-07-30T09:00:00.000Z',
+  tags: ['Follow-Up Needed', 'idea', 'UI Copy', 'Launch Blocker'], complete: false, tombstone: false,
+  projectSlug: '-home-destin-writing', projectPath: '/home/destin/writing',
+  missingProject: false, notSyncedYet: false,
+};
+const R6_NO_TAGS: PresentOk = {
+  status: 'ok', id: 'r6-no-tags', provider: 'claude', title: 'Quarterly budget notes',
+  projectName: 'finance', originalPath: '/home/destin/youcoded-dev/finance',
+  lastActive: '2026-07-14T15:40:00.000Z', createdAt: '2026-07-14T15:00:00.000Z',
+  tags: [], complete: false, tombstone: false,
+  projectSlug: '-home-destin-youcoded-dev-finance', projectPath: '/home/destin/youcoded-dev/finance',
+  missingProject: false, notSyncedYet: false,
+};
+const R6_CONVERSATIONS: PresentOk[] = [R6_TWO_TAGS, R6_FOUR_TAGS, R6_NO_TAGS];
+
+// Caps a resolved tag-chip list at two, folding the rest into a single "+N"
+// chip in the neutral fallback color (never a fabricated tag) — the row's own
+// bound on how much width tags can claim, so a heavily-tagged conversation
+// can never push the project name or the buttons off the row. Used by the two
+// candidates below that share a line with something else; present-tags-row
+// gives tags their own line and never calls this.
+function capTagChips(tags: ChipTag[]): ChipTag[] {
+  if (tags.length <= 2) return tags;
+  const rest = tags.length - 2;
+  return [...tags.slice(0, 2), { label: COPY.presentTagsMore(rest), color: DEFAULT_TAG_COLOR }];
+}
+
+// The R5 card shell (PresentCardHeader + closed-by-default + Ctrl+O aware),
+// reproduced as a new sibling rather than editing PresentCardClosed in place
+// — same rule R5 itself followed against R4's PresentCard. The only reason a
+// new component is needed at all: PresentCardClosed's header count is wired
+// to PRESENT_CONVERSATIONS.length (R4/R5's two-conversation array), and this
+// round's own fixture set has three rows — reusing it unedited would print
+// the wrong count in the card header.
+function PresentCardR6({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="present-card-r6">
+      <PresentCardHeader open={open} onToggle={() => setOpen(!open)} count={R6_CONVERSATIONS.length} />
+      {open && children}
+    </div>
+  );
+}
+
+// A · present-tags-meta — tags join line 2, in front of the project, the same
+// left-to-right order ChatsearchMetaLine already uses on the approved search
+// row (tags → project → date). Composed by hand rather than through
+// ChatsearchMetaLine itself: that component always ends with a date, and this
+// row's date already lives on line 1, so reusing it here would print the date
+// twice. Buttons stay pinned to the right, same as R5.
+function PresentTagsMetaEntry({ r, tagIndex }: { r: PresentOk; tagIndex: Map<string, TagRecord> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = capTagChips(resolveChatsearchTags(r.tags, tagIndex));
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        {!blocked && (
+          <span className="shrink-0 ml-auto text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        {chips.length > 0 && (
+          <span className="flex items-center gap-1 shrink-0">
+            {chips.map((t, i) => <TagChip key={`${t.label}-${i}`} tag={t} />)}
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentTagsMeta() {
+  const tagIndex = useTagLabelIndex();
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => <PresentTagsMetaEntry key={r.id} r={r} tagIndex={tagIndex} />)}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// B · present-tags-title — tags join line 1, sitting between the title and
+// the right-pinned date; line 2 stays project + buttons, untouched from R5.
+// Same two-then-overflow cap as A. Puts tags at the eye's first stop, but now
+// THREE things (title, tags, date) compete for line 1's width instead of two.
+function PresentTagsTitleEntry({ r, tagIndex }: { r: PresentOk; tagIndex: Map<string, TagRecord> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = capTagChips(resolveChatsearchTags(r.tags, tagIndex));
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        {chips.length > 0 && (
+          <span className="flex items-center gap-1 shrink-0">
+            {chips.map((t, i) => <TagChip key={`${t.label}-${i}`} tag={t} />)}
+          </span>
+        )}
+        {!blocked && (
+          <span className="shrink-0 ml-auto text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        <span className="min-w-0 flex-1 truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentTagsTitle() {
+  const tagIndex = useTagLabelIndex();
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => <PresentTagsTitleEntry key={r.id} r={r} tagIndex={tagIndex} />)}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// C · present-tags-row — tags get a third line of their own, beneath the
+// unmodified R5 skeleton (line 1 title+date, line 2 project+buttons). No cap
+// here: `flex-wrap` lets every tag show, wrapping to more lines instead of
+// being cut, at the cost of a line of height per conversation. Omitted
+// entirely when there are no tags, so the no-tags row stays two lines.
+function PresentTagsRowEntry({ r, tagIndex }: { r: PresentOk; tagIndex: Map<string, TagRecord> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        {!blocked && (
+          <span className="shrink-0 ml-auto text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        <span className="min-w-0 flex-1 truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+        <ChatsearchActions r={r} />
+      </div>
+      {chips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 mt-1.5">
+          {chips.map((t, i) => <TagChip key={`${t.label}-${i}`} tag={t} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+function PresentTagsRow() {
+  const tagIndex = useTagLabelIndex();
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => <PresentTagsRowEntry key={r.id} r={r} tagIndex={tagIndex} />)}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -4394,6 +4603,30 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'Two lines, full width',
             note: 'Title and date share the top line, project and the buttons share the bottom one — nothing is squeezed into a leftover sliver, but your eye has to travel corner to corner to read one conversation.',
             render: () => <PresentRowSplit />,
+          },
+        ],
+      },
+      {
+        n: 6,
+        basis: 'R5 · C (present-row-split) — the owner\'s pick: "more like c, try to keep tags." Skeleton unchanged (title/date on line 1, project/buttons on line 2); every candidate below adds tags back to it and answers only where they go. Fixture set replaced for this round alone — a two-tag row, a four-tag row carrying a long multi-word label, and a no-tag row — so the comparison can\'t look tidy just because R5\'s own two fixtures were lightly tagged.',
+        candidates: [
+          {
+            id: 'present-tags-meta',
+            label: 'Tags on the project line',
+            note: 'Tags sit on line 2, right before the project name — the same tags-then-project order the search-result row already uses. Caps at two tags plus a "+N" chip so a heavily-tagged conversation can never push the project name or the buttons off the row, but that same cap means the project name and buttons are the ones fighting tags for space.',
+            render: () => <PresentTagsMeta />,
+          },
+          {
+            id: 'present-tags-title',
+            label: 'Tags on the title line',
+            note: 'Tags sit on line 1, between the title and the date — the first thing your eye reaches. Same two-then-"+N" cap as the other option, but now three things (title, tags, date) share the top line instead of two, so a long title has the least room of any candidate here.',
+            render: () => <PresentTagsTitle />,
+          },
+          {
+            id: 'present-tags-row',
+            label: 'Tags on their own line',
+            note: 'Tags drop to a full third line beneath project and buttons, wrapping instead of being capped — every tag is always visible, however many there are. Costs real height: a heavily-tagged conversation in a list of several makes the whole block taller, and a conversation with no tags stays two lines so this cost is only paid when there is something to show.',
+            render: () => <PresentTagsRow />,
           },
         ],
       },

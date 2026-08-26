@@ -42,6 +42,11 @@ export const COPY = {
   loadOlder: 'Load older',
   rawOutput: 'Raw output',
   referencedHeading: 'Referenced conversations',
+  // The overflow chip a presented conversation's tag row shows once more than
+  // two tags would crowd out the project name or the buttons next to them —
+  // e.g. "+2" standing in for two tags not shown. Kept terse on purpose: it
+  // sits inside a chip-sized space next to real tag chips.
+  presentTagsMore: (n: number) => `+${n}`,
   // Phase B error strings (main process). Listed here so the gate can show them.
   errNotAnId: 'Not a conversation id',
   errNotIndexed: 'This conversation is not in the index on this device',
