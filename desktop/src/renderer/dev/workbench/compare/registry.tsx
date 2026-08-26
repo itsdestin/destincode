@@ -2515,7 +2515,7 @@ function SentCardAC({ tileW, wrapName, fade, captionBelow, preview }: {
           {SENT_FILES.map((f) => (
             <div key={f.id} className={`${tileW} shrink-0`}>
               <SentFileTile path={f.path} sessionId="wb-1" status="complete" narrow={preview === 'short'}
-                record={sentRecord(f.id)} projectPath={SENT_PROJECT} tileBg="bg-inset" wrapName={wrapName} />
+                record={sentRecord(f.id)} projectPath={SENT_PROJECT} tileBg="bg-inset" wrapName={wrapName} compact />
             </div>
           ))}
         </div>

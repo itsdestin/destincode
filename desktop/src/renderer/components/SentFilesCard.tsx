@@ -102,9 +102,13 @@ export interface SentFileTileProps {
   /** Let the filename wrap to two lines instead of truncating — for narrow
    *  filmstrip tiles where "scroll-pe…" says nothing. */
   wrapName?: boolean;
+  /** Filmstrip tiles: the whole tile is the click target and width is scarce,
+   *  so the "Open" button collapses to its arrow glyph and the name gets the
+   *  full row. */
+  compact?: boolean;
 }
 
-export function SentFileTile({ path, sessionId, status, narrow, record: recordOverride, projectPath: projectPathOverride, tileBg = 'bg-well', wrapName = false }: SentFileTileProps) {
+export function SentFileTile({ path, sessionId, status, narrow, record: recordOverride, projectPath: projectPathOverride, tileBg = 'bg-well', wrapName = false, compact = false }: SentFileTileProps) {
   const artifactCtx = useArtifactOptional();
   const open = useOpenFilepath(sessionId);
   const cwd = artifactCtx?.state.sessionCwd?.[sessionId];
@@ -162,11 +166,11 @@ export function SentFileTile({ path, sessionId, status, narrow, record: recordOv
       </div>
       <div className="flex items-center gap-2 px-2.5 py-2 min-w-0">
         <span className="flex-1 min-w-0">
-          <span className={`block text-sm-tight font-semibold text-fg ${wrapName ? 'line-clamp-2 break-all leading-snug' : 'truncate'}`}>{name}</span>
+          <span className={`block text-sm-tight font-semibold text-fg ${wrapName ? 'line-clamp-2 leading-snug [overflow-wrap:anywhere]' : 'truncate'}`}>{name}</span>
           {dir && <span className="block text-2xs font-mono text-fg-muted truncate">{dir}/</span>}
         </span>
-        <span className="shrink-0 inline-flex items-center gap-1 text-2xs font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md px-2 py-1 transition-colors">
-          Open
+        <span className={`shrink-0 inline-flex items-center gap-1 text-2xs font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md transition-colors ${compact ? 'p-1 self-start' : 'px-2 py-1'}`} aria-label="Open">
+          {!compact && 'Open'}
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M7 7h10v10" />
             <path d="M7 17 17 7" />
