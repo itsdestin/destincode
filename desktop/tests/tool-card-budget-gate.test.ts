@@ -85,7 +85,12 @@ describe('friendlyToolDisplay — malformed (non-string) inputs never leak [obje
 
   it('AskUserQuestion: object-valued header falls through to a string question text', () => {
     const d = friendlyToolDisplay(tool('AskUserQuestion', { questions: [{ header: { bad: true }, question: 'Pick one' }] }));
-    expect(d.label).toBe('Pick one');
+    // P-18: the question text now rides the "↳" detail slot (like Read's path),
+    // and the label falls back to plain "Question" — the malformed header must
+    // still never leak, and the question text must still reach the user.
+    expect(d.label).toBe('Question');
+    expect(d.label).not.toContain('[object Object]');
+    expect(d.detail).toBe('↳ Pick one');
   });
 
   // Crash-capable shapes: an object survives `(x as string) || ''` (truthy) and

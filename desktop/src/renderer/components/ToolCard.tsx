@@ -242,9 +242,16 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       // Show the first question's header/text as the tool label.
       // Fix: only accept string values — String(header) on a malformed object
       // input produced an "[object Object]" label.
+      // P-18: read like every other card — short topic as the label, the
+      // question itself as the "↳" detail (Read shows "Reading X ↳ path").
+      // Header missing → plain "Question" so the detail still carries the text.
       const questions = input.questions as any[];
-      const header = asString(questions?.[0]?.header) || asString(questions?.[0]?.question) || 'Question';
-      return { label: truncate(header, 40), detail: '' };
+      const header = asString(questions?.[0]?.header);
+      const question = asString(questions?.[0]?.question);
+      return {
+        label: header ? truncate(header, 40) : 'Question',
+        detail: question ? `↳ ${truncate(question, 60)}` : '',
+      };
     }
 
     case 'ExitPlanMode': {
@@ -586,7 +593,9 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
           >
             Skip it
           </button>
-          <span className="text-fg-faint text-xs select-none">|</span>
+          {/* P-18: a real 1px divider instead of a typed "|" — takes the theme's
+              edge colour and is silent to screen readers. */}
+          <span aria-hidden="true" className="w-px h-3.5 bg-edge shrink-0" />
           {/* Orange, not the generic row's blue: a fourth member of the status
               button set, distinct from the amber band behind it (compare R2·A).
               fullAutoStop implies a native deny-listed ask, so onAlwaysAllow
@@ -892,16 +901,21 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
                   key={oi}
                   disabled={responding}
                   onClick={() => handleSelect(q.question, opt.label, q.multiSelect)}
-                  className={`w-full text-left px-2.5 ${pad} rounded-sm text-xs transition-colors
+                  // P-18: one row shape for both states — a visible dim border
+                  // when unselected, the accent border when selected — so rows
+                  // don't jump between "flat" and "outlined" as the user picks.
+                  className={`w-full text-left px-2.5 ${pad} rounded-md border text-xs transition-colors
                     ${selected
-                      ? 'bg-accent/20 border border-accent/50 text-fg'
-                      : 'bg-inset/40 border border-transparent hover:bg-inset/70 text-fg-dim'}
+                      ? 'bg-accent/15 border-accent text-fg'
+                      : 'bg-inset/40 border-edge-dim hover:bg-inset/70 text-fg-dim'}
                     ${focused ? 'ring-1 ring-white/30' : ''}
                     disabled:opacity-50`}
                 >
                   <div className="flex items-center gap-2">
-                    {/* Selection indicator */}
-                    <span className={`w-3 h-3 shrink-0 rounded-${q.multiSelect ? 'sm' : 'full'} border
+                    {/* Selection indicator. P-18: the two shapes are written out in
+                        full — Tailwind only generates classes it can read verbatim,
+                        so a computed `rounded-${...}` never produced any styling. */}
+                    <span className={`w-3 h-3 shrink-0 border ${q.multiSelect ? 'rounded-sm' : 'rounded-full'}
                       ${selected ? 'bg-accent border-accent' : 'border-edge'}`}
                     />
                     <span className="font-medium">{opt.label}</span>
@@ -998,7 +1012,9 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
       {tool.status === 'failed' && (
         <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
       )}
-      <span className="text-fg-faint text-xs select-none">|</span>
+      {/* P-18: a real 1px divider instead of a typed "|" — takes the theme's
+          edge colour and is silent to screen readers. */}
+      <span aria-hidden="true" className="w-px h-3.5 bg-edge shrink-0" />
       <span className="text-xs font-medium text-fg-2">{display.label}</span>
       {display.detail && (
         <span className="text-xs text-fg-muted truncate flex-1 min-w-0">{display.detail}</span>

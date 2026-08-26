@@ -215,13 +215,10 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
 
   return (
     <>
-      <Dialog open onClose={onCancel} size="prompt" aria-label="Close session" scrollBody={false}>
-          <div className="px-4 pt-4 pb-3 border-b border-edge">
-            <h2 className="text-sm font-bold text-fg">Close session</h2>
-            {sessionName && (
-              <p className="text-2xs text-fg-muted mt-1 truncate">{sessionName}</p>
-            )}
-          </div>
+      {/* P-15: title + session name come from the shared Dialog header now, so
+          this prompt gets the same header (and the ✕) every other dialog has
+          instead of a hand-rolled copy of it. */}
+      <Dialog open onClose={onCancel} size="prompt" title="Close session" subtitle={sessionName} scrollBody={false}>
           {/* min-h-0 + overflow-y-auto: this dialog passes scrollBody={false}
               because it renders its own header and footer, and Dialog's own doc
               is explicit that doing so makes the SCROLL REGION the caller's
@@ -322,32 +319,30 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               </>
             )}
           </div>
-          <div className="px-4 pb-4 flex items-center gap-2 justify-between">
+          {/* P-15: the footer used to put a bespoke pill toggle BESIDE the two
+              buttons, and at the prompt width (340px) both the toggle label and
+              "Close session" wrapped onto two lines. Now "Don't show again" is
+              its own row above the buttons, built on the shared Toggle
+              primitive (a real switch, so it announces its state), and the
+              buttons sit right-aligned on one line. */}
+          <div className="px-4 pb-4 flex flex-col gap-3">
             {/* Don't show again — persists suppress flag to localStorage so App.tsx
                 skips this prompt on future closes and destroys sessions directly. */}
-            <button
-              onClick={() => setDontShowAgain((v) => !v)}
-              className="flex items-center gap-1.5 text-3xs text-fg-muted hover:text-fg transition-colors"
-              aria-pressed={dontShowAgain}
-            >
-              <span
-                className={`w-7 h-4 rounded-full transition-colors flex-shrink-0 ${
-                  dontShowAgain ? 'bg-accent' : 'bg-edge'
-                }`}
-              >
-                <span
-                  className={`block w-3 h-3 rounded-full bg-on-accent shadow transition-transform mt-0.5 ${
-                    dontShowAgain ? 'translate-x-3.5' : 'translate-x-0.5'
-                  }`}
-                />
-              </span>
+            <label className="flex items-center gap-2 text-2xs text-fg-muted whitespace-nowrap cursor-pointer">
+              <Toggle
+                checked={dontShowAgain}
+                onChange={setDontShowAgain}
+                aria-label="Don't show again"
+              />
               Don't show again
-            </button>
-            <div className="flex gap-2">
-              <Button variant="ghost" onClick={onCancel}>
+            </label>
+            <div className="flex gap-2 justify-end">
+              <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={onCancel}>
                 Cancel
               </Button>
               <Button
+                size="sm"
+                className="whitespace-nowrap"
                 onClick={() => {
                   // Persist suppress preference before confirming so the caller
                   // can immediately skip the prompt on the next close.

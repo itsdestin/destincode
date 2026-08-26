@@ -1,4 +1,3 @@
-import { createPortal } from 'react-dom';
 import { Button, Dialog } from './ui';
 
 const DONATE_URL = 'https://buymeacoffee.com/itsdestin';
@@ -18,17 +17,19 @@ const DONATE_URL = 'https://buymeacoffee.com/itsdestin';
 export function DonateConfirm({ open, onClose }: { open: boolean; onClose: () => void }) {
   if (!open) return null;
 
-  return createPortal(
-    <>
-      <Dialog
-        open
-        onClose={onClose}
-        layer={3}
-        size="prompt"
-        aria-label="Confirm opening the donation link"
-        scrollBody={false}
-        className="p-6 text-center"
-      >
+  // P-15: every dialog carries the shared header so it has a visible title and
+  // a ✕ — this one had neither. Dialog already portals itself, so the extra
+  // createPortal wrapper it used to sit in is gone too.
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      layer={3}
+      size="prompt"
+      title="Support YouCoded"
+      scrollBody={false}
+    >
+      <div className="p-6 text-center">
         <p className="text-xs text-fg-muted mb-1">Donations supported via</p>
         <div className="flex items-center justify-center gap-2 mb-5">
           {/* Custom coffee-mug icon: body + handle + rising steam. Ties to "Buy Me a Coffee" label via BMC yellow. */}
@@ -58,8 +59,7 @@ export function DonateConfirm({ open, onClose }: { open: boolean; onClose: () =>
             Open
           </Button>
         </div>
-      </Dialog>
-    </>,
-    document.body,
+      </div>
+    </Dialog>
   );
 }

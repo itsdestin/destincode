@@ -113,6 +113,38 @@ describe('CloseSessionPrompt', () => {
     expect(onConfirm.mock.calls[0][0].flags).toEqual({});
   });
 
+  // P-15 (2026-08-25 UI audit): header comes from the shared Dialog shell (so
+  // the ✕ exists), and "Don't show again" is a real switch on its own row
+  // rather than a bespoke pill wedged beside the buttons.
+  it('uses the shared header and a real switch for "Don\'t show again"', async () => {
+    mockWindowClaude({ tags: [], note: '', supported: true, flags: {} });
+    // jsdom here has no localStorage; install a Map-backed stub (same shape
+    // handle-prompt.test.tsx uses) so the suppress write can be observed.
+    const store = new Map<string, string>();
+    const stub = {
+      getItem: (k: string) => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string) => void store.set(k, String(v)),
+      removeItem: (k: string) => void store.delete(k),
+      clear: () => store.clear(),
+    };
+    Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true, writable: true });
+    (window as any).localStorage = stub;
+    const onConfirm = mount();
+    await screen.findByText('No tags');
+    expect(screen.getByRole('heading', { name: 'Close session' })).toBeInTheDocument();
+    expect(screen.getByText('fix chat scroll stick')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close Close session' })).toBeInTheDocument();
+
+    const sw = screen.getByRole('switch', { name: "Don't show again" });
+    expect(sw).toHaveAttribute('aria-checked', 'false');
+    fireEvent.click(sw);
+    expect(sw).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Close session' }));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    // The switch still drives the suppress flag the caller reads on the next close.
+    expect(store.get('youcoded-close-prompt-disabled')).toBe('1');
+  });
+
   it('marks complete from the toggle at the bottom', async () => {
     mockWindowClaude({ tags: [], note: '', supported: true, flags: {} });
     const onConfirm = mount();

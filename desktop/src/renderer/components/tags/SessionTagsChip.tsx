@@ -55,7 +55,8 @@ export function SessionTagsChip({ sessionId }: { sessionId: string | null }) {
             ))}
             {meta.note && <NotebookIcon className="w-3 h-3 text-fg-muted shrink-0" />}
             {leadLabel && (
-              <span className="truncate text-fg-2">
+              // P-10: below phone width the chip keeps only its dots so the status bar stays one row
+              <span className="truncate text-fg-2 hidden sm:inline">
                 {leadLabel}{labelCount > 1 ? ` +${labelCount - 1}` : ''}
               </span>
             )}

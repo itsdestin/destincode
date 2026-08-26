@@ -57,20 +57,22 @@ interface StatusData {
 const MODELS = ['haiku', 'sonnet', 'opus[1m]', 'fable'] as const;
 type ModelAlias = typeof MODELS[number];
 
-const MODEL_DISPLAY: Record<ModelAlias | 'unknown', { label: string; color: string; border: string; icon?: ProviderIconKey }> = {
-  // Restyle: chips now use the standard `bg-panel` surface (set via className
-  // in the JSX, not here) like every other status-bar chip, with brand-colored
-  // TEXT + a matching tinted BORDER.
+const MODEL_DISPLAY: Record<ModelAlias | 'unknown', { label: string; color: string; icon?: ProviderIconKey }> = {
+  // P-10 (2026-08-25 UI audit): `color` now tints ONLY the chip's leading icon.
+  // The chip's border and text use the same grey treatment as every other
+  // status-bar chip — a brand-coloured outline was the one coloured border in
+  // the bar and read as a warning. The old tinted `border` field is gone.
   // CC sessions use the official Claude Code CLI mascot and adaptive brand token.
-  sonnet:      { label: 'Sonnet', color: 'var(--brand-claude)', border: 'color-mix(in srgb, var(--brand-claude) 35%, transparent)',  icon: 'claudecode' },
-  'opus[1m]':  { label: 'Opus',   color: 'var(--brand-claude)', border: 'color-mix(in srgb, var(--brand-claude) 35%, transparent)',  icon: 'claudecode' },
-  haiku:       { label: 'Haiku',  color: 'var(--brand-claude)', border: 'color-mix(in srgb, var(--brand-claude) 35%, transparent)',  icon: 'claudecode' },
-  // Fable 5 — most capable. Fuchsia text keeps it as the top/premium tier,
+  sonnet:      { label: 'Sonnet', color: 'var(--brand-claude)', icon: 'claudecode' },
+  'opus[1m]':  { label: 'Opus',   color: 'var(--brand-claude)', icon: 'claudecode' },
+  haiku:       { label: 'Haiku',  color: 'var(--brand-claude)', icon: 'claudecode' },
+  // Fable 5 — most capable. Fuchsia icon keeps it as the top/premium tier,
   // distinct from the Anthropic-orange aliases and the amber reserved for AUTO.
-  fable:       { label: 'Fable',  color: '#E879F9', border: 'rgba(232,121,249,0.35)',  icon: 'claudecode' },
+  fable:       { label: 'Fable',  color: '#E879F9', icon: 'claudecode' },
   // Error state, not a real model — red like the high-danger usage threshold
   // (utilizationColor/contextColor) so it reads as "wrong", never as a normal pill.
-  unknown:     { label: 'Model Unknown', color: '#DD4444', border: 'rgba(221,68,68,0.3)' },
+  // This one has no icon, so its red stays on the text (it IS an alert).
+  unknown:     { label: 'Model Unknown', color: '#DD4444' },
 };
 
 /**
@@ -96,29 +98,18 @@ function ccChipDisplay(model: Exclude<ModelChip, { kind: 'native' }>) {
  * models get Anthropic orange, Qwen gets its purple, Google gets its blue,
  * and anything unrecognized falls back to --tag-blue (the old default).
  *
- * The style now uses `bg-panel` (set via className in the JSX, same as the
- * CC alias chips and every other status-bar chip) with brand-colored text +
- * a matching tinted border. The old transparent-tint background is gone.
+ * P-10: the colour tints ONLY the leading icon (when the brand has one). The
+ * chip's border and text are the shared grey chip treatment, same as the
+ * CC alias chip and every other status-bar chip.
  */
 function nativeChipStyle(modelId: string, providerType?: string | null): {
   color: string;
-  borderColor: string;
   icon?: ProviderIconKey;
 } {
   const brand = resolveModelBrand(modelId, providerType);
-  if (brand) {
-    return {
-      color: brand.color,
-      borderColor: `color-mix(in srgb, ${brand.color} 35%, transparent)`,
-      icon: brand.icon,
-    };
-  }
+  if (brand) return { color: brand.color, icon: brand.icon };
   // Fallback: the old --tag-blue default for unrecognized models.
-  const fallback = 'var(--tag-blue)';
-  return {
-    color: fallback,
-    borderColor: `color-mix(in srgb, ${fallback} 35%, transparent)`,
-  };
+  return { color: 'var(--tag-blue)' };
 }
 
 // Amber (#F2B33D) for AUTO matches CC's own banner color and visually sits
@@ -1059,13 +1050,22 @@ export default function StatusBar({
     : nativeChips?.tokensPerSecond ?? null;
 
   return (
-    <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-3xs text-fg-muted">
+    // P-10: 11px (text-2xs) is the floor for text people read (design guide G-5);
+    // the bar was the last surface below it. "Collapse before wrap": below `sm`
+    // (phone width) the bar is a single non-wrapping row and the chips shed their
+    // text (effort suffix, theme name) instead of spilling onto a second row with
+    // one orphaned chip. Tailwind breakpoints only — no width sniffing here
+    // (react-renderer rule). `overflow-hidden` is safe: every popup this bar opens
+    // is portalled to document.body, so nothing anchored inside it gets clipped.
+    <div className="status-bar flex flex-nowrap overflow-hidden sm:flex-wrap sm:overflow-visible items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-2xs text-fg-muted">
       {/* Combined model + effort pill — clicking opens the full picker (same as /effort).
          Shift+Space still cycles models via the keyboard shortcut in App.tsx.
 
-         Restyle: the chip now uses the standard `bg-panel border-edge-dim` surface
-         (same as usage/theme/version chips) with brand-colored TEXT + matching tinted
-         BORDER. Native chips auto-detect the brand from the model id/provider type. */}
+         P-10: the chip uses the shared grey `bg-panel border-edge-dim text-fg-muted`
+         treatment like every other chip; ONLY the leading icon carries the brand
+         colour, so "which model" is still signalled by colour without the chip
+         looking like a warning. Native chips auto-detect the brand from the model
+         id/provider type. */}
       {model && (model.kind === 'native' ? (
         // Native runtime: the bound model id IS the truth, so this chip never
         // shows an error state. The full id goes in the title because the label
@@ -1075,8 +1075,7 @@ export default function StatusBar({
           return (
             <button
               onClick={onOpenModelPicker}
-              className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors max-w-[14rem] truncate"
-              style={{ color: nStyle.color, borderColor: nStyle.borderColor }}
+              className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim text-fg-muted cursor-pointer hover:border-edge hover:bg-inset transition-colors max-w-[14rem] truncate"
               title={`${model.modelId} — click to change model`}
             >
               {/* No effort segment: /effort and MAX_EFFORT_MODELS are Claude Code
@@ -1084,7 +1083,12 @@ export default function StatusBar({
                   min-w-0 is load-bearing: a flex child defaults to min-width:auto
                   and won't shrink below its content, so `truncate` alone would let
                   a long GGUF name blow past the button's max-w instead of eliding. */}
-              {nStyle.icon && <ProviderIcon icon={nStyle.icon} className="flex-shrink-0" />}
+              {/* P-10: brand colour lives on the icon only (see nativeChipStyle). */}
+              {nStyle.icon && (
+                <span className="inline-flex flex-shrink-0" style={{ color: nStyle.color }}>
+                  <ProviderIcon icon={nStyle.icon} />
+                </span>
+              )}
               <span className="truncate min-w-0">{model.label}</span>
             </button>
           );
@@ -1095,18 +1099,26 @@ export default function StatusBar({
           return (
             <button
               onClick={onOpenModelPicker}
-              className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:border-edge hover:bg-inset transition-colors"
-              style={{ color: display.color, borderColor: display.border }}
+              className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim text-fg-muted cursor-pointer hover:border-edge hover:bg-inset transition-colors"
+              // P-10: brand colour moved to the icon. The 'unknown' error state has
+              // no icon, so it keeps red TEXT — that one is meant to read as wrong.
+              style={model.kind === 'unknown' ? { color: display.color } : undefined}
               title={model.kind === 'unknown'
                 ? "YouCoded couldn't confirm which model this session is using — click to set one explicitly"
                 : 'Click to change model and effort (Shift+Space cycles model)'}
             >
-              {display.icon && <ProviderIcon icon={display.icon} className="flex-shrink-0" />}
+              {display.icon && (
+                <span className="inline-flex flex-shrink-0" style={{ color: display.color }}>
+                  <ProviderIcon icon={display.icon} />
+                </span>
+              )}
               <span>{display.label}</span>
+              {/* P-10 collapse-before-wrap: the "| <effort> Effort" suffix is
+                  desktop-only; on a phone the model name alone fits the row. */}
               {model.kind !== 'unknown' && (
                 <>
-                  <span className="opacity-40">|</span>
-                  <span className="capitalize">{effort || 'auto'} Effort</span>
+                  <span className="opacity-40 hidden sm:inline">|</span>
+                  <span className="capitalize hidden sm:inline">{effort || 'auto'} Effort</span>
                 </>
               )}
             </button>
@@ -1443,7 +1455,8 @@ export default function StatusBar({
         return (
           <button
             onClick={handler}
-            className={`px-1.5 py-0.5 rounded-sm border text-4xs sm:text-3xs ${styleClass} ${handler ? 'cursor-pointer hover:brightness-125 transition-all' : ''}`}
+            // P-10: one step up with the bar's base size — 11px floor on desktop.
+            className={`px-1.5 py-0.5 rounded-sm border text-3xs sm:text-2xs ${styleClass} ${handler ? 'cursor-pointer hover:brightness-125 transition-all' : ''}`}
             title={isFailing ? 'Sync is failing — click for details' : 'Sync warnings — click for details'}
           >
             {label}
@@ -1451,14 +1464,32 @@ export default function StatusBar({
         );
       })()}
 
-      {/* Theme pill */}
+      {/* Theme pill.
+          P-10: this is a label that happens to be clickable, not a control the
+          user reaches for — so no border/background (it was drawn like a button
+          next to real buttons). Hover reveals a small cycle glyph so the click
+          affordance is still discoverable. Below `sm` the name collapses to a
+          palette icon (collapse-before-wrap); `title` keeps the name reachable. */}
       {show('theme') && (
         <button
           onClick={cycleTheme}
-          className="px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:bg-inset transition-colors"
+          className="group flex items-center gap-1 px-1 py-0.5 rounded-sm text-fg-muted cursor-pointer hover:bg-inset transition-colors"
           title="Click to cycle theme"
+          aria-label={`Theme: ${activeTheme.name}. Click to cycle theme.`}
         >
-          {activeTheme.name}
+          {/* Palette icon — phone width only */}
+          <svg className="sm:hidden flex-shrink-0" width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 3a9 9 0 0 0 0 18c1.1 0 2-.9 2-2 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.2 0-1.1.9-2 2-2h2.3A4.7 4.7 0 0 0 22 9.8C21.6 5.9 17.2 3 12 3z" />
+            <circle cx="7.5" cy="10.5" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="11" cy="7" r="1.2" fill="currentColor" stroke="none" />
+            <circle cx="15.5" cy="8" r="1.2" fill="currentColor" stroke="none" />
+          </svg>
+          <span className="hidden sm:inline">{activeTheme.name}</span>
+          {/* Cycle glyph — hover only */}
+          <svg className="flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M21 12a9 9 0 1 1-2.6-6.4" />
+            <polyline points="21 3 21 9 15 9" />
+          </svg>
         </button>
       )}
 
