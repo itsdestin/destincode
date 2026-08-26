@@ -16,6 +16,7 @@ import { isAndroid } from '../platform';
 import { SessionTagsChip } from './tags/SessionTagsChip';
 import { Dialog } from './ui';
 import { resolveModelBrand, type ProviderIconKey } from './provider-brand';
+import type { SessionTotals } from '../state/session-totals';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -456,6 +457,10 @@ interface Props {
    *  is the same number meaning two very different things. Absent → treated as
    *  a first turn, so an unwired caller errs toward the calm reading. */
   turnsWithUsage?: 0 | 1 | 2;
+  /** Native sessions only: session-so-far totals (spec §2) — tokens, cost and
+   *  edited lines, specialists included. Absent for CC sessions, which take the
+   *  same numbers from the statusline instead. */
+  nativeTotals?: SessionTotals | null;
 }
 
 
@@ -1010,12 +1015,18 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
 // --- Main StatusBar component ---
 
+// One vocabulary for every session-scoped chip (spec §2). Repeated wording is
+// the point: three chips and the /usage card must not each invent their own
+// description of the same scope.
+const SCOPE_NOTE = 'Counts this session so far, including specialists.';
+const INPUT_NOTE = 'Input is counted per request — a long turn re-sends its history each step, and that is what you are billed for.';
+
 export default function StatusBar({
   statusData, onRunSync, onOpenSync, model, modelProviderType, provider,
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
-  nativeUsage, nativeContextLength, turnsWithUsage,
+  nativeUsage, nativeContextLength, turnsWithUsage, nativeTotals,
 }: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncWarnings } = statusData;
 
@@ -1044,17 +1055,24 @@ export default function StatusBar({
   // context % is accurate for the local model, not a hardcoded guess.
   const nativeChips = selectNativeStatusChips(nativeUsage, nativeContextLength);
 
-  // In/Out come from the CC statusline for CC sessions and from turn-complete
-  // usage for native ones. Native used to render its OWN "Tokens" chip (just
-  // in+out summed) while these two sat at "--" forever, because sessionStats is
-  // only ever written by CC — two dead chips beside a redundant third
-  // (Destin, 2026-07-28). One concept, one chip, whichever runtime feeds it.
-  const inTokens = ss?.inputTokens ?? nativeChips?.inputTokens ?? null;
-  const outTokens = ss?.outputTokens ?? nativeChips?.outputTokens ?? null;
+  // In/Out come from the CC statusline for CC sessions and from SESSION TOTALS
+  // for native ones. They used to come from the last completed turn, which made
+  // one label mean two different measurements depending on the runtime — the
+  // defect this change exists to remove (spec §6). Totals include specialists;
+  // input is counted per request, because that is what a provider bills for.
+  const inTokens = ss?.inputTokens ?? nativeTotals?.inputTokens ?? null;
+  const outTokens = ss?.outputTokens ?? nativeTotals?.outputTokens ?? null;
+  // Cached/Reuse get the identical treatment: CC's statusline first, then
+  // session totals for native — never the last-turn nativeChips, which would
+  // blend "this session so far" and "the last turn" under one label again.
+  const cacheReadTotal = ss?.cacheReadTokens ?? nativeTotals?.cacheReadTokens ?? null;
+  const cacheCreationTotal = ss?.cacheCreationTokens ?? nativeTotals?.cacheCreationTokens ?? null;
   // Speed had the identical problem: a CC chip stuck at "--" for native sessions
   // beside a native chip that duplicated it AND ignored show('output-speed'), so
   // hiding Speed in settings didn't hide it. CC derives it from the statusline's
   // apiDuration; native's provider already reports tokens/sec on turn-complete.
+  // Unlike In/Out/Cached/Reuse above, this one stays LAST-TURN for both runtimes
+  // — it measures a moment (how fast is it going right now), not a session total.
   const speedTokPerSec = ss?.outputTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
     ? Math.round(ss.outputTokens / ss.apiDuration)
     : nativeChips?.tokensPerSecond ?? null;
@@ -1302,43 +1320,52 @@ export default function StatusBar({
         </span>
       )}
 
-      {/* Input tokens. Rule 1 (spec §3): no value, no chip. */}
+      {/* Input tokens. Rule 1 (spec §3): no value, no chip. In a native session
+          this is a SESSION TOTAL (nativeTotals), not the last turn — see the
+          inTokens derivation above (spec §6). Fix: switched the displayed
+          value from formatTokens' abbreviated "12.3k" to toLocaleString's exact
+          "12,345" — a SESSION total compounds across many turns and can run
+          well past the point where an abbreviation reads as precise, unlike
+          the single-turn figure this chip used to show. */}
       {show('tokens-in') && inTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={`Input tokens: ${inTokens.toLocaleString()}`}
+          title={ss == null && nativeTotals != null ? `${SCOPE_NOTE} ${INPUT_NOTE}` : `Input tokens: ${inTokens.toLocaleString()}`}
         >
           <span className="text-fg-muted">In:</span>
-          <span className="text-fg-2">{formatTokens(inTokens)}</span>
+          <span className="text-fg-2">{inTokens.toLocaleString()}</span>
         </span>
       )}
 
-      {/* Output tokens. Rule 1 (spec §3): no value, no chip. */}
+      {/* Output tokens. Rule 1 (spec §3): no value, no chip. Session total for
+          native (spec §6); see the In chip above for why this shows the exact
+          count rather than formatTokens' abbreviation. */}
       {show('tokens-out') && outTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={`Output tokens: ${outTokens.toLocaleString()}`}
+          title={ss == null && nativeTotals != null ? SCOPE_NOTE : `Output tokens: ${outTokens.toLocaleString()}`}
         >
           <span className="text-fg-muted">Out:</span>
-          <span className="text-fg-2">{formatTokens(outTokens)}</span>
+          <span className="text-fg-2">{outTokens.toLocaleString()}</span>
         </span>
       )}
 
-      {/* Cache efficiency. WHY the ?? nativeChips fallback: sessionStats is written
+      {/* Cache efficiency. WHY the ?? nativeTotals fallback: sessionStats is written
           by Claude Code's statusline, which native sessions never run — so these two
           chips sat at '--' forever while the harness shipped the numbers on every
-          turn-complete. Same fix the In/Out and Speed chips got on 2026-07-28.
+          turn-complete. Native reads SESSION TOTALS here (spec §6), not the last
+          turn — same reasoning as In/Out above.
           cr/cc are resolved ONCE so the title, the value and the hit-rate math can
           never disagree about which source they came from.
           Rule 1 (spec §3): no value, no chip — bail before rendering. */}
       {show('cache-stats') && (() => {
-        const cr = ss?.cacheReadTokens ?? nativeChips?.cacheReadTokens ?? null;
+        const cr = cacheReadTotal;
         if (cr == null) return null;
-        const cc = ss?.cacheCreationTokens ?? nativeChips?.cacheCreationTokens ?? null;
+        const cc = cacheCreationTotal;
         return (
           <span
             className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-            title={`Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}`}
+            title={ss == null && nativeTotals != null ? SCOPE_NOTE : `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}`}
           >
             <span className="text-fg-muted">Cached:</span>
             <span className="text-[#4CAF50]">{formatTokens(cr)}</span>
@@ -1348,15 +1375,21 @@ export default function StatusBar({
 
       {/* Context reuse — how much of the prompt came from cache instead of being
           re-read. See selectCacheReuse for why this is NOT reads/(reads+writes).
+          Session total for native (spec §6): reads nativeTotals, not the last
+          turn's nativeChips, so this stops meaning something different from the
+          In/Out/Cached chips beside it.
           Rule 1 (spec §3): 'unknown' means no data to report — bail before
           rendering. 'first-turn' is a real, known state (nothing to reuse yet)
           and keeps rendering "New", same as before. */}
       {show('cache-hit-rate') && (() => {
-        const reuse = selectCacheReuse(ss, nativeChips);
+        const reuse = selectCacheReuse(ss, nativeTotals);
         const display = selectReuseDisplay(reuse, turnsWithUsage);
         if (display.kind === 'unknown') return null;
         const prompt = (reuse.promptTokens ?? 0).toLocaleString();
-        const title = display.kind === 'first-turn'
+        const usingTotals = ss == null && nativeTotals != null;
+        const title = usingTotals
+          ? SCOPE_NOTE
+          : display.kind === 'first-turn'
           ? `Nothing to reuse yet — this is the session's first turn, so all ${prompt} prompt tokens were read fresh.`
           : display.pct === 0
             ? `None of this turn's prompt came from cache; all ${prompt} tokens were read fresh. Caches expire after a few minutes idle, and reset when the model or tool list changes.`
@@ -1392,11 +1425,22 @@ export default function StatusBar({
       )}
 
       {/* Output speed — derived: outputTokens / apiDuration. Rule 1 (spec §3):
-          no value, no chip. */}
+          no value, no chip. Deliberately stays LAST-TURN for both runtimes (see
+          the speedTokPerSec comment above) — never fed by nativeTotals.
+          Fix (task-7 review): this title used to be a ternary keyed on
+          `ss?.outputTokens != null && ss?.apiDuration != null`, but that
+          condition does NOT follow from the render guard — sessionStats (ss) is
+          only ever written by Claude Code's statusline, so it is always null in
+          a native session, and speedTokPerSec there comes from nativeChips
+          instead. That made the "specific" branch unreachable for native
+          sessions and, if collapsed onto that branch instead of this one, would
+          dereference a null ss on every native render. The generic text is the
+          only branch that is actually valid regardless of source, so it is the
+          one kept. */}
       {show('output-speed') && speedTokPerSec != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output tokens per second on the last turn'}
+          title="Output tokens per second on the last turn"
         >
           <span className="text-fg-muted">Speed:</span>
           <span className="text-fg-2">
@@ -1405,23 +1449,32 @@ export default function StatusBar({
         </span>
       )}
 
-      {/* Code changes — lines added/removed */}
-      {show('code-changes') && (
-        <span
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.linesAdded != null ? `Lines added: ${ss.linesAdded} | Lines removed: ${ss.linesRemoved ?? 0}` : 'Code changes'}
-        >
-          {ss?.linesAdded != null || ss?.linesRemoved != null ? (
-            <>
-              <span className="text-[#4CAF50]">+{ss?.linesAdded ?? 0}</span>
-              <span className="text-[#DD4444]">-{ss?.linesRemoved ?? 0}</span>
-              <span className="text-fg-muted hidden sm:inline">lines</span>
-            </>
-          ) : (
-            <span className="text-fg-muted">No changes</span>
-          )}
-        </span>
-      )}
+      {/* Code changes — lines added/removed.
+          CC sessions keep the statusline count: it is Claude Code's own number
+          and covers edits made through ANY path, including shell commands.
+          Native sessions use the derived count (structuredPatch hunks stored on
+          tool calls AND on specialist segments). The two are not comparable
+          across runtimes; each is the most complete number its runtime has.
+          Nothing edited yet → the chip does not render. It used to say "No
+          changes", which was FALSE in every native session (spec §1). */}
+      {show('code-changes') && (() => {
+        const added = ss?.linesAdded ?? nativeTotals?.linesAdded ?? null;
+        const removed = ss?.linesRemoved ?? nativeTotals?.linesRemoved ?? null;
+        if (!added && !removed) return null;
+        const title = ss?.linesAdded != null
+          ? `Lines added: ${added ?? 0} | Lines removed: ${removed ?? 0}`
+          : `${SCOPE_NOTE} Counts edits made through the model's editing tools; edits made by shell commands are not counted.`;
+        return (
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+            title={title}
+          >
+            <span className="text-[#4CAF50]">+{added ?? 0}</span>
+            <span className="text-[#DD4444]">-{removed ?? 0}</span>
+            <span className="text-fg-muted hidden sm:inline">lines</span>
+          </span>
+        );
+      })()}
 
       {/* Git branch — reads from statusline.sh's .gitbranch-{sessionId} file */}
       {show('git-branch') && gitBranch && (

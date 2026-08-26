@@ -41,6 +41,7 @@ import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
 import { useNativeSessionUsage, useTurnsWithUsage } from './hooks/useNativeSessionUsage';
+import { useNativeSessionTotals } from './hooks/useNativeSessionTotals';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -2538,6 +2539,9 @@ function AppInner() {
   // NOT gated on isNativeSession — CC turns carry usage too (the transcript
   // watcher stamps it), and the reuse chip serves both runtimes.
   const turnsWithUsage = useTurnsWithUsage(sessionId);
+  // Session-so-far totals for the bar's token / cost / code-change chips.
+  // Null for CC sessions, which take those numbers from the statusline.
+  const nativeTotals = useNativeSessionTotals(isNativeSession ? sessionId : null);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -2996,6 +3000,7 @@ function AppInner() {
                   nativeUsage={nativeStatusUsage}
                   nativeContextLength={nativeStatusUsage?.contextLength ?? null}
                   turnsWithUsage={turnsWithUsage}
+                  nativeTotals={nativeTotals}
                 />
               </div>
           </>
