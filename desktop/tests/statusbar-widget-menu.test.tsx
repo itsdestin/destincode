@@ -65,6 +65,11 @@ describe('Customize Status Bar menu', () => {
 
   it('explains nothing in a Claude Code session', async () => {
     await openMenu('claude');
+    // Positive control FIRST: the two assertions below are absence checks, and
+    // an absence check passes just as happily against a menu that never opened.
+    // The 5h Usage row is the row those reasons would attach to, so finding it
+    // proves the menu is open AND that this row carries no reason line.
+    expect(screen.getByText('5h Usage')).toBeTruthy();
     expect(screen.queryByText(/Claude Code sessions only/)).toBeNull();
     expect(screen.queryByText(/Not measured in this kind/)).toBeNull();
   });
