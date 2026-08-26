@@ -143,7 +143,12 @@ export function SentFileTile({ path, sessionId, status, error, narrow, tileBg = 
     <button
       type="button"
       onClick={() => { void open(path); }}
-      title={failed ? `${path} — ${error || 'could not be sent'}` : `Open ${name}`}
+      // A failed tile names the TOOL's reason when it has one and stops there when
+      // it does not — `error || 'could not be sent'` asserted a cause nobody
+      // verified, which is the shape `status-strip-authority.test.tsx` scans for
+      // (docs/error-message-standards.md). The "Couldn't send" overlay already
+      // tells the user it failed; the tooltip must not invent WHY.
+      title={failed ? (error ? `${path} — ${error}` : path) : `Open ${name}`}
       // data-file-path (absolute) lets the chat right-click menu recover the
       // real path for View in folder / Copy as path — left-click opens the
       // in-app artifact viewer.

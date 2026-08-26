@@ -87,6 +87,19 @@ describe('DeliverablesCard', () => {
     expect(screen.getByTestId('sent-file-tile')).toHaveAttribute('title', expect.stringContaining('is a directory'));
   });
 
+  it('a failed tile with NO error text names the path and invents no cause', () => {
+    // The repo guard (status-strip-authority.test.tsx) scans for the SHAPE
+    // `someError || 'a guess'`. This pins the behaviour behind it: when the tool
+    // gave us no reason, the tooltip must say nothing about WHY. The overlay
+    // already tells the user it failed (docs/error-message-standards.md).
+    setViewport(false);
+    render(<DeliverablesCard tools={[call('t1', ['/tmp/out'], { status: 'failed' })]} sessionId="s" />);
+    expect(screen.getByText('Couldn’t send')).toBeInTheDocument();
+    const tile = screen.getByTestId('sent-file-tile');
+    expect(tile).toHaveAttribute('title', '/tmp/out');
+    expect(tile.getAttribute('title')).not.toMatch(/could not|couldn|failed|not found|—/i);
+  });
+
   it('a running call shows Sending…', () => {
     setViewport(false);
     render(<DeliverablesCard tools={[call('t1', ['/p/a.md'], { status: 'running' })]} sessionId="s" />);
