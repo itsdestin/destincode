@@ -237,7 +237,18 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
   // ACTIVE Ctrl+O expand/collapse-all first, so a card that mounts mid
   // expand-all still comes up open, and mid collapse-all still comes up
   // closed — only the plain-mount default changed, from true to false.
-  const [open, setOpen] = useState(() => getInitialExpanded(false));
+  //
+  // WHY hasFailure overrides the plain-mount default: both the per-tile
+  // "Couldn't send" overlay and the failures paragraph below only render
+  // while `open` is true, and the header's count treats a failed call
+  // identically to a sent one — so a card that mounted collapsed could fail
+  // outright and look like an ordinary one-liner. A delivery failure is an
+  // error the user must see without clicking anything
+  // (docs/error-message-standards.md); it must never be able to hide behind
+  // a collapsed card. An explicit Ctrl+O expand/collapse-all still wins
+  // either way, same as the plain-mount case.
+  const hasFailure = tools.some((t) => t.status === 'failed');
+  const [open, setOpen] = useState(() => getInitialExpanded(hasFailure));
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
 
   const entries = useMemo(

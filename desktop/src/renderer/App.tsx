@@ -98,6 +98,7 @@ import { BuddyOverlayApp } from './components/buddy/BuddyOverlayApp';
 import { EscCloseProvider, useEscStackEmpty, useDismissTop } from './hooks/use-esc-close';
 // Pure guard for the chat-focused ESC -> PTY forwarding listener below.
 import { shouldForwardEscToPty } from './state/should-forward-esc-to-pty';
+import { NARROW_VIEWPORT_QUERY } from './hooks/use-narrow-viewport';
 
 type ViewMode = 'chat' | 'terminal';
 
@@ -1549,7 +1550,7 @@ function AppInner() {
     // history, and never over unsaved edits. Same raw event feed as the tracker.
     const deliverableAutoOpen = createDeliverableAutoOpen({
       getFocusedSessionId: () => focusedSessionIdRef.current,
-      canAutoOpen: () => getPlatform() === 'electron' && !window.matchMedia?.('(max-width: 639.98px)').matches,
+      canAutoOpen: () => getPlatform() === 'electron' && !window.matchMedia?.(NARROW_VIEWPORT_QUERY).matches,
       guard: guardDirtyEditor,
       open: (sid, path) => {
         // drawerOpensImmediately: false — nobody clicked this. Opening the

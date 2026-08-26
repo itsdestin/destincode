@@ -88,7 +88,21 @@ export async function openFilepath(
     const projRes = await (window.claude as any).artifacts.listProject(cwd);
     const trackedList: ArtifactRecord[] = projRes?.ok ? (projRes.artifacts ?? []) : [];
     let projMatch: ArtifactRecord | undefined = findBestMatch(trackedList, path);
-    if (!projMatch) {
+    // WHY (deferred mode only): an auto-open must never select an EPHEMERAL
+    // record. listAllFiles (project-file-discovery.ts) returns a DISCOVERED
+    // record whose `id` is a relative path, not a persisted sidecar ULID. In
+    // deferred/auto-open mode, LIST_PROJECT racing a queued APPEND_VERSION
+    // means the file can be real but not yet in the sidecar — so a discovered
+    // match here is exactly the case where a concurrent whole-session refresh
+    // (artifact-tool-use-tracker's debounced listSession -> replaces the
+    // session artifact list wholesale) wipes that id out from under the
+    // selection a moment later, leaving nothing for ACTIVE_ARTIFACT_SET to
+    // find and force-opening the file list instead of the file
+    // (SessionDrawer.tsx: `showList = !active`). A synchronous click never
+    // races that refresh, so only click mode may still fall back to the disk
+    // scan; deferred mode instead falls through to artifactify below, which
+    // PERSISTS a real sidecar record before selecting it.
+    if (!projMatch && drawerOpensImmediately) {
       const filesRes = await (window.claude as any).artifacts.listAllFiles(cwd);
       const filesList: ArtifactRecord[] = filesRes?.ok ? (filesRes.files ?? []) : [];
       projMatch = findBestMatch(filesList, path);

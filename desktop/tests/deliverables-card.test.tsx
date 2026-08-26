@@ -78,8 +78,9 @@ describe('DeliverablesCard', () => {
   it("a failed tile shows the tool's own error text, never a fixed guess", () => {
     setViewport(false);
     const err = 'SendUserFile failed — nothing was sent:\n- /tmp/out is a directory';
+    // No header click: a failed call now seeds the card open (Finding 2 fix)
+    // — see the dedicated "mounts OPEN" test below for that behavior itself.
     render(<DeliverablesCard tools={[call('t1', ['/tmp/out'], { status: 'failed', error: err })]} sessionId="s" />);
-    fireEvent.click(screen.getByText('Deliverables'));
     expect(screen.getByText('Couldn’t send')).toBeInTheDocument();
     expect(screen.getByText(/is a directory/)).toBeInTheDocument();
     expect(screen.queryByText(/not found/)).toBeNull();
@@ -91,6 +92,22 @@ describe('DeliverablesCard', () => {
     render(<DeliverablesCard tools={[call('t1', ['/p/a.md'], { status: 'running' })]} sessionId="s" />);
     fireEvent.click(screen.getByText('Deliverables'));
     expect(screen.getByText('Sending…')).toBeInTheDocument();
+  });
+
+  it('a card whose only call failed mounts OPEN and shows the error text without any click (Finding 2 fix)', () => {
+    setViewport(false);
+    const err = 'SendUserFile failed — nothing was sent:\n- /tmp/out is a directory';
+    render(<DeliverablesCard tools={[call('t1', ['/tmp/out'], { status: 'failed', error: err })]} sessionId="s" />);
+    // No click on the header — a failure must be visible on first paint.
+    expect(screen.getByTestId('deliverables-strip')).toBeInTheDocument();
+    expect(screen.getByText('Couldn’t send')).toBeInTheDocument();
+    expect(screen.getByText(/is a directory/)).toBeInTheDocument();
+  });
+
+  it('a card whose calls all succeeded still mounts collapsed', () => {
+    setViewport(false);
+    render(<DeliverablesCard tools={[call('t1', ['/p/a.md'])]} sessionId="s" />);
+    expect(screen.queryByTestId('deliverables-strip')).toBeNull();
   });
 
   // Run LAST: broadcastCollapseAll/broadcastExpandAll flip a module-level flag

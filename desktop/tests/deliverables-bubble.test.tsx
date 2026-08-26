@@ -80,7 +80,8 @@ describe('Deliverables card in the bubble', () => {
       [send('send1', ['/p/a.md']), send('send2', ['/p/b.md', '/p/c.md'], { status: 'failed', error: err }), bash('bash1')],
     );
     expect(screen.getAllByTestId('deliverables-card')).toHaveLength(1);
-    fireEvent.click(screen.getByText('Deliverables')); // card mounts closed now — open it to see the tiles
+    // send2 failed, so the card seeds OPEN on mount (Finding 2 fix) — no
+    // click needed, and one would toggle it back closed.
     const tiles = screen.getAllByTestId('sent-file-tile');
     expect(tiles).toHaveLength(3);
 

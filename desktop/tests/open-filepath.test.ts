@@ -200,6 +200,36 @@ describe('openFilepath — deferred mode (drawerOpensImmediately: false)', () =>
     expect(dispatched.length).toBe(0);
   });
 
+  it('tracked miss (Finding 1 fix): never selects an ephemeral discovered record — listAllFiles is not consulted and the eventual selection is the persisted sidecar id, not the relative-path discovered id', async () => {
+    const state = makeState({ sessionCwd: { s1: '/proj' } });
+    // listAllFiles is wired to return a DISCOVERED record whose id is the raw
+    // relative path (project-file-discovery.ts shape) — exactly the ephemeral
+    // record a concurrent tracker refresh would wipe out from under
+    // ACTIVE_ARTIFACT_SET. If deferred mode ever falls back to listAllFiles
+    // like click mode does, this stub is what it would (wrongly) select.
+    const { listAllFiles, listProject, appendVersion } = installClaudeArtifacts({
+      listProject: async () => ({ ok: true, artifacts: [] }), // tracked miss
+      listAllFiles: async () => ({ ok: true, files: [record('e.md', 'e.md')] }),
+      // artifactify's own refresh comes back with a real sidecar id.
+      listSession: async () => ({ ok: true, artifacts: [record('art-9', 'e.md')] }),
+    });
+    const { ctx, dispatched } = makeCtx(state);
+
+    await openFilepath(ctx, 's1', '/proj/e.md', { drawerOpensImmediately: false });
+
+    expect(listProject).toHaveBeenCalledTimes(1);
+    // The direct pin on the fix: deferred mode must not even ask the disk-scan
+    // question on a tracked miss, since asking it is what produces the
+    // ephemeral id in the first place.
+    expect(listAllFiles).not.toHaveBeenCalled();
+    expect(appendVersion).toHaveBeenCalledTimes(1);
+    // The behavioral outcome that matters to the user: whatever got selected
+    // is the persisted sidecar id, never the discovered relative-path id.
+    const selected = dispatched.find((a) => a.type === 'ACTIVE_ARTIFACT_SET') as any;
+    expect(selected?.artifactId).toBe('art-9');
+    expect(selected?.artifactId).not.toBe('e.md');
+  });
+
   it('artifactify success: no dispatch before the match, then DRAWER_OPENED, SESSION_ARTIFACTS_LOADED, ACTIVE_ARTIFACT_SET', async () => {
     const state = makeState({ sessionCwd: { s1: '/proj' } });
     installClaudeArtifacts({
