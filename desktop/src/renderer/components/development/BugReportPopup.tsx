@@ -5,7 +5,6 @@
 // Screen 3 (result): shows submission outcome or Claude session progress.
 // Uses the shared <Dialog> shell — no hardcoded colors, blur, or z-indexes
 // (PITFALLS overlay invariant).
-import { createPortal } from 'react-dom';
 import { useEffect, useState } from 'react';
 import { useEscClose } from '../../hooks/use-esc-close';
 import { Button, Dialog, SegmentedTabs, Textarea } from '../ui';
@@ -134,9 +133,20 @@ export function BugReportPopup({ open, onClose }: Props) {
     }
   };
 
-  return createPortal(
-    <>
-      <Dialog open onClose={onClose} size="panel" aria-label="Report a bug" scrollBody={false} className="p-4 overflow-y-auto">
+  // P-15: every dialog carries the shared header so it has a visible title and
+  // a ✕ — this one had neither, so Escape was the only way out. The title
+  // follows the Bug/Feature switch. The old createPortal wrapper is gone too:
+  // Dialog already portals itself, so it was portaling a portal.
+  return (
+    <Dialog
+      open
+      onClose={onClose}
+      size="panel"
+      title={kind === 'bug' ? 'Report a bug' : 'Request a feature'}
+      scrollBody={false}
+      className="overflow-y-auto"
+    >
+      <div className="p-4">
         {screen === 'describe' && (
           <DescribeScreen
             kind={kind}
@@ -166,9 +176,8 @@ export function BugReportPopup({ open, onClose }: Props) {
             onDone={onClose}
           />
         )}
-      </Dialog>
-    </>,
-    document.body,
+      </div>
+    </Dialog>
   );
 }
 
