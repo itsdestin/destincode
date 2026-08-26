@@ -7,6 +7,7 @@ import type { NativePermissionMode } from '../../shared/permission-types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
+import { type WidgetId, type SessionRuntime, widgetApplies, widgetUnavailableReason } from '../state/status-widgets';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
 import ContextPopup from './ContextPopup';
@@ -460,14 +461,6 @@ const warnStyles = {
 };
 
 // --- Widget visibility system ---
-
-type WidgetId =
-  | 'usage-5h' | 'usage-7d' | 'context' | 'git-branch' | 'sync-warnings' | 'theme' | 'version'
-  | 'session-cost' | 'tokens-in' | 'tokens-out' | 'cache-stats' | 'code-changes' | 'session-time'
-  | 'cache-hit-rate' | 'active-ratio' | 'output-speed'
-  | 'announcement'
-  | 'open-tasks'
-  | 'session-tags';
 
 // Widget categories and definitions with info tooltips
 // defaultVisible: true = shown for new installs, false = opt-in only
