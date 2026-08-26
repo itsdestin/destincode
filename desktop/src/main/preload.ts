@@ -1307,8 +1307,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke('artifacts:list-all-files', projectId, opts),
     listProjectsIndex: (opts?: { withCounts?: boolean }) =>
       ipcRenderer.invoke('artifacts:list-projects-index', opts),
-    get: (projectRoot: string, artifactId: string) =>
-      ipcRenderer.invoke('artifacts:get', projectRoot, artifactId),
+    // opts: { full? } — full opts into reading up to FULL_READ_MAX_BYTES for a
+    // file the pane is currently showing as a prefix.
+    get: (projectRoot: string, artifactId: string, opts?: { full?: boolean }) =>
+      ipcRenderer.invoke('artifacts:get', projectRoot, artifactId, opts),
     // Read a file as base64 — binary viewers (xlsx/docx/pdf/image) decode this
     // to bytes (renderer can't fetch a file:// URL from the http/app origin).
     readBinary: (absolutePath: string) =>
