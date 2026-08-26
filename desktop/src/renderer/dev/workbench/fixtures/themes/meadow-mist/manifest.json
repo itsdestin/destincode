@@ -17,7 +17,7 @@
     "fg-muted": "#465B4E",
     "fg-faint": "#637668",
     "edge": "#8FB191",
-    "edge-dim": "#8FB19180",
+    "edge-dim": "#8FB191CC",
     "scrollbar-thumb": "#2F7D55",
     "scrollbar-hover": "#24613F"
   },
@@ -39,7 +39,7 @@
     "terminal-value": "assets/wallpaper-terminal.webp",
     "opacity": 1,
     "panels-blur": 22,
-    "panels-opacity": 0.58,
+    "panels-opacity": 0.85,
     "bubble-blur": 18,
     "bubble-opacity": 0.64
   },

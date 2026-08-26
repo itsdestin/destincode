@@ -171,7 +171,7 @@ function renderPublishButton(args: {
   // common fast path (<200ms).
   if (!state) {
     return (
-      <div className="w-full py-2.5 text-xs rounded-lg border border-edge-dim text-fg-faint text-center">
+      <div className="w-full py-2.5 text-xs rounded-lg border border-edge-dim text-fg-muted text-center">
         Checking publish status…
       </div>
     );

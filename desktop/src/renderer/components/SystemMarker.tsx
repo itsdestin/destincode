@@ -42,15 +42,15 @@ export default function SystemMarker({ marker }: Props) {
               <path d="M2 1 L6 4 L2 7" fill="none" stroke="currentColor" strokeWidth="1.2" />
             </svg>
             {marker.label}
-            <span className="ml-1 text-fg-faint normal-case tracking-normal">· {time}</span>
-            <span className="ml-1 text-fg-faint normal-case tracking-normal">
+            <span className="ml-1 text-fg-muted normal-case tracking-normal">· {time}</span>
+            <span className="ml-1 text-fg-muted normal-case tracking-normal">
               · {expanded ? 'hide' : 'view'} summary
             </span>
           </button>
         ) : (
           <span className="text-2xs uppercase tracking-wider whitespace-nowrap">
             {marker.label}
-            <span className="ml-2 text-fg-faint normal-case tracking-normal">· {time}</span>
+            <span className="ml-2 text-fg-muted normal-case tracking-normal">· {time}</span>
           </span>
         )}
         <div className="flex-1 h-px bg-edge-dim" />

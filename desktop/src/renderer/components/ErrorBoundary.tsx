@@ -27,7 +27,7 @@ export default class ErrorBoundary extends React.Component<Props, State> {
       return (
         <div className="flex flex-col items-center justify-center h-full gap-2 text-fg-muted text-xs p-4">
           <span className="text-destructive-fg font-medium">{this.props.name} crashed</span>
-          <span className="text-fg-faint max-w-md text-center break-words">
+          <span className="text-fg-muted max-w-md text-center break-words">
             {this.state.error.message}
           </span>
           {/* Filled-grey (bg-inset/hover:bg-edge) becomes the outline `secondary`

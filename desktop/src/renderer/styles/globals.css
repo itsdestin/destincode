@@ -20,8 +20,8 @@
   --on-accent: #F2F2F2;
   --fg: #1A1A1A;
   --fg-2: #444444;
-  --fg-dim: #656565;
-  --fg-muted: #797979;
+  --fg-dim: #535353;
+  --fg-muted: #5E5E5E;
   --fg-faint: #989898;
   --edge: #C0C0C0;
   --edge-dim: #B3B3B380;
@@ -81,12 +81,12 @@
   --panel: #191919;
   --inset: #222222;
   --well: #1C1C1C;
-  --accent: #D4D4D4;
+  --accent: #8DA6C9;
   --on-accent: #111111;
   --fg: #E0E0E0;
   --fg-2: #B0B0B0;
   --fg-dim: #999999;
-  --fg-muted: #6C6C6C;
+  --fg-muted: #898989;
   --fg-faint: #515151;
   --edge: #393939;
   --edge-dim: #44444480;
@@ -129,12 +129,12 @@
   --panel: #161B22;
   --inset: #21262D;
   --well: #0D1117;
-  --accent: #B1BAC4;
+  --accent: #6CA0DC;
   --on-accent: #0D1117;
   --fg: #C9D1D9;
   --fg-2: #A0AAB4;
-  --fg-dim: #8B949E;
-  --fg-muted: #6E7681;
+  --fg-dim: #919AA4;
+  --fg-muted: #858D97;
   --fg-faint: #4E555E;
   --edge: #343A41;
   --edge-dim: #3F454C80;
@@ -189,12 +189,12 @@
   /* Tracks --canvas: all four built-ins keep on-accent == canvas. */
   --on-accent: #F6EEE1;
   --fg: #2C2418;
-  --fg-2: #564938;
-  --fg-dim: #695E4D;
+  --fg-2: #504333;
+  --fg-dim: #564C3D;
   /* Darkened from #9E9283 (2.47:1) and #BEB3A4 (1.67:1) to clear
      audit-theme-contrast thresholds (≥3:1 for fg-muted, ≥1.8:1 for
      fg-faint) against canvas. */
-  --fg-muted: #7D7161;
+  --fg-muted: #615648;
   --fg-faint: #9A8F7F;
   --edge: #C4B8A6;
   --edge-dim: #B8AC9A80;
@@ -1021,6 +1021,18 @@ body[data-mode="buddy-chat"] #theme-bg {
 }
 [data-wallpaper] .bg-accent {
   background-color: color-mix(in srgb, var(--accent) calc(var(--bubble-opacity, 1) * 100%), transparent);
+}
+/* P-13: on light schemes the user's bubble is inset-grey with body text, not a
+   solid accent block (in light/creme the accent is near-black, so the user's own
+   messages were the darkest thing on screen). Dark schemes keep the accent
+   bubble. Same opacity expression as [data-wallpaper] .bg-inset so wallpaper
+   packs stay translucent; the timestamp follows fg instead of on-accent. */
+[data-theme-scheme='light'] .user-bubble {
+  background-color: color-mix(in srgb, var(--inset) calc(var(--bubble-opacity, 1) * 100%), transparent);
+  color: var(--fg);
+}
+[data-theme-scheme='light'] .user-bubble .bubble-timestamp {
+  color: color-mix(in srgb, var(--fg) 50%, transparent);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

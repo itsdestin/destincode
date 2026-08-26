@@ -525,7 +525,7 @@ export function FilesTab({
                 </div>
               )}
               {searching && !noSearchResults && (
-                <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-faint mb-0.5 px-0.5">
+                <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-muted mb-0.5 px-0.5">
                   Matches by file name ({flatResults.length})
                 </div>
               )}
@@ -538,7 +538,7 @@ export function FilesTab({
                 const capped = contentTruncated || displayCapped;
                 return (
                   <div className="col-span-full min-w-0">
-                    <div className="text-[10.5px] uppercase tracking-wider text-fg-faint mt-2 mb-1.5 px-0.5">
+                    <div className="text-[10.5px] uppercase tracking-wider text-fg-muted mt-2 mb-1.5 px-0.5">
                       Matches by file contents ({shownRows}{capped ? '+' : ''})
                     </div>
                     <div className="flex flex-col gap-2">
@@ -557,7 +557,7 @@ export function FilesTab({
                             >
                               <ChevronIcon className="w-3 h-3 shrink-0" expanded={expanded} />
                               <span className="text-xs font-mono font-medium text-fg-2 shrink-0">{filename}</span>
-                              {dir && <span className="text-2xs font-mono text-fg-faint truncate min-w-0">{dir}</span>}
+                              {dir && <span className="text-2xs font-mono text-fg-muted truncate min-w-0">{dir}</span>}
                               <span className="text-2xs text-fg-muted shrink-0 ml-auto">
                                 {group.hits.length} {group.hits.length === 1 ? 'match' : 'matches'}
                               </span>
