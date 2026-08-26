@@ -34,6 +34,12 @@ import { TagChip } from '../../../components/tags/TagChip';
 import { TagPicker } from '../../../components/tags/TagPicker';
 import { NoteEditor } from '../../../components/tags/NoteEditor';
 import { useTagRegistry } from '../../../hooks/useTagRegistry';
+// chatsearch-present Round 4: the same responsive/collapse-state hooks
+// DeliverablesCard.tsx (branch feat/send-user-file-card, unmerged — see that
+// round's header comment) drives its filmstrip and header with. Real hooks
+// from THIS branch, not redrawn.
+import { useNarrowViewport } from '../../../hooks/use-narrow-viewport';
+import { useExpandAllToggle, getInitialExpanded } from '../../../hooks/useExpandAllToggle';
 import { PRIORITY_TAG, PRIORITY_HINT } from '../../../components/tags/built-in-tags';
 // Shared with the shipping surfaces — a candidate must draw the SAME mark the
 // app does, or the comparison is against something that doesn't exist.
@@ -3219,6 +3225,347 @@ function PresentResumeCard() {
   );
 }
 
+// ── Round 4: mimic the Deliverables card ─────────────────────────────────
+// R3's three literal-reuse candidates were never rejected on their own
+// merits — the owner instead named the target himself: "you should try to
+// mimic the design of the new 'deliverables' card somewhat." The reference is
+// DeliverablesCard.tsx (src/renderer/components/DeliverablesCard.tsx on
+// branch feat/send-user-file-card) — an ALREADY-APPROVED card (workbench
+// compare rounds, pick "D + scroll-aware fades + collapsible") that renders
+// mid-message inside the assistant's own bubble, exactly like this surface:
+// a collapsible bg-well card, open by default, holding a horizontal filmstrip
+// of preview tiles under a header row that is itself the collapse button.
+//
+// WHY every piece below is redrawn rather than imported: feat/send-user-file-
+// card has not merged into this branch, so DeliverablesCard and its private
+// helpers (SentFileTile, its edge-overflow hook) are not reachable from here.
+// Classes, hook usage, and structure are copied verbatim from that file so
+// the comparison is against the real approved design, not a guess at it. WHEN
+// feat/send-user-file-card merges, the shared shell — card chrome, the
+// header-button anatomy, the filmstrip + edge-fade mechanism, the tile frame
+// — should be extracted into ONE component both features import, rather than
+// kept as two hand-synced copies. Flagged again in the round-4 report.
+//
+// A deliverable tile previews a FILE (ArtifactThumbnail: image / first lines
+// of text / scaled HTML / letter glyph). A conversation has no file to
+// preview, so its stand-in is the conversation's OPENING MESSAGE, shown small
+// and clipped the same way ArtifactThumbnail clips text — see
+// OpeningMessagePreview below. Where that opening-message text would really
+// come from (the session's first user message, verbatim? summarized?) is not
+// decided — invented fixture text only, flagged again in the report, same
+// caveat as Round 1's PRESENT_EXCERPT above.
+//
+// Tag chips are omitted here on purpose: "too busy" was the very first
+// rejection (R1), and the deliverables tile this round mimics shows only a
+// name and a path — no chips at all. Reuses PresentedMetaQuiet (declared for
+// R2 above), which already renders project + date with an empty tag list.
+// This is a deliberate, reversible call — flagged again in the report.
+const PRESENT_OPENING_MESSAGE: Record<string, string> = {
+  [CS_RESUMABLE]: 'Permission ask keeps timing out on the big repo scan — is that expected, or did something regress?',
+  [CS_NATIVE]: 'Can you draft the August newsletter intro? Keep it short — three short paragraphs, casual tone.',
+};
+
+/** Stand-in for ArtifactThumbnail's "first lines of a text file" preview —
+ *  see the round header comment for why a conversation needs one at all.
+ *  Sans-serif and quoted rather than ArtifactThumbnail's font-mono: that
+ *  choice is for source CODE, and this is conversational speech, so it
+ *  borrows Round 1's present-excerpt treatment (italic, quoted) instead. */
+function OpeningMessagePreview({ text }: { text: string }) {
+  return (
+    <div className="absolute inset-0 p-2 overflow-hidden">
+      <p className="text-3xs leading-snug text-fg-2 italic line-clamp-5">“{text}”</p>
+    </div>
+  );
+}
+
+/** Same edge-overflow tracker DeliverablesCard.tsx's filmstrip uses for its
+ *  fades (useEdgeOverflow there — private to that file, so redrawn here per
+ *  the round header WHY comment). Fades appear only while something is
+ *  actually hidden past that edge. */
+function usePresentEdgeOverflow(ref: React.RefObject<HTMLDivElement | null>, deps: unknown[]) {
+  const [edges, setEdges] = React.useState({ left: false, right: false });
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const left = el.scrollLeft > 2;
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+      setEdges((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+    };
+    measure();
+    el.addEventListener('scroll', measure, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', measure); ro.disconnect(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return edges;
+}
+const presentFade = (side: 'left' | 'right') => ({
+  background: `linear-gradient(to ${side === 'left' ? 'right' : 'left'}, var(--well), transparent)`,
+});
+
+/** The header row IS the collapse button, same anatomy as DeliverablesCard's
+ *  own header: leading glyph, label, count, a right-aligned truncating
+ *  caption, trailing chevron. ChatIcon substitutes for DeliverablesCard's
+ *  FilesGlyph — the app's own "this is a conversation" mark (see this file's
+ *  ChatIcon import comment). The caption slot is reproduced for structural
+ *  fidelity but always empty: a presented conversation has no equivalent yet
+ *  of the SendUserFile tool's optional caption argument. */
+function PresentCardHeader({ open, onToggle, count }: { open: boolean; onToggle: () => void; count: number }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors"
+    >
+      <ChatIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+      <span className="text-xs font-semibold text-fg-2">{COPY.referencedHeading}</span>
+      <span className="text-2xs font-mono text-fg-muted">{count}</span>
+      <span className="flex-1 min-w-0 text-2xs text-fg-muted truncate text-right" />
+      <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={open} />
+    </button>
+  );
+}
+
+/** The deliverables-style card shell: `mt-2 rounded-lg border border-edge
+ *  bg-well overflow-hidden`, open by default (`getInitialExpanded(true)`),
+ *  Ctrl+O expand/collapse-all aware. `children` is the round-4-candidate-
+ *  specific body — a filmstrip or a stacked-rows list. */
+function PresentCard({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(() => getInitialExpanded(true));
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="present-card">
+      <PresentCardHeader open={open} onToggle={() => setOpen(!open)} count={PRESENT_CONVERSATIONS.length} />
+      {open && children}
+    </div>
+  );
+}
+
+function PresentInBubble({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Name line shared by all three Round 4 tile layouts — verbatim
+ *  DeliverablesCard SentFileTile classes (`text-sm-tight font-semibold
+ *  text-fg truncate`), not R2/R3's `text-sm`. */
+function PresentTileName({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <span className="block text-sm-tight font-semibold text-fg truncate">
+      {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+    </span>
+  );
+}
+
+/** DeliverablesCard's own compact "Open" arrow badge (SentFileTile,
+ *  `compact` prop), redrawn here per the round header WHY comment. Present-
+ *  filmstrip-arrow's Preview affordance. */
+function CompactArrowBadge({ onClick, disabled, title }: {
+  onClick: (e: React.MouseEvent) => void; disabled?: boolean; title: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={COPY.preview}
+      className="shrink-0 inline-flex items-center p-1 text-fg-2 border border-edge hover:border-fg-muted rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M7 7h10v10" />
+        <path d="M7 17 17 7" />
+      </svg>
+    </button>
+  );
+}
+
+/** A second compact affordance beside the arrow — present-filmstrip-arrow's
+ *  Resume action. No shared "resume" glyph exists on this branch (the Resume
+ *  Browser spells the word out on a full-size button), so this is a small
+ *  play-triangle, drawn inline the same way SentFileTile draws its own arrow
+ *  inline rather than as a shared Icons.tsx export. */
+function CompactResumeBadge({ onClick, disabled, title, label }: {
+  onClick: (e: React.MouseEvent) => void; disabled?: boolean; title: string; label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={label}
+      className="shrink-0 inline-flex items-center p-1 text-fg-2 border border-edge hover:border-fg-muted rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M8 5v14l11-7z" />
+      </svg>
+    </button>
+  );
+}
+
+// A · present-filmstrip-arrow — closest to the reference. The WHOLE tile is
+// one <button> that opens the preview, exactly the way SentFileTile's whole
+// tile opens its file — the footer just carries the same compact bordered
+// arrow (restating that action) plus a second, equally small affordance for
+// Resume beside it. Two real <button>s nested inside the tile's own <button>,
+// each stopping propagation — the same nested-button-plus-stopPropagation
+// shape SkillCard.tsx already ships (PluginBadge inside the card's own
+// button), not a new pattern invented for this candidate.
+function FilmstripArrowTile({ r, narrow }: { r: Extract<ResolvedConversation, { status: 'ok' }>; narrow: boolean }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const native = r.provider === 'native';
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group flex flex-col w-full min-w-0 text-left rounded-lg bg-inset border border-edge hover:border-fg-muted overflow-hidden transition-colors disabled:opacity-70"
+    >
+      <div className={`relative w-full ${narrow ? 'h-16' : 'h-28'} border-b border-edge`}>
+        <OpeningMessagePreview text={PRESENT_OPENING_MESSAGE[r.id]} />
+      </div>
+      <div className="flex items-start gap-2 px-2.5 py-2 min-w-0">
+        <span className="flex-1 min-w-0">
+          <PresentTileName r={r} />
+          <PresentedMetaQuiet r={r} className="mt-0.5" />
+        </span>
+        <div className="flex items-center gap-1 shrink-0 pt-0.5">
+          <CompactArrowBadge
+            onClick={(e) => e.stopPropagation()}
+            disabled={r.tombstone}
+            title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+          />
+          <CompactResumeBadge
+            onClick={(e) => e.stopPropagation()}
+            disabled={!!blocked}
+            title={blocked ?? (native ? COPY.resumeNativeHint : COPY.resumeHint)}
+            label={native ? COPY.resumeNative : COPY.resume}
+          />
+        </div>
+      </div>
+    </button>
+  );
+}
+function PresentFilmstripArrow() {
+  const narrow = useNarrowViewport();
+  const stripRef = React.useRef<HTMLDivElement>(null);
+  const edges = usePresentEdgeOverflow(stripRef, [narrow]);
+  return (
+    <PresentInBubble>
+      <PresentCard>
+        <div className="relative">
+          <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="present-strip-arrow">
+            {PRESENT_CONVERSATIONS.map((r) => (
+              <div key={r.id} className={`${narrow ? 'w-44' : 'w-56'} shrink-0`}>
+                <FilmstripArrowTile r={r} narrow={narrow} />
+              </div>
+            ))}
+          </div>
+          {edges.left && <div className="pointer-events-none absolute top-0 bottom-2 left-0 w-10" style={presentFade('left')} />}
+          {edges.right && <div className="pointer-events-none absolute top-0 bottom-2 right-0 w-10" style={presentFade('right')} />}
+        </div>
+      </PresentCard>
+    </PresentInBubble>
+  );
+}
+
+// B · present-filmstrip-buttons — same filmstrip, same tiles, but the footer
+// swaps the two glyph affordances for the real ChatsearchActions pair (the
+// same variant="secondary"/"primary" size="sm" Preview/Resume Buttons every
+// other round already uses) — explicit at the cost of crowding a `w-44`
+// narrow tile, which is the trade-off this candidate exists to show.
+function FilmstripButtonsTile({ r, narrow }: { r: Extract<ResolvedConversation, { status: 'ok' }>; narrow: boolean }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group flex flex-col w-full min-w-0 text-left rounded-lg bg-inset border border-edge hover:border-fg-muted overflow-hidden transition-colors disabled:opacity-70"
+    >
+      <div className={`relative w-full ${narrow ? 'h-16' : 'h-28'} border-b border-edge`}>
+        <OpeningMessagePreview text={PRESENT_OPENING_MESSAGE[r.id]} />
+      </div>
+      <div className="px-2.5 pt-2 pb-2 min-w-0">
+        <PresentTileName r={r} />
+        <PresentedMetaQuiet r={r} className="mt-0.5" />
+        <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+          <ChatsearchActions r={r} />
+        </div>
+      </div>
+    </button>
+  );
+}
+function PresentFilmstripButtons() {
+  const narrow = useNarrowViewport();
+  const stripRef = React.useRef<HTMLDivElement>(null);
+  const edges = usePresentEdgeOverflow(stripRef, [narrow]);
+  return (
+    <PresentInBubble>
+      <PresentCard>
+        <div className="relative">
+          <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="present-strip-buttons">
+            {PRESENT_CONVERSATIONS.map((r) => (
+              <div key={r.id} className={`${narrow ? 'w-44' : 'w-56'} shrink-0`}>
+                <FilmstripButtonsTile r={r} narrow={narrow} />
+              </div>
+            ))}
+          </div>
+          {edges.left && <div className="pointer-events-none absolute top-0 bottom-2 left-0 w-10" style={presentFade('left')} />}
+          {edges.right && <div className="pointer-events-none absolute top-0 bottom-2 right-0 w-10" style={presentFade('right')} />}
+        </div>
+      </PresentCard>
+    </PresentInBubble>
+  );
+}
+
+// C · present-stacked-rows — same card shell and header, but the body is a
+// VERTICAL stack of full-width rows instead of a sideways filmstrip: a small
+// square preview thumbnail on the left, title + the quiet metadata line in
+// the middle, the two explicit Buttons on the right. No sideways scrolling,
+// nothing hidden off an edge — reads better for the one-or-two-conversation
+// case this surface's own fixture always shows.
+function StackedRow({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group flex items-center gap-3 w-full min-w-0 text-left rounded-lg bg-inset border border-edge hover:border-fg-muted overflow-hidden transition-colors p-2 disabled:opacity-70"
+    >
+      <div className="relative w-16 h-16 shrink-0 rounded-md overflow-hidden border border-edge">
+        <OpeningMessagePreview text={PRESENT_OPENING_MESSAGE[r.id]} />
+      </div>
+      <span className="flex-1 min-w-0">
+        <PresentTileName r={r} />
+        <PresentedMetaQuiet r={r} className="mt-0.5" />
+      </span>
+      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+        <ChatsearchActions r={r} />
+      </div>
+    </button>
+  );
+}
+function PresentStackedRows() {
+  return (
+    <PresentInBubble>
+      <PresentCard>
+        <div className="flex flex-col gap-2 px-2 pb-2">
+          {PRESENT_CONVERSATIONS.map((r) => <StackedRow key={r.id} r={r} />)}
+        </div>
+      </PresentCard>
+    </PresentInBubble>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -3857,6 +4204,30 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'Looks like the Resume screen\'s cards',
             note: 'Each conversation gets its own bordered card, the same shape as the cards on the "reopen a past conversation" screen you already use, stacked one after another. Consistent with the screen built for exactly this job.',
             render: () => <PresentResumeCard />,
+          },
+        ],
+      },
+      {
+        n: 4,
+        basis: 'R3 not rejected on its own merits — the owner named the target himself: "you should try to mimic the design of the new \'deliverables\' card somewhat." All three candidates below share ONE card shell and header, copied from that already-approved card (DeliverablesCard.tsx, branch feat/send-user-file-card — unmerged, so redrawn rather than imported, see the code comment above this round). What differs between them is only the body: how the tiles lay out, and how explicitly Preview/Resume are offered.',
+        candidates: [
+          {
+            id: 'present-filmstrip-arrow',
+            label: 'Filmstrip, glyph actions',
+            note: 'Closest to the deliverables card: a sideways-scrolling row of tiles, and clicking a tile opens it, the same way a deliverable file opens. Preview and Resume are both there, just as two small icon buttons in the corner — the least spelled-out of the three.',
+            render: () => <PresentFilmstripArrow />,
+          },
+          {
+            id: 'present-filmstrip-buttons',
+            label: 'Filmstrip, text buttons',
+            note: 'Same sideways tiles, but Preview and Resume are full "Preview" / "Resume" buttons instead of icons — unmistakable, but two buttons is a tight fit on a tile this narrow, especially on a phone.',
+            render: () => <PresentFilmstripButtons />,
+          },
+          {
+            id: 'present-stacked-rows',
+            label: 'Stacked rows, text buttons',
+            note: 'Drops the sideways scrolling entirely — each conversation is a full-width row with a small square preview, the title and details in the middle, and the two buttons on the right. Nothing is ever hidden off the edge of the screen, but it takes more vertical space than a filmstrip once there are more than two or three.',
+            render: () => <PresentStackedRows />,
           },
         ],
       },
