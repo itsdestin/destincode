@@ -146,6 +146,12 @@ describe('StatusBar session totals', () => {
     render(<StatusBar statusData={statusData} provider="native" nativeTotals={emptyTotals()} sessionId="s1" />);
     expect(screen.queryByText(/no changes/i)).toBeNull();
     expect(screen.queryByText(/lines/i)).toBeNull();
+    // Positive control (Finding 3): the two assertions above only check
+    // absence, so a total render failure (bar never mounted) would pass them
+    // too. SessionTagsChip renders "Add tags" for any runtime the instant
+    // sessionId is set (see the earlier positive controls in this file) —
+    // its presence proves the bar actually mounted around the missing chip.
+    expect(screen.getByText('Add tags')).toBeInTheDocument();
   });
 
   it('says what the numbers include', () => {
@@ -153,5 +159,56 @@ describe('StatusBar session totals', () => {
     const totals = { ...emptyTotals(), inputTokens: 10, specialistRuns: 2 };
     render(<StatusBar statusData={statusData} provider="native" nativeTotals={totals} sessionId="s1" />);
     expect(screen.getByTitle(/including specialists/i)).toBeInTheDocument();
+  });
+});
+
+describe('StatusBar — a brand-new native session has measured nothing (Finding 1)', () => {
+  // createSessionChatState() seeds a fresh native session's totals with
+  // emptyTotals() — all-zero, NOT null — the instant the session enters the
+  // store, before any turn has completed. The token chips used to gate on
+  // `value != null`, and 0 != null is true, so In/Out/Cached rendered "0"
+  // from session creation onward for anyone with those opt-in chips on. This
+  // pins the fix: a chip must gate on having measured something, not merely
+  // on the value being present.
+  it('renders no In, Out, Cached or Reuse chip for a session that has completed no turns', () => {
+    withWidgets(['tokens-in', 'tokens-out', 'cache-stats', 'cache-hit-rate']);
+    render(<StatusBar statusData={statusData} provider="native" nativeTotals={emptyTotals()} sessionId="s1" />);
+    expect(screen.queryByText('In:')).toBeNull();
+    expect(screen.queryByText('Out:')).toBeNull();
+    expect(screen.queryByText('Cached:')).toBeNull();
+    expect(screen.queryByText('Reuse:')).toBeNull();
+    // Positive control: proves the bar mounted rather than the four absence
+    // checks above passing vacuously on an empty container.
+    expect(screen.getByText('Add tags')).toBeInTheDocument();
+  });
+
+  it('still renders In, Out and Cached once the session has a real measurement', () => {
+    withWidgets(['tokens-in', 'tokens-out', 'cache-stats']);
+    const totals = { ...emptyTotals(), inputTokens: 500, outputTokens: 300, cacheReadTokens: 200 };
+    render(<StatusBar statusData={statusData} provider="native" nativeTotals={totals} sessionId="s1" />);
+    expect(screen.getByText('In:')).toBeInTheDocument();
+    expect(screen.getByText('500')).toBeInTheDocument();
+    expect(screen.getByText('Out:')).toBeInTheDocument();
+    expect(screen.getByText('300')).toBeInTheDocument();
+    expect(screen.getByText('Cached:')).toBeInTheDocument();
+    expect(screen.getByText('200')).toBeInTheDocument();
+  });
+
+  it('still renders Reuse once the session has real prompt and cache-read tokens', () => {
+    withWidgets(['cache-hit-rate']);
+    // turnsWithUsage: 2 so a real (non-first-turn) percentage is exercised.
+    const totals = { ...emptyTotals(), inputTokens: 1000, cacheReadTokens: 400 };
+    render(<StatusBar statusData={statusData} provider="native" nativeTotals={totals} turnsWithUsage={2} sessionId="s1" />);
+    expect(screen.getByText('Reuse:')).toBeInTheDocument();
+    expect(screen.getByText('40%')).toBeInTheDocument();
+  });
+
+  it('uses friendlier zero-reuse tooltip copy for a native session with real prompt tokens but no cache hits (Finding 4)', () => {
+    withWidgets(['cache-hit-rate']);
+    const totals = { ...emptyTotals(), inputTokens: 1000, cacheReadTokens: 0 };
+    render(<StatusBar statusData={statusData} provider="native" nativeTotals={totals} turnsWithUsage={2} sessionId="s1" />);
+    expect(screen.getByTitle(
+      "None of this session's prompt tokens came from cache; all 1,000 were read fresh. Counts this session so far, including specialists."
+    )).toBeInTheDocument();
   });
 });

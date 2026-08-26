@@ -1326,8 +1326,14 @@ export default function StatusBar({
           stays formatTokens' abbreviated "12.3k" — a session total compounds
           across many turns and grows well past the point where a raw digit
           string is glanceable, which is exactly why the abbreviation exists.
-          The exact count moves to the tooltip instead, where there's room. */}
-      {show('tokens-in') && inTokens != null && (
+          The exact count moves to the tooltip instead, where there's room.
+          Fix: gate on truthy, not just non-null. createSessionChatState()
+          seeds a brand-new native session's totals at emptyTotals() — all
+          ZERO, not null — so a `!= null` check alone rendered "In: 0" from
+          the instant the session was created. 0 input tokens is
+          indistinguishable from "no turn has run yet", so we hide rather
+          than show a number nothing has actually measured. */}
+      {show('tokens-in') && !!inTokens && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss == null && nativeTotals != null
@@ -1341,8 +1347,13 @@ export default function StatusBar({
 
       {/* Output tokens. Rule 1 (spec §3): no value, no chip. Session total for
           native (spec §6); see the In chip above for why this stays
-          abbreviated with the exact count in the tooltip. */}
-      {show('tokens-out') && outTokens != null && (
+          abbreviated with the exact count in the tooltip.
+          Fix: gate on truthy like In, above — same emptyTotals() defect. A
+          turn producing genuinely 0 output tokens and a session that has
+          run no turns are both 0 here and cannot be told apart from the
+          number alone, so — same as In — we hide rather than risk showing
+          a number nothing measured. */}
+      {show('tokens-out') && !!outTokens && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss == null && nativeTotals != null
@@ -1361,10 +1372,15 @@ export default function StatusBar({
           turn — same reasoning as In/Out above.
           cr/cc are resolved ONCE so the title, the value and the hit-rate math can
           never disagree about which source they came from.
-          Rule 1 (spec §3): no value, no chip — bail before rendering. */}
+          Rule 1 (spec §3): no value, no chip — bail before rendering.
+          Fix: bail on falsy (null OR 0), not just null — same emptyTotals()
+          defect as In/Out above: a brand-new native session's cache totals
+          start at 0, and 0 cache reads ever is indistinguishable from "no
+          turn has run yet to read from cache", so this hides rather than
+          show a number nothing measured. */}
       {show('cache-stats') && (() => {
         const cr = cacheReadTotal;
-        if (cr == null) return null;
+        if (!cr) return null;
         const cc = cacheCreationTotal;
         return (
           <span
@@ -1393,8 +1409,18 @@ export default function StatusBar({
         if (display.kind === 'unknown') return null;
         const prompt = (reuse.promptTokens ?? 0).toLocaleString();
         const usingTotals = ss == null && nativeTotals != null;
+        // Fix: zero reuse on a session TOTAL (as opposed to a single turn)
+        // reads as an accusation — "Reused 0 of X" sounds like the cache is
+        // broken, when it's just as likely nothing has been reused yet.
+        // Reaching this branch already means promptTokens > 0 (selectCacheReuse
+        // returns ratio: null, filtered above, whenever it isn't), so
+        // readTokens === 0 here is a real "read fresh" measurement, not an
+        // absent one — same friendlier framing the CC per-turn path already
+        // uses for its own 0% case below.
         const title = usingTotals
-          ? `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this session's ${prompt} prompt tokens from cache. ${SCOPE_NOTE}`
+          ? (reuse.readTokens === 0
+            ? `None of this session's prompt tokens came from cache; all ${prompt} were read fresh. ${SCOPE_NOTE}`
+            : `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this session's ${prompt} prompt tokens from cache. ${SCOPE_NOTE}`)
           : display.kind === 'first-turn'
           ? `Nothing to reuse yet — this is the session's first turn, so all ${prompt} prompt tokens were read fresh.`
           : display.pct === 0
