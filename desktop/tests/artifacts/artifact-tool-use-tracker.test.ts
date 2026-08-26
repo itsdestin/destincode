@@ -27,6 +27,15 @@ function toolUse(i: number, opts: { tool?: string; path?: string; sessionId?: st
   };
 }
 
+function sendUse(toolUseId: string, files: string[], sessionId = 'sess-1') {
+  return { type: 'tool-use', sessionId, uuid: `u-${toolUseId}`, timestamp: Date.now(),
+    data: { toolName: 'SendUserFile', toolUseId, toolInput: { files, status: 'normal' } } };
+}
+function toolResult(toolUseId: string, opts: { isError?: boolean; sessionId?: string } = {}) {
+  return { type: 'tool-result', sessionId: opts.sessionId ?? 'sess-1', uuid: `r-${toolUseId}`, timestamp: Date.now(),
+    data: { toolUseId, toolResult: 'x', isError: opts.isError ?? false } };
+}
+
 function makeTracker(overrides: Partial<Parameters<typeof createArtifactToolUseTracker>[0]> = {}) {
   const appendVersion = vi.fn().mockResolvedValue({ ok: true });
   const listSession = vi.fn().mockResolvedValue({ ok: true, artifacts: [{ id: 'a1' }] });
@@ -133,6 +142,44 @@ describe('artifact tool-use tracker', () => {
       tracker.handle(toolUse(2, { tool: 'Edit' }));
       tracker.handle(toolUse(3, { tool: 'MultiEdit' }));
       expect(appendVersion.mock.calls.map((c) => c[2].type)).toEqual(['create', 'edit', 'edit']);
+    });
+  });
+
+  describe('SendUserFile → delivered versions', () => {
+    it('records nothing on the call and one delivered version per file on the successful result', () => {
+      const { tracker, appendVersion } = makeTracker();
+      tracker.handle(sendUse('toolu_s', [`${ROOT}/docs/report.md`, '/tmp/chart.png']));
+      expect(appendVersion).not.toHaveBeenCalled();           // the file is not confirmed yet
+      tracker.handle(toolResult('toolu_s'));
+      expect(appendVersion).toHaveBeenCalledTimes(2);
+      expect(appendVersion).toHaveBeenCalledWith(ROOT, 'sess-1', expect.objectContaining({
+        type: 'delivered', author: 'agent', toolUseId: 'toolu_s', kind: 'internal', path: 'docs/report.md',
+      }));
+      expect(appendVersion).toHaveBeenCalledWith(ROOT, 'sess-1', expect.objectContaining({
+        type: 'delivered', author: 'agent', toolUseId: 'toolu_s', kind: 'external', absolutePath: '/tmp/chart.png',
+      }));
+    });
+
+    it('an error result drops the pending call — no ghost record for a typo’d path', () => {
+      const { tracker, appendVersion } = makeTracker();
+      tracker.handle(sendUse('toolu_bad', [`${ROOT}/docs/missing.md`]));
+      tracker.handle(toolResult('toolu_bad', { isError: true }));
+      tracker.handle(toolResult('toolu_bad'));                 // a late duplicate must not revive it
+      expect(appendVersion).not.toHaveBeenCalled();
+    });
+
+    it('a result with no pending SendUserFile call is ignored', () => {
+      const { tracker, appendVersion } = makeTracker();
+      tracker.handle(toolResult('toolu_unknown'));
+      expect(appendVersion).not.toHaveBeenCalled();
+    });
+
+    it('refreshes the drawer ONCE after a multi-file delivery', async () => {
+      const { tracker, listSession } = makeTracker();
+      tracker.handle(sendUse('toolu_s', [`${ROOT}/a.md`, `${ROOT}/b.md`, `${ROOT}/c.md`]));
+      tracker.handle(toolResult('toolu_s'));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(listSession).toHaveBeenCalledTimes(1);
     });
   });
 });
