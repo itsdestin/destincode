@@ -57,7 +57,24 @@ import type { CompareSurface } from './types';
 // its options would be comparing wording against something that cannot happen.
 import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
 // The ask card's status glyph — same mark ToolCard's awaiting-approval header draws.
-import { QuestionIcon } from '../../../components/Icons';
+// ChatIcon is the app's real "this is a conversation" mark (SessionStrip tabs,
+// ChatView header) — reused below so a search-result row can say "past
+// conversation" with the same glyph the rest of the app uses for that idea.
+import { QuestionIcon, ChatIcon } from '../../../components/Icons';
+// Chat search results round: the real copy contract, the resolved-conversation
+// shape, and the seven-state fake index — same sources ChatsearchFindCard,
+// ChatsearchShowCard, and the fixtures module itself use, so a candidate here
+// can never say something the shipped card wouldn't.
+import { COPY, providerLabel, type ResolvedConversation } from '../../../../shared/chatsearch-refs';
+import { formatRelativeTime } from '../../../utils/format-time';
+import {
+  CHATSEARCH_FIXTURE,
+  CS_RESUMABLE,
+  CS_MISSING_PROJECT,
+  CS_NOT_SYNCED,
+  CS_TOMBSTONE,
+  CS_NATIVE,
+} from '../fixtures/chatsearch';
 
 const WORK_TAG = { label: 'work', color: 'tag-blue' } as const;
 const NOTE = 'blocked on the gh dead-end';
@@ -2339,6 +2356,245 @@ function GrantWidthPane({ variant, copy }: {
   );
 }
 
+// ── Chat search results: three treatments for the rejected find card ────────
+// ChatsearchFindCard.tsx shipped and the owner rejected it on sight: it hand-
+// rolled its two buttons instead of using Button, printed tags as plain
+// "#tag" text instead of TagChip, and nothing on the card said these rows are
+// PAST conversations rather than fresh search hits. All three candidates
+// below fix all three defects identically — they differ only in how much the
+// surrounding chrome does to say "this is a conversation from your history".
+// Only the ARRANGEMENT changes; see the file header rule at the top of this
+// file for why that's the only thing allowed to.
+
+// Fixture tags are plain strings (e.g. 'perm', 'ui'); the real card will
+// resolve each to a full TagRecord (id, color chosen in the Tag Picker) via
+// useTagRegistry. This candidate-only helper cycles two of the app's real
+// tag-color slots so TagChip has something to render — never invents a color
+// system of its own.
+const CHATSEARCH_TAG_COLORS = ['tag-blue', 'tag-teal'] as const;
+function chatsearchTagChip(label: string, i: number): Pick<TagRecord, 'label' | 'color'> {
+  return { label, color: CHATSEARCH_TAG_COLORS[i % CHATSEARCH_TAG_COLORS.length] };
+}
+
+// One shared array so all three candidates render the exact same six rows —
+// the resumable case, the two disabled-Resume cases, the disabled-Preview
+// case, the assistant-lane case, and a row chatsearch never resolved at all —
+// and only the visual treatment differs. Explicit lookups (rather than a
+// filter over CHATSEARCH_FIXTURE) so this list's order is the spec, not an
+// accident of the fixture's authoring order.
+const CHATSEARCH_RESULTS: ResolvedConversation[] = [
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_RESUMABLE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_MISSING_PROJECT)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NOT_SYNCED)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_TOMBSTONE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NATIVE)!,
+  { status: 'unknown', query: 'dead' },
+];
+
+/** Preview/Resume, built from the real Button — used by all three candidates
+ *  below. This is the fix for defect 1 (SessionRefActions hand-rolls its
+ *  buttons from raw classes): one shared place, real primitive, real variants.
+ *  Inert on purpose — the workbench's fixture ids have no real session or
+ *  transcript behind them, so wiring the real
+ *  requestPreview/requestResume dispatchers (SessionRefActions.tsx) would
+ *  fire events nothing here can honor. Only the visual result is under
+ *  comparison. */
+function ChatsearchActions({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const native = r.provider === 'native';
+  return (
+    <div className="flex items-center gap-1.5 shrink-0">
+      <Button
+        variant="secondary" size="sm"
+        disabled={r.tombstone}
+        title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      >
+        {COPY.preview}
+      </Button>
+      <Button
+        variant="primary" size="sm"
+        disabled={!!blocked}
+        title={blocked ?? (native ? COPY.resumeNativeHint : COPY.resumeHint)}
+      >
+        {native ? COPY.resumeNative : COPY.resume}
+      </Button>
+    </div>
+  );
+}
+
+// ── A · resume-rows — "Resume Browser rows, in the chat" ────────────────────
+// Maximum consistency: reproduces ResumeBrowser's own row anatomy (renderSessionRow,
+// ResumeBrowser.tsx:867) verbatim, so a search result looks like the resume
+// list the owner already uses daily rather than a new invention.
+function ChatsearchRowA({ r }: { r: ResolvedConversation }) {
+  if (r.status !== 'ok') {
+    // Nothing chatsearch could resolve — no session to act on, so this row
+    // just states the raw query and why, the same wording ChatsearchFindCard
+    // falls back to, carried into a row shape so it still reads as a member
+    // of the list rather than an error breaking out of it.
+    return (
+      <div className="rounded-lg border border-edge-dim bg-inset p-3">
+        <div className="text-sm font-mono text-fg-muted truncate">{r.query}</div>
+        <div className="text-3xs text-fg-muted mt-1">
+          {r.status === 'ambiguous' ? COPY.ambiguousId(r.candidates.length) : COPY.unknownId}
+        </div>
+      </div>
+    );
+  }
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-lg border border-edge-dim bg-inset hover:border-edge transition-colors p-3 flex items-center gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm truncate">
+          {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+        </div>
+        {r.tags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 mt-1">
+            {r.tags.map((t, i) => <TagChip key={t} tag={chatsearchTagChip(t, i)} />)}
+          </div>
+        )}
+        <div className="flex items-center gap-1.5 text-3xs text-fg-muted mt-1">
+          {blocked ? (
+            // ResumeBrowser's house rule for the two blocked states: plain
+            // words replace the whole metadata trail, no glyph.
+            <span className="truncate">{blocked}</span>
+          ) : (
+            <>
+              <span className="truncate">{r.projectName || COPY.noProject}</span>
+              <span className="shrink-0 ml-auto">{formatRelativeTime(r.lastActive)}</span>
+            </>
+          )}
+        </div>
+      </div>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+
+function ChatsearchResultsA() {
+  return (
+    <div className="flex flex-col gap-1.5">
+      {/* The quiet header line is defect 3's fix for this candidate: it says
+          in words that every row below is a PAST conversation, which nothing
+          else on the row does. */}
+      <div className="text-3xs text-fg-muted px-0.5">{COPY.headerFind(CHATSEARCH_RESULTS.length)}</div>
+      <div className="space-y-1.5">
+        {CHATSEARCH_RESULTS.map((r, i) => <ChatsearchRowA key={i} r={r} />)}
+      </div>
+    </div>
+  );
+}
+
+// ── B · titled-panel — "One titled panel, compact rows inside" ──────────────
+// The container does the explaining: a real header names the group, compact
+// rows inside carry a leading ChatIcon so each one reads as a conversation at
+// a glance even before the header registers.
+function ChatsearchRowB({ r }: { r: ResolvedConversation }) {
+  if (r.status !== 'ok') {
+    return (
+      <div className="rounded-md bg-inset/50 px-2.5 py-2 flex items-center gap-2">
+        <ChatIcon className="w-3.5 h-3.5 text-fg-muted shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-mono text-fg-muted truncate">{r.query}</div>
+          <div className="text-3xs text-fg-muted">
+            {r.status === 'ambiguous' ? COPY.ambiguousId(r.candidates.length) : COPY.unknownId}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2 flex items-center gap-2">
+      <ChatIcon className="w-3.5 h-3.5 text-fg-muted shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-xs truncate">
+            {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+          </span>
+          {r.tags.map((t, i) => <TagChip key={t} tag={chatsearchTagChip(t, i)} />)}
+        </div>
+        <div className="text-3xs text-fg-muted truncate mt-0.5">
+          {blocked ?? `${r.projectName || COPY.noProject} · ${formatRelativeTime(r.lastActive)}`}
+        </div>
+      </div>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+
+function ChatsearchResultsB() {
+  return (
+    <div className="rounded-lg border border-edge bg-well overflow-hidden">
+      <div className="text-2xs uppercase tracking-wider text-fg-muted px-3 py-2 border-b border-edge">
+        {COPY.headerFind(CHATSEARCH_RESULTS.length)}
+      </div>
+      <div className="p-2 space-y-1">
+        {CHATSEARCH_RESULTS.map((r, i) => <ChatsearchRowB key={i} r={r} />)}
+      </div>
+    </div>
+  );
+}
+
+// ── C · stacked-cards — "Every result is its own conversation card" ─────────
+// Drops the list metaphor entirely: each result gets the exact card
+// ChatsearchShowCard already uses for a single opened conversation (same
+// classes, same "Past conversation · <provider>" identity header), so a
+// search hit and a deliberately-opened conversation are visually the same
+// kind of object. That header line is this candidate's fix for defect 3 —
+// reused rather than invented, because it's the one identity marker the
+// owner has already seen and not rejected.
+function ChatsearchCardC({ r }: { r: ResolvedConversation }) {
+  if (r.status !== 'ok') {
+    // No resolved conversation behind this row, so it does NOT get the "Past
+    // conversation" header — claiming that here would be the unverified
+    // guess the app's error-message rule forbids. Same fallback wording as
+    // ChatsearchShowCard's own unknown-id case.
+    return (
+      <div className="rounded-lg border border-edge-dim bg-inset px-4 py-3">
+        <div className="text-sm font-mono text-fg-muted truncate">{r.query}</div>
+        <div className="text-xs text-fg-muted mt-1">
+          {r.status === 'ambiguous' ? COPY.ambiguousId(r.candidates.length) : COPY.unknownId}
+        </div>
+      </div>
+    );
+  }
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-lg border border-edge bg-well px-4 py-3">
+      <div className="text-2xs uppercase tracking-wider text-fg-muted mb-1">
+        {COPY.headerShow} · {providerLabel(r.provider)}
+      </div>
+      <h4 className="text-sm font-medium text-fg">
+        {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+      </h4>
+      <div className="text-xs text-fg-muted mt-0.5">
+        {blocked ?? `${r.projectName || COPY.noProject} · ${formatRelativeTime(r.lastActive)}`}
+        {r.tombstone && ` · ${COPY.previewTombstone}`}
+      </div>
+      {r.tags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 mt-1.5">
+          {r.tags.map((t, i) => <TagChip key={t} tag={chatsearchTagChip(t, i)} />)}
+        </div>
+      )}
+      <div className="flex items-center justify-end gap-1.5 mt-2.5">
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+
+function ChatsearchResultsC() {
+  // No group header by design — this candidate's whole bet is that the
+  // per-card identity line carries defect 3 on its own, at the cost of the
+  // most vertical space of the three (see the candidate's note below).
+  return (
+    <div className="space-y-2">
+      {CHATSEARCH_RESULTS.map((r, i) => <ChatsearchCardC key={i} r={r} />)}
+    </div>
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -2848,13 +3104,47 @@ const ALL_SURFACES: CompareSurface[] = [
       },
     ],
   },
+  {
+    id: 'chatsearch-results',
+    label: 'Chat search results',
+    question: 'How should past-conversation search results look in the chat?',
+    frame: 'canvas',
+    // Chat-column width — these cards render inline in the timeline, same as
+    // every other tool-result card, not a dialog or panel.
+    paneWidth: 420,
+    rounds: [
+      {
+        n: 1,
+        candidates: [
+          {
+            id: 'resume-rows',
+            label: 'Resume Browser rows, in the chat',
+            note: 'Maximum consistency: copies the row the owner already knows from the resume list, so nothing here has to be learned twice. Cost: that row was built for a full-width panel, so the metadata trail (project · date) feels tight at chat-column width, and six rows plus a header run tall.',
+            render: () => <ChatsearchResultsA />,
+          },
+          {
+            id: 'titled-panel',
+            label: 'One titled panel, compact rows inside',
+            note: 'A single labeled panel explains the whole group at a glance and the rows inside are dense enough to show all six without scrolling — the most compact of the three. Cost: two nested surfaces (the panel and the row tint) is more visual machinery than the chat column usually carries for one tool result.',
+            render: () => <ChatsearchResultsB />,
+          },
+          {
+            id: 'stacked-cards',
+            label: 'Every result is its own conversation card',
+            note: 'Reuses the exact card the single-conversation card already shows, so a search hit and a conversation you opened on purpose look like the same kind of thing — including its "Past conversation" label, which is the most explicit of the three about what these rows are. Cost: the most vertical space by far; six results pushes everything else in the chat well down the page.',
+            render: () => <ChatsearchResultsC />,
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 // CompareView opens on COMPARE_SURFACES[0] and has no URL param for the surface,
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'bash-grant-width';
+const ACTIVE_FIRST = 'chatsearch-results';
 
 export const COMPARE_SURFACES: CompareSurface[] = [
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),
