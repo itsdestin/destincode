@@ -83,7 +83,7 @@ describe('disabled is never a fill (UI audit 2026-08-25, P-12 decision)', () => 
   // block. Destin rejected adding an accent colour to fix this (2026-08-25); the
   // baseline convention is the rule, and this pins it.
   it('Button disables by opacity only — no disabled:bg-* utility', () => {
-    const classes = buttonClasses({ variant: 'primary', size: 'md' });
+    const classes = buttonClasses('primary', 'md');
     expect(classes).toMatch(/\bdisabled:opacity-\d+\b/);
     expect(classes).not.toMatch(/\bdisabled:bg-/);
   });
