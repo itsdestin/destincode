@@ -9,6 +9,8 @@ import { ChevronIcon } from '../Icons';
 import { useExpandAllToggle, getInitialExpanded, isExpandModeActive } from '../../hooks/useExpandAllToggle';
 import { useArtifactOptional } from '../../state/ArtifactContext';
 import { ArtifactThumbnail } from '../ArtifactThumbnail';
+import { matchSessionArtifact } from '../filepath-match';
+import { SentFilesCard } from '../SentFilesCard';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 // Fix: tool inputs are unknown-typed JSON from the model/provider. Every
 // `input.x as string` below was a lie-cast guarded only by truthiness — an
@@ -88,16 +90,6 @@ function PathHeader({ fp, extra }: { fp: string; extra?: React.ReactNode }) {
 // Match a tool's absolute file_path to one of the session's tracked artifacts.
 // Mirrors FilepathToken's suffix matching: internal artifacts store a
 // project-relative path, so the tool's absolute path ends with it.
-function matchSessionArtifact(arts: ArtifactRecord[], absPath: string): ArtifactRecord | undefined {
-  if (!absPath) return undefined;
-  const norm = absPath.replace(/\\/g, '/');
-  return arts.find((a) => {
-    const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
-    const an = aPath.replace(/\\/g, '/');
-    return an === norm || norm.endsWith('/' + an) || an.endsWith('/' + norm);
-  });
-}
-
 // Derive the project root for the thumbnail's content fetch by stripping the
 // artifact's relative path off the tool's absolute file_path. Only internal
 // artifacts can be derived this way; external ones return '' (the thumbnail
@@ -964,6 +956,12 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         return <WebFetchView tool={tool} />;
       case 'WebSearch':
         return <WebSearchView tool={tool} />;
+      // SendUserFile normally renders as the in-bubble SentFilesCard (pulled
+      // out of its tool group by AssistantTurnBubble). This case covers the
+      // places that still render a bare ToolCard for it — the tool gallery,
+      // the buddy window's strip — so it never falls to the raw JSON view.
+      case 'SendUserFile':
+        return <SentFilesCard tools={[tool]} sessionId={sessionId ?? ''} />;
       default: {
         // MCP PowerShell is shell-like — reuse ShellView. Other MCP tools fall
         // through to the raw view.

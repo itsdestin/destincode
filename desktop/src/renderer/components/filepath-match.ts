@@ -61,6 +61,20 @@ export interface ArtifactifyArgs {
  * sidecar. (Suffix matching in findBestMatch still resolves most `~` clicks
  * against already-tracked files before this is ever reached.)
  */
+/** Suffix-tolerant lookup of a tool's absolute file path in a session's artifact
+ *  list. Moved from ToolBody (2026-08-25) so the SendUserFile card and the
+ *  Write/Edit/Read preview card share ONE matcher. Internal records compare by
+ *  relative path (suffix of the absolute), externals by absolutePath. */
+export function matchSessionArtifact(arts: ArtifactRecord[], absPath: string): ArtifactRecord | undefined {
+  if (!absPath) return undefined;
+  const norm = absPath.replace(/\\/g, '/');
+  return arts.find((a) => {
+    const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
+    const an = aPath.replace(/\\/g, '/');
+    return an === norm || norm.endsWith('/' + an) || an.endsWith('/' + norm);
+  });
+}
+
 export function buildArtifactifyArgs(clickedPath: string, cwd: string): ArtifactifyArgs | null {
   const norm = clickedPath.replace(/\\/g, '/');
   if (norm.startsWith('~')) return null;

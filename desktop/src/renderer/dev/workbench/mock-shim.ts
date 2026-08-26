@@ -2,7 +2,7 @@ import type { MockStore } from './mock-store';
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
-  CONTENT as ARTIFACT_CONTENT, contextGroups,
+  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, contextGroups,
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
 
@@ -30,6 +30,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'artifacts.listProjectsIndex', 'artifacts.listSession', 'artifacts.listProject',
   'artifacts.listAllFiles', 'artifacts.get', 'artifacts.checkExistence',
   'artifacts.searchContent', 'artifacts.watchProject', 'artifacts.unwatchProject',
+  'artifacts.readBinary',
   'syncSpaces.status',
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
@@ -639,6 +640,18 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     // Nothing is missing from disk here — every fixture "exists" by construction.
     checkExistence: async () => ({ ok: true, missingIds: [] as string[] }),
+    // Image bytes for ArtifactThumbnail / ImageView. Real handler shape
+    // (read-binary-access.ts): { ok, base64, mime } or { ok:false, reason }.
+    // Every image path gets the same sample PNG — the workbench reviews the
+    // CARD, not the picture. Non-images get an honest refusal so the glyph
+    // fallback stays reviewable.
+    readBinary: async (absolutePath: string) => {
+      const ext = absolutePath.split('.').pop()?.toLowerCase() ?? '';
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].includes(ext)) {
+        return { ok: true, base64: SAMPLE_PNG_BASE64, mime: 'image/png' };
+      }
+      return { ok: false, reason: 'not-an-image' };
+    },
     searchContent: async (_root: string, query: string) => ({
       ok: true,
       matches: Object.entries(ARTIFACT_CONTENT)
