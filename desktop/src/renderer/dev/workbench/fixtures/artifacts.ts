@@ -14,7 +14,7 @@ import type { ArtifactRecord, CentralIndexProject } from '../../../../shared/art
 
 const T = '2026-07-28T16:20:00.000Z';
 
-function version(sessionId: string, type: 'create' | 'edit' | 'read', ts: string) {
+function version(sessionId: string, type: 'create' | 'edit' | 'read' | 'delivered', ts: string) {
   return { id: `v-${ts}`, ts, sessionId, type, author: 'agent' as const };
 }
 
@@ -31,7 +31,7 @@ const BY_PROJECT: Record<string, ArtifactRecord[]> = {
       absolutePath: null,
       lastModified: T,
       status: 'active',
-      versions: [version('wb-1', 'create', T)],
+      versions: [version('wb-1', 'create', T), version('wb-1', 'delivered', T)],
       comments: [],
       tags: [],
     },
@@ -53,7 +53,7 @@ const BY_PROJECT: Record<string, ArtifactRecord[]> = {
       absolutePath: '/tmp/youcoded-scratch/latency-chart.png',
       lastModified: T,
       status: 'active',
-      versions: [version('wb-1', 'read', T)],
+      versions: [version('wb-1', 'read', T), version('wb-1', 'delivered', T)],
       comments: [],
       tags: [],
     },

@@ -9,7 +9,12 @@ export type VersionAuthor = 'agent' | 'user';
 // card, without fabricating fake edit history. Only document-type files get a
 // 'read' version (see the artifact tracker in App.tsx); code/config reads are
 // not tracked.
-export type VersionType = 'create' | 'edit' | 'delete' | 'read';
+// 'delivered' (2026-08-25) marks a file the assistant handed to the user via
+// SendUserFile. Non-read — so an in-project file a script produced becomes
+// visible in Project View — but, like 'read', it never bumps lastModified:
+// delivery is not modification. Kotlin mirror is a String typealias, so an
+// older client reads it fine (labels it "created"; cosmetic).
+export type VersionType = 'create' | 'edit' | 'delete' | 'read' | 'delivered';
 
 export interface VersionEvent {
   id: string;            // ULID

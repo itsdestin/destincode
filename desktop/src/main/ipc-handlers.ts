@@ -3475,7 +3475,7 @@ export function registerIpcHandlers(
       path: string;
       kind: 'internal' | 'external';
       absolutePath: string | null;
-      type: 'create' | 'edit' | 'delete' | 'read';
+      type: 'create' | 'edit' | 'delete' | 'read' | 'delivered';
       author: 'agent' | 'user';
       toolUseId?: string;
     }

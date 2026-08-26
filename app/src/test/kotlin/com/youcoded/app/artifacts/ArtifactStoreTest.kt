@@ -172,4 +172,43 @@ class ArtifactStoreTest {
             projectRoot.deleteRecursively()
         }
     }
+
+    // Mirror of desktop's "a 'delivered' version does NOT bump lastModified on
+    // an existing record" (artifact-store.test.ts). Delivery is not a
+    // modification — handing over an old file must not jump it to the top of
+    // "recently modified" on the phone, and the guard has to exist here too
+    // since the renderer's artifact tracker reaches this Kotlin appendVersion
+    // when it runs on Android (spec 2026-08-25 §4.2).
+    @Test
+    fun deliveredVersionDoesNotBumpLastModified() {
+        val projectRoot = Files.createTempDirectory("kt-as-").toFile()
+        try {
+            appendVersion(
+                projectRoot = projectRoot.absolutePath,
+                projectId   = "p1",
+                projectName = "test",
+                input = AppendVersionInput(
+                    path = "a.md", kind = "internal", absolutePath = null,
+                    sessionId = "s", type = "edit", author = "agent",
+                )
+            )
+            val before = (readSidecar(projectRoot.absolutePath) as ReadResult.Ok).sidecar
+            val stamp = before.artifacts[0].lastModified
+            Thread.sleep(5)
+            appendVersion(
+                projectRoot = projectRoot.absolutePath,
+                projectId   = "p1",
+                projectName = "test",
+                input = AppendVersionInput(
+                    path = "a.md", kind = "internal", absolutePath = null,
+                    sessionId = "s2", type = "delivered", author = "agent", toolUseId = "toolu_d",
+                )
+            )
+            val after = (readSidecar(projectRoot.absolutePath) as ReadResult.Ok).sidecar
+            assertEquals(stamp, after.artifacts[0].lastModified)
+            assertEquals("delivered", after.artifacts[0].versions.last().type)
+        } finally {
+            projectRoot.deleteRecursively()
+        }
+    }
 }

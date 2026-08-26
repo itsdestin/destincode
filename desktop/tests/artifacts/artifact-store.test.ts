@@ -306,6 +306,25 @@ describe('appendVersion — read semantics + artifact id', () => {
     expect(after.artifacts[0].lastModified).toBe(stamp);   // unchanged — a view is not a modification
     expect(after.artifacts[0].versions).toHaveLength(2);   // the read IS still recorded
   });
+
+  it("a 'delivered' version does NOT bump lastModified on an existing record", async () => {
+    // Handing the user an old file is not a modification — it must not jump
+    // to the top of "recently modified" (spec 2026-08-25 §4.2).
+    await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'edit', author: 'agent',
+    });
+    const before = (await readSidecar(projectRoot)) as ProjectSidecar;
+    const stamp = before.artifacts[0].lastModified;
+    await new Promise((r) => setTimeout(r, 5));
+    await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's2', type: 'delivered', author: 'agent', toolUseId: 'toolu_d',
+    });
+    const after = (await readSidecar(projectRoot)) as ProjectSidecar;
+    expect(after.artifacts[0].lastModified).toBe(stamp);
+    expect(after.artifacts[0].versions.at(-1)?.type).toBe('delivered');
+  });
 });
 
 describe('removeArtifactRecord', () => {
