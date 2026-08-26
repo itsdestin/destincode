@@ -299,8 +299,14 @@ export function ProjectHero({
           the bottom-right, so the old left/right split stopped describing the
           layout — the cog is the only thing still anchored top-right. */}
       <div className="flex items-start justify-between gap-3">
-        {/* Content: eyebrow + name switcher + path/repo + description + stats */}
-        <div className="min-w-0">
+        {/* Content: eyebrow + name switcher + path/repo + description + stats.
+            `flex-1` is load-bearing: without it the column is sized by its
+            widest child's MAX-CONTENT width. A <textarea>'s max-content width is
+            its default ~20 `cols`, not its text, so opening the description
+            editor collapsed the whole column to the stats row's width (~333px)
+            and the editor re-wrapped 2 lines into 3. `flex-1` makes the width
+            the row's, so read and edit modes occupy the same box. */}
+        <div className="flex-1 min-w-0">
         <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1.5">
           Project
         </div>
@@ -396,7 +402,7 @@ export function ProjectHero({
             autoFocus
             aria-label="Project description"
             placeholder="What is this project?"
-            className="mt-1.5 w-full max-w-[46rem] text-sm italic overflow-hidden"
+            className="mt-1.5 -ml-2.5 w-full max-w-[46rem] text-sm italic overflow-hidden"
             // Cap at the keystroke, not just on commit — PROJECT_DESCRIPTION_MAX
             // is the shared source of truth (shared/artifacts/types.ts), not a
             // re-typed 200 that could drift from the main-process limit.
@@ -414,17 +420,28 @@ export function ProjectHero({
           <button
             type="button"
             onClick={() => setEditingDesc(true)}
-            className="mt-1.5 block text-left rounded-md -ml-1 px-1 py-0.5 hover:bg-inset transition-colors max-w-[46rem]"
+            // Geometry MUST match the Textarea below exactly -- same padding,
+            // radius, negative margin, and a transparent 1px border standing in
+            // for the field's real one. Otherwise clicking to edit shifts the
+            // text and resizes the box under the cursor.
+            className="mt-1.5 block text-left rounded-lg border border-transparent -ml-2.5 px-2.5 py-1.5 hover:bg-inset transition-colors max-w-[46rem]"
             title="Edit description"
           >
             <span className="text-sm italic text-fg-dim">“{description}”</span>
           </button>
         ) : (
+          // Dashed-outline add affordance, matching QuickChips' "+ Add Chip" and
+          // ModelPicker's freeform row. Bare hover-only text read as a label,
+          // not a control -- there was nothing to see until the cursor was
+          // already on it. `-ml-2 px-2` keeps the LABEL aligned with the name
+          // and path above, so the box hangs into the card's gutter instead of
+          // indenting the text.
           <button
             type="button"
             onClick={() => setEditingDesc(true)}
-            className="mt-1.5 block text-left rounded-md -ml-1 px-1 py-0.5 text-sm text-fg-muted hover:text-fg-2 hover:bg-inset transition-colors"
+            className="mt-1.5 -ml-2 inline-flex items-center gap-1 rounded-md border border-dashed border-edge-dim px-2 py-1 text-xs text-fg-muted hover:text-fg hover:border-edge hover:bg-inset transition-colors"
           >
+            <span aria-hidden="true" className="text-sm leading-none">+</span>
             Add a description
           </button>
         )}
@@ -503,7 +520,19 @@ export function ProjectHero({
                 aria-expanded={syncMenu.open}
                 aria-label={`Sync status: ${syncPill.short}`}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 transition-colors ${
-                  syncMenu.open ? 'border-edge bg-well' : 'border-edge-dim bg-inset hover:border-edge'
+                  // Rest is UNFILLED, exactly like the `secondary` Buttons beside
+                  // it, so hover has somewhere to go: hover fills to `bg-inset`.
+                  // Two earlier attempts were too subtle because both relied on
+                  // a relationship no theme guarantees -- `edge-dim -> edge` is
+                  // one 1px line, and `inset -> edge` asks a BORDER token to read
+                  // as a background, which in green/low-contrast themes it does
+                  // not. `transparent -> bg-inset` is the app's most-used hover
+                  // pair (82 sites) and is visible in every shipped theme.
+                  // Label colour deliberately untouched: Button.tsx's rule is
+                  // "hover is ALWAYS a background fade, the label stays crisp".
+                  syncMenu.open
+                    ? 'border-edge bg-well'
+                    : 'border-edge-dim hover:bg-inset hover:border-edge'
                 }`}
               >
                 {/* Plain colored dot (2026-08-06 revert) — same shape as
