@@ -102,6 +102,15 @@ export async function openFilepath(
     // races that refresh, so only click mode may still fall back to the disk
     // scan; deferred mode instead falls through to artifactify below, which
     // PERSISTS a real sidecar record before selecting it.
+    // This narrows what deferred mode can open: a path buildArtifactifyArgs
+    // can't turn into artifactify args — notably a `~/` path, which it
+    // returns null for (see the `!args` check below) — used to be resolvable
+    // via the listAllFiles suffix match this branch now skips, and silently
+    // opens nothing instead. That's the right trade (a silent no-op is
+    // deferred mode's documented contract above; restoring the disk-scan
+    // fallback here reintroduces the force-open-list race this comment
+    // exists to prevent) but it is a real behavior loss, not a free one —
+    // don't "restore" the fallback without re-solving the race it reopens.
     if (!projMatch && drawerOpensImmediately) {
       const filesRes = await (window.claude as any).artifacts.listAllFiles(cwd);
       const filesList: ArtifactRecord[] = filesRes?.ok ? (filesRes.files ?? []) : [];

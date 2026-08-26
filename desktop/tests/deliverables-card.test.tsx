@@ -110,6 +110,40 @@ describe('DeliverablesCard', () => {
     expect(screen.queryByTestId('deliverables-strip')).toBeNull();
   });
 
+  it('a failure arriving mid-flight (running -> failed on the SAME instance) opens the card with no click', () => {
+    // This is the live-delivery path, not replay: the card mounts while the
+    // call is still 'running' (hasFailure false at first render, so the
+    // mount-time seed alone would miss it), then the SAME tool entry flips to
+    // 'failed' on a later render — exactly what chat-reducer does when a
+    // result arrives. `rerender` keeps the component instance so this can
+    // only pass via the live effect, never the mount seed. A fresh `render`
+    // per status would reproduce the replay case and pass against the broken
+    // seed-only code — the trap the rest of this suite fell into.
+    setViewport(false);
+    const err = 'SendUserFile failed — nothing was sent:\n- /tmp/out is a directory';
+    const { rerender } = render(<DeliverablesCard tools={[call('t1', ['/tmp/out'], { status: 'running' })]} sessionId="s" />);
+    expect(screen.queryByTestId('deliverables-strip')).toBeNull();
+    rerender(<DeliverablesCard tools={[call('t1', ['/tmp/out'], { status: 'failed', error: err })]} sessionId="s" />);
+    expect(screen.getByTestId('deliverables-strip')).toBeInTheDocument();
+    expect(screen.getByText('Couldn’t send')).toBeInTheDocument();
+    expect(screen.getByText(/is a directory/)).toBeInTheDocument();
+  });
+
+  it('a card the mid-flight failure opened can still be collapsed by the user, and stays collapsed', () => {
+    // Pins the transition guard (wasFailed ref): once hasFailure has already
+    // gone true, a LATER re-render for an unrelated reason (here, a caption
+    // showing up) must not force `open` back on and undo the user's click.
+    setViewport(false);
+    const err = 'SendUserFile failed — nothing was sent:\n- /tmp/out is a directory';
+    const { rerender } = render(<DeliverablesCard tools={[call('t1', ['/tmp/out'], { status: 'running' })]} sessionId="s" />);
+    rerender(<DeliverablesCard tools={[call('t1', ['/tmp/out'], { status: 'failed', error: err })]} sessionId="s" />);
+    expect(screen.getByTestId('deliverables-strip')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Deliverables')); // user collapses it
+    expect(screen.queryByTestId('deliverables-strip')).toBeNull();
+    rerender(<DeliverablesCard tools={[call('t1', ['/tmp/out'], { status: 'failed', error: err, input: { files: ['/tmp/out'], caption: 'still failed' } })]} sessionId="s" />);
+    expect(screen.queryByTestId('deliverables-strip')).toBeNull();
+  });
+
   // Run LAST: broadcastCollapseAll/broadcastExpandAll flip a module-level flag
   // in useExpandAllToggle.ts that persists for the rest of this file's test
   // run (by design — see that file's header comment), so a test earlier in

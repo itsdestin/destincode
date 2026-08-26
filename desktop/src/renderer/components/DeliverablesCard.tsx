@@ -238,17 +238,36 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
   // expand-all still comes up open, and mid collapse-all still comes up
   // closed — only the plain-mount default changed, from true to false.
   //
-  // WHY hasFailure overrides the plain-mount default: both the per-tile
-  // "Couldn't send" overlay and the failures paragraph below only render
-  // while `open` is true, and the header's count treats a failed call
-  // identically to a sent one — so a card that mounted collapsed could fail
+  // WHY hasFailure feeds BOTH the mount seed and a live effect below: both
+  // the per-tile "Couldn't send" overlay and the failures paragraph only
+  // render while `open` is true, and the header's count treats a failed call
+  // identically to a sent one — so a card that stayed collapsed could fail
   // outright and look like an ordinary one-liner. A delivery failure is an
   // error the user must see without clicking anything
   // (docs/error-message-standards.md); it must never be able to hide behind
-  // a collapsed card. An explicit Ctrl+O expand/collapse-all still wins
-  // either way, same as the plain-mount case.
+  // a collapsed card.
+  //
+  // The seed alone only covers REPLAY: a transcript loaded from disk already
+  // has status: 'failed' on first render, so getInitialExpanded sees it. A
+  // LIVE delivery does not — chat-reducer creates the tool call as
+  // status: 'running' the moment it starts streaming and flips the SAME
+  // entry to 'failed' only when the result arrives, long after this
+  // component (unkeyed, one instance for the whole turn) already mounted
+  // collapsed. useState's initializer runs once at first render, so it can
+  // never see a failure that shows up in a later re-render — only the effect
+  // below, watching the live value, can react to that transition.
   const hasFailure = tools.some((t) => t.status === 'failed');
   const [open, setOpen] = useState(() => getInitialExpanded(hasFailure));
+  // Open on the false→true transition of hasFailure, i.e. exactly when a
+  // failure ARRIVES mid-flight. Guarded by wasFailed so this only fires once
+  // per failure: without the guard, a re-render for any other reason (a
+  // caption change, a sibling tool finishing) while hasFailure is already
+  // true would force `open` back on and undo a user's manual collapse-click.
+  const wasFailed = useRef(hasFailure);
+  useEffect(() => {
+    if (hasFailure && !wasFailed.current) setOpen(true);
+    wasFailed.current = hasFailure;
+  }, [hasFailure]);
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
 
   const entries = useMemo(
