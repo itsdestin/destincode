@@ -466,9 +466,20 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   // biggest sessions. Same once-only guard as the main path: existingToolSegment
   // is the pre-update segment (only set inside the TOOL_RESULT branch above),
   // so a duplicate delivery with a patch already recorded is a no-op.
+  //
+  // Fix (Finding 1, 2026-08-26): also require `existingToolSegment` itself, not
+  // just `!existingToolSegment?.structuredPatch`. If this toolUseId's tool-use
+  // was never observed under this parent (a dropped/malformed transcript line —
+  // treated as real elsewhere in this function's own comments), no segment
+  // exists to have been captured, so the old guard was vacuously true on EVERY
+  // delivery and a duplicate orphan result counted twice. A rare missed orphan
+  // now contributes an incomplete number; a duplicate would have invented one —
+  // and this whole feature exists to stop the status bar showing numbers that
+  // aren't true.
   const totals = action.type === 'TRANSCRIPT_TOOL_RESULT'
+      && existingToolSegment
       && action.structuredPatch
-      && !existingToolSegment?.structuredPatch
+      && !existingToolSegment.structuredPatch
     ? addPatchLines(session.totals, action.structuredPatch)
     : session.totals;
   const next = new Map(state);
@@ -1358,7 +1369,17 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // renderer reload replays the transcript while the live stream is still
       // arriving — see seenUuids' comment), and Map.set absorbs the duplicate
       // silently, so the guard is "this call had no patch yet", not a uuid.
-      const totals = action.structuredPatch && !existing?.structuredPatch
+      //
+      // Fix (Finding 1, 2026-08-26): also require `existing` itself, not just
+      // `!existing?.structuredPatch`. If the tool-use for this id was never
+      // observed (a dropped/malformed transcript line, which this codebase
+      // treats as real — see the watcher re-emit comments above), `existing`
+      // is undefined and the old guard was vacuously true on EVERY delivery,
+      // so a duplicate of an orphan result counted its lines twice. A rare
+      // missed orphan now contributes an incomplete number; a duplicate would
+      // have invented one — and this whole feature exists to stop the status
+      // bar showing numbers that aren't true.
+      const totals = existing && action.structuredPatch && !existing.structuredPatch
         ? addPatchLines(session.totals, action.structuredPatch)
         : session.totals;
 
@@ -1496,9 +1517,16 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // carrying the whole run (native-session-host.ts), and counting both
       // would double it. Everything else — including a Claude Code turn,
       // which carries no costUsd and so contributes tokens only — accumulates.
-      const totals = action.parentAgentToolUseId
-        ? session.totals
-        : addTurnUsage(session.totals, action.usage ?? {});
+      //
+      // Fix (Finding 3, 2026-08-26): this used to be a ternary keyed on
+      // `action.parentAgentToolUseId`, but that branch can never be true here —
+      // the identical `if (action.parentAgentToolUseId) return state;` guard at
+      // the top of this case already exits before this line is ever reached. A
+      // specialist's own turn-complete never reaches here. This matters because
+      // a later change will deliver a specialist's whole run as its own event;
+      // counting both that event AND a (currently impossible) subagent
+      // turn-complete here would double a user's tokens and cost.
+      const totals = addTurnUsage(session.totals, action.usage ?? {});
 
       next.set(action.sessionId, { ...session, timeline, seenUuids, totals, ...endTurn(session, undefined, assistantTurns) });
       return next;

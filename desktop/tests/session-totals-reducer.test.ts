@@ -51,6 +51,44 @@ describe('reducer session totals', () => {
     expect(s.get(SID)!.totals.linesAdded).toBe(3);
   });
 
+  it('counts a SPECIALIST edit exactly once, even on a duplicate emit (Finding 2: mirrors the main-timeline dup test)', () => {
+    let s = start();
+    const patch = [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 3, lines: ['+x', '+y', '+z'] }];
+    s = chatReducer(s, { type: 'TRANSCRIPT_TOOL_USE', sessionId: SID, uuid: 'p3', timestamp: 1, toolUseId: 'task-3', toolName: 'Task', toolInput: {} } as any);
+    s = chatReducer(s, { type: 'TRANSCRIPT_TOOL_USE', sessionId: SID, uuid: 'c3', timestamp: 2, toolUseId: 'ct-3', toolName: 'Write', toolInput: {}, parentAgentToolUseId: 'task-3', agentId: 'child-1' } as any);
+    const result = { type: 'TRANSCRIPT_TOOL_RESULT' as const, sessionId: SID, uuid: 'c4', timestamp: 3, toolUseId: 'ct-3', toolName: 'Write', result: 'ok', isError: false, structuredPatch: patch, parentAgentToolUseId: 'task-3', agentId: 'child-1' };
+    s = chatReducer(s, result as any);
+    s = chatReducer(s, result as any);   // duplicate delivery (replay overlapping live)
+    expect(s.get(SID)!.totals.linesAdded).toBe(3);
+  });
+
+  it('Finding 1 (main-timeline): an orphan tool result — no preceding tool-use for that toolUseId — contributes nothing, even on duplicate delivery', () => {
+    let s = start();
+    const patch = [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: [' ctx', '-a', '+b', '+c'] }];
+    // No TRANSCRIPT_TOOL_USE for 'missing-tool' ever dispatched — this simulates
+    // a dropped/malformed tool-use line, which this codebase treats as a real
+    // possibility (see the once-only guard comments above the reducer cases).
+    const result = { type: 'TRANSCRIPT_TOOL_RESULT' as const, sessionId: SID, uuid: 'tr-orphan', timestamp: 2, toolUseId: 'missing-tool', toolName: 'Edit', result: 'ok', isError: false, structuredPatch: patch };
+    s = chatReducer(s, result as any);
+    s = chatReducer(s, result as any);   // duplicate delivery
+    expect(s.get(SID)!.totals.linesAdded).toBe(0);
+    expect(s.get(SID)!.totals.linesRemoved).toBe(0);
+  });
+
+  it('Finding 1 (specialist): an orphan specialist tool result — no preceding tool-use under the parent — contributes nothing, even on duplicate delivery', () => {
+    let s = start();
+    const patch = [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 3, lines: ['+x', '+y', '+z'] }];
+    // The parent Agent tool-call DOES exist (otherwise applySubagentEvent bails
+    // entirely before reaching the patch guard), but no TRANSCRIPT_TOOL_USE ever
+    // created a 'ct-orphan' segment under it.
+    s = chatReducer(s, { type: 'TRANSCRIPT_TOOL_USE', sessionId: SID, uuid: 'p4', timestamp: 1, toolUseId: 'task-4', toolName: 'Task', toolInput: {} } as any);
+    const result = { type: 'TRANSCRIPT_TOOL_RESULT' as const, sessionId: SID, uuid: 'c-orphan', timestamp: 3, toolUseId: 'ct-orphan', toolName: 'Write', result: 'ok', isError: false, structuredPatch: patch, parentAgentToolUseId: 'task-4', agentId: 'child-1' };
+    s = chatReducer(s, result as any);
+    s = chatReducer(s, result as any);   // duplicate delivery
+    expect(s.get(SID)!.totals.linesAdded).toBe(0);
+    expect(s.get(SID)!.totals.linesRemoved).toBe(0);
+  });
+
   it('survives serialization', async () => {
     const { serializeChatState, deserializeChatState } = await import('../src/renderer/state/chat-types');
     let s = start();
