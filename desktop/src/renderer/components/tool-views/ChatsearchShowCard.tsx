@@ -16,7 +16,7 @@ export default function ChatsearchShowCard({ id, provider, onUnavailable }: { id
       <div className="text-2xs uppercase tracking-wider text-fg-muted mb-1">{COPY.headerShow} · {providerLabel(provider)}</div>
       <h4 className="text-base font-medium text-fg mb-0.5">{r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}</h4>
       <div className="text-xs text-fg-muted mb-3">
-        {formatRelativeTime(r.lastActive)} · {r.projectName || '(no project)'}
+        {formatRelativeTime(r.lastActive)} · {r.projectName || COPY.noProject}
         {r.tags.length > 0 && <> · {r.tags.map((t) => `#${t}`).join(' ')}</>}
         {r.tombstone && <> · {COPY.previewTombstone}</>}
       </div>

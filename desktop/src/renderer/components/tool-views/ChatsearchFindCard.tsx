@@ -21,7 +21,7 @@ export default function ChatsearchFindCard({ shortIds, onUnavailable }: { shortI
                   {r.tombstone && <span className="ml-1 text-fg-muted" title={COPY.previewTombstone}>†</span>}
                 </div>
                 <div className="truncate text-xs text-fg-muted">
-                  {formatRelativeTime(r.lastActive)} · {r.projectName || '(no project)'}
+                  {formatRelativeTime(r.lastActive)} · {r.projectName || COPY.noProject}
                   {r.tags.length > 0 && <> · {r.tags.map((t) => `#${t}`).join(' ')}</>}
                 </div>
               </div>

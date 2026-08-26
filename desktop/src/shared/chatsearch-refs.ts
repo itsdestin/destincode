@@ -36,6 +36,7 @@ export const COPY = {
   headerShow: 'Past conversation',
   paneSubtitle: (p: string) => `Past conversation · read-only · ${providerLabel(p)}`,
   untitled: 'Untitled conversation',
+  noProject: '(no project)',
   toolsNotShown: (n: number) => `${n} tool call${n === 1 ? '' : 's'} not shown`,
   startOfConversation: 'start of conversation',
   loadOlder: 'Load older',
