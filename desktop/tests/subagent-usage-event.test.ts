@@ -392,4 +392,54 @@ describe('subagent-usage — the producer half', () => {
     );
     logSpy.mockRestore();
   });
+
+  // Task 28 item 3. The THIRD `missing` phrase — the one for when BOTH halves
+  // are gone. It was the last one left unpinned: with only the parent and child
+  // phrases covered (the two tests above), this arm could be rewritten to
+  // either of theirs and all 16 tests stayed green, so a teardown that took
+  // both sessions would have named ONE of them and implied the other was fine.
+  //
+  // Reachable by the same cascade as the child half, one step further along it:
+  // destroy(parent) deletes the child's live entry (via destroyChildrenOf) and
+  // then the parent's, and destroyAll() at app quit walks every live session
+  // doing exactly that. A specialist run whose spend is priced after both
+  // deletions have landed — the background path in particular, which nothing is
+  // awaiting — finds neither session to price it against.
+  it('says NEITHER was live when both entries are gone by the time the spend is priced', async () => {
+    const logSpy = vi.spyOn(logger, 'log');
+    boot(RUN);
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    // The same post-return hook the test above uses, dropping BOTH entries: the
+    // window opens after throwIfEnded's last check and before the spend is
+    // priced, which is the only place this arm can be observed.
+    const runSpecialist = (host as any).runSpecialist.bind(host);
+    let childId = '';
+    (host as any).runSpecialist = async (cid: string, prompt: string) => {
+      const result = await runSpecialist(cid, prompt);
+      childId = cid;
+      (host as any).live.delete(cid);        // the child goes...
+      (host as any).live.delete('root-1');   // ...and so does the parent
+      return result;
+    };
+    const seen: any[] = [];
+    host.on('transcript-event', (e) => seen.push(e));
+    await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      binding: { providerId: 'openrouter', modelId: 'child-model' },
+      token: { parentId: 'root-1', writer: false }, description: 'find it',
+    } as any);
+    await host.drain('root-1');
+
+    expect(childId).not.toBe('');
+    expect(seen.filter((e) => e.type === 'subagent-usage')).toEqual([]);
+    // Names BOTH. Picking either half here would be a true sentence that reads
+    // as a false one — "the parent session was no longer live" tells the reader
+    // the child was still there, and it wasn't.
+    expect(logSpy).toHaveBeenCalledWith(
+      'ERROR', 'NativeSessionHost',
+      "could not report a finished specialist's spend to its parent (neither session was still live) — the parent's session totals will be short by this run",
+      expect.objectContaining({ childId, parentId: 'root-1' }),
+    );
+    logSpy.mockRestore();
+  });
 });

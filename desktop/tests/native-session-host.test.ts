@@ -3932,9 +3932,15 @@ describe('NativeSessionHost per-turn pricing', () => {
 
   // Task 24. The line directly BELOW the one the test above pins —
   // `if (free !== undefined) this.opts.free = free;` in HarnessSession.setBinding —
-  // was itself unguarded: deleting it left 151 tests green, because every
-  // pricing test until now ran all of its turns on ONE side of the
-  // free/metered line. It stopped being cosmetic when costUsd became
+  // was itself unguarded: with that line deleted the ENTIRE suite stays green
+  // EXCEPT this one test — measured 2026-08-27 across the whole desktop suite,
+  // in a copy of this branch at HEAD outside the worktree: 1 failed / 6,250
+  // passed, against a 0 failed / 6,251 passed baseline. (Task 28 item 1 — the
+  // earlier wording here, "deleting it left 151 tests green", named a count no
+  // scope reproduces; a bare test count depends on which files you ran, so it
+  // rots. The claim above does not.) Nothing else catches it because every
+  // other pricing test runs all of its turns on ONE side of the free/metered
+  // line. It stopped being cosmetic when costUsd became
   // `this.opts.free ? null : costForUsage(...)` (Task 22 item 1): a STALE
   // `free` no longer merely mislabels a turn, it suppresses the bill outright.
   // What the user would see: swap mid-session from a local model to an
