@@ -900,10 +900,21 @@ function WidgetConfigPopup({ open, onClose, visible, toggle, relevance }: {
                               untouched and returns when the user switches to a
                               session where the widget applies. */}
                           {reason ? (
-                            <div className="flex items-center gap-2 flex-1 text-left opacity-50">
+                            /* Label on its own line, reason on the line beneath
+                               it. WHY not side by side (how this used to read):
+                               a long reason squeezed the label and wrapped
+                               "Session Duration" onto two lines, so that one row
+                               stood taller than every other row in the menu.
+                               Stacked, each part gets a full line and every
+                               dimmed row is the same height. The empty spacer
+                               keeps the label's left edge on the same x as the
+                               enabled rows, whose labels sit after a checkbox. */
+                            <div className="flex items-start gap-2 flex-1 text-left opacity-50">
                               <span className="w-3.5 h-3.5 flex-shrink-0" />
-                              <span className="flex-1 text-2xs text-fg">{w.label}</span>
-                              <span className="text-3xs text-fg-muted italic">{reason}</span>
+                              <div className="flex-1 min-w-0">
+                                <div className="text-2xs text-fg">{w.label}</div>
+                                <div className="text-3xs text-fg-muted italic">{reason}</div>
+                              </div>
                             </div>
                           ) : (
                           <button
@@ -1694,7 +1705,7 @@ export default function StatusBar({
         onClose={() => setPopupOpen(false)}
         visible={visible}
         toggle={toggle}
-        relevance={{ runtime, hasPricedWork: nativeTotals?.anyPriced ?? true }}
+        relevance={{ runtime, hasPricedWork: nativeTotals?.anyPriced ?? true, runsLocally: nativeTotals?.anyFree ?? false }}
       />
 
       {/* Update panel — opened from the version pill. Guard on updateStatus

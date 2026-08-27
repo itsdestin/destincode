@@ -41,20 +41,41 @@ const statusData = {
   gitBranch: null, sessionStats: null, syncWarnings: [],
 } as any;
 
-async function openMenu(provider: 'claude' | 'native') {
-  render(<StatusBar statusData={statusData} provider={provider} sessionId="s1" />);
+async function openMenu(provider: 'claude' | 'native', nativeTotals?: any) {
+  render(<StatusBar statusData={statusData} provider={provider} sessionId="s1" nativeTotals={nativeTotals ?? null} />);
   fireEvent.click(screen.getByRole('button', { name: /status bar widgets|customize/i }));
+}
+
+// Session totals shaped like the ones the chat reducer accumulates. Only the
+// three pricing flags matter to the Customize menu.
+function totals(over: Record<string, unknown>) {
+  return {
+    inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+    costUsd: 0, anyPriced: false, anyUnpriced: false, anyFree: false,
+    linesAdded: 0, linesRemoved: 0, specialistRuns: 0, specialistCostUsd: 0,
+    ...over,
+  };
+}
+
+// The row a dimmed widget occupies: walk up from its label to the first
+// ancestor that also holds the reason line, then one level further, so the
+// element under test is at least the whole row however the row is stacked.
+// Deliberately not a class-name lookup — this file's point is structure.
+function rowAround(label: HTMLElement, reason: string): HTMLElement {
+  let el: HTMLElement | null = label;
+  while (el && !(el.textContent ?? '').includes(reason)) el = el.parentElement;
+  return (el?.parentElement ?? el)!;
 }
 
 describe('Customize Status Bar menu', () => {
   it('explains the subscription rows in a native session', async () => {
     await openMenu('native');
-    expect(screen.getAllByText('Claude Code sessions only — see /usage').length).toBe(2);
+    expect(screen.getAllByText('Claude Code sessions only').length).toBe(2);
   });
 
-  it('explains the unmeasured rows', async () => {
+  it('explains the unavailable rows without promising them later', async () => {
     await openMenu('native');
-    expect(screen.getAllByText('Not measured in this kind of session yet').length).toBe(2);
+    expect(screen.getAllByText('Not available in this kind of session').length).toBe(2);
   });
 
   it('leaves Git Branch unexplained — it is a missing feed, not a relevance rule', async () => {
@@ -71,12 +92,58 @@ describe('Customize Status Bar menu', () => {
     // proves the menu is open AND that this row carries no reason line.
     expect(screen.getByText('5h Usage')).toBeTruthy();
     expect(screen.queryByText(/Claude Code sessions only/)).toBeNull();
-    expect(screen.queryByText(/Not measured in this kind/)).toBeNull();
+    expect(screen.queryByText(/Not available in this kind/)).toBeNull();
   });
 
   it('dims the row without touching the saved choice', async () => {
     window.localStorage.setItem('youcoded-statusbar-widgets', JSON.stringify(['usage-5h']));
     await openMenu('native');
     expect(JSON.parse(window.localStorage.getItem('youcoded-statusbar-widgets')!)).toContain('usage-5h');
+  });
+
+  it('says a local session costs nothing to run, not that it is unpriced', async () => {
+    // End-to-end for checkpoint #9: proves StatusBar actually feeds anyFree
+    // through as runsLocally, which the status-widgets unit test cannot see.
+    await openMenu('native', totals({ anyFree: true }));
+    expect(screen.queryByText("Models on your own machine don't cost anything to run")).toBeTruthy();
+    expect(screen.queryByText('No published price for this model')).toBeNull();
+  });
+
+  it('still says "no published price" for a metered model with no rate', async () => {
+    await openMenu('native', totals({ anyUnpriced: true }));
+    expect(screen.queryByText('No published price for this model')).toBeTruthy();
+    expect(screen.queryByText("Models on your own machine don't cost anything to run")).toBeNull();
+  });
+
+  it('stacks the reason under the label instead of beside it', async () => {
+    // Checkpoint #6: the reason used to sit BESIDE the label on the same
+    // single-line flex row, which wrapped "Session Duration" onto two lines and
+    // made that row taller than its neighbours. Structure, not pixels: the
+    // reason must not be a direct child of the row that holds the checkbox
+    // spacer, and must share a two-child wrapper with the label.
+    await openMenu('native');
+    const label = screen.getByText('5h Usage');
+    const reason = screen.getAllByText('Claude Code sessions only')[0];
+    const stack = label.parentElement!;
+    expect(reason.parentElement).toBe(stack);
+    expect(stack.children.length).toBe(2);
+    const row = stack.parentElement!;
+    expect(Array.from(row.children).includes(reason)).toBe(false);
+    // The label comes first; the reason is on the line beneath it.
+    expect(!!(label.compareDocumentPosition(reason) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+  });
+
+  it('leaves a dimmed row with zero focusable elements', async () => {
+    await openMenu('native');
+    const row = rowAround(screen.getByText('5h Usage'), 'Claude Code sessions only');
+    expect(row.querySelectorAll('button, a, input, select, textarea, [tabindex]').length).toBe(0);
+  });
+
+  it('positive control: an enabled row still has its controls', async () => {
+    // Without this, the assertion above would pass just as happily against a
+    // selector that finds nothing anywhere.
+    await openMenu('native');
+    const themeRow = screen.getByText('Theme').parentElement!.parentElement!;
+    expect(themeRow.querySelectorAll('button').length > 0).toBe(true);
   });
 });
