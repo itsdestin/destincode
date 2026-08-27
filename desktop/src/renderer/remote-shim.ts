@@ -1604,6 +1604,11 @@ export function installShim(): void {
     // (payload.slug / payload.rule); the desktop preload passes the same values
     // positionally. The section is NOT gated on native.supported, so this route
     // is the one a phone over remote access actually uses.
+    // Object payload (this transport's convention) — remote-server.ts reads
+    // payload.filePath / payload.maxBytes. Same clamp + deny list as desktop.
+    fs: {
+      readHead: (filePath: string, maxBytes?: number) => invoke('fs:read-head', { filePath, maxBytes }),
+    },
     permissions: {
       list: () => invoke('permissions:list'),
       remove: (slug: string, rule: unknown) => invoke('permissions:remove', { slug, rule }),

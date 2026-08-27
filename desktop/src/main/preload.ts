@@ -1252,6 +1252,12 @@ contextBridge.exposeInMainWorld('claude', {
   // the renderer sends back the slug it was handed. remove/removeProject resolve
   // false when nothing matched, i.e. the on-screen list had gone stale.
   // Positional args match ipc-handlers, same as search:* above.
+  // First bytes of a file the user attached, for the composer's preview cards.
+  // Positional args like every other namespace here; main clamps maxBytes to
+  // READ_HEAD_MAX_BYTES (shared/read-head.ts) and refuses sensitive paths.
+  fs: {
+    readHead: (filePath: string, maxBytes?: number) => ipcRenderer.invoke('fs:read-head', filePath, maxBytes),
+  },
   permissions: {
     list: () => ipcRenderer.invoke('permissions:list'),
     remove: (slug: string, rule: unknown) => ipcRenderer.invoke('permissions:remove', slug, rule),
