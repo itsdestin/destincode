@@ -81,11 +81,18 @@ function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath
     return () => ro.disconnect();
   }, [url]);
 
-  // A vector's reported size is meaningless: a viewBox-only SVG reports
-  // Chromium's 300×150 default whatever it actually draws (its RATIO is right,
-  // its size is not). Left alone it renders as a small box in a big pane and the
-  // lens suppresses itself for being smaller than the lens. So scale a vector up
-  // to fill the pane at its own aspect ratio and treat THAT as its natural size.
+  // A vector's REPORTED size is meaningless: a viewBox-only SVG answers
+  // naturalWidth 300×150 whatever it actually draws. Its ratio is right, its
+  // size is not.
+  //
+  // Left to itself the browser handles this fine — CSS's default sizing
+  // algorithm stretches a ratio-only replaced element to the container, which is
+  // why such an SVG already filled the pane before this feature existed. But
+  // this viewer sets an EXPLICIT width/height (the lens has to draw from an
+  // element whose CSS box equals its content box), and that would have pinned
+  // the drawing at the bogus 300×150 — small in a big pane, and below the lens's
+  // own minimum size, so the magnifier would have refused to open on exactly the
+  // format it works best on. Recompute the size the browser would have chosen.
   const content = (() => {
     if (!isSvg || !(natural.w > 0) || !(box.w > 0)) return natural;
     const up = Math.min(box.w / natural.w, box.h / natural.h);
