@@ -1983,7 +1983,15 @@ export class HarnessSession extends EventEmitter {
           // Priced HERE, where the model that ran this turn is known. A
           // mid-session swap re-resolves opts.pricing, so already-counted turns
           // keep the price they actually ran at (spec §5).
-          costUsd: costForUsage(turnUsage, this.opts.pricing),
+          //
+          // `free` WINS over any rate card (Task 22): the two facts are
+          // resolved from different sources — the provider type says free, the
+          // catalog says the price — and nothing else stopped them
+          // contradicting each other. A local-engine binding whose model id
+          // happens to carry a published rate would otherwise ship
+          // {"costUsd": 7, "free": true}: a turn billed $7 that also cost
+          // nothing to run. Free means free; a bill is never stamped on it.
+          costUsd: this.opts.free ? null : costForUsage(turnUsage, this.opts.pricing),
           // Reported separately from costUsd because "free to run" and "no
           // published price" are different facts with different wording — see
           // the field comment in shared/types.ts. Defaults to false: never

@@ -1373,7 +1373,13 @@ export default function StatusBar({
             return (
               <span
                 className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-                title={"This provider bills for usage, but no price is published for this model, so the session cost can't be totalled."}
+                // "available", not "published" (Task 22): the price lookup
+                // returns nothing for ANY model missing from the catalog, and
+                // a catalog that never loaded (dead network, empty cache)
+                // looks identical to a model that genuinely has no rate.
+                // Saying "no price is published" asserts a cause nobody
+                // checked — docs/error-message-standards.md forbids that.
+                title={"This provider bills for usage, but no price is available for this model here, so the session cost can't be totalled."}
               >
                 <span className="text-fg-muted">Cost:</span>
                 {/* Muted, not accent-coloured: this is an ABSENCE of a figure,

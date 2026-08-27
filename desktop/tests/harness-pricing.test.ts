@@ -44,6 +44,17 @@ describe('costForUsage', () => {
     const u = { inputTokens: 100, outputTokens: 0, cacheReadTokens: 5_000, cacheCreationTokens: 0 };
     expect(costForUsage(u, { in: 3, out: 15, cacheRead: 0.3 })).toBeGreaterThanOrEqual(0);
   });
+
+  // The clamp itself, not just its sign. The test above is satisfied by the
+  // trailing Math.max(0, ...) alone, so the clamp could be deleted and stay
+  // green — this pins the FIGURE. A provider can only have served from cache
+  // what it was actually sent: 100 prompt tokens means at most 100 cached
+  // reads, whatever the 5,000 it reported. Billing the raw number here is
+  // $0.0015 instead of $0.00003 — 50x the real cost, and still positive.
+  it('bills at most the prompt size when a provider reports more cached reads than prompt tokens', () => {
+    const u = { inputTokens: 100, outputTokens: 0, cacheReadTokens: 5_000, cacheCreationTokens: 0 };
+    expect(costForUsage(u, { in: 3, out: 15, cacheRead: 0.3 })).toBeCloseTo(100 / 1e6 * 0.3, 10);
+  });
 });
 
 describe('a rate card of all zeroes means FREE, not priced-at-zero', () => {

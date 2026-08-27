@@ -3858,4 +3858,61 @@ describe('NativeSessionHost per-turn pricing', () => {
     expect(usage.free).toBe(true);
     expect(usage.costUsd).toBeNull();
   });
+
+  // Task 22 item 1. `free` and `costUsd` are computed from two independent
+  // sources — the provider TYPE and the rate card — so nothing stopped them
+  // contradicting each other. A local-engine binding whose price resolver
+  // happens to answer with a rate (the resolver keys on the model id and has
+  // no idea where the model runs) produced {"costUsd":7,"free":true}: a turn
+  // billed $7 and simultaneously declared free. The status bar has to trust
+  // one of those. Production only avoided it because the wiring short-circuits
+  // local-engine before the catalog is asked — the invariant belonged where
+  // the number is stamped, not in the wiring.
+  it('never stamps a positive cost on a turn it also reports as free', async () => {
+    const usage = await firstTurnUsage({
+      providerType: 'local-engine', pricing: { in: 1_000_000, out: 2_000_000 },
+    });
+    expect(usage.free).toBe(true);
+    expect(usage.costUsd).toBeNull();
+  });
+
+  // Task 22 item 2. Spec 5: "a price is attached to each turn as it completes
+  // ... never applied retroactively to already-counted work." Deleting
+  // setBinding's pricing re-apply left the whole suite green, because every
+  // pricing test until now ran exactly one turn on one model. Two turns across
+  // a mid-session swap is the smallest shape that can tell the two apart.
+  it('prices each turn at the model that ran it, across a mid-session model swap', async () => {
+    // The scripted stream is 3 input + 2 output tokens either way, so the ONLY
+    // thing that can move the figure is which rate card was in force.
+    const rates: Record<string, { in: number; out: number }> = {
+      'm-cheap': { in: 1_000_000, out: 2_000_000 },     // 3 in + 2 out = $7
+      'm-dear': { in: 10_000_000, out: 20_000_000 },    // the same turn = $70
+    };
+    const h = new NativeSessionHost(
+      new SessionStore(new NativeHome(root)), factory, NO_CONTEXT,
+      async () => 'openrouter' as any,
+      async () => null,
+      async (b: any) => rates[b.modelId] ?? null,
+    );
+    const turns: any[] = [];
+    h.on('transcript-event', (e) => { if (e.type === 'turn-complete') turns.push(e); });
+    await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'p', modelId: 'm-cheap' } });
+
+    h.send('s-1', 'hello');
+    await waitForTurnComplete(h, 1);
+    expect(await h.setBinding('s-1', { providerId: 'p', modelId: 'm-dear' })).toBe(true);
+    h.send('s-1', 'hello again');
+    await waitForTurnComplete(h, 1);
+    await h.drain('s-1');
+    await h.destroyAll();
+
+    expect(turns).toHaveLength(2);
+    // Turn 2 ran on the expensive model and must be billed at it — without the
+    // re-apply this is still $7, priced at a model that had already been left.
+    expect(turns[1].data.usage.costUsd).toBeCloseTo(70, 10);
+    // And the swap must not reach BACKWARDS: turn 1 keeps the price it ran at.
+    expect(turns[0].data.usage.costUsd).toBeCloseTo(7, 10);
+    expect(turns[0].data.model).toBe('m-cheap');
+    expect(turns[1].data.model).toBe('m-dear');
+  });
 });

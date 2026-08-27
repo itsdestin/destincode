@@ -303,8 +303,13 @@ describe('Session Cost chip', () => {
     expect(screen.getByText('not listed')).toBeInTheDocument();
     // It is an absence, not a figure — no dollar amount may appear.
     expect(screen.queryByText(/\$/)).toBeNull();
+    // "not available", not "not published": pricingFor returns null for ANY
+    // model missing from the catalog, and an empty catalog after a failed
+    // fetch looks exactly like a model with no rate. Saying "no price is
+    // published" states a cause that was never checked
+    // (docs/error-message-standards.md). This wording is true either way.
     expect(screen.getByTitle(
-      "This provider bills for usage, but no price is published for this model, so the session cost can't be totalled."
+      "This provider bills for usage, but no price is available for this model here, so the session cost can't be totalled."
     )).toBeInTheDocument();
   });
 
