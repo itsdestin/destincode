@@ -52,9 +52,18 @@ export type SearchFilterPillProps = {
    * a narrowed list is never mistaken for the full one while the popover is shut.
    * Each surface decides what counts — defaults-on filters shouldn't be counted.
    */
-  activeFilters: number;
-  filterOpen: boolean;
-  onToggleFilter: () => void;
+  activeFilters?: number;
+  filterOpen?: boolean;
+  /**
+   * Opens/closes the filter UI. OPTIONAL since P-1 #2: the marketplace's wide
+   * bar reuses this pill for its search field, but its filters are the chips
+   * beside it — so when this is absent the sliders trigger is not rendered at
+   * all, rather than rendering a button that does nothing.
+   */
+  onToggleFilter?: () => void;
+  /** Accessible name for the trigger. Defaults to the file browsers' wording;
+   *  surfaces with no sort (the marketplace) pass their own. */
+  filterLabel?: string;
   /** Sizing for the wrapper (e.g. "flex-1" or a fixed width). */
   className?: string;
   /** The filter popover — rendered inside the ref'd wrapper. */
@@ -63,16 +72,23 @@ export type SearchFilterPillProps = {
 
 export const SearchFilterPill = React.forwardRef<HTMLDivElement, SearchFilterPillProps>(
   function SearchFilterPill(
-    { value, onChange, placeholder, inputAriaLabel, activeFilters, filterOpen, onToggleFilter, className = '', children },
+    {
+      value, onChange, placeholder, inputAriaLabel,
+      activeFilters = 0, filterOpen = false, onToggleFilter,
+      filterLabel: idleLabel = 'Filter and sort', className = '', children,
+    },
     ref,
   ) {
-    const filterLabel = activeFilters > 0 ? `Filters (${activeFilters} active)` : 'Filter and sort';
+    const filterLabel = activeFilters > 0 ? `Filters (${activeFilters} active)` : idleLabel;
+    // Without a trigger the input is the last child, so the right inset matches
+    // the left one instead of the 4px the docked button needs.
+    const hasTrigger = !!onToggleFilter;
     return (
       <div ref={ref} className={`relative ${className}`.trim()}>
         {/* Fix: focus used to render `border-edge-dim` — LESS contrast than the
             resting `border-edge`, i.e. an invisible focus state. `border-accent`
             is the design system's focus token (see InputGroup.tsx / field.ts). */}
-        <div className="flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 pr-1 py-1 w-full focus-within:border-accent">
+        <div className={`flex items-center gap-2 bg-inset border border-edge rounded-full pl-3 ${hasTrigger ? 'pr-1' : 'pr-3'} py-1 w-full focus-within:border-accent`}>
           <span className="text-fg-muted shrink-0"><SearchGlyph /></span>
           <input
             type="text"
@@ -82,7 +98,7 @@ export const SearchFilterPill = React.forwardRef<HTMLDivElement, SearchFilterPil
             onChange={(e) => onChange(e.target.value)}
             className="bg-transparent outline-none text-sm-tight text-fg w-full min-w-0 placeholder:text-fg-muted"
           />
-          <button
+          {hasTrigger && <button
             type="button"
             className={`shrink-0 relative w-7 h-7 rounded-full inline-flex items-center justify-center transition-colors ${
               filterOpen || activeFilters > 0
@@ -100,7 +116,7 @@ export const SearchFilterPill = React.forwardRef<HTMLDivElement, SearchFilterPil
                 {activeFilters}
               </span>
             )}
-          </button>
+          </button>}
         </div>
         {children}
       </div>

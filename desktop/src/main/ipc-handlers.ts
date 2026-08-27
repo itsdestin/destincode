@@ -8,6 +8,7 @@ import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent, type SpecialistsEvent } from '../shared/types';
+import { isPlaceholderModelId } from '../shared/model-ids';
 import { hasRealTitle } from '../shared/session-title';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
@@ -2230,7 +2231,15 @@ export function registerIpcHandlers(
       // changes on an explicit /model switch, so writing on every block would
       // mean hundreds of redundant record writes per conversation — each one a
       // sync-visible change. Only a DIFFERENT model reaches the store.
-      if (typeof model === 'string' && model && lastModelSeen.get(claudeId) !== model) {
+      // Fix: never record CC's `<synthetic>` placeholder. It is stamped on
+      // assistant lines CC composed itself (session limit / out of credits /
+      // /login), so it is not a model — and this record OVERRIDES the Resume
+      // Browser's transcript scan (session-browser.ts, store overlay), so a
+      // single limit notice would print `<synthetic>` as the card's model and
+      // sync that to every other device. Read side is guarded too
+      // (store-core.ts sanitizeModelRef) to heal records written before this.
+      if (typeof model === 'string' && model && !isPlaceholderModelId(model)
+          && lastModelSeen.get(claudeId) !== model) {
         lastModelSeen.set(claudeId, model);
         noteModelUsed(claudeId, { modelId: model, providerType: 'claude-code', providerLabel: 'Claude Code' });
       }

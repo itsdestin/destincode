@@ -62,12 +62,14 @@ export default function MarketplaceHero({ slots, lookup, onOpen }: Props) {
   const slot = slots[Math.min(index, slots.length - 1)];
   const entry = lookup(slot.id);
 
+  // P-21 #1: the hero used to paint its border in the slot's accentColor — a
+  // hardcoded gold (or blue/green) in every theme. It now keeps the theme's own
+  // card edge from layer-surface. MarketplaceCard still honours accentColor.
   return (
     <section
       role="region"
       aria-label="Featured"
       className="layer-surface relative overflow-hidden min-h-[110px] sm:min-h-[180px] p-4 sm:p-6 flex flex-col justify-end gap-2 touch-pan-y select-none"
-      style={slot.accentColor ? { borderColor: slot.accentColor } : undefined}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >

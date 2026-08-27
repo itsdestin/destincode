@@ -11,6 +11,7 @@ import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
 import { useTheme } from '../state/theme-context';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
+import { isPlaceholderModelId } from '../../shared/model-ids';
 
 interface Props {
   turn: AssistantTurn;
@@ -113,7 +114,11 @@ function TurnMetadataStrip({ turn }: { turn: AssistantTurn }) {
       className="text-[10.5px] text-fg-muted mt-1 pl-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono select-text"
       title="Per-turn metadata from transcript"
     >
-      {turn.model && <span>{turn.model}</span>}
+      {/* Fix: `<synthetic>` is CC's placeholder for a notice it wrote itself
+          (session limit, out of credits, /login), not a model — printing it
+          raw here showed the user a fake model name. Nothing replaces it: the
+          turn genuinely ran on no model. */}
+      {turn.model && !isPlaceholderModelId(turn.model) && <span>{turn.model}</span>}
       {u && (
         <>
           <span>in {u.inputTokens.toLocaleString()}</span>
