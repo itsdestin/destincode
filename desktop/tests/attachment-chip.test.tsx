@@ -140,3 +140,18 @@ describe('AttachmentChip', () => {
     expect(readHead).toHaveBeenCalledWith(path, READ_HEAD_DEFAULT_BYTES);
   });
 });
+
+// Fix (2026-08-27 sweep): a tile is itself a <button>; the preview must never put a
+// button or a link inside it — React logged "<button> cannot be a descendant of <button>"
+// on every Projects screen when the code-block Copy button rode along.
+import { render as renderPreview } from '@testing-library/react';
+import { MarkdownHeadPreview } from '../src/renderer/components/HeadPreview';
+describe('MarkdownHeadPreview is inert', () => {
+  it('renders no button and no link, even for code blocks and links', () => {
+    const { container } = renderPreview(<MarkdownHeadPreview text={'# Title\n\n```ts\nconst a = 1;\n```\n\n[docs](https://example.com)'} />);
+    expect(container.querySelector('button')).toBeNull();
+    expect(container.querySelector('a')).toBeNull();
+    expect(container.querySelector('pre')).not.toBeNull();
+    expect(container.textContent).toContain('docs');
+  });
+});

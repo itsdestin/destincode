@@ -33,7 +33,7 @@ export function MarkdownHeadPreview({ text, scale = 0.6, className = '' }: Markd
         className="origin-top-left pointer-events-none select-none text-fg text-sm text-left px-2 pt-1.5 [&>:first-child]:mt-0"
         style={{ transform: `scale(${scale})`, width: inverse, height: inverse }}
       >
-        <MarkdownContent content={text} />
+        <MarkdownContent content={text} preview />
       </div>
     </div>
   );
