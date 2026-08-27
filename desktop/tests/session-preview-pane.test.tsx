@@ -5,10 +5,10 @@
 // WHY no title/close assertions live here: the pane used to draw its own
 // title/close header (the "two X's" bug — SessionDrawer already draws a top
 // bar with a close button, and the pane drew a second one directly beneath
-// it). It no longer takes `title`/`onClose` props or renders either — the
+// it). It no longer takes `onClose` props or renders a close control — the
 // drawer's top bar owns both now, same slot a file's name/close use. Those
 // assertions live at the drawer level: tests/session-drawer-preview-header.test.tsx.
-// This suite only covers what's still the pane's own job: loading/paging/error
+// This suite covers what's still the pane's own job: loading/paging/error
 // states and the read-only/lane caption line.
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
@@ -23,12 +23,10 @@ beforeAll(() => {
 });
 
 const msg = (seq: number) => ({ role: seq % 2 ? 'assistant' : 'user', content: `m${seq}`, timestamp: seq, seq, droppedToolCalls: 0 });
-// chatsearch.resolve is NOT mocked by default (only .read is) — several tests
-// below rely on that: useResolvedConversations (A3, added so the right-click
-// scaffold can name the conversation — see build-menu.test.tsx) must tolerate
-// a missing/failing resolve without breaking the pane's existing loading/paging
-// behaviour, since this pane predates that hook and most tests here never
-// touch it at all.
+// A title most tests don't care about — the pane takes it as a required prop
+// now (Fix: SessionDrawer resolves it once and threads it down; the pane no
+// longer re-resolves the same id itself).
+const TITLE = 'A conversation';
 beforeEach(() => { (window as any).claude = { chatsearch: { read: vi.fn() } }; });
 // This suite has no globals-mode auto-cleanup (vitest.config.ts doesn't set
 // test.globals), and several tests below reuse the same seq numbers (e.g.
@@ -40,7 +38,7 @@ afterEach(cleanup);
 describe('SessionPreviewPane', () => {
   it('loads the newest slice and offers Load older while hasMore', async () => {
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(58), msg(59)], hasMore: true });
-    render(<SessionPreviewPane provider="claude" id="abc" />);
+    render(<SessionPreviewPane provider="claude" id="abc" title={TITLE} />);
     expect(await screen.findByText('m59')).toBeTruthy();
     expect((window as any).claude.chatsearch.read).toHaveBeenCalledWith({ provider: 'claude', id: 'abc', tail: 40 });
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(56), msg(57)], hasMore: false });
@@ -50,14 +48,42 @@ describe('SessionPreviewPane', () => {
     expect(screen.queryByRole('button', { name: COPY.loadOlder })).toBeNull();
     expect(screen.getByText(new RegExp(COPY.startOfConversation))).toBeTruthy();
   });
-  it('surfaces the real error and never renders an empty list as an empty conversation', async () => {
+
+  // Case (a) — docs/error-message-standards.md: the backend gave a real
+  // reason, so it's shown verbatim, paired with Retry, and nothing is
+  // invented on top of it.
+  it('surfaces the real error verbatim with a Retry, and never renders an empty list as an empty conversation', async () => {
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: false, error: 'EACCES: permission denied, open /x.jsonl' });
-    render(<SessionPreviewPane provider="claude" id="abc" />);
+    render(<SessionPreviewPane provider="claude" id="abc" title={TITLE} />);
     expect(await screen.findByText(/EACCES: permission denied/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    // Case (b)'s two-action card must NOT also be showing.
+    expect(screen.queryByRole('button', { name: 'Report bug' })).toBeNull();
   });
+
+  // Case (b) — docs/error-message-standards.md: chatsearch:read answered
+  // { ok: false } with no `error` field. The old code filled that gap with a
+  // hardcoded guess ('Unknown error reading the transcript'), asserting a
+  // cause ("the read failed") nobody verified — the guard this pins is
+  // tests/status-strip-authority.test.tsx's "no user-facing error falls back
+  // to a hardcoded cause". The honest answer is the general two-action card:
+  // no invented message, Report bug / Diagnose with Claude instead.
+  it('a failure with no error string shows the general card, not a fabricated cause', async () => {
+    (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: false });
+    render(<SessionPreviewPane provider="claude" id="abc" title={TITLE} />);
+    expect(await screen.findByText(COPY.errReadUnknownTitle)).toBeTruthy();
+    expect(screen.getByText(COPY.errReadUnknownExplainer)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Report bug' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Diagnose with Claude' })).toBeTruthy();
+    // No invented cause anywhere on the card, and no Retry (that affordance
+    // belongs to case (a) only).
+    expect(screen.queryByText('Unknown error reading the transcript')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
   it('labels the lane for humans', async () => {
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(1)], hasMore: false });
-    render(<SessionPreviewPane provider="native" id="abc" />);
+    render(<SessionPreviewPane provider="native" id="abc" title={TITLE} />);
     expect(await screen.findByText(/YouCoded assistant/)).toBeTruthy();
     expect(screen.queryByText(/\bnative\b/)).toBeNull();
   });
@@ -70,10 +96,10 @@ describe('SessionPreviewPane', () => {
     let resolveFirst!: (v: any) => void;
     const firstRead = new Promise((res) => { resolveFirst = res; });
     (window as any).claude.chatsearch.read.mockImplementationOnce(() => firstRead);
-    const { rerender } = render(<SessionPreviewPane provider="claude" id="first" />);
+    const { rerender } = render(<SessionPreviewPane provider="claude" id="first" title="First" />);
 
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(10)], hasMore: false });
-    rerender(<SessionPreviewPane provider="claude" id="second" />);
+    rerender(<SessionPreviewPane provider="claude" id="second" title="Second" />);
     // Positive control: the SECOND conversation's message is the one that renders.
     expect(await screen.findByText('m10')).toBeTruthy();
 
@@ -88,7 +114,7 @@ describe('SessionPreviewPane', () => {
   // error…" — restated here as the explicit positive control for half B.)
   it('a first-load failure shows the full-pane error with the real message and no messages', async () => {
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: false, error: 'ENOENT: no such file, open /y.jsonl' });
-    render(<SessionPreviewPane provider="claude" id="abc" />);
+    render(<SessionPreviewPane provider="claude" id="abc" title={TITLE} />);
     expect(await screen.findByText(/ENOENT: no such file/)).toBeTruthy();
     expect(screen.queryByText(/^m\d+$/)).toBeNull();
   });
@@ -98,7 +124,7 @@ describe('SessionPreviewPane', () => {
   // paging control instead of replacing the pane.
   it('a failed Load older keeps the loaded messages on screen and surfaces the error near the control', async () => {
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(58), msg(59)], hasMore: true });
-    render(<SessionPreviewPane provider="claude" id="abc" />);
+    render(<SessionPreviewPane provider="claude" id="abc" title={TITLE} />);
     expect(await screen.findByText('m59')).toBeTruthy();
 
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: false, error: 'ETIMEDOUT reading older page' });
@@ -118,30 +144,43 @@ describe('SessionPreviewPane', () => {
     expect(screen.getByText(new RegExp(COPY.startOfConversation))).toBeTruthy();
   });
 
-  // A3: the pane resolves its own title (SessionDrawer.tsx isn't touched by
-  // this change, so it never passes one down) and threads it — alongside the
-  // id it already has — into ConversationTranscript's data attributes, which
-  // is what the right-click "Ask about this" scaffold reads (build-menu.ts).
-  it('resolves and stamps its own conversation id/title once chatsearch:resolve answers', async () => {
-    (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(1)], hasMore: false });
-    (window as any).claude.chatsearch.resolve = vi.fn().mockResolvedValue({
-      ok: true,
-      results: [{ status: 'ok', id: 'abc', provider: 'claude', title: 'Debugging sync', projectName: 'p', originalPath: '', lastActive: '', createdAt: '', tags: [], complete: true, tombstone: false, projectSlug: '', projectPath: '', missingProject: false, notSyncedYet: false }],
-    });
-    const { container } = render(<SessionPreviewPane provider="claude" id="abc" />);
-    await screen.findByText('m1');
-    await waitFor(() => expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-title')).toBe('Debugging sync'));
-    expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-id')).toBe('abc');
+  // Same case (b) honesty as the full-pane case above, but for the "Load
+  // older" page specifically — the empty-string sentinel must not collapse
+  // into "no error happened" (see olderError's WHY comment in the pane).
+  it('a failed Load older with no error string shows the general card, not the "Load older" button reappearing silently', async () => {
+    (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(58), msg(59)], hasMore: true });
+    render(<SessionPreviewPane provider="claude" id="abc" title={TITLE} />);
+    expect(await screen.findByText('m59')).toBeTruthy();
+
+    (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: false });
+    fireEvent.click(screen.getByRole('button', { name: COPY.loadOlder }));
+    expect(await screen.findByText(COPY.errReadUnknownTitle)).toBeTruthy();
+    // The failure must not silently look like success — the paging button
+    // must not have quietly come back.
+    expect(screen.queryByRole('button', { name: COPY.loadOlder })).toBeNull();
   });
 
-  // Positive control for the above: the id is always known immediately (it's
-  // a required prop), so the marker that lets the right-click menu fire is
-  // present even before resolve answers — a slow/failed resolve only affects
-  // the TITLE the scaffold names, never whether "Ask about this" appears.
-  it('stamps the conversation id even while the title resolve is unavailable (no chatsearch.resolve mock)', async () => {
+  // A3: SessionDrawer resolves the previewed id once for its own header
+  // (Resume eligibility, tags) and threads that title down as a prop — the
+  // pane just stamps it, alongside the id it already has, into
+  // ConversationTranscript's data attributes, which is what the right-click
+  // "Ask about this" scaffold reads (build-menu.ts).
+  it('stamps the title prop and id onto the transcript, for the right-click scaffold to read', async () => {
     (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(1)], hasMore: false });
-    const { container } = render(<SessionPreviewPane provider="claude" id="abc" />);
+    const { container } = render(<SessionPreviewPane provider="claude" id="abc" title="Debugging sync" />);
     await screen.findByText('m1');
     expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-id')).toBe('abc');
+    expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-title')).toBe('Debugging sync');
+  });
+
+  // Positive control for the above: an empty title (untitled conversation)
+  // still stamps the id and an empty title attribute — never undefined/stale
+  // — same convention chatsearch:resolve used ('' means untitled).
+  it('stamps an empty title as-is for an untitled conversation', async () => {
+    (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(1)], hasMore: false });
+    const { container } = render(<SessionPreviewPane provider="claude" id="abc" title="" />);
+    await screen.findByText('m1');
+    expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-id')).toBe('abc');
+    expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-title')).toBe('');
   });
 });

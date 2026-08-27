@@ -71,6 +71,17 @@ export const COPY = {
   errNotAConversation: 'This file is a helper transcript, not a conversation',
   errOutsideRoots: 'Transcript is stored outside the folders YouCoded may read',
   errReadPrefix: "Couldn't read this transcript: ",
+  // Fix (2026-08-27): the case (b) general-error card SessionPreviewPane
+  // shows when chatsearch:read fails without giving a reason — never guess
+  // one. Shared between the first-load failure and a failed "Load older"
+  // page; both are the same operation (reading this transcript) so the same
+  // wording is honest for either.
+  errReadUnknownTitle: 'Unable to read this transcript.',
+  errReadUnknownExplainer: "The read didn't report a reason. Diagnosing will collect the app's logs so Claude can look at what happened.",
+  // The tag/note popover's dialog role needs an accessible name (a
+  // screen-reader user hears it) — every user-facing sentence for this
+  // feature lives in COPY, aria-label included.
+  tagsAndNoteLabel: 'Tags and note',
   // A3 (2026-08-26 preview-header spec): right-clicking inside a previewed
   // past conversation prefixes the normal "Ask about this" lead with this
   // clause, naming the conversation the quote came from. Unlike the live

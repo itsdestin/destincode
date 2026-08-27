@@ -848,7 +848,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 <div
                   className="layer-surface absolute right-0 top-full mt-2 w-[280px] p-2 z-30"
                   role="dialog"
-                  aria-label="Tags and note"
+                  aria-label={COPY.tagsAndNoteLabel}
                 >
                   <TagNoteEditor
                     appliedIds={new Set(previewMeta.tags)}
@@ -898,6 +898,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             <SessionPreviewPane
               provider={activePreview.provider}
               id={activePreview.id}
+              // Fix: this drawer already has the title (activePreview.title,
+              // set when the preview was opened — same value the top bar and
+              // the Organize aria-label above use) — thread it down instead
+              // of making the pane re-resolve the same id a second time just
+              // to get the same string back.
+              title={activePreview.title}
             />
           ) : gitReviewOpen && active ? (
             // Standard top bar (above) stays; find bar, content, edit cluster, and

@@ -5,19 +5,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import ConversationTranscript from './project-view/ConversationTranscript';
 import { ErrorState } from './ui/states';
+import { BugReportPopup } from './development/BugReportPopup';
 import { COPY, READ_TAIL_DEFAULT, type TranscriptMessage, type ChatsearchProvider } from '../../shared/chatsearch-refs';
-// SessionDrawer already resolves this same id for its own header (title,
-// Resume eligibility, tags — spec A1/A2/A4), but that title never reaches
-// this component as a prop (SessionDrawer.tsx is owned by that in-flight
-// work and is intentionally left untouched here). Resolving it again here
-// keeps the "Ask about this" scaffold (A3) able to name the conversation
-// without depending on that other file's wiring — same hook, same IPC call,
-// its own doc comment names exactly this kind of caller.
-import { useResolvedConversations } from '../hooks/useResolvedConversations';
 
+// Fix (2026-08-27): the conversation title for the right-click scaffold (A3)
+// now arrives as a `title` prop instead of being resolved a second time in
+// here. SessionDrawer already resolves this same id for its own header
+// (title, Resume eligibility, tags — spec A1/A2/A4) and has had the title on
+// hand since the moment the preview was opened (activePreview.title) — this
+// pane used to re-run chatsearch:resolve for the exact same id just to get
+// the same string, purely because the two changes landed in separate commits
+// that couldn't touch each other's file yet. Passing '' is fine: the same
+// string an unresolved/untitled conversation always had — askPreviewContext
+// (build-menu.ts) already falls back to COPY.untitled when it's empty.
 type Phase = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; message: string };
 
-export default function SessionPreviewPane({ provider, id }: { provider: ChatsearchProvider; id: string }) {
+export default function SessionPreviewPane({ provider, id, title }: { provider: ChatsearchProvider; id: string; title: string }) {
   const [messages, setMessages] = useState<TranscriptMessage[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [phase, setPhase] = useState<Phase>({ kind: 'loading' });
@@ -25,7 +28,12 @@ export default function SessionPreviewPane({ provider, id }: { provider: Chatsea
   // Fix 2: a failed "Load older" reports its error HERE, near the paging
   // control, instead of through `phase` — `phase` stays 'ready' so the
   // messages already on screen are never replaced by a full-pane error.
-  const [olderError, setOlderError] = useState<string | null>(null);
+  // WHY an object and not a bare string: `message` can legitimately be ''
+  // (backend gave no reason — see the `load()` WHY comment below), and a
+  // bare '' is falsy, which would make the "did this fail at all" check
+  // below silently treat a real, unexplained failure as no failure and
+  // re-show the "Load older" button as if nothing happened.
+  const [olderError, setOlderError] = useState<{ message: string } | null>(null);
   const [scrollKey, setScrollKey] = useState(0);
 
   // Fix 1: generation token guarding every in-flight read. Bumped by every
@@ -39,18 +47,29 @@ export default function SessionPreviewPane({ provider, id }: { provider: Chatsea
   // `cancelled` flag, generalized to a counter so loadOlder can share it.
   const genRef = useRef(0);
 
-  // Best-effort conversation title for the right-click scaffold (A3) only —
-  // nothing here is rendered while this is loading/unresolved, so a slow or
-  // failed resolve just means the scaffold falls back to COPY.untitled
-  // (build-menu.ts's askPreviewContext), never a broken pane.
-  const titleResolved = useResolvedConversations([id]);
-  const titleRow = titleResolved.results.find((r) => (r.status === 'ok' ? r.id === id : r.query === id)) ?? null;
-  const conversationTitle = titleRow && titleRow.status === 'ok' ? titleRow.title : '';
+  // Opens BugReportPopup for the "no reason given" branch of a read failure
+  // (case (b) below) — same one-destination pattern as SettingsPanel's
+  // Tailscale setup error and PermissionsSection's load failure: both
+  // "Report bug" and "Diagnose with Claude" land on this popup, which already
+  // wraps dev:summarize-issue + dev:submit-issue.
+  const [showBugReport, setShowBugReport] = useState(false);
 
   const load = useCallback(async (before?: number) => {
     const req = before === undefined ? { provider, id, tail: READ_TAIL_DEFAULT } : { provider, id, tail: READ_TAIL_DEFAULT, before };
     const res = await (window.claude as any).chatsearch.read(req);
-    if (!res?.ok) throw new Error(res?.error || 'Unknown error reading the transcript');
+    if (!res?.ok) {
+      // WHY: never invent a cause for a failure nobody diagnosed. `res.error`
+      // is the real reason when chatsearch:read supplied one — surfaced
+      // verbatim below. When it did not, `new Error(undefined)` yields an
+      // EMPTY message (not a guessed string like the old
+      // 'Unknown error reading the transcript'), which the render below reads
+      // as "we don't know why" and shows the general Report-bug/Diagnose card
+      // instead of asserting a specific cause that might not even be true —
+      // the read may not have failed at all. This line is what
+      // tests/status-strip-authority.test.tsx's "no user-facing error falls
+      // back to a hardcoded cause" guard checks; don't put the fallback back.
+      throw new Error(res?.error);
+    }
     return res as { messages: TranscriptMessage[]; hasMore: boolean };
   }, [provider, id]);
 
@@ -62,7 +81,10 @@ export default function SessionPreviewPane({ provider, id }: { provider: Chatsea
       setMessages(r.messages); setHasMore(r.hasMore); setPhase({ kind: 'ready' }); setScrollKey((k) => k + 1);
     }).catch((e) => {
       if (genRef.current !== myGen) return;
-      setPhase({ kind: 'error', message: e?.message || String(e) });
+      // e.message is '' exactly when load() couldn't find a real reason —
+      // keep it '' rather than falling back to String(e) ('Error'), which
+      // would just be a different hardcoded guess wearing a JS-native mask.
+      setPhase({ kind: 'error', message: e instanceof Error ? e.message : '' });
     });
   }, [load]);
 
@@ -84,8 +106,8 @@ export default function SessionPreviewPane({ provider, id }: { provider: Chatsea
       // failure next to "Load older" instead of blowing away the pane. Retry
       // re-runs loadOlder() with the SAME beforeSeq (messages[0] didn't
       // change on failure), so it retries this backwards page, not the
-      // newest slice.
-      setOlderError(e?.message || String(e));
+      // newest slice. Same '' handling as loadNewest's catch above.
+      setOlderError({ message: e instanceof Error ? e.message : '' });
     } finally {
       if (genRef.current === myGen) setLoadingOlder(false);
     }
@@ -117,16 +139,42 @@ export default function SessionPreviewPane({ provider, id }: { provider: Chatsea
             change to the drawer's own bar. */}
         <div className="mb-2 text-xs text-fg-muted">{COPY.paneSubtitle(provider)}</div>
         {phase.kind === 'loading' && <p className="text-sm text-fg-muted">{COPY.loading}</p>}
-        {/* First load has nothing to show behind it, so a full-pane error is correct here. */}
-        {phase.kind === 'error' && <ErrorState mode="recoverable" message={`${COPY.errReadPrefix}${phase.message}`} onRetry={() => void loadNewest()} />}
+        {/* First load has nothing to show behind it, so a full-pane error is
+            correct here. Two shapes per docs/error-message-standards.md:
+            phase.message set → the real reason, verbatim, with Retry (case a).
+            phase.message === '' → we don't have one; say so and offer the two
+            actions instead of asserting a cause nobody checked (case b). */}
+        {phase.kind === 'error' && (
+          phase.message
+            ? <ErrorState mode="recoverable" message={`${COPY.errReadPrefix}${phase.message}`} onRetry={() => void loadNewest()} />
+            : (
+              <ErrorState
+                mode="general"
+                title={COPY.errReadUnknownTitle}
+                explainer={COPY.errReadUnknownExplainer}
+                onReportBug={() => setShowBugReport(true)}
+                onDiagnose={() => setShowBugReport(true)}
+              />
+            )
+        )}
         {phase.kind === 'ready' && (
           <ConversationTranscript messages={messages} scrollToEndKey={scrollKey}
-            conversationId={id} conversationTitle={conversationTitle}
+            conversationId={id} conversationTitle={title}
             olderHint={hasMore
               ? (
                 <div className="py-2 text-center">
                   {olderError ? (
-                    <ErrorState mode="recoverable" variant="inline" message={`${COPY.errReadPrefix}${olderError}`} onRetry={() => void loadOlder()} />
+                    olderError.message
+                      ? <ErrorState mode="recoverable" variant="inline" message={`${COPY.errReadPrefix}${olderError.message}`} onRetry={() => void loadOlder()} />
+                      : (
+                        <ErrorState
+                          mode="general"
+                          title={COPY.errReadUnknownTitle}
+                          explainer={COPY.errReadUnknownExplainer}
+                          onReportBug={() => setShowBugReport(true)}
+                          onDiagnose={() => setShowBugReport(true)}
+                        />
+                      )
                   ) : (
                     <button type="button" className="rounded-md border border-edge bg-well px-3 py-1 text-xs text-fg hover:bg-inset disabled:opacity-50" disabled={loadingOlder} onClick={loadOlder}>{COPY.loadOlder}</button>
                   )}
@@ -135,6 +183,7 @@ export default function SessionPreviewPane({ provider, id }: { provider: Chatsea
               : <div className="py-2 text-center text-[11.5px] text-fg-muted">— {COPY.startOfConversation} —</div>} />
         )}
       </div>
+      <BugReportPopup open={showBugReport} onClose={() => setShowBugReport(false)} />
     </div>
   );
 }
