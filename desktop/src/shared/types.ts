@@ -217,6 +217,22 @@ export interface TranscriptEvent {
        *  ("runs on your machine" vs "no published price"). Only main can tell
        *  them apart — it is the only side that knows the provider type. */
       free?: boolean;
+      /** Native runtime only, and only where the provider reports one: the USD
+       *  figure the PROVIDER ITSELF charged for this turn's requests. Today only
+       *  OpenRouter-shaped providers report a cost, so this is ABSENT on a local
+       *  model, an Anthropic or OpenAI key, and a plain OpenAI-compatible
+       *  endpoint.
+       *
+       *  Absent means "the provider told us nothing" — never $0, and never
+       *  "we checked and it matched". A reported 0 (a genuinely free model) is
+       *  a real reading and is kept as 0, which is why this is `number` and not
+       *  `number | null`: unlike costUsd there is no third state to spell.
+       *
+       *  Present ONLY when every step of the turn reported one, so it always
+       *  covers exactly the same steps as `costUsd` and the two can be compared
+       *  honestly. Diagnostic: main compares them and logs a gap; nothing in
+       *  the UI reads this. */
+      providerCostUsd?: number;
     };
     /**
      * Populated only on events emitted from a subagent JSONL — identifies

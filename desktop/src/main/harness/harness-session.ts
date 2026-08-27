@@ -139,7 +139,10 @@ import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
 import { mcpToolsFor, estimateToolSchemaTokens } from './mcp/mcp-tools';
 import type { ReadyServer } from './mcp/mcp-manager';
-import { costForUsage, type ModelPricing } from './pricing';
+import {
+  costForUsage, providerCostFromMetadata, costDisagreement,
+  COST_DISAGREEMENT_THRESHOLD, type ModelPricing,
+} from './pricing';
 import { log } from '../logger';
 
 export interface HarnessSessionOpts {
@@ -248,6 +251,13 @@ interface StepUsage { inputTokens: number; outputTokens: number; cacheReadTokens
 interface StepResult {
   text: string; toolCalls: ToolCall[]; usage: StepUsage;
   finishReason: string | undefined; interrupted: boolean;
+  /** What the PROVIDER itself says this one request cost, in USD — OpenRouter
+   *  reports it on every response (pricing.ts's openRouterCostExtractor).
+   *  `undefined` means the provider reported nothing, which is every other
+   *  provider and must never be read as $0. Deliberately NOT on StepUsage:
+   *  that is the fixed transcript token shape, and this is a dollar figure
+   *  from a different source. */
+  providerCostUsd?: number;
   /** Milliseconds from this step's FIRST real output chunk to the end of its
    *  stream — i.e. time actually spent generating. Excludes prefill (before the
    *  first chunk) and everything outside the stream (tool execution, permission
@@ -1675,6 +1685,20 @@ export class HarnessSession extends EventEmitter {
 
     const startedAt = Date.now();
     const turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    // The PROVIDER's own bill for this turn, summed over the same steps
+    // turnUsage covers, so the two figures are comparable.
+    //
+    // WHY the two counters: the provider bills per REQUEST while costForUsage
+    // prices a whole TURN of N steps. Summing both is only honest while both
+    // sums cover the SAME steps. A turn where some steps reported a cost and
+    // some did not (a mid-turn model swap to a provider that reports nothing,
+    // or a response that simply omitted the field) would otherwise publish
+    // part of a bill next to all of a turn — a fake disagreement, silently, in
+    // the cheap direction. When the counts differ, the turn reports no
+    // provider figure at all.
+    let turnProviderCostUsd: number | undefined;
+    let stepsCounted = 0;
+    let stepsWithProviderCost = 0;
     // Time spent GENERATING, summed over the turn's steps. Not wall-clock: a turn
     // includes prefill, tool execution and permission waits, and dividing output
     // tokens by all of that reports a decode speed several times slower than the
@@ -1767,6 +1791,11 @@ export class HarnessSession extends EventEmitter {
         turnUsage.outputTokens += step.usage.outputTokens;
         turnUsage.cacheReadTokens += step.usage.cacheReadTokens;
         turnUsage.cacheCreationTokens += step.usage.cacheCreationTokens;
+        stepsCounted++;
+        if (step.providerCostUsd !== undefined) {
+          stepsWithProviderCost++;
+          turnProviderCostUsd = (turnProviderCostUsd ?? 0) + step.providerCostUsd;
+        }
         generationMs += step.generationMs;
 
         // v0 interrupt semantics: push the partial, emit user-interrupt, return.
@@ -1961,6 +1990,33 @@ export class HarnessSession extends EventEmitter {
       // wall-clock only when no step ever produced output, where the ratio is 0
       // either way and the fallback just avoids dividing by zero.
       const seconds = Math.max((generationMs || (Date.now() - startedAt)) / 1000, 0.001);
+      // Hoisted out of the emit below so the same number can be checked against
+      // the provider's own before it ships.
+      const costUsd = this.opts.free ? null : costForUsage(turnUsage, this.opts.pricing);
+      // Published ONLY when every counted step reported one — see the counters'
+      // declaration for why a partially-covered turn reports nothing.
+      const providerCostUsd = stepsCounted > 0 && stepsWithProviderCost === stepsCounted
+        ? turnProviderCostUsd
+        : undefined;
+      // Our arithmetic, checked against the only authority there is. This is a
+      // DIAGNOSTIC line in ~/.claude/desktop.log and nothing else: a gap is a
+      // bug for us to fix, not something to put in front of a user, so no
+      // transcript event and no UI. `costDisagreement` returns null — never a
+      // number — whenever there is nothing honest to compare (no provider
+      // figure, no rate card of ours, or a bill too small for the ratio to
+      // mean anything), so silence here is never a claim that the two agreed.
+      // The message states only what was observed; it names no cause, because
+      // none has been established (docs/error-message-standards.md).
+      const costGap = costDisagreement(costUsd, providerCostUsd);
+      if (costGap !== null && costGap > COST_DISAGREEMENT_THRESHOLD) {
+        log('WARN', 'HarnessSession', 'our cost figure and the provider\u2019s own disagree for this turn', {
+          sessionId: this.opts.sessionId,
+          model: this.binding.modelId,
+          ourCostUsd: costUsd,
+          providerCostUsd,
+          relativeGap: Number(costGap.toFixed(4)),
+        });
+      }
       this.emitEvent('turn-complete', {
         model: this.binding.modelId,
         stopReason,
@@ -1991,12 +2047,18 @@ export class HarnessSession extends EventEmitter {
           // happens to carry a published rate would otherwise ship
           // {"costUsd": 7, "free": true}: a turn billed $7 that also cost
           // nothing to run. Free means free; a bill is never stamped on it.
-          costUsd: this.opts.free ? null : costForUsage(turnUsage, this.opts.pricing),
+          costUsd,
           // Reported separately from costUsd because "free to run" and "no
           // published price" are different facts with different wording — see
           // the field comment in shared/types.ts. Defaults to false: never
           // claim a turn was free without having established it.
           free: this.opts.free ?? false,
+          // Spread, so a turn the provider said nothing about carries no key at
+          // all. A `providerCostUsd: 0` would read as "the provider agrees this
+          // was free", which is the exact confusion pricing.ts exists to
+          // prevent — and it would be wrong for every non-OpenRouter provider,
+          // which is most of them.
+          ...(providerCostUsd === undefined ? {} : { providerCostUsd }),
         },
       });
     } catch (err: any) {
@@ -2486,6 +2548,9 @@ export class HarnessSession extends EventEmitter {
     }
 
     const usage = await result.usage;
+    // Sibling promise of result.usage. Carries OpenRouter's own dollar figure
+    // for THIS request when the provider reported one; undefined otherwise.
+    const providerCostUsd = providerCostFromMetadata(await result.providerMetadata);
     const finishReason = await result.finishReason;
     // `preparing` entries are NOT deleted when their call completes (the card
     // transitions in place under the same id), so filter by completed
@@ -2506,6 +2571,10 @@ export class HarnessSession extends EventEmitter {
       },
       finishReason,
       interrupted: false,
+      // Spread so a provider that reported nothing leaves the key ABSENT
+      // rather than present-and-undefined — the turn accumulator counts
+      // reporting steps, and "present but undefined" would muddy that.
+      ...(providerCostUsd === undefined ? {} : { providerCostUsd }),
       generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0,
     };
   }

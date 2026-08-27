@@ -7,6 +7,7 @@
 // are written as plain language telling the user what to do — not debug codes.
 import { ulid } from 'ulid';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { openRouterCostExtractor } from '../harness/pricing';
 import { withPrefillProgress, type PrefillProgress } from './prefill-progress';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -266,6 +267,24 @@ export class ProviderRegistry {
           apiKey,
           headers: OPENROUTER_HEADERS,
           includeUsage: true,   // see the local-engine branch — off by default in the SDK
+          // Lets the harness check its own arithmetic: OpenRouter reports the
+          // real, authoritative dollar figure it charged for each request, and
+          // `costForUsage` only ever computed an estimate from a rate card.
+          // Reads `usage.cost` off the raw wire response — a field the AI SDK's
+          // own stream parts do not model, so without this hook it is gone by
+          // the time a chunk reaches us. Attached ONLY here: no other provider
+          // reports a cost, and pricing.ts is emphatic that a provider which
+          // reports nothing must read as nothing, never as $0.
+          //
+          // NOT paired with a `usage: { include: true }` request body, which the
+          // plan expected. OpenRouter's own Usage Accounting docs (fetched
+          // 2026-08-27) say that parameter "and `stream_options: {include_usage:
+          // true}` are deprecated and have no effect. Full usage details are now
+          // always included automatically in every response." Sending a
+          // documented no-op would be code that claims to do something it does
+          // not. If OpenRouter ever stops volunteering the field, the metadata
+          // simply comes back absent — which is already the handled case.
+          metadataExtractor: openRouterCostExtractor,
         })(binding.modelId);
       }
       case 'openai-compatible': {

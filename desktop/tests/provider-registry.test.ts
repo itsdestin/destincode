@@ -8,6 +8,7 @@ import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os'
 import { NativeHome } from '../src/main/native-home';
 import { SecretsStore } from '../src/main/providers/secrets-store';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
+import { openRouterCostExtractor } from '../src/main/harness/pricing';
 import type { LocalEngineHook } from '../src/main/engine/engine-manager';
 
 describe('ProviderRegistry', () => {
@@ -80,6 +81,35 @@ describe('ProviderRegistry', () => {
     const model = await reg.languageModel({ providerId: 'openrouter', modelId: 'meta-llama/llama-3-8b' });
     expect(model).toBeTruthy();
     expect(typeof (model as any).modelId).toBe('string');
+  });
+
+  // Plan Task 27. OpenRouter reports the real dollar figure it charged on every
+  // response; nothing else this app can talk to does. The hook that reads it is
+  // attached to THIS branch only, and pricing.ts is emphatic that a provider
+  // which reports nothing must read as nothing rather than as $0 — so a stray
+  // extractor on a provider that never fills it in would be worse than none.
+  it('openrouter asks the SDK to read the provider’s own cost off the wire', async () => {
+    await reg.setKey('openrouter', 'sk-or-abc');
+    const model = await reg.languageModel({ providerId: 'openrouter', modelId: 'openai/gpt-4o' });
+    expect((model as any).config.metadataExtractor).toBe(openRouterCostExtractor);
+  });
+
+  it('no other provider claims to report a cost', async () => {
+    const id = await reg.upsert({ type: 'openai-compatible', label: 'Ollama', baseUrl: 'http://localhost:11434/v1', enabled: true });
+    const model = await reg.languageModel({ providerId: id, modelId: 'llama3' });
+    expect((model as any).config.metadataExtractor).toBeUndefined();
+  });
+
+  // The plan expected a `usage: { include: true }` request body alongside the
+  // extractor. OpenRouter's own Usage Accounting docs (fetched 2026-08-27) say
+  // that parameter — and `stream_options: { include_usage: true }` — are
+  // "deprecated and have no effect", because full usage details are now always
+  // included automatically. Sending it would be code that claims to ask for
+  // something it cannot ask for, so the body stays exactly as the SDK builds it.
+  it('sends no request-body parameter to ask for cost — the deprecated one is a no-op', async () => {
+    await reg.setKey('openrouter', 'sk-or-abc');
+    const model = await reg.languageModel({ providerId: 'openrouter', modelId: 'openai/gpt-4o' });
+    expect((model as any).config.transformRequestBody).toBeUndefined();
   });
 
   it('setKey rotation keeps the same secretRef (providers.json pointer stable)', async () => {
