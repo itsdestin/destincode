@@ -11,15 +11,18 @@ import { createTerminalKeyHandler } from './terminal-key-handler';
 import { useTheme } from '../state/theme-context';
 import { isTouchDevice } from '../platform';
 import { isWorkbenchMode, workbenchTerminalBacking, TERMINAL_BACKING_STYLE } from '../workbench-mode';
+import { computeTerminalSurface } from '../themes/theme-engine';
 
 /** Terminal always uses Cascadia Code — user font selection applies to the
  *  chat UI only. Proportional or display fonts break xterm's character grid. */
 const TERMINAL_FONT = "'Cascadia Code', 'Cascadia Mono', Consolas, monospace";
 
 /** Read the current theme CSS variables and return an xterm ITheme.
- *  @param background — which theme token xterm paints as its OPAQUE background.
- *  The app always uses 'canvas'; 'panel' exists for the UI Workbench's solid
- *  backing mock-ups (workbench-mode.ts). This used to take a `transparent`
+ *  @param background — which theme token xterm paints as its OPAQUE background:
+ *  'panel' under a wallpaper/gradient theme, 'canvas' on a flat one (the P-20.2
+ *  guarantee — decided by computeTerminalSurface in theme-engine.ts, never
+ *  here). xterm needs a resolved colour, which is why this reads the token by
+ *  name instead of `--terminal-backing`. This used to take a `transparent`
  *  flag that returned the keyword 'transparent' — never use that: xterm's
  *  css.toColor accepts only `#…` / `rgb(…)` and THROWS on keywords, falling
  *  back to opaque black (measured 2026-08-27). */
@@ -65,12 +68,15 @@ export default function TerminalView({ sessionId, visible }: Props) {
   // below is a no-op, so the real PTY terminal is untouched.
   const [workbenchBacking] = React.useState(workbenchTerminalBacking);
   const backingStyle = workbenchBacking === 'today' ? null : TERMINAL_BACKING_STYLE[workbenchBacking];
-  // Which theme token xterm paints as its opaque background: always 'canvas'
-  // in the app; the workbench solid mock-ups switch it to 'panel'.
-  const xtermBackground = backingStyle?.xtermBackground ?? 'canvas';
 
   // Detect if the theme has a visual background (wallpaper image, gradient, or glassmorphism)
   const bg = activeTheme?.background;
+  // Which theme token xterm paints as its opaque background. The shipped answer
+  // is the theme engine's (P-20.2: 'panel' under a wallpaper/gradient — the
+  // same predicate that stamps [data-wallpaper] on <html> — 'canvas' on a flat
+  // theme); the workbench mock-ups override it for side-by-side shots only.
+  const shippedBacking = computeTerminalSurface(bg).backing;
+  const xtermBackground = backingStyle?.xtermBackground ?? shippedBacking;
   const hasWallpaper = bg?.type === 'image' && !!bg.value;
   const hasGradient = bg?.type === 'gradient' && !!bg.value;
   const hasBlur = !!(bg?.['panels-blur'] && bg['panels-blur'] > 0 && !reducedEffects);
@@ -532,12 +538,22 @@ export default function TerminalView({ sessionId, visible }: Props) {
   });
 
   // xterm opacity is driven by `--terminal-xterm-opacity` (theme-engine writes
-  // it from the theme's `background.terminal-opacity`, user slider overrides).
+  // it from the theme's `background.terminal-opacity`, user slider overrides —
+  // and floors it at 0.8 under a wallpaper/gradient, see computeTerminalSurface).
   // When no visual background is active we force a full-opacity `1` so solid
   // themes don't inherit a translucent xterm.
   const xtermOpacityStyle: React.CSSProperties['opacity'] = seeThrough
     ? 'var(--terminal-xterm-opacity)'
     : 1;
+  // The colour the grid container (and the header-gap backdrop) fill with,
+  // as a var() so the theme's live token edits repaint it. Under a
+  // wallpaper the container is FILLED (panel), so the few-pixel strip below
+  // xterm's last cell row and the 20% show-through both read as one panel
+  // sheet; a flat theme fills with --canvas as it always did; a flat theme
+  // with only panels-blur stays unfilled so the blur can be seen (today's
+  // behaviour). The workbench mock-ups follow their own token.
+  const fillContainer = xtermBackground === 'panel' || !seeThrough;
+  const backingColor = `var(--${xtermBackground})`;
 
   // `terminal-overlay-scroll` hides xterm's native scrollbar (see globals.css)
   // so the floating thumb below paints in front of the rightmost column.
@@ -603,10 +619,12 @@ export default function TerminalView({ sessionId, visible }: Props) {
           the header and dims its backdrop via the container's opacity; without
           this, the strip above the content would show the theme background at
           FULL brightness, leaving a visible brightness step at the header edge.
-          Replicate the terminal's dimmed surface — --canvas at the same
-          --terminal-xterm-opacity — over just the gap so it reads as one
+          Replicate the terminal's dimmed surface — the same backing token
+          (--panel under a gradient, --canvas on a blur-only flat theme) at the
+          same --terminal-xterm-opacity — over just the gap so it reads as one
           continuous surface. Solid themes need nothing (the strip already shows
-          --canvas); wallpaper themes are covered by the full-bleed terminalBg. */}
+          --canvas); wallpaper themes are covered by the full-bleed terminalBg.
+          Workbench mock-ups pin the variant's own opacity so the gap matches. */}
       {seeThrough && !terminalBg && (
         <div
           aria-hidden
@@ -616,8 +634,8 @@ export default function TerminalView({ sessionId, visible }: Props) {
             left: 0,
             right: 0,
             height: 'var(--terminal-top-inset, 0px)',
-            backgroundColor: 'var(--canvas)',
-            opacity: 'var(--terminal-xterm-opacity, 0.6)',
+            backgroundColor: backingColor,
+            opacity: backingStyle ? backingStyle.xtermOpacity : 'var(--terminal-xterm-opacity, 0.6)',
           }}
         />
       )}
@@ -657,8 +675,8 @@ export default function TerminalView({ sessionId, visible }: Props) {
           // here like the top/side insets — NOT via .app-content margin, which
           // can't move this absolutely-positioned container (see globals.css).
           bottom: 'var(--terminal-bottom-inset, 0px)',
-          // Workbench backing mock-ups override the shipped opacity (`scrim`
-          // 0.85, `solid90` 0.9, `solid100` 1 — see workbench-mode.ts).
+          // Workbench backing mock-ups override the shipped opacity (`legacy`
+          // 0.6, `scrim` 0.85, `solid90` 0.9, `solid100` 1 — workbench-mode.ts).
           opacity: backingStyle ? backingStyle.xtermOpacity : xtermOpacityStyle,
           // xterm renders cell rows to a canvas; if container height isn't a
           // whole multiple of cell height (typical — fonts round irregularly),
@@ -666,11 +684,16 @@ export default function TerminalView({ sessionId, visible }: Props) {
           // whatever's behind the WebView. On Android that's the Compose Box's
           // dark color, producing a visible black bar between xterm and the
           // input bar. Match the xterm theme background here so the strip is
-          // indistinguishable from a rendered cell. Skip when a visual
-          // background (wallpaper/gradient/glass) is active so we don't cover it.
-          // (Matches xterm's own background token — 'panel' only under the
-          // workbench solid mock-ups.)
-          backgroundColor: seeThrough ? undefined : `var(--${xtermBackground})`,
+          // indistinguishable from a rendered cell. Under a wallpaper the fill
+          // is the panel sheet itself (P-20.2); only a blur-only flat theme is
+          // left unfilled so the blur stays visible — see fillContainer.
+          backgroundColor: fillContainer ? backingColor : undefined,
+          // Workbench mock-ups only: `.xterm-viewport` (globals.css) fills with
+          // --terminal-backing, which the theme engine set for the SHIPPED
+          // surface. Re-point it at the variant's token so a `scrim` shot on a
+          // wallpaper theme doesn't show a panel-coloured strip under a canvas
+          // grid. Never set in the app (backingStyle is null there).
+          ...(backingStyle ? { '--terminal-backing': backingColor } as React.CSSProperties : null),
         }}
       />
     </div>

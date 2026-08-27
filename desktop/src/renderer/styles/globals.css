@@ -370,9 +370,12 @@ html, body, #root {
      cell row (because xterm sizes cells to whole rows; the viewport is
      usually 3-12px taller than xterm-screen depending on font metrics). On
      touch platforms with no native scrollbar, that strip reads as a black
-     bar between xterm and the InputBar. Match the canvas token so any
-     uncovered strip blends with the terminal background. */
-  background-color: var(--canvas) !important;
+     bar between xterm and the InputBar. Match the terminal's backing token
+     so any uncovered strip blends with the grid: --terminal-backing is set by
+     theme-engine.ts (P-20.2) to var(--panel) under a wallpaper/gradient theme
+     and var(--canvas) on a flat one — the fallback keeps it --canvas before
+     the first theme apply, exactly the old literal. */
+  background-color: var(--terminal-backing, var(--canvas)) !important;
 }
 
 .xterm-screen {

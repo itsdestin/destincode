@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildTokenCSS, buildShapeCSS, buildBackgroundStyle, buildLayoutAttrs, buildPatternStyle, computeOverlayTokens, buildEffectLayers } from '../src/renderer/themes/theme-engine';
+import { buildTokenCSS, buildShapeCSS, buildBackgroundStyle, buildLayoutAttrs, buildPatternStyle, computeOverlayTokens, buildEffectLayers, computeTerminalSurface, hasBackgroundLayer, TERMINAL_WALLPAPER_OPACITY_FLOOR } from '../src/renderer/themes/theme-engine';
 
 const TOKENS = {
   canvas: '#0D0F1A', panel: '#141726', inset: '#1F2440', well: '#0D0F1A',
@@ -403,5 +403,44 @@ describe('--destructive-fg (text-on-surface variant)', () => {
         expect(rule.status, `${name}: ${ruleName} for engine value ${engineFg}`).toBe('PASS');
       }
     }
+  });
+});
+
+// P-20.2 (decided 2026-08-27): under a wallpaper/gradient the terminal paints
+// the panel colour at no less than 0.8; flat themes are untouched. This is the
+// single decision point applyThemeToDom and TerminalView both consume.
+describe('computeTerminalSurface — the terminal surface guarantee', () => {
+  const image = { type: 'image' as const, value: 'theme-asset://x/wall.jpg' };
+
+  it('flat theme (no background): --canvas at the historical 0.6 default', () => {
+    expect(computeTerminalSurface(undefined)).toEqual({ backing: 'canvas', opacity: 0.6 });
+  });
+
+  it('flat theme honours its declared terminal-opacity unchanged, even below the floor', () => {
+    expect(computeTerminalSurface({ type: 'solid', value: '#000', 'terminal-opacity': 0.4 }))
+      .toEqual({ backing: 'canvas', opacity: 0.4 });
+  });
+
+  it('wallpaper theme with no declared opacity: --panel at the 0.8 floor', () => {
+    expect(TERMINAL_WALLPAPER_OPACITY_FLOOR).toBe(0.8);
+    expect(computeTerminalSurface(image)).toEqual({ backing: 'panel', opacity: 0.8 });
+  });
+
+  it('wallpaper theme declaring 0.4 is floored to 0.8; declaring 0.9 is honoured', () => {
+    expect(computeTerminalSurface({ ...image, 'terminal-opacity': 0.4 }).opacity).toBe(0.8);
+    expect(computeTerminalSurface({ ...image, 'terminal-opacity': 0.9 }).opacity).toBe(0.9);
+    expect(computeTerminalSurface({ ...image, 'terminal-opacity': 1 }).opacity).toBe(1);
+  });
+
+  it('gradient themes count as a background layer, exactly like [data-wallpaper]', () => {
+    const gradient = { type: 'gradient' as const, value: 'linear-gradient(#000, #fff)' };
+    expect(hasBackgroundLayer(gradient)).toBe(true);
+    expect(computeTerminalSurface(gradient)).toEqual({ backing: 'panel', opacity: 0.8 });
+  });
+
+  it('an image/gradient type with an EMPTY value is not a background layer (no wallpaper to read over)', () => {
+    expect(hasBackgroundLayer({ type: 'image', value: '' })).toBe(false);
+    expect(computeTerminalSurface({ type: 'image', value: '', 'terminal-opacity': 0.5 }))
+      .toEqual({ backing: 'canvas', opacity: 0.5 });
   });
 });

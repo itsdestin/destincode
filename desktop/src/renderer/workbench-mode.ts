@@ -25,15 +25,26 @@ export function isWorkbenchMode(): boolean {
 /** Terminal backing variants for ledger P-20.2 (2026-08-27 UI review): how
  *  solid should the terminal's surface be under a wallpaper theme?
  *
- *  - `today`    — no change. xterm paints an opaque `--canvas` background and
- *                 the whole grid (text included) sits at
- *                 `--terminal-xterm-opacity` (theme `terminal-opacity`, default
- *                 0.6) over the blurred/darkened wallpaper layer.
- *  - `scrim`    — today's mechanism, stronger: the same opaque `--canvas` xterm
- *                 at 0.85 instead of 0.6. This is exactly what a theme pack
- *                 could ship today by setting `terminal-opacity: 0.85`.
+ *  DECIDED 2026-08-27 (Destin: "fine with 3 at 8-% instead of 90"): the
+ *  panel-backed form at 0.8 ships, as a theme guarantee in theme-engine.ts
+ *  (`computeTerminalSurface`) — NOT via this switch. The variants stay so the
+ *  phase-d comparisons can still be re-shot side by side:
+ *
+ *  - `today`    — what SHIPS. No override: under a wallpaper/gradient theme
+ *                 xterm paints `--panel` (opaque) and the grid sits at
+ *                 `--terminal-xterm-opacity`, which the engine floors at 0.8;
+ *                 flat themes keep `--canvas` at their own `terminal-opacity`
+ *                 (default 0.6). Same as the app.
+ *  - `legacy`   — the PRE-decision surface, for Before shots: an opaque
+ *                 `--canvas` xterm with the whole grid at 0.6 over the
+ *                 blurred/darkened wallpaper layer. (The engine's floor makes
+ *                 this unreachable through a theme now, so it carries a literal
+ *                 0.6.)
+ *  - `scrim`    — the legacy mechanism, stronger: the same `--canvas` xterm at
+ *                 0.85 instead of 0.6.
  *  - `solid90`  — xterm paints `--panel` (opaque) and the grid sits at 0.9, so
- *                 the wallpaper shows through 10%.
+ *                 the wallpaper shows through 10%. (The shipping form is this
+ *                 at 0.8.)
  *  - `solid100` — the same `--panel` xterm at 1: the wallpaper is hidden
  *                 behind the grid.
  *
@@ -43,16 +54,12 @@ export function isWorkbenchMode(): boolean {
  *  so each `⎿ …` line and the shortcuts hint rendered on a black bar — an
  *  artefact of transparency, not of the backing, and real Claude Code output
  *  is full of dim text. The opaque form needs no `allowTransparency` (a
- *  measured xterm perf cost), no override of the `.xterm-viewport` colour, and
- *  is one theme value away from shipping. The only visible difference is that
- *  `solid90` text is drawn at 0.9 rather than 1.
- *
- *  The SHIPPING version of whichever wins is a theme guarantee (a value in the
- *  theme manifest / theme-engine default), NOT a query param — this switch
- *  exists only so all four can be screenshotted side by side. */
-export type TerminalBacking = 'today' | 'scrim' | 'solid90' | 'solid100';
+ *  measured xterm perf cost) and no override of the `.xterm-viewport` colour.
+ *  The only visible difference is that `solid90` text is drawn at 0.9 rather
+ *  than 1. */
+export type TerminalBacking = 'today' | 'legacy' | 'scrim' | 'solid90' | 'solid100';
 
-const TERMINAL_BACKINGS: ReadonlyArray<TerminalBacking> = ['today', 'scrim', 'solid90', 'solid100'];
+const TERMINAL_BACKINGS: ReadonlyArray<TerminalBacking> = ['today', 'legacy', 'scrim', 'solid90', 'solid100'];
 
 /** Reads `?termBacking=`; anything unrecognised (or not in workbench mode) is
  *  `today`, so a typo renders the shipped terminal rather than a blank pane. */
@@ -64,11 +71,13 @@ export function workbenchTerminalBacking(): TerminalBacking {
 
 /** Per-variant knobs TerminalView applies. `xtermOpacity` replaces the grid
  *  container's `--terminal-xterm-opacity`; `xtermBackground` is which theme
- *  token xterm paints as its (opaque) background. */
+ *  token xterm paints as its (opaque) background. `today` has no entry: it is
+ *  the theme engine's own answer. */
 export const TERMINAL_BACKING_STYLE: Record<Exclude<TerminalBacking, 'today'>, {
   xtermOpacity: number;
   xtermBackground: 'canvas' | 'panel';
 }> = {
+  legacy: { xtermOpacity: 0.6, xtermBackground: 'canvas' },
   scrim: { xtermOpacity: 0.85, xtermBackground: 'canvas' },
   solid90: { xtermOpacity: 0.9, xtermBackground: 'panel' },
   solid100: { xtermOpacity: 1, xtermBackground: 'panel' },
