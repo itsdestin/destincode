@@ -20,6 +20,7 @@ import { ProviderRegistry } from '../src/main/providers/provider-registry';
 import {
   providerCostFromMetadata, costDisagreement,
   COST_DISAGREEMENT_THRESHOLD, COST_COMPARE_FLOOR_USD,
+  addComparableTurn, sessionCostDisagreement, NO_SESSION_COST_TOTALS,
 } from '../src/main/harness/pricing';
 
 // A streamed OpenRouter response, byte-for-byte in the wire shape OpenRouter
@@ -29,7 +30,10 @@ import {
 // capture of a live billed request — nobody here has spent real money on a real
 // model to record one. It pins that we read the shape OpenRouter documents; it
 // does NOT establish that our dollar figure matches a real bill.
-function openRouterSse(usage: Record<string, unknown> | null): string {
+function openRouterSse(
+  usage: Record<string, unknown> | null,
+  opts: { thenASilentChunk?: boolean } = {},
+): string {
   const lines = [
     `data: ${JSON.stringify({ id: 'gen-1', object: 'chat.completion.chunk', model: 'openai/gpt-4o', choices: [{ index: 0, delta: { role: 'assistant', content: 'hi' }, finish_reason: null }] })}`,
     `data: ${JSON.stringify({ id: 'gen-1', object: 'chat.completion.chunk', model: 'openai/gpt-4o', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}`,
@@ -38,6 +42,15 @@ function openRouterSse(usage: Record<string, unknown> | null): string {
     // OpenRouter sends the usage block in its LAST SSE message, in a chunk with
     // an empty choices array — the case a naive extractor skips.
     lines.push(`data: ${JSON.stringify({ id: 'gen-1', object: 'chat.completion.chunk', model: 'openai/gpt-4o', choices: [], usage })}`);
+  }
+  if (opts.thenASilentChunk) {
+    // SYNTHETIC, said plainly so nobody over-trusts it: nobody here has seen
+    // OpenRouter send a chunk AFTER its usage block. This exists to exercise
+    // the extractor's "last one wins, but only a real reading overwrites"
+    // guard — a figure an earlier chunk carried must survive a later chunk
+    // that carries none. Every other fixture puts the usage in the final
+    // chunk, so without this the guard is never exercised at all.
+    lines.push(`data: ${JSON.stringify({ id: 'gen-1', object: 'chat.completion.chunk', model: 'openai/gpt-4o', choices: [] })}`);
   }
   lines.push('data: [DONE]');
   return lines.map((l) => `${l}\n\n`).join('');
@@ -108,6 +121,32 @@ describe('reading the provider’s own cost off a recorded response', () => {
     const { meta } = await turnAgainst(openRouterSse({ ...RECORDED_USAGE, cost: 0 }));
     expect(providerCostFromMetadata(meta)).toBe(0);
   });
+
+  // Plan Task 30 item 4. The extractor only overwrites its running figure with
+  // a REAL reading; a later chunk with no usage block must leave the earlier
+  // one standing. Deleting that guard used to turn nothing red.
+  it('keeps the figure an earlier chunk carried when a later chunk carries none', async () => {
+    const { meta } = await turnAgainst(openRouterSse(RECORDED_USAGE, { thenASilentChunk: true }));
+    expect(providerCostFromMetadata(meta)).toBeCloseTo(0.95, 10);
+  });
+
+  // Plan Task 30 items 2 + 3. The old guard for this claim asserted only that
+  // no `transformRequestBody` hook was installed — which stayed true while the
+  // body itself still carried `stream_options: { include_usage: true }`, the
+  // very parameter the code's own comment quotes OpenRouter calling inert.
+  // The request body is the thing the claim is about, so assert on the body.
+  it('asks for the cost in NO request-body parameter — the ones that would are documented no-ops', async () => {
+    const { sentBody } = await turnAgainst(openRouterSse(RECORDED_USAGE));
+    // OpenRouter's Usage Accounting docs (fetched 2026-08-27) call both of
+    // these "deprecated and have no effect": full usage details are always
+    // included now. The read side is the metadataExtractor; the body is left
+    // exactly as the SDK builds it.
+    expect(sentBody.usage).toBeUndefined();
+    expect(sentBody.stream_options).toBeUndefined();
+    // Not a body assertion by mistake: the turn really did happen and really
+    // did carry a cost, so an empty/undefined body cannot pass this test.
+    expect(sentBody.model).toBe('openai/gpt-4o');
+  });
 });
 
 describe('providerCostFromMetadata', () => {
@@ -146,6 +185,63 @@ describe('costDisagreement', () => {
   it('has a threshold above the few-percent band the two formulas can honestly differ by', () => {
     expect(COST_DISAGREEMENT_THRESHOLD).toBeGreaterThan(0.02);
     expect(COST_DISAGREEMENT_THRESHOLD).toBeLessThan(0.5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The session pair (plan Task 30 item 1).
+//
+// COST_COMPARE_FLOOR_USD applied PER TURN means the check never fires at all on
+// a cheap model: a 3k-in / 100-out turn on a Gemini-Flash-class rate card costs
+// about $0.00034, a third of the floor, forever. The sums cross the floor long
+// before any single turn does — so the session keeps a running pair.
+//
+// THE PAIR IS THE POINT. A turn enters BOTH sums or NEITHER, so a session where
+// some turns had a provider figure and some did not can never put a PARTIAL
+// provider total next to a COMPLETE cost total.
+// ---------------------------------------------------------------------------
+describe('the session pair — both sums always cover the same turns', () => {
+  it('folds a turn in only when BOTH figures exist, and then into both sides', () => {
+    let t = addComparableTurn(NO_SESSION_COST_TOTALS, 2, 3);
+    expect(t).toEqual({ ourUsd: 2, theirUsd: 3, turns: 1 });
+    t = addComparableTurn(t, 100, undefined);   // provider reported nothing
+    expect(t).toEqual({ ourUsd: 2, theirUsd: 3, turns: 1 });
+    t = addComparableTurn(t, null, 100);        // no published rate of ours
+    expect(t).toEqual({ ourUsd: 2, theirUsd: 3, turns: 1 });
+    t = addComparableTurn(t, undefined, 100);   // a free turn
+    expect(t).toEqual({ ourUsd: 2, theirUsd: 3, turns: 1 });
+  });
+
+  it('counts a reported zero — it is a reading, not a silence', () => {
+    expect(addComparableTurn(NO_SESSION_COST_TOTALS, 0, 0)).toEqual({ ourUsd: 0, theirUsd: 0, turns: 1 });
+  });
+
+  it('never mutates the totals it was handed', () => {
+    const start = addComparableTurn(NO_SESSION_COST_TOTALS, 2, 3);
+    addComparableTurn(start, 5, 5);
+    expect(start).toEqual({ ourUsd: 2, theirUsd: 3, turns: 1 });
+    expect(NO_SESSION_COST_TOTALS).toEqual({ ourUsd: 0, theirUsd: 0, turns: 0 });
+  });
+
+  it('is null when nothing was ever comparable — a 0 there would read as agreement', () => {
+    expect(sessionCostDisagreement(NO_SESSION_COST_TOTALS)).toBeNull();
+  });
+
+  it('is null while the running total is still under the floor', () => {
+    expect(sessionCostDisagreement({ ourUsd: 0.0004, theirUsd: 0.0002, turns: 1 })).toBeNull();
+  });
+
+  it('compares once the SUM crosses the floor, where no single turn ever could', () => {
+    // A cheap model, in real numbers: ours $0.00034 a turn, the provider's own
+    // half of that. Neither figure can ever be compared on its own.
+    let t = NO_SESSION_COST_TOTALS;
+    for (let i = 0; i < 5; i++) {
+      t = addComparableTurn(t, 0.00034, 0.00017);
+      expect(sessionCostDisagreement(t)).toBeNull();
+    }
+    // Six turns is where the provider's running total first clears $0.001.
+    t = addComparableTurn(t, 0.00034, 0.00017);
+    expect(sessionCostDisagreement(t)!).toBeCloseTo(1, 6);   // we report double
   });
 });
 
@@ -218,6 +314,14 @@ async function turnUsage(
   return seen.find((e) => e.type === 'turn-complete')!.data.usage;
 }
 
+/** Every cost diagnostic the session logged, and the two kinds separately.
+ *  There are now two lines with different jobs — one localises a fault to a
+ *  single turn, one catches a systematic error the per-turn floor hides — so a
+ *  test that means one must not accidentally count the other. */
+const costWarnings = () => vi.mocked(log).mock.calls.filter((c) => /cost/i.test(String(c[2])));
+const turnWarnings = () => costWarnings().filter((c) => /for this turn/.test(String(c[2])));
+const sessionWarnings = () => costWarnings().filter((c) => /across this session/.test(String(c[2])));
+
 describe('the provider’s figure rides the turn beside ours', () => {
   beforeEach(() => { vi.mocked(log).mockClear(); });
 
@@ -262,11 +366,15 @@ describe('the provider’s figure rides the turn beside ours', () => {
   it('logs a diagnostic line when the two figures disagree beyond the threshold', async () => {
     // Ours: $3. Provider: $6 — 50% apart, far above the 5% threshold.
     await turnUsage([{ inTok: 1, outTok: 1, cost: 6 }]);
-    const warned = vi.mocked(log).mock.calls.filter((c) => /cost/i.test(String(c[2])));
+    const warned = turnWarnings();
     expect(warned).toHaveLength(1);
     expect(warned[0][0]).toBe('WARN');
     // The line must carry BOTH figures — a gap with no numbers is undiagnosable.
     expect(warned[0][3]).toMatchObject({ ourCostUsd: 3, providerCostUsd: 6 });
+    // One turn is also the whole session, so the session line fires too, with
+    // the same numbers and the count of turns behind them.
+    expect(sessionWarnings()).toHaveLength(1);
+    expect(sessionWarnings()[0][3]).toMatchObject({ ourCostUsd: 3, providerCostUsd: 6, comparableTurns: 1 });
   });
 
   it('stays silent when the two agree, and when there is nothing to compare', async () => {
@@ -274,5 +382,101 @@ describe('the provider’s figure rides the turn beside ours', () => {
     await turnUsage([{ inTok: 1, outTok: 1 }]);                 // provider said nothing
     await turnUsage([{ inTok: 1, outTok: 1, cost: 3 }], { pricing: null });  // we have no rate
     expect(vi.mocked(log).mock.calls.filter((c) => /cost/i.test(String(c[2])))).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The same check across the whole SESSION (plan Task 30 item 1).
+//
+// The per-turn floor is right in itself — below a tenth of a cent the
+// provider's own rounding is a large fraction of the figure — but it means the
+// check literally never fires on a cheap model. Those turns still add up into
+// the figure the status bar shows, so the sums are compared too.
+//
+// And the step-vs-turn trap repeats here one level up: a session where SOME
+// turns published a provider figure and some did not must never sum a partial
+// provider total against a complete cost total.
+// ---------------------------------------------------------------------------
+
+/** Runs several turns on ONE session and returns each turn-complete usage.
+ *  A fresh session per turn cannot exercise a session accumulator, which is
+ *  the whole point here. Each entry is one single-step turn. */
+async function sessionOfTurns(
+  turns: { inTok: number; outTok: number; cost?: number }[],
+  over: Record<string, unknown> = {},
+) {
+  const model = costScriptedModel(turns);
+  const session = new HarnessSession(
+    makeOpts({
+      tools: [fakeTool('Noop')],
+      decide: async () => ({ action: 'allow' }) as any,
+      pricing: { in: 1_000_000, out: 2_000_000 },   // $1/token in, $2/token out
+      ...over,
+    }),
+    async () => model as any,
+  );
+  const seen: any[] = [];
+  session.on('transcript-event', (e: any) => seen.push(e));
+  for (let i = 0; i < turns.length; i++) await session.send(`turn ${i}`);
+  return seen.filter((e) => e.type === 'turn-complete').map((e) => e.data.usage);
+}
+
+describe('the session sum catches what no single turn could', () => {
+  beforeEach(() => { vi.mocked(log).mockClear(); });
+
+  /** A Gemini-Flash-class rate card, in the real units: USD per 1M tokens. */
+  const CHEAP = { in: 0.1, out: 0.4 };
+
+  it('never fires per turn on a cheap model, and fires ONCE on the session sum', async () => {
+    // Each turn is 3k in + 100 out — an ordinary turn. At CHEAP that is
+    // $0.00034 of ours against $0.00017 of the provider's: we report DOUBLE
+    // what was charged, a 100% systematic error. Both figures sit a third of
+    // the way to the $0.001 floor, so no single turn can ever be compared.
+    const turns = Array.from({ length: 8 }, () => ({ inTok: 3000, outTok: 100, cost: 0.00017 }));
+    const usage = await sessionOfTurns(turns, { pricing: CHEAP });
+    expect(usage).toHaveLength(8);
+    expect(usage[0].costUsd).toBeCloseTo(0.00034, 10);
+    // The bug this task is about: with only the per-turn check, this session
+    // is silent forever despite being wrong by 100% on every single turn.
+    expect(turnWarnings()).toHaveLength(0);
+    // Once — not once per turn from there on. The sixth turn is where the
+    // provider's running total first clears the floor ($0.00102); turns seven
+    // and eight would each repeat an identical line carrying nothing new.
+    expect(sessionWarnings()).toHaveLength(1);
+    expect(sessionWarnings()[0][0]).toBe('WARN');
+    expect(sessionWarnings()[0][3]).toMatchObject({ comparableTurns: 6, relativeGap: 1 });
+  });
+
+  it('never sums a partial provider total against a complete cost total', async () => {
+    // Turn one: the provider billed $3 and we said $3 — exact agreement.
+    // Turn two: the provider reported nothing (a swap to a provider that never
+    // does, or a response that omitted the field) and is a hundred times
+    // bigger. Summing BOTH of our turns ($303) against the provider's ONE ($3)
+    // would read as a 99% disagreement — silently, and always in the direction
+    // that says we over-charge. The unpaired turn must leave BOTH sums alone.
+    await sessionOfTurns([
+      { inTok: 1, outTok: 1, cost: 3 },
+      { inTok: 100, outTok: 100 },
+    ]);
+    expect(costWarnings()).toHaveLength(0);
+  });
+
+  it('still checks the turns that DID report, dropping the unpaired one from OUR side too', async () => {
+    // Same shape, but now the paired turn genuinely disagrees. The logged
+    // figures must be exactly $3 and $6 — that one turn. A $303 on our side
+    // would mean the unpaired turn leaked into the sum.
+    await sessionOfTurns([
+      { inTok: 1, outTok: 1, cost: 6 },
+      { inTok: 100, outTok: 100 },
+    ]);
+    expect(sessionWarnings()).toHaveLength(1);
+    expect(sessionWarnings()[0][3]).toMatchObject({
+      ourCostUsd: 3, providerCostUsd: 6, comparableTurns: 1,
+    });
+  });
+
+  it('stays silent across a session whose sums agree', async () => {
+    await sessionOfTurns(Array.from({ length: 8 }, () => ({ inTok: 3000, outTok: 100, cost: 0.00034 })), { pricing: CHEAP });
+    expect(costWarnings()).toHaveLength(0);
   });
 });

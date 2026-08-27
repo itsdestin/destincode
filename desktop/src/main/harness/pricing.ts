@@ -172,3 +172,83 @@ export function costDisagreement(
   if (theirs < COST_COMPARE_FLOOR_USD) return null;
   return Math.abs(theirs - ours) / theirs;
 }
+
+// ---------------------------------------------------------------------------
+// The same check, over the whole SESSION (plan Task 30 item 1).
+//
+// COST_COMPARE_FLOOR_USD is right in itself — below a tenth of a cent the
+// provider's own rounding is a large fraction of the figure, so the ratio would
+// say more about rounding than about our arithmetic. But applied ONLY per turn
+// it means the check never fires at all on a cheap model: a 3k-in / 100-out
+// turn on a Gemini-Flash-class rate card (~$0.10 per 1M in) costs about
+// $0.00034, a third of the floor, forever. A 50% systematic pricing error on
+// such a model is invisible per turn — and those turns still add up into the
+// figure the status bar shows the user.
+//
+// A running total crosses the floor long before any single turn does, so the
+// session keeps one and compares it too. The per-turn check stays: it localises
+// a fault to ONE turn, which a session total cannot.
+//
+// THE PAIR IS THE WHOLE POINT. The step-vs-turn trap above repeats here one
+// level up: a session where SOME turns published a provider figure and some did
+// not must never put a PARTIAL provider total next to a COMPLETE cost total —
+// that reads as a disagreement, silently, always in the direction that says we
+// over-charge. So a turn enters BOTH sums or NEITHER, and the two sums always
+// cover exactly the same turns.
+//
+// WHY this pairs where the turn level had to be all-or-nothing: costForUsage
+// prices a whole TURN off summed token counts and cannot be split back into per
+// step figures, so a turn with a half-reporting set of steps has nothing to pair
+// WITH. A turn does have its own figure, so it can be paired or dropped one at
+// a time — which is strictly better, since one silent turn no longer blinds the
+// whole session.
+// ---------------------------------------------------------------------------
+
+export interface SessionCostTotals {
+  /** Our figure, summed over ONLY the turns the provider also reported one for. */
+  ourUsd: number;
+  /** The provider's figure, over exactly those same turns. */
+  theirUsd: number;
+  /** How many turns are in the pair. 0 means nothing has been comparable yet,
+   *  which is NOT the same fact as two totals of zero that happened to agree. */
+  turns: number;
+}
+
+/** A session that has compared nothing yet. Frozen: every session starts from
+ *  this one shared object, so an accidental mutation would leak across all of
+ *  them. */
+export const NO_SESSION_COST_TOTALS: SessionCostTotals =
+  Object.freeze({ ourUsd: 0, theirUsd: 0, turns: 0 });
+
+/** Folds one finished turn into the running pair — or returns the pair
+ *  untouched when the turn is not comparable (the provider reported nothing, or
+ *  we have no figure of our own because the model is free or has no published
+ *  rate). Never mutates its argument.
+ *
+ *  A reported 0 on either side IS a reading and counts: a `:free` model that
+ *  genuinely billed nothing told us something. Only `undefined`/`null` is
+ *  silence. */
+export function addComparableTurn(
+  totals: SessionCostTotals,
+  ours: number | null | undefined,
+  theirs: number | undefined,
+): SessionCostTotals {
+  if (ours == null || theirs === undefined) return totals;
+  return {
+    ourUsd: totals.ourUsd + ours,
+    theirUsd: totals.theirUsd + theirs,
+    turns: totals.turns + 1,
+  };
+}
+
+/** How far our running total sits from the provider's, as a fraction of the
+ *  provider's — or `null` when there is nothing honest to compare yet.
+ *
+ *  null, never 0, for a session that has paired no turns at all: a 0 would read
+ *  as "we checked the whole session and it matched", which is the exact
+ *  confusion this module exists to prevent. Below the floor it is null for the
+ *  same reason the per-turn check is. */
+export function sessionCostDisagreement(totals: SessionCostTotals): number | null {
+  if (totals.turns === 0) return null;
+  return costDisagreement(totals.ourUsd, totals.theirUsd);
+}

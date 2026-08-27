@@ -266,7 +266,14 @@ export class ProviderRegistry {
           baseURL: p.baseUrl ?? OPENROUTER_BASE_URL,
           apiKey,
           headers: OPENROUTER_HEADERS,
-          includeUsage: true,   // see the local-engine branch — off by default in the SDK
+          // NO `includeUsage: true` here, unlike the local-engine and generic
+          // openai-compatible branches (where it stays necessary). The SDK
+          // compiles that flag to `stream_options: { include_usage: true }` —
+          // the exact parameter the comment below quotes OpenRouter calling
+          // deprecated and inert. Harmless on the wire, but it made this branch
+          // argue both sides of its own claim. OpenRouter includes full usage
+          // details on every response without being asked; the captured request
+          // body is pinned in provider-cost-check.test.ts.
           // Lets the harness check its own arithmetic: OpenRouter reports the
           // real, authoritative dollar figure it charged for each request, and
           // `costForUsage` only ever computed an estimate from a rate card.

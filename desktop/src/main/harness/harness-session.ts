@@ -141,7 +141,8 @@ import { mcpToolsFor, estimateToolSchemaTokens } from './mcp/mcp-tools';
 import type { ReadyServer } from './mcp/mcp-manager';
 import {
   costForUsage, providerCostFromMetadata, costDisagreement,
-  COST_DISAGREEMENT_THRESHOLD, type ModelPricing,
+  COST_DISAGREEMENT_THRESHOLD, addComparableTurn, sessionCostDisagreement,
+  NO_SESSION_COST_TOTALS, type ModelPricing, type SessionCostTotals,
 } from './pricing';
 import { log } from '../logger';
 
@@ -575,6 +576,22 @@ export class HarnessSession extends EventEmitter {
   // is a full prefill" (first step, or history rewritten by compaction, which
   // invalidates the cached prefix).
   private lastStepPromptTokens = 0;
+  /** Running pair for the SESSION-wide cost self-check (Task 30). The per-turn
+   *  check can never fire on a cheap model — a whole turn there costs a
+   *  fraction of the comparison floor — but these sums cross it, so a
+   *  systematic pricing error shows up where no single turn could show it.
+   *  Only turns that had BOTH figures are folded in, so the two sums always
+   *  cover exactly the same turns (see pricing.ts for why that matters).
+   *
+   *  Deliberately NOT reset by /clear or resume: this measures OUR pricing
+   *  arithmetic against the provider's bill, which is a property of the code,
+   *  not of the conversation. On resume it simply starts again from the turns
+   *  this process runs — the check is continuous, not a per-session report. */
+  private sessionCostTotals: SessionCostTotals = NO_SESSION_COST_TOTALS;
+  /** The session line is a one-shot. Once the sums disagree they keep
+   *  disagreeing, and repeating an identical warning on every later turn would
+   *  bury the finding rather than sharpen it. */
+  private sessionCostGapLogged = false;
   binding: ModelBinding;
 
   // Tool runtime state (Task 9). readRegistry + todos are per-SESSION runtime
@@ -2015,6 +2032,31 @@ export class HarnessSession extends EventEmitter {
           ourCostUsd: costUsd,
           providerCostUsd,
           relativeGap: Number(costGap.toFixed(4)),
+        });
+      }
+      // ...and the same comparison across the whole session (Task 30). The
+      // per-turn line above localises a fault to ONE turn but is silent
+      // forever on a cheap model, where a whole turn costs a third of the
+      // floor; these sums cross the floor after a handful of turns, so a
+      // systematic pricing error finally becomes visible. Only turns that had
+      // BOTH figures are in either sum, so a session that mixed a reporting
+      // provider with a silent one never puts part of a bill next to all of
+      // our arithmetic. Same rules as above: diagnostic only, no UI, and the
+      // message states what was observed without naming a cause.
+      this.sessionCostTotals = addComparableTurn(this.sessionCostTotals, costUsd, providerCostUsd);
+      const sessionCostGap = sessionCostDisagreement(this.sessionCostTotals);
+      if (!this.sessionCostGapLogged && sessionCostGap !== null
+          && sessionCostGap > COST_DISAGREEMENT_THRESHOLD) {
+        this.sessionCostGapLogged = true;
+        log('WARN', 'HarnessSession', 'our cost figures and the provider\u2019s own disagree across this session', {
+          sessionId: this.opts.sessionId,
+          // The LATEST turn's model, not "the model these totals are for": a
+          // session can swap models mid-flight, so the sums may span several.
+          modelOfLatestTurn: this.binding.modelId,
+          comparableTurns: this.sessionCostTotals.turns,
+          ourCostUsd: this.sessionCostTotals.ourUsd,
+          providerCostUsd: this.sessionCostTotals.theirUsd,
+          relativeGap: Number(sessionCostGap.toFixed(4)),
         });
       }
       this.emitEvent('turn-complete', {

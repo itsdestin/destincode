@@ -106,7 +106,14 @@ describe('ProviderRegistry', () => {
   // "deprecated and have no effect", because full usage details are now always
   // included automatically. Sending it would be code that claims to ask for
   // something it cannot ask for, so the body stays exactly as the SDK builds it.
-  it('sends no request-body parameter to ask for cost — the deprecated one is a no-op', async () => {
+  // NAME NARROWED (plan Task 30 item 3): this asserts one specific thing — that
+  // no body-rewriting hook is installed — and the old name claimed it proved
+  // the whole body asks for nothing, which it did not: the body still carried
+  // `stream_options: { include_usage: true }` while this passed. The claim
+  // about the BODY is now guarded by reading the real captured body, in
+  // provider-cost-check.test.ts ("asks for the cost in NO request-body
+  // parameter"). Both are kept: this one is the cheap structural check.
+  it('installs no request-body rewriting hook on the OpenRouter branch', async () => {
     await reg.setKey('openrouter', 'sk-or-abc');
     const model = await reg.languageModel({ providerId: 'openrouter', modelId: 'openai/gpt-4o' });
     expect((model as any).config.transformRequestBody).toBeUndefined();
