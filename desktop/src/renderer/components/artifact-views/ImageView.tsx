@@ -69,8 +69,19 @@ function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath
     return () => ro.disconnect();
   }, [url]);
 
+  // A vector's reported size is meaningless: a viewBox-only SVG reports
+  // Chromium's 300×150 default whatever it actually draws (its RATIO is right,
+  // its size is not). Left alone it renders as a small box in a big pane and the
+  // lens suppresses itself for being smaller than the lens. So scale a vector up
+  // to fill the pane at its own aspect ratio and treat THAT as its natural size.
+  const content = (() => {
+    if (!isSvg || !(natural.w > 0) || !(box.w > 0)) return natural;
+    const up = Math.min(box.w / natural.w, box.h / natural.h);
+    return { w: natural.w * up, h: natural.h * up };
+  })();
+
   const zoom = useZoomPan({
-    containerW: box.w, containerH: box.h, contentW: natural.w, contentH: natural.h,
+    containerW: box.w, containerH: box.h, contentW: content.w, contentH: content.h,
   });
 
   // Escape rides the app's dismissal stack. A raw keydown listener here would
@@ -103,6 +114,12 @@ function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath
         onLoad={(e) => setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })}
         className="absolute left-1/2 top-1/2 max-w-none select-none"
         style={{
+          // Explicit size, so the element's CSS box always equals the content
+          // box. The lens draws from this element, so any mismatch (an
+          // object-contain letterbox, a vector at its default size) would
+          // magnify something different from what is on screen.
+          width: content.w || undefined,
+          height: content.h || undefined,
           // translate(-50%,-50%) centres it, then pan and scale ride on top. A
           // transform creates no scroll extent, which is exactly why dragging is
           // the only way to pan and why zoom-math clamps the offset.

@@ -113,7 +113,17 @@ export function Loupe({
       aria-hidden
       // L2 so the lens floats over the pill (L1) it was switched on from.
       className="fixed top-0 left-0 pointer-events-none p-0"
-      style={{ width: diameter, height: diameter, borderRadius: '50%', visibility: 'hidden' }}
+      style={{
+        width: diameter,
+        height: diameter,
+        borderRadius: '50%',
+        visibility: 'hidden',
+        // The panel's own 1px --edge border disappears against image content —
+        // the lens read as a vague change of scale rather than as a lens. A dark
+        // ring plus a light inner hairline reads on both bright and dark
+        // pictures, which a single colour cannot.
+        boxShadow: '0 0 0 1px rgba(0,0,0,0.55), inset 0 0 0 1px rgba(255,255,255,0.35), 0 6px 18px rgba(0,0,0,0.4)',
+      }}
     >
       <canvas ref={canvasRef} width={diameter} height={diameter} />
     </OverlayPanel>

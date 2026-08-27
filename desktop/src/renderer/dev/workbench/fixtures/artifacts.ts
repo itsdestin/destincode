@@ -330,7 +330,30 @@ export function allFiles(projectId: string): ArtifactRecord[] {
 /** Content served by artifacts.get(). Keyed by artifact id. Long enough to
  *  scroll and to exercise markdown rendering, since a two-line file makes every
  *  reader look fine. */
+/** A deliberately viewBox-ONLY SVG (no width/height attributes) served for any
+ *  .svg path. That shape is the interesting one for the artifact zoom: such an
+ *  SVG reports naturalWidth 300×150 in Chromium whatever its viewBox says, so it
+ *  is the case the magnifier's sizing has to survive. The 1px hairlines and 6px
+ *  text are there to be magnified — a vector source should stay razor-sharp at
+ *  any zoom, unlike the PNG below. */
+export const SAMPLE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">' +
+  '<rect width="800" height="500" fill="#101820"/>' +
+  '<g stroke="#4ade80" stroke-width="0.5">' +
+  Array.from({ length: 40 }, (_, i) => `<line x1="${i * 20}" y1="0" x2="${i * 20}" y2="500"/>`).join('') +
+  '</g>' +
+  '<circle cx="400" cy="250" r="120" fill="none" stroke="#f472b6" stroke-width="1"/>' +
+  '<text x="400" y="250" fill="#e2e8f0" font-size="6" text-anchor="middle">' +
+  'vector detail stays sharp at 800%</text>' +
+  '<text x="400" y="470" fill="#94a3b8" font-size="18" text-anchor="middle">sample.svg</text>' +
+  '</svg>';
+
 export const CONTENT: Record<string, string> = {
+  // SVG is the one image format that ALSO takes the text path — it renders
+  // through ImageView but stays editable, so rendersFromBytesOnly() exempts it
+  // and ActiveArtifactView still fetches its text. Without an entry here the
+  // viewer reports "This file is no longer on disk" and never reaches the image.
+  'a-sent-diagram': SAMPLE_SVG,
   // Over-cap fixtures: mock-shim slices these and reports a much larger
   // sizeBytes, so the partial-view states are reachable without an 8 MB file.
   'a-big-log': `2026-08-25T14:00:00Z  INFO  request 1000 handled in 0ms\n2026-08-25T14:01:01Z  INFO  request 1001 handled in 3ms\n2026-08-25T14:02:02Z  INFO  request 1002 handled in 6ms\n2026-08-25T14:03:03Z  INFO  request 1003 handled in 9ms\n2026-08-25T14:04:04Z  INFO  request 1004 handled in 12ms\n2026-08-25T14:05:05Z  INFO  request 1005 handled in 15ms\n2026-08-25T14:06:06Z  INFO  request 1006 handled in 18ms\n2026-08-25T14:07:07Z  INFO  request 1007 handled in 21ms\n2026-08-25T14:08:08Z  INFO  request 1008 handled in 24ms\n2026-08-25T14:09:09Z  INFO  request 1009 handled in 27ms\n2026-08-25T14:10:00Z  INFO  request 1010 handled in 30ms\n2026-08-25T14:11:01Z  INFO  request 1011 handled in 33ms\n2026-08-25T14:12:02Z  INFO  request 1012 handled in 36ms\n2026-08-25T14:13:03Z  INFO  request 1013 handled in 39ms\n2026-08-25T14:14:04Z  INFO  request 1014 handled in 42ms\n2026-08-25T14:15:05Z  INFO  request 1015 handled in 45ms\n2026-08-25T14:16:06Z  INFO  request 1016 handled in 48ms\n2026-08-25T14:17:07Z  INFO  request 1017 handled in 51ms\n2026-08-25T14:18:08Z  INFO  request 1018 handled in 54ms\n2026-08-25T14:19:09Z  INFO  request 1019 handled in 57ms\n2026-08-25T14:20:00Z  INFO  request 1020 handled in 60ms\n2026-08-25T14:21:01Z  INFO  request 1021 handled in 63ms\n2026-08-25T14:22:02Z  INFO  request 1022 handled in 66ms\n2026-08-25T14:23:03Z  INFO  request 1023 handled in 69ms\n2026-08-25T14:24:04Z  INFO  request 1024 handled in 72ms\n2026-08-25T14:25:05Z  INFO  request 1025 handled in 75ms\n2026-08-25T14:26:06Z  INFO  request 1026 handled in 78ms\n2026-08-25T14:27:07Z  INFO  request 1027 handled in 81ms\n2026-08-25T14:28:08Z  INFO  request 1028 handled in 84ms\n2026-08-25T14:29:09Z  INFO  request 1029 handled in 87ms\n2026-08-25T14:30:00Z  INFO  request 1030 handled in 90ms\n2026-08-25T14:31:01Z  INFO  request 1031 handled in 93ms\n2026-08-25T14:32:02Z  INFO  request 1032 handled in 96ms\n2026-08-25T14:33:03Z  INFO  request 1033 handled in 99ms\n2026-08-25T14:34:04Z  INFO  request 1034 handled in 102ms\n2026-08-25T14:35:05Z  INFO  request 1035 handled in 105ms\n2026-08-25T14:36:06Z  INFO  request 1036 handled in 108ms\n2026-08-25T14:37:07Z  INFO  request 1037 handled in 111ms\n2026-08-25T14:38:08Z  INFO  request 1038 handled in 114ms\n2026-08-25T14:39:09Z  INFO  request 1039 handled in 117ms`,
@@ -561,23 +584,6 @@ export function contextGroups(projectPath: string) {
   ];
 }
 
-/** A deliberately viewBox-ONLY SVG (no width/height attributes) served for any
- *  .svg path. That shape is the interesting one for the artifact zoom: such an
- *  SVG reports naturalWidth 300×150 in Chromium whatever its viewBox says, so it
- *  is the case the magnifier's sizing has to survive. The 1px hairlines and 6px
- *  text are there to be magnified — a vector source should stay razor-sharp at
- *  any zoom, unlike the PNG below. */
-export const SAMPLE_SVG =
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">' +
-  '<rect width="800" height="500" fill="#101820"/>' +
-  '<g stroke="#4ade80" stroke-width="0.5">' +
-  Array.from({ length: 40 }, (_, i) => `<line x1="${i * 20}" y1="0" x2="${i * 20}" y2="500"/>`).join('') +
-  '</g>' +
-  '<circle cx="400" cy="250" r="120" fill="none" stroke="#f472b6" stroke-width="1"/>' +
-  '<text x="400" y="250" fill="#e2e8f0" font-size="6" text-anchor="middle">' +
-  'vector detail stays sharp at 800%</text>' +
-  '<text x="400" y="470" fill="#94a3b8" font-size="18" text-anchor="middle">sample.svg</text>' +
-  '</svg>';
 
 /** Draw a 1600×1000 test pattern and return it as base64 PNG.
  *
@@ -611,21 +617,22 @@ export function makeDetailPngBase64(): string | null {
     ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(1600, y + 0.5); ctx.stroke();
   }
 
+  // Fine text across the WHOLE frame, not one corner: the magnifier is reviewed
+  // by hovering wherever the rig happens to point, and a lens landing on empty
+  // background proves nothing about whether it reveals detail.
   ctx.fillStyle = '#e2e8f0';
   ctx.font = '7px monospace';
-  for (let row = 0; row < 24; row++) {
-    ctx.fillText(
-      `${String(row).padStart(2, '0')}  p99 latency ${(12 + row * 0.37).toFixed(2)}ms — the quick brown fox jumps over the lazy dog 0123456789`,
-      40, 120 + row * 14,
-    );
+  for (let row = 0; row < 62; row++) {
+    const line = `${String(row).padStart(2, '0')}  p99 latency ${(12 + row * 0.37).toFixed(2)}ms`
+      + ' — the quick brown fox jumps over the lazy dog 0123456789 — legible only under the lens';
+    // Three columns: one line of 7px monospace is ~520px wide and the frame is
+    // 1600px, so a single column would leave two thirds of it empty.
+    for (const x of [24, 560, 1096]) ctx.fillText(line, x, 116 + row * 14);
   }
 
   ctx.fillStyle = '#38bdf8';
   ctx.font = 'bold 48px sans-serif';
-  ctx.fillText('latency-chart.png', 40, 70);
-  ctx.fillStyle = '#f472b6';
-  ctx.font = '11px sans-serif';
-  ctx.fillText('↑ 7px rows above are the magnifier target', 40, 480);
+  ctx.fillText('latency-chart.png', 24, 70);
 
   return canvas.toDataURL('image/png').split(',')[1] ?? null;
 }
