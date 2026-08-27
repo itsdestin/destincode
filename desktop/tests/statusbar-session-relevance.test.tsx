@@ -261,16 +261,101 @@ describe('Session Cost chip', () => {
     expect(screen.getByText('$1.37')).toBeInTheDocument();
   });
 
-  it('renders NOTHING — never $0.00 — when nothing was priced', () => {
+  it('renders NOTHING — never $0.00 — for a local session that costs nothing to run', () => {
     withWidgets(['session-cost']);
+    // Destin declined a "Free" chip (checkpoint #2): silence stays the answer
+    // for a local session. This fixture used to be `{ anyUnpriced: true }`,
+    // which now has a chip of its own ("not listed") — free-to-run and
+    // metered-but-unpriced are opposite situations and no longer share a
+    // branch, which is the whole point of checkpoint #3.
     render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
-      nativeTotals={costTotals({ costUsd: 0, anyUnpriced: true })} />);
+      nativeTotals={costTotals({ costUsd: 0, anyFree: true })} />);
     // Assert the CHIP is gone, not just the '$' glyph: an earlier version of
     // this test looked for /\$/, which the pre-fix code satisfied by rendering
     // the literal '--' — so it passed against the very defect it claimed to
     // guard. The chip's label is the thing that must be absent.
     expect(screen.queryByText('Cost:')).toBeNull();
     expect(screen.queryByText(/\$/)).toBeNull();
+    expect(screen.queryByText('not listed')).toBeNull();
+    // Positive control: the three absence checks above would also pass if the
+    // bar never mounted.
+    expect(screen.getByText('Add tags')).toBeInTheDocument();
+  });
+
+  it('renders NOTHING when the session has measured nothing at all', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({})} />);
+    expect(screen.queryByText('Cost:')).toBeNull();
+    expect(screen.queryByText('not listed')).toBeNull();
+    expect(screen.getByText('Add tags')).toBeInTheDocument();
+  });
+
+  // Checkpoint #3. Before this, a free local session and a metered session
+  // whose model has no published price rendered an IDENTICAL bar (verified
+  // with `magick compare`: 0 differing pixels) because both simply hid the
+  // chip. One of those two is spending the user's money.
+  it('says "not listed" when the provider bills but this model has no published price', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 0, anyUnpriced: true })} />);
+    expect(screen.getByText('Cost:')).toBeInTheDocument();
+    expect(screen.getByText('not listed')).toBeInTheDocument();
+    // It is an absence, not a figure — no dollar amount may appear.
+    expect(screen.queryByText(/\$/)).toBeNull();
+    expect(screen.getByTitle(
+      "This provider bills for usage, but no price is published for this model, so the session cost can't be totalled."
+    )).toBeInTheDocument();
+  });
+
+  // Both flags can be true at once: a free local parent that delegated to a
+  // metered specialist. A real figure must win — "not listed" alongside a
+  // number would read as two different answers to the same question.
+  it('prefers a real figure over "not listed" when free, unpriced and priced work all happened', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({
+        costUsd: 0.61, anyPriced: true, anyUnpriced: true, anyFree: true,
+        specialistRuns: 2, specialistCostUsd: 0.61,
+      })} />);
+    expect(screen.getByText('$0.61')).toBeInTheDocument();
+    expect(screen.getByText('· specialists')).toBeInTheDocument();
+    expect(screen.queryByText('not listed')).toBeNull();
+  });
+
+  // Checkpoint #4: name where the money came from on the chip itself, not only
+  // in a tooltip nobody hovers.
+  it('names specialist spend on the chip and splits it in the tooltip', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 1.2, anyPriced: true, specialistRuns: 1, specialistCostUsd: 0.3 })} />);
+    expect(screen.getByText('$1.20')).toBeInTheDocument();
+    expect(screen.getByText('· specialists')).toBeInTheDocument();
+    // One specialist is "1 specialist", not "1 specialists".
+    expect(screen.getByTitle(/\$0\.30 of this was spent by 1 specialist this session delegated to\./)).toBeInTheDocument();
+  });
+
+  it('shows no specialist marker when the session delegated nothing', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 0.42, anyPriced: true })} />);
+    expect(screen.getByText('$0.42')).toBeInTheDocument();
+    expect(screen.queryByText('· specialists')).toBeNull();
+    expect(screen.queryByTitle(/specialists this session delegated to/)).toBeNull();
+  });
+
+  // The sub-cent guard from commit 4c5b06d3 must survive the new marker: the
+  // marker is appended to the SAME chip that guard protects.
+  it('keeps the <$0.01 guard when the specialist marker is appended', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 0.0004, anyPriced: true, specialistRuns: 1, specialistCostUsd: 0.0004 })} />);
+    expect(screen.getByText('<$0.01')).toBeInTheDocument();
+    expect(screen.getByText('· specialists')).toBeInTheDocument();
+    expect(screen.queryByText('$0.00')).toBeNull();
+    // The tooltip's split figure gets the same guard — a sub-cent split must
+    // not read "$0.00 of this was spent by…".
+    expect(screen.getByTitle(/<\$0\.01 of this was spent by 1 specialist this session delegated to\./)).toBeInTheDocument();
   });
 
   // A fraction of a cent is REAL money. toFixed(2) alone rounds it to "$0.00",

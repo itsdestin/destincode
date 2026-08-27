@@ -1057,6 +1057,14 @@ function WidgetConfigPopup({ open, onClose, visible, toggle, relevance }: {
 // the point: three chips and the /usage card must not each invent their own
 // description of the same scope.
 const SCOPE_NOTE = 'Counts this session so far, including specialists.';
+// One money formatter for the cost chip AND its tooltip. WHY shared: toFixed(2)
+// rounds anything under half a cent to "$0.00", and a bar (or a tooltip) that
+// reads "$0.00" while money is being spent reads as broken — spec §5 forbids
+// that false zero. Extracted when the tooltip gained a second figure (the
+// specialist split): two call sites formatting money two different ways is how
+// a chip and its own tooltip end up disagreeing.
+const formatCostUsd = (usd: number) => (usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`);
+
 const INPUT_NOTE = 'Input is counted per request — a long turn re-sends its history each step, and that is what you are billed for.';
 
 export default function StatusBar({
@@ -1348,22 +1356,61 @@ export default function StatusBar({
         const ccCost = ss?.costUsd ?? null;
         const nativeCost = nativeTotals?.anyPriced ? nativeTotals.costUsd : null;
         const cost = ccCost ?? nativeCost;
-        if (cost == null) return null;
-        // WHY the sub-cent guard: toFixed(2) rounds any real cost under half a
-        // cent down to "$0.00", and a bar that reads "$0.00" while money is
-        // actually being spent reads as broken — it's the false zero spec §5
-        // forbids ("Never $0.00"). The first turn of a native session on a
-        // cheap metered model is a few hundred tokens ≈ $0.0004, so this is
-        // the COMMON first thing a user sees, not an edge case. A cost that is
-        // above zero but below a cent renders "<$0.01"; an exact zero isn't a
-        // rounding artifact at all and takes the no-chip path above, same as
-        // "nothing was priced".
+        if (cost == null) {
+          // NEW branch (checkpoint #3). Nothing could be priced — but WHY not
+          // has two opposite answers, and until now the bar gave the same
+          // silent chipless row for both (verified with `magick compare`: the
+          // local and unpriced review scenarios were pixel-identical). One of
+          // those two is quietly spending the user's money.
+          //   - anyUnpriced: the provider DOES bill, we just have no published
+          //     rate for this model → say so, dimmed. Reaching here means
+          //     nothing was priced at all, because a single priced turn would
+          //     have made `cost` a real number above and won this slot.
+          //   - anyFree only (a local model), or nothing measured at all →
+          //     render nothing, exactly as before. Destin declined a "Free"
+          //     chip (checkpoint #2); silence stays the answer there.
+          if (ccCost == null && nativeTotals?.anyUnpriced) {
+            return (
+              <span
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+                title={"This provider bills for usage, but no price is published for this model, so the session cost can't be totalled."}
+              >
+                <span className="text-fg-muted">Cost:</span>
+                {/* Muted, not accent-coloured: this is an ABSENCE of a figure,
+                    not an alert. Same treatment as the Reuse chip's "New". */}
+                <span className="text-fg-muted">not listed</span>
+              </span>
+            );
+          }
+          return null;
+        }
+        // WHY the sub-cent guard (formatCostUsd): toFixed(2) rounds any real
+        // cost under half a cent down to "$0.00", and a bar that reads "$0.00"
+        // while money is actually being spent reads as broken — it's the false
+        // zero spec §5 forbids ("Never $0.00"). The first turn of a native
+        // session on a cheap metered model is a few hundred tokens ≈ $0.0004,
+        // so this is the COMMON first thing a user sees, not an edge case. A
+        // cost that is above zero but below a cent renders "<$0.01"; an exact
+        // zero isn't a rounding artifact at all and takes the no-chip path
+        // above, same as "nothing was priced".
         if (cost <= 0) return null;
         const partial = ccCost == null && nativeTotals?.anyUnpriced;
+        // Checkpoint #4 — name where the money came from. Only on the NATIVE
+        // figure: a Claude Code session's cost is Claude Code's own total, and
+        // this app's specialist accounting is no part of it, so attributing a
+        // slice of it here would be a claim we cannot back.
+        const specialistCost = ccCost == null ? (nativeTotals?.specialistCostUsd ?? 0) : 0;
+        const specialistRuns = ccCost == null ? (nativeTotals?.specialistRuns ?? 0) : 0;
         const title = ccCost != null
           ? 'Estimated cost of this session, as counted by Claude Code.'
           : `${SCOPE_NOTE} Priced from published rates, prompt-cache discounts included.`
             + (partial ? ' Models with no published price are not included in this total.' : '')
+            // The count is dropped rather than printed as "0 specialists" if
+            // the two numbers ever disagree — a wrong sentence is worse than a
+            // missing one (docs/error-message-standards.md).
+            + (specialistCost > 0 && specialistRuns > 0
+              ? ` ${formatCostUsd(specialistCost)} of this was spent by ${specialistRuns} specialist${specialistRuns === 1 ? '' : 's'} this session delegated to.`
+              : '')
             + ' Not exact — a few models charge more above very large prompts.';
         return (
           <span
@@ -1371,7 +1418,10 @@ export default function StatusBar({
             title={title}
           >
             <span className="text-fg-muted">Cost:</span>
-            <span className="text-fg-2">{cost < 0.01 ? '<$0.01' : `$${cost.toFixed(2)}`}</span>
+            <span className="text-fg-2">{formatCostUsd(cost)}</span>
+            {/* Shown only when the session actually delegated: most never do,
+                and this bar is already crowded. */}
+            {specialistCost > 0 && <span className="text-fg-muted">· specialists</span>}
           </span>
         );
       })()}
