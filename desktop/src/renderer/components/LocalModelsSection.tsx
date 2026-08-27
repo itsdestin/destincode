@@ -509,6 +509,37 @@ const ROW_BANNER = {
   },
 } as const;
 
+/** The band's outline: flat across the middle, then sweeping DOWN into each of
+ *  the card's rounded corners so the two read as one shape.
+ *
+ *  The arc's ORIENTATION is the whole trick, and getting it backwards is what
+ *  made the first attempt look like a blocky tab: each corner ellipse is centred
+ *  at the INNER-BOTTOM of its wedge, so the arc leaves the flat run with a
+ *  HORIZONTAL tangent (no step where they join) and meets the card's side edge
+ *  with a VERTICAL one. Centring it at the outer corner instead flips both
+ *  tangents and produces the notch.
+ *
+ *  Built from three mask layers rather than a drawn shape: a mask is
+ *  colour-agnostic, so the three state colours stay ordinary background classes
+ *  with their contrast untouched, and px-sized layers do not stretch with the
+ *  panel the way an SVG scaled to width would.
+ */
+const BAND_H = 11;   // flat thickness across the middle
+const BAND_SWEEP = 14;   // how far in from each end the curve starts
+const BAND_DEPTH = 6;    // how far the ends drop below the flat run
+
+const MASK = {
+  image: [
+    'linear-gradient(#000, #000)',
+    `radial-gradient(${BAND_SWEEP}px ${BAND_DEPTH}px at 100% 100%, transparent 99%, #000 100%)`,
+    `radial-gradient(${BAND_SWEEP}px ${BAND_DEPTH}px at 0 100%, transparent 99%, #000 100%)`,
+  ].join(', '),
+  size: `100% ${BAND_H}px, ${BAND_SWEEP}px ${BAND_DEPTH}px, ${BAND_SWEEP}px ${BAND_DEPTH}px`,
+  position: 'top left, bottom left, bottom right',
+  repeat: 'no-repeat',
+};
+
+
 // Exported (named) so tests can pin each row state without booting the whole
 // LocalModelsSection (which needs the full models API mocked).
 export function LocalModelRow({
@@ -623,26 +654,45 @@ export function LocalModelRow({
           size the app defines, and arbitrary text-[Npx] is banned (globals.css:299)
           — on 1px of padding with leading-none, so the band is about a third of
           the header it started as.
-          TAPERED, still full width: the clip is an ellipse anchored at the top
-          centre, so the fill is full height under the label and curves away to a
-          sliver as it reaches each edge of the card. rx is 51%: just over half
-          the width, so the fill still TOUCHES both edges rather than stopping
-          short ("full card width, tapering", not a floating pill), while being
-          tight enough that the arc actually reads at this height. 55% was tried
-          first and rejected: side by side at this band height it is very nearly
-          a plain rectangle (the difference is ~2px of curve over the outer edge).
-          WHY a clipped SOLID fill and not a fade-to-transparent gradient: a
-          translucent strip takes its colour from the theme behind it, which is
-          what made this label score 1.07:1 on Creme. Clipping removes fill
-          without diluting it, so the contrast under the centred label is
-          untouched — the label sits inside the 96%-height zone, verified. */}
+          The bottom edge runs FLAT across the width and rounds into the card's
+          corners only at the two ends. rounded-b-lg is the SAME 12px the card
+          itself uses (--radius-lg), so the band's ends echo the corner they sit
+          in rather than introducing a second, competing curve.
+          Two earlier shapes were built and rejected before this one: an ellipse
+          clip tapering to points (the ends floated in mid-air above the corners)
+          and its inverse, dipping into the corners (it read as a header again).
+          WHY a SOLID fill and not a fade-to-transparent: a translucent strip
+          takes its colour from the theme behind it, which is what made this
+          label score 1.07:1 on Creme. Rounding removes fill without diluting
+          it, so the contrast under the label is untouched. */}
       {banner && (
-        <div className={`px-3 py-px text-4xs leading-none font-medium tracking-wider uppercase text-center [clip-path:ellipse(51%_100%_at_50%_0)] ${banner.strip}`}>
+        <div
+          // The silhouette Destin tuned on 2026-08-27 (sweep 8 / depth 6 / flat 11,
+          // smoothed to a 14px sweep): FLAT across the middle, then curving DOWN
+          // into each corner so the band and the card's corner read as one shape.
+          //
+          // Three mask layers unioned: the flat strip down to 11px, plus an
+          // elliptical wedge at each bottom corner reaching 6px deeper. A MASK
+          // rather than a drawn shape because the mask is colour-agnostic — the
+          // three state colours stay ordinary background classes — and because
+          // px-sized layers do not stretch with the panel, which an SVG scaled to
+          // width would (the sweep would visibly distort on resize).
+          // border-radius cannot do this: it only ever cuts a corner off, and
+          // this corner has to bulge outward.
+          style={{
+            height: `${BAND_H + BAND_DEPTH}px`,
+            WebkitMaskImage: MASK.image, maskImage: MASK.image,
+            WebkitMaskSize: MASK.size, maskSize: MASK.size,
+            WebkitMaskPosition: MASK.position, maskPosition: MASK.position,
+            WebkitMaskRepeat: MASK.repeat, maskRepeat: MASK.repeat,
+          }}
+          className={`px-3 pt-px text-4xs leading-none font-medium tracking-wider uppercase text-center ${banner.strip}`}
+        >
           {banner.text}
         </div>
       )}
 
-      <div className="px-3 py-2.5">
+      <div className="px-3 pt-2 pb-2">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
             {/* title= carries the full id on hover: the name is truncated by the
@@ -682,9 +732,9 @@ export function LocalModelRow({
         </div>
 
         {showBar && (
-          <div className="mt-2">
+          <div className="mt-1.5">
             {/* Centred directly over the bar it describes. */}
-            <p className="text-3xs text-fg-muted text-center mb-1">{progressText}</p>
+            <p className="text-3xs text-fg-muted text-center mb-0.5">{progressText}</p>
             <ProgressBar percent={pct ?? 0} aria-label="Download progress" />
           </div>
         )}
