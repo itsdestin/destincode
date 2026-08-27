@@ -619,16 +619,25 @@ export function LocalModelRow({
     <div className={`rounded-lg bg-inset/50 overflow-hidden ${banner ? `border ${banner.border}` : ''}`.trim()}>
       {/* The banner names the state before any number is read — a stopped
           download is the thing this screen exists to make obvious. */}
-      {/* Full-bleed header strip, but SHORT: 9px type on 1px of padding, about
-          half its original height (Destin, 2026-08-27 — the state should read
-          as an accent, not as the row's main surface). Shrunk rather than
-          softened: it is still a SOLID fill with black text, because that is
-          what carries the contrast, and fading it back to a translucent tint is
-          exactly what made the label invisible on the light themes. Re-measured
-          at this size: 6.65:1 on Creme, against the 4.5 needed at 9px.
-          leading-tight is safe — the label is uppercase, so no descenders. */}
+      {/* An accent, not a surface (Destin, 2026-08-27): 9px type — the smallest
+          size the app defines, and arbitrary text-[Npx] is banned (globals.css:299)
+          — on 1px of padding with leading-none, so the band is about a third of
+          the header it started as.
+          TAPERED, still full width: the clip is an ellipse anchored at the top
+          centre, so the fill is full height under the label and curves away to a
+          sliver as it reaches each edge of the card. rx is 51%: just over half
+          the width, so the fill still TOUCHES both edges rather than stopping
+          short ("full card width, tapering", not a floating pill), while being
+          tight enough that the arc actually reads at this height. 55% was tried
+          first and rejected: side by side at this band height it is very nearly
+          a plain rectangle (the difference is ~2px of curve over the outer edge).
+          WHY a clipped SOLID fill and not a fade-to-transparent gradient: a
+          translucent strip takes its colour from the theme behind it, which is
+          what made this label score 1.07:1 on Creme. Clipping removes fill
+          without diluting it, so the contrast under the centred label is
+          untouched — the label sits inside the 96%-height zone, verified. */}
       {banner && (
-        <div className={`px-3 py-px text-4xs leading-tight font-medium tracking-wider uppercase text-center ${banner.strip}`}>
+        <div className={`px-3 py-px text-4xs leading-none font-medium tracking-wider uppercase text-center [clip-path:ellipse(51%_100%_at_50%_0)] ${banner.strip}`}>
           {banner.text}
         </div>
       )}
