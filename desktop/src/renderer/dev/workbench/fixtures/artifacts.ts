@@ -58,6 +58,18 @@ const BY_PROJECT: Record<string, ArtifactRecord[]> = {
       tags: [],
     },
     {
+      // Vector image: the one source the magnifier keeps sharp at any zoom.
+      id: 'a-sent-diagram',
+      path: 'pipeline-diagram.svg',
+      kind: 'external',
+      absolutePath: '/tmp/youcoded-scratch/pipeline-diagram.svg',
+      lastModified: T,
+      status: 'active',
+      versions: [version('wb-1', 'read', T)],
+      comments: [],
+      tags: [],
+    },
+    {
       // No preview for this type — exercises the letter-glyph fallback tile.
       id: 'a-sent-pdf',
       path: 'scroll-perf-report.pdf',
@@ -547,6 +559,75 @@ export function contextGroups(projectPath: string) {
       ],
     },
   ];
+}
+
+/** A deliberately viewBox-ONLY SVG (no width/height attributes) served for any
+ *  .svg path. That shape is the interesting one for the artifact zoom: such an
+ *  SVG reports naturalWidth 300×150 in Chromium whatever its viewBox says, so it
+ *  is the case the magnifier's sizing has to survive. The 1px hairlines and 6px
+ *  text are there to be magnified — a vector source should stay razor-sharp at
+ *  any zoom, unlike the PNG below. */
+export const SAMPLE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">' +
+  '<rect width="800" height="500" fill="#101820"/>' +
+  '<g stroke="#4ade80" stroke-width="0.5">' +
+  Array.from({ length: 40 }, (_, i) => `<line x1="${i * 20}" y1="0" x2="${i * 20}" y2="500"/>`).join('') +
+  '</g>' +
+  '<circle cx="400" cy="250" r="120" fill="none" stroke="#f472b6" stroke-width="1"/>' +
+  '<text x="400" y="250" fill="#e2e8f0" font-size="6" text-anchor="middle">' +
+  'vector detail stays sharp at 800%</text>' +
+  '<text x="400" y="470" fill="#94a3b8" font-size="18" text-anchor="middle">sample.svg</text>' +
+  '</svg>';
+
+/** Draw a 1600×1000 test pattern and return it as base64 PNG.
+ *
+ *  WHY generate rather than paste a literal: the magnifier is suppressed on any
+ *  source smaller than the 180px lens, so the 96×64 SAMPLE_PNG below cannot
+ *  review it at all — and a real 1600×1000 photo pasted as base64 would add tens
+ *  of kilobytes of unreadable noise to this file. The pattern carries 7px text
+ *  and 1px rules on purpose: those are the details a loupe exists to reveal, and
+ *  they are also what visibly degrades at 400%, which is the honest thing to
+ *  show. Browser-only (the workbench is a browser tab); returns null elsewhere. */
+export function makeDetailPngBase64(): string | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1600;
+  canvas.height = 1000;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const bg = ctx.createLinearGradient(0, 0, 1600, 1000);
+  bg.addColorStop(0, '#0f172a');
+  bg.addColorStop(1, '#1e293b');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, 1600, 1000);
+
+  ctx.strokeStyle = 'rgba(148,163,184,0.35)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= 1600; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, 1000); ctx.stroke();
+  }
+  for (let y = 0; y <= 1000; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(1600, y + 0.5); ctx.stroke();
+  }
+
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = '7px monospace';
+  for (let row = 0; row < 24; row++) {
+    ctx.fillText(
+      `${String(row).padStart(2, '0')}  p99 latency ${(12 + row * 0.37).toFixed(2)}ms — the quick brown fox jumps over the lazy dog 0123456789`,
+      40, 120 + row * 14,
+    );
+  }
+
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.fillText('latency-chart.png', 40, 70);
+  ctx.fillStyle = '#f472b6';
+  ctx.font = '11px sans-serif';
+  ctx.fillText('↑ 7px rows above are the magnifier target', 40, 480);
+
+  return canvas.toDataURL('image/png').split(',')[1] ?? null;
 }
 
 /** A 96×64 PNG (gradient + a dot) served by the mock artifacts.readBinary for

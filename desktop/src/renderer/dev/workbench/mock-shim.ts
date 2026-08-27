@@ -5,7 +5,7 @@ import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-pol
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
-  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, contextGroups,
+  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, SAMPLE_SVG, makeDetailPngBase64, contextGroups,
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
 import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
@@ -847,7 +847,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // fallback stays reviewable.
     readBinary: async (absolutePath: string) => {
       const ext = absolutePath.split('.').pop()?.toLowerCase() ?? '';
+      // SVG is a vector source with no native resolution — the one format whose
+      // magnified detail should stay perfectly sharp. Served as its own fixture
+      // so that path is reviewable at all (it used to fall through to a refusal).
+      if (ext === 'svg') {
+        return { ok: true, base64: btoa(SAMPLE_SVG), mime: 'image/svg+xml' };
+      }
       if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].includes(ext)) {
+        // The 96x64 sample is smaller than the 180px magnifier lens, which
+        // suppresses itself on tiny sources — so it cannot review the zoom at
+        // all. Chart/screenshot paths get a generated 1600x1000 pattern with 7px
+        // text instead; everything else keeps the small sample, so the existing
+        // thumbnail surfaces look exactly as they did.
+        const name = absolutePath.split('/').pop()?.toLowerCase() ?? '';
+        if (/chart|screenshot/.test(name)) {
+          const detailed = makeDetailPngBase64();
+          if (detailed) return { ok: true, base64: detailed, mime: 'image/png' };
+        }
         return { ok: true, base64: SAMPLE_PNG_BASE64, mime: 'image/png' };
       }
       return { ok: false, reason: 'not-an-image' };
