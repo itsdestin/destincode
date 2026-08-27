@@ -100,14 +100,17 @@ export function SpecialistEnvelope({ input, definition, provenance, targetTitle,
           {definition?.displayName ?? agent} working in <span className="font-mono">{where}</span>
           {definition?.description ? ` — ${definition.description}` : ''}
         </li>
+        {/* One line for "what it may do": the charter word, then the exact
+            tools, then the one thing it cannot do. Destin (2026-08-26): the
+            separate "Read-only: reads and searches…" and "Tools: …" bullets
+            said the same thing twice and read as clutter. */}
         <li>
           {charter === 'read-write'
-            ? <>Can <span className="text-fg-2">edit files</span>{canShell ? <> and <span className="text-fg-2">run commands</span></> : ''} there without asking again.</>
+            ? <><span className="text-fg-2">Can edit files{canShell ? ' and run commands' : ''}</span>{tools.length > 0 ? <> using {tools.join(', ')}</> : ''}, without asking again.</>
             : charter === 'read-only'
-              ? <><span className="text-fg-2">Read-only</span>: reads and searches{tools.some(t => t === 'WebFetch' || t === 'WebSearch') ? ', and browses the web' : ''}. Cannot edit files{canShell ? '' : ' or run commands'}.</>
+              ? <><span className="text-fg-2">Read-only</span>{tools.length > 0 ? <> using {tools.join(', ')}</> : ''}. Cannot edit files{canShell ? '' : ' or run commands'}.</>
               : <>Tools and limits for “{agent}” could not be looked up — approve only if you know this specialist.</>}
         </li>
-        {tools.length > 0 && <li>Tools: {tools.join(', ')}</li>}
         <li>Runs on {modelLine}.</li>
       </ul>
       <div className="text-fg-muted">
