@@ -31,6 +31,135 @@ export async function readSidecar(projectRoot: string): Promise<ReadResult> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Shared parsed copy — the 2026-08-27 OOM fix (read side of PR #318)
+// ---------------------------------------------------------------------------
+//
+// PR #318 queued the sidecar WRITER and left every READER unguarded. One Edit
+// costs ~11 full parses of artifacts.json (LIST_SESSION, artifacts:get per
+// visible tool card, check-existence, the watcher's id map, every open tab at
+// startup…), and for youcoded-dev that file is 6.4 MB / 21,311 versions. Under a
+// burst those parses pile up: the 2026-08-27 core dump held 477 parsed copies
+// (~3.0 GB) against V8's 2.8 GB ceiling. Evidence:
+// docs/active/investigations/2026-08-27-artifacts-sidecar-oom-crash.md.
+//
+// `readSidecarShared` bounds that to ONE parsed copy per project:
+//   - validated by the file's size + mtime (a stat, not a read) so an external
+//     write — another dev instance on the same folder — is always picked up;
+//   - concurrent callers share one in-flight parse;
+//   - a committed `writeSidecar` SEEDS the cache with the object it just wrote,
+//     so the reads that follow every edit cost zero parses;
+//   - an idle copy is dropped after SIDECAR_CACHE_IDLE_MS.
+//
+// The shared object is READ-ONLY by contract. Callers that mutate and write
+// back (appendVersionsDirect, removeArtifactRecord, renameArtifact,
+// runSidecarMigration, the manual include/exclude handlers, import-project)
+// keep calling `readSidecar` for a private copy — a writer mutating the shared
+// object would leak a never-committed state into every reader.
+//
+// Blind spot, accepted: a write by ANOTHER process that leaves size and mtime
+// identical (same-tick, same-length) is not detected. Appends always change
+// the size; the app's own writes seed the cache and never hit this.
+
+export const SIDECAR_CACHE_IDLE_MS = 60_000;
+
+interface SharedSidecar {
+  mtimeMs: number;
+  size: number;
+  value: ReadResult;
+  idleTimer: NodeJS.Timeout;
+}
+const sharedSidecars = new Map<string, SharedSidecar>();
+const sharedInFlight = new Map<string, Promise<ReadResult>>();
+
+function sidecarPath(projectRoot: string): string {
+  return join(projectRoot, SIDECAR_RELATIVE);
+}
+
+function retain(path: string, stat: { mtimeMs: number; size: number }, value: ReadResult): void {
+  const prev = sharedSidecars.get(path);
+  if (prev) clearTimeout(prev.idleTimer);
+  const idleTimer = setTimeout(() => {
+    // Only drop what this timer was armed for — a fresher entry re-armed its own.
+    if (sharedSidecars.get(path)?.idleTimer === idleTimer) sharedSidecars.delete(path);
+  }, SIDECAR_CACHE_IDLE_MS);
+  idleTimer.unref?.();
+  sharedSidecars.set(path, { mtimeMs: stat.mtimeMs, size: stat.size, value, idleTimer });
+}
+
+function touch(entry: SharedSidecar): void {
+  entry.idleTimer.refresh();
+}
+
+/**
+ * Read-only sidecar access that shares one parsed copy per project. See the
+ * block comment above for the contract; mutate-and-write callers use
+ * `readSidecar` instead.
+ */
+export async function readSidecarShared(projectRoot: string): Promise<ReadResult> {
+  const path = sidecarPath(projectRoot);
+  let stat: { mtimeMs: number; size: number };
+  try {
+    stat = await fs.stat(path);
+  } catch (e: any) {
+    if (e.code === 'ENOENT') {
+      const prev = sharedSidecars.get(path);
+      if (prev) { clearTimeout(prev.idleTimer); sharedSidecars.delete(path); }
+      return null;
+    }
+    throw e;
+  }
+  const cached = sharedSidecars.get(path);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    touch(cached);
+    return cached.value;
+  }
+  const inFlight = sharedInFlight.get(path);
+  if (inFlight) return inFlight;
+  const p = (async () => {
+    // Retain under the PRE-read stat: if the file changes between this stat
+    // and the read, the next caller's stat differs and forces a re-parse.
+    // Caching under a post-read stat could pin stale content under a fresh key.
+    const value = await readSidecar(projectRoot);
+    retain(path, stat, value);
+    return value;
+  })();
+  sharedInFlight.set(path, p);
+  try {
+    return await p;
+  } finally {
+    sharedInFlight.delete(path);
+  }
+}
+
+async function seedSharedSidecar(projectRoot: string, value: ProjectSidecar): Promise<void> {
+  const path = sidecarPath(projectRoot);
+  try {
+    const stat = await fs.stat(path);
+    retain(path, stat, value);
+  } catch {
+    // Not fatal — the next reader parses from disk.
+  }
+}
+
+/** Tests only: drop every shared copy and timer. */
+export function _resetSidecarCacheForTests(): void {
+  for (const e of sharedSidecars.values()) clearTimeout(e.idleTimer);
+  sharedSidecars.clear();
+  sharedInFlight.clear();
+}
+
+/**
+ * The CAS comparand from raw sidecar text WITHOUT parsing it. `updatedAt` is a
+ * top-level-only key (shared/artifacts/types.ts — records carry `lastModified`,
+ * versions carry `ts`), so the first match is the right one wherever it sits.
+ * casWrite offers this the file HEAD first; undefined means "not in the head",
+ * and casWrite then retries with the whole text.
+ */
+export function extractUpdatedAt(json: string): string | undefined {
+  return /"updatedAt"\s*:\s*"([^"]*)"/.exec(json)?.[1];
+}
+
 /**
  * Advance `updatedAt` past `expected` when the two would collide.
  *
@@ -85,8 +214,13 @@ export async function writeSidecar(
     path,
     expectedUpdatedAt,
     json,
-    expectedUpdatedAt === null ? undefined : (raw) => JSON.parse(raw).updatedAt
+    // 2026-08-27: was `(raw) => JSON.parse(raw).updatedAt` — a full parse of a
+    // 6.4 MB file to read one timestamp, on every write. See extractUpdatedAt.
+    expectedUpdatedAt === null ? undefined : extractUpdatedAt
   );
+  // The object we just wrote IS the on-disk state — hand it to every reader
+  // that follows (LIST_SESSION fires after every tracked write) for free.
+  if (result.committed) await seedSharedSidecar(projectRoot, next);
   return { committed: result.committed };
 }
 
@@ -332,9 +466,12 @@ function sleep(ms: number) {
 }
 
 // Project roots already checked in THIS process. The migration is safe to call
-// from hot handlers (LIST_SESSION fires after every tracked write), and the
-// pure pass over a 2,800-record array is cheap — but it is not free, and there
-// is no reason to redo it every call.
+// from hot handlers (LIST_SESSION fires after every tracked write), but the
+// pure pass is over EVERY record — 3,917 artifacts / 21,311 versions in
+// youcoded-dev on 2026-08-27, and growing ~600 versions a day — so there is no
+// reason to redo it every call. (An earlier revision of this comment sized it
+// at "2,800 records"; the 7.6x drift is part of why the 2026-08-27 OOM
+// investigation exists — never assume this file is small.)
 //
 // Process-lifetime, deliberately: the sidecar (.youcoded/artifacts.json) is
 // per-device and NEVER synced — DEFAULT_IGNORES (sync-spaces/guards.ts) excludes

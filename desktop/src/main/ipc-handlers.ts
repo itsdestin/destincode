@@ -102,7 +102,11 @@ import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
-import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord, runSidecarMigration } from './artifacts/artifact-store';
+// 2026-08-27 OOM fix: read-only handlers (list, get, save, check-existence,
+// the binary-roots pass) go through readSidecarShared — one parsed copy per
+// project however many callers ask at once. Only the manual include/exclude
+// handlers, which mutate and write back, keep the private readSidecar.
+import { appendVersion, readSidecar, readSidecarShared, writeSidecar, renameArtifact, removeArtifactRecord, runSidecarMigration } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
 // Shared with remote-server.ts — see that module's header for why these left
 // this file (they were closures, so the remote transport could not reach them).
@@ -3676,7 +3680,7 @@ export function registerIpcHandlers(
     // done here at each of the three call sites instead, and only when a write
     // actually happened.
     if (migration.migrated) invalidateSidecarIdCache(projectRoot);
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
     // Filter to artifacts touched by this session
     const result = sidecar.artifacts.filter((a) =>
@@ -3747,7 +3751,7 @@ export function registerIpcHandlers(
     // project per process, so this costs one Set lookup after the first call.
     const migration = await runSidecarMigration(projectRoot);
     if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
 
     let tracked: any[] = [];
     if (sidecar && !('corrupted' in sidecar)) {
@@ -3803,7 +3807,7 @@ export function registerIpcHandlers(
     // unbounded one.
     opts?: { full?: boolean },
   ) => {
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
     const artifact = (sidecar && !('corrupted' in sidecar))
       ? sidecar.artifacts.find((a) => a.id === artifactId)
       : undefined;
@@ -3929,7 +3933,7 @@ export function registerIpcHandlers(
         // includes from each root's sidecar — covers e.g. a temp-dir xlsx.
         const tracked = new Set<string>();
         for (const root of roots) {
-          const sidecar = await readSidecar(root).catch(() => null);
+          const sidecar = await readSidecarShared(root).catch(() => null);
           if (!sidecar || 'corrupted' in sidecar) continue;
           for (const a of sidecar.artifacts) {
             if (a.kind === 'external' && a.absolutePath) tracked.add(canonicalize(a.absolutePath, null));
@@ -3967,7 +3971,7 @@ export function registerIpcHandlers(
     // caller that never showed the dialog (D5 — mistake-prevention tier).
     opts?: { baseMtimeMs?: number; confirmed?: boolean }
   ) => {
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
     const artifact = (sidecar && !('corrupted' in sidecar))
       ? sidecar.artifacts.find((a) => a.id === artifactId)
       : undefined;
@@ -4334,7 +4338,7 @@ export function registerIpcHandlers(
     if (!projectRoot || !Array.isArray(artifactIds) || artifactIds.length === 0) {
       return { ok: true, missingIds: [] };
     }
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, missingIds: [] };
     const byId = new Map(sidecar.artifacts.map((a) => [a.id, a]));
     const results = await Promise.all(

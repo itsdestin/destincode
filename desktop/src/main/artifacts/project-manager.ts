@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import { join, basename } from 'path';
 import { canonicalize } from '../../shared/artifacts/canonicalize';
 import { newProjectId } from '../../shared/artifacts/ulid';
-import { readSidecar } from './artifact-store';
+import { readSidecarShared } from './artifact-store';
 import { sweepStaleTmp } from './cas-write';
 import { readIndex, upsertProject } from './central-index';
 import { CentralIndexProject } from '../../shared/artifacts/types';
@@ -30,7 +30,7 @@ export async function ensureProject(
   }
 
   // Check sidecar for auto-recovery
-  const sidecar = await readSidecar(projectRoot);
+  const sidecar = await readSidecarShared(projectRoot);
   let projectId: string;
   let name: string;
   if (sidecar && 'projectId' in sidecar) {
