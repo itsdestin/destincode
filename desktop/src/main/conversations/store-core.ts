@@ -4,6 +4,7 @@
 // keeping this file free of side effects is what lets us unit-test every merge
 // and parse rule with plain objects and no mocks.
 import type { SessionProvider, PortableModelRef } from '../../shared/types';
+import { isPlaceholderModelId } from '../../shared/model-ids';
 // Task 5: PortableModelRef now LIVES in shared/types.ts (PastSession needs it
 // too, and shared/ must never import from main/ — see the type's own comment
 // there). Re-exported here so this module's existing importers
@@ -63,8 +64,15 @@ function sanitizeFlags(raw: unknown): Record<string, FlagState> {
 function sanitizeModelRef(raw: unknown): PortableModelRef | undefined {
   if (!raw || typeof raw !== 'object') return undefined;
   const r = raw as Partial<Record<keyof PortableModelRef, unknown>>;
+  // Fix: drop CC's `<synthetic>` placeholder here, on the READ side, not only
+  // at the writer. Records written before the writer was guarded already carry
+  // it on disk (3 of Destin's 1,855 the day this landed) and sync to peers, and
+  // session-browser's store overlay OVERWRITES the transcript scan with the
+  // record's value — so a poisoned record defeats the transcript-side fix and
+  // would only self-heal if that conversation ever ran another real turn.
+  // Filtering on read heals every existing record the first time it is loaded.
   if (
-    typeof r.modelId === 'string' && r.modelId &&
+    typeof r.modelId === 'string' && r.modelId && !isPlaceholderModelId(r.modelId) &&
     typeof r.providerType === 'string' && r.providerType &&
     typeof r.providerLabel === 'string' && r.providerLabel
   ) {

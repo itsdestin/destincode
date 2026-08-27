@@ -13,6 +13,7 @@ import { MODELS, type ModelAlias } from './components/StatusBar';
 import { modelChipFor, supportsAliasCycling } from './components/model-chip';
 import FolderSwitcher from './components/FolderSwitcher';
 import { isTypingTarget } from './utils/is-typing-target';
+import { isPlaceholderModelId } from '../shared/model-ids';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import { AnchorTip, Button, Dialog, Toast, Toggle } from './components/ui';
@@ -2032,6 +2033,15 @@ function AppInner() {
       if (!postSwitchTurnReady.current) return;
 
       const actualModel = event.data.model as string;
+      // Fix: a `<synthetic>` turn is CC talking, not a model — "You've hit your
+      // session limit", "You're out of usage credits", "Please run /login". It
+      // carries no evidence about which model the switch landed on, so
+      // verifying against it produced "Couldn't switch to Sonnet" (and on a
+      // second one, "Model switch failed again… report a bug") when the switch
+      // had not failed at all. That is a guessed cause in a user-facing string
+      // — see docs/error-message-standards.md. Stay pending and verify against
+      // the next REAL turn instead.
+      if (isPlaceholderModelId(actualModel)) return;
       const baseKey = (k: string) => k.replace(/\[.*\]/, '');
       const matches = actualModel.includes(baseKey(pendingModel));
       if (matches) {

@@ -1,6 +1,7 @@
 import { useCallback, useRef, useSyncExternalStore } from 'react';
 import { useChatStore } from '../state/chat-context';
-import { MODELS, type ModelAlias } from '../components/StatusBar';
+import { type ModelAlias } from '../components/StatusBar';
+import { claudeAliasForModelId, isPlaceholderModelId } from '../../shared/model-ids';
 
 // Cached selector: the ModelAlias of the most recent assistant turn with a
 // known model in the ACTIVE session's timeline (or null — no session, no
@@ -37,21 +38,29 @@ export function useActiveSessionModel(sessionId: string | null): ModelAlias | nu
     // Walk backward through the timeline for the most recent assistant-turn
     // with a known model. turn.model is null until the first assistant-text
     // arrives, so new/empty sessions return null here.
+    //
+    // Fix: skip CC's `<synthetic>` placeholder turns (limit / out-of-credits /
+    // auth notices). They are stamped onto real assistant turns by the reducer
+    // like any other model, and they are the LAST thing in the timeline exactly
+    // when you hit a limit — so stopping on one returned null from this hook,
+    // which makes AppInner's drift-reconciliation effect bail at its
+    // `if (!activeSessionModel) return` guard. A pill sitting on the red
+    // 'unknown' sentinel then stayed stuck there instead of self-healing.
     let latestModel: string | null = null;
     for (let i = session.timeline.length - 1; i >= 0; i--) {
       const entry = session.timeline[i];
       if (entry.kind === 'assistant-turn') {
         const turn = session.assistantTurns.get(entry.turnId);
-        if (turn?.model) { latestModel = turn.model; break; }
+        if (turn?.model && !isPlaceholderModelId(turn.model)) { latestModel = turn.model; break; }
       }
     }
     if (!latestModel) return null;
 
-    // Match the raw transcript model (e.g. 'claude-opus-4-7') → ModelAlias,
-    // mirroring the SessionInfo matcher. Returns a primitive, so
-    // useSyncExternalStore's Object.is compare handles identity — no manual
-    // cache needed (unlike useSessionAttention, which returns a Map).
-    return MODELS.find((m) => latestModel!.includes(m.replace(/\[.*\]/, ''))) ?? null;
+    // Match the raw transcript model (e.g. 'claude-opus-4-7') → ModelAlias via
+    // the shared matcher. Returns a primitive, so useSyncExternalStore's
+    // Object.is compare handles identity — no manual cache needed (unlike
+    // useSessionAttention, which returns a Map).
+    return claudeAliasForModelId(latestModel);
   }, [store]);
 
   const subscribe = useCallback((cb: () => void) => store.subscribeAll(cb), [store]);

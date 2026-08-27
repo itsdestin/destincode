@@ -296,6 +296,23 @@ describe('mergeRecords', () => {
     expect(parsed2?.lastUsedModel).toBeUndefined();
   });
 
+  it('parseRecord drops a lastUsedModel poisoned with CC\'s <synthetic> placeholder', () => {
+    // Heals records written before the writer was guarded. This matters because
+    // session-browser's store overlay OVERWRITES its transcript scan with the
+    // record's value, so a poisoned record silently defeated the transcript-side
+    // fix — 3 of 1,855 real records were in that state, and they sync to peers.
+    // Filtering on parse means the first load of each one cleans it.
+    const poisoned = rec({ lastUsedModel: { modelId: '<synthetic>', providerType: 'claude-code', providerLabel: 'Claude Code' } });
+    const parsed = parseRecord(JSON.stringify(poisoned));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.lastUsedModel).toBeUndefined();
+    expect(parsed?.id).toBe(poisoned.id);       // the rest of the record survives
+
+    // Discrimination: a real id on the same shape is untouched.
+    const clean = rec({ lastUsedModel: { modelId: 'claude-opus-5', providerType: 'claude-code', providerLabel: 'Claude Code' } });
+    expect(parseRecord(JSON.stringify(clean))?.lastUsedModel?.modelId).toBe('claude-opus-5');
+  });
+
   it('parseRecord round-trips a record with NO lastUsedModel without inventing the key', () => {
     const parsed = parseRecord(JSON.stringify(rec()));
     expect(parsed).not.toBeNull();
