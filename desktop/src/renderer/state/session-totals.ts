@@ -35,10 +35,20 @@ export interface SessionTotals {
   /** Some counted work had NO published price → the figure is incomplete, and
    *  the tooltip has to say so. */
   anyUnpriced: boolean;
+  /** Some counted work ran on a model that costs nothing to run (a local
+   *  engine). Distinct from anyUnpriced, which means "metered, but we have no
+   *  published rate" — opposite situations that the bar and the Customize menu
+   *  must word differently. Both can be true at once: a free local parent that
+   *  delegated to a metered specialist. */
+  anyFree: boolean;
   linesAdded: number;
   linesRemoved: number;
   /** Specialist runs folded in above. Lets a tooltip say "including 3 specialists". */
   specialistRuns: number;
+  /** Of costUsd, how much was spent by specialist runs rather than by this
+   *  session's own turns. Lets the Cost chip name where the money came from
+   *  instead of leaving it to a hover tooltip. Always ≤ costUsd. */
+  specialistCostUsd: number;
 }
 
 export interface TurnUsageLike {
@@ -50,13 +60,18 @@ export interface TurnUsageLike {
    *  pricing information at all (a Claude Code turn, whose cost comes from the
    *  statusline instead). The three cases are deliberately distinct. */
   costUsd?: number | null;
+  /** True when the work ran on a model that costs nothing to run (a local
+   *  engine). Main stamps it, because the renderer cannot tell a free local
+   *  model from a metered one with no published price — SessionInfo carries no
+   *  provider type. Absent is treated as false. */
+  free?: boolean;
 }
 
 export function emptyTotals(): SessionTotals {
   return {
     inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
-    costUsd: 0, anyPriced: false, anyUnpriced: false,
-    linesAdded: 0, linesRemoved: 0, specialistRuns: 0,
+    costUsd: 0, anyPriced: false, anyUnpriced: false, anyFree: false,
+    linesAdded: 0, linesRemoved: 0, specialistRuns: 0, specialistCostUsd: 0,
   };
 }
 
@@ -74,7 +89,14 @@ function addUsage(t: SessionTotals, u: TurnUsageLike): SessionTotals {
   // absent field means "nothing to add" here. null still means something
   // ("priced work with no published price") and must produce a new object.
   const hasCost = u.costUsd !== undefined;
-  if (!hasTokens && !hasCost) return t;
+  // WHY `&& !t.anyFree` and not just `u.free`: anyFree is a latch — once set it
+  // can never change again, so a free turn arriving at already-free totals
+  // changes NOTHING. Every turn of a local session carries free: true, so
+  // without this clause the common case would allocate a lookalike object on
+  // every single turn and churn the useSyncExternalStore snapshot the guard
+  // above exists to keep stable.
+  const hasFree = u.free === true && !t.anyFree;
+  if (!hasTokens && !hasCost && !hasFree) return t;
 
   const next: SessionTotals = {
     ...t,
@@ -89,6 +111,10 @@ function addUsage(t: SessionTotals, u: TurnUsageLike): SessionTotals {
   } else if (u.costUsd === null) {
     next.anyUnpriced = true;
   }
+  // Set OUTSIDE the costUsd branches on purpose: "free to run" is a third state,
+  // not a spelling of unpriced, and a free turn may also carry a cost field
+  // (a free parent's totals still absorb its metered specialists' spend).
+  if (u.free === true) next.anyFree = true;
   return next;
 }
 
@@ -103,6 +129,11 @@ export function addSubagentUsage(t: SessionTotals, u: TurnUsageLike): SessionTot
   const next = addUsage(t, u);
   const withRun: SessionTotals = next === t ? { ...t } : next;
   withRun.specialistRuns = t.specialistRuns + 1;
+  // The same dollars, counted a second time in a narrower bucket — NOT extra
+  // spend. Only a real published price lands here, exactly as costUsd above:
+  // an unpriced specialist adds a run but no money, so specialistCostUsd can
+  // never claim a figure costUsd doesn't already contain.
+  if (typeof u.costUsd === 'number') withRun.specialistCostUsd = t.specialistCostUsd + u.costUsd;
   return withRun;
 }
 

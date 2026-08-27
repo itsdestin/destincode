@@ -89,6 +89,43 @@ describe('reducer session totals', () => {
     expect(s.get(SID)!.totals.linesRemoved).toBe(0);
   });
 
+  // Task 17: the two new totals fields, seen through the real reducer.
+  // NOTE: there is no reducer path that calls addSubagentUsage yet — a
+  // specialist's spend is meant to arrive as its own subagent-usage event
+  // (see the WHY block above the addTurnUsage call in chat-reducer.ts), which
+  // main does not emit yet. So what the reducer can be held to today is the
+  // other half: a parent turn's cost is NEVER specialist spend, and a
+  // specialist's own turn-complete still contributes nothing at all.
+  it('a parent turn with a cost is not counted as specialist spend', () => {
+    let s = start();
+    s = chatReducer(s, turnComplete({ inputTokens: 100, outputTokens: 10, costUsd: 0.5 }, 'u10'));
+    const totals = s.get(SID)!.totals;
+    expect(totals.costUsd).toBeCloseTo(0.5, 10);
+    expect(totals.specialistCostUsd).toBe(0);
+    expect(totals.specialistRuns).toBe(0);
+  });
+
+  it('a SPECIALIST turn-complete adds no cost and no specialist spend — its own event owns that', () => {
+    let s = start();
+    s = chatReducer(s, {
+      ...turnComplete({ inputTokens: 500, outputTokens: 50, costUsd: 0.9 }, 'u11'),
+      parentAgentToolUseId: 'parent-tool-2',
+      agentId: 'child-2',
+    } as any);
+    const totals = s.get(SID)!.totals;
+    expect(totals.costUsd).toBe(0);
+    expect(totals.specialistCostUsd).toBe(0);
+  });
+
+  it('carries a free-to-run turn through to the session totals', () => {
+    let s = start();
+    s = chatReducer(s, turnComplete({ inputTokens: 100, outputTokens: 10, free: true }, 'u12'));
+    const totals = s.get(SID)!.totals;
+    expect(totals.anyFree).toBe(true);
+    expect(totals.anyUnpriced).toBe(false);
+    expect(totals.anyPriced).toBe(false);
+  });
+
   it('survives serialization', async () => {
     const { serializeChatState, deserializeChatState } = await import('../src/renderer/state/chat-types');
     let s = start();

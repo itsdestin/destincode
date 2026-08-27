@@ -10,8 +10,8 @@ describe('session totals', () => {
     const t = emptyTotals();
     expect(t).toEqual({
       inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
-      costUsd: 0, anyPriced: false, anyUnpriced: false,
-      linesAdded: 0, linesRemoved: 0, specialistRuns: 0,
+      costUsd: 0, anyPriced: false, anyUnpriced: false, anyFree: false,
+      linesAdded: 0, linesRemoved: 0, specialistRuns: 0, specialistCostUsd: 0,
     });
   });
 
@@ -46,6 +46,41 @@ describe('session totals', () => {
     t = addTurnUsage(t, { inputTokens: 1, outputTokens: 1 });
     expect(t.anyPriced).toBe(false);
     expect(t.anyUnpriced).toBe(false);
+  });
+
+  // "Free to run" is a THIRD state, not a spelling of unpriced: a local engine
+  // costs nothing (anyFree), while a metered model with no published rate costs
+  // an unknown something (anyUnpriced). The bar and the Customize menu word the
+  // two differently, so the totals must keep them apart.
+  it('records free-to-run work without touching either pricing verdict', () => {
+    let t = emptyTotals();
+    t = addTurnUsage(t, { inputTokens: 10, outputTokens: 1, free: true });
+    expect(t.anyFree).toBe(true);
+    expect(t.anyPriced).toBe(false);
+    expect(t.anyUnpriced).toBe(false);
+    expect(t.costUsd).toBe(0);
+  });
+
+  it('a priced parent turn is not specialist spend', () => {
+    let t = emptyTotals();
+    t = addTurnUsage(t, { inputTokens: 1, outputTokens: 1, costUsd: 0.5 });
+    expect(t.costUsd).toBeCloseTo(0.5, 10);
+    expect(t.specialistCostUsd).toBe(0);
+  });
+
+  it('a priced specialist run counts into BOTH the session cost and specialist spend', () => {
+    let t = emptyTotals();
+    t = addSubagentUsage(t, { inputTokens: 1, outputTokens: 1, costUsd: 0.5 });
+    expect(t.costUsd).toBeCloseTo(0.5, 10);
+    expect(t.specialistCostUsd).toBeCloseTo(0.5, 10);
+  });
+
+  it('an unpriced specialist run adds no specialist spend, only a run', () => {
+    let t = emptyTotals();
+    t = addSubagentUsage(t, { inputTokens: 1, outputTokens: 1, costUsd: null });
+    expect(t.specialistCostUsd).toBe(0);
+    expect(t.specialistRuns).toBe(1);
+    expect(t.anyUnpriced).toBe(true);
   });
 
   it('folds a specialist run into the same totals and counts it', () => {
@@ -101,6 +136,29 @@ describe('session totals', () => {
     const t = emptyTotals();
     const next = addTurnUsage(t, { inputTokens: 1 });
     expect(next).not.toBe(t);
+  });
+
+  // THE TRAP: every turn of a local session carries free: true, so if `free`
+  // allocated a new lookalike object each time, the useSyncExternalStore
+  // snapshot would churn on every turn — the exact failure the no-op guard
+  // above exists to prevent. A free flag that changes nothing must be a no-op.
+  it('returns the same reference when free: true is already recorded', () => {
+    const t = addTurnUsage(emptyTotals(), { free: true });
+    expect(t.anyFree).toBe(true);
+    const next = addTurnUsage(t, { free: true });
+    expect(next).toBe(t);
+  });
+
+  it('returns the same reference for free: false, which says nothing new', () => {
+    const t = emptyTotals();
+    expect(addTurnUsage(t, { free: false })).toBe(t);
+  });
+
+  it('returns a different reference the FIRST time free: true is recorded', () => {
+    const t = emptyTotals();
+    const next = addTurnUsage(t, { free: true });
+    expect(next).not.toBe(t);
+    expect(next.anyFree).toBe(true);
   });
 
   it('returns a different reference for an explicitly unpriced turn (costUsd: null)', () => {

@@ -60,22 +60,27 @@ const NATIVE_TOKENS = {
   inputTokens: 84_000, outputTokens: 3_200, cacheReadTokens: 61_000, cacheCreationTokens: 900,
 } as const;
 
+// Task 17: free and unpriced are now different things, so these five stopped
+// saying what their names claim and are corrected here. 'statusbar-local' is a
+// local engine (free, nothing unpriced); 'statusbar-unpriced' is metered with no
+// published rate (NOT free); 'statusbar-delegated' is a free local parent whose
+// every cent came from its metered specialists.
 const STATUSBAR_TOTALS_OVERRIDE: Partial<Record<ScenarioId, { sessionId: string; totals: SessionTotals }>> = {
   'statusbar-local': {
     sessionId: 'wb-2',
-    totals: { ...NATIVE_TOKENS, costUsd: 0, anyPriced: false, anyUnpriced: true, linesAdded: 210, linesRemoved: 45, specialistRuns: 0 },
+    totals: { ...NATIVE_TOKENS, costUsd: 0, anyPriced: false, anyUnpriced: false, anyFree: true, linesAdded: 210, linesRemoved: 45, specialistRuns: 0, specialistCostUsd: 0 },
   },
   'statusbar-metered': {
     sessionId: 'wb-2',
-    totals: { ...NATIVE_TOKENS, costUsd: 1.37, anyPriced: true, anyUnpriced: false, linesAdded: 210, linesRemoved: 45, specialistRuns: 0 },
+    totals: { ...NATIVE_TOKENS, costUsd: 1.37, anyPriced: true, anyUnpriced: false, anyFree: false, linesAdded: 210, linesRemoved: 45, specialistRuns: 0, specialistCostUsd: 0 },
   },
   'statusbar-unpriced': {
     sessionId: 'wb-2',
-    totals: { ...NATIVE_TOKENS, costUsd: 0, anyPriced: false, anyUnpriced: true, linesAdded: 210, linesRemoved: 45, specialistRuns: 0 },
+    totals: { ...NATIVE_TOKENS, costUsd: 0, anyPriced: false, anyUnpriced: true, anyFree: false, linesAdded: 210, linesRemoved: 45, specialistRuns: 0, specialistCostUsd: 0 },
   },
   'statusbar-delegated': {
     sessionId: 'wb-2',
-    totals: { ...NATIVE_TOKENS, costUsd: 0.61, anyPriced: true, anyUnpriced: true, linesAdded: 480, linesRemoved: 96, specialistRuns: 3 },
+    totals: { ...NATIVE_TOKENS, costUsd: 0.61, anyPriced: true, anyUnpriced: true, anyFree: true, linesAdded: 480, linesRemoved: 96, specialistRuns: 3, specialistCostUsd: 0.61 },
   },
 };
 
