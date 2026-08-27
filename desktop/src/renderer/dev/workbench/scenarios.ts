@@ -2,16 +2,16 @@ import type { SessionInfo } from '../../../shared/types';
 import type { TagRecord } from '../../../shared/tags';
 import type { StoredProject } from '../../../shared/permission-types';
 import type { FlagName } from '../../components/resume-browser-filters';
-import { sessions } from './fixtures/sessions';
+import { sessions, siteSessions } from './fixtures/sessions';
 import { permissions as seedPermissions, stressPermissions } from './fixtures/permissions';
 import { providers as seedProviders, catalog as seedCatalog, type ProviderRow, type CatalogRow } from './fixtures/providers';
 import { tags as seedTags } from './fixtures/tags';
 import { defaults as seedDefaults, type MockDefaults } from './fixtures/defaults';
 
-export type ScenarioId = 'default' | 'empty' | 'no-providers' | 'refused' | 'stress';
+export type ScenarioId = 'default' | 'empty' | 'no-providers' | 'refused' | 'stress' | 'site';
 
 export const SCENARIO_IDS: readonly ScenarioId[] = [
-  'default', 'empty', 'no-providers', 'refused', 'stress',
+  'default', 'empty', 'no-providers', 'refused', 'stress', 'site',
 ];
 
 /** A row in the Resume Browser's list. Mirrors ResumeBrowser.tsx's local
@@ -154,6 +154,20 @@ function stressPast(): PastSession[] {
   });
 }
 
+// Landing-page embed (scenario=site): two short past rows so the Resume list
+// isn't empty behind the one live session, without dragging in the full
+// eleven-row developer fixture (spec: a visitor sees a friendly conversation,
+// not a dev harness).
+function sitePast(): PastSession[] {
+  return [
+    past(0, 'draft the club newsletter', {
+      provider: 'native',
+      lastUsedModel: { modelId: 'qwen3-coder-30b-a3b-instruct', providerType: 'local-engine', providerLabel: 'Local' },
+    }),
+    past(1, 'compare two laptops', { tags: ['tag_work'] }),
+  ];
+}
+
 /** Builds a fresh state for a scenario. Every call re-runs the fixture
  *  factories, so two stores never share a mutable array. */
 export function seed(scenario: ScenarioId): MockState {
@@ -179,6 +193,10 @@ export function seed(scenario: ScenarioId): MockState {
       return { ...base, providers: base.providers.map((p) => ({ ...p, ready: false })), catalog: [] };
     case 'stress':
       return { ...base, past: stressPast(), permissions: stressPermissions() };
+    case 'site':
+      // Landing-page embed: providers/catalog/tags/defaults as default, one
+      // native session, two past rows, no pre-set meta.
+      return { ...base, sessions: siteSessions(), past: sitePast(), meta: {} };
     case 'refused':
     case 'default':
     default:

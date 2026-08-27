@@ -29,6 +29,9 @@ const SESSION_FOR: Record<string, string> = {
   'claude-code': 'wb-1',
   native: 'wb-2',
   specialists: 'wb-11',
+  // Landing-page embed (scenario=site): site.jsonl plays into the one session
+  // that scenario seeds (fixtures/sessions.ts siteSessions), not wb-2.
+  site: 'site-1',
 };
 
 /** `?stalled=1` replays the fixture's parked-turn line so the red

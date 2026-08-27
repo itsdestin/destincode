@@ -166,9 +166,12 @@ describe('chat hydrate payload', () => {
   it('round-trips through the app serializers into populated timelines', () => {
     const restored = deserializeChatState(buildHydratePayload());
 
-    // Both seeded sessions from fixtures/sessions.ts must be present, keyed by
-    // the ids the session list uses — a mismatch shows an empty chat view.
-    expect([...restored.keys()].sort()).toEqual(['wb-1', 'wb-11', 'wb-2']);
+    // Every mapped conversation fixture must be present, keyed by the ids the
+    // session list uses — a mismatch shows an empty chat view. site-1 added
+    // when scenario=site's fixture (site.jsonl) was mapped in SESSION_FOR —
+    // buildHydratePayload merges every mapped fixture unconditionally, not
+    // just the active scenario's.
+    expect([...restored.keys()].sort()).toEqual(['site-1', 'wb-1', 'wb-11', 'wb-2']);
 
     for (const [sessionId, session] of restored) {
       expect(session.timeline.length, `${sessionId} timeline`).toBeGreaterThan(0);
