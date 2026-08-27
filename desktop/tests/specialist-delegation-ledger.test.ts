@@ -2,10 +2,11 @@
 // specialist delegation (plan 1b Task 2). Real filesystem (temp dir per
 // test), same fixture style as permission-store.test.ts: NativeHome(dir)
 // against a fresh temp root, no fs mocking.
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as fs from 'fs'; import * as os from 'os'; import * as path from 'path';
 import { NativeHome } from '../src/main/native-home';
-import { DelegationLedger, OWNER, isOwnerAlive, type DelegationRecord } from '../src/main/harness/specialists/delegation-ledger';
+import { DelegationLedger, OWNER, isOwnerAlive, toRunView, type DelegationRecord } from '../src/main/harness/specialists/delegation-ledger';
+import type { SpecialistNote } from '../src/shared/types';
 
 let home: NativeHome; let ledger: DelegationLedger; let dir: string;
 const CWD = '/some/project';
@@ -326,5 +327,168 @@ describe('DelegationLedger', () => {
       }));
       expect(await ledger.claimUndelivered(CWD, 'p1')).toBeNull();
     });
+  });
+
+  // ---- Plan 1c Task 1: every write funnels through one private mutate()
+  // chokepoint so a single onChange listener sees every touched record —
+  // Task 5 wires this into the live `specialists:run-changed` push. These
+  // tests exercise the listener contract itself; the guard test below
+  // enforces the mechanism (one mutateJson call site) that makes it true by
+  // construction rather than by convention.
+  describe('change listener (plan 1c)', () => {
+    it('recordStart fires with the new record', async () => {
+      const onChange = vi.fn();
+      const l = new DelegationLedger(home, onChange);
+      await l.recordStart(CWD, 'p1', makeRecord({ childId: 'c1' }));
+      expect(onChange).toHaveBeenCalledTimes(1);
+      const [calledCwd, calledParentId, changed] = onChange.mock.calls[0];
+      expect(calledCwd).toBe(CWD);
+      expect(calledParentId).toBe('p1');
+      expect(changed).toHaveLength(1);
+      expect((changed[0] as DelegationRecord).childId).toBe('c1');
+    });
+
+    // Every other write, aimed at 'c1' with 'c2' seeded as an untouched
+    // sibling — each must report changed=[c1] and nothing else.
+    it.each<[string, (l: DelegationLedger) => Promise<unknown>]>([
+      ['update', (l) => l.update(CWD, 'p1', 'c1', { status: 'completed', endedAt: 1 })],
+      ['updateIfRunning', (l) => l.updateIfRunning(CWD, 'p1', 'c1', { status: 'failed', endedAt: 1 })],
+      ['updateUnlessCompleted', (l) => l.updateUnlessCompleted(CWD, 'p1', 'c1', { status: 'interrupted', endedAt: 1 })],
+      ['appendMissedSteers', (l) => l.appendMissedSteers(CWD, 'p1', 'c1', ['steer'])],
+      ['takeMissedSteers', (l) => l.takeMissedSteers(CWD, 'p1', 'c1')],
+      ['markInjectionAttempted', (l) => l.markInjectionAttempted(CWD, 'p1', 'c1')],
+      ['confirmDelivered', (l) => l.confirmDelivered(CWD, 'p1', 'c1')],
+      ['releaseClaim', (l) => l.releaseClaim(CWD, 'p1', 'c1')],
+      ['appendNote', (l) => l.appendNote(CWD, 'p1', 'c1', { text: 'hi', from: 'user', at: 1 })],
+    ])('%s fires the listener with only the touched record', async (_name, run) => {
+      // Seeded through a listener-less ledger sharing the same home/file, so
+      // the setup writes themselves never reach the onChange under test.
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1' }));
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c2' }));
+      const onChange = vi.fn();
+      const l = new DelegationLedger(home, onChange);
+      await run(l);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      const [calledCwd, calledParentId, changed] = onChange.mock.calls[0];
+      expect(calledCwd).toBe(CWD);
+      expect(calledParentId).toBe('p1');
+      expect(changed).toHaveLength(1);
+      expect((changed[0] as DelegationRecord).childId).toBe('c1');
+    });
+
+    it('claimUndelivered fires the listener with only the touched (oldest eligible) record', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1', status: 'completed', startedAt: 100 }));
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c2', status: 'completed', startedAt: 200 }));
+      const onChange = vi.fn();
+      const l = new DelegationLedger(home, onChange);
+      await l.claimUndelivered(CWD, 'p1');
+      expect(onChange).toHaveBeenCalledTimes(1);
+      const [, , changed] = onChange.mock.calls[0];
+      expect(changed).toHaveLength(1);
+      expect((changed[0] as DelegationRecord).childId).toBe('c1'); // oldest wins
+    });
+
+    it('listFor never fires the listener', async () => {
+      const onChange = vi.fn();
+      const l = new DelegationLedger(home, onChange);
+      await l.recordStart(CWD, 'p1', makeRecord({ childId: 'c1' }));
+      onChange.mockClear();
+      l.listFor(CWD, 'p1');
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it('a write that changes nothing (update on an unknown childId) does not fire', async () => {
+      const onChange = vi.fn();
+      const l = new DelegationLedger(home, onChange);
+      await l.recordStart(CWD, 'p1', makeRecord({ childId: 'c1' }));
+      onChange.mockClear();
+      await l.update(CWD, 'p1', 'no-such-child', { status: 'completed' });
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    // Source-level guard (global constraint "Emit in the ledger, never in
+    // the host per method"): every write must go through mutate() so the
+    // change listener sees it, rather than each method calling
+    // home.mutateJson directly and some future method forgetting to notify.
+    it('THE GUARD: delegation-ledger.ts calls home.mutateJson exactly once (inside mutate())', () => {
+      const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'harness', 'specialists', 'delegation-ledger.ts'), 'utf8');
+      // Code lines only — the file's WHY comments name mutateJson freely; this guard is about CODE.
+      const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+      expect(code.match(/await this\.home\.mutateJson\(/g)?.length, 'every write must go through mutate() so the change listener sees it').toBe(1);
+    });
+  });
+
+  it('appendNote appends in order; a 1b record with no notes reads as []', async () => {
+    await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1' })); // no `notes` field — a pre-1c record
+    const note1: SpecialistNote = { text: 'first', from: 'user', at: 1 };
+    const note2: SpecialistNote = { text: 'second', from: 'assistant', at: 2 };
+    await ledger.appendNote(CWD, 'p1', 'c1', note1);
+    await ledger.appendNote(CWD, 'p1', 'c1', note2);
+    const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+    expect(rec?.notes).toEqual([note1, note2]);
+  });
+
+  it('appendMissedSteers with a note lands steer + note in ONE write (listener fires once, both present)', async () => {
+    const onChange = vi.fn();
+    const l = new DelegationLedger(home, onChange);
+    await l.recordStart(CWD, 'p1', makeRecord({ childId: 'c1' }));
+    onChange.mockClear();
+
+    const note: SpecialistNote = { text: 'parked steer', from: 'user', at: 5 };
+    await l.appendMissedSteers(CWD, 'p1', 'c1', ['parked steer'], note);
+
+    expect(onChange).toHaveBeenCalledTimes(1); // one write, not two
+    const rec = l.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+    expect(rec?.missedSteers).toEqual(['parked steer']);
+    expect(rec?.notes).toEqual([note]);
+  });
+
+  it('toRunView strips delivery bookkeeping and carries notes/model/steps/stale', () => {
+    const note: SpecialistNote = { text: 'steer', from: 'user', at: 1 };
+    const rec: DelegationRecord = makeRecord({
+      childId: 'c1',
+      description: 'does a thing',
+      status: 'failed',
+      endedAt: 200,
+      steps: 7,
+      stale: true,
+      rawReport: 'the raw report',
+      reportPath: '/spill/path.txt',
+      failureText: 'boom',
+      delivered: true,
+      injectionAttempted: true,
+      claimedBy: OWNER,
+      claimedAt: 123,
+      missedSteers: ['s1'],
+      notes: [note],
+      model: { label: 'Sonnet 5', via: 'named', fallback: false },
+    });
+
+    const view = toRunView(rec);
+
+    expect(view).toEqual({
+      childId: 'c1',
+      parentToolCallId: 'tc-1',
+      agentType: 'explorer',
+      title: 'Fig the Explorer',
+      description: 'does a thing',
+      background: true,
+      status: 'failed',
+      startedAt: rec.startedAt,
+      endedAt: 200,
+      steps: 7,
+      stale: true,
+      model: { label: 'Sonnet 5', via: 'named', fallback: false },
+      notes: [note],
+    });
+    // Delivery bookkeeping must not leak into the renderer's view.
+    expect((view as unknown as Record<string, unknown>).delivered).toBeUndefined();
+    expect((view as unknown as Record<string, unknown>).injectionAttempted).toBeUndefined();
+    expect((view as unknown as Record<string, unknown>).claimedBy).toBeUndefined();
+    expect((view as unknown as Record<string, unknown>).claimedAt).toBeUndefined();
+    expect((view as unknown as Record<string, unknown>).owner).toBeUndefined();
+    expect((view as unknown as Record<string, unknown>).missedSteers).toBeUndefined();
+    expect((view as unknown as Record<string, unknown>).rawReport).toBeUndefined();
+    expect((view as unknown as Record<string, unknown>).reportPath).toBeUndefined();
   });
 });

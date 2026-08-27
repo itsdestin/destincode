@@ -9,8 +9,20 @@
 // import-file-dialog.test.tsx). Swapped to RTL's own `fireEvent`, this repo's
 // existing convention; every assertion below is verbatim from the brief.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render as rtlRender, screen, fireEvent, cleanup } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { makeStoreWrapper } from './helpers/chat-store-harness';
 import StatusBar from '../src/renderer/components/StatusBar';
+
+// Master added <SpecialistsChip> to the bar (useSpecialistSummary → useChatStore),
+// so StatusBar can no longer mount outside a ChatProvider. Every render here
+// goes through the REAL store + reducer this branch already uses for hook tests
+// (helpers/chat-store-harness.ts), seeded with the 's1' session these tests name.
+// With no specialist runs in that session the chip renders null, so the bar's
+// DOM — and every assertion below — is unchanged.
+function render(ui: ReactElement) {
+  return rtlRender(ui, { wrapper: makeStoreWrapper(['s1']).wrapper });
+}
 
 // Multiple <StatusBar> renders share one jsdom document in this file — see
 // statusbar-session-relevance.test.tsx for why explicit cleanup is required

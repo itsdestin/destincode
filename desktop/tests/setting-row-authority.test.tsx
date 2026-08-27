@@ -182,6 +182,7 @@ describe('setting row adoption', () => {
     'ProvidersSection.tsx': { count: 1, why: 'K6 provider list row' },
     'SyncSetupWizard.tsx': { count: 1, why: 'a wizard step, not a settings menu' },
     'ResumeBrowser.tsx': { count: 3, why: 'L1 drawer — out of the dialog family entirely' },
+    'CloseSessionPrompt.tsx': { count: 1, why: 'dialog footer: "Don\'t show again" beside the confirm button — a footer convention, not a settings row (P-15, 2026-08-26)' },
   };
 
   function togglesOutsideARow(src: string): number {

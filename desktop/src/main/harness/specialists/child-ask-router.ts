@@ -55,6 +55,10 @@ export interface ChildAskRouterDeps {
   childId: string;
   agentType: string;
   title: string;
+  /** The Task-tool call that spawned this specialist (Task 6, 1c) — rides
+   *  onto the routed ask's `specialist` payload so the renderer can nest the
+   *  ask row under the right specialist card instead of just labelling it. */
+  parentToolCallId: string;
   /** Overridable for tests (default SPECIALIST_ASK_HOLD_MS = 5 minutes). */
   timeoutMs?: number;
   /** Task 11 (closes a review finding): called when the parent answers a
@@ -85,7 +89,7 @@ export function childAskRouter(deps: ChildAskRouterDeps): NonNullable<HarnessSes
         ...req,
         sessionId: deps.parentId,
         raisedBy: deps.childId,
-        specialist: { childId: deps.childId, agentType: deps.agentType, title: deps.title },
+        specialist: { childId: deps.childId, agentType: deps.agentType, title: deps.title, parentToolCallId: deps.parentToolCallId },
       },
       {
         timeoutMs: deps.timeoutMs ?? SPECIALIST_ASK_HOLD_MS,

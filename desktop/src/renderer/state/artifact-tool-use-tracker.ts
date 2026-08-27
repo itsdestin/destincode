@@ -4,7 +4,9 @@ import { resolveTrackedPath } from '../../shared/artifacts/resolve-tracked-path'
 /**
  * The artifact tracker: turns Write/Edit/MultiEdit/Read tool-use transcript
  * events into `appendVersion` calls so the file shows up in the Session Drawer,
- * then refreshes that session's drawer list from the sidecar.
+ * then refreshes that session's drawer list from the sidecar. It also listens
+ * for `tool-result` events to record SendUserFile deliveries — see the
+ * "delivered" handling below.
  *
  * Extracted from App.tsx (2026-08-15) so it can be pinned by a test. It has no
  * React in it: App.tsx builds one with `createArtifactToolUseTracker(deps)`,
@@ -23,7 +25,7 @@ export interface TrackerAppendArgs {
   path: string;
   kind: 'internal' | 'external';
   absolutePath: string | null;
-  type: 'create' | 'edit' | 'read';
+  type: 'create' | 'edit' | 'read' | 'delivered';
   author: 'agent';
   /** Transcript tool_use id — appendVersion's replay-dedupe key. */
   toolUseId?: string;
@@ -49,7 +51,12 @@ export interface ArtifactToolUseTracker {
 }
 
 const DEFAULT_REFRESH_DELAY_MS = 250;
-const TRACKED_TOOLS = ['Write', 'Edit', 'MultiEdit', 'Read'];
+const TRACKED_TOOLS = ['Write', 'Edit', 'MultiEdit', 'Read', 'SendUserFile'];
+// SendUserFile calls wait for their RESULT: the tool fails on a missing path,
+// and recording at call time would create a "delivered" artifact of a file
+// that does not exist (the renderer cannot check disk). Bounded so a session
+// that dies between call and result cannot grow it forever.
+const PENDING_DELIVERIES_CAP = 200;
 
 export function createArtifactToolUseTracker(deps: ArtifactToolUseTrackerDeps): ArtifactToolUseTracker {
   const refreshDelayMs = deps.refreshDelayMs ?? DEFAULT_REFRESH_DELAY_MS;
@@ -58,6 +65,40 @@ export function createArtifactToolUseTracker(deps: ArtifactToolUseTrackerDeps): 
   // settled append so the drawer refreshes once after the burst.
   const pendingRefresh = new Map<string, { timer: ReturnType<typeof setTimeout>; projectRoot: string }>();
   let disposed = false;
+
+  const pendingDeliveries = new Map<string, { sessionId: string; files: string[] }>();
+
+  const holdDelivery = (sessionId: string, toolUseId: string | undefined, input: Record<string, unknown>) => {
+    if (!toolUseId) return;
+    const files = Array.isArray(input.files) ? input.files.filter((f): f is string => typeof f === 'string' && f.length > 0) : [];
+    if (!files.length) return;
+    if (pendingDeliveries.size >= PENDING_DELIVERIES_CAP) pendingDeliveries.delete(pendingDeliveries.keys().next().value as string);
+    pendingDeliveries.set(toolUseId, { sessionId, files });
+  };
+
+  const settleDelivery = (toolUseId: string | undefined, isError: boolean) => {
+    if (!toolUseId) return;
+    const pending = pendingDeliveries.get(toolUseId);
+    if (!pending) return;
+    pendingDeliveries.delete(toolUseId);
+    if (isError) return;                                   // nothing was sent — nothing to record
+    const session = deps.getSessions()?.find?.((s) => s.id === pending.sessionId);
+    const projectRoot: string = session?.cwd ?? '';
+    if (!projectRoot) return;
+    // One append per file, all sharing the call's toolUseId: main's replay
+    // dedupe is per artifact record, so a 4-file call yields 4 records and a
+    // replayed transcript adds nothing.
+    const appends = pending.files.map((file) => {
+      const resolved = resolveTrackedPath(file, projectRoot);
+      const args: TrackerAppendArgs = {
+        path: resolved.path, kind: resolved.kind, absolutePath: resolved.absolutePath,
+        type: 'delivered', author: 'agent', toolUseId,
+      };
+      return Promise.resolve(deps.appendVersion(projectRoot, pending.sessionId, args))
+        .catch((e) => log('[artifact-tracker] appendVersion (delivered) failed', e));
+    });
+    void Promise.all(appends).finally(() => scheduleRefresh(pending.sessionId, projectRoot));
+  };
 
   const scheduleRefresh = (sessionId: string, projectRoot: string) => {
     if (disposed) return;
@@ -78,13 +119,15 @@ export function createArtifactToolUseTracker(deps: ArtifactToolUseTrackerDeps): 
 
   const handle = (raw: unknown) => {
     if (disposed) return;
-    const event = raw as { type?: string; sessionId?: string; data?: { toolName?: string; toolUseId?: string; toolInput?: Record<string, unknown> } } | null;
+    const event = raw as { type?: string; sessionId?: string; data?: { toolName?: string; toolUseId?: string; toolInput?: Record<string, unknown>; isError?: boolean } } | null;
     if (!event?.type || !event?.sessionId) return;
+    if (event.type === 'tool-result') { settleDelivery(event.data?.toolUseId, event.data?.isError === true); return; }
     if (event.type !== 'tool-use') return;
     const toolName: string = event.data?.toolName ?? '';
     const isRead = toolName === 'Read';
     if (!TRACKED_TOOLS.includes(toolName)) return;
     const input = event.data?.toolInput ?? {};
+    if (toolName === 'SendUserFile') { holdDelivery(event.sessionId, event.data?.toolUseId, input); return; }
     const targetPath = (typeof input.file_path === 'string' && input.file_path) || (typeof input.path === 'string' && input.path) || '';
     if (!targetPath) return;
 
@@ -149,6 +192,7 @@ export function createArtifactToolUseTracker(deps: ArtifactToolUseTrackerDeps): 
     disposed = true;
     for (const { timer } of pendingRefresh.values()) clearTimeout(timer);
     pendingRefresh.clear();
+    pendingDeliveries.clear();
   };
 
   return { handle, dispose };

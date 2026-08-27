@@ -9,8 +9,9 @@ import { TodoWriteTool } from './todo-write';
 import { WebFetchTool } from './web-fetch';
 import { WebSearchTool } from './web-search';
 import { AskUserQuestionTool } from './ask-user-question';
+import { SendUserFileTool } from './send-user-file';
 
-/** Plan A core set + Plan B tools. WebFetch/WebSearch are the web pair (free in
- *  every preset/mode — see permission-types.rulesForMode); AskUserQuestion
- *  (interactive, driver-routed) comes last. */
-export const CORE_TOOLS: NativeTool[] = [ReadTool, WriteTool, EditTool, BashTool, GlobTool, GrepTool, TodoWriteTool, WebFetchTool, WebSearchTool, AskUserQuestionTool];
+/** Plan A core set + Plan B tools + SendUserFile (2026-08-25). WebFetch/WebSearch
+ *  are the web pair (free in every preset/mode — see permission-types.rulesForMode);
+ *  AskUserQuestion (interactive, driver-routed) comes last. */
+export const CORE_TOOLS: NativeTool[] = [ReadTool, WriteTool, EditTool, BashTool, GlobTool, GrepTool, TodoWriteTool, WebFetchTool, WebSearchTool, SendUserFileTool, AskUserQuestionTool];

@@ -365,6 +365,12 @@ function handleMessage(data: string): void {
     case 'git:changed':
       dispatchEvent('git:changed', payload);
       break;
+    case 'specialists:event':
+      // Task 8 — push-only (see ipc-handlers.ts's nativeHost.on('specialists-
+      // event', ...) forwarder). window.claude.on.specialistEvent subscribers
+      // receive the SpecialistsEvent payload verbatim.
+      dispatchEvent('specialists:event', payload);
+      break;
     case 'social:presence-event':
       // Presence relay (Task 6). The host forwards one presence event (server
       // protocol frame or synthetic connection-state event). window.claude.social
@@ -847,6 +853,10 @@ export function installShim(): void {
       sessionMetaChanged: (cb: Callback) => { addListener('session:meta-changed', cb); return () => removeListener('session:meta-changed', cb); },
       // Pushed when the tag registry changes (create/update/delete).
       tagsChanged: (cb: Callback) => { addListener('tags:changed', cb); return () => removeListener('tags:changed', cb); },
+      // Specialists 1c (Task 8) — one hire's ledger record changed. Unsubscribe
+      // fn, matching preload's specialistEvent (both keep window.claude.on's
+      // shape consistent for the specialists card's cleanup effects).
+      specialistEvent: (cb: Callback) => { addListener('specialists:event', cb); return () => removeListener('specialists:event', cb); },
       // Android-only push event — see remote-shim handleMessage above for rationale.
       sessionPermissionMode: (cb: Callback) => addListener('session:permission-mode', cb),
       uiAction: (cb: Callback) => addListener('ui:action:received', cb),
@@ -1174,6 +1184,10 @@ export function installShim(): void {
       renameProject: (name: string, displayName: string) =>
         invoke('syncspaces:rename-project', { name, displayName }),
       stopProject: (name: string) => invoke('syncspaces:stop-project', { name }),
+      // Synced project description (Task 3) — payload-object shape, matching
+      // preload's renameProject/setProjectDescription convention.
+      setProjectDescription: (name: string, description: string) =>
+        invoke('syncspaces:set-project-description', { name, description }),
       // Conversation-lease takeover (Plan 2b Task 9). Same shape as preload for
       // parity (PITFALLS rule) so a remote browser doesn't crash when the resume
       // dialog calls leaseQuery. Remote-server routing lands in Task 11 — until
@@ -1214,6 +1228,8 @@ export function installShim(): void {
       add: (folderPath: string, nickname?: string) => invoke('folders:add', { folderPath, nickname }),
       remove: (folderPath: string) => invoke('folders:remove', { folderPath }),
       rename: (folderPath: string, nickname: string) => invoke('folders:rename', { folderPath, nickname }),
+      setDescription: (folderPath: string, description: string) =>
+        invoke('folders:set-description', { folderPath, description }),
     },
     artifacts: {
       listSession: (sessionId: string, projectRoot: string) =>
@@ -1592,6 +1608,17 @@ export function installShim(): void {
       list: () => invoke('permissions:list'),
       remove: (slug: string, rule: unknown) => invoke('permissions:remove', { slug, rule }),
       removeProject: (slug: string) => invoke('permissions:remove-project', { slug }),
+    },
+    // Specialists 1c (Task 8) — object payloads, matching every other remote-
+    // shim namespace above (permissions, search) — preload takes positional
+    // args instead, same split as those.
+    specialists: {
+      list: (opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => invoke('specialists:list', opts ?? {}),
+      getDelegatedModels: () => invoke('specialists:delegated-get'),
+      setDelegatedModel: (tier: 'budget' | 'frontier', binding: { providerId: string; modelId: string } | null) =>
+        invoke('specialists:delegated-set', { tier, binding }),
+      steer: (sessionId: string, childId: string, text: string) => invoke('specialists:steer', { sessionId, childId, text }),
+      interrupt: (sessionId: string, childId: string) => invoke('specialists:interrupt', { sessionId, childId }),
     },
     // Local llama.cpp engine (Plan B). Server pushes engine:install-progress /
     // engine:status-changed via the WS dispatcher; subscriptions return an

@@ -5,7 +5,11 @@
 
 import { useEffect, useState } from 'react';
 
-const QUERY = '(max-width: 639.98px)';
+// Exported so call sites that need the raw media query string (rather than a
+// hook subscription — e.g. a one-shot window.matchMedia check in App.tsx)
+// don't hardcode a second copy that can drift from this one.
+export const NARROW_VIEWPORT_QUERY = '(max-width: 639.98px)';
+const QUERY = NARROW_VIEWPORT_QUERY;
 
 export function useNarrowViewport(): boolean {
   // Read the real viewport on the FIRST render, not in the mount effect. This

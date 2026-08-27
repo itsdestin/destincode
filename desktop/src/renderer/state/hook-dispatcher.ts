@@ -32,6 +32,20 @@ export function hookEventToAction(event: HookEvent): ChatAction | null {
 
       if (!requestId) return null;
 
+      // Specialists 1c: the broker spreads `specialist` {childId, agentType,
+      // title, parentToolCallId} onto a routed child ask (permission-broker.ts).
+      // Validate the shape rather than trust the wire — a payload missing the
+      // child id degrades to a plain (top-level) ask, never to a mis-nested one.
+      const rawSpecialist = payload.specialist as Record<string, unknown> | undefined;
+      const specialist = rawSpecialist && typeof rawSpecialist.childId === 'string'
+        ? {
+            childId: rawSpecialist.childId,
+            agentType: typeof rawSpecialist.agentType === 'string' ? rawSpecialist.agentType : 'specialist',
+            title: typeof rawSpecialist.title === 'string' ? rawSpecialist.title : 'A specialist',
+            parentToolCallId: typeof rawSpecialist.parentToolCallId === 'string' ? rawSpecialist.parentToolCallId : undefined,
+          }
+        : undefined;
+
       return {
         type: 'PERMISSION_REQUEST',
         sessionId,
@@ -42,7 +56,16 @@ export function hookEventToAction(event: HookEvent): ChatAction | null {
         denyListed: denyListed || undefined,
         external: external || undefined,
         permissionMode,
+        specialist,
       };
+    }
+
+    // Specialists 1c: the child-ask-router's 5-minute hold elapsed. The ask is
+    // still answerable; the nested row just tells the user the helper moved on.
+    case 'PermissionHeld': {
+      const requestId = payload._requestId as string;
+      if (!requestId) return null;
+      return { type: 'PERMISSION_HELD', sessionId, requestId };
     }
 
     case 'PermissionExpired': {

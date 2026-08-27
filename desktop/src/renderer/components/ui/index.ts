@@ -49,7 +49,7 @@ export type { AnchorTipProps, AnchorTipTrigger, AnchorTipPlacement } from './Anc
 export { Toast } from './Toast';
 export type { ToastProps, ToastTone } from './Toast';
 
-export { SegmentedTabs } from './SegmentedTabs';
+export { SegmentedTabs, SegmentedTabLabel, PluginIcon, PaletteIcon } from './SegmentedTabs';
 export type { SegmentedTabsProps, SegmentedTab } from './SegmentedTabs';
 
 export { ProgressBar } from './ProgressBar';

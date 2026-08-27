@@ -23,6 +23,12 @@ export function SearchIcon({ size = 15, strokeWidth = 2 }: IconProps) {
   );
 }
 
+// 2026-08-06: CheckCircleIcon/AlertTriangleIcon/CircleSlashIcon/MonitorIcon
+// (the sync-pill per-state glyphs from the 2026-08-05 mockup) were removed
+// here — the pill reverted to the plain colored dot (sync-spaces.md pins the
+// dot as the one sanctioned status-color use; ProjectSwitcher rows already
+// use it, and two visual languages for one status was the wrong call).
+
 export function GitBranchIcon({ size = 13, strokeWidth = 2 }: IconProps) {
   return (
     <svg {...base(size, strokeWidth)}>

@@ -13,7 +13,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
-import { readSidecar } from './artifact-store';
+import { readSidecarShared } from './artifact-store';
 import { listProjects } from './central-index';
 import { buildSavedFolderProjects } from './saved-folder-projects';
 import { trackedArtifacts } from './visible-artifacts';
@@ -33,7 +33,7 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 // this was written for merged into Files on 2026-07-23. NO on-disk discovery is
 // mixed in here.
 export async function countArtifacts(projectRoot: string): Promise<number> {
-  const sidecar = await readSidecar(projectRoot);
+  const sidecar = await readSidecarShared(projectRoot);
   if (!sidecar || 'corrupted' in sidecar) return 0;
   const visible = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes, sidecar.manualExcludes, projectRoot)
     .filter((a: any) => a.status !== 'deleted');
@@ -66,7 +66,7 @@ export async function projectAllFiles(projectRoot: string): Promise<{ files: any
   try { scan = await discoverProjectFiles(projectRoot); }
   catch { scan = { files: [], truncated: false }; }
   const seen = new Set(scan.files.map((f: any) => f.path));
-  const sidecar = await readSidecar(projectRoot);
+  const sidecar = await readSidecarShared(projectRoot);
   const extra: any[] = [];
   if (sidecar && !('corrupted' in sidecar)) {
     const candidates = sidecar.artifacts.filter((a) => {
@@ -157,7 +157,7 @@ export async function listProjectsIndex(opts?: { withCounts?: boolean }): Promis
     } else {
       // Fast path for ChatView's frequent cwd-resolution calls: cheap sidecar-
       // only artifact count, no on-disk scan and no existence check.
-      const sidecar = await readSidecar(p.path);
+      const sidecar = await readSidecarShared(p.path);
       let trackedCount = 0;
       if (sidecar && !('corrupted' in sidecar)) {
         trackedCount = trackedArtifacts(sidecar.artifacts as any[], sidecar.manualIncludes, sidecar.manualExcludes, p.path)

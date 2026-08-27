@@ -73,15 +73,15 @@ describe('primitive adoption', () => {
     //     THE v1.3.1 AUDIT IS STILL OUTSTANDING. This exemption had to go because
     //     it asserts NON-adoption and would now rot, not because the audit landed.
     //
-    //   FieldError — unadopted BY OVERSIGHT, found the moment this test started
-    //     scanning `states.tsx` (a lowercase filename the first version skipped).
-    //     25 sites across 14 files still hand-roll its exact markup as
-    //     `<p className="text-{2,3}xs text-destructive-fg">`. It is NOT a
-    //     decision, just unfinished — but adopting it is a real change, because
-    //     6 of those sites are text-2xs and the primitive hardcodes text-3xs, so
-    //     a blind swap shrinks them. Tracked on the ROADMAP; remove this entry
-    //     when it is done.
-    const INTENTIONALLY_UNADOPTED = new Set(['FieldError']);
+    //   FieldError — REMOVED from this list 2026-08-16. It was unadopted BY
+    //     OVERSIGHT (found when this test started scanning `states.tsx`, a
+    //     lowercase filename the first version skipped), not by decision.
+    //     SpecialistsSection.tsx (tier-write error) gave it its first real call
+    //     site, so the exemption no longer describes reality. The other ~25
+    //     sites that still hand-roll `<p className="text-{2,3}xs
+    //     text-destructive-fg">` remain unconverted — that migration is still
+    //     tracked on the ROADMAP, it just isn't what this exemption was for.
+    const INTENTIONALLY_UNADOPTED = new Set<string>([]);
 
     const unused = primitives.filter(
       (name) =>

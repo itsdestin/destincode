@@ -174,7 +174,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     );
 
     expect(capturedCtorArgs).toBeDefined();
-    // Positional shape pinned by the brief: 11 args (Task 6c added
+    // Positional shape pinned by the brief: 13 args (Task 6c added
     // visionSupportFor as the 5th positional parameter — the 3rd injected
     // closure, after contextLengthFor and providerTypeFor — shifting
     // everything after providerTypeFor down by one; the Task 13 fix pass then
@@ -183,13 +183,14 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // contextAndSlotsFor closure, since the two were only ever split apart by
     // a shared-state race, so that pair nets out to zero; plan 1b Task 2 added
     // nativeHome as an 11th, trailing param for the DelegationLedger the host
-    // constructs internally; Task 11 then added pricingFor as the 6th
-    // positional parameter — the 4th injected closure, right after
-    // visionSupportFor, because all four are resolved together for every
-    // create/resume/swap — shifting everything after it down by one again),
-    // skillCatalog (index 9) explicitly undefined so mcpManager (index 10)
-    // lands in the right slot.
-    expect(capturedCtorArgs!.length).toBe(12);
+    // constructs internally; plan 1b Task 8 added specialistAskHoldMs as a
+    // trailing param and plan 1c Task 4 added the real SpecialistCatalog after
+    // it; the status-bar work then added pricingFor as the 6th positional
+    // parameter — the 4th injected closure, right after visionSupportFor,
+    // because all four are resolved together for every create/resume/swap —
+    // shifting everything after it down by one), skillCatalog (index 9)
+    // explicitly undefined so mcpManager (index 10) lands in the right slot.
+    expect(capturedCtorArgs!.length).toBe(14);
     expect(capturedCtorArgs![9]).toBeUndefined();
 
     const mcpManager = capturedCtorArgs![10] as {

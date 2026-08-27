@@ -597,6 +597,7 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     ['syncspaces:create-project', 'IPC.SYNC_SPACES_CREATE_PROJECT'],
     ['syncspaces:import-project', 'IPC.SYNC_SPACES_IMPORT_PROJECT'],
     ['syncspaces:rename-project', 'IPC.SYNC_SPACES_RENAME_PROJECT'],
+    ['syncspaces:set-project-description', 'IPC.SYNC_SPACES_SET_PROJECT_DESCRIPTION'],
     ['syncspaces:stop-project', 'IPC.SYNC_SPACES_STOP_PROJECT'],
     // Plan 2b Task 11 — conversation leases + device registry. Full four-surface
     // desktop parity (preload / remote-shim / ipc-handlers constant / remote-server).
@@ -635,6 +636,12 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     'syncspaces:list-devices',
     'syncspaces:rename-device',
     'syncspaces:remove-device',
+    // Synced project description (project-description spec, Task 3). Desktop-only
+    // for now, so it rides the SAME not-implemented-on-mobile stub arm. Without
+    // it the phone's description editor waits ~30s for a response that never
+    // arrives instead of rejecting immediately — delete the Kotlin arm and this
+    // assertion is the only thing that notices.
+    'syncspaces:set-project-description',
   ];
   if (fs.existsSync(kotlinPath)) {
     const kotlin = fs.readFileSync(kotlinPath, 'utf8');
@@ -654,6 +661,47 @@ describe('syncspaces:* channel parity (desktop surfaces)', () => {
     expect(preload).toContain('session:moved');
     expect(shim).toContain('session:moved');
   });
+});
+
+// Local-folder description (project-description spec, Task 4). Saved folders are
+// local-only — no sync surface — so parity is desktop-only, same four surfaces and
+// same "ipc-handlers carries the constant, everyone else carries the literal"
+// pattern as the syncspaces:* block above. NOTE: there was no pre-existing
+// folders:* parity block to add a row to (unlike syncspaces:*) — folders:list/
+// add/remove/rename were never covered here, so this new describe block is
+// scoped to the one channel this task adds rather than backfilling the rest.
+describe('folders:set-description channel parity (desktop surfaces)', () => {
+  const channels: Array<[string, string]> = [
+    ['folders:set-description', 'IPC.FOLDERS_SET_DESCRIPTION'],
+  ];
+  const preload = fs.readFileSync(path.join(__dirname, '../src/main/preload.ts'), 'utf8');
+  const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
+  const handlers = fs.readFileSync(path.join(__dirname, '../src/main/ipc-handlers.ts'), 'utf8');
+  const remoteServer = fs.readFileSync(path.join(__dirname, '../src/main/remote-server.ts'), 'utf8');
+  for (const [ch, constant] of channels) {
+    it(`${ch} present in preload, remote-shim, ipc-handlers, remote-server`, () => {
+      expect(preload).toContain(ch);
+      expect(shim).toContain(ch);
+      expect(handlers).toContain(constant);
+      expect(remoteServer).toContain(ch);
+    });
+  }
+
+  // Android carries a REAL handler for this one (not a stub): folders:rename
+  // already has a native implementation, so its description sibling needs one
+  // too — without the `"folders:set-description" ->` arm the phone silently
+  // no-ops, the card refreshes, and the user's text is gone with no error.
+  // Guarded by existsSync so a moved Kotlin path degrades to a skip rather
+  // than exploding, same as the syncspaces stub block above.
+  const kotlinFolderPath = path.join(__dirname, '../../app/src/main/kotlin/com/youcoded/app/runtime/SessionService.kt');
+  if (fs.existsSync(kotlinFolderPath)) {
+    const kotlin = fs.readFileSync(kotlinFolderPath, 'utf8');
+    it('folders:set-description has a real Android handler arm in SessionService.kt', () => {
+      expect(kotlin).toContain('"folders:set-description" ->');
+    });
+  } else {
+    it.skip('SessionService.kt not found — skipping Android folders:set-description check', () => {});
+  }
 });
 
 // Connect-GitHub modal (device-flow auth, 2026-07-14). The four REQUEST channels
@@ -1070,5 +1118,64 @@ describe('permissions:* channel parity', () => {
   it('stubbed in SessionService.kt (Android)', () => {
     const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
     for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+  });
+});
+
+// Five-surface parity for the specialists roster/tier/card-action UI (Task 8,
+// plan 1c). Cloned from the permissions:* block above — same gap it closes:
+// a channel missing from remote-shim.ts or SessionService.kt would silently
+// break the roster/tier pickers or a card's steer/stop button on remote or
+// Android, the exact failure mode native:* had until 2026-07-28.
+describe('specialists:* channel parity', () => {
+  const NEW_TYPES = [
+    'specialists:list',
+    'specialists:delegated-get',
+    'specialists:delegated-set',
+    'specialists:steer',
+    'specialists:interrupt',
+  ];
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'specialists:list': 'IPC.SPECIALISTS_LIST',
+    'specialists:delegated-get': 'IPC.SPECIALISTS_DELEGATED_GET',
+    'specialists:delegated-set': 'IPC.SPECIALISTS_DELEGATED_SET',
+    'specialists:steer': 'IPC.SPECIALISTS_STEER',
+    'specialists:interrupt': 'IPC.SPECIALISTS_INTERRUPT',
+  };
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from ipc-handlers.ts`).toBe(true);
+  });
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`'${t}'`);
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+  });
+  // specialists:event is a PUSH, not a request — it is exempt from the
+  // ipc-handlers.ts (no `ipcMain.handle`, only a `.on()` forwarder) and
+  // Kotlin/remote-server "request" surfaces the same way native:model-state
+  // is (see the native:* describe block above). It still needs to exist on
+  // BOTH client surfaces (preload + remote-shim) so a subscriber compiles and
+  // actually receives it on either platform.
+  it('specialists:event push channel present in preload + remote-shim only', () => {
+    const preload = read('src', 'main', 'preload.ts');
+    const shim = read('src', 'renderer', 'remote-shim.ts');
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    expect(preload).toContain(`'specialists:event'`);
+    expect(shim).toContain(`'specialists:event'`);
+    // Never a request stub: unlike the five channels above, this is push-only
+    // and must not appear in Kotlin's not-implemented list at all.
+    expect(kt).not.toContain(`"specialists:event"`);
   });
 });

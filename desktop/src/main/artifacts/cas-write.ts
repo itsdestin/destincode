@@ -159,11 +159,45 @@ export async function mutateFileUnderLock(
   }
 }
 
+// 2026-08-27 OOM fix: the comparand is ONE timestamp, but this check used to
+// hand the extractor the WHOLE file — for a 6.4 MB artifacts.json that was a
+// full read AND (with the store's old `JSON.parse(raw).updatedAt` extractor) a
+// full parse, on every write, just to compare 24 bytes. Offer the extractor a
+// bounded head first; only when it has no answer there (returns undefined, or
+// throws — JSON.parse on a truncated head does) fall back to the whole file.
+// Every extractor that worked before still works: the fallback is the old path.
+const HEAD_PROBE_BYTES = 4096;
+
+async function readComparand(
+  target: string,
+  extract: (json: string) => string | undefined
+): Promise<string | undefined> {
+  const handle = await fs.open(target, 'r');
+  let head: string;
+  let complete: boolean;
+  try {
+    const buf = Buffer.alloc(HEAD_PROBE_BYTES);
+    const { bytesRead } = await handle.read(buf, 0, HEAD_PROBE_BYTES, 0);
+    head = buf.subarray(0, bytesRead).toString('utf8');
+    complete = bytesRead < HEAD_PROBE_BYTES;
+  } finally {
+    await handle.close();
+  }
+  if (complete) return extract(head); // the head IS the file — nothing to fall back to
+  try {
+    const fromHead = extract(head);
+    if (fromHead !== undefined) return fromHead;
+  } catch {
+    // A whole-file extractor (JSON.parse) chokes on a truncated head — expected.
+  }
+  return extract(await fs.readFile(target, 'utf8'));
+}
+
 export async function casWrite(
   target: string,
   expectedUpdatedAt: string | null,
   content: string,
-  extractUpdatedAt?: (json: string) => string
+  extractUpdatedAt?: (json: string) => string | undefined
 ): Promise<CasResult> {
   const lock = target + '.lock';
   await fs.mkdir(dirname(target), { recursive: true });
@@ -176,10 +210,9 @@ export async function casWrite(
     // CAS check inside the lock — safe from races now
     if (extractUpdatedAt) {
       try {
-        const onDisk = await fs.readFile(target, 'utf8');
-        const actual = extractUpdatedAt(onDisk);
+        const actual = await readComparand(target, extractUpdatedAt);
         if (actual !== expectedUpdatedAt) {
-          return { committed: false, actualUpdatedAt: actual };
+          return { committed: false, actualUpdatedAt: actual ?? null };
         }
       } catch (e: any) {
         if (e.code !== 'ENOENT') throw e;

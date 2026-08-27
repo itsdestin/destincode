@@ -5,10 +5,22 @@
 // subscription a native session doesn't spend; Fast mode is a Claude Code
 // toggle nothing native honours (spec §3).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render as rtlRender, screen, fireEvent, cleanup } from '@testing-library/react';
+import type { ReactElement } from 'react';
+import { makeStoreWrapper } from './helpers/chat-store-harness';
 import '@testing-library/jest-dom/vitest';
 import StatusBar from '../src/renderer/components/StatusBar';
 import { emptyTotals, addTurnUsage, addSubagentUsage } from '../src/renderer/state/session-totals';
+
+// Master added <SpecialistsChip> to the bar (useSpecialistSummary → useChatStore),
+// so StatusBar can no longer mount outside a ChatProvider. Every render here
+// goes through the REAL store + reducer this branch already uses for hook tests
+// (helpers/chat-store-harness.ts), seeded with the 's1' session these tests name.
+// With no specialist runs in that session the chip renders null, so the bar's
+// DOM — and every assertion below — is unchanged.
+function render(ui: ReactElement) {
+  return rtlRender(ui, { wrapper: makeStoreWrapper(['s1']).wrapper });
+}
 
 // Multiple <StatusBar> renders share one jsdom document in this file — without
 // explicit cleanup a later test's queryByText/getByText would see the

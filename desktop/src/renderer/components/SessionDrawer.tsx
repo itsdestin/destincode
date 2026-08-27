@@ -918,17 +918,21 @@ function versionsInSession(artifact: ArtifactRecord, sessionId: string): Version
 }
 
 // Session-scoped status word: deleted (unchanged short-circuit), viewed (this
-// session's versions are all 'read'), edited (>1 modifying version THIS
-// session), created (exactly one). Falls back to the record-global count only
-// if this session somehow has zero version events for the artifact — that
-// shouldn't happen (the artifact wouldn't be in this session's list at all),
-// but an empty label would be worse than the old (still-wrong) global word.
+// session's versions are all 'read'), delivered (this session's versions are
+// all 'read'/'delivered' with at least one 'delivered'), edited (>1 modifying
+// version THIS session), created (exactly one). Falls back to the
+// record-global count only if this session somehow has zero version events
+// for the artifact — that shouldn't happen (the artifact wouldn't be in this
+// session's list at all), but an empty label would be worse than the old
+// (still-wrong) global word.
 function statusInfo(artifact: ArtifactRecord, isDeleted: boolean, sessionId: string): string {
   if (isDeleted) return 'deleted';
   const sessionVersions = versionsInSession(artifact, sessionId);
   const versions = sessionVersions.length > 0 ? sessionVersions : artifact.versions;
-  const modifying = versions.filter((v) => v.type !== 'read').length;
-  if (modifying === 0) return 'viewed';
+  // 'read' and 'delivered' are not modifications. A delivered-only file says
+  // "delivered" (more than a view, less than an edit) — spec 2026-08-25 §4.2.
+  const modifying = versions.filter((v) => v.type !== 'read' && v.type !== 'delivered').length;
+  if (modifying === 0) return versions.some((v) => v.type === 'delivered') ? 'delivered' : 'viewed';
   if (modifying > 1) return 'edited';
   return 'created';
 }

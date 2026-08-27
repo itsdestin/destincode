@@ -44,8 +44,11 @@ export interface AskRequest {
   raisedBy?: string;
   /** Rides the hook-event payload so the permission card can label which
    *  specialist raised the ask. Consuming this on the renderer side is a
-   *  follow-up task — this one only threads the data through structurally. */
-  specialist?: { childId: string; agentType: string; title: string };
+   *  follow-up task — this one only threads the data through structurally.
+   *  `parentToolCallId` (Task 6, 1c) is the Task-tool call that spawned this
+   *  specialist — the renderer needs it to nest the routed row under the
+   *  right specialist card instead of just labelling it. */
+  specialist?: { childId: string; agentType: string; title: string; parentToolCallId: string };
   /** Task 11: the exact permission-engine SUBJECT this ask is about (e.g. a
    *  Bash command string) — harness-session.ts already computes this via
    *  tool.permissionSubject(args) before calling askUser, but only THREADS it
@@ -226,6 +229,12 @@ export class PermissionBroker extends EventEmitter {
           entry.timer = undefined;
           entry.timedOut = true;
           resolve(onTimeout());
+          // WHY: the renderer's nested row must SAY the helper carried on
+          // (spec R3) — before 1c the flip was silent and the card looked
+          // unchanged. Emitted AFTER the PermissionRequest this same entry
+          // already sent (at ask()-time and every heartbeat since), so a
+          // listener sees the request before it sees the hold.
+          this.emit('hook-event', this.hookEventFor(entry, 'PermissionHeld'));
           // NOT deleted from `pending` — see PendingAsk.timedOut's own WHY.
           // It IS now unanswerable-by-the-turn though, so it stops heartbeating.
           this.syncReannounceTimer();
@@ -236,17 +245,31 @@ export class PermissionBroker extends EventEmitter {
     });
   }
 
-  /** The ONE place a PermissionRequest goes out, first time and every beat.
-   *  `payload` is shallow-copied per emit: the stored announcement is re-sent
+  /** The ONE place any hook-event about a pending ask is BUILT — the live
+   *  PermissionRequest announcement, its pendingEventsFor() replay, and the
+   *  PermissionHeld hold-flip all route through this so the four-field shape
+   *  (sessionId/type/payload/timestamp) is defined in exactly one place. WHY:
+   *  before this helper the same object literal was hand-built twice (once
+   *  per emit site) and this task would otherwise have made it a third —
+   *  a reviewer flagged that as the exact way the two would drift apart.
+   *  `payload` is a fresh copy per call: the stored announcement is reused
    *  indefinitely, so handing every listener the same object would let one
    *  in-process consumer's mutation rewrite what all later beats say. */
-  private emitAnnouncement(entry: PendingAsk): void {
-    this.emit('hook-event', {
+  private hookEventFor(entry: PendingAsk, type: 'PermissionRequest' | 'PermissionHeld'): HookEvent {
+    const payload = type === 'PermissionRequest'
+      ? entry.announcement.payload
+      : { _requestId: entry.announcement.payload._requestId };
+    return {
       sessionId: entry.announcement.sessionId,
-      type: entry.announcement.type,
-      payload: { ...entry.announcement.payload },
+      type,
+      payload: { ...payload },
       timestamp: Date.now(),
-    });
+    };
+  }
+
+  /** The ONE place a PermissionRequest goes out, first time and every beat. */
+  private emitAnnouncement(entry: PendingAsk): void {
+    this.emit('hook-event', this.hookEventFor(entry, 'PermissionRequest'));
   }
 
   /** Task 0 (ROADMAP #permissions, 2026-08-16): a renderer reload rebuilds
@@ -259,17 +282,16 @@ export class PermissionBroker extends EventEmitter {
    *  and, unlike the heartbeat, it deliberately includes TIMED-OUT entries:
    *  those are still "the ask stays answerable" (see PendingAsk.timedOut), so
    *  the reloaded window must show a card a late human answer can still hit,
-   *  even though nothing is stuck waiting on it. */
+   *  even though nothing is stuck waiting on it. A timed-out entry gets its
+   *  PermissionHeld pushed right after its PermissionRequest (Task 6) — WHY:
+   *  held is a state the row shows (R3); the replay has to restore the
+   *  state, not just the buttons, or a held ask comes back looking fresh. */
   pendingEventsFor(sessionId: string): HookEvent[] {
     const events: HookEvent[] = [];
     for (const entry of this.pending.values()) {
       if (entry.sessionId !== sessionId) continue;
-      events.push({
-        sessionId: entry.announcement.sessionId,
-        type: entry.announcement.type,
-        payload: { ...entry.announcement.payload },
-        timestamp: Date.now(),
-      });
+      events.push(this.hookEventFor(entry, 'PermissionRequest'));
+      if (entry.timedOut) events.push(this.hookEventFor(entry, 'PermissionHeld'));
     }
     return events;
   }
@@ -342,8 +364,7 @@ export class PermissionBroker extends EventEmitter {
       // resolve, so route it to whoever is tracking this ask's real outcome
       // instead (NativeSessionHost.onLateResponse) rather than calling
       // `entry.resolve` again, which would just no-op.
-      this.pending.delete(requestId);
-      this.syncReannounceTimer();
+      this.removeEntry(requestId, entry);
       if (this.lateResponseHandler) {
         this.lateResponseHandler(
           {
@@ -365,8 +386,7 @@ export class PermissionBroker extends EventEmitter {
     }
 
     if (entry.timer) clearTimeout(entry.timer); // exit path: respond() before the deadline
-    this.pending.delete(requestId);
-    this.syncReannounceTimer();
+    this.removeEntry(requestId, entry);
     entry.resolve(resolved);
     return true;
   }
@@ -400,10 +420,13 @@ export class PermissionBroker extends EventEmitter {
 
   private cancelOne(id: string, entry: PendingAsk): void {
     if (entry.timer) clearTimeout(entry.timer); // exit path: cancel
-    this.pending.delete(id);
-    this.syncReannounceTimer();
+    this.removeEntry(id, entry);
     // PermissionExpired clears the approval card; _requestId matches the field
-    // hook-dispatcher reads for the expired branch.
+    // hook-dispatcher reads for the expired branch. Emitted AFTER removeEntry's
+    // PermissionResolved (below) so a RemoteServer buffer purge keyed on the
+    // resolved id clears the now-stale Request/Held first, THEN this terminal
+    // Expired lands fresh — reversing the order would purge the Expired event
+    // it just buffered too.
     this.emit('hook-event', {
       sessionId: entry.sessionId,
       type: 'PermissionExpired',
@@ -411,5 +434,32 @@ export class PermissionBroker extends EventEmitter {
       timestamp: Date.now(),
     });
     entry.resolve({ behavior: 'canceled' });
+  }
+
+  /** The ONE place a `PendingAsk` stops being pending — whichever route
+   *  triggered it. Before this, `respond()` (both its in-time and late
+   *  branches) and `cancelOne()` each called `pending.delete` directly, and
+   *  `respond()` emitted NOTHING on resolution (2026-08-16 review finding:
+   *  "the catch-up replays asks that were already answered"). A phone
+   *  reconnecting after answering a card in two seconds was replayed that
+   *  same PermissionRequest out of RemoteServer's buffer — a dead question
+   *  with live-looking Yes/No buttons; tapping either returned false and the
+   *  card showed a "socket closed" message that was simply untrue. Routing
+   *  every removal through here means RemoteServer only has to listen for
+   *  ONE signal (`PermissionResolved`) to purge its buffer, instead of a
+   *  per-route emit risking exactly the kind of miss this finding was about.
+   *  Not built via hookEventFor() — that helper only knows the two LIVE
+   *  card states (Request/Held); this is a new, renderer-invisible type
+   *  (hook-dispatcher.ts's switch defaults to null on an unknown type) whose
+   *  only consumer is RemoteServer.bufferHookEvent's purge branch. */
+  private removeEntry(id: string, entry: PendingAsk): void {
+    this.pending.delete(id);
+    this.syncReannounceTimer();
+    this.emit('hook-event', {
+      sessionId: entry.sessionId,
+      type: 'PermissionResolved',
+      payload: { _requestId: id },
+      timestamp: Date.now(),
+    });
   }
 }

@@ -17,6 +17,7 @@ import {
   RULE_KIND_LABEL,
   type RuleKind,
 } from './permissions/describe-rule';
+import { CROSS_PROJECT_SLUG } from '../../shared/permission-types';
 import type {
   NativePermissionMode,
   PermissionRule,
@@ -179,12 +180,13 @@ const MODES: readonly { id: NativePermissionMode; label: string; line: string }[
     label: 'Ask first',
     // "Reading and searching never ask" is the explainer's own wording, and it
     // is the fact that stops this reading as "asks about everything".
-    line: 'Checks with you before it changes a file or runs a command. Reading and searching never interrupt you.',
+    // Destin's 2026-08-26/27 copy review: gerunds, one clause shorter.
+    line: 'Checks with you before changing a file or running a command. Reading and searching never interrupt you.',
   },
   {
     id: 'auto-edit',
     label: 'Auto edit',
-    line: 'Changes files on its own without asking. It still checks before running a command.',
+    line: 'Changes files without asking. Still checks before running a command.',
   },
   {
     id: 'full-auto',
@@ -195,7 +197,7 @@ const MODES: readonly { id: NativePermissionMode; label: string; line: string }[
     // (native-session-host.ts:291-301), so it does outrank them. Naming the
     // list as the exception to the mode is true either way; claiming it can
     // never be overridden would not be.
-    line: 'Works without checking with you, so you can leave it running. Even in full auto, your agent will still ask before:',
+    line: 'Works without checking with you, so you can leave it running. It still asks before:',
   },
 ];
 
@@ -364,6 +366,13 @@ export default function PermissionsSection() {
 
   const names = projects ? folderNames(projects) : new Map<string, string>();
   const withRules = (projects ?? []).filter((project) => project.rules.length > 0);
+  // D2 (2026-08-26): the cross-project bucket is not a folder and it outranks
+  // every folder — the grants in it are in force wherever the user is working,
+  // so it reads first rather than sorted in among places it does not belong to.
+  const ordered = [
+    ...withRules.filter((project) => project.slug === CROSS_PROJECT_SLUG),
+    ...withRules.filter((project) => project.slug !== CROSS_PROJECT_SLUG),
+  ];
 
   return (
     // No opening paragraph. The dialog is titled "Permissions", the section
@@ -388,7 +397,9 @@ export default function PermissionsSection() {
       <div>
         {/* Heading matches the explainer's own "How much it asks" section, so
             the (i) reads as the long version of what is on screen. */}
-        <h3 className={SECTION_LABEL}>Understanding agent permission modes</h3>
+        {/* Destin's 2026-08-26/27 copy review: the label is a name, not a
+            sentence — the card underneath already does the explaining. */}
+        <h3 className={SECTION_LABEL}>Permission modes</h3>
         <div className="rounded-lg bg-inset/50">
           <div className="px-3 py-2.5 space-y-2">
             {MODES.map((m) => (
@@ -428,7 +439,7 @@ export default function PermissionsSection() {
           </div>
           <div className="border-t border-edge-dim px-3 py-2">
             <p className="text-3xs text-fg-muted">
-              Each conversation has its own setting. Change it from the bar at the bottom of the chat.
+              Each conversation has its own mode. Change it from the bar at the bottom of the chat.
             </p>
           </div>
         </div>
@@ -461,9 +472,12 @@ export default function PermissionsSection() {
         <div className="rounded-lg bg-inset/50">
           <div className="px-3 py-2.5">
             <p className="text-2xs text-fg-dim leading-relaxed">
-              Things you chose &ldquo;Always allow&rdquo; for. In Ask first and Auto edit, your agent
-              stops asking before each one. Full auto does not ask anyway — except for the four
-              above, and an &ldquo;Always allow&rdquo; on one of those turns off even that last check.
+              {/* Destin's 2026-08-26/27 copy review: one promise for every mode
+                  instead of a per-mode breakdown; the Full auto exception keeps
+                  its own clause because it is the only one that changes. */}
+              Things you chose &ldquo;Always allow&rdquo; for. Your assistant stops asking before each of
+              these. Full auto never asks anyway, except for the four above &mdash; and an
+              &ldquo;Always allow&rdquo; on one of those removes even that check.
             </p>
           </div>
 
@@ -483,7 +497,7 @@ export default function PermissionsSection() {
                 // Reads as first-run rather than as an error, and names the one
                 // action that fills this list. Where those approvals apply and
                 // how to take one back is the explainer's job.
-                message={'Nothing yet. When you choose “Always allow” on a request, it turns up here.'}
+                message={'Nothing yet. When you choose “Always allow” on a request, it shows up here.'}
               />
             ) : (
               // Nothing between the band and the cards, on purpose. The summary
@@ -492,7 +506,7 @@ export default function PermissionsSection() {
               // effect above). A card that begins directly under its label is
               // the family's normal rhythm, not an absence.
               <div className="space-y-2">
-                {withRules.map((project) => (
+                {ordered.map((project) => (
                   <FolderCard
                     key={project.slug}
                     project={project}
@@ -537,7 +551,11 @@ function FolderCard({
   const [note, setNote] = useState<string | null>(null);
 
   const count = project.rules.length;
-  const label = name ?? project.slug;
+  // D2: the bucket's slug is a storage key ('all projects'), never a folder
+  // name — printing it raw would put a place-shaped label on something that is
+  // not a place. Its title and its one-line description are fixed copy.
+  const everyProject = project.slug === CROSS_PROJECT_SLUG;
+  const label = everyProject ? 'All projects' : (name ?? project.slug);
   const groups = groupByKind(project.rules);
 
   const confirmClear = async () => {
@@ -582,7 +600,14 @@ function FolderCard({
               unique — the path is supporting detail, and letting it wrap would
               make a list of collapsed folders tall again. The never-recorded
               line is a sentence, not data, so it wraps. */}
-          {project.cwd ? (
+          {everyProject ? (
+            // NOT the never-recorded sentence below: nothing is missing here.
+            // This card has no path because it never had one, so it says what it
+            // holds instead of apologising for an absence that isn't one.
+            <p className="text-3xs -mt-0.5 text-fg-muted">
+              Your own specialists that you always allow. These apply in every folder.
+            </p>
+          ) : project.cwd ? (
             <p className="text-3xs -mt-0.5 text-fg-muted truncate">{project.cwd}</p>
           ) : (
             // Says the path is missing rather than inventing one — it just does
@@ -795,6 +820,10 @@ function RuleRow({
         description={detail || undefined}
         // The trigger unmounts while the confirm is open, exactly as DevicesTab
         // does — two revoke buttons for one row would be ambiguous.
+        // Destin's 2026-08-26/27 copy review: the visible label is just "Revoke"
+        // — the row above already names what is being revoked. The aria-label
+        // keeps the full sentence, so the button still stands on its own out of
+        // context (a screen reader reads it without the row around it).
         control={
           confirming ? undefined : (
             <Button
@@ -807,7 +836,7 @@ function RuleRow({
                 setNote(null);
               }}
             >
-              Revoke permission
+              Revoke
             </Button>
           )
         }

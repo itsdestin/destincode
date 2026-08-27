@@ -12,7 +12,7 @@
 // "Always allow" rule. Frozen on purpose — see slug-encoding.ts.
 import { nativeStoreSlug } from '../slug-encoding';
 import type { NativeHome } from '../native-home';
-import { normalizeRule, sameRule } from '../../shared/permission-types';
+import { normalizeRule, sameRule, isCrossProjectRule, CROSS_PROJECT_SLUG } from '../../shared/permission-types';
 import type { StoredProject, StoredRule } from '../../shared/permission-types';
 
 const FILE = 'permissions.json';
@@ -46,7 +46,15 @@ const EMPTY: PermFile = { v: 2, projects: {} };
 export class PermissionStore {
   constructor(private home: NativeHome) {}
 
-  /** Remembered rules for the project owning `cwd`, or [] if none stored. */
+  /** Remembered rules that apply at `cwd`: the CROSS-PROJECT bucket plus the
+   *  project's own, or [] if neither is stored.
+   *
+   *  D2 fix (2026-08-26): the bucket is what makes "applies in every project"
+   *  true. Before it, a `user`-scoped specialist grant was written under the
+   *  slug of whichever folder happened to be open when it was approved, so the
+   *  card's promise, describeRule's wording and the docs were all false — the
+   *  next project asked again. See isCrossProjectRule (shared/permission-types)
+   *  for which rules land there and why the subject is the discriminator. */
   async rulesFor(cwd: string): Promise<StoredRule[]> {
     // readJson is synchronous and untyped (unknown | null); cast + default.
     const data = (this.home.readJson(FILE) as PermFile | null) ?? EMPTY;
@@ -56,12 +64,24 @@ export class PermissionStore {
     // would otherwise be evaluated as a glob, which is how "always allow this
     // exact command" turned `rm *.log` into a wildcard grant. Reading it as
     // exact restores the promise the user was actually shown.
-    return (data.projects?.[nativeStoreSlug(cwd)]?.rules ?? []).map(normalizeRule);
+    // Bucket FIRST, then this project's own. Order is only about last-match-wins
+    // in the engine, and both sides are allow rules for different subjects, so a
+    // tie is harmless — the same reasoning as buildDecide's disk/memory union.
+    return [
+      ...(data.projects?.[CROSS_PROJECT_SLUG]?.rules ?? []),
+      ...(data.projects?.[nativeStoreSlug(cwd)]?.rules ?? []),
+    ].map(normalizeRule);
   }
 
-  /** Persist one remembered decision for `cwd`'s project, deduping exact repeats. */
+  /** Persist one remembered decision, deduping exact repeats. Filed under
+   *  `cwd`'s project — EXCEPT a cross-project rule, which is filed under the
+   *  reserved bucket instead so every project reads it (D2). */
   async remember(cwd: string, rule: StoredRule): Promise<void> {
-    const slug = nativeStoreSlug(cwd);
+    // The rule's own subject decides where it lives (isCrossProjectRule) —
+    // nothing extra is threaded in, so a rule read back off disk can never
+    // disagree with the bucket it is sitting in.
+    const crossProject = isCrossProjectRule(rule);
+    const slug = crossProject ? CROSS_PROJECT_SLUG : nativeStoreSlug(cwd);
     // Read-modify-write under the file lock — never a bare write.
     await this.home.mutateJson(FILE, (cur) => {
       const data = (cur as PermFile | null) ?? EMPTY;
@@ -86,7 +106,12 @@ export class PermissionStore {
       // the cwd is NOT recoverable from the slug. `v: 2` unconditionally: this
       // file's first-ever version branch (Task 11) — every write moves a v1
       // file forward, never backward.
-      return { ...data, v: 2, projects: { ...data.projects, [slug]: { ...(data.projects?.[slug] ?? {}), cwd, rules } } };
+      // The bucket is NOT a folder, so it never records a cwd — writing the
+      // folder that happened to be open when the grant was given would make
+      // Settings print a path under a card that applies everywhere, which is
+      // exactly the false-scope claim this bucket exists to end.
+      const entry = { ...(data.projects?.[slug] ?? {}), ...(crossProject ? {} : { cwd }), rules };
+      return { ...data, v: 2, projects: { ...data.projects, [slug]: entry } };
     });
   }
 

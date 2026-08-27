@@ -1282,6 +1282,10 @@ class SessionService : Service() {
                         put("nickname", wd.label)
                         put("addedAt", 0)
                         put("exists", File(wd.path).isDirectory)
+                        // WHY: serve the per-folder description on the wire so the shared
+                        // React folder switcher can render it, matching desktop's
+                        // youcoded-folders.json entries (Task 4).
+                        put("description", wd.description)
                     })
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, arr) }
@@ -1329,6 +1333,23 @@ class SessionService : Service() {
                     }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, renamed) }
+            }
+            "folders:set-description" -> {
+                // WHY: local-folder counterpart to desktop's saved-folder description
+                // (Task 4) — folders:rename has a real Android implementation, so this
+                // needs one too instead of silently no-oping on mobile (see Task 5 brief).
+                val folderPath = msg.payload.optString("folderPath", "")
+                val description = msg.payload.optString("description", "")
+                var ok = false
+                if (folderPath.isNotEmpty()) {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val store = com.youcoded.app.config.WorkingDirStore(homeDir)
+                    if (store.dirs.value.any { it.path == folderPath }) {
+                        store.setDescription(folderPath, description)
+                        ok = true
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, ok) }
             }
 
             "clipboard:save-image" -> {
@@ -3773,6 +3794,19 @@ class SessionService : Service() {
             "permissions:list",
             "permissions:remove",
             "permissions:remove-project",
+            // Specialists 1c (Task 8) — roster + tier reads/writes + card
+            // actions all read/write the DESKTOP native harness (SpecialistCatalog,
+            // DelegationLedger, DelegatedModels), same as permissions:* above;
+            // Android has no native harness to hold any of that until M8. Reply
+            // not-implemented so the shared React UI degrades to a "desktop only"
+            // state instead of timing out. specialists:event (the ledger push) is
+            // OUTBOUND-only — same as native:model-state above — so it needs no
+            // entry here at all.
+            "specialists:list",
+            "specialists:delegated-get",
+            "specialists:delegated-set",
+            "specialists:steer",
+            "specialists:interrupt",
             // Local llama.cpp engine (Plan B) — desktop-only; no Android runtime yet.
             "engine:status",
             "engine:install",
@@ -3800,6 +3834,10 @@ class SessionService : Service() {
             // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
             // are desktop-only (Phase 3 on Android).
             "syncspaces:rename-project",
+            // Synced project description (Task 3) — desktop-only for now; without this
+            // arm the description editor on a phone would wait ~30s for a response
+            // that never arrives instead of failing fast.
+            "syncspaces:set-project-description",
             "syncspaces:stop-project",
             // Plan 2b — conversation leases/takeover + device registry are
             // desktop-only (Android has no lease/takeover). The shared React UI

@@ -19,8 +19,9 @@ import WallpaperBackdrop from "../WallpaperBackdrop";
 import InstallingFooterStrip from "./InstallingFooterStrip";
 import MarketplaceAuthChip from "./MarketplaceAuthChip";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { Button, CloseButton } from "../ui";
+import { Button, CloseButton, EmptyState, ErrorState, LoadingState } from "../ui";
 import { useEscClose } from "../../hooks/use-esc-close";
+import { useNarrowViewport } from "../../hooks/use-narrow-viewport";
 import { useCurrentPlatform } from "../../state/platform";
 import { platformDisplayName, platformListDisplay } from "../../../shared/platform-display";
 import type { SkillEntry, IntegrationEntry, IntegrationState } from "../../../shared/types";
@@ -273,6 +274,24 @@ export default function MarketplaceScreen({
 
   const open = (t: DetailTarget) => setDetail(t);
 
+  // P-1 #5: see the header below — decides whether the "Esc · Back to chat"
+  // button exists at all, not just whether it is displayed.
+  const compact = useNarrowViewport();
+
+  // P-1 #4: "Explore everything" used to render its heading over nothing while
+  // the registry loaded — and forever if it couldn't be reached. Only the
+  // nothing-loaded-yet case shows a state: fetchAll() flips `loading` on every
+  // refresh (after each install/uninstall too), and swapping a populated grid
+  // for a spinner each time would be a visible flash. The error text is
+  // mp.error verbatim — the real message, never a guessed cause
+  // (docs/error-message-standards.md). Retry re-runs the same fetch.
+  const registryEmpty = mp.skillEntries.length === 0 && mp.themeEntries.length === 0;
+  const registryState = registryEmpty && mp.loading
+    ? <LoadingState what="the marketplace" />
+    : registryEmpty && mp.error
+      ? <ErrorState mode="recoverable" message={mp.error} onRetry={() => { void mp.refresh(); }} />
+      : null;
+
   return (
     <div className="fixed inset-0 z-40">
       {/* Pre-blurred wallpaper as a non-scrolling backdrop. Absolute-positioned
@@ -317,15 +336,23 @@ export default function MarketplaceScreen({
           )}
           {/* Wide: "Esc · Back to chat", no border (the Esc key does the work).
               Ghost Button rather than a bare <button> so it carries the hover
-              pill + focus ring — matched across all three screens, change 27. */}
-          <Button
-            variant="ghost"
-            onClick={onExit}
-            className="hidden sm:inline-flex text-sm px-2.5 py-1"
-            aria-label="Exit marketplace"
-          >
-            Esc · Back to chat
-          </Button>
+              pill + focus ring — matched across all three screens, change 27.
+              P-1 #5: this was `className="hidden sm:inline-flex"`, which never
+              hid it — Tailwind v4 emits `.hidden` BEFORE `.inline-flex`, so the
+              Button's own base `inline-flex` won and the keyboard hint rendered
+              at phone width, ~150px that truncated the title to "Ma…". Rendering
+              it only when not compact (same 640px boundary) removes the thief;
+              the CloseButton below is the narrow exit. */}
+          {!compact && (
+            <Button
+              variant="ghost"
+              onClick={onExit}
+              className="text-sm px-2.5 py-1"
+              aria-label="Exit marketplace"
+            >
+              Esc · Back to chat
+            </Button>
+          )}
           {/* Narrow: bordered close-X button — touch users have no Esc key, so we
               give them an obvious close affordance with a button-shaped container
               matching the Library button next to it. */}
@@ -461,41 +488,55 @@ export default function MarketplaceScreen({
                 beyond that consider content-visibility:auto per PITFALLS. */}
             <section className="flex flex-col gap-2">
               <h3 className="text-lg font-medium text-fg px-1">Explore everything</h3>
-              <MarketplaceGrid dense>
-                {mp.skillEntries.map((s) => (
-                  <MarketplaceCard
-                    key={s.id}
-                    item={{ kind: "skill", entry: s }}
-                    installed={installedIds.has(s.id)}
-                    updateAvailable={!!mp.updateAvailable[s.id]}
-                    onOpen={() => open({ kind: "skill", id: s.id })}
-                  />
-                ))}
-              </MarketplaceGrid>
+              {/* P-1 #4: loading / unreachable state under the heading. */}
+              {registryState ?? (
+                <MarketplaceGrid dense>
+                  {mp.skillEntries.map((s) => (
+                    <MarketplaceCard
+                      key={s.id}
+                      item={{ kind: "skill", entry: s }}
+                      installed={installedIds.has(s.id)}
+                      updateAvailable={!!mp.updateAvailable[s.id]}
+                      onOpen={() => open({ kind: "skill", id: s.id })}
+                    />
+                  ))}
+                </MarketplaceGrid>
+              )}
             </section>
           </>
         ) : (
           <section>
-            <h3 className="text-sm text-fg-dim px-1 mb-2">
-              {filtered.length} result{filtered.length === 1 ? "" : "s"}
-            </h3>
-            <MarketplaceGrid dense>
-              {filtered.map((item) => (
-                <MarketplaceCard
-                  key={item.kind === "skill" ? item.entry.id : `theme:${item.entry.slug}`}
-                  item={item}
-                  installed={item.kind === "skill" && installedIds.has(item.entry.id)}
-                  onOpen={() =>
-                    open(item.kind === "skill"
-                      ? { kind: "skill", id: item.entry.id }
-                      : { kind: "theme", slug: item.entry.slug })
-                  }
-                />
-              ))}
-            </MarketplaceGrid>
-            {filtered.length === 0 && (
-              <p className="text-center text-fg-dim py-12">Nothing matches those filters.</p>
-            )}
+            {/* P-1 #4: while nothing has loaded yet, the filtered list is empty
+                for the wrong reason — show the registry state, not "no match". */}
+            {registryState ?? (filtered.length === 0 ? (
+              /* P-1 #3: ONE empty state with a way out. Previously "0 results"
+                 and "Nothing matches those filters." rendered together, and
+                 there was no button to clear the chips. */
+              <EmptyState
+                message="Nothing matches those filters."
+                action={{ label: "Clear filters", onClick: () => setFilter(emptyFilter()) }}
+              />
+            ) : (
+              <>
+                <h3 className="text-sm text-fg-dim px-1 mb-2">
+                  {filtered.length} result{filtered.length === 1 ? "" : "s"}
+                </h3>
+                <MarketplaceGrid dense>
+                  {filtered.map((item) => (
+                    <MarketplaceCard
+                      key={item.kind === "skill" ? item.entry.id : `theme:${item.entry.slug}`}
+                      item={item}
+                      installed={item.kind === "skill" && installedIds.has(item.entry.id)}
+                      onOpen={() =>
+                        open(item.kind === "skill"
+                          ? { kind: "skill", id: item.entry.id }
+                          : { kind: "theme", slug: item.entry.slug })
+                      }
+                    />
+                  ))}
+                </MarketplaceGrid>
+              </>
+            ))}
           </section>
         )}
       </div>

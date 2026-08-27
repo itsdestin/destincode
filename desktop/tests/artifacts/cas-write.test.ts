@@ -113,3 +113,40 @@ describe('casWrite', () => {
     }
   });
 });
+
+// 2026-08-27 OOM fix: the CAS comparand is ONE timestamp, but the check used
+// to hand the extractor the WHOLE file — 6.4 MB of artifacts.json parsed to
+// read 24 bytes, on every write. casWrite now offers the extractor a bounded
+// head first and falls back to the whole file only when the head has no answer.
+describe('casWrite — head probe before whole-file read', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'cas-head-')); });
+  afterEach(() => { vi.restoreAllMocks(); try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+
+  const probe = (json: string) => /"updatedAt"\s*:\s*"([^"]*)"/.exec(json)?.[1];
+
+  it('never reads the whole file when the head probe answers', async () => {
+    const target = join(dir, 'big.json');
+    // updatedAt near the front, then a body far larger than the probe window.
+    writeFileSync(target, `{"updatedAt":"2026-01-01T00:00:00Z","pad":"${'x'.repeat(200_000)}"}`);
+    const whole = vi.spyOn(fsp, 'readFile');
+    const result = await casWrite(target, '2026-01-01T00:00:00Z', '{"updatedAt":"2026-01-02T00:00:00Z"}', probe);
+    expect(result.committed).toBe(true);
+    expect(whole.mock.calls.filter((c) => String(c[0]) === target)).toHaveLength(0);
+  });
+
+  it('falls back to the whole file when the head has no answer (updatedAt past the probe window)', async () => {
+    const target = join(dir, 'tail.json');
+    writeFileSync(target, `{"pad":"${'y'.repeat(200_000)}","updatedAt":"2026-03-03T00:00:00Z"}`);
+    const ok = await casWrite(target, '2026-03-03T00:00:00Z', '{"updatedAt":"2026-03-04T00:00:00Z"}', probe);
+    expect(ok.committed).toBe(true);
+  });
+
+  it('an extractor that THROWS on the truncated head (JSON.parse) still gets the whole file', async () => {
+    const target = join(dir, 'parse.json');
+    writeFileSync(target, `{"pad":"${'z'.repeat(200_000)}","updatedAt":"2026-05-05T00:00:00Z"}`);
+    const result = await casWrite(target, 'stale', '{"updatedAt":"x"}', (json) => JSON.parse(json).updatedAt);
+    expect(result.committed).toBe(false);
+    expect(result.actualUpdatedAt).toBe('2026-05-05T00:00:00Z');
+  });
+});

@@ -306,6 +306,25 @@ describe('appendVersion — read semantics + artifact id', () => {
     expect(after.artifacts[0].lastModified).toBe(stamp);   // unchanged — a view is not a modification
     expect(after.artifacts[0].versions).toHaveLength(2);   // the read IS still recorded
   });
+
+  it("a 'delivered' version does NOT bump lastModified on an existing record", async () => {
+    // Handing the user an old file is not a modification — it must not jump
+    // to the top of "recently modified" (spec 2026-08-25 §4.2).
+    await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's', type: 'edit', author: 'agent',
+    });
+    const before = (await readSidecar(projectRoot)) as ProjectSidecar;
+    const stamp = before.artifacts[0].lastModified;
+    await new Promise((r) => setTimeout(r, 5));
+    await appendVersion(projectRoot, 'p1', 'proj', {
+      path: 'a.md', kind: 'internal', absolutePath: null,
+      sessionId: 's2', type: 'delivered', author: 'agent', toolUseId: 'toolu_d',
+    });
+    const after = (await readSidecar(projectRoot)) as ProjectSidecar;
+    expect(after.artifacts[0].lastModified).toBe(stamp);
+    expect(after.artifacts[0].versions.at(-1)?.type).toBe('delivered');
+  });
 });
 
 describe('removeArtifactRecord', () => {
@@ -549,5 +568,32 @@ describe('renameArtifact — guards against a relative absolutePath (finding 2)'
 
     const sidecar = await readSidecar(projectRoot) as ProjectSidecar;
     expect(sidecar.artifacts[0].absolutePath).toBe(join(projectRoot, 'renamed-outside.txt').replace(/\\/g, '/'));
+  });
+});
+
+// 2026-08-27 OOM fix — see tests/artifacts/sidecar-cache.test.ts for the read
+// side. This pins the write side: the CAS check must not unpack the on-disk
+// file to read its one timestamp.
+describe('writeSidecar — CAS check reads the timestamp without parsing the file', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-cas-probe-'));
+    mkdirSync(join(projectRoot, '.youcoded'));
+    writeFileSync(join(projectRoot, '.youcoded', 'artifacts.json'), JSON.stringify(sample, null, 2));
+  });
+  afterEach(() => { vi.restoreAllMocks(); rmSync(projectRoot, { recursive: true, force: true }); });
+
+  it('commits a matching write with ZERO JSON.parse calls on the CAS path', async () => {
+    const cur = (await readSidecar(projectRoot)) as ProjectSidecar;
+    const parse = vi.spyOn(JSON, 'parse');
+    const res = await writeSidecar(projectRoot, cur.updatedAt, cur);
+    expect(res.committed).toBe(true);
+    expect(parse).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a stale token', async () => {
+    const cur = (await readSidecar(projectRoot)) as ProjectSidecar;
+    const res = await writeSidecar(projectRoot, '2000-01-01T00:00:00.000Z', cur);
+    expect(res.committed).toBe(false);
   });
 });

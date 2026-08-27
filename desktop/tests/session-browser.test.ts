@@ -277,6 +277,58 @@ describe('listPastSessions — last model used (Claude Code)', () => {
     expect(sessions[0].lastUsedModel).toBeUndefined();
   });
 
+  it('skips CC\'s <synthetic> placeholder and reports the real model behind it', async () => {
+    // Regression (2026-08-26): Claude Code stamps `"model": "<synthetic>"` on
+    // assistant lines IT composed — "You've hit your session limit", "You're
+    // out of usage credits", "Please run /login · API Error: 401". Those land
+    // LAST, so the card labelled a 308-turn Opus conversation `<synthetic>`.
+    writeTranscript('C--proj-alpha', SID_A, {
+      model: 'claude-opus-5',
+      trailing: [
+        {
+          type: 'assistant', uuid: 'syn1', timestamp: '2026-06-01T10:06:00Z',
+          message: { model: '<synthetic>', stop_reason: 'end_turn', content: [{ type: 'text', text: "You've hit your session limit · resets 3:50am" }] },
+        },
+        {
+          type: 'assistant', uuid: 'syn2', timestamp: '2026-06-01T10:06:01Z',
+          message: { model: '<synthetic>', stop_reason: 'end_turn', content: [{ type: 'text', text: "You've hit your session limit · resets 3:50am" }] },
+        },
+      ],
+    });
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel?.modelId).toBe('claude-opus-5');
+  });
+
+  it('omits lastUsedModel when EVERY assistant line is a placeholder', async () => {
+    // A session that died on the very first turn (limit/auth) has no real model
+    // to report. No chip is the honest answer; a fallback to the app default
+    // would be a guess dressed as history.
+    writeTranscript('C--proj-alpha', SID_A, {
+      trailing: [{
+        type: 'assistant', uuid: 'syn1', timestamp: '2026-06-01T10:06:00Z',
+        message: { model: '<synthetic>', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Please run /login · API Error: 401' }] },
+      }],
+    });
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel).toBeUndefined();
+  });
+
+  it('still reports the last timestamp when the tail ends on a placeholder', async () => {
+    // The two values share one backwards pass. Skipping a line for the MODEL
+    // must not skip it for the TIMESTAMP — the placeholder line is still the
+    // last thing that happened in the conversation.
+    writeTranscript('C--proj-alpha', SID_A, {
+      model: 'claude-opus-5',
+      trailing: [{
+        type: 'assistant', uuid: 'syn1', timestamp: '2026-06-03T09:15:00Z',
+        message: { model: '<synthetic>', stop_reason: 'end_turn', content: [{ type: 'text', text: 'out of credits' }] },
+      }],
+    });
+    const sessions = await listSessions();
+    expect(sessions[0].lastModified).toBe(Date.parse('2026-06-03T09:15:00Z'));
+    expect(sessions[0].lastUsedModel?.modelId).toBe('claude-opus-5');
+  });
+
   it('still reports the last timestamp when a model is present', async () => {
     // Both values come from one backwards pass now; a regression in either
     // could silently break the other.
@@ -302,6 +354,50 @@ describe('listPastSessions — Conversation Store union (Phase 2a)', () => {
   // A path guaranteed NOT to exist on this device — stands in for the
   // originalPath of a conversation that only ran on another machine.
   const absentProject = () => path.join(tmpHome, 'not-on-this-device', 'remote-proj');
+
+  it('a record poisoned with <synthetic> does not override the transcript scan', async () => {
+    // The bug the FIRST placeholder fix missed. The store overlay assigns
+    // rec.lastUsedModel over the freshly-scanned transcript value
+    // (session-browser.ts, `if (rec.lastUsedModel)`), so a record written
+    // before the writer was guarded defeated the transcript-side fix entirely
+    // — and 3 of Destin's 1,855 real records were in exactly that state,
+    // including the card that started this whole investigation. The read-side
+    // filter in store-core's sanitizeModelRef is what heals them.
+    const store = seedStore();
+    writeTranscript('C--proj-alpha', SID_A, { model: 'claude-opus-5' });
+    await store.upsert({
+      id: SID_A,
+      provider: 'claude',
+      projectName: 'proj-alpha',
+      originalPath: path.join(tmpHome, 'proj-alpha'),
+      title: 'Poisoned Record',
+      lastActive: '2026-06-20T10:00:00Z',
+      lastUsedModel: { modelId: '<synthetic>', providerType: 'claude-code', providerLabel: 'Claude Code' },
+    } as any);
+
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel?.modelId).toBe('claude-opus-5');
+  });
+
+  it('a record with a REAL model still overrides the transcript scan', async () => {
+    // Without this, the test above passes on a sanitizer that drops every
+    // model ref. The store legitimately wins for a synced conversation whose
+    // local transcript is stale or absent.
+    const store = seedStore();
+    writeTranscript('C--proj-alpha', SID_A, { model: 'claude-opus-5' });
+    await store.upsert({
+      id: SID_A,
+      provider: 'claude',
+      projectName: 'proj-alpha',
+      originalPath: path.join(tmpHome, 'proj-alpha'),
+      title: 'Clean Record',
+      lastActive: '2026-06-20T10:00:00Z',
+      lastUsedModel: { modelId: 'claude-fable-5', providerType: 'claude-code', providerLabel: 'Claude Code' },
+    } as any);
+
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel?.modelId).toBe('claude-fable-5');
+  });
 
   it('surfaces a remote-device conversation (no local transcript) with resume gated off', async () => {
     const store = seedStore();

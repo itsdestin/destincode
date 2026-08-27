@@ -5,11 +5,13 @@ import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost, SUBAGENT_DISPLAY_TYPES, mergeChildEvents } from '../src/main/harness/native-session-host';
 import { PermissionStore } from '../src/main/harness/permission-store';
 import { nativeStoreSlug } from '../src/main/slug-encoding';
+import { CROSS_PROJECT_SLUG } from '../src/shared/permission-types';
 import type { PermissionRule } from '../src/shared/permission-types';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS } from '../src/main/harness/specialists/limits';
+import { SpecialistCatalog } from '../src/main/harness/specialists/catalog';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_NOTE_MAX_CHARS, SPECIALIST_SPAWN_BUDGET_PER_SESSION } from '../src/main/harness/specialists/limits';
 import { OWNER, DelegationLedger } from '../src/main/harness/specialists/delegation-ledger';
 import { ModelSearchTool } from '../src/main/harness/tools/model-search';
 import type { CatalogModel } from '../src/shared/provider-types';
@@ -1144,6 +1146,93 @@ describe('NativeSessionHost', () => {
       const p = revokeHost(new PermissionStore(new NativeHome(root)));
       await expect(p.revokeProject('-never-granted')).resolves.toBe(false);
       await p.destroyAll();
+    });
+
+    // D2 (2026-08-26) — the cross-project bucket. A grant on a specialist the
+    // user defined in a folder THEY own is promised, on the card and in
+    // Settings, to apply "in every project". It only does if the store files it
+    // under CROSS_PROJECT_SLUG and every project's decide unions that in — and
+    // if revoking reaches every live session, since no session's cwd slugs to a
+    // key containing a space. These drive the REAL buildDecide, so the whole
+    // union (disk bucket + this session's memory) is what answers.
+    describe('a grant that applies in every project', () => {
+      // The exact subject shapes tools/task.ts builds. `fp` is the definition
+      // file's content hash: edit the file and the subject changes, which is
+      // what makes the standing grant stop matching.
+      const SUBJECT = 'read-write:file:docs-writer@a1b2c3d4e5f6';
+      const EDITED_SUBJECT = 'read-write:file:docs-writer@ffffffffffff';
+      const userRule: PermissionRule = { tool: 'Task', pattern: SUBJECT, action: 'allow', match: 'exact' };
+      const memoryOnlyStore = () => ({
+        rulesFor: async () => [] as any[],
+        remember: async () => { /* no-op */ },
+        remove: async () => true,
+        removeProject: async () => true,
+      });
+
+      /** Two real, distinct project folders under the temp root. */
+      function twoProjects(): [string, string] {
+        const a = path.join(root, 'alpha'); const b = path.join(root, 'beta');
+        fs.mkdirSync(a, { recursive: true }); fs.mkdirSync(b, { recursive: true });
+        return [a, b];
+      }
+
+      it('approved in one project, in force in another — and an EDITED file still asks', async () => {
+        const store = new PermissionStore(new NativeHome(root));
+        const [cwdA, cwdB] = twoProjects();
+        const p = revokeHost(store);
+        await p.create({ sessionId: 'a', cwd: cwdA, binding });
+
+        // Exactly what the "Always allow" path does (host owns the scoping).
+        (p as any).rememberRule('a', cwdA, userRule);
+        // The persist is fire-and-forget, so wait for it to land before reading
+        // from a session that has no in-memory copy of its own.
+        for (let i = 0; i < 100 && (await store.rulesFor(cwdB)).length === 0; i++) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+
+        const decideB = (p as any).buildDecide('b', cwdB, []);
+        expect((await decideB('Task', SUBJECT)).action).toBe('allow');
+        // The other half of the promise the card makes: edit the file and you
+        // are asked again, in every project, because the subject moved.
+        expect((await decideB('Task', EDITED_SUBJECT)).action).toBe('ask');
+        await p.destroyAll();
+      });
+
+      it('revoking the bucket clears it from a live session whose cwd is a real folder', async () => {
+        // Memory-only store: the ONLY thing that can still grant after the disk
+        // delete is the session's in-memory copy — which a cwd-slug comparison
+        // would never have reached, because no cwd slugs to 'all projects'.
+        const [cwdA] = twoProjects();
+        const p = revokeHost(memoryOnlyStore());
+        await p.create({ sessionId: 'a', cwd: cwdA, binding });
+        (p as any).rememberRule('a', cwdA, userRule);
+
+        const decideA = (p as any).buildDecide('a', cwdA, []);
+        expect((await decideA('Task', SUBJECT)).action).toBe('allow');
+
+        await p.revokeRule(CROSS_PROJECT_SLUG, userRule);
+        expect((await decideA('Task', SUBJECT)).action).toBe('ask');
+        await p.destroyAll();
+      });
+
+      it("clearing the whole bucket leaves that session's own project grants alone", async () => {
+        const [cwdA] = twoProjects();
+        const p = revokeHost(memoryOnlyStore());
+        await p.create({ sessionId: 'a', cwd: cwdA, binding });
+        const projectGrant: PermissionRule = { tool: 'Write', pattern: 'note.txt', action: 'allow', match: 'exact' };
+        (p as any).rememberRule('a', cwdA, userRule);
+        (p as any).rememberRule('a', cwdA, projectGrant);
+
+        await p.revokeProject(CROSS_PROJECT_SLUG);
+
+        const decideA = (p as any).buildDecide('a', cwdA, []);
+        expect((await decideA('Task', SUBJECT)).action).toBe('ask');       // the bucket went
+        // Deleting the session's whole memory here would have taken this with
+        // it — a grant the user never asked to revoke, still listed in Settings
+        // under its own folder.
+        expect((await decideA('Write', 'note.txt')).action).toBe('allow');
+        await p.destroyAll();
+      });
     });
   });
 
@@ -3075,6 +3164,475 @@ describe('NativeSessionHost', () => {
 
       await h.destroyAll();
     });
+
+    // ---- D2 (2026-08-26, review Critical): a resume rebuilds the child from
+    // the definition file AS IT IS NOW (buildSpecialistSession reads
+    // specialist.allowedTools / charter / systemPrompt), while the consent the
+    // user gave was for the file as it was at the hire. A task_id call carries
+    // no work_dir, so it has no permission subject, so no consent card can
+    // render for it — under auto-edit the pattern-less Task allow answers
+    // first. Without the fingerprint check, editing a read-only helper to add
+    // Bash and then resuming it ran write-capable with no consent at all.
+    //
+    // The comparison is deliberately narrow: only two fingerprints that are
+    // BOTH present and DIFFERENT refuse. Either side absent means "no claim to
+    // check" — built-ins have nothing on disk, and rows written before this
+    // field existed have nothing recorded — and refusing those would make
+    // every pre-existing hire unresumable. All four combinations are pinned. ----
+    describe('resume refuses a definition file that changed since the hire (D2)', () => {
+      let projectDir: string;
+      beforeEach(() => { projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-resume-fp-')); });
+      afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true }); });
+
+      /** A real project-shipped helper file, so its fingerprint is the REAL
+       *  content hash the loader stamps — never a hand-written string that
+       *  could agree with a broken loader. */
+      function writeHelperFile(): void {
+        const dir = path.join(projectDir, '.claude', 'agents');
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'doc-helper.md'),
+          '---\nname: Doc Helper\ndescription: A project-defined helper.\ntools: [Read]\n---\nHelp with reading files.\n',
+        );
+      }
+
+      async function boot(catalog: SpecialistCatalog) {
+        const home = new NativeHome(projectDir);
+        const h = new NativeSessionHost(
+          new SessionStore(home), factory, NO_CONTEXT, async () => null, async () => null,
+          undefined, undefined, undefined, undefined, undefined, undefined, home, undefined, catalog,
+        );
+        // create() awaits catalog.ensureFresh(cwd), so the roster below is
+        // loaded by the time any test reads it.
+        await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+        return h;
+      }
+
+      /** Hire `specialist`, stamp its ledger row with `recordedFingerprint`,
+       *  tear the child down (not live + own ledger row IS resumeSpecialist's
+       *  whole eligibility bar), then try to resume it. */
+      async function hireThenResume(h: NativeSessionHost, specialist: any, recordedFingerprint: string | undefined) {
+        const { childId, title } = await h.createChild('root-1', {
+          specialist, prompt: 'p', workDir: projectDir, parentToolCallId: 'tc-1',
+        });
+        await (h as any).ledger.recordStart(projectDir, 'root-1', {
+          childId, parentToolCallId: 'tc-1', agentType: specialist.id, title, workDir: projectDir,
+          description: specialist.description, background: false, status: 'running', startedAt: Date.now(),
+          delivered: false, owner: OWNER, missedSteers: [], definitionFingerprint: recordedFingerprint,
+        });
+        await h.destroy(childId);
+        const reservation = h.reserveSpecialist('root-1', { writer: false });
+        if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+        const result = await h.resumeSpecialist('root-1', {
+          childId, prompt: 'continue the investigation', background: false,
+          parentToolCallId: 'tc-2', reservation: reservation.token,
+        });
+        return { result, childId };
+      }
+
+      /** Did the resumed brief actually reach the child? The child's OWN
+       *  transcript is the only honest answer — a status code alone would not
+       *  prove the run never started. */
+      function briefDelivered(h: NativeSessionHost, childId: string): boolean {
+        return (h as any).store.readEvents(childId, projectDir)
+          .some((e: any) => e.type === 'user-message' && String(e.data?.text ?? '').includes('continue the investigation'));
+      }
+
+      // The other half of the fix, and the one that makes the rest reachable at
+      // all: the HIRE has to record which version of the file was consented to.
+      // Without this write every record's fingerprint is absent, which the
+      // comparison correctly reads as "no claim to check" — so no resume could
+      // ever be refused, and the four cases below would all pass vacuously.
+      it('the hire records WHICH version of the definition file was consented to', async () => {
+        writeHelperFile();
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const helper = catalog.roster(projectDir).list().find((d) => d.fingerprint)!;
+        const reservation = h.reserveSpecialist('root-1', { writer: false });
+        if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+        const { childId } = await h.spawnSpecialist('root-1', {
+          specialist: helper, prompt: 'find the config loader', workDir: projectDir,
+          parentToolCallId: 'tc-1', token: reservation.token, description: helper.description,
+        });
+        const rec = (h as any).ledger.listFor(projectDir, 'root-1').find((r: any) => r.childId === childId);
+        expect(rec.definitionFingerprint).toBe(helper.fingerprint);
+        await h.destroyAll();
+      });
+
+      it('refuses when the recorded fingerprint and the file\'s current one differ — and never resumes', async () => {
+        writeHelperFile();
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const helper = catalog.roster(projectDir).list().find((d) => d.fingerprint)!;
+        expect(helper.fingerprint).toBeTruthy();   // sanity: the file loader always stamps one
+
+        const { result, childId } = await hireThenResume(h, helper, 'aaaaaaaaaaaa');
+        expect(result).toEqual({ status: 'definition-changed', agentType: helper.id });
+        expect((h as any).live.has(childId)).toBe(false);   // no session was rebuilt
+        expect(briefDelivered(h, childId)).toBe(false);     // and the brief never ran
+        await h.destroyAll();
+      });
+
+      it('a legacy row with no recorded fingerprint is NOT refused — every pre-existing hire stays resumable', async () => {
+        writeHelperFile();
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const helper = catalog.roster(projectDir).list().find((d) => d.fingerprint)!;
+        const { result, childId } = await hireThenResume(h, helper, undefined);
+        expect(result.status).toBe('ok');
+        expect(briefDelivered(h, childId)).toBe(true);
+        await h.destroyAll();
+      });
+
+      it('a built-in (nothing on disk to change) is NOT refused, even against a recorded fingerprint', async () => {
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const builtin = catalog.roster(projectDir).resolve('explorer')!;
+        expect(builtin.fingerprint).toBeUndefined();   // sanity: this is the "specialist side absent" case
+        const { result, childId } = await hireThenResume(h, builtin, 'aaaaaaaaaaaa');
+        expect(result.status).toBe('ok');
+        expect(briefDelivered(h, childId)).toBe(true);
+        await h.destroyAll();
+      });
+
+      it('an unchanged file resumes normally — the check costs nothing when nothing changed', async () => {
+        writeHelperFile();
+        const catalog = new SpecialistCatalog({ claudeUserDir: null });
+        const h = await boot(catalog);
+        const helper = catalog.roster(projectDir).list().find((d) => d.fingerprint)!;
+        const { result, childId } = await hireThenResume(h, helper, helper.fingerprint);
+        expect(result.status).toBe('ok');
+        expect(briefDelivered(h, childId)).toBe(true);
+        await h.destroyAll();
+      });
+    });
+  });
+
+  // Task 5 (plan 1c) — the ledger's own change listener (wired once at
+  // construction, native-session-host.ts) turning every ledger write into a
+  // 'specialists-event' the renderer will eventually consume (Task 10), plus
+  // the user-facing note/stop surface (steerFromUser/interruptFromUser) and
+  // the spawn-time model landing on the record. Deliberately does NOT
+  // re-test steerSpecialist's own miss/deliver dispatch logic (task_id
+  // management (Task 6) above already covers postSteer's in-flight branch) —
+  // these tests are about the NOTE recording and the EVENT feed layered on
+  // top of it.
+  describe('user-facing steer/stop + specialists-event feed (Task 5, plan 1c)', () => {
+    const EXPLORER = resolveSpecialist('explorer')!;
+
+    function bootHostWithLedger(modelFactory: any = factory) {
+      const home = new NativeHome(root);
+      const store = new SessionStore(home);
+      const h = new NativeSessionHost(
+        store, modelFactory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, undefined, home,
+      );
+      return { home, store, h };
+    }
+    const childSession = (h: NativeSessionHost, id: string) => (h as any).live.get(id).session;
+
+    it('ledger changes surface as specialists-event {kind:run} with a SpecialistRunView (no delivery bookkeeping fields)', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const events: any[] = [];
+      h.on('specialists-event', (e) => events.push(e));
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const { childId } = await h.spawnSpecialistBackground('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+      });
+
+      // recordDelegationStart is awaited inside spawnSpecialistBackground
+      // before it returns, so the FIRST event is guaranteed to already be
+      // sitting in `events` by the time we get here — no polling needed.
+      expect(events.length).toBeGreaterThan(0);
+      const first = events[0];
+      expect(first.kind).toBe('run');
+      expect(first.sessionId).toBe('root-1');
+      expect(first.run.childId).toBe(childId);
+      expect(first.run.status).toBe('running');
+      expect(first.run.agentType).toBe(EXPLORER.id);
+      // The run view is the RENDERER's shape — never the host's own delivery
+      // bookkeeping (toRunView's own comment lists exactly this set).
+      const bookkeepingFields = ['delivered', 'injectionAttempted', 'claimedBy', 'claimedAt', 'owner', 'missedSteers', 'rawReport', 'reportPath'];
+      for (const f of bookkeepingFields) expect(first.run).not.toHaveProperty(f);
+
+      await h.destroyAll();
+    });
+
+    it('steerSpecialist appends the note to the record for a LIVE delivery (one write) and for a PARKED steer (the same write as the parked steer) — the run event carries it either way', async () => {
+      const { h } = bootHostWithLedger(delayedFactory);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // Child A: mid-turn (delayedFactory trickles chunks), so postSteer
+      // delivers live and the note is a plain appendNote — ONE write.
+      const { childId: liveChildId, title: liveTitle } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: liveChildId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: liveTitle,
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      const turn = childSession(h, liveChildId).send('go');
+      await new Promise((r) => setTimeout(r, 20));
+
+      const events: any[] = [];
+      h.on('specialists-event', (e) => events.push(e));
+
+      const liveResult = h.steerSpecialist('root-1', liveChildId, 'focus on auth.ts instead', 'user');
+      expect(liveResult.status).toBe('ok');
+
+      // The ledger write is fire-and-forget — poll for it to land.
+      let liveRec: any;
+      for (let i = 0; i < 50; i++) {
+        liveRec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === liveChildId);
+        if (liveRec?.notes?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(liveRec.notes).toEqual([{ text: 'focus on auth.ts instead', from: 'user', at: expect.any(Number) }]);
+      expect(liveRec.missedSteers).toEqual([]); // delivered live, never parked
+      // ONE ledger write for the live delivery → exactly one emitted event
+      // for this child (proves appendNote, not a second write anywhere).
+      expect(events.filter((e) => e.run.childId === liveChildId)).toHaveLength(1);
+      expect(events.find((e) => e.run.childId === liveChildId)!.run.notes).toEqual([
+        { text: 'focus on auth.ts instead', from: 'user', at: expect.any(Number) },
+      ]);
+
+      await turn; // let the delayed stream settle before moving on
+
+      // Child B: never sent a turn, so postSteer misses and the steer parks.
+      const { childId: parkedChildId, title: parkedTitle } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p2', workDir: root, parentToolCallId: 'tc-2',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: parkedChildId, parentToolCallId: 'tc-2', agentType: EXPLORER.id, title: parkedTitle,
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      events.length = 0;
+
+      const parkedResult = h.steerSpecialist('root-1', parkedChildId, 'check config.ts instead', 'assistant');
+      expect(parkedResult.status).toBe('ok');
+
+      let parkedRec: any;
+      for (let i = 0; i < 50; i++) {
+        parkedRec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === parkedChildId);
+        if (parkedRec?.missedSteers?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(parkedRec.missedSteers).toEqual(['check config.ts instead']);
+      expect(parkedRec.notes).toEqual([{ text: 'check config.ts instead', from: 'assistant', at: expect.any(Number) }]);
+      // The parked steer and its note commit in the SAME mutateJson call
+      // (appendMissedSteers' `note` param) — never two independent writes —
+      // so this child gets exactly ONE event, carrying the note already.
+      const parkedEvents = events.filter((e) => e.run.childId === parkedChildId);
+      expect(parkedEvents).toHaveLength(1);
+      expect(parkedEvents[0].run.notes).toEqual([{ text: 'check config.ts instead', from: 'assistant', at: expect.any(Number) }]);
+
+      await h.destroyAll();
+    });
+
+    it('steerFromUser: empty → error, 2001 chars → error naming the limit and the length, foreign childId → error, ok → {ok:true}', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      expect(h.steerFromUser('root-1', childId, '   ')).toEqual({ ok: false, error: 'The note is empty.' });
+
+      const tooLong = 'a'.repeat(2001);
+      expect(h.steerFromUser('root-1', childId, tooLong)).toEqual({
+        ok: false,
+        error: 'Notes are limited to 2,000 characters — this one is 2,001.',
+      });
+
+      expect(h.steerFromUser('root-1', 'not-a-real-child', 'hello')).toEqual({
+        ok: false, error: 'That helper isn’t part of this conversation.',
+      });
+
+      expect(h.steerFromUser('root-1', childId, 'a real note')).toEqual({ ok: true });
+
+      await h.destroyAll();
+    });
+
+    // Review finding fix (plan 1c, Task 5): SPECIALIST_NOTE_MAX_CHARS was only
+    // enforced in steerFromUser (the human's send-a-note box). The model's own
+    // task_id steer reaches steerSpecialist directly with no cap at all, and
+    // every accepted steer is now a PERMANENT ledger entry (read-modify-write
+    // WHOLE on every access) — so an unbounded model-written note grows that
+    // file without limit, the same cost class RAW_REPORT_CAP_CHARS already
+    // guards against on the report side. The cap now lives INSIDE
+    // steerSpecialist so it holds no matter which path reaches it.
+    it('an over-cap ASSISTANT steer is delivered to the helper in full, but the note recorded on the ledger is clamped and says so', async () => {
+      const { h } = bootHostWithLedger(delayedFactory);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // Mid-turn child (delayedFactory trickles chunks) so postSteer delivers
+      // live — proves the DELIVERY path never sees the clamp.
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      const session = childSession(h, childId);
+      const postSteerSpy = vi.spyOn(session, 'postSteer');
+      const turn = session.send('go');
+      await new Promise((r) => setTimeout(r, 20));
+
+      const longText = 'x'.repeat(SPECIALIST_NOTE_MAX_CHARS + 500);
+      const result = h.steerSpecialist('root-1', childId, longText, 'assistant');
+      expect(result.status).toBe('ok');
+
+      // Delivery is untouched: postSteer received the FULL, unclamped text.
+      expect(postSteerSpy).toHaveBeenCalledWith(longText);
+      expect(postSteerSpy.mock.calls[0][0]).toHaveLength(longText.length);
+
+      // The RECORDED note is clamped and visibly marked as cut, not silently
+      // truncated (the chat card renders note.text verbatim).
+      let rec: any;
+      for (let i = 0; i < 50; i++) {
+        rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (rec?.notes?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rec.notes).toHaveLength(1);
+      const recordedText: string = rec.notes[0].text;
+      expect(recordedText.length).toBeLessThanOrEqual(SPECIALIST_NOTE_MAX_CHARS);
+      expect(recordedText).not.toBe(longText);
+      expect(recordedText.startsWith('x'.repeat(100))).toBe(true); // real content survives, just cut
+      expect(recordedText.toLowerCase()).toMatch(/cut|long|short|trim/); // visibly marked, not an invisible cut
+      expect(recordedText.toLowerCase()).not.toContain('subagent');
+      expect(recordedText.toLowerCase()).not.toContain('spawn');
+
+      // missedSteers is untouched by the clamp too — never parked here since
+      // this was a live delivery, but nothing here should have populated it.
+      expect(rec.missedSteers).toEqual([]);
+
+      await turn;
+      await h.destroyAll();
+    });
+
+    it('an under-cap ASSISTANT steer is recorded byte-for-byte unchanged', async () => {
+      const { h } = bootHostWithLedger(delayedFactory);
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      const turn = childSession(h, childId).send('go');
+      await new Promise((r) => setTimeout(r, 20));
+
+      const shortText = 'focus on auth.ts instead';
+      const result = h.steerSpecialist('root-1', childId, shortText, 'assistant');
+      expect(result.status).toBe('ok');
+
+      let rec: any;
+      for (let i = 0; i < 50; i++) {
+        rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        if (rec?.notes?.length > 0) break;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      expect(rec.notes).toEqual([{ text: shortText, from: 'assistant', at: expect.any(Number) }]);
+
+      await turn;
+      await h.destroyAll();
+    });
+
+    it('steerFromUser still REJECTS an over-cap note rather than clamping it — the assistant-path clamp does not leak into the user-facing surface', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      const tooLong = 'a'.repeat(SPECIALIST_NOTE_MAX_CHARS + 1);
+      const result = h.steerFromUser('root-1', childId, tooLong);
+      expect(result).toEqual({
+        ok: false,
+        error: `Notes are limited to ${SPECIALIST_NOTE_MAX_CHARS.toLocaleString()} characters — this one is ${(SPECIALIST_NOTE_MAX_CHARS + 1).toLocaleString()}.`,
+      });
+
+      // Rejected before it ever reached steerSpecialist — no note recorded at all.
+      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec.notes ?? []).toEqual([]);
+
+      await h.destroyAll();
+    });
+
+    it('interruptFromUser mirrors the outcome mapping', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+      const { childId } = await h.createChild('root-1', {
+        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId, parentToolCallId: 'tc-1', agentType: EXPLORER.id, title: 'The Explorer',
+        workDir: root, description: EXPLORER.description, background: false,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+
+      expect(h.interruptFromUser('root-1', 'not-a-real-child')).toEqual({
+        ok: false, error: 'That helper isn’t part of this conversation.',
+      });
+
+      expect(h.interruptFromUser('root-1', childId)).toEqual({ ok: true });
+
+      // Already finished — destroy() drops it from childrenOf, but the
+      // ledger's own (own child, not live) record is still there.
+      await h.destroy(childId);
+      expect(h.interruptFromUser('root-1', childId)).toEqual({
+        ok: false, error: 'This helper has already finished.',
+      });
+
+      await h.destroyAll();
+    });
+
+    it('the spawn-time model lands on the record and in the run view', async () => {
+      const { h } = bootHostWithLedger();
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      const events: any[] = [];
+      h.on('specialists-event', (e) => events.push(e));
+
+      const reservation = h.reserveSpecialist('root-1', { writer: false });
+      if (!reservation.ok) throw new Error('unreachable — no capacity/writer conflict in this test');
+      const { childId } = await h.spawnSpecialistBackground('root-1', {
+        specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+        token: reservation.token, description: EXPLORER.description,
+        model: { label: 'anthropic/claude-opus-5', via: 'named', fallback: false },
+      });
+
+      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(rec.model).toEqual({ label: 'anthropic/claude-opus-5', via: 'named', fallback: false });
+
+      const runEvent = events.find((e) => e.run.childId === childId);
+      expect(runEvent.run.model).toEqual({ label: 'anthropic/claude-opus-5', via: 'named', fallback: false });
+
+      await h.destroyAll();
+    });
   });
 
   // Fix (Important 5, final review): the internalReadRoots exemption used to
@@ -3391,6 +3949,137 @@ describe('NativeSessionHost', () => {
       const session = (h as any).live.get('root-1').session;
       const catalog = await session.opts.toolServices.models.catalog();
       expect(catalog).toBeNull();
+      await h.destroyAll();
+    });
+  });
+
+  // Task 8 (plan 1c) — Settings' two model-tier rows, via the SAME
+  // toolServices.modelCatalog wiring the describe block just above proved
+  // reaches the session. setDelegatedModel must refuse (and never write) a
+  // binding the live catalog doesn't recognize — a stale/unconfirmed model
+  // would let a helper spawn on something that no longer exists with nothing
+  // on screen explaining why.
+  describe('getDelegatedModels / setDelegatedModel (Task 8)', () => {
+    const CATALOG: CatalogModel[] = [
+      { id: 'claude-opus-5', providerId: 'anthropic', label: 'Claude Opus 5' },
+    ];
+
+    it('setDelegatedModel refuses an id absent from the catalog and never writes', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      const result = await h.setDelegatedModel('budget', { providerId: 'openrouter', modelId: 'ghost-model' });
+      expect(result).toEqual({ ok: false, error: '"ghost-model" isn’t in the model list right now — pick it from the list.' });
+      // Never written: a fresh read still reports nothing designated.
+      const view = await h.getDelegatedModels();
+      expect(view.budget).toBeNull();
+      await h.destroyAll();
+    });
+
+    it('setDelegatedModel writes a binding that IS in the catalog, and getDelegatedModels reads its label back', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      const result = await h.setDelegatedModel('frontier', { providerId: 'anthropic', modelId: 'claude-opus-5' });
+      expect(result).toEqual({ ok: true });
+      const view = await h.getDelegatedModels();
+      expect(view.frontier).toEqual({ providerId: 'anthropic', modelId: 'claude-opus-5', label: 'Claude Opus 5' });
+      await h.destroyAll();
+    });
+
+    it('clears with null', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined,
+        { modelCatalog: async () => CATALOG },
+        undefined, undefined,
+        new NativeHome(root),
+      );
+      await h.setDelegatedModel('frontier', { providerId: 'anthropic', modelId: 'claude-opus-5' });
+      expect((await h.getDelegatedModels()).frontier).not.toBeNull();
+      const result = await h.setDelegatedModel('frontier', null);
+      expect(result).toEqual({ ok: true });
+      expect((await h.getDelegatedModels()).frontier).toBeNull();
+      await h.destroyAll();
+    });
+
+    it('without a nativeHome, getDelegatedModels reports nothing designated instead of throwing', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+      );
+      await expect(h.getDelegatedModels()).resolves.toEqual({ budget: null, frontier: null });
+      await h.destroyAll();
+    });
+  });
+
+  // Task 9 (plan 1c) — run replay on attach. A DIFFERENT "Task 9" from the
+  // "restart recovery + subagent-card replay (Task 9, plan 1b)" describe
+  // just below (that comment already flags the reused number; same reason
+  // applies here — not renamed to avoid an unrelated diff).
+  describe('specialistRunsFor (Task 9, plan 1c — run replay on attach)', () => {
+    it('returns toRunView of every ledger record for the live parent, and [] for an unknown session', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-a', parentToolCallId: 'tc-1', agentType: 'explorer', title: 'Nadia',
+        workDir: root, description: 'd', background: true,
+        status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+      });
+      await (h as any).ledger.recordStart(root, 'root-1', {
+        childId: 'child-b', parentToolCallId: 'tc-2', agentType: 'researcher', title: 'Otis',
+        workDir: root, description: 'd', background: true,
+        status: 'completed', startedAt: Date.now(), endedAt: Date.now(), delivered: true, owner: OWNER, missedSteers: [],
+      });
+
+      const runs = h.specialistRunsFor('root-1');
+      expect(runs).toHaveLength(2);
+      expect(runs.map((r) => r.childId).sort()).toEqual(['child-a', 'child-b']);
+      // toRunView strips delivery bookkeeping — the host's own business, never the card's.
+      expect((runs.find((r) => r.childId === 'child-a') as any).owner).toBeUndefined();
+      expect((runs.find((r) => r.childId === 'child-a') as any).claimedBy).toBeUndefined();
+
+      // Unknown/non-live session: no crash, no cards — matches getHistory()'s
+      // own "null for non-live" contract (see that method's WHY comment).
+      expect(h.specialistRunsFor('does-not-exist')).toEqual([]);
+
+      await h.destroyAll();
+    });
+
+    it('caps replay at SPECIALIST_SPAWN_BUDGET_PER_SESSION records', async () => {
+      const store = new SessionStore(new NativeHome(root));
+      const h = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, undefined, new NativeHome(root),
+      );
+      await h.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      // One more record than the lifetime spawn budget allows. In production
+      // the ledger can never actually hold more than the budget for one
+      // parent (trySpendSpecialistSpawnBudget gates every spawn BEFORE
+      // recordStart ever runs) — this proves the defensive cap holds even so.
+      for (let i = 0; i < SPECIALIST_SPAWN_BUDGET_PER_SESSION + 1; i++) {
+        await (h as any).ledger.recordStart(root, 'root-1', {
+          childId: `child-${i}`, parentToolCallId: `tc-${i}`, agentType: 'explorer', title: `T${i}`,
+          workDir: root, description: 'd', background: true,
+          status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
+        });
+      }
+
+      expect(h.specialistRunsFor('root-1')).toHaveLength(SPECIALIST_SPAWN_BUDGET_PER_SESSION);
+
       await h.destroyAll();
     });
   });
@@ -3795,6 +4484,177 @@ describe('NativeSessionHost', () => {
       expect(merged.map((e) => `${e.type}:${e.data.agentId ?? e.data.toolUseId}`)).toEqual([
         'tool-use:tc-1', 'assistant-text:child-1', 'tool-use:tc-2', 'assistant-text:child-2',
       ]);
+    });
+
+    // Task 7 (plan 1c): replay must match the live-copy guard's widened
+    // predicate exactly — a text-bearing assistant-thinking event splices in
+    // stamped (same as any other display-safe type), while the three
+    // NON-text-bearing shapes (heartbeat/stallWarning/toolPreparing) never do.
+    // Asserted against an in-memory events array rather than round-tripping
+    // through SessionStore: the store already drops payload-less thinking
+    // events before they ever reach disk (session-store.ts), so a disk
+    // round-trip would pass this test for the wrong reason — it wouldn't
+    // prove the FILTER excludes them, only that the store never persisted
+    // them in the first place.
+    it('mergeChildEvents replays text-bearing thinking, never heartbeats', () => {
+      const parentEvents = [ev('tool-use', { sessionId: 'root-1', data: { toolUseId: 'tc-1' } })];
+      const childEvents = [
+        ev('assistant-thinking', { data: {} }), // payload-less heartbeat
+        ev('assistant-thinking', { data: { text: 'thinking it through', partId: 'r1' } }),
+        ev('assistant-thinking', { data: { stallWarning: { retryInMs: 1000, willRetry: true } } }),
+        ev('assistant-thinking', { data: { toolPreparing: { toolCallId: 'x', toolName: 'Glob', chars: 1 } } }),
+        ev('assistant-text', { data: { text: 'ok' } }),
+      ];
+      const merged = mergeChildEvents('root-1', parentEvents, [{ record: rec(), events: childEvents }]);
+      expect(merged.map((e) => e.type)).toEqual(['tool-use', 'assistant-thinking', 'assistant-text']);
+      expect(merged[1].data.text).toBe('thinking it through');
+      expect(merged[1].sessionId).toBe('root-1');
+      expect(merged[1].data.agentId).toBe('child-1');
+      expect(merged[1].data.parentAgentToolUseId).toBe('tc-1');
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Task 4 (plan 1c) — the catalog is loaded before the Task tool exists,
+  // re-read at the start of every root turn when a file changed, and the
+  // Task tool is rebuilt from the in-memory roster every turn (never once).
+  // ---------------------------------------------------------------------
+  describe('specialist catalog wiring (Task 4, plan 1c)', () => {
+    let projectDir: string;
+
+    function ccFile(name: string): string {
+      return `---\nname: ${name}\ndescription: A project-defined helper.\ntools: [Read]\n---\nHelp with reading files.\n`;
+    }
+    function projectAgentsDir(): string {
+      return path.join(projectDir, '.claude', 'agents');
+    }
+    function bootWithCatalog(catalog: SpecialistCatalog) {
+      return new NativeSessionHost(
+        new SessionStore(new NativeHome(projectDir)), factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, catalog,
+      );
+    }
+    // waitForTurnComplete alone isn't enough between TWO sends on the SAME
+    // host: 'turn-complete' fires inside HarnessSession's own driver, before
+    // runTurns' drainDeliveries + its finally clears entry.inFlight — so a
+    // send() issued the instant waitForTurnComplete resolves can race that
+    // window and get QUEUED (drained inside the SAME runTurns pass) instead
+    // of dispatched as its own pass, silently skipping that turn's own
+    // ensureFresh() call. Awaiting entry.running (settles only once runTurns
+    // itself has fully returned) closes that window.
+    async function sendAndSettle(h: NativeSessionHost, sessionId: string, text: string): Promise<void> {
+      h.send(sessionId, text);
+      await waitForTurnComplete(h, 1);
+      await (h as any).live.get(sessionId).running;
+    }
+
+    beforeEach(() => { projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-cat-proj-')); });
+    afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true }); });
+
+    it("create() loads the catalog for the cwd BEFORE the Task tool is built — a personal file present at create time is in the first turn's Task description", async () => {
+      fs.mkdirSync(projectAgentsDir(), { recursive: true });
+      fs.writeFileSync(path.join(projectAgentsDir(), 'foo-helper.md'), ccFile('Foo Helper'));
+      // claudeUserDir: null — no ~/.claude/agents source in this test process;
+      // only the project's own .claude/agents (read regardless of `home`).
+      const catalog = new SpecialistCatalog({ claudeUserDir: null });
+      const h = bootWithCatalog(catalog);
+      await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+      h.send('root-1', 'hi');
+      await waitForTurnComplete(h, 1);
+      const taskTool = (h as any).live.get('root-1').session.toolByName.get('Task');
+      // Present on the VERY FIRST turn — proves ensureFresh(cwd) was awaited
+      // BEFORE toolWiring() built this tool, not raced against it.
+      expect(taskTool.description).toContain('foo-helper');
+      await h.destroyAll();
+    });
+
+    // D2 (2026-08-26, review Major) — the WIRING half of "work_dir resolves
+    // against the session folder": task.ts can only do it if harness-session.ts
+    // actually hands createTaskTool the session's cwd. Driven through a real
+    // session so a dropped argument fails HERE, rather than silently in
+    // production, where the remembered rule would name the Electron process's
+    // own directory — a folder the user was never in.
+    it("the Task tool's permission subject resolves work_dir against the SESSION's folder, never process.cwd()", async () => {
+      const catalog = new SpecialistCatalog({ claudeUserDir: null });
+      const h = bootWithCatalog(catalog);
+      await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+      h.send('root-1', 'hi');
+      await waitForTurnComplete(h, 1);
+      const taskTool = (h as any).live.get('root-1').session.toolByName.get('Task');
+      const posix = projectDir.replace(/\\/g, '/');
+      expect(taskTool.permissionSubject({ agent: 'explorer', work_dir: '.' })).toBe(`read-only:${posix}`);
+      expect(taskTool.permissionSubject({ agent: 'explorer', work_dir: 'sub' })).toBe(`read-only:${posix}/sub`);
+      // The bug this pins: the subject used to be built from the Electron
+      // process's own directory, which has nothing to do with this session.
+      expect(taskTool.permissionSubject({ agent: 'explorer', work_dir: '.' }))
+        .not.toContain(process.cwd().replace(/\\/g, '/'));
+      await h.destroyAll();
+    });
+
+    it('a turn dispatched after a file changed sees the new roster (ensureFresh runs before the turn); an unchanged folder costs no re-read', async () => {
+      const catalog = new SpecialistCatalog({ claudeUserDir: null });
+      const ensureFreshSpy = vi.spyOn(catalog, 'ensureFresh');
+      const h = bootWithCatalog(catalog);
+      await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+      // create() itself already called ensureFresh once (Task 4 — before the
+      // Task tool is ever built) — the empty project folder's first-ever read.
+      expect(ensureFreshSpy).toHaveBeenCalledTimes(1);
+      expect(await ensureFreshSpy.mock.results[0].value).toBe(true); // never-seen cwd — first read
+
+      // Turn 1: nothing changed since create() read it a moment ago.
+      await sendAndSettle(h, 'root-1', 't1');
+      expect(ensureFreshSpy).toHaveBeenCalledTimes(2);
+      expect(await ensureFreshSpy.mock.results[1].value).toBe(false); // unchanged — cheap fingerprint check only
+      let taskTool = (h as any).live.get('root-1').session.toolByName.get('Task');
+      expect(taskTool.description).not.toContain('bar-helper');
+
+      // A file lands in the project's agents folder between turns.
+      fs.mkdirSync(projectAgentsDir(), { recursive: true });
+      fs.writeFileSync(path.join(projectAgentsDir(), 'bar-helper.md'), ccFile('Bar Helper'));
+
+      // Turn 2: ensureFresh runs again — this time BEFORE the turn — and the
+      // roster it hands the Task tool has changed.
+      await sendAndSettle(h, 'root-1', 't2');
+      expect(ensureFreshSpy).toHaveBeenCalledTimes(3);
+      expect(await ensureFreshSpy.mock.results[2].value).toBe(true); // the new file changed the fingerprint
+      taskTool = (h as any).live.get('root-1').session.toolByName.get('Task');
+      expect(taskTool.description).toContain('bar-helper');
+
+      // Turn 3: nothing changed since turn 2 — ensureFresh still runs (every
+      // turn re-checks), but reports no change, i.e. no re-read of the folder.
+      await sendAndSettle(h, 'root-1', 't3');
+      expect(ensureFreshSpy).toHaveBeenCalledTimes(4);
+      expect(await ensureFreshSpy.mock.results[3].value).toBe(false); // unchanged — cheap fingerprint check only
+
+      await h.destroyAll();
+    });
+
+    it("the Task tool is rebuilt at turn start: after the roster changes, the next turn's tools list carries the new description", async () => {
+      const catalog = new SpecialistCatalog({ claudeUserDir: null });
+      const h = bootWithCatalog(catalog);
+      await h.create({ sessionId: 'root-1', cwd: projectDir, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+      await sendAndSettle(h, 'root-1', 't1');
+      const taskV1 = (h as any).live.get('root-1').session.toolByName.get('Task');
+
+      await sendAndSettle(h, 'root-1', 't2');
+      const taskV1b = (h as any).live.get('root-1').session.toolByName.get('Task');
+      // No has()-guard for Task (unlike ModelSearch/Skill): rebuilt every
+      // turn even when the roster hasn't changed — a NEW object each time...
+      expect(taskV1b).not.toBe(taskV1);
+      // ...but an IDENTICAL description, since the roster it was built from
+      // didn't change — no prompt-cache cost from the rebuild itself.
+      expect(taskV1b.description).toBe(taskV1.description);
+
+      fs.mkdirSync(projectAgentsDir(), { recursive: true });
+      fs.writeFileSync(path.join(projectAgentsDir(), 'zed-helper.md'), ccFile('Zed Helper'));
+
+      await sendAndSettle(h, 'root-1', 't3');
+      const taskV2 = (h as any).live.get('root-1').session.toolByName.get('Task');
+      expect(taskV2.description).toContain('zed-helper');
+      expect(taskV2.description).not.toBe(taskV1b.description);
+
+      await h.destroyAll();
     });
   });
 });

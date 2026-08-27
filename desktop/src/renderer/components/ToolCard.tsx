@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
+import { useSpecialistDefinition, useSpecialistRunByChild } from '../hooks/useSpecialists';
+import { TaskConsentBlock } from './SpecialistEnvelope';
+import { hasNestedAsk } from '../utils/specialist-cards';
 import { useArtifactOptional } from '../state/ArtifactContext';
 import { Button, Radio, RadioGroup } from './ui';
 // The card renders the widths this SHARED derivation produced and sends back only
 // which one was chosen — it never builds a rule pattern of its own.
 import { bashGrantOptions, bashNoGrantNote, type GrantScope } from '../../shared/bash-grant-shapes';
-import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
+import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon, StoppedIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
@@ -41,7 +44,44 @@ function truncate(s: string, max: number): string {
 // asString (the unknown-input validator this file introduced in PR #295) moved
 // to utils/tool-input.ts so ToolBody.tsx can share the exact same idiom.
 
-export function friendlyToolDisplay(tool: ToolCallState): { label: string; detail: string } {
+/**
+ * Specialists 1c — what a Task card's header says. Kept out of the switch so
+ * SubagentTimeline/tests can call it with the same context ToolCard resolves:
+ * `ctx.title` is the child's minted name once the run record has landed;
+ * `ctx.targetTitle`/`ctx.targetRunning` describe the OTHER child a `task_id`
+ * management call names (steer / resume / stop read differently — the same
+ * card copy for all three was the informed-consent gap in ROADMAP).
+ */
+export function taskDisplay(
+  input: Record<string, unknown>,
+  ctx?: { title?: string; targetTitle?: string; targetRunning?: boolean; runStatus?: string },
+): { label: string; detail: string } {
+  const taskId = asString(input.task_id);
+  const prompt = asString(input.prompt);
+  if (taskId) {
+    const who = ctx?.targetTitle || 'a specialist';
+    if (input.interrupt === true) return { label: `Stopping ${who}`, detail: '' };
+    // Running child → the prompt is a mid-course note; finished → a resume
+    // with a fresh brief. Unknown (no record yet) reads as the neutral verb.
+    const label = ctx?.targetRunning === true ? `Note to ${who}`
+      : ctx?.targetRunning === false ? `Resuming ${who}`
+      : `Message to ${who}`;
+    return { label, detail: prompt ? `↳ ${truncate(prompt.replace(/\n/g, ' '), 80)}` : '' };
+  }
+  const desc = asString(input.description);
+  const agent = asString(input.agent) || 'specialist';
+  const article = /^[aeiou]/i.test(agent) ? 'an' : 'a';
+  const label = ctx?.title || `Hiring ${article} ${agent}`;
+  // "· in the background" only while it is still there — a finished background
+  // hire reads like any finished hire.
+  const bg = input.background === true && (!ctx?.runStatus || ctx.runStatus === 'running') ? ' · in the background' : '';
+  return { label: label + bg, detail: desc ? `↳ ${desc}` : '' };
+}
+
+export function friendlyToolDisplay(
+  tool: ToolCallState,
+  ctx?: { taskTargetTitle?: string; taskTargetRunning?: boolean },
+): { label: string; detail: string } {
   // The model is still GENERATING this call's arguments, so `input` is empty and
   // every per-tool detail line below would render blank. Show the argument
   // character count instead: it is the only thing on a preparing card that
@@ -95,6 +135,19 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
         detail += ` pages ${pages}`;
       }
       return { label, detail };
+    }
+
+    case 'SendUserFile': {
+      // Files handed to the user. The chat renders these as the DeliverablesCard,
+      // not a ToolCard; this label covers the gallery / buddy strip fallbacks.
+      const raw = input.files;
+      const files = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === 'string') : [];
+      const names = files.map(basename);
+      return {
+        // Fix: a non-array `files` (malformed input) used to read "Sent 0 files".
+        label: files.length === 1 ? 'Sent a file' : files.length ? `Sent ${files.length} files` : 'Sent files',
+        detail: names.length ? `↳ ${names.join(', ')}` : '',
+      };
     }
 
     case 'Write': {
@@ -151,6 +204,18 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       const detail = globPath ? `↳ in ${basename(globPath)}/` : '';
       return { label, detail };
     }
+
+    // Native specialists (1c). Header reads as the hire — "Wren the Whistling
+    // Worker ↳ Run the release checklist" — once the run record names the
+    // child; before that, "Hiring a worker". `task_id` calls read as the
+    // management verb they are.
+    case 'Task':
+      return taskDisplay(input, {
+        title: tool.specialistRun?.title,
+        runStatus: tool.specialistRun?.status,
+        targetTitle: ctx?.taskTargetTitle,
+        targetRunning: ctx?.taskTargetRunning,
+      });
 
     case 'Agent': {
       // Fix: a non-string description rendered "Agent: [object Object]".
@@ -242,9 +307,16 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
       // Show the first question's header/text as the tool label.
       // Fix: only accept string values — String(header) on a malformed object
       // input produced an "[object Object]" label.
+      // P-18: read like every other card — short topic as the label, the
+      // question itself as the "↳" detail (Read shows "Reading X ↳ path").
+      // Header missing → plain "Question" so the detail still carries the text.
       const questions = input.questions as any[];
-      const header = asString(questions?.[0]?.header) || asString(questions?.[0]?.question) || 'Question';
-      return { label: truncate(header, 40), detail: '' };
+      const header = asString(questions?.[0]?.header);
+      const question = asString(questions?.[0]?.question);
+      return {
+        label: header ? truncate(header, 40) : 'Question',
+        detail: question ? `↳ ${truncate(question, 60)}` : '',
+      };
     }
 
     case 'ExitPlanMode': {
@@ -299,10 +371,43 @@ export function friendlyToolDisplay(tool: ToolCallState): { label: string; detai
 // array + behavior:allow (it ignores the array's CONTENTS — the host derives the
 // remembered rule from the tool call itself), so any single-element marker works.
 // CC asks keep sending their real suggestion string. Task 13.
+/** D2: the folder a project-scoped grant is actually pinned to. The subject is
+ *  built from the call's `work_dir` resolved against the session folder
+ *  (tools/task.ts), so naming the session folder is only right when the call
+ *  did not narrow to a subdirectory — and a note that names the wrong folder
+ *  is worse than one that names none. Falls back to a folder-less phrase
+ *  rather than guessing. */
+function grantFolderName(workDir: unknown, sessionCwd?: string): string {
+  const given = typeof workDir === 'string' ? workDir.trim() : '';
+  // Resolve the way tools/task.ts does (work_dir against the session cwd)
+  // instead of taking the last segment of whatever was typed. Without this,
+  // './' read as the folder literally named "." and '..' as one named "..",
+  // so the note said "in . only" — a folder name that exists nowhere.
+  // Hand-rolled because the renderer bundle has no Node `path`: split on both
+  // separators, drop '' and '.', pop on '..'. Only the LAST segment is ever
+  // shown, so this needs to be right about the name, not about the whole path.
+  const raw = given.replace(/\\/g, '/');
+  const absolute = raw.startsWith('/') || /^[A-Za-z]:\//.test(raw);
+  const parts = absolute ? [] : (sessionCwd ?? '').replace(/\\/g, '/').split('/').filter(Boolean);
+  for (const segment of raw.split('/')) {
+    if (!segment || segment === '.') continue;
+    if (segment === '..') { parts.pop(); continue; }
+    parts.push(segment);
+  }
+  // Never invent a name: an empty result (no session cwd, or '..' walked past
+  // the root) falls back to the folder-less phrase, as it did before.
+  return parts[parts.length - 1] || 'this project';
+}
+
 const NATIVE_ALWAYS_ALLOW = 'native:always-allow';
 
-function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, permissionMode, onResponded, onFailed }: {
+export function PermissionButtons({ requestId, suggestions, denyListed, command, folderName, suppressAlwaysAllow, alwaysAllowNote, permissionMode, onResponded, onFailed, bare = false }: {
   requestId: string;
+  /** Specialists 1c: render the generic row WITHOUT its own band (border/bg/
+   *  padding) so a host can lay it out inline — the specialists popup puts the
+   *  buttons on the same line as the request. Confirm and safety-stop paths
+   *  keep their band. */
+  bare?: boolean;
   suggestions?: string[];
   /** Deny-listed native ask → gate "Always allow" behind a consequence confirm. */
   denyListed?: boolean;
@@ -320,6 +425,12 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
    *  Also set for an external-directory ask, where a remembered rule could
    *  never be consulted (harness-session.ts, step 4). */
   suppressAlwaysAllow?: boolean;
+  /** D2: one line stating HOW WIDE this card's "Always allow" actually is.
+   *  Only the caller knows (a hire card reads the specialist's grantScope), and
+   *  the button label cannot carry it without becoming a sentence. Shown only
+   *  when the button is actually offered — a note about a control that is not
+   *  there is noise. */
+  alwaysAllowNote?: string;
   /** The session's mode when the ask fired (native broker only). 'full-auto'
    *  + denyListed renders the safety-stop footer instead of the generic row —
    *  Full auto's only rule-based ask IS the destructive-command stop, and a
@@ -486,7 +597,10 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
                 denyListed: an ordinary command never carried this warning, and
                 showing "may delete files" over `npm run build` would be the
                 misleading-error failure in a different costume. */}
-            It may delete files or change published code, and you won't be asked again during future sessions in this project.
+            {/* Destin's 2026-08-26/27 copy review: "This can delete", and the
+                "during future sessions" hedge dropped — the rule is simply on
+                from now on in this project. */}
+            This can delete files or change published code, and you won't be asked again in this project.
           </p>
         )}
         {/* The width choice. Only rendered when the derivation actually produced
@@ -586,7 +700,9 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
           >
             Skip it
           </button>
-          <span className="text-fg-faint text-xs select-none">|</span>
+          {/* P-18: a real 1px divider instead of a typed "|" — takes the theme's
+              edge colour and is silent to screen readers. */}
+          <span aria-hidden="true" className="w-px h-3.5 bg-edge shrink-0" />
           {/* Orange, not the generic row's blue: a fourth member of the status
               button set, distinct from the amber band behind it (compare R2·A).
               fullAutoStop implies a native deny-listed ask, so onAlwaysAllow
@@ -611,7 +727,7 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
     // (buttonsRef[next].focus()), so adding ui/Button's focus-visible ring would
     // paint an accent ring on top of this one on the selected button. Left alone
     // on purpose; don't "finish the migration" by adding FOCUS_RING here.
-    <div className="px-3 py-2 border-t border-edge bg-inset/30 space-y-1.5">
+    <div className={bare ? 'space-y-1.5' : 'px-3 py-2 border-t border-edge bg-inset/30 space-y-1.5'}>
     <div className="flex items-center gap-2">
       <button
         ref={el => { buttonsRef.current[0] = el; }}
@@ -645,6 +761,12 @@ function PermissionButtons({ requestId, suggestions, denyListed, command, folder
           (compare R2·C). Shape-owned copy — see CommandShape.noGrantNote. */}
       {noGrantPossible && noGrantNote && (
         <p className="text-3xs text-fg-muted leading-relaxed">{noGrantNote}</p>
+      )}
+      {/* D2: the promise "Always allow" is about to make, in the user's words.
+          Gated on canAlwaysAllow so it never describes a button that isn't
+          rendered — the failure the noGrantNote above exists to avoid. */}
+      {canAlwaysAllow && alwaysAllowNote && (
+        <p className="text-3xs text-fg-muted leading-relaxed">{alwaysAllowNote}</p>
       )}
     </div>
   );
@@ -892,16 +1014,21 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
                   key={oi}
                   disabled={responding}
                   onClick={() => handleSelect(q.question, opt.label, q.multiSelect)}
-                  className={`w-full text-left px-2.5 ${pad} rounded-sm text-xs transition-colors
+                  // P-18: one row shape for both states — a visible dim border
+                  // when unselected, the accent border when selected — so rows
+                  // don't jump between "flat" and "outlined" as the user picks.
+                  className={`w-full text-left px-2.5 ${pad} rounded-md border text-xs transition-colors
                     ${selected
-                      ? 'bg-accent/20 border border-accent/50 text-fg'
-                      : 'bg-inset/40 border border-transparent hover:bg-inset/70 text-fg-dim'}
+                      ? 'bg-accent/15 border-accent text-fg'
+                      : 'bg-inset/40 border-edge-dim hover:bg-inset/70 text-fg-dim'}
                     ${focused ? 'ring-1 ring-white/30' : ''}
                     disabled:opacity-50`}
                 >
                   <div className="flex items-center gap-2">
-                    {/* Selection indicator */}
-                    <span className={`w-3 h-3 shrink-0 rounded-${q.multiSelect ? 'sm' : 'full'} border
+                    {/* Selection indicator. P-18: the two shapes are written out in
+                        full — Tailwind only generates classes it can read verbatim,
+                        so a computed `rounded-${...}` never produced any styling. */}
+                    <span className={`w-3 h-3 shrink-0 border ${q.multiSelect ? 'rounded-sm' : 'rounded-full'}
                       ${selected ? 'bg-accent border-accent' : 'border-edge'}`}
                     />
                     <span className="font-medium">{opt.label}</span>
@@ -955,7 +1082,12 @@ interface Props {
 export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }: Props) {
   // Seed from the module-level mode so a card that mounts AFTER Ctrl+O fired
   // (e.g. when its parent tool group just opened) starts in the right state.
-  const [expanded, setExpanded] = useState(() => getInitialExpanded());
+  const [expanded, setExpanded] = useState(() => getInitialExpanded() || hasNestedAsk(tool));
+  // Specialists 1c: a helper's ask arriving inside this card opens the card —
+  // the buttons are useless behind a collapsed header. Opens once per ask;
+  // the user can still collapse it afterwards.
+  const nestedAsk = hasNestedAsk(tool);
+  useEffect(() => { if (nestedAsk) setExpanded(true); }, [nestedAsk]);
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
   const dispatch = useChatDispatch();
   // Optional: the workbench tool gallery (?mode=workbench&view=tools) renders
@@ -963,7 +1095,41 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   // name from the confirm header rather than crashing the card.
   const artifacts = useArtifactOptional();
   const sessionCwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
-  const display = friendlyToolDisplay(tool);
+  // Specialists 1c: a `task_id` call names ANOTHER card's child — look up that
+  // child's run so the header can say "Note to Wren…" (a narrow selector, so
+  // this memoized card does not re-render on every session update).
+  const taskTargetId = tool.toolName === 'Task' ? asString(tool.input.task_id) : '';
+  const taskTarget = useSpecialistRunByChild(sessionId, taskTargetId || undefined);
+  // Task 10: same lookup TaskConsentBlock uses, so the Always-allow gate
+  // below and the consent envelope above never disagree about whether this
+  // hire is a built-in. Hooks can't be called conditionally, so this runs
+  // for every card — `agent` is '' for anything that isn't an untargeted
+  // Task hire, and useSpecialistDefinition('') returns undefined for free.
+  const hireAgent = tool.toolName === 'Task' && !taskTargetId ? asString(tool.input.agent) : '';
+  // Fix (Task 10 review): cwd must be gated the SAME as agentId, not passed
+  // through unconditionally — passing the real cwd for every card forced a
+  // per-project specialists.list() disk read (three folders) off the FIRST
+  // tool card of ANY kind in a session, hire or not, and every other card
+  // then subscribed to that cache entry and re-rendered on its changes (the
+  // roster hook is useState+useEffect, not useSyncExternalStore, so
+  // React.memo on ToolCard does not stop it). A hire card still has a truthy
+  // hireAgent, so it is unaffected — this only collapses NON-hire cards onto
+  // the one shared empty-cwd cache entry instead of a fresh per-project read.
+  const hireDefinition = useSpecialistDefinition(hireAgent ? sessionCwd : undefined, hireAgent || undefined);
+  const display = friendlyToolDisplay(tool, {
+    taskTargetTitle: taskTarget?.title,
+    taskTargetRunning: taskTarget ? taskTarget.status === 'running' : undefined,
+  });
+  // Specialists 1c: the REAL status of a Task card is its run record, not its
+  // tool result — a background hire's result is only the launch ack (Destin's
+  // 1b hands-on, Test 4: the card read ✓ while the child was still working).
+  const run = tool.toolName === 'Task' ? tool.specialistRun : undefined;
+  const runIcon: 'spinner' | 'check' | 'fail' | 'stopped' | null =
+    !run || tool.status === 'awaiting-approval' ? null
+    : run.status === 'running' ? 'spinner'
+    : run.status === 'completed' ? (tool.specialistReport?.status === 'failed' ? 'fail' : 'check')
+    : run.status === 'failed' ? 'fail'
+    : 'stopped';
   // Skill tool calls always return "Launching skill: X" with success — the body
   // is pure ceremony. Render header only, no chevron, non-interactive, with a
   // lighter dashed border so it reads as an annotation, not an expandable card.
@@ -977,14 +1143,19 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
     : 'w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors';
   const headerContent = (
     <>
-      {/* Status indicator */}
-      {tool.status === 'running' && (
+      {/* Status indicator — a Task card with a run record shows the RUN's
+          state (see runIcon); every other card shows the tool's. */}
+      {runIcon === 'spinner' && <BrailleSpinner size="sm" />}
+      {runIcon === 'check' && <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
+      {runIcon === 'fail' && <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
+      {runIcon === 'stopped' && <StoppedIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
+      {runIcon === null && tool.status === 'running' && (
         <BrailleSpinner size="sm" />
       )}
-      {tool.status === 'awaiting-approval' && (
+      {runIcon === null && tool.status === 'awaiting-approval' && (
         <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
       )}
-      {tool.status === 'complete' && (
+      {runIcon === null && tool.status === 'complete' && (
         // Skills get the note glyph on success — visually distinct from
         // the generic check used by every other tool, since "skill ran"
         // carries different meaning ("Claude consulted instructions/notes")
@@ -995,13 +1166,27 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
           <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         )
       )}
-      {tool.status === 'failed' && (
+      {runIcon === null && tool.status === 'failed' && (
         <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
       )}
-      <span className="text-fg-faint text-xs select-none">|</span>
-      <span className="text-xs font-medium text-fg-2">{display.label}</span>
+      {/* P-18: a real 1px divider instead of a typed "|" — takes the theme's
+          edge colour and is silent to screen readers. */}
+      <span aria-hidden="true" className="w-px h-3.5 bg-edge shrink-0" />
+      <span className="text-xs font-medium text-fg-2">
+        {/* Specialists 1c: a routed child ask that could NOT nest under its
+            Task card still says who is asking, so it never reads as the
+            parent's own request. */}
+        {tool.specialist && tool.status === 'awaiting-approval' ? `${tool.specialist.title} wants to: ` : ''}
+        {display.label}
+      </span>
       {display.detail && (
         <span className="text-xs text-fg-muted truncate flex-1 min-w-0">{display.detail}</span>
+      )}
+      {run?.stale && run.status === 'running' && (
+        <span className="text-4xs uppercase tracking-wide text-amber-500 shrink-0" title="No activity for a while — may be stuck">may be stuck</span>
+      )}
+      {runIcon === 'stopped' && (
+        <span className="text-4xs uppercase tracking-wide text-fg-muted shrink-0">stopped</span>
       )}
       {!isCompactSkill && (
         <span data-testid="tool-card-chevron" className="shrink-0 inline-flex">
@@ -1012,7 +1197,7 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   );
 
   return (
-    <div className={`${cardBorder} rounded-lg overflow-hidden ${inGroup ? 'bg-inset' : ''}`}>
+    <div className={`${cardBorder} rounded-lg overflow-hidden ${inGroup ? 'bg-inset' : ''}`} data-tool-use-id={tool.toolUseId}>
       {/* Header */}
       {isCompactSkill ? (
         <div className={headerClass}>{headerContent}</div>
@@ -1022,6 +1207,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
         </button>
       )}
 
+
+      {/* Specialists 1c: the consent envelope for a hire / note / resume /
+          stop — what Yes allows, in plain words, ABOVE the buttons and visible
+          without expanding the card. Spec §5: approving the launch IS the grant. */}
+      {tool.status === 'awaiting-approval' && tool.requestId && tool.toolName === 'Task' && (
+        <TaskConsentBlock tool={tool} sessionId={sessionId} />
+      )}
 
       {/* Permission / AskUserQuestion / ExitPlanMode UI */}
       {tool.status === 'awaiting-approval' && tool.requestId && (() => {
@@ -1070,7 +1262,49 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             // outside the session folder and never consults the stored rules
             // there, so offering "Always allow" would promise a grant that can
             // never fire. Spec 2026-08-11, finding 3.
-            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true}
+            // Specialists 1c: a `task_id` management call (note / resume / stop)
+            // grants nothing new, so there is nothing an "Always allow" could
+            // remember — and offering it invited a blanket-delegation misread
+            // (plan 1b checklist, Test 10).
+            //
+            // Task 10 / Global Constraint (hire grants — two independent
+            // protections). Half (b) USED to hide Always-allow for every hire
+            // whose source !== 'builtin'. D2 (2026-08-26) replaces the reason it
+            // was hidden rather than removing the protection: the danger was
+            // never "a file-defined helper gets a grant", it was "a grant keyed
+            // by a NAME survives the file changing under it". The subject now
+            // carries the file's content hash (tools/task.ts), so an edit that
+            // widens the file's tools no longer matches the old grant — which
+            // means the option can safely be offered, and Destin gets the
+            // across-projects grant he asked for on helpers in his own folders.
+            //
+            // What half (b) still enforces, unchanged: DEFAULT-CLOSED while the
+            // definition is unknown. `hireDefinition` is undefined until the
+            // lookup POSITIVELY resolves (never shown-then-hidden), and an
+            // unresolved hire must never be offered a grant optimistically —
+            // we would not know which width it was even asking for.
+            suppressAlwaysAllow={tool.toolName === 'max_steps' || tool.toolName === 'doom_loop' || tool.external === true
+              || (tool.toolName === 'Task' && !!tool.input?.task_id)
+              || (tool.toolName === 'Task' && !tool.input?.task_id && !hireDefinition)
+              // A hire with no work_dir has NO permission subject at all
+              // (tools/task.ts permissionSubject returns undefined), so
+              // rememberedRuleFor mints nothing and execute() refuses the call
+              // outright. Offering "Always allow" there — with a note promising
+              // a width — promises a grant that nothing can keep.
+              || (tool.toolName === 'Task' && !tool.input?.task_id && !tool.input?.work_dir)}
+            // D2: say what the grant covers. A built-in already behaved this way
+            // and its wording is unchanged from what shipped, so no existing
+            // card's copy moves. A file-defined helper gets the sentence that
+            // matches the subject tools/task.ts will actually build for it.
+            alwaysAllowNote={tool.toolName === 'Task' && !tool.input?.task_id && hireDefinition
+              // Destin's 2026-08-26/27 copy review: "covers", and the re-ask
+              // clause reads from the file's side ("If its file changes").
+              ? (hireDefinition.grantScope === 'user'
+                  ? "Always allow covers this helper in every project. If its file changes, you'll be asked again."
+                  : hireDefinition.grantScope === 'project'
+                    ? `Always allow covers this helper in ${grantFolderName(tool.input?.work_dir, sessionCwd)} only, because it is defined inside the project. If its file changes, you'll be asked again.`
+                    : undefined)
+              : undefined}
             onResponded={onRespondedCb}
             onFailed={onFailedCb}
           />

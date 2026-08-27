@@ -5,12 +5,12 @@
 //
 // Adding an entry is the SUPPORTED way to design UI ahead of its backend.
 // Deleting the guard test because a channel is "obviously fine" is not.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  // Empty today. The `permissions.*` trio lived here while the management UI
-  // (M5 2a) was designed against fake data; they came off when the real
-  // store/host/IPC landed. The mock namespace in mock-shim.ts STAYS — the
-  // workbench still needs fixture data — only the "no real backend" claim goes.
-  //
-  // Add entries as new UI is designed ahead of its backend, e.g.
-  //   { channel: 'thing.list', feature: 'thing manager (M9)' },
-];
+// Empty: Task 8 shipped the real backend for the six specialists channels
+// (list, the tier get/set pair, steer/interrupt, and the specialists:event
+// push) — see ipc-handlers.ts/preload.ts/remote-shim.ts's `specialists:*`
+// surfaces. The seventh row this list used to carry, `specialists.openFolder`,
+// turned out not to need its own channel at all: Task 10's "Open folder"
+// button calls the existing generic `shell.openPath`, so there is no bespoke
+// channel left to build. (The mock namespace in mock-shim.ts STAYS — the
+// workbench still needs fixture data — only the "no real backend" claim goes.)
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];

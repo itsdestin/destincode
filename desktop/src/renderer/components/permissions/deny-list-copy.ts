@@ -31,17 +31,21 @@ const HEADERS: Record<DenyFamily, string> = {
   formatting: 'Stopped before formatting a drive',
 };
 
+// Destin's 2026-08-26/27 copy review: each clause now starts with "this", so
+// the subline reads as one sentence about the command in front of the user
+// rather than about the app ("Full auto still stops here — this deletes files").
 const CLAUSES: Record<DenyFamily, string> = {
-  deleting: 'it permanently removes files.',
-  pushing: 'it changes your published code.',
-  undoing: 'it permanently discards saved work.',
-  admin: 'it runs with full control of this computer.',
-  formatting: 'it erases everything on it.',
+  deleting: 'this permanently removes files.',
+  pushing: 'this changes your published code.',
+  undoing: 'this permanently discards saved work.',
+  admin: 'this runs with full control of your computer.',
+  formatting: 'this erases everything on it.',
 };
 
-// Owner-settled line (compare surface 'full-auto-ask', R3/R4) — "limits", em
-// dash, lowercase clause. Don't reword without a new compare round.
-const SUBLINE_BASE = 'YouCoded limits this action, even in Full Auto';
+// Owner-settled line (compare surface 'full-auto-ask', R3/R4; reworded in
+// Destin's 2026-08-26/27 copy review) — em dash, lowercase clause. Don't
+// reword without a new compare round.
+const SUBLINE_BASE = 'Full auto still stops here';
 
 export function fullAutoStopCopy(command: string | undefined): { header: string; subline: string } {
   if (command) {

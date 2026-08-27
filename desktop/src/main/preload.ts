@@ -115,6 +115,12 @@ const IPC = {
   FOLDERS_ADD: 'folders:add',
   FOLDERS_REMOVE: 'folders:remove',
   FOLDERS_RENAME: 'folders:rename',
+  // Local-only description on a saved folder — sibling of FOLDERS_RENAME. Preload
+  // can't import shared/types.ts (sandboxed, no relative imports), so this literal
+  // must stay byte-identical to the one in shared/types.ts — the parity test only
+  // checks the CONSTANT NAME against ipc-handlers, not this literal against the
+  // shared one, so a typo here would pass tests silently.
+  FOLDERS_SET_DESCRIPTION: 'folders:set-description',
   // Theme system
   THEME_RELOAD: 'theme:reload',   // Main -> Renderer: a theme file changed
   THEME_LIST: 'theme:list',       // Renderer -> Main: get list of user theme slugs
@@ -182,6 +188,9 @@ const IPC = {
   SYNC_SPACES_CREATE_PROJECT: 'syncspaces:create-project',
   SYNC_SPACES_IMPORT_PROJECT: 'syncspaces:import-project',
   SYNC_SPACES_RENAME_PROJECT: 'syncspaces:rename-project',
+  // Synced project description (Task 3) — preload inlines its own IPC constants
+  // because the sandboxed preload can't resolve relative imports.
+  SYNC_SPACES_SET_PROJECT_DESCRIPTION: 'syncspaces:set-project-description',
   SYNC_SPACES_STOP_PROJECT: 'syncspaces:stop-project',
   // Conversation-lease takeover (Plan 2b Task 9) — inlined literals (preload can't import).
   SYNC_SPACES_LEASE_QUERY: 'syncspaces:lease-query',
@@ -485,6 +494,16 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.on('tags:changed', handler);
       return () => ipcRenderer.removeListener('tags:changed', handler);
     },
+    // Specialists 1c (Task 8) — one hire's ledger record changed (status,
+    // model, a new note). Fired by nativeHost's 'specialists-event' listener
+    // in ipc-handlers.ts, itself fed by DelegationLedger's own mutate()
+    // chokepoint — never a direct emit per host method. Unsubscribe fn, same
+    // as sessionMetaChanged/tagsChanged above (not the raw handler).
+    specialistEvent: (cb: (e: any) => void) => {
+      const handler = (_e: IpcRendererEvent, event: any) => cb(event);
+      ipcRenderer.on('specialists:event', handler);
+      return () => ipcRenderer.removeListener('specialists:event', handler);
+    },
     // Shape parity with remote-shim — desktop never fires this push event
     // (mode detection runs in App.tsx via pty:output text matching), so this
     // is a no-op subscriber that just keeps `window.claude.on` symmetric.
@@ -786,6 +805,8 @@ contextBridge.exposeInMainWorld('claude', {
     add: (folderPath: string, nickname?: string): Promise<any> => ipcRenderer.invoke(IPC.FOLDERS_ADD, folderPath, nickname),
     remove: (folderPath: string): Promise<boolean> => ipcRenderer.invoke(IPC.FOLDERS_REMOVE, folderPath),
     rename: (folderPath: string, nickname: string): Promise<boolean> => ipcRenderer.invoke(IPC.FOLDERS_RENAME, folderPath, nickname),
+    setDescription: (folderPath: string, description: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.FOLDERS_SET_DESCRIPTION, folderPath, description),
   },
   // Settings → Development feature (bug report, contribute, known issues)
   dev: {
@@ -851,6 +872,10 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.SYNC_SPACES_RENAME_PROJECT, { name, displayName }),
     stopProject: (name: string) =>
       ipcRenderer.invoke(IPC.SYNC_SPACES_STOP_PROJECT, { name }),
+    // Synced project description (Task 3) — payload-object shape, same convention
+    // as renameProject above.
+    setProjectDescription: (name: string, description: string) =>
+      ipcRenderer.invoke(IPC.SYNC_SPACES_SET_PROJECT_DESCRIPTION, { name, description }),
     // Conversation-lease takeover (Plan 2b Task 9). The Resume Browser calls
     // leaseQuery before resuming a store-backed row; if held elsewhere it offers
     // leaseTakeover (ask-hand-off), falling back to leaseForce on timeout.
@@ -1231,6 +1256,18 @@ contextBridge.exposeInMainWorld('claude', {
     list: () => ipcRenderer.invoke('permissions:list'),
     remove: (slug: string, rule: unknown) => ipcRenderer.invoke('permissions:remove', slug, rule),
     removeProject: (slug: string) => ipcRenderer.invoke('permissions:remove-project', slug),
+  },
+  // Specialists 1c (Task 8) — roster + tier reads/writes + card actions.
+  // Positional args, matching every other request-response namespace above
+  // (permissions, search, providers) — the remote-shim equivalent below takes
+  // an object payload instead, same split as those.
+  specialists: {
+    list: (opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => ipcRenderer.invoke('specialists:list', opts),
+    getDelegatedModels: () => ipcRenderer.invoke('specialists:delegated-get'),
+    setDelegatedModel: (tier: 'budget' | 'frontier', binding: { providerId: string; modelId: string } | null) =>
+      ipcRenderer.invoke('specialists:delegated-set', tier, binding),
+    steer: (sessionId: string, childId: string, text: string) => ipcRenderer.invoke('specialists:steer', sessionId, childId, text),
+    interrupt: (sessionId: string, childId: string) => ipcRenderer.invoke('specialists:interrupt', sessionId, childId),
   },
   // Local llama.cpp engine (Plan B). Progress/status pushes return an
   // unsubscribe, matching every other on* subscription in this file.

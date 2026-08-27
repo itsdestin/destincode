@@ -188,6 +188,8 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
     return { hasAwaitingApproval: hasAwaiting, hasRunningTools: hasRunning, awaitingTools: awaiting };
   }, [state.toolCalls, state.activeTurnToolIds]);
 
+
+
   // Find the most recent assistant turn's Anthropic request ID — surfaced on
   // the AttentionBanner only for session-died / error so users can cite it
   // when reporting an issue. Walk the timeline from the end for O(1) typical cost.
@@ -905,6 +907,7 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                   </div>
                 </div>
               ))}
+
             {/* Only show thinking indicator when Claude is between tool completion
                 and next text — not when tools are still running or awaiting approval.
                 When the classifier flags a non-ok attention state, swap the

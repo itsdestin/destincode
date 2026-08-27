@@ -263,6 +263,29 @@ export class NativeHome {
     }
   }
 
+  /**
+   * Create the parent directories and write `contents` to `rel`, but ONLY if
+   * that file doesn't already exist. Returns true when it actually wrote
+   * (first time ever), false when the file was already there (left
+   * untouched, even if the user has since edited it).
+   *
+   * WHY this exists (Task 3, plan 1c, ADR 008): the personal specialists
+   * folder (~/.youcoded/specialists/) and its starter file (example.md) are
+   * the first non-JSON, non-session write under ~/.youcoded/ — SpecialistCatalog
+   * needs a way to lazily create both on first use without a second writer
+   * bypassing NativeHome. An existence check + write is enough here (unlike
+   * writeJson/mutateJson) because the only conflict this file can ever have
+   * is with a user's own edits, which must never be clobbered — there's no
+   * concurrent-writer race to guard against the way providers.json has.
+   */
+  async ensureTextFile(rel: string, contents: string): Promise<boolean> {
+    const p = path.join(this.dir, rel);
+    if (fs.existsSync(p)) return false;
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    await fs.promises.writeFile(p, contents, 'utf8');
+    return true;
+  }
+
   /** Enumerate every sessions/<slug>/<id>.jsonl with stat info (for browse/resume UIs). */
   listSessionFiles(): SessionFileInfo[] {
     const base = path.join(this.dir, 'sessions');

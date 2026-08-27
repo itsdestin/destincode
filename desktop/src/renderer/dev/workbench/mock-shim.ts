@@ -1,11 +1,14 @@
 import type { MockStore } from './mock-store';
+import type { DelegatedModelsView } from '../../../shared/types';
+import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
-  CONTENT as ARTIFACT_CONTENT, contextGroups,
+  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, contextGroups,
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
+import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
 import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
@@ -37,6 +40,12 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
+  // Specialists 1c — real backend as of Task 8 (see the contract test's
+  // remote-shim/preload scan); still hand-written here so the workbench has
+  // fixture data to serve instead of a real filesystem/ledger.
+  'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
+  'specialists.steer', 'specialists.interrupt', 'on.specialistEvent',
+  'shell.openPath',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
@@ -46,7 +55,10 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'artifacts.listProjectsIndex', 'artifacts.listSession', 'artifacts.listProject',
   'artifacts.listAllFiles', 'artifacts.get', 'artifacts.checkExistence',
   'artifacts.searchContent', 'artifacts.watchProject', 'artifacts.unwatchProject',
-  'syncSpaces.status',
+  'artifacts.readBinary',
+  'syncSpaces.status', 'syncSpaces.syncNow', 'syncSpaces.stopProject',
+  'syncSpaces.renameProject', 'syncSpaces.setProjectDescription',
+  'folders.rename', 'folders.setDescription',
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
@@ -598,6 +610,78 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   const native: Ns<'native'> = { supported: true };
 
+  // Fix (final review): SpecialistsSection's "Open folder" button reads
+  // shell.openPath's resolved value as an error message whenever it's truthy —
+  // correct against the real Electron API, which resolves '' on success and an
+  // error string on failure (see that component's own comment). With no `shell`
+  // entry here at all, the call used to fall through to the catch-all proxy,
+  // which resolves every unknown member to `[]` — and `[]` is truthy, so
+  // clicking "Open folder" in the workbench always showed an error box with no
+  // text. openPath has nothing to do in a browser tab (there is no OS file
+  // manager to hand off to), so '' — the real success value — is the honest
+  // stand-in. Other shell.* members called from renderer code (openExternal,
+  // openChangelog, showItemInFolder) discard their return value at every call
+  // site, so the same truthy-[] bug never surfaces for them; left on the
+  // catch-all rather than hand-written for no behavioural gain.
+  const shell: Ns<'shell'> = {
+    openPath: async () => '',
+  };
+
+  // Specialists 1c — roster, model tiers, and the two card actions. Real
+  // backend as of Task 8; this is fixture data standing in for a filesystem
+  // read + ledger. Tier writes go through `write` so the refused scenario
+  // exercises the picker's revert path.
+  let tiers = seedDelegatedModels();
+  const specialistSubs = new Set<(e: any) => void>();
+  const specialists = {
+    // Task 10: real shape is { definitions, skipped, folders } — the roster
+    // hook keys its cache on cwd and the definedBy() provenance line needs
+    // `folders.project` to tell a project's own .claude/agents apart from
+    // the user's. `skipped` stays empty — none of the seeded fixture rows
+    // collide, so there is nothing to demonstrate here yet.
+    list: async (opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => ({
+      definitions: specialistRoster(),
+      skipped: [],
+      folders: {
+        personal: '/home/destin/.youcoded/specialists',
+        claudeUser: '/home/destin/.claude/agents',
+        project: opts?.cwd ? `${opts.cwd}/.claude/agents` : undefined,
+      },
+    }),
+    getDelegatedModels: async () => tiers,
+    setDelegatedModel: (tier: 'budget' | 'frontier', binding: DelegatedModelsView['budget']) =>
+      write(() => {
+        // The real backend derives the display label from its catalog; the
+        // mock does the same from the seeded one so the row never shows an id.
+        const label = binding ? (store.getState().catalog.find(c => c.id === binding.modelId)?.label ?? binding.modelId) : '';
+        tiers = { ...tiers, [tier]: binding ? { ...binding, label } : null };
+      }),
+    // Task 10: notes now ride on the run record (no separate 'note' event
+    // kind) — append to the run's `notes` and re-emit the WHOLE run, same
+    // shape `interrupt` below already used. The reducer derives the
+    // Activity-trail row from `run.notes` itself.
+    steer: async (sessionId: string, childId: string, text: string) => {
+      const run = RUNS.get(childId);
+      if (run) {
+        const notes = [...(run.notes ?? []), { text, from: 'user' as const, at: Date.now() }];
+        const next = { ...run, notes };
+        RUNS.set(childId, next);
+        for (const cb of specialistSubs) cb({ kind: 'run', sessionId, run: next });
+      }
+      return { ok: true };
+    },
+    interrupt: async (sessionId: string, childId: string) => {
+      const run = RUNS.get(childId);
+      if (run) {
+        const next = { ...run, status: 'interrupted' as const, endedAt: Date.now() };
+        RUNS.set(childId, next);
+        for (const cb of specialistSubs) cb({ kind: 'run', sessionId, run: next });
+      }
+      return { ok: true };
+    },
+  };
+
+
   // The attention classifier polls this every second while a turn is in flight
   // and does `raw.split('\n')` (useAttentionClassifier.ts:126,133). The catch-all
   // `[]` has no .split, so the workbench threw once per second — non-fatal, but
@@ -615,13 +699,81 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // "Cannot read properties of undefined (reading 'find')".
   // Shape from sync-spaces/service.ts:420. Sync off is the honest state here:
   // there is no sync engine behind a browser tab.
+  //
+  // MOCKUP (2026-08-05 project-description design): sync is ENABLED here, with
+  // one space per dot state, because the design moves the sync readout into a
+  // pill and the only way to judge that is to see every state it must hold —
+  // including the two long gray sentences and the red error message, which are
+  // the strings a pill is least able to survive. `enabled: false` short-circuits
+  // syncDotFor to the same gray for everything (sync-dot-state.ts:62), which
+  // would have shown one state and hidden the hard three.
+  const descriptions: Record<string, string | null> = {};
+  const descriptionFor = (path: string, seeded?: string | null) =>
+    path in descriptions ? descriptions[path] : (seeded ?? null);
+
+  const SYNC_NOW = Date.now();
   const syncSpaces = {
     status: async () => ({
-      enabled: false,
-      spaces: [] as unknown[],
-      recentEvents: [] as unknown[],
-      syncHub: 'off',
+      enabled: true,
+      spaces: [
+        {
+          id: 'project:youcoded', root: '/home/destin/youcoded-dev/youcoded',
+          displayName: 'youcoded', state: 'active' as const, kind: 'project' as const,
+          remote: 'https://github.com/itsdestin/youcoded.git', lastSyncAt: SYNC_NOW - 120_000,
+          description: descriptionFor('/home/destin/youcoded-dev/youcoded', artifactProjects()[0].description),
+        },
+        {
+          id: 'project:wecoded-themes', root: '/home/destin/youcoded-dev/wecoded-themes',
+          displayName: 'wecoded-themes', state: 'active' as const, kind: 'project' as const,
+          remote: 'https://github.com/itsdestin/wecoded-themes.git', lastSyncAt: SYNC_NOW - 3_600_000,
+          description: descriptionFor('/home/destin/youcoded-dev/wecoded-themes', artifactProjects()[1].description),
+        },
+        {
+          id: 'project:recipes', root: '/home/destin/recipes',
+          displayName: 'recipes', state: 'stopped' as const, kind: 'project' as const,
+          remote: 'https://github.com/itsdestin/recipes.git', lastSyncAt: SYNC_NOW - 86_400_000,
+          description: descriptionFor('/home/destin/recipes', artifactProjects()[3].description),
+        },
+        // Personal is what deriveSyncBoxState gates green on — without it the
+        // Sync panel header reads 'setup' forever.
+        {
+          id: 'personal', root: '/home/destin/YouCoded/Personal',
+          state: 'active' as const, kind: 'personal' as const,
+          remote: 'https://github.com/itsdestin/youcoded-personal.git', lastSyncAt: SYNC_NOW - 60_000,
+        },
+        // wecoded-marketplace is deliberately ABSENT — no space means the gray
+        // "Only on this computer" state, i.e. the unsynced-folder branch.
+      ],
+      recentEvents: [
+        { type: 'synced', spaceId: 'personal', at: SYNC_NOW - 60_000 },
+        { type: 'synced', spaceId: 'project:youcoded', at: SYNC_NOW - 120_000 },
+        {
+          type: 'error', spaceId: 'project:wecoded-themes', at: SYNC_NOW - 90_000,
+          message: 'GitHub rejected the push: remote contains work you do not have locally.',
+        },
+      ],
+      syncHub: 'connected',
     }),
+    // MOCK_ONLY — no backend yet. The real one becomes setProjectDescription in
+    // sync-spaces/service.ts, writing the synced project registry.
+    setProjectDescription: async (folderName: string, description: string) => {
+      const root = folderName === 'recipes' ? '/home/destin/recipes' : `/home/destin/youcoded-dev/${folderName}`;
+      descriptions[root] = description.trim() || null;
+      return { ok: true };
+    },
+    syncNow: async () => ({ ok: true }),
+    stopProject: async () => ({ ok: true }),
+    renameProject: async () => ({ ok: true }),
+  };
+
+  // MOCK_ONLY — the LOCAL-folder half of the same field, mirroring how
+  // folders.rename already writes the nickname that becomes the display name.
+  const folders = {
+    rename: async () => ({ ok: true }),
+    setDescription: async (path: string, description: string) => {
+      descriptions[path] = description.trim() || null;
+      return { ok: true };
+    },
   };
 
   // Project View's Conversations and Context tabs. Conversations reuse the same
@@ -689,7 +841,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   const artifacts = {
     listProjectsIndex: async (opts?: { withCounts?: boolean }) => ({
       ok: true,
-      projects: opts?.withCounts ? projectsWithCounts() : artifactProjects(),
+      // MOCKUP: descriptions edited in-session override the seeded ones, so the
+      // inline editor behaves like the real thing instead of snapping back.
+      projects: (opts?.withCounts ? projectsWithCounts() : artifactProjects())
+        .map((p) => ({ ...p, description: descriptionFor(p.path, p.description) })),
     }),
     listSession: async (sessionId: string) => ({
       ok: true, artifacts: sessionArtifacts(sessionId),
@@ -736,6 +891,18 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     // Nothing is missing from disk here — every fixture "exists" by construction.
     checkExistence: async () => ({ ok: true, missingIds: [] as string[] }),
+    // Image bytes for ArtifactThumbnail / ImageView. Real handler shape
+    // (read-binary-access.ts): { ok, base64, mime } or { ok:false, reason }.
+    // Every image path gets the same sample PNG — the workbench reviews the
+    // CARD, not the picture. Non-images get an honest refusal so the glyph
+    // fallback stays reviewable.
+    readBinary: async (absolutePath: string) => {
+      const ext = absolutePath.split('.').pop()?.toLowerCase() ?? '';
+      if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].includes(ext)) {
+        return { ok: true, base64: SAMPLE_PNG_BASE64, mime: 'image/png' };
+      }
+      return { ok: false, reason: 'not-an-image' };
+    },
     searchContent: async (_root: string, query: string) => ({
       ok: true,
       matches: Object.entries(ARTIFACT_CONTENT)
@@ -868,6 +1035,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     get: async () => ({ fast: activeScenario === 'statusbar-cc', effort: 'auto' }),
     set: async () => ({ ok: true }),
   };
+  // Specialists 1c: the delegation feed (run records + delivered notes). Not
+  // on Ns<'on'> yet (no real channel) — attached separately so the typed
+  // members above stay compiler-checked.
+  (on as any).specialistEvent = (cb: (e: any) => void) => { specialistSubs.add(cb); return () => { specialistSubs.delete(cb); }; };
 
   // `theme` is absent from useIpc.ts entirely, so NONE of this is
   // compiler-checked — the contract test is the only guard. Typed as a plain
@@ -927,6 +1098,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance, skills, marketplace, modes,
+    terminal, artifacts, syncSpaces, project, account, appearance, specialists, shell,
+    skills, marketplace, folders, modes,
   } as unknown as Record<string, Record<string, unknown>>;
 }

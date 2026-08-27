@@ -26,8 +26,9 @@ import type { ExplainerSection } from '../SettingsExplainer';
 // section's own first line already tells the user what the entries ARE and what
 // removing one does; this tells them where the entries come from and points at
 // the settings that decide how often they get asked in the first place.
+// Destin's 2026-08-26/27 copy review: lighter phrasing throughout this file.
 export const PERMISSIONS_EXPLAINER_INTRO =
-  'The assistant asks you first before it does anything that changes your computer — running a command, editing a file. Choosing “Always allow” when it asks is what puts something on this list. How often it checks with you in the first place is a separate setting, explained below.';
+  'The assistant asks you before doing anything that changes your computer — running a command, editing a file. Choosing “Always allow” when it asks is what puts something on this list. How often it asks in the first place is a separate setting, explained below.';
 
 export const PERMISSIONS_EXPLAINER_SECTIONS: ExplainerSection[] = [
   {
@@ -41,12 +42,12 @@ export const PERMISSIONS_EXPLAINER_SECTIONS: ExplainerSection[] = [
     // persisted default-mode setting — the mode belongs to the conversation.
     heading: 'How much it asks',
     paragraphs: [
-      'Each conversation has its own setting for how often it checks with you, and you can change it part-way through — from the bar at the bottom of the chat.',
+      'Each conversation has its own mode, and you can change it part-way through from the bar at the bottom of the chat.',
     ],
     bullets: [
-      { term: 'Ask first', text: 'checks with you before anything that changes your files or runs a command. Reading and searching never ask.' },
-      { term: 'Auto edit', text: 'edits files without asking, but still checks before running commands.' },
-      { term: 'Full auto', text: 'does not check with you at all, apart from the things it always asks about. Use it when you are watching.' },
+      { term: 'Ask first', text: 'asks before anything that changes your files or runs a command. Reading and searching never ask.' },
+      { term: 'Auto edit', text: 'edits files without asking, but still asks before running commands.' },
+      { term: 'Full auto', text: "doesn't ask at all, apart from the things it always asks about. Use it when you're watching." },
     ],
   },
   {
@@ -55,11 +56,11 @@ export const PERMISSIONS_EXPLAINER_SECTIONS: ExplainerSection[] = [
     // that word, so the heading uses the one on screen.
     heading: 'Presets',
     paragraphs: [
-      'When you start a conversation you pick a preset, and that decides where it starts out.',
+      'When you start a conversation you pick a preset, which decides the starting mode.',
     ],
     bullets: [
-      { term: 'Assistant', text: 'starts out cautious and asks about most things.' },
-      { term: 'Coder', text: 'starts out able to edit files without asking, since that is most of the work.' },
+      { term: 'Assistant', text: 'starts cautious and asks about most things.' },
+      { term: 'Coder', text: "starts able to edit files without asking, since that's most of the work." },
     ],
   },
   {
@@ -77,18 +78,23 @@ export const PERMISSIONS_EXPLAINER_SECTIONS: ExplainerSection[] = [
     // the result is visible and removable on the screen this explains.
     heading: 'Things it always asks about',
     paragraphs: [
-      'The short list on this screen stops and asks every time, whichever setting you are on — including Full auto, and including a folder where you have approved everything else. They are the things that are hardest to undo once they have happened.',
-      'If you ever choose “Always allow” on one of these, the app asks you to confirm you meant it, and from then on that one exact thing stops asking. It appears in the list on this screen like any other approval, and removing it there puts the question back.',
+      "The short list on this screen asks every time, whatever mode you're in — even Full auto, even in a folder where you've approved everything else. They're the things that are hardest to undo.",
+      'If you choose “Always allow” on one of these, the app asks you to confirm, and from then on that one exact thing stops asking. It appears in the list like any other approval, and removing it puts the question back.',
     ],
   },
   {
     // Where an approval reaches. This is the line that used to sit under the
     // count on screen; the rows themselves already show which folder they are
     // in, so on screen it was telling the user something the layout shows.
-    heading: 'Approvals you have already given',
+    heading: "Approvals you've already given",
     paragraphs: [
-      'Every approval belongs to the folder you were working in when you gave it. The same request in a different folder asks again — a copy of a project kept somewhere else does not inherit anything.',
-      'Removing an approval does not undo whatever it already did. It only means you get asked the next time that thing comes up.',
+      // CORRECTNESS, not just wording (Destin's 2026-08-26/27 review): "Every
+      // approval belongs to the folder" was FALSE. A grant on a helper defined
+      // in your own specialists folder is minted without a work dir
+      // (tools/task.ts permissionSubject), stored under the cross-project slug,
+      // and listed on this screen under "All projects" — it applies everywhere.
+      'Most approvals belong to the folder you were working in when you gave them — the same request in another folder asks again. The exception is your own specialists: allowing one of them applies in every folder, under “All projects”.',
+      "Removing an approval doesn't undo anything it already did. It only means you'll be asked the next time.",
     ],
   },
   {
@@ -97,7 +103,7 @@ export const PERMISSIONS_EXPLAINER_SECTIONS: ExplainerSection[] = [
     // allow list in its own settings, which nothing here reads or writes.
     heading: 'Approvals you gave Claude Code',
     paragraphs: [
-      "Conversations running on Claude Code keep their own separate list of approvals, which this screen does not manage. You can change those in Claude Code's own settings.",
+      "Conversations running on Claude Code keep their own separate list of approvals, which this screen doesn't manage. You can change those in Claude Code's own settings.",
     ],
   },
 ];

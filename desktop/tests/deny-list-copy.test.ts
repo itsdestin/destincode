@@ -19,10 +19,10 @@ describe('fullAutoStopCopy', () => {
 
   it('builds the settled subline with the family clause', () => {
     expect(fullAutoStopCopy('git push origin master').subline).toBe(
-      'YouCoded limits this action, even in Full Auto — it changes your published code.',
+      'Full auto still stops here — this changes your published code.',
     );
     expect(fullAutoStopCopy('rm -rf build').subline).toBe(
-      'YouCoded limits this action, even in Full Auto — it permanently removes files.',
+      'Full auto still stops here — this permanently removes files.',
     );
   });
 
@@ -30,7 +30,7 @@ describe('fullAutoStopCopy', () => {
     // A missing command (never expected, but the type allows it) must not crash the card.
     expect(fullAutoStopCopy(undefined)).toEqual({
       header: 'Stopped before a risky command',
-      subline: 'YouCoded limits this action, even in Full Auto.',
+      subline: 'Full auto still stops here.',
     });
   });
 });

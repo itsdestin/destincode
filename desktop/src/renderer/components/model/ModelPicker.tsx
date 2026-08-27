@@ -29,17 +29,19 @@ import type { PortableModelRef } from '../../../shared/types';
 // Native Runtime Parity Program's standing rule is "full parity is the end
 // state; build real features, no interim 'not available yet' shims".
 
+import { CLAUDE_ALIASES, type ClaudeAlias } from '../../../shared/model-ids';
+
 export type ModelChoice =
   | { runtime: 'claude'; alias: string }
   | { runtime: 'native'; providerId: string; modelId: string };
 
-/** The four Claude Code aliases. Mirrors StatusBar's MODELS order. */
-const CLAUDE_MODELS: { alias: string; label: string }[] = [
-  { alias: 'haiku', label: 'Haiku' },
-  { alias: 'sonnet', label: 'Sonnet' },
-  { alias: 'opus[1m]', label: 'Opus' },
-  { alias: 'fable', label: 'Fable' },
-];
+/** Labels for the shared alias list. The ALIASES are canonical in
+ *  shared/model-ids.ts (StatusBar derives from the same place); only the
+ *  display labels are picker-local. Labels are model-class only, by design. */
+const CLAUDE_LABELS: Record<ClaudeAlias, string> = {
+  haiku: 'Haiku', sonnet: 'Sonnet', 'opus[1m]': 'Opus', fable: 'Fable',
+};
+const CLAUDE_MODELS = CLAUDE_ALIASES.map((alias) => ({ alias, label: CLAUDE_LABELS[alias] }));
 
 const CLAUDE_SOURCE = 'claude';
 
