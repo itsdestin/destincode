@@ -1338,6 +1338,16 @@ export default function StatusBar({
         const nativeCost = nativeTotals?.anyPriced ? nativeTotals.costUsd : null;
         const cost = ccCost ?? nativeCost;
         if (cost == null) return null;
+        // WHY the sub-cent guard: toFixed(2) rounds any real cost under half a
+        // cent down to "$0.00", and a bar that reads "$0.00" while money is
+        // actually being spent reads as broken — it's the false zero spec §5
+        // forbids ("Never $0.00"). The first turn of a native session on a
+        // cheap metered model is a few hundred tokens ≈ $0.0004, so this is
+        // the COMMON first thing a user sees, not an edge case. A cost that is
+        // above zero but below a cent renders "<$0.01"; an exact zero isn't a
+        // rounding artifact at all and takes the no-chip path above, same as
+        // "nothing was priced".
+        if (cost <= 0) return null;
         const partial = ccCost == null && nativeTotals?.anyUnpriced;
         const title = ccCost != null
           ? 'Estimated cost of this session, as counted by Claude Code.'
@@ -1350,7 +1360,7 @@ export default function StatusBar({
             title={title}
           >
             <span className="text-fg-muted">Cost:</span>
-            <span className="text-fg-2">${cost.toFixed(2)}</span>
+            <span className="text-fg-2">{cost < 0.01 ? '<$0.01' : `$${cost.toFixed(2)}`}</span>
           </span>
         );
       })()}

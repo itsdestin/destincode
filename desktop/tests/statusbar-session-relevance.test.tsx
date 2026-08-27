@@ -265,7 +265,34 @@ describe('Session Cost chip', () => {
     withWidgets(['session-cost']);
     render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
       nativeTotals={costTotals({ costUsd: 0, anyUnpriced: true })} />);
+    // Assert the CHIP is gone, not just the '$' glyph: an earlier version of
+    // this test looked for /\$/, which the pre-fix code satisfied by rendering
+    // the literal '--' — so it passed against the very defect it claimed to
+    // guard. The chip's label is the thing that must be absent.
+    expect(screen.queryByText('Cost:')).toBeNull();
     expect(screen.queryByText(/\$/)).toBeNull();
+  });
+
+  // A fraction of a cent is REAL money. toFixed(2) alone rounds it to "$0.00",
+  // which spec §5 forbids — and it is the first thing a native session on a
+  // cheap metered model shows (a few hundred tokens ≈ $0.0004).
+  it('renders <$0.01 for a real sub-cent cost, never $0.00', () => {
+    withWidgets(['session-cost']);
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
+      nativeTotals={costTotals({ costUsd: 0.0004, anyPriced: true })} />);
+    expect(screen.queryByText('Cost:')).toBeTruthy();
+    expect(screen.queryByText('<$0.01')).toBeTruthy();
+    expect(screen.queryByText('$0.00')).toBeNull();
+  });
+
+  // Same guard on the Claude Code side — that runtime HAD this behaviour
+  // before the native-cost work and must keep it.
+  it('renders <$0.01 for a sub-cent Claude Code session cost', () => {
+    withWidgets(['session-cost']);
+    const withCost = { ...statusData, sessionStats: { costUsd: 0.003 } };
+    render(<StatusBar statusData={withCost} provider="claude" sessionId="s1" />);
+    expect(screen.queryByText('<$0.01')).toBeTruthy();
+    expect(screen.queryByText('$0.00')).toBeNull();
   });
 
   it('shows the cost of a metered SPECIALIST under a free local parent', () => {
