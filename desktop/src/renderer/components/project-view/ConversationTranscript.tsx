@@ -10,19 +10,33 @@ import { COPY } from '../../../shared/chatsearch-refs';
 
 export type TranscriptRow = HistoryMessage & { seq?: number; droppedToolCalls?: number };
 
-export default function ConversationTranscript({ messages, olderHint, scrollToEndKey }: {
+export default function ConversationTranscript({ messages, olderHint, scrollToEndKey, conversationId, conversationTitle }: {
   messages: TranscriptRow[];
   /** Rendered above the first message, e.g. a Load older button. */
   olderHint?: React.ReactNode;
   /** Change this value to jump to the newest message (initial load). */
   scrollToEndKey?: unknown;
+  /**
+   * Set ONLY by a caller previewing a specific past conversation (today:
+   * SessionPreviewPane) — never by ConversationPreview (Project View), which
+   * has no chatsearch-indexed id to offer. Presence is what lets the
+   * right-click menu fire here at all (build-menu.ts widens its `.chat-scroll`
+   * gate to also accept this container), and what lets its "Ask about this"
+   * scaffold name the conversation instead of a bare quote — see
+   * docs/active/specs/2026-08-26-conversation-preview-header-design.md §A3.
+   */
+  conversationId?: string;
+  conversationTitle?: string;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }); }, [scrollToEndKey]);
   return (
     // w-full + min-w-0: this sits inside .drawer-pane, which collapses to 100%
     // on narrow screens WITHOUT resizing children (.claude/rules/narrow-viewport.md).
-    <div className="w-full min-w-0 max-w-[680px] mx-auto">
+    // data-conversation-id/-title: React drops both when conversationId is
+    // undefined, so ConversationPreview (which never passes it) renders
+    // neither attribute and its right-click behaviour is untouched.
+    <div className="w-full min-w-0 max-w-[680px] mx-auto" data-conversation-id={conversationId} data-conversation-title={conversationTitle}>
       {olderHint}
       {messages.map((m, i) => (
         <div key={m.seq ?? i}>

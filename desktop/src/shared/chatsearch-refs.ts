@@ -71,6 +71,17 @@ export const COPY = {
   errNotAConversation: 'This file is a helper transcript, not a conversation',
   errOutsideRoots: 'Transcript is stored outside the folders YouCoded may read',
   errReadPrefix: "Couldn't read this transcript: ",
+  // A3 (2026-08-26 preview-header spec): right-clicking inside a previewed
+  // past conversation prefixes the normal "Ask about this" lead with this
+  // clause, naming the conversation the quote came from. Unlike the live
+  // chat — which IS the conversation, so a bare "you said" is unambiguous —
+  // the assistant answering a preview quote has no other way to know which
+  // past conversation to `show`/`turns` through the chatsearch plugin. Kept
+  // as a plain parenthetical (not a bare id) so a message sent with nothing
+  // else typed still reads as an unfinished sentence, not a stray token.
+  // Wording is NOT yet signed off by Destin (spec C4) — flag any change here.
+  askPreviewContext: (title: string, id: string) =>
+    `(from the past conversation "${title || COPY.untitled}", id ${id})`,
 } as const;
 
 /** What `chatsearch:resolve` returns per requested id. */

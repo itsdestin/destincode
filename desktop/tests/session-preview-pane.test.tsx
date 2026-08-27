@@ -23,6 +23,12 @@ beforeAll(() => {
 });
 
 const msg = (seq: number) => ({ role: seq % 2 ? 'assistant' : 'user', content: `m${seq}`, timestamp: seq, seq, droppedToolCalls: 0 });
+// chatsearch.resolve is NOT mocked by default (only .read is) — several tests
+// below rely on that: useResolvedConversations (A3, added so the right-click
+// scaffold can name the conversation — see build-menu.test.tsx) must tolerate
+// a missing/failing resolve without breaking the pane's existing loading/paging
+// behaviour, since this pane predates that hook and most tests here never
+// touch it at all.
 beforeEach(() => { (window as any).claude = { chatsearch: { read: vi.fn() } }; });
 // This suite has no globals-mode auto-cleanup (vitest.config.ts doesn't set
 // test.globals), and several tests below reuse the same seq numbers (e.g.
@@ -110,5 +116,32 @@ describe('SessionPreviewPane', () => {
     expect(screen.getByText('m57')).toBeTruthy();
     expect(screen.getByText('m59')).toBeTruthy();
     expect(screen.getByText(new RegExp(COPY.startOfConversation))).toBeTruthy();
+  });
+
+  // A3: the pane resolves its own title (SessionDrawer.tsx isn't touched by
+  // this change, so it never passes one down) and threads it — alongside the
+  // id it already has — into ConversationTranscript's data attributes, which
+  // is what the right-click "Ask about this" scaffold reads (build-menu.ts).
+  it('resolves and stamps its own conversation id/title once chatsearch:resolve answers', async () => {
+    (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(1)], hasMore: false });
+    (window as any).claude.chatsearch.resolve = vi.fn().mockResolvedValue({
+      ok: true,
+      results: [{ status: 'ok', id: 'abc', provider: 'claude', title: 'Debugging sync', projectName: 'p', originalPath: '', lastActive: '', createdAt: '', tags: [], complete: true, tombstone: false, projectSlug: '', projectPath: '', missingProject: false, notSyncedYet: false }],
+    });
+    const { container } = render(<SessionPreviewPane provider="claude" id="abc" />);
+    await screen.findByText('m1');
+    await waitFor(() => expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-title')).toBe('Debugging sync'));
+    expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-id')).toBe('abc');
+  });
+
+  // Positive control for the above: the id is always known immediately (it's
+  // a required prop), so the marker that lets the right-click menu fire is
+  // present even before resolve answers — a slow/failed resolve only affects
+  // the TITLE the scaffold names, never whether "Ask about this" appears.
+  it('stamps the conversation id even while the title resolve is unavailable (no chatsearch.resolve mock)', async () => {
+    (window as any).claude.chatsearch.read.mockResolvedValueOnce({ ok: true, messages: [msg(1)], hasMore: false });
+    const { container } = render(<SessionPreviewPane provider="claude" id="abc" />);
+    await screen.findByText('m1');
+    expect(container.querySelector('[data-conversation-id]')?.getAttribute('data-conversation-id')).toBe('abc');
   });
 });

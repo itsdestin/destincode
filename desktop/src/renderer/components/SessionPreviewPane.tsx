@@ -6,6 +6,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import ConversationTranscript from './project-view/ConversationTranscript';
 import { ErrorState } from './ui/states';
 import { COPY, READ_TAIL_DEFAULT, type TranscriptMessage, type ChatsearchProvider } from '../../shared/chatsearch-refs';
+// SessionDrawer already resolves this same id for its own header (title,
+// Resume eligibility, tags — spec A1/A2/A4), but that title never reaches
+// this component as a prop (SessionDrawer.tsx is owned by that in-flight
+// work and is intentionally left untouched here). Resolving it again here
+// keeps the "Ask about this" scaffold (A3) able to name the conversation
+// without depending on that other file's wiring — same hook, same IPC call,
+// its own doc comment names exactly this kind of caller.
+import { useResolvedConversations } from '../hooks/useResolvedConversations';
 
 type Phase = { kind: 'loading' } | { kind: 'ready' } | { kind: 'error'; message: string };
 
@@ -30,6 +38,14 @@ export default function SessionPreviewPane({ provider, id }: { provider: Chatsea
   // conversation with the wrong one. Same pattern as ConversationPreview.tsx's
   // `cancelled` flag, generalized to a counter so loadOlder can share it.
   const genRef = useRef(0);
+
+  // Best-effort conversation title for the right-click scaffold (A3) only —
+  // nothing here is rendered while this is loading/unresolved, so a slow or
+  // failed resolve just means the scaffold falls back to COPY.untitled
+  // (build-menu.ts's askPreviewContext), never a broken pane.
+  const titleResolved = useResolvedConversations([id]);
+  const titleRow = titleResolved.results.find((r) => (r.status === 'ok' ? r.id === id : r.query === id)) ?? null;
+  const conversationTitle = titleRow && titleRow.status === 'ok' ? titleRow.title : '';
 
   const load = useCallback(async (before?: number) => {
     const req = before === undefined ? { provider, id, tail: READ_TAIL_DEFAULT } : { provider, id, tail: READ_TAIL_DEFAULT, before };
@@ -105,6 +121,7 @@ export default function SessionPreviewPane({ provider, id }: { provider: Chatsea
         {phase.kind === 'error' && <ErrorState mode="recoverable" message={`${COPY.errReadPrefix}${phase.message}`} onRetry={() => void loadNewest()} />}
         {phase.kind === 'ready' && (
           <ConversationTranscript messages={messages} scrollToEndKey={scrollKey}
+            conversationId={id} conversationTitle={conversationTitle}
             olderHint={hasMore
               ? (
                 <div className="py-2 text-center">

@@ -31,6 +31,33 @@ describe('ConversationTranscript', () => {
     render(<ConversationTranscript messages={[{ role: 'assistant', content: text, timestamp: 1 }]} />);
     expect(document.querySelector('button[data-file-path]')).toBeNull();
   });
+  // A3 (2026-08-26 preview-header spec): these two attributes are what lets
+  // build-menu.ts's right-click guard fire inside a preview (it widens
+  // `.chat-scroll` to also accept `[data-conversation-id]`) AND what lets
+  // the "Ask about this" scaffold name the conversation. ConversationPreview
+  // (Project View) never passes these — the second case here pins that it
+  // gets neither attribute, so its right-click behaviour stays untouched.
+  it('stamps data-conversation-id/-title on its container when a caller names a conversation', () => {
+    const { container } = render(
+      <ConversationTranscript
+        messages={[{ role: 'assistant', content: 'hi', timestamp: 1 }]}
+        conversationId="conv-1"
+        conversationTitle="Debugging sync"
+      />,
+    );
+    const el = container.querySelector('[data-conversation-id]');
+    expect(el).toBeTruthy();
+    expect(el?.getAttribute('data-conversation-id')).toBe('conv-1');
+    expect(el?.getAttribute('data-conversation-title')).toBe('Debugging sync');
+  });
+
+  it('renders NEITHER attribute when no conversation is named (ConversationPreview\'s case)', () => {
+    const { container } = render(
+      <ConversationTranscript messages={[{ role: 'assistant', content: 'hi', timestamp: 1 }]} />,
+    );
+    expect(container.querySelector('[data-conversation-id]')).toBeNull();
+  });
+
   it('shows a gap marker with the dropped count, singular and plural', () => {
     render(<ConversationTranscript messages={[
       { role: 'user', content: 'q', timestamp: 1, seq: 0, droppedToolCalls: 0 },

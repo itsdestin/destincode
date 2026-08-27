@@ -2,6 +2,7 @@ import { isAndroid, isRemoteMode } from '../../platform';
 import { copyText, readText } from './clipboard';
 import { editorViewFor } from '../artifact-views/cm/editor-registry';
 import type { MenuIconName } from './menu-icons';
+import { COPY } from '../../../shared/chatsearch-refs';
 
 // Builds the chat right-click menu for a given DOM target. Pure inspection of
 // the DOM + current selection → a list of entries; the host owns positioning,
@@ -37,6 +38,20 @@ function selectionText(): string {
 
 function closestBubble(el: Element): Element | null {
   return el.closest('.assistant-bubble, .user-bubble');
+}
+
+// A previewed past conversation (SessionPreviewPane, via ConversationTranscript)
+// stamps its container with data-conversation-id/-title instead of carrying
+// .chat-scroll — see the guard in buildContextMenu for why. Reused here so
+// textMenu/codeMenu can name the conversation in their "Ask about this"
+// scaffold (spec §A3); absent everywhere else (the live chat IS the
+// conversation, so it names nothing — that keeps its scaffold unchanged).
+function closestPreviewConversation(el: Element): { id: string; title: string } | null {
+  const container = el.closest('[data-conversation-id]');
+  if (!(container instanceof HTMLElement)) return null;
+  const id = container.getAttribute('data-conversation-id');
+  if (!id) return null;
+  return { id, title: container.getAttribute('data-conversation-title') || '' };
 }
 
 function baseName(p: string): string {
@@ -181,8 +196,15 @@ function linkMenu(a: HTMLAnchorElement, target: HTMLElement): MenuEntry[] {
 
 function codeMenu(pre: HTMLElement, target: HTMLElement): MenuEntry[] {
   const code = pre.innerText.replace(/\n+$/, '');
+  // Preview-only: prefix the lead with which past conversation this code came
+  // from (see closestPreviewConversation) — a no-op in the live chat, where
+  // this stays exactly 'Earlier, you shared this code:'.
+  const previewRef = closestPreviewConversation(target);
+  const lead = previewRef
+    ? `${COPY.askPreviewContext(previewRef.title, previewRef.id)} Earlier, you shared this code:`
+    : 'Earlier, you shared this code:';
   return [
-    { type: 'item', id: 'ask', label: 'Ask about this', icon: 'ask', primary: true, disabled: !code, run: () => askAboutThis(scaffold('Earlier, you shared this code:', code, true)) },
+    { type: 'item', id: 'ask', label: 'Ask about this', icon: 'ask', primary: true, disabled: !code, run: () => askAboutThis(scaffold(lead, code, true)) },
     { type: 'item', id: 'copy-code', label: 'Copy code block', icon: 'code', disabled: !code, run: () => void copyText(code) },
     { type: 'sep' },
     ...textBasics(closestBubble(target)),
@@ -264,7 +286,13 @@ function textMenu(target: HTMLElement): MenuEntry[] {
       : 'Regarding this:';
   const entries: MenuEntry[] = [];
   if (quote) {
-    entries.push({ type: 'item', id: 'ask', label: 'Ask about this', icon: 'ask', primary: true, run: () => askAboutThis(scaffold(lead, quote, false)) });
+    // Preview-only: name which past conversation this quote came from, so
+    // the assistant answering it can `show`/`turns` its way into the rest —
+    // a no-op in the live chat, where `finalLead` === `lead` and the
+    // scaffold this produces is unchanged (pinned by build-menu.test.tsx).
+    const previewRef = closestPreviewConversation(target);
+    const finalLead = previewRef ? `${COPY.askPreviewContext(previewRef.title, previewRef.id)} ${lead}` : lead;
+    entries.push({ type: 'item', id: 'ask', label: 'Ask about this', icon: 'ask', primary: true, run: () => askAboutThis(scaffold(finalLead, quote, false)) });
   }
   entries.push(...textBasics(bubble));
   return entries;
@@ -294,8 +322,16 @@ export function buildContextMenu(target: HTMLElement): MenuEntry[] | null {
   if (artifactViewer instanceof HTMLElement) return finalize(artifactMenu(artifactViewer));
 
   // Everything else is scoped to chat content — never hijack the terminal, the
-  // settings panels, or other chrome.
-  if (!target.closest('.chat-scroll')) return null;
+  // settings panels, or other chrome. A previewed past conversation
+  // (SessionPreviewPane) is chat content too, but its scroll container is
+  // NOT .chat-scroll on purpose: that class carries real CSS (globals.css:591,
+  // :614, plus bottom-chrome offsets sized for the live composer) that has no
+  // meaning inside a drawer, so adopting the class would import layout
+  // assumptions along with the behaviour it was really needed for here.
+  // data-conversation-id is the transcript's OWN marker (ConversationTranscript,
+  // set only when a caller names a conversation) — accepting either gets the
+  // preview the whole menu without borrowing chat-composer CSS.
+  if (!target.closest('.chat-scroll') && !target.closest('[data-conversation-id]')) return null;
 
   const filePill = target.closest('[data-file-path]');
   if (filePill instanceof HTMLElement && filePill.getAttribute('data-file-path')) {
