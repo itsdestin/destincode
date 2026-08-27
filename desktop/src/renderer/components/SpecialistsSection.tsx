@@ -57,7 +57,10 @@ export const SPECIALISTS_EXPLAINER_SECTIONS: ExplainerSection[] = [
   {
     heading: 'Read-only vs can edit',
     paragraphs: [
-      'A read-only helper can look at files and search the web but cannot change anything or run commands. A helper that can edit is limited to the folder it was hired for. Either way, deleting things, secrets, and anything outside the folder still ask you every time. Approving a hire is what grants these — the card in the chat says exactly what before you say yes.',
+      // Destin's 2026-08-26/27 copy review: deleting is split out of the
+      // "either way" clause, because a read-only helper cannot delete anything
+      // — listing it for both charters overstated the read-only case.
+      "A read-only helper can look at files and search the web, but can't change anything or run commands. A helper that can edit is limited to the folder it was hired for. Either way, secrets and anything outside that folder still ask you — and for helpers that can edit, so does deleting things. Approving a hire is what grants this; the card in the chat says exactly what before you say yes.",
     ],
   },
 ];

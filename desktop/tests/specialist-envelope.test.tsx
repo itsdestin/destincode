@@ -18,11 +18,12 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, screen, cleanup, waitFor, renderHook, act } from '@testing-library/react';
 import React from 'react';
 import ToolCard from '../src/renderer/components/ToolCard';
+import { SpecialistEnvelope } from '../src/renderer/components/SpecialistEnvelope';
 import { ChatProvider } from '../src/renderer/state/chat-context';
 import { ArtifactProvider } from '../src/renderer/state/ArtifactContext';
 import { initialArtifactState } from '../src/renderer/state/artifact-tracker';
 import { useSpecialistDefinition, refreshSpecialistRoster } from '../src/renderer/hooks/useSpecialists';
-import type { ToolCallState, SpecialistsListResult } from '../src/shared/types';
+import type { ToolCallState, SpecialistsListResult, SpecialistDefinitionView } from '../src/shared/types';
 
 afterEach(cleanup);
 
@@ -66,7 +67,7 @@ describe('a project-defined helper resolves when the card passes its cwd', () =>
       definitions: [{
         id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes docs.',
         charter: 'read-write', allowedTools: ['Read', 'Write', 'Edit'],
-        source: 'claude-code', path: '/proj/.claude/agents/docs-writer.md',
+        source: 'claude-code', grantScope: 'project', path: '/proj/.claude/agents/docs-writer.md',
         warnings: [], offered: true,
       }],
       skipped: [],
@@ -77,7 +78,10 @@ describe('a project-defined helper resolves when the card passes its cwd', () =>
 
     const envelope = await waitFor(() => screen.getByTestId('specialist-envelope'));
     await waitFor(() => expect(envelope.textContent).toContain('Docs Writer'));
-    expect(envelope.textContent).toContain("This project's .claude/agents/docs-writer.md");
+    // Destin's 2026-08-26/27 copy review folded the standalone provenance line
+    // into the lead sentence — the file is still named, inside the sentence
+    // that says what approving it grants.
+    expect(envelope.textContent).toContain("comes from this project's .claude/agents/docs-writer.md");
   });
 });
 
@@ -325,5 +329,87 @@ describe('a non-hire tool card', () => {
     expect(list).not.toHaveBeenCalledWith(
       expect.objectContaining({ cwd: 'cwd-non-hire-should-never-be-read' }),
     );
+  });
+});
+
+// ── The lead sentence, the trust line and the footer ────────────────────────
+//
+// Destin's 2026-08-26/27 copy review replaced the "What Yes allows" heading +
+// provenance line + "X working in Y — description" bullet with ONE narrative
+// sentence per origin. These render SpecialistEnvelope directly (no roster
+// round-trip) because what is being pinned is the copy, not the lookup.
+describe('the hire consent card, per origin', () => {
+  const base = { description: '', warnings: [] as string[], offered: true };
+  const hire = { description: 'x', agent: 'whoever', prompt: 'y', work_dir: '.' };
+
+  function renderEnvelope(definition?: SpecialistDefinitionView) {
+    mockSpecialistsList({ definitions: [], skipped: [], folders: { personal: '/p', claudeUser: '/c' } });
+    return render(<SpecialistEnvelope input={hire} definition={definition} cwd="/work/proj" />);
+  }
+  const text = () => screen.getByTestId('specialist-envelope').textContent ?? '';
+
+  it('built-in + read-only: says it ships with the app, names the folder, and warns about nothing', () => {
+    renderEnvelope({
+      ...base, id: 'explorer', displayName: 'Explorer', charter: 'read-only',
+      allowedTools: ['Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'],
+      source: 'builtin', grantScope: 'builtin',
+    });
+    expect(text()).toContain('The Explorer is built into YouCoded and is being hired with read-only access to proj/.');
+    expect(text()).toContain('Cannot edit files or run commands. It reads and searches using Read, Glob, Grep, WebFetch, WebSearch.');
+    // A built-in's instructions ARE YouCoded's, so there is nothing to distrust.
+    expect(screen.queryByText(/Its instructions come from a file/)).toBeNull();
+    // Read-only footer: a helper that cannot write cannot delete either, so
+    // promising a deletion check here would describe a check that never fires.
+    expect(text()).toContain('Secrets and anything outside proj/ still come to you.');
+    expect(text()).not.toContain('Deleting things');
+  });
+
+  it('built-in + read-write: says it may edit files and run commands, and the footer adds deleting', () => {
+    renderEnvelope({
+      ...base, id: 'worker', displayName: 'Worker', charter: 'read-write',
+      allowedTools: ['Read', 'Write', 'Edit', 'Bash'], source: 'builtin', grantScope: 'builtin',
+    });
+    expect(text()).toContain('The Worker is built into YouCoded and is being hired to edit files and run commands in proj/.');
+    expect(text()).toContain('Can edit files and run commands without asking again, using Read, Write, Edit, Bash.');
+    expect(text()).toContain('Deleting things, secrets, and anything outside proj/ still come to you.');
+  });
+
+  it("project file: names .claude/agents and warns that the instructions came with the project", () => {
+    renderEnvelope({
+      ...base, id: 'code-reviewer', displayName: 'code-reviewer', charter: 'read-write',
+      allowedTools: ['Read', 'Write', 'Edit', 'Bash'], source: 'claude-code', grantScope: 'project',
+      path: '/work/proj/.claude/agents/code-reviewer.md',
+    });
+    expect(text()).toContain("code-reviewer comes from this project's .claude/agents/code-reviewer.md and is being hired to edit files and run commands in proj/.");
+    expect(screen.getByText(/Only approve it if you trust where this project came from/)).toBeTruthy();
+  });
+
+  it('personal folder: names the file, and a helper with no Bash never claims it can run commands', () => {
+    renderEnvelope({
+      ...base, id: 'docs-writer', displayName: 'docs-writer', charter: 'read-write',
+      allowedTools: ['Read', 'Write', 'Edit'], source: 'personal', grantScope: 'user',
+      path: '/home/d/.youcoded/specialists/docs-writer.md',
+    });
+    expect(text()).toContain('docs-writer comes from your specialists folder (docs-writer.md) and is being hired to edit files in proj/.');
+    expect(text()).not.toContain('run commands in proj/');
+    expect(text()).toContain('Can edit files without asking again, using Read, Write, Edit. Cannot run commands.');
+    expect(screen.getByText(/Open the file if you're not sure what it does/)).toBeTruthy();
+  });
+
+  it('~/.claude/agents: names that folder rather than the project one', () => {
+    renderEnvelope({
+      ...base, id: 'foo', displayName: 'foo', charter: 'read-only',
+      allowedTools: ['Read'], source: 'claude-code', grantScope: 'user',
+      path: '/home/d/.claude/agents/foo.md',
+    });
+    expect(text()).toContain('foo comes from your ~/.claude/agents/foo.md and is being hired with read-only access to proj/.');
+    expect(text()).not.toContain('.claude/agents/foo.md and is being hired to edit');
+    expect(screen.getByText(/Open the file if you're not sure what it does/)).toBeTruthy();
+  });
+
+  it('unknown definition: promises nothing, and invents no trust verdict either', () => {
+    renderEnvelope(undefined);
+    expect(text()).toContain('whoever could not be looked up, so its tools and limits are unknown. Approve only if you know this specialist.');
+    expect(screen.queryByText(/Its instructions come from a file/)).toBeNull();
   });
 });

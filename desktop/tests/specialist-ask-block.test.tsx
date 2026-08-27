@@ -52,20 +52,24 @@ describe('SpecialistAskBlock — held-ask copy', () => {
     renderBlock({ askHeld: true }, 'running');
     const held = screen.getByTestId('nested-ask-held');
     expect(held.textContent).toBe(
-      'No answer for 5 minutes, so Wren carried on without this. Yes still works — it lands as a follow-up.',
+      'Wren waited 5 minutes, then carried on without this. Answering Yes now sends it as a follow-up.',
     );
   });
 
   it('held + finished: says the helper has finished and explains what a Yes does now', () => {
     renderBlock({ askHeld: true }, 'completed');
     const held = screen.getByTestId('nested-ask-held');
-    expect(held.textContent).toBe('Wren has finished; a Yes now tells the assistant, which can send Wren out again with your answer.');
+    expect(held.textContent).toBe('Wren has already finished. Answering Yes tells the assistant, which can send Wren back out with your answer.');
   });
 
-  it('external (outside-the-folder) ask explains why there is no Always Allow', () => {
+  it('external (outside-the-folder) ask says the helper has to ask every time — and offers no Always Allow', () => {
     renderBlock({ external: true });
-    expect(screen.getByText(/Outside the project folder/i).textContent).toBe(
-      'Outside the project folder — Wren must ask each time; no “Always allow”.',
+    expect(screen.getByText(/outside the project folder/i).textContent).toBe(
+      'This is outside the project folder, so Wren has to ask every time.',
     );
+    // Destin's 2026-08-26/27 copy review dropped the "no “Always allow”" clause
+    // from the sentence, so this assertion is now the only thing pinning the
+    // fact it described: the button is absent, not merely unmentioned.
+    expect(screen.queryByRole('button', { name: /always allow/i })).toBeNull();
   });
 });

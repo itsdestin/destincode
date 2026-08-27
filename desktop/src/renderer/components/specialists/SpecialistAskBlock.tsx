@@ -42,6 +42,10 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
   const sessionCwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
   const requestId = segment.requestId!;
   const who = specialistName ?? 'The specialist';
+  // Destin's 2026-08-26/27 copy review: the outside-the-folder note is now a
+  // full sentence, so the name lands MID-sentence — "The specialist" would
+  // read as a capitalised stranger there. Same name, sentence-case default.
+  const whoMid = specialistName ?? 'the specialist';
   const onResponded = () => {
     if (!sessionId) return;
     const action = { type: 'PERMISSION_RESPONDED' as const, sessionId, requestId };
@@ -78,7 +82,11 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
       )}
       {segment.external && (
         <p className={`${note} text-fg-muted`}>
-          Outside the project folder — {who} must ask each time; no “Always allow”.
+          {/* Destin's 2026-08-26/27 copy review: a sentence, not a fragment.
+              The "no Always allow" clause went because the button is simply
+              absent here (suppressAlwaysAllow) — naming a control that is not
+              on screen was the noise. */}
+          This is outside the project folder, so {whoMid} has to ask every time.
         </p>
       )}
       {segment.askHeld && (
@@ -89,9 +97,11 @@ export function SpecialistAskBlock({ segment, sessionId, specialistName, compact
               assistant, which decides what to do with it. Telling a user
               nothing here is how someone answers a 10-minute-old ask for a
               helper that's long gone without knowing that's what they did. */}
+          {/* Destin's 2026-08-26/27 copy review: both branches lead with the
+              helper's name and say what answering now actually does. */}
           {runStatus !== undefined && runStatus !== 'running'
-            ? <>{who} has finished; a Yes now tells the assistant, which can send {who} out again with your answer.</>
-            : <>No answer for 5 minutes, so {who} carried on without this. Yes still works — it lands as a follow-up.</>}
+            ? <>{who} has already finished. Answering Yes tells the assistant, which can send {whoMid} back out with your answer.</>
+            : <>{who} waited 5 minutes, then carried on without this. Answering Yes now sends it as a follow-up.</>}
         </p>
       )}
       {!(compact && leading) && buttons}

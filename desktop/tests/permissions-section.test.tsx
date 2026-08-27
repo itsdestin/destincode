@@ -30,6 +30,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import PermissionsSection from '../src/renderer/components/PermissionsSection';
 import { CROSS_PROJECT_SLUG } from '../src/shared/permission-types';
+import { PERMISSIONS_EXPLAINER_SECTIONS } from '../src/renderer/components/permissions/permissions-explainer';
 
 const list = vi.fn();
 const remove = vi.fn();
@@ -106,7 +107,7 @@ describe('PermissionsSection — the overview', () => {
     // The labels on this screen are the two authored ones — that is what
     // uppercase is for.
     expect(await screen.findByRole('heading', { name: 'Always allowed' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Understanding agent permission modes' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Permission modes' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /MyNotes/i })).toBeNull();
     expect(screen.queryByRole('heading', { name: /-home-destin-notes/ })).toBeNull();
 
@@ -203,7 +204,7 @@ describe('PermissionsSection — the modes block is reference content', () => {
 
   /** The block under the modes heading: its label plus the card beneath it. */
   function modesBlock(): HTMLElement {
-    return screen.getByRole('heading', { name: 'Understanding agent permission modes' })
+    return screen.getByRole('heading', { name: 'Permission modes' })
       .parentElement as HTMLElement;
   }
 
@@ -237,7 +238,7 @@ describe('PermissionsSection — the modes block is reference content', () => {
     // exist, so the reader does not hunt this screen for one.
     list.mockResolvedValue([]);
     render(<PermissionsSection />);
-    await screen.findByRole('heading', { name: 'Understanding agent permission modes' });
+    await screen.findByRole('heading', { name: 'Permission modes' });
     expect(modesBlock().textContent).toMatch(/bar at the bottom of the chat/i);
   });
 
@@ -578,5 +579,30 @@ describe('PermissionsSection — the "All projects" card', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Revoke all 2 permissions for All projects' }));
     fireEvent.click(screen.getByRole('button', { name: /^Confirm removing everything approved for/ }));
     await waitFor(() => expect(removeProject).toHaveBeenCalledWith(CROSS_PROJECT_SLUG));
+  });
+});
+
+// Destin's 2026-08-26/27 copy review found a CORRECTNESS bug in the (i)
+// explainer, not just a wording one: it claimed every approval belongs to the
+// folder it was given in. A grant on a helper from your own specialists folder
+// is minted with no work dir (tools/task.ts permissionSubject), stored under
+// CROSS_PROJECT_SLUG, and rendered on this very screen under "All projects" —
+// so the old sentence contradicted the list right next to it. This pins the
+// correction, which is the one claim on that screen a user could act on and be
+// wrong about.
+describe('the (i) explainer on where an approval reaches', () => {
+  const section = () =>
+    PERMISSIONS_EXPLAINER_SECTIONS.find((s) => s.heading === "Approvals you've already given");
+
+  it('does not claim every approval is folder-scoped', () => {
+    const text = (section()?.paragraphs ?? []).join(' ');
+    expect(text).not.toMatch(/Every approval belongs to the folder/);
+    expect(text).toMatch(/Most approvals belong to the folder you were working in/);
+  });
+
+  it('names your own specialists as the every-folder exception, under the heading the list uses', () => {
+    const text = (section()?.paragraphs ?? []).join(' ');
+    expect(text).toMatch(/The exception is your own specialists/);
+    expect(text).toMatch(/applies in every folder, under \u201cAll projects\u201d/);
   });
 });

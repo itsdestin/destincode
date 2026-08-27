@@ -32,8 +32,9 @@ export interface GrantOption {
 
 // The default limits sentence. A shape may override it with one that names the
 // thing it actually scoped to.
+// Destin's 2026-08-26/27 copy review: lighter wording, same two exclusions.
 const GENERIC_LIMITS =
-  "This won't cover the command chained onto another one, or run with options that change what it does.";
+  "Doesn't cover this command chained onto another one, or run with different options.";
 
 // Commands a wide rung must never admit. One entry per destructive deny-list
 // FAMILY, pinned by a test that fails if a family is added without one.
@@ -131,8 +132,9 @@ function namesItsTarget(refspec: string): boolean {
 const COMMAND_SHAPES: CommandShape[] = [
   {
     key: 'git push',
+    // Destin's 2026-08-26/27 copy review: same fact, fewer words.
     noGrantNote:
-      "There's nothing to remember here: this sends whichever branch is checked out when it runs, so next time it could be a different one.",
+      "Nothing to remember here — this pushes whichever branch is checked out at the time, so next time it could be a different one.",
     // A bare `git push` pushes whatever branch is checked out AT RUN TIME, and
     // that branch changes underneath the grant — approve it on a feature branch
     // and next week it silently pushes master. Nothing here can name the target,
@@ -175,7 +177,8 @@ const COMMAND_SHAPES: CommandShape[] = [
         // Names what safety rule 2 keeps out of THIS grant specifically. The
         // generic sentence ("options that change what it does") would be true but
         // would not tell a user that deleting the branch is the thing excluded.
-        limits: "This won't cover deleting or force-pushing the branch, or this command chained onto another one.",
+        // Destin's 2026-08-26/27 copy review: matches GENERIC_LIMITS' new opening.
+        limits: "Doesn't cover deleting or force-pushing the branch, or this command chained onto another one.",
       };
     },
   },
