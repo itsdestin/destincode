@@ -2801,10 +2801,10 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.MODELS_DOWNLOAD_CANCEL, async (_e, downloadId: string) => { modelManager.cancel(downloadId); return true; });
   ipcMain.handle(IPC.MODELS_DELETE, async (_e, id: string) => { await engineManager.deleteModel(id); return true; });
   ipcMain.handle(IPC.MODELS_INSTALLED, async () => engineManager.installedModels());
-  // Orphaned .partial scan (2026-07-15): .partial files left by a PREVIOUS app
-  // run are invisible to the in-memory downloader — this lets the UI list them
-  // (clean via models:delete; resume by re-starting the same download).
-  ipcMain.handle(IPC.MODELS_ORPHANED_PARTIALS, async () => modelManager.orphanedPartials());
+  // Resume an interrupted download (2026-08-26). Reads the manifest written
+  // beside the .partial — no Hugging Face round trip, so it works when the
+  // network is the reason the download stopped.
+  ipcMain.handle(IPC.MODELS_RESUME, async (_e, modelId: string) => modelManager.resume(modelId));
   ipcMain.handle(IPC.ENDPOINTS_DETECT, async () =>
     detectEndpoints(fetch, ((await providerRegistry.list()) as any[])));
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens

@@ -364,7 +364,6 @@ const IPC = {
   MODELS_DELETE: 'models:delete',
   MODELS_INSTALLED: 'models:installed',
   MODELS_RESUME: 'models:resume',
-  MODELS_ORPHANED_PARTIALS: 'models:orphaned-partials',
   ENDPOINTS_DETECT: 'endpoints:detect',
   // Model memory lifecycle (2026-07-14) — keep in sync with shared/types.ts.
   ENGINE_MODELS: 'engine:models',
@@ -1317,9 +1316,6 @@ contextBridge.exposeInMainWorld('claude', {
     // (2026-08-26) — no Hugging Face round trip, so it works when the network
     // is the reason the download stopped.
     resume: (modelId: string) => ipcRenderer.invoke(IPC.MODELS_RESUME, modelId),
-    // Orphaned .partial files from a previous app run (clean via delete(modelId),
-    // resume by re-downloading the same repo+quant — Range continues the bytes).
-    orphanedPartials: () => ipcRenderer.invoke(IPC.MODELS_ORPHANED_PARTIALS),
     detectEndpoints: () => ipcRenderer.invoke(IPC.ENDPOINTS_DETECT),
     setBackend: (backend: string) => ipcRenderer.invoke(IPC.ENGINE_SET_BACKEND, backend),
     // Create-time / swap memory guard + [Reload Model] (2026-07-14).

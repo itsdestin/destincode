@@ -1591,9 +1591,6 @@ export const IPC = {
   // Resume an interrupted download from its manifest (2026-08-26) — invoke(modelId)
   // → { downloadId }. Replaces MODELS_ORPHANED_PARTIALS, removed the same day.
   MODELS_RESUME: 'models:resume',
-  // Orphaned .partial scan (2026-07-15) — invoke → OrphanedPartial[]; lists
-  // .partial files left by a PREVIOUS app run so the UI can clean/resume them.
-  MODELS_ORPHANED_PARTIALS: 'models:orphaned-partials',
   ENDPOINTS_DETECT: 'endpoints:detect',
   // ---- Model memory lifecycle (2026-07-14): per-model residency + guards ----
   ENGINE_MODELS: 'engine:models',                 // invoke → EngineModel[] with live state

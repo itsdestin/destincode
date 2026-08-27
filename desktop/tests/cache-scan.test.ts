@@ -40,9 +40,10 @@ describe('scanGgufCache', () => {
   });
 });
 
-// Orphaned-.partial surfacing (2026-07-15): a .partial left by a previous app
+// Unfinished-download surfacing (2026-08-27): a .partial left by a previous app
 // run is invisible to scanGgufCache AND to the in-memory downloader — this scan
-// is the UI's only way to find it (models:orphaned-partials).
+// is the UI's only way to find it, and it is the SAME scan scanGgufCache filters,
+// so the two lists can never disagree (models:installed).
 
 describe('scanLocalDownloads', () => {
   it('counts a complete split set as complete', () => {
