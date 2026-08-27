@@ -124,10 +124,33 @@ export interface UsageSnapshot {
   apiDuration: number | null;
   linesAdded: number | null;
   linesRemoved: number | null;
+  /** Utilization of the Claude SUBSCRIPTION, as a PERCENT (0-100) — the unit
+   *  the cache file uses (~/.claude/.usage-cache.json → "utilization": 42) and
+   *  the unit the status bar prints. NOT a 0-1 ratio. */
   fiveHourUtilization: number | null;
   fiveHourResetsAt: string | null;
   sevenDayUtilization: number | null;
   sevenDayResetsAt: string | null;
+
+  // --- Native (YouCoded-runtime) sessions (spec §10) ---
+  // A native session runs no Claude Code statusline, so the fields above are
+  // filled from this app's own per-turn accounting instead. These three say
+  // where the numbers came from and how complete they are, so the card can be
+  // honest about both rather than guessing.
+
+  /** True when the session figures above came from this app's own per-turn
+   *  totals rather than from Claude Code's statusline. Gates the "Counts this
+   *  session so far, including specialists." sentence — a promise this app can
+   *  only make about numbers it counted itself. */
+  countsFromSessionTotals?: boolean;
+  /** True when some counted work ran on a METERED model whose provider
+   *  publishes no rate, so the cost above (if any) leaves that work out.
+   *  Distinct from work that is FREE to run — a local model has nothing to
+   *  charge, which is not the same as a missing price and must never be
+   *  worded as one. */
+  costIsPartial?: boolean;
+  /** How many specialist runs are folded into the session figures. */
+  specialistRuns?: number;
 }
 
 // Thin divider entry — shown when a slash command produced a side-effect

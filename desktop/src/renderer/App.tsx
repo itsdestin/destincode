@@ -2090,21 +2090,59 @@ function AppInner() {
       const stats = statusData.sessionStatsMap[sid];
       const ctx = statusData.contextMap[sid] ?? null;
       const usage = statusData.usage as { five_hour?: { utilization: number; resets_at: string }; seven_day?: { utilization: number; resets_at: string } } | null;
-      if (!stats && ctx == null && !usage) return null;
+      // Native fallback (spec §10). sessionStatsMap is written by Claude Code's
+      // statusline, which a native session never runs — so without this every
+      // session figure below was null and /usage was a page of "--" in exactly
+      // the sessions the status bar now sends people here for (it hides the 5h
+      // and 7d chips there, and the Customize menu points at this card).
+      // Same precedence as the bar: the statusline wins where it exists,
+      // session totals fill in where it doesn't, so the two surfaces cannot
+      // disagree about the same session.
+      //
+      // Scoped to NATIVE sessions for exactly the same reason the bar scopes
+      // its own totals that way (StatusBar.tsx: `useNativeSessionTotals(
+      // isNativeSession ? sessionId : null)`). A Claude Code session's numbers
+      // are Claude Code's own, and its line count in particular covers edits
+      // this app never sees (shell commands); the derived count is a DIFFERENT
+      // measurement, so substituting it under the same label would make the
+      // card contradict the bar about one session.
+      const isNative = sessionsRef.current.find((x) => x.id === sid)?.provider === 'native';
+      const totals = (isNative ? chatStateMapRef.current.get(sid)?.totals : null) ?? null;
+      if (!stats && ctx == null && !usage && !totals) return null;
+      // A brand-new native session starts at emptyTotals() — every field ZERO
+      // before a single turn has run — so a zero here means "nothing measured
+      // yet", not "measured zero", and must read as absent so the card omits
+      // the row instead of printing a 0 it did not measure. A statusline zero
+      // is a REAL measurement and is never collapsed (it wins via ?? above).
+      // This mirrors StatusBar.tsx's inTokens/outTokens derivation exactly.
+      const fromTotals = (v: number | undefined) => (v != null && v > 0 ? v : null);
       return {
         entryId: `usage-${sid}-${Date.now()}`,
         timestamp: Date.now(),
-        costUsd: stats?.costUsd ?? null,
-        inputTokens: stats?.inputTokens ?? null,
-        outputTokens: stats?.outputTokens ?? null,
-        cacheReadTokens: stats?.cacheReadTokens ?? null,
-        cacheCreationTokens: stats?.cacheCreationTokens ?? null,
+        // anyPriced gate: work with no published price contributes nothing to
+        // totals.costUsd, so showing that 0 would be a false zero — the card
+        // drops the figure instead (docs/error-message-standards.md).
+        costUsd: stats?.costUsd ?? (totals?.anyPriced ? totals.costUsd : null),
+        // "Some counted work is METERED but has no published rate", which is
+        // NOT the same as "free to run" (totals.anyFree) and must never be
+        // worded as one.
+        costIsPartial: stats?.costUsd == null && !!totals?.anyUnpriced,
+        countsFromSessionTotals: !stats && !!totals,
+        specialistRuns: totals?.specialistRuns ?? 0,
+        inputTokens: stats?.inputTokens ?? fromTotals(totals?.inputTokens),
+        outputTokens: stats?.outputTokens ?? fromTotals(totals?.outputTokens),
+        cacheReadTokens: stats?.cacheReadTokens ?? fromTotals(totals?.cacheReadTokens),
+        cacheCreationTokens: stats?.cacheCreationTokens ?? fromTotals(totals?.cacheCreationTokens),
         contextTokens: stats?.contextTokens ?? null,
         contextPercent: ctx,
+        // Deliberately NOT filled from totals: the harness does not report turn
+        // wall-time or thinking-time at all (spec §15), so there is no native
+        // number to fall back to. The card omits both rows rather than invent
+        // one.
         duration: stats?.duration ?? null,
         apiDuration: stats?.apiDuration ?? null,
-        linesAdded: stats?.linesAdded ?? null,
-        linesRemoved: stats?.linesRemoved ?? null,
+        linesAdded: stats?.linesAdded ?? fromTotals(totals?.linesAdded),
+        linesRemoved: stats?.linesRemoved ?? fromTotals(totals?.linesRemoved),
         fiveHourUtilization: usage?.five_hour?.utilization ?? null,
         fiveHourResetsAt: usage?.five_hour?.resets_at ?? null,
         sevenDayUtilization: usage?.seven_day?.utilization ?? null,
