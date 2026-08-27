@@ -216,7 +216,7 @@ dependencies {
     implementation("com.github.luben:zstd-jni:1.5.7-11")
 
     // Markdown parsing for chat view
-    implementation("org.commonmark:commonmark:0.29.0")
+    implementation("org.commonmark:commonmark:0.30.0")
 
     // WebSocket server for React UI bridge
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
