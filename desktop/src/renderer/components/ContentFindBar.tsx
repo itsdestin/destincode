@@ -171,18 +171,23 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
     </>
   );
 
+  // One pill, both layouts. Destin's review of P-14 (2026-08-27): "i still want it
+  // to be its own element/pill with border, i just don't want it to overlap my
+  // message" — so the in-flow row is a transparent lane that RESERVES the height,
+  // and the same bordered pill the artifact viewer floats sits at its right edge.
+  const pill = 'flex items-center gap-1 px-1.5 py-1 rounded-lg bg-panel border border-edge shadow-lg';
   if (layout === 'row') {
     return (
-      // px-2 sm:px-3 = the header bar's own horizontal rhythm, so the row's
-      // controls line up with the chrome above it. shrink-0: it is a flex-column
-      // sibling of the scroll container and must never be squeezed by it.
-      <div className="find-row shrink-0 flex items-center justify-end gap-1 px-2 sm:px-3 py-1 bg-panel border-b border-edge">
-        {controls}
+      // px-2 sm:px-3 = the header bar's own horizontal rhythm, so the pill lines
+      // up with the chrome above it. shrink-0: it is a flex-column sibling of the
+      // scroll container and must never be squeezed by it.
+      <div className="find-row shrink-0 flex justify-end px-2 sm:px-3 py-1">
+        <div className={pill}>{controls}</div>
       </div>
     );
   }
   return (
-    <div className={`absolute ${positionClassName} z-20 flex items-center gap-1 px-1.5 py-1 rounded-lg bg-panel border border-edge shadow-lg`}>
+    <div className={`absolute ${positionClassName} z-20 ${pill}`}>
       {controls}
     </div>
   );

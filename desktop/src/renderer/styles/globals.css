@@ -2026,9 +2026,9 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
   /* 6px breathing room under the floating pill — matches .drawer-pane. */
   margin-top: calc(var(--top-chrome-bottom, 3rem) + 6px);
 }
-[data-wallpaper] .chat-pane > .find-row {
-  background-color: color-mix(in srgb, var(--panel) calc(var(--panels-opacity, 1) * 100%), transparent);
-}
+/* The lane itself paints nothing (the pill inside carries the panel colour and
+   border), so a wallpaper shows through around the pill exactly as it does
+   around a floating one. */
 /* While the row is open the scroll container starts BELOW it, not under the
    header, so the header-clearing padding-top (and the matching scrollbar-track
    inset) would be dead space above the first message. Two classes so this
