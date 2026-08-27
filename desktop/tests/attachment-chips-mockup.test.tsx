@@ -61,3 +61,15 @@ describe('attachment chips mock-up', () => {
     for (const img of imgs) expect(img.getAttribute('src')).toMatch(/^data:image\//);
   });
 });
+
+// Design C shipped (2026-08-27): section C must render the REAL composer chip
+// (components/AttachmentChip.tsx, which stamps data-file-kind), and the two
+// rejected mock-ups must not — otherwise the page could drift from the app.
+describe('attachment chips mock-up — section C is the shipping chip', () => {
+  it('only section C renders AttachmentChip', () => {
+    render(<AttachmentChipsMockup />);
+    expect(screen.getByTestId('mock-c').querySelectorAll('[data-file-kind]').length).toBe(KINDS.length * 2);
+    expect(screen.getByTestId('mock-a').querySelectorAll('[data-file-kind]').length).toBe(0);
+    expect(screen.getByTestId('mock-b').querySelectorAll('[data-file-kind]').length).toBe(0);
+  });
+});

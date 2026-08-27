@@ -1,6 +1,7 @@
 import http from 'http';
 import zlib from 'zlib';
 import { listProjectsIndex } from './artifacts/projects-index';
+import { readFileHead } from './fs-read-head';
 // Shared cap so a local folder's description (set via a remote browser client)
 // can't drift from the synced registry's limit — same constant project-registry.ts
 // and ipc-handlers.ts use.
@@ -1035,6 +1036,13 @@ export class RemoteServer {
       // no explicit case gets no reply at all, which hangs the request instead of
       // failing it. Payloads arrive object-wrapped from remote-shim (payload.slug /
       // payload.rule), matching the search:* cases above.
+      case 'fs:read-head': {
+        // Same function as the ipcMain handler (main/fs-read-head.ts): a
+        // remote browser gets the same cap and the same sensitive-path
+        // refusal, never a wider read.
+        this.respond(client.ws, type, id, await readFileHead(payload?.filePath, payload?.maxBytes));
+        break;
+      }
       case 'permissions:list': {
         // Read-only: the store is the disk authority. No native runtime → no
         // grants to show, same shape the renderer already handles for an empty list.
