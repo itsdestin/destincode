@@ -290,10 +290,24 @@ describe('subagent-usage — the producer half', () => {
     // Drops the PARENT's live entry as the child's final step begins — the
     // teardown race the missing `else` was hiding. Reaching into `live` is the
     // only way to stage it deterministically: the real race is a destroy
-    // landing inside a window a test cannot otherwise aim at. It has to be the
-    // parent, not the child: runSpecialist's own throwIfEnded already notices a
-    // missing CHILD and fails the run loudly, so the parent is the half that
-    // can genuinely go missing with the run itself completing normally.
+    // landing inside a window a test cannot otherwise aim at.
+    //
+    // Task 25 item 1 — this comment used to say the CHILD half could not
+    // genuinely go missing, because runSpecialist's own throwIfEnded notices a
+    // missing child. That was wrong, and it invited a future reader to delete a
+    // live branch as dead code. throwIfEnded checks `this.live.has(childId)`
+    // only DURING the run and never again once runSpecialist has RETURNED,
+    // while the spend is priced after that return. Worse, the cascade order
+    // makes the child half the MORE likely of the two in production:
+    // destroy(parent) awaits destroyChildrenOf(parent) — which destroys each
+    // child, deleting the child's own live entry — BEFORE it reaches
+    // `this.live.delete(parent)`. A parent teardown landing in that await gap
+    // therefore removes the CHILD first and leaves the parent live.
+    //
+    // So the split here is only about what each test can STAGE, not about what
+    // can happen: a doStream hook runs while the run is still going, which is
+    // the parent half; the child half needs a hook that fires after
+    // runSpecialist resolves, which is the test right below this one.
     const model = new MockLanguageModelV4({
       doStream: async () => {
         const chunks = RUN[Math.min(call, RUN.length - 1)];
@@ -331,6 +345,49 @@ describe('subagent-usage — the producer half', () => {
     expect(logSpy).toHaveBeenCalledWith(
       'ERROR', 'NativeSessionHost',
       "could not report a finished specialist's spend to its parent (the parent session was no longer live) — the parent's session totals will be short by this run",
+      expect.objectContaining({ childId, parentId: 'root-1' }),
+    );
+    logSpy.mockRestore();
+  });
+
+  // Task 25 items 1 + 2. The CHILD half of the same race — and the proof that
+  // the branch the test above's old comment called unreachable is not only
+  // reachable but the more likely one (the cascade order is spelled out there).
+  // It also pins a SECOND of the three `missing` phrases: with only the parent
+  // phrase pinned, collapsing that three-way ternary to one hardcoded string
+  // passed the suite while telling the user the wrong half had gone missing.
+  it('names the SPECIALIST half when the child is the session that went missing', async () => {
+    const logSpy = vi.spyOn(logger, 'log');
+    boot(RUN);
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    // The post-return hook the comment above describes: wrap runSpecialist so
+    // the child's live entry disappears the instant the run RESOLVES — after
+    // throwIfEnded's last check, before the spend is priced. That is the exact
+    // window destroy() opens by tearing children down ahead of the parent.
+    const runSpecialist = (host as any).runSpecialist.bind(host);
+    let childId = '';
+    (host as any).runSpecialist = async (cid: string, prompt: string) => {
+      const result = await runSpecialist(cid, prompt);
+      childId = cid;
+      (host as any).live.delete(cid);   // the child goes; the parent stays live
+      return result;
+    };
+    const seen: any[] = [];
+    host.on('transcript-event', (e) => seen.push(e));
+    await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      binding: { providerId: 'openrouter', modelId: 'child-model' },
+      token: { parentId: 'root-1', writer: false }, description: 'find it',
+    } as any);
+    await host.drain('root-1');
+
+    expect(childId).not.toBe('');
+    expect(seen.filter((e) => e.type === 'subagent-usage')).toEqual([]);
+    // Names the CHILD, not the parent — the parent is right there and live, so
+    // saying the parent had gone would be a false statement of cause.
+    expect(logSpy).toHaveBeenCalledWith(
+      'ERROR', 'NativeSessionHost',
+      "could not report a finished specialist's spend to its parent (the specialist session was no longer live) — the parent's session totals will be short by this run",
       expect.objectContaining({ childId, parentId: 'root-1' }),
     );
     logSpy.mockRestore();

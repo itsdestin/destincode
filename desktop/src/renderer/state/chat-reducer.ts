@@ -1565,6 +1565,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         console.warn(`[chat] subagent-usage arrived for session ${action.sessionId}, which this window does not hold — that specialist's tokens and cost are counted nowhere`);
         return state;
       }
+      // Task 25 item 3 — deliberately silent, unlike the missing-session branch
+      // above. emitSubagentUsage types `usage` as required, so a missing one is
+      // not a lost dollar figure: it is a malformed or legacy persisted event
+      // that never carried tokens or cost to begin with. Nothing to count means
+      // nothing to warn about — this is not a fourth silent hole.
       if (!action.usage) return state;
       // DEDUP on uuid: resume replays the parent's whole record while the live
       // stream may still be delivering, and counting one specialist twice
