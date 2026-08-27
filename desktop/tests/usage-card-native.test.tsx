@@ -293,4 +293,49 @@ describe('UsageCard context row — remaining, not used', () => {
     expect(screen.getByText('90%')).toHaveStyle({ color: '#ef4444' });
     expect(screen.getByText('12%')).toHaveStyle({ color: '#10b981' });
   });
+
+  // Task 29 item 1: the two scales above are OPPOSITE on purpose, and until now
+  // every case sat comfortably inside a band (90 / 35 / 12), so nothing pinned
+  // the edges themselves. `pct < 20` could become `pct <= 20`, or `pct >= 80`
+  // become `pct > 80`, and the whole file stayed green while one boundary value
+  // silently changed colour. These four cases sit exactly ON the thresholds, so
+  // moving a boundary by a single point turns one of them red.
+  it('at exactly 20% remaining the context row is amber, not red', () => {
+    // 20 is the FIRST value that is no longer critical: red is `< 20`, so 20
+    // itself must warn in amber.
+    render(<UsageCard snapshot={ctx(20)} />);
+    expect(screen.getByText('20%')).toHaveStyle({ color: '#f59e0b' });
+    expect(fillOf(screen.getByRole('progressbar', { name: 'Context remaining' }))).toHaveStyle({
+      backgroundColor: '#f59e0b',
+    });
+  });
+
+  it('at exactly 50% remaining the context row is green, not amber', () => {
+    // Amber is `< 50`, so half a window still free is healthy, not a warning.
+    render(<UsageCard snapshot={ctx(50)} />);
+    expect(screen.getByText('50%')).toHaveStyle({ color: '#10b981' });
+    expect(fillOf(screen.getByRole('progressbar', { name: 'Context remaining' }))).toHaveStyle({
+      backgroundColor: '#10b981',
+    });
+  });
+
+  it('at exactly 80% utilisation a subscription bar is red, not amber', () => {
+    // The mirror image of the row above: on the utilisation scale red starts AT
+    // 80 (`>= 80`), because there high is the bad direction.
+    render(<UsageCard snapshot={{ ...nativeSnapshot, fiveHourUtilization: 80, sevenDayUtilization: null }} />);
+    expect(screen.getByText('80%')).toHaveStyle({ color: '#ef4444' });
+    expect(fillOf(screen.getByRole('progressbar', { name: '5-hour limit' }))).toHaveStyle({
+      backgroundColor: '#ef4444',
+    });
+  });
+
+  it('at exactly 50% utilisation a subscription bar is amber, not green', () => {
+    // Amber starts AT 50 (`>= 50`) — the opposite edge from the context row,
+    // where 50 is the first GREEN value.
+    render(<UsageCard snapshot={{ ...nativeSnapshot, fiveHourUtilization: 50, sevenDayUtilization: null }} />);
+    expect(screen.getByText('50%')).toHaveStyle({ color: '#f59e0b' });
+    expect(fillOf(screen.getByRole('progressbar', { name: '5-hour limit' }))).toHaveStyle({
+      backgroundColor: '#f59e0b',
+    });
+  });
 });
