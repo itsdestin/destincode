@@ -196,7 +196,11 @@ describe('ModelDownloader', () => {
     await dl.wait(id).catch(() => {});
     expect(() => dl.start('bartowski/M-GGUF', quantOpt(), () => {}))
       .toThrow(/already partly downloaded from unsloth\/M-GGUF/);
-    // The same repo may continue.
-    expect(() => dl.start('unsloth/M-GGUF', quantOpt(), () => {})).not.toThrow();
+    // The same repo may continue. Awaited (not fire-and-forget) because the
+    // dead fetch rejects, and an unawaited rejection here surfaces as an
+    // unhandled error that fails the whole run.
+    let second = '';
+    expect(() => { second = dl.start('unsloth/M-GGUF', quantOpt(), () => {}); }).not.toThrow();
+    await dl.wait(second).catch(() => {});
   });
 });

@@ -35,7 +35,10 @@ export function writeManifest(cacheDir: string, repo: string, quant: QuantOption
   // Write-then-rename: a crash mid-write must leave NO manifest rather than half
   // of one. readManifest would reject the fragment, but "absent" is the honest
   // state and "present but unreadable" invites someone to try to repair it.
-  const tmp = `${target}.tmp`;
+  // PER-PROCESS temp name, never a fixed `<file>.tmp`: a dev instance and the
+  // built app share the cache dir, so two writers on one temp path make the
+  // loser's rename throw ENOENT (scripts/ast-grep/atomic-tmp-name-per-process).
+  const tmp = `${target}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(manifest, null, 2));
   fs.renameSync(tmp, target);
 }
@@ -63,5 +66,15 @@ export function readManifest(cacheDir: string, firstFileBasename: string): Downl
 
 export function removeManifest(cacheDir: string, firstFileBasename: string): void {
   fs.rmSync(manifestPathFor(cacheDir, firstFileBasename), { force: true });
-  fs.rmSync(`${manifestPathFor(cacheDir, firstFileBasename)}.tmp`, { force: true });
+  // Sweep any half-written temp too. The name carries the writing process's
+  // pid, so it can't be reconstructed — match the prefix instead. A crashed
+  // write from ANOTHER process is exactly the litter this is here to clear.
+  const prefix = `${firstFileBasename}${MANIFEST_SUFFIX}.`;
+  let names: string[] = [];
+  try { names = fs.readdirSync(cacheDir); } catch { return; } // dir gone — nothing to sweep
+  for (const name of names) {
+    if (name.startsWith(prefix) && name.endsWith('.tmp')) {
+      fs.rmSync(path.join(cacheDir, name), { force: true });
+    }
+  }
 }
