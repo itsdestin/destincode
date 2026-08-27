@@ -933,11 +933,36 @@ export class NativeSessionHost extends EventEmitter {
         if (parentSession && childSession) {
           const { pricing, free } = childSession.priceCard;
           parentSession.emitSubagentUsage({
-            usage: { ...run.usage, costUsd: costForUsage(run.usage, pricing), free },
+            // `free` WINS over any rate card (Task 23 item 1 — the specialist
+            // twin of the same fix Task 22 made for turn-complete in
+            // harness-session.ts). The two facts come from independent
+            // sources: `free` from the provider TYPE, the number from the
+            // catalog, which keys on the model id and has no idea where the
+            // model runs. A specialist delegated to a local model whose id
+            // happens to carry a published rate would otherwise report
+            // {"costUsd": 0.027, "free": true} — a run billed AND free. Free
+            // means free, and free is reported as null, never as a $0.00 bill.
+            usage: { ...run.usage, costUsd: free ? null : costForUsage(run.usage, pricing), free },
             model: childSession.binding.modelId,
             parentAgentToolUseId: opts.parentToolCallId,
             agentId: childId,
           });
+        } else {
+          // Task 23 item 2. This `if` used to have no `else`, so a teardown
+          // race that removed either session between the run finishing and its
+          // spend being priced dropped a whole delegated run's tokens and cost
+          // with ZERO log output — the parent's totals silently went short and
+          // nothing anywhere said so. A cost figure that is quietly short is
+          // worse than one that is visibly missing: the user has no way to know
+          // not to trust it.
+          //
+          // The message states ONLY what was just looked up and found absent —
+          // never a guessed cause (docs/error-message-standards.md). We know
+          // which half was missing; we do NOT know why, so we don't say.
+          const missing = !parentSession && !childSession ? 'neither session was still live'
+            : !parentSession ? 'the parent session was no longer live'
+            : 'the specialist session was no longer live';
+          log('ERROR', 'NativeSessionHost', `could not report a finished specialist's spend to its parent (${missing}) — the parent's session totals will be short by this run`, { childId, parentId });
         }
       } catch (usageErr) {
         log('ERROR', 'NativeSessionHost', 'failed to report a finished specialist\'s spend to its parent — the parent\'s session totals will be short by this run', { childId, parentId, error: String(usageErr) });

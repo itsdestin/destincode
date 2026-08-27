@@ -12,7 +12,7 @@
 //       NativeSessionHost emits exactly one such event on the PARENT's stream,
 //       priced at the CHILD's own model, and persists it to the PARENT's
 //       record so a resume replays it.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os';
 import { SUBAGENT_DISPLAY_TYPES, NativeSessionHost } from '../src/main/harness/native-session-host';
 import { chatReducer } from '../src/renderer/state/chat-reducer';
@@ -21,6 +21,8 @@ import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { scriptedModel, stream, textChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
 import { resolveSpecialist } from '../src/main/harness/specialists/registry';
+import * as logger from '../src/main/logger';
+import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 
 const SID = 'p1';
 const start = (): ChatState => chatReducer(new Map(), { type: 'SESSION_INIT', sessionId: SID });
@@ -105,6 +107,35 @@ describe('subagent-usage — the reducer half', () => {
     expect(after.get(SID)!.totals.inputTokens).toBe(0);
   });
 
+  // Task 23 item 3. The orphan branch drops a real dollar figure on the floor.
+  // It should never happen (SESSION_INIT runs before any transcript event), so
+  // if it ever does, the only trace anyone will have is this line.
+  it('warns when an orphan report is dropped — that is money nothing counted', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    chatReducer(start(), {
+      ...subagentUsage('su7', { inputTokens: 10, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.5, free: false }),
+      sessionId: 'a-session-this-window-never-had',
+    } as any);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('a-session-this-window-never-had'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('subagent-usage'));
+    warn.mockRestore();
+  });
+
+  // The other half of the same rule, and the one that matters more: a SECOND
+  // delivery of the same report is expected and normal (a resume replays what
+  // the live stream already delivered). Warning there would print on ordinary
+  // healthy use, which is exactly how a warning stops being read.
+  it('stays silent on a duplicate delivery — that one is normal, not a fault', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let s = start();
+    const ev = subagentUsage('su8', { inputTokens: 10, outputTokens: 1, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.5, free: false });
+    s = chatReducer(s, ev as any);
+    s = chatReducer(s, ev as any);
+    expect(warn).not.toHaveBeenCalled();
+    expect(s.get(SID)!.totals.specialistRuns).toBe(1);
+    warn.mockRestore();
+  });
+
   it('is bookkeeping, not conversation: no timeline entry, and the parent turn stays open', () => {
     let s = start();
     s = chatReducer(s, {
@@ -151,12 +182,16 @@ describe('subagent-usage — the producer half', () => {
     'free-model': { in: 0, out: 0 },
   };
 
-  function boot(scripts: any[][]) {
+  // providerType defaults to null (→ the host's cloud-safe 'openrouter'
+  // fallback). It is a parameter because "free" is resolved from the provider
+  // TYPE while the cost is resolved from the rate card — the only way to script
+  // the two disagreeing is to set them independently.
+  function boot(scripts: any[][], providerType: string | null = null) {
     const model = scriptedModel(scripts);
     store = new SessionStore(new NativeHome(root));
     host = new NativeSessionHost(
       store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }),
-      async () => null, async () => null,
+      async () => providerType as any, async () => null,
       async (binding) => PRICES[binding.modelId] ?? null,
     );
     return model;
@@ -173,8 +208,8 @@ describe('subagent-usage — the producer half', () => {
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-subusage-')); });
   afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
 
-  async function runOne(childModelId: string) {
-    boot(RUN);
+  async function runOne(childModelId: string, providerType: string | null = null) {
+    boot(RUN, providerType);
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     const seen: any[] = [];
     host.on('transcript-event', (e) => seen.push(e));
@@ -224,5 +259,80 @@ describe('subagent-usage — the producer half', () => {
     // And it comes back out of getHistory() — the exact list the replay handler
     // streams to a resuming window.
     expect(host.getHistory('root-1')!.filter((e) => e.type === 'subagent-usage')).toHaveLength(1);
+  });
+
+  // Task 23 item 1 — the specialist-path twin of Task 22 item 1 (which fixed
+  // the same contradiction for a parent's own turn-complete, in
+  // harness-session.ts). `free` comes from the provider TYPE and `costUsd`
+  // comes from the rate card: two independent answers with nothing stopping
+  // them disagreeing. A specialist delegated to a model that runs on this
+  // machine, whose model id ALSO carries a published rate, reported a run that
+  // was billed AND cost nothing to run. The status bar has to trust one of
+  // them; `free` wins, and a free run is reported as null, never $0.00.
+  it('never reports a specialist run as billed AND free', async () => {
+    const { seen } = await runOne('child-model', 'local-engine');
+    const ev = seen.find((e) => e.type === 'subagent-usage');
+    expect(ev.data.usage.free).toBe(true);
+    expect(ev.data.usage.costUsd).toBeNull();
+  });
+
+  // Task 23 item 2. The report is only emitted when BOTH sessions are still
+  // live — the child must still be in `this.live` for its price card to be
+  // readable. That `if` had no `else`, so a teardown race between the run
+  // finishing and the report being priced took a path that logged NOTHING: the
+  // parent's totals silently went short by a whole delegated run. A cost figure
+  // that is quietly short is worse than one that is visibly missing.
+  it('says so in the log when a finished specialist\'s spend cannot reach its parent', async () => {
+    const logSpy = vi.spyOn(logger, 'log');
+    store = new SessionStore(new NativeHome(root));
+    let call = 0;
+    let childId = '';
+    // Drops the PARENT's live entry as the child's final step begins — the
+    // teardown race the missing `else` was hiding. Reaching into `live` is the
+    // only way to stage it deterministically: the real race is a destroy
+    // landing inside a window a test cannot otherwise aim at. It has to be the
+    // parent, not the child: runSpecialist's own throwIfEnded already notices a
+    // missing CHILD and fails the run loudly, so the parent is the half that
+    // can genuinely go missing with the run itself completing normally.
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        const chunks = RUN[Math.min(call, RUN.length - 1)];
+        call++;
+        if (call === RUN.length) {
+          for (const [id, entry] of (host as any).live as Map<string, any>) {
+            if (entry.parentSessionId === 'root-1') childId = id;
+          }
+          (host as any).live.delete('root-1');
+        }
+        return { stream: simulateReadableStream({ chunks }) };
+      },
+    });
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }),
+      async () => null, async () => null,
+      async (binding) => PRICES[binding.modelId] ?? null,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const seen: any[] = [];
+    host.on('transcript-event', (e) => seen.push(e));
+    await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader', workDir: root, parentToolCallId: 'tc-1',
+      binding: { providerId: 'openrouter', modelId: 'child-model' },
+      token: { parentId: 'root-1', writer: false }, description: 'find it',
+    } as any);
+    await host.drain('root-1');
+
+    expect(childId).not.toBe('');
+    // Nothing was reported — that is the condition being logged, not a bug here.
+    expect(seen.filter((e) => e.type === 'subagent-usage')).toEqual([]);
+    // ...and the log names WHICH half was missing. It states only what was
+    // looked up and found absent — never a guessed cause
+    // (docs/error-message-standards.md).
+    expect(logSpy).toHaveBeenCalledWith(
+      'ERROR', 'NativeSessionHost',
+      "could not report a finished specialist's spend to its parent (the parent session was no longer live) — the parent's session totals will be short by this run",
+      expect.objectContaining({ childId, parentId: 'root-1' }),
+    );
+    logSpy.mockRestore();
   });
 });

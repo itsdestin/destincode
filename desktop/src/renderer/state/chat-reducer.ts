@@ -1550,7 +1550,22 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // content is a dollar figure would be worse than a missing number.
       // Returning `state` itself (not the `next` copy) keeps the
       // useSyncExternalStore snapshot referentially stable on a no-op.
-      if (!session || !action.usage) return state;
+      if (!session) {
+        // Task 23 item 3. Dropping this silently loses a real dollar figure:
+        // the specialist's tokens and cost are then counted NOWHERE, and the
+        // parent's total is quietly short with nothing to trace it back to.
+        // It should be impossible (SESSION_INIT runs before any transcript
+        // event reaches the reducer), so if it ever happens this line is the
+        // only trace anyone will have.
+        //
+        // WHY here and NOT on the dedup branch below: a second delivery of the
+        // same report is EXPECTED — a resume replays the parent's record while
+        // the live stream may still be delivering. Warning there would print
+        // during ordinary healthy use, which is how a warning stops being read.
+        console.warn(`[chat] subagent-usage arrived for session ${action.sessionId}, which this window does not hold — that specialist's tokens and cost are counted nowhere`);
+        return state;
+      }
+      if (!action.usage) return state;
       // DEDUP on uuid: resume replays the parent's whole record while the live
       // stream may still be delivering, and counting one specialist twice
       // would double the session's reported cost.
