@@ -12,10 +12,11 @@
 // assertions can't live in its own test file anymore (see the note atop
 // tests/session-preview-pane.test.tsx).
 import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import '@testing-library/jest-dom/vitest';
 import { ArtifactContext } from '../src/renderer/state/ArtifactContext';
 import { initialArtifactState } from '../src/renderer/state/artifact-tracker';
-import { COPY, providerLabel } from '../src/shared/chatsearch-refs';
+import { COPY, providerLabel, type ResolvedConversation } from '../src/shared/chatsearch-refs';
 
 // Same reason as session-drawer-session-scoped-labels.test.tsx: theme-context
 // touches localStorage/matchMedia/queryLocalFonts on mount and doesn't export
@@ -36,8 +37,18 @@ import { SessionDrawer } from '../src/renderer/components/SessionDrawer';
 
 // jsdom does not implement scrollIntoView; ConversationTranscript (rendered
 // inside SessionPreviewPane) calls it to jump to the newest message.
+// jsdom also has no matchMedia — the preview header's narrow-viewport
+// collapse (spec A4) now calls useNarrowViewport() unconditionally on every
+// SessionDrawer render, same pattern as use-narrow-viewport.test.tsx's own
+// stub. `matches: false` keeps these header-shape assertions on the WIDE
+// (labelled) rendering, which is what they're pinning.
 beforeAll(() => {
   Element.prototype.scrollIntoView = vi.fn();
+  (window as any).matchMedia = (window as any).matchMedia || ((q: string) => ({
+    matches: false, media: q, onchange: null,
+    addEventListener: () => {}, removeEventListener: () => {},
+    addListener: () => {}, removeListener: () => {}, dispatchEvent: () => true,
+  }));
 });
 
 afterEach(cleanup);
@@ -66,7 +77,17 @@ function stateWithPreview() {
 function mockWindowClaude() {
   (window as any).claude = {
     artifacts: { get: vi.fn(), checkExistence: vi.fn().mockResolvedValue({ ok: true, missingIds: [] }) },
-    chatsearch: { read: vi.fn().mockResolvedValue({ ok: true, messages: [], hasMore: false }) },
+    chatsearch: {
+      read: vi.fn().mockResolvedValue({ ok: true, messages: [], hasMore: false }),
+      // The preview header (A1/A2/A4) resolves the previewed id for Resume's
+      // enabled/disabled state. Answering 'unknown' keeps these pre-existing
+      // header-shape tests indifferent to Resume — they assert on the title/
+      // close-button/list-toggle behaviour this file exists to pin, not on
+      // Resume, which has its own test file.
+      resolve: vi.fn().mockResolvedValue({ ok: true, results: [{ status: 'unknown', query: '' }] }),
+    },
+    session: { getMeta: vi.fn().mockResolvedValue({ tags: [], note: '', supported: true, flags: {} }) },
+    tags: { list: vi.fn().mockResolvedValue([]) },
   };
 }
 
@@ -137,5 +158,203 @@ describe('SessionDrawer: one header for a previewed conversation', () => {
       </ArtifactContext.Provider>,
     );
     expect(await screen.findByText(COPY.untitled)).toBeTruthy();
+  });
+});
+
+// ── Resume + tag/note sheet (spec 2026-08-26-conversation-preview-header-
+// design.md, A1/A2/A4) ──
+type Ok = Extract<ResolvedConversation, { status: 'ok' }>;
+
+function okRow(overrides: Partial<Ok> = {}): Ok {
+  return {
+    status: 'ok',
+    id: PREVIEW.id,
+    provider: 'claude',
+    title: PREVIEW.title,
+    projectName: 'proj',
+    originalPath: '/home/u/proj',
+    lastActive: '2026-08-20T00:00:00.000Z',
+    createdAt: '2026-08-19T00:00:00.000Z',
+    tags: [],
+    complete: false,
+    tombstone: false,
+    projectSlug: 'proj-slug',
+    projectPath: '/home/u/proj',
+    missingProject: false,
+    notSyncedYet: false,
+    ...overrides,
+  };
+}
+
+const TAGS = [{ id: 'tag_work', label: 'work', color: 'tag-blue', archived: false, createdAt: '' }];
+
+function mockWindowClaudeFor(row: ResolvedConversation | null, opts: {
+  getMeta?: ReturnType<typeof vi.fn>; setTag?: ReturnType<typeof vi.fn>; setNote?: ReturnType<typeof vi.fn>;
+} = {}) {
+  (window as any).claude = {
+    artifacts: { get: vi.fn(), checkExistence: vi.fn().mockResolvedValue({ ok: true, missingIds: [] }) },
+    chatsearch: {
+      read: vi.fn().mockResolvedValue({ ok: true, messages: [], hasMore: false }),
+      resolve: vi.fn().mockResolvedValue({ ok: true, results: row ? [row] : [] }),
+    },
+    session: {
+      getMeta: opts.getMeta ?? vi.fn().mockResolvedValue({ tags: [], note: '', supported: true, flags: {} }),
+      setTag: opts.setTag ?? vi.fn().mockResolvedValue({ ok: true }),
+      setNote: opts.setNote ?? vi.fn().mockResolvedValue({ ok: true }),
+    },
+    tags: { list: vi.fn().mockResolvedValue(TAGS), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  };
+}
+
+function renderDrawerWithPreview(preview: typeof PREVIEW = PREVIEW) {
+  const state = { ...stateWithPreview(), activeSessionPreviewBySession: { [SESSION]: preview } };
+  return render(
+    <ArtifactContext.Provider value={{ state, dispatch: vi.fn() }}>
+      <SessionDrawer sessionId={SESSION} projectRoot={ROOT} projectId="proj-1" projectName="proj" />
+    </ArtifactContext.Provider>,
+  );
+}
+
+describe('Resume button (spec A2)', () => {
+  it('is enabled with the continue-in-a-tab hint when the conversation resolves resumable', async () => {
+    mockWindowClaudeFor(okRow());
+    renderDrawerWithPreview();
+    const btn = await screen.findByTitle(COPY.resumeHint);
+    expect(btn).not.toBeDisabled();
+    expect(btn).toHaveTextContent(COPY.resume);
+  });
+
+  it('is disabled with the missing-project reason when the project folder is absent', async () => {
+    mockWindowClaudeFor(okRow({ missingProject: true, projectSlug: '', projectPath: '' }));
+    renderDrawerWithPreview();
+    const btn = await screen.findByTitle(COPY.resumeMissingProject);
+    expect(btn).toBeDisabled();
+  });
+
+  it('is disabled with the not-synced reason when the transcript has not synced to this device', async () => {
+    mockWindowClaudeFor(okRow({ notSyncedYet: true }));
+    renderDrawerWithPreview();
+    const btn = await screen.findByTitle(COPY.resumeNotSynced);
+    expect(btn).toBeDisabled();
+  });
+
+  it('labels the assistant lane "Resume…" — that lane opens a model picker before it launches', async () => {
+    mockWindowClaudeFor(okRow({ provider: 'native' }));
+    renderDrawerWithPreview({ ...PREVIEW, provider: 'native' });
+    const btn = await screen.findByTitle(COPY.resumeNativeHint);
+    expect(btn).toHaveTextContent(COPY.resumeNative);
+    expect(btn).not.toBeDisabled();
+  });
+
+  it('clicking an enabled Resume dispatches youcoded:resume-session with the resolved conversation\'s data', async () => {
+    mockWindowClaudeFor(okRow({ projectSlug: 'my-slug', projectPath: '/my/path' }));
+    renderDrawerWithPreview();
+    const btn = await screen.findByTitle(COPY.resumeHint);
+
+    const heard = vi.fn();
+    window.addEventListener('youcoded:resume-session', (e: any) => heard(e.detail));
+    fireEvent.click(btn);
+
+    // requestResume (tool-views/SessionRefActions.tsx) is reused verbatim —
+    // this is the same four-field shape App.tsx's listener expects.
+    expect(heard).toHaveBeenCalledWith({
+      claudeSessionId: PREVIEW.id,
+      projectSlug: 'my-slug',
+      projectPath: '/my/path',
+      provider: 'claude',
+    });
+  });
+
+  it('a disabled Resume (missing project) never dispatches the event — positive control above', async () => {
+    mockWindowClaudeFor(okRow({ missingProject: true, projectSlug: '', projectPath: '' }));
+    renderDrawerWithPreview();
+    const btn = await screen.findByTitle(COPY.resumeMissingProject);
+
+    const heard = vi.fn();
+    window.addEventListener('youcoded:resume-session', (e: any) => heard(e.detail));
+    fireEvent.click(btn);
+
+    expect(heard).not.toHaveBeenCalled();
+  });
+});
+
+describe('Preview header tag/note sheet (spec A1) — reads/writes through the meta store', () => {
+  it('opens from the tag glyph and shows what session:get-meta answered, not the search index', async () => {
+    mockWindowClaudeFor(okRow(), {
+      getMeta: vi.fn().mockResolvedValue({ tags: ['tag_work'], note: 'a note', supported: true, flags: {} }),
+    });
+    renderDrawerWithPreview();
+    await screen.findByText(PREVIEW.title);
+    fireEvent.click(screen.getByRole('button', { name: `Organize ${PREVIEW.title}` }));
+
+    expect(await screen.findByPlaceholderText('Search or create a tag…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'work' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByPlaceholderText('Add a note…')).toHaveValue('a note');
+  });
+
+  it('applies a tag optimistically and keeps it applied once session:set-tag confirms', async () => {
+    const setTag = vi.fn().mockResolvedValue({ ok: true });
+    mockWindowClaudeFor(okRow(), { setTag });
+    renderDrawerWithPreview();
+    await screen.findByText(PREVIEW.title);
+    fireEvent.click(screen.getByRole('button', { name: `Organize ${PREVIEW.title}` }));
+    const tagBtn = await screen.findByRole('button', { name: 'work' });
+    expect(tagBtn).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(tagBtn);
+    expect(tagBtn).toHaveAttribute('aria-pressed', 'true'); // optimistic, before the write resolves
+    await waitFor(() => expect(setTag).toHaveBeenCalledWith(PREVIEW.id, 'tag_work', true));
+    expect(tagBtn).toHaveAttribute('aria-pressed', 'true'); // still applied — the write succeeded
+  });
+
+  it('rolls back an optimistic tag apply when session:set-tag reports {ok:false} — negative case for the test above', async () => {
+    const setTag = vi.fn().mockResolvedValue({ ok: false });
+    mockWindowClaudeFor(okRow(), { setTag });
+    renderDrawerWithPreview();
+    await screen.findByText(PREVIEW.title);
+    fireEvent.click(screen.getByRole('button', { name: `Organize ${PREVIEW.title}` }));
+    const tagBtn = await screen.findByRole('button', { name: 'work' });
+
+    fireEvent.click(tagBtn);
+    expect(tagBtn).toHaveAttribute('aria-pressed', 'true'); // optimistic
+    // A failed write must not look like it succeeded (spec risk note) — the
+    // chip un-applies once the refusal comes back.
+    await waitFor(() => expect(tagBtn).toHaveAttribute('aria-pressed', 'false'));
+  });
+
+  it('rolls back a note edit when session:set-note reports {ok:false}', async () => {
+    const setNote = vi.fn().mockResolvedValue({ ok: false });
+    mockWindowClaudeFor(okRow(), {
+      getMeta: vi.fn().mockResolvedValue({ tags: [], note: 'original', supported: true, flags: {} }),
+      setNote,
+    });
+    renderDrawerWithPreview();
+    await screen.findByText(PREVIEW.title);
+    fireEvent.click(screen.getByRole('button', { name: `Organize ${PREVIEW.title}` }));
+    const noteField = await screen.findByPlaceholderText('Add a note…');
+    expect(noteField).toHaveValue('original');
+
+    fireEvent.change(noteField, { target: { value: 'edited' } });
+    fireEvent.blur(noteField);
+    await waitFor(() => expect(setNote).toHaveBeenCalledWith(PREVIEW.id, 'edited'));
+    // The UI must not keep a change the backend rejected.
+    await waitFor(() => expect(screen.getByPlaceholderText('Add a note…')).toHaveValue('original'));
+  });
+
+  it('keeps a note edit once session:set-note confirms it — positive control for the rollback test above', async () => {
+    const setNote = vi.fn().mockResolvedValue({ ok: true });
+    mockWindowClaudeFor(okRow(), {
+      getMeta: vi.fn().mockResolvedValue({ tags: [], note: 'original', supported: true, flags: {} }),
+      setNote,
+    });
+    renderDrawerWithPreview();
+    await screen.findByText(PREVIEW.title);
+    fireEvent.click(screen.getByRole('button', { name: `Organize ${PREVIEW.title}` }));
+    const noteField = await screen.findByPlaceholderText('Add a note…');
+
+    fireEvent.change(noteField, { target: { value: 'edited' } });
+    fireEvent.blur(noteField);
+    await waitFor(() => expect(setNote).toHaveBeenCalledWith(PREVIEW.id, 'edited'));
+    expect(screen.getByPlaceholderText('Add a note…')).toHaveValue('edited');
   });
 });

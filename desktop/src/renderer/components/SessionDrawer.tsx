@@ -16,9 +16,10 @@ import { useGitFileStatus } from '../hooks/useGitFileStatus';
 import { gitFooterState } from '../utils/git-footer';
 import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
 import SessionPreviewPane from './SessionPreviewPane';
-// 6b (cut candidate — see Task 6 brief 6b): COPY/providerLabel are used ONLY
-// by the "Referenced conversations" list block below. If that block is cut,
-// this import goes with it.
+// 6b: COPY/providerLabel were originally added ONLY for the "Referenced
+// conversations" list block below (a cut candidate — see Task 6 brief 6b).
+// The A1/A2/A4 preview header (Resume + tag/note sheet) now uses COPY too, so
+// this import no longer goes away if that block is cut.
 import { COPY, providerLabel } from '../../shared/chatsearch-refs';
 import { useArtifactContent } from './artifact-views/useArtifactContent';
 import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
@@ -31,8 +32,15 @@ import { fileTypeGroup } from '../../shared/artifacts/categorization';
 import type { FileTypeGroup } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
-import { CloseButton, EmptyState, SearchFilterPill } from './ui';
+import { Button, CloseButton, EmptyState, SearchFilterPill } from './ui';
 import { FileFilterPopover } from './project-view/FileFilterPopover';
+import { useResolvedConversations } from '../hooks/useResolvedConversations';
+import { useTagRegistry } from '../hooks/useTagRegistry';
+import { usePreviewMeta } from '../hooks/usePreviewMeta';
+import { useNarrowViewport } from '../hooks/use-narrow-viewport';
+import { resumeBlockedReason, requestResume } from './tool-views/SessionRefActions';
+import { TagGlyph } from './tags/glyphs';
+import { TagNoteEditor } from './tags/TagNoteEditor';
 
 // 'type' removed 2026-07-23 — the Type FILTER supersedes sorting by type.
 type SortKey = 'recent' | 'name';
@@ -135,6 +143,61 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const activePreview = state.activeSessionPreviewBySession[sessionId] ?? null;
   // "Referenced conversations" list (6b, cut candidate — see Task 6 brief).
   const referenced = state.referencedSessionsBySession[sessionId] ?? [];
+
+  // ── Preview header: Resume + tag/note sheet (spec A1/A2/A4, 2026-08-26) ──
+  // Called HERE, unconditionally, rather than inside the `activePreview ?`
+  // branch below — this component has an early return further down (`if
+  // (!active && !activePreview) return <aside>…`), and rules of hooks means
+  // every hook this component calls must run on every render regardless of
+  // which branch is about to be taken. useResolvedConversations is a no-op
+  // (no chatsearch:resolve call) when passed `[]`, so an idle drawer viewing
+  // a real file — or with nothing open at all — costs nothing extra.
+  const previewResolved = useResolvedConversations(activePreview ? [activePreview.id] : []);
+  const previewRow = activePreview
+    ? previewResolved.results.find((r) => (r.status === 'ok' ? r.id === activePreview.id : r.query === activePreview.id)) ?? null
+    : null;
+  // The Resume Browser's own registry — same tags, same colors, one source.
+  const previewTagRegistry = useTagRegistry();
+  // Tags/note come from the meta store, NOT the search index (A1): the index
+  // only refreshes at launch/session-end, so it would show a tag as applied
+  // (or missing) that the store already disagrees with. `usePreviewMeta`
+  // returns a no-op api when `activePreview` is null.
+  const previewMeta = usePreviewMeta(activePreview ? activePreview.id : null);
+  const narrowViewport = useNarrowViewport();
+  const [previewSheetOpen, setPreviewSheetOpen] = useState(false);
+  const previewSheetWrapRef = useRef<HTMLDivElement>(null);
+  useEscClose(previewSheetOpen, () => setPreviewSheetOpen(false));
+  useEffect(() => {
+    if (!previewSheetOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (previewSheetWrapRef.current && !previewSheetWrapRef.current.contains(e.target as Node)) {
+        setPreviewSheetOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [previewSheetOpen]);
+  // Sheet must not survive a preview swap/close — reopening on a DIFFERENT
+  // conversation's Preview click must not silently show the outgoing one's
+  // still-open tag sheet.
+  useEffect(() => { setPreviewSheetOpen(false); }, [activePreview?.id]);
+
+  // Resume's enabled/disabled state and tooltip (spec A2). `previewRow` is
+  // only a resumable `Ok` conversation once `chatsearch:resolve` answers
+  // 'ok' — every other status (still loading, unknown, ambiguous) disables
+  // Resume with a copy-book reason rather than a raw id or a blank button.
+  const previewNative = activePreview?.provider === 'native';
+  const previewOk = previewRow && previewRow.status === 'ok' ? previewRow : null;
+  const previewBlockedReason = previewOk ? resumeBlockedReason(previewOk) : null;
+  const previewResumeDisabled = !previewOk || !!previewBlockedReason;
+  const previewResumeTitle = previewOk
+    ? (previewBlockedReason ?? (previewNative ? COPY.resumeNativeHint : COPY.resumeHint))
+    : previewRow?.status === 'ambiguous'
+      ? COPY.ambiguousId(previewRow.candidates.length)
+      : previewRow?.status === 'unknown'
+        ? COPY.unknownId
+        : previewResolved.loading ? COPY.lookingUp(1) : COPY.unknownId;
+  const previewResumeLabel = previewNative ? COPY.resumeNative : COPY.resume;
   // Live external-change events while the drawer is actually visible — the
   // watcher in main is refcounted, so open drawers on the same project share one.
   useProjectWatch(drawerOpen && projectRoot ? projectRoot : null);
@@ -738,6 +801,67 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           </div>
         ) : null}
         <div className="flex-1" />
+        {/* Resume + tag/note sheet (spec A4): `☰ list · title · (spacer) ·
+            Resume · 🏷 tag · ⛶ expand · ✕ close`. Both are `activePreview`-
+            only — a real artifact never shows them, and the file-only icons
+            below stay `active &&`-gated exactly as before. */}
+        {activePreview && (
+          <>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={previewResumeDisabled}
+              title={previewResumeTitle}
+              // Narrow (<640px, spec: checked at 390px): collapse the label to
+              // the same glyph "Review Changes" already uses for "continue" —
+              // the button becomes icon-only, so its accessible name has to
+              // move from the text node to aria-label.
+              aria-label={narrowViewport ? previewResumeLabel : undefined}
+              onClick={previewOk && !previewBlockedReason ? () => requestResume(previewOk) : undefined}
+            >
+              {narrowViewport ? <Ic name="forward" size={14} /> : previewResumeLabel}
+            </Button>
+            <div ref={previewSheetWrapRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setPreviewSheetOpen((v) => !v)}
+                aria-label={`Organize ${activePreview.title || COPY.untitled}`}
+                aria-haspopup="dialog"
+                aria-expanded={previewSheetOpen}
+                className={`w-7 h-7 rounded-md inline-flex items-center justify-center shrink-0 border transition-colors ${
+                  previewSheetOpen ? 'text-fg bg-well border-edge' : 'text-fg-dim border-transparent hover:text-fg hover:bg-well hover:border-edge'
+                }`}
+              >
+                {/* Same mark as the Resume Browser's tag button (glyphs.tsx) —
+                    shared so it can't drift between the two surfaces. */}
+                <TagGlyph className="w-4 h-4" />
+              </button>
+              {previewSheetOpen && (
+                // layer-surface (panel) hosting TagNoteEditor's own bg-inset
+                // card — the same nesting CloseSessionPrompt's OverlayPanel
+                // uses, and TagNoteEditor already lifts its OWN fields to
+                // bg-well against that bg-inset card, so no fieldClassName
+                // override is needed here (unlike the Resume Browser, whose
+                // sheet drops the TagPicker/NoteEditor straight onto its
+                // bg-inset card with no layer-surface between it and the
+                // panel below).
+                <div
+                  className="layer-surface absolute right-0 top-full mt-2 w-[280px] p-2 z-30"
+                  role="dialog"
+                  aria-label="Tags and note"
+                >
+                  <TagNoteEditor
+                    appliedIds={new Set(previewMeta.tags)}
+                    onToggleTag={previewMeta.toggleTag}
+                    registry={previewTagRegistry}
+                    note={previewMeta.note}
+                    onNote={previewMeta.saveNote}
+                  />
+                </div>
+              )}
+            </div>
+          </>
+        )}
         {/* Edit/Save moved to the floating button at the bottom-right of the
             doc pane (Destin, 2026-07-22) — see the cluster below the content div. */}
         {active && isElectron && <IconBtn name="external" title="Open with the default app" onClick={handleOpenExternal} />}

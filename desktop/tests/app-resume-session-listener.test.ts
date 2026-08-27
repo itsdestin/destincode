@@ -1,0 +1,63 @@
+import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+
+// Guard for the youcoded:resume-session listener (spec
+// 2026-08-26-conversation-preview-header-design.md A2, plan Task 12 pulled
+// forward). App.tsx is 3600+ lines and mounting it in a test requires the
+// full renderer boot sequence (PTY host, remote server, localStorage under
+// jsdom's default origin, dozens of window.claude channels) — a spike to
+// mount the real component against the workbench's own mock shim got as far
+// as the buddy-window effect before hitting an unrelated jsdom localStorage
+// gap, which is exactly the kind of unrelated failure app-quit-routes.test.ts
+// (main.ts) already accepted this same tradeoff for. So, like that file, this
+// pins the invariant against the SOURCE TEXT rather than a live mount — a
+// weaker guard (it proves the listener is wired correctly, not that clicking
+// Resume in a running app ends in a new tab), but a real one: the component-
+// level test (tests/session-drawer-preview-header.test.tsx) already proves
+// the CustomEvent itself carries the right payload when Resume is clicked;
+// this proves the OTHER end reads that payload correctly and hands it to
+// handleResumeSession untouched.
+describe('App.tsx: youcoded:resume-session listener', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'App.tsx'), 'utf8');
+
+  it('registers a listener for the event SessionRefActions.requestResume (and the preview header) dispatch', () => {
+    expect(src).toMatch(/window\.addEventListener\('youcoded:resume-session', onResume\)/);
+    expect(src).toMatch(/window\.removeEventListener\('youcoded:resume-session', onResume\)/);
+  });
+
+  it('bails when the detail is missing any of the three required fields, before calling handleResumeSession', () => {
+    // The guard clause must run BEFORE the call, and must check all three —
+    // a payload with a hole must never reach handleResumeSession's
+    // positional arguments.
+    const onResumeBody = /const onResume = \(e: Event\) => \{([\s\S]*?)\};\n\s*window\.addEventListener/.exec(src)?.[1] ?? '';
+    expect(onResumeBody).toMatch(/if \(!d\?\.claudeSessionId \|\| !d\.projectSlug \|\| !d\.projectPath\) return;/);
+    // The guard must appear textually before the call it's guarding.
+    const guardIdx = onResumeBody.indexOf('if (!d?.claudeSessionId');
+    const callIdx = onResumeBody.indexOf('handleResumeSession(');
+    expect(guardIdx).toBeGreaterThanOrEqual(0);
+    expect(callIdx).toBeGreaterThan(guardIdx);
+  });
+
+  it('calls handleResumeSession with the event\'s three required fields, provider passed through, and launchInNewWindow undefined', () => {
+    // Positional: (claudeSessionId, projectSlug, projectPath, resumeModel,
+    // resumeDangerous, launchInNewWindow, provider, nativeBinding). The
+    // spec (A2, Destin: "not new 'window' just new tab in session") requires
+    // launchInNewWindow (arg 6) to be explicitly undefined, not omitted —
+    // omitting it would read the same at the call site but is the harder
+    // invariant to keep true across a future signature change, so pin the
+    // literal.
+    expect(src).toMatch(
+      /handleResumeSession\(d\.claudeSessionId, d\.projectSlug, d\.projectPath, undefined, undefined, undefined, d\.provider\)/,
+    );
+  });
+
+  it('is declared after handleResumeSession, not "next to" youcoded:open-library — a TDZ constraint, documented at the call site', () => {
+    const resumeListenerIdx = src.indexOf("addEventListener('youcoded:resume-session'");
+    const openLibraryListenerIdx = src.indexOf("addEventListener('youcoded:open-library'");
+    const handleResumeDeclIdx = src.indexOf('const handleResumeSession = useCallback');
+    expect(openLibraryListenerIdx).toBeGreaterThan(0);
+    expect(handleResumeDeclIdx).toBeGreaterThan(openLibraryListenerIdx);
+    expect(resumeListenerIdx).toBeGreaterThan(handleResumeDeclIdx);
+  });
+});
