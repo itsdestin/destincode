@@ -5,7 +5,7 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
-import { Button, CloseButton, SegmentedTabs } from "../ui";
+import { Button, CloseButton, EmptyState, SegmentedTabs } from "../ui";
 import MarketplaceCard from "../marketplace/MarketplaceCard";
 import WallpaperBackdrop from "../WallpaperBackdrop";
 import MarketplaceGrid from "../marketplace/MarketplaceGrid";
@@ -47,6 +47,20 @@ export default function LibraryScreen({
     () => Object.values(mp.updateAvailable).filter(Boolean).length,
     [mp.updateAvailable],
   );
+
+  // Installed-theme count for the Themes segment — themeEntries holds the whole
+  // registry, so filter to what is actually installed (mirrors the Installed
+  // themes section below).
+  const installedThemeCount = useMemo(
+    () => mp.themeEntries.filter(t => t.installed).length,
+    [mp.themeEntries],
+  );
+
+  // Empty-state CTA for the Installed sections. undefined when the screen was
+  // mounted without a marketplace destination, so EmptyState renders no button.
+  const browseAction = onOpenMarketplace
+    ? { label: 'Browse the Marketplace', onClick: onOpenMarketplace }
+    : undefined;
 
   // If the user is on the updates tab and updates drop to zero, fall back to skills.
   useEffect(() => {
@@ -175,21 +189,29 @@ export default function LibraryScreen({
         </div>
       </div>
 
-      {/* Tab chip row — sticky so it stays visible while scrolling content.
-          Change 45: two visual changes here, both deliberate. Inactive tabs lose
-          their permanent bg-inset fill (approved option B — transparent, hover
-          reveals the tint), and the labels shrink text-sm -> text-xs to match the
-          one tab recipe. The Updates tab is conditional, so it is appended to the
-          array rather than rendered as a sibling — otherwise it would sit outside
-          the tablist and drop out of arrow-key navigation. */}
+      {/* Tab row — sticky so it stays visible while scrolling content.
+          UI review P-2 #2: the Library adopts the Projects header switcher —
+          one rounded-full pill of icon + label + count segments — so the two
+          top-level browsing screens share a single switcher shape. The pill
+          look itself lives in SegmentedTabs (variant="pill"); this file only
+          supplies the segment contents. The Updates tab is conditional, so it
+          is appended to the array rather than rendered as a sibling — otherwise
+          it would sit outside the tablist and drop out of arrow-key navigation. */}
       <div className="sticky top-0 z-10 bg-canvas px-4 py-2 border-b border-edge-dim">
         <SegmentedTabs
           aria-label="Library sections"
+          variant="pill"
           value={tab}
           onChange={(id) => setTab(id as typeof tab)}
           tabs={[
-            { id: 'skills', label: 'Skills' },
-            { id: 'themes', label: 'Themes' },
+            {
+              id: 'skills',
+              label: <TabLabel icon={<SkillIcon />} text="Skills" count={mp.installedSkills.length} active={tab === 'skills'} />,
+            },
+            {
+              id: 'themes',
+              label: <TabLabel icon={<PaletteIcon />} text="Themes" count={installedThemeCount} active={tab === 'themes'} />,
+            },
             ...(updateCount > 0 ? [{ id: 'updates', label: `Updates · ${updateCount}` }] : []),
           ]}
         />
@@ -202,14 +224,14 @@ export default function LibraryScreen({
              plugin's marketplace detail overlay. */}
         {tab === 'skills' && (
           <>
-            <Section title="Favorites" empty="No favorites yet — tap the star on any installed skill.">
+            <Section title="Favorites" empty="Star an installed skill and it appears here.">
               {mp.installedSkills.filter(s => favSet.has(s.id)).length > 0 && (
                 <MarketplaceGrid>
                   {mp.installedSkills.filter(s => favSet.has(s.id)).map(renderSkillCard)}
                 </MarketplaceGrid>
               )}
             </Section>
-            <Section title="Installed" empty="Install something from the marketplace to see it here.">
+            <Section title="Installed" empty="Nothing installed yet." action={browseAction}>
               {mp.installedSkills.filter(s => !favSet.has(s.id)).length > 0 && (
                 <MarketplaceGrid>
                   {mp.installedSkills.filter(s => !favSet.has(s.id)).map(renderSkillCard)}
@@ -222,14 +244,14 @@ export default function LibraryScreen({
         {/* Themes tab — starred theme favorites first, then the rest. */}
         {tab === 'themes' && (
           <>
-            <Section title="Favorite themes" empty="No favorite themes yet — tap the star on any installed theme.">
+            <Section title="Favorite themes" empty="Star an installed theme and it appears here.">
               {mp.themeEntries.filter(t => t.installed && themeFavSet.has(t.slug)).length > 0 && (
                 <MarketplaceGrid>
                   {mp.themeEntries.filter(t => t.installed && themeFavSet.has(t.slug)).map(renderThemeCard)}
                 </MarketplaceGrid>
               )}
             </Section>
-            <Section title="Installed themes" empty="No themes installed.">
+            <Section title="Installed themes" empty="No themes installed yet." action={browseAction}>
               {mp.themeEntries.filter(t => t.installed && !themeFavSet.has(t.slug)).length > 0 && (
                 <MarketplaceGrid>
                   {mp.themeEntries.filter(t => t.installed && !themeFavSet.has(t.slug)).map(renderThemeCard)}
@@ -270,12 +292,61 @@ export default function LibraryScreen({
   );
 }
 
-function Section({ title, empty, children }: { title: string; empty: string; children?: React.ReactNode }) {
-  const hasContent = React.Children.count(children) > 0;
+function Section({ title, empty, action, children }: {
+  title: string;
+  empty: string;
+  // Optional button under the empty message (Installed sections offer "Browse
+  // the Marketplace"; Favorites sections have nothing to offer, so none).
+  action?: { label: string; onClick: () => void };
+  children?: React.ReactNode;
+}) {
+  // Bug fix (UI review P-2 #1): every call site passes `{cond && <Grid/>}`,
+  // and when `cond` is false that child is the literal `false` — which
+  // React.Children.count STILL counts as 1. So `hasContent` was always true
+  // and the empty state had never rendered on any theme since this file was
+  // written. toArray() drops null/undefined/boolean children, so filtering it
+  // counts only real elements.
+  const hasContent = React.Children.toArray(children).filter(Boolean).length > 0;
   return (
     <section>
       <h2 className="text-lg font-medium text-fg px-1 mb-2">{title}</h2>
-      {hasContent ? children : <p className="text-fg-dim px-1 text-sm">{empty}</p>}
+      {hasContent ? children : <EmptyState message={empty} action={action} />}
     </section>
+  );
+}
+
+// Segment contents for the pill switcher: icon + label + count. Count styling
+// mirrors ProjectView's segments — subdued on the active (accent) segment,
+// muted on inactive ones — so the two screens read as one control.
+function TabLabel({ icon, text, count, active }: { icon: React.ReactNode; text: string; count: number; active: boolean }) {
+  return (
+    <>
+      <span className="shrink-0 inline-flex" aria-hidden>{icon}</span>
+      <span>{text}</span>
+      <span className={`text-2xs shrink-0 ${active ? 'opacity-80' : 'text-fg-muted'}`}>{count}</span>
+    </>
+  );
+}
+
+// Inline icons sized to match ProjectView's segment icons (16px, 2px stroke).
+function SkillIcon() {
+  // Four-point sparkle — the app's "skill" mark.
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z" />
+    </svg>
+  );
+}
+
+function PaletteIcon() {
+  // Painter's palette with four paint wells.
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 1.4-3.4 2 2 0 0 1 1.4-3.4H19a2.5 2.5 0 0 0 2.5-2.5A9 9 0 0 0 12 3z" />
+      <circle cx="7.5" cy="12" r="1" />
+      <circle cx="10" cy="7.5" r="1" />
+      <circle cx="15" cy="7.5" r="1" />
+      <circle cx="17.5" cy="11.5" r="1" />
+    </svg>
   );
 }

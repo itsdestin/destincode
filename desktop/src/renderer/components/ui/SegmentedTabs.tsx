@@ -23,9 +23,12 @@ export type SegmentedTabsProps = {
   tabs: readonly SegmentedTab[];
   value: string;
   onChange: (id: string) => void;
-  /** bare = a plain row (Library). contained = tabs share an inset trough and
-   *  split the width evenly (BugReportPopup). */
-  variant?: 'bare' | 'contained';
+  /** bare = a plain row. contained = tabs share an inset trough and split the
+   *  width evenly (BugReportPopup). pill = one rounded-full layer-surface pill
+   *  holding rounded-full segments — the Projects header switcher, adopted by
+   *  the Library (UI review P-2 #2) so the two top-level browsing screens share
+   *  one switcher shape. */
+  variant?: 'bare' | 'contained' | 'pill';
   'aria-label'?: string;
   className?: string;
 };
@@ -33,6 +36,14 @@ export type SegmentedTabsProps = {
 const TAB_BASE = `px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${FOCUS_RING}`;
 const TAB_ACTIVE = 'bg-accent text-on-accent';
 const TAB_INACTIVE = 'text-fg-2 hover:bg-inset';
+
+// Pill recipe — copied verbatim from ProjectView's segmented control (the
+// wide/desktop branch) so a Library segment and a Projects segment render
+// pixel-identical. Kept as separate constants rather than folded into TAB_*
+// so the bare/contained variants stay byte-for-byte what they were.
+const PILL_CONTAINER = 'flex items-center gap-1 p-1 layer-surface !rounded-full';
+const PILL_TAB_BASE = `shrink-0 px-3.5 py-1.5 rounded-full text-sm-tight font-medium inline-flex items-center justify-center gap-2 transition-colors ${FOCUS_RING}`;
+const PILL_TAB_INACTIVE = 'text-fg-2 hover:text-fg hover:bg-inset';
 
 export function SegmentedTabs({
   tabs,
@@ -51,17 +62,26 @@ export function SegmentedTabs({
     onChange(tabs[(i + delta + tabs.length) % tabs.length].id);
   };
 
+  const pill = variant === 'pill';
+
   return (
     <div
       role="tablist"
       aria-label={ariaLabel}
       onKeyDown={onKeyDown}
       className={[
-        variant === 'contained' ? 'flex gap-1 p-1 bg-inset/50 rounded-lg' : 'flex gap-2',
+        pill
+          ? PILL_CONTAINER
+          : variant === 'contained'
+            ? 'flex gap-1 p-1 bg-inset/50 rounded-lg'
+            : 'flex gap-2',
         className,
       ]
         .filter(Boolean)
         .join(' ')}
+      // layer-surface carries the big panel drop shadow; a control sitting in
+      // a header should not cast one. Same override ProjectView uses.
+      style={pill ? { boxShadow: 'none' } : undefined}
     >
       {tabs.map((tab) => {
         const active = tab.id === value;
@@ -75,8 +95,8 @@ export function SegmentedTabs({
             tabIndex={active ? 0 : -1}
             onClick={() => onChange(tab.id)}
             className={[
-              TAB_BASE,
-              active ? TAB_ACTIVE : TAB_INACTIVE,
+              pill ? PILL_TAB_BASE : TAB_BASE,
+              active ? TAB_ACTIVE : pill ? PILL_TAB_INACTIVE : TAB_INACTIVE,
               variant === 'contained' ? 'flex-1' : '',
             ]
               .filter(Boolean)

@@ -5,6 +5,7 @@ import FavoriteStar from './marketplace/FavoriteStar';
 import { computeOnAccent } from '../themes/theme-validator';
 import SettingsExplainer, { type ExplainerSection } from './SettingsExplainer';
 import type { LoadedTheme } from '../themes/theme-types';
+import { themePreviewSrc } from '../themes/builtin/previews';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Button, Select, Toggle, SettingRow } from './ui';
 
@@ -91,6 +92,19 @@ interface Props {
 }
 
 // Small pencil icon used on theme cards to open the per-theme edit panel.
+// The top of a theme card: the theme's preview picture (built-ins ship theirs; community
+// and user themes serve preview.png from their folder). If the picture cannot load — no
+// preview.png, or a remote client that cannot resolve theme-asset:// — the card falls
+// back to the token gradient the cards used to show, so nothing is ever blank.
+function ThemePreviewStrip({ theme }: { theme: LoadedTheme }) {
+  const [failed, setFailed] = useState(false);
+  const src = themePreviewSrc(theme);
+  if (!src || failed) {
+    return <div className="absolute inset-x-0 top-0 h-10" style={{ background: `linear-gradient(90deg, ${theme.tokens.canvas}, ${theme.tokens.accent})` }} aria-hidden="true" />;
+  }
+  return <img src={src} alt="" className="absolute inset-x-0 top-0 h-10 w-full object-cover object-top" onError={() => setFailed(true)} />;
+}
+
 const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
   <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
     <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
@@ -111,7 +125,7 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
 
   // Appearance panel shows favorites only, plus the active theme as a fallback
   // so there's always at least one card even when the user has unstarred their
-  // current theme. "Browse all themes" is the escape hatch for the full list.
+  // current theme. The full installed list lives in Your Library › Themes.
   const gridThemes = useMemo(() => {
     const favs = allThemes.filter(t => themeFavSet.has(t.slug));
     if (favs.some(t => t.slug === activeSlug)) return favs;
@@ -163,7 +177,7 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
         {/* Theme grid — pencil on each card opens the per-theme edit view.
             Cycle membership moved to the status bar widget editor. */}
         <div>
-          <p className="text-4xs text-fg-muted uppercase tracking-wider mb-2">Your Themes</p>
+          <p className="text-4xs text-fg-muted uppercase tracking-wider mb-2">Favorited Themes</p>
           <div className="grid grid-cols-2 gap-2">
             {gridThemes.map(t => {
               const isActive = t.slug === activeSlug;
@@ -183,16 +197,22 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
                   // active theme's panel over it would defeat the preview.
                   // They were the only keyboard-reachable control in this file
                   // with no focus indication at all.
-                  className={`relative rounded-lg overflow-hidden border text-left transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
+                  // Phase C P-3 #1 (Destin, 2026-08-27): every card is the same fixed
+                  // height — the height the active card used to grow to — and the
+                  // top is the theme's preview picture (the same one Marketplace and
+                  // Library cards show). Before, only the active card had a second
+                  // row ("active"), so its row-mate stretched to match and showed an
+                  // empty strip with a floating pencil. Now nothing ever grows: name,
+                  // "active" and the pencil share ONE row at the bottom.
+                  className={`relative h-16 rounded-lg overflow-hidden border text-left transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
+                  style={{ background: t.tokens.canvas }}
                 >
-                  <div style={{ height: 6, background: `linear-gradient(90deg, ${t.tokens.canvas}, ${t.tokens.accent})` }} />
-                  <div className="px-2 py-1.5" style={{ background: t.tokens.canvas }}>
-                    {/* Leave room on right for the pencil and star icons */}
-                    <p className="text-3xs font-medium truncate pr-8" style={{ color: t.tokens.fg }}>{t.name}</p>
-                    {isActive && <span className="text-4xs" style={{ color: t.tokens.accent }}>active</span>}
-                  </div>
-                  {/* Pencil — opens the per-theme edit menu. Positioned bottom-right
-                      to avoid overlap with the star which occupies top-right. */}
+                  <ThemePreviewStrip theme={t} />
+                  <div className="absolute inset-x-0 bottom-0 h-6 flex items-center gap-1.5 pl-2 pr-1" style={{ background: t.tokens.canvas }}>
+                    <p className="text-3xs font-medium truncate flex-1 min-w-0" style={{ color: t.tokens.fg }}>{t.name}</p>
+                    {isActive && <span className="text-4xs shrink-0" style={{ color: t.tokens.accent }}>active</span>}
+                  {/* Pencil — opens the per-theme edit menu. Sits in the bottom row
+                      beside the name; the star keeps the top-right corner. */}
                   <button
                     type="button"
                     onClick={e => { e.stopPropagation(); openEditor(t.slug); }}
@@ -204,13 +224,14 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
                     // to the inline `color` below, i.e. that theme's own fg, so the
                     // hover is legible on a light and a dark swatch alike. 20% black
                     // could not do that — it vanished on dark themes.
-                    className="absolute bottom-1 right-1 w-5 h-5 rounded-sm flex items-center justify-center hover:bg-current/15 coarse-hit transition-colors"
+                    className="w-5 h-5 shrink-0 rounded-sm flex items-center justify-center hover:bg-current/15 coarse-hit transition-colors"
                     style={{ color: t.tokens.fg }}
                     title="Edit theme"
                     aria-label={`Edit ${t.name}`}
                   >
                     <PencilIcon />
                   </button>
+                  </div>
                   {/* Star — toggles this theme in/out of the Appearance panel favorites. */}
                   <FavoriteStar
                     filled={isFav}
@@ -224,17 +245,22 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
           </div>
         </div>
 
-        {/* Browse all themes — dispatches a global event that App.tsx listens
-            for to open the Library on the themes tab and close this popup. */}
-        <button
-          type="button"
-          onClick={() => {
-            window.dispatchEvent(new CustomEvent('youcoded:open-library', { detail: { tab: 'themes' } }));
-          }}
-          className="layer-surface w-full mt-1 px-4 py-3 text-fg-2 hover:text-fg text-sm flex items-center justify-center gap-2"
-        >
-          Browse all themes →
-        </button>
+        {/* Browse marketplace — above Build (Destin, Phase C P-3 #3, 2026-08-27):
+            the old "Browse all themes →" button is gone; it opened Your Library ›
+            Themes and read as a duplicate of this one. Installed themes are one
+            click away in the Library; this button is how you get MORE. */}
+        {onOpenMarketplace && (
+          <Button
+            variant="secondary"
+            onClick={() => {
+              onOpenMarketplace();
+              onClose();
+            }}
+            className="w-full py-2"
+          >
+            Browse Theme Marketplace
+          </Button>
+        )}
 
         {/* Build with Claude — surfaced directly below the grid so users see
             the "make a new one" affordance before the ancillary toggles.
@@ -262,19 +288,6 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
           ✦ Build New Theme with Claude
         </Button>
 
-        {/* Browse marketplace — paired with Build as the two acquisition paths */}
-        {onOpenMarketplace && (
-          <Button
-            variant="secondary"
-            onClick={() => {
-              onOpenMarketplace();
-              onClose();
-            }}
-            className="w-full py-2"
-          >
-            Browse Theme Marketplace
-          </Button>
-        )}
 
         {/* Reduce Visual Effects — always on the main screen (accessibility/perf toggle).
             Global: disables particles, forces blur to 0, shortens animations. Previously
