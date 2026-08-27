@@ -41,7 +41,10 @@ const TAB_INACTIVE = 'text-fg-2 hover:bg-inset';
 // wide/desktop branch) so a Library segment and a Projects segment render
 // pixel-identical. Kept as separate constants rather than folded into TAB_*
 // so the bare/contained variants stay byte-for-byte what they were.
-const PILL_CONTAINER = 'flex items-center gap-1 p-1 layer-surface !rounded-full';
+// w-fit: the pill hugs its segments like the Projects header does — as a plain `flex`
+// in a block parent it stretched across the whole Library page (seen in the Phase C
+// after-sweep, 2026-08-27).
+const PILL_CONTAINER = 'w-fit flex items-center gap-1 p-1 layer-surface !rounded-full';
 const PILL_TAB_BASE = `shrink-0 px-3.5 py-1.5 rounded-full text-sm-tight font-medium inline-flex items-center justify-center gap-2 transition-colors ${FOCUS_RING}`;
 const PILL_TAB_INACTIVE = 'text-fg-2 hover:text-fg hover:bg-inset';
 
