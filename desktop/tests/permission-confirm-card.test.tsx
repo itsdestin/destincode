@@ -55,7 +55,7 @@ describe('deny-listed always-allow confirm', () => {
   it('states the project-scoped consequence (copy shared with the full-auto stop — owner-set 2026-08-12)', () => {
     renderConfirm();
     expect(
-      screen.getByText("It may delete files or change published code, and you won't be asked again during future sessions in this project."),
+      screen.getByText("This can delete files or change published code, and you won't be asked again in this project."),
     ).toBeTruthy();
   });
 

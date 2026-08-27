@@ -1,6 +1,6 @@
 import { useArtifactOptional } from '../state/ArtifactContext';
 import { asString } from '../utils/tool-input';
-import { useDelegatedModels, useSpecialistDefinition, useSpecialistRoster, useSpecialistRunByChild, definedBy } from '../hooks/useSpecialists';
+import { useDelegatedModels, useSpecialistDefinition, useSpecialistRunByChild } from '../hooks/useSpecialists';
 import type { SpecialistDefinitionView, ToolCallState } from '../../shared/types';
 
 /** ToolCard's entry: resolves the roster + target for the awaiting Task card.
@@ -13,16 +13,17 @@ export function TaskConsentBlock({ tool, sessionId }: { tool: ToolCallState; ses
   const cwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
   const agent = asString(tool.input.agent) || undefined;
   const definition = useSpecialistDefinition(cwd, agent);
-  const roster = useSpecialistRoster(cwd);
-  const folders = roster.status === 'ready' ? roster.result.folders : undefined;
   const taskId = asString(tool.input.task_id);
   const target = useSpecialistRunByChild(sessionId, taskId || undefined);
+  // Destin's 2026-08-26/27 copy review: narrative consent block — the card no
+  // longer prints a separate provenance line (definedBy), because the lead
+  // sentence now says where the helper comes from inside the sentence that
+  // says what it may do. definedBy still serves the Settings roster.
   return (
     <div className="px-3 pt-2">
       <SpecialistEnvelope
         input={tool.input}
         definition={definition}
-        provenance={definition ? definedBy(definition, folders) : undefined}
         targetTitle={target?.title}
         targetRunning={target ? target.status === 'running' : undefined}
         cwd={cwd}
@@ -31,21 +32,27 @@ export function TaskConsentBlock({ tool, sessionId }: { tool: ToolCallState; ses
   );
 }
 
+/** Last segment of a path, either separator. */
+function fileName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 /**
  * The consent envelope (spec §5: approving the launch IS the grant). Says, in
- * plain words, exactly what saying Yes lets this helper do — charter, tools,
- * folder, model — rendered from the MAPPED definition the child will actually
- * get, never from the model's prose. A `task_id` call reads as what it is:
- * a note, a resume, or a stop, and grants nothing new.
+ * plain words, exactly what saying Yes lets this helper do — where it came
+ * from, charter, tools, folder, model — rendered from the MAPPED definition the
+ * child will actually get, never from the model's prose. A `task_id` call reads
+ * as what it is: a note, a resume, or a stop, and grants nothing new.
+ *
+ * Destin's 2026-08-26/27 copy review: narrative consent block. One lead
+ * sentence carries origin + charter + folder together (the old "What Yes
+ * allows" heading, the separate provenance line, and the "X working in Y —
+ * description" bullet all went); a file-defined helper gains an amber trust
+ * line, and the footer differs by charter.
  */
-export function SpecialistEnvelope({ input, definition, provenance, targetTitle, targetRunning, cwd }: {
+export function SpecialistEnvelope({ input, definition, targetTitle, targetRunning, cwd }: {
   input: Record<string, unknown>;
   definition?: SpecialistDefinitionView;
-  /** Task 10: "Built in" / "Your specialists folder · x.md" / etc — the
-   *  caller computes this (useSpecialists.ts's definedBy) because it needs
-   *  the roster's `folders` alongside the definition, which this component
-   *  never fetches on its own. */
-  provenance?: string;
   targetTitle?: string;
   targetRunning?: boolean;
   /** Task 10: the CALLER's cwd, not a sessionId to re-derive it from — the
@@ -63,10 +70,10 @@ export function SpecialistEnvelope({ input, definition, provenance, targetTitle,
   if (taskId) {
     const who = targetTitle ?? 'this specialist';
     const line = input.interrupt === true
-      ? `Yes stops ${who}. Work done so far is kept and the assistant can resume it later.`
+      ? `Yes stops ${who}. Its work so far is kept, and the assistant can resume it later.`
       : targetRunning === false
-        ? `Yes sends ${who} back to work with this brief — under the same limits you already approved. Nothing new is granted.`
-        : `Yes delivers this note to ${who} at its next step. Nothing new is granted.`;
+        ? `Yes sends ${who} back to work with this brief, under the limits you already approved. Nothing new is granted.`
+        : `Yes passes this note to ${who} at its next step. Nothing new is granted.`;
     return (
       <div className="rounded-lg border border-edge bg-inset/40 px-3 py-2 text-xs text-fg-dim" data-testid="specialist-envelope">
         {line}
@@ -75,45 +82,77 @@ export function SpecialistEnvelope({ input, definition, provenance, targetTitle,
   }
 
   const agent = asString(input.agent) || 'specialist';
+  const name = definition?.displayName ?? agent;
   const charter = definition?.charter;
   const tools = definition?.allowedTools ?? [];
   const canShell = tools.includes('Bash');
+  const file = definition?.path ? fileName(definition.path) : undefined;
+
+  // The half-sentence every origin ends on, so read-only and read-write read
+  // identically no matter which folder the helper came from. A helper with no
+  // Bash grant never claims it can run commands.
+  const scope = charter === 'read-only'
+    ? <>is being hired with <span className="text-fg-2">read-only</span> access to {where}.</>
+    : <>is being hired to <span className="text-fg-2">edit files{canShell ? ' and run commands' : ''}</span> in {where}.</>;
+
+  // The lead: origin + charter + folder in ONE sentence. The unknown branch is
+  // the only one that promises nothing, because nothing is known.
+  const lead = !definition
+    ? <><span className="text-fg-2">{agent}</span> could not be looked up, so its tools and limits are unknown. Approve only if you know this specialist.</>
+    : definition.source === 'builtin'
+      ? <><span className="text-fg-2">The {name}</span> is built into YouCoded and {scope}</>
+      : definition.source === 'personal'
+        ? <><span className="text-fg-2">{name}</span> comes from your specialists folder ({file}) and {scope}</>
+        : definition.grantScope === 'project'
+          ? <><span className="text-fg-2">{name}</span> comes from this project's <span className="text-fg-2">.claude/agents/{file}</span> and {scope}</>
+          : <><span className="text-fg-2">{name}</span> comes from your ~/.claude/agents/{file} and {scope}</>;
+
+  // What it may do, then the one thing it cannot — the exact tools, named.
+  const capability = charter === 'read-only'
+    ? <>Cannot edit files or run commands.{tools.length > 0 ? <> It reads and searches using {tools.join(', ')}.</> : null}</>
+    : charter === 'read-write'
+      ? (canShell
+          ? <>Can edit files and run commands without asking again{tools.length > 0 ? <>, using {tools.join(', ')}</> : null}.</>
+          : <>Can edit files without asking again{tools.length > 0 ? <>, using {tools.join(', ')}</> : null}. Cannot run commands.</>)
+      : null;
+
   const modelReq = asString(input.model);
   const modelLine = modelReq === 'budget' || modelReq === 'frontier'
     ? (tiers?.[modelReq]
-        ? `the ${modelReq} model from Settings (${tiers[modelReq]!.label})`
-        : `the ${modelReq} model — none is set in Settings, so it will use this conversation's model`)
+        ? `Runs on the ${modelReq} model from Settings (${tiers[modelReq]!.label}).`
+        : `Runs on the ${modelReq} model — none is set in Settings, so it uses this conversation's model.`)
     : modelReq
-      ? `${modelReq} (the assistant named it)`
+      ? `Runs on ${modelReq}, which the assistant chose.`
       : definition?.modelPreference && definition.modelPreference !== 'parent'
         ? (tiers?.[definition.modelPreference]
-            ? `the ${definition.modelPreference} model from Settings (${tiers[definition.modelPreference]!.label}) — this specialist prefers it`
-            : `this conversation's model (it prefers the ${definition.modelPreference} tier, which is not set)`)
-        : "this conversation's model";
+            ? `Runs on the ${definition.modelPreference} model from Settings (${tiers[definition.modelPreference]!.label}) — this specialist prefers it.`
+            : `Runs on this conversation's model (it prefers the ${definition.modelPreference} tier, which is not set).`)
+        : "Runs on this conversation's model.";
+
+  // Amber, the same tone the held-ask and stale-run lines use: a helper whose
+  // instructions YouCoded did not write is the one fact on this card the app
+  // cannot vouch for. Built-ins get no line — there is nothing to warn about.
+  const trust = !definition || definition.source === 'builtin'
+    ? null
+    : definition.grantScope === 'project'
+      ? 'Its instructions come from a file in this project, not from YouCoded. Only approve it if you trust where this project came from.'
+      : "Its instructions come from a file on your computer, not from YouCoded. Open the file if you're not sure what it does.";
+
+  // Tailored per charter: a read-only helper cannot delete anything, so listing
+  // deletion among the things that still come to you would be noise.
+  const footer = charter === 'read-only'
+    ? `Secrets and anything outside ${where} still come to you.`
+    : `Deleting things, secrets, and anything outside ${where} still come to you.`;
 
   return (
     <div className="rounded-lg border border-edge bg-inset/40 px-3 py-2 text-xs space-y-1" data-testid="specialist-envelope">
-      <div className="font-medium text-fg-2">What Yes allows</div>
-      {provenance && <div className="text-fg-muted -mt-0.5">{provenance}</div>}
+      <div className="text-fg-dim">{lead}</div>
       <ul className="list-disc pl-4 space-y-0.5 text-fg-dim">
-        <li>
-          {definition?.displayName ?? agent} working in <span className="font-mono">{where}</span>
-          {definition?.description ? ` — ${definition.description}` : ''}
-        </li>
-        <li>
-          {charter === 'read-write'
-            ? <>Can <span className="text-fg-2">edit files</span>{canShell ? <> and <span className="text-fg-2">run commands</span></> : ''} there without asking again.</>
-            : charter === 'read-only'
-              ? <><span className="text-fg-2">Read-only</span>: reads and searches{tools.some(t => t === 'WebFetch' || t === 'WebSearch') ? ', and browses the web' : ''}. Cannot edit files{canShell ? '' : ' or run commands'}.</>
-              : <>Tools and limits for “{agent}” could not be looked up — approve only if you know this specialist.</>}
-        </li>
-        {tools.length > 0 && <li>Tools: {tools.join(', ')}</li>}
-        <li>Runs on {modelLine}.</li>
+        {capability && <li>{capability}</li>}
+        <li>{modelLine}</li>
       </ul>
-      <div className="text-fg-muted">
-        Deleting things, secrets, and anything outside {folder ? `${folder}/` : 'the folder'} still come to you.
-      </div>
+      {trust && <div className="text-amber-500">{trust}</div>}
+      <div className="text-fg-muted">{footer}</div>
     </div>
   );
 }
-

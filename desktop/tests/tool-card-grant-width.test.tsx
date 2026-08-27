@@ -122,7 +122,7 @@ describe('grant width — what the card shows', () => {
   it('still warns on a deny-listed command', () => {
     renderAsk('rm -rf build', { denyListed: true });
     openConfirm();
-    expect(screen.getByText(/may delete files/)).toBeTruthy();
+    expect(screen.getByText(/can delete files/)).toBeTruthy();
   });
 });
 

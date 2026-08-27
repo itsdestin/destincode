@@ -597,7 +597,10 @@ export function PermissionButtons({ requestId, suggestions, denyListed, command,
                 denyListed: an ordinary command never carried this warning, and
                 showing "may delete files" over `npm run build` would be the
                 misleading-error failure in a different costume. */}
-            It may delete files or change published code, and you won't be asked again during future sessions in this project.
+            {/* Destin's 2026-08-26/27 copy review: "This can delete", and the
+                "during future sessions" hedge dropped — the rule is simply on
+                from now on in this project. */}
+            This can delete files or change published code, and you won't be asked again in this project.
           </p>
         )}
         {/* The width choice. Only rendered when the derivation actually produced
@@ -1294,10 +1297,12 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
             // card's copy moves. A file-defined helper gets the sentence that
             // matches the subject tools/task.ts will actually build for it.
             alwaysAllowNote={tool.toolName === 'Task' && !tool.input?.task_id && hireDefinition
+              // Destin's 2026-08-26/27 copy review: "covers", and the re-ask
+              // clause reads from the file's side ("If its file changes").
               ? (hireDefinition.grantScope === 'user'
-                  ? 'Always allow applies to this helper in every project. If you edit its file, you\u2019ll be asked again.'
+                  ? "Always allow covers this helper in every project. If its file changes, you'll be asked again."
                   : hireDefinition.grantScope === 'project'
-                    ? `Always allow applies to this helper in ${grantFolderName(tool.input?.work_dir, sessionCwd)} only, because it is defined inside the project. If you edit its file, you\u2019ll be asked again.`
+                    ? `Always allow covers this helper in ${grantFolderName(tool.input?.work_dir, sessionCwd)} only, because it is defined inside the project. If its file changes, you'll be asked again.`
                     : undefined)
               : undefined}
             onResponded={onRespondedCb}

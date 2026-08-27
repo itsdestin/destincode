@@ -75,7 +75,8 @@ export function SpecialistActions({ sessionId, run, compact = false }: {
               onChange={e => setNote(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
               rows={2}
-              placeholder={`Anything ${first} should know mid-run — applied at its next step`}
+              // Destin's 2026-08-26/27 copy review: "it's applied", so the clause has a subject.
+              placeholder={`Anything ${first} should know mid-run — it's applied at its next step`}
               className="flex-1 min-w-0 text-xs rounded-md border border-edge bg-canvas px-2 py-1 text-fg resize-y"
             />
             <button
