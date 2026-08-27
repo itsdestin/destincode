@@ -50,6 +50,27 @@ describe('native session record completeness', () => {
     });
   });
 
+  // A specialist's whole spend reaches the parent as ONE subagent-usage event
+  // on the parent's own stream. If that event didn't survive the disk
+  // round-trip, a resumed session would silently forget every specialist it
+  // ever ran — the same quiet shrinkage this file exists to prevent for turns.
+  it('round-trips a subagent-usage report', async () => {
+    await store.create({ v: 1, sessionId: 's1', harnessId: 'h1', binding: { providerId: 'anthropic', modelId: 'claude' }, cwd, createdAt: 1 });
+    await store.append(cwd, ev('subagent-usage', {
+      model: 'child-model',
+      parentAgentToolUseId: 'tc-1',
+      agentId: 'child-1',
+      usage: { inputTokens: 6000, outputTokens: 600, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.027, free: false },
+    }));
+    const back = store.readEvents('s1', cwd);
+    const report = back.find((e) => e.type === 'subagent-usage');
+    expect(report?.data.usage).toEqual({
+      inputTokens: 6000, outputTokens: 600, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.027, free: false,
+    });
+    expect(report?.data.agentId).toBe('child-1');
+    expect(report?.data.parentAgentToolUseId).toBe('tc-1');
+  });
+
   it('round-trips a tool-result structuredPatch', async () => {
     await store.create({ v: 1, sessionId: 's1', harnessId: 'h1', binding: { providerId: 'anthropic', modelId: 'claude' }, cwd, createdAt: 1 });
     await store.append(cwd, ev('tool-result', {

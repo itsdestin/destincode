@@ -11,7 +11,7 @@ import {
   abnormalStopReason,
 } from './chat-types';
 import { SubagentSegment, ToolCallState, ToolGroupState } from '../../shared/types';
-import { addTurnUsage, addPatchLines } from './session-totals';
+import { addTurnUsage, addSubagentUsage, addPatchLines } from './session-totals';
 
 // Fix: message ids are used as React keys. A hydrated remote client restarts
 // this counter at 0 while its snapshot already holds msg-1..msg-N, so new live
@@ -1529,6 +1529,37 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       const totals = addTurnUsage(session.totals, action.usage ?? {});
 
       next.set(action.sessionId, { ...session, timeline, seenUuids, totals, ...endTurn(session, undefined, assistantTurns) });
+      return next;
+    }
+
+    // One finished specialist's TOTAL spend, folded into the PARENT's totals
+    // (spec §2). This is the other half of the WHY block just above: the
+    // child's own turn-complete is never counted, so this event is where a
+    // delegated run's tokens and dollars enter the numbers — exactly once.
+    //
+    // Deliberately does NOT delegate to applySubagentEvent even though it
+    // carries parentAgentToolUseId. That helper builds the nested CARD's
+    // segments; this event has nothing to draw. It is bookkeeping, not
+    // conversation: no timeline entry, no turn state touched, so a background
+    // specialist that finishes between the parent's turns cannot end a turn
+    // that isn't running.
+    case 'TRANSCRIPT_SUBAGENT_USAGE': {
+      const session = state.get(action.sessionId);
+      // ORPHAN guard: a report for a session this window doesn't hold changes
+      // nothing, and must never MINT one — a ghost conversation whose only
+      // content is a dollar figure would be worse than a missing number.
+      // Returning `state` itself (not the `next` copy) keeps the
+      // useSyncExternalStore snapshot referentially stable on a no-op.
+      if (!session || !action.usage) return state;
+      // DEDUP on uuid: resume replays the parent's whole record while the live
+      // stream may still be delivering, and counting one specialist twice
+      // would double the session's reported cost.
+      if (session.seenUuids.has(action.uuid)) return state;
+      next.set(action.sessionId, {
+        ...session,
+        totals: addSubagentUsage(session.totals, action.usage),
+        seenUuids: new Set(session.seenUuids).add(action.uuid),
+      });
       return next;
     }
 

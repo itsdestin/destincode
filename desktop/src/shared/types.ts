@@ -144,7 +144,20 @@ export type TranscriptEventType =
   // only `skillId`/`displayName`/`args` as a compact card, because a 26k-character
   // SKILL.md as a user bubble is unreadable (Destin, 2026-07-28). `skillPath`
   // makes the card open the real file in the artifact viewer.
-  | 'skill-invoked';
+  | 'skill-invoked'
+  // Native-runtime only: one finished specialist's TOTAL spend, reported to the
+  // PARENT session so the parent's status bar can count work it delegated
+  // (spec §2/§8). Carries the child's summed `usage` (with its own costUsd/free),
+  // its `model`, the `parentAgentToolUseId` of the Task call that started it, and
+  // its `agentId`. Persisted on the parent, so replay restores it exactly like a
+  // tool card — the totals are rebuilt from the record, so a resumed session must
+  // not forget the specialists it ran.
+  // NOT a forwarded child turn-complete: SUBAGENT_DISPLAY_TYPES deliberately
+  // withholds that copy, because a stamped one would end the PARENT's turn in the
+  // reducer and attribute the child's model to the parent. Bookkeeping only — it
+  // never enters the timeline and never enters model history (history-rebuild.ts's
+  // default branch drops it).
+  | 'subagent-usage';
 
 export interface TranscriptEvent {
   type: TranscriptEventType;

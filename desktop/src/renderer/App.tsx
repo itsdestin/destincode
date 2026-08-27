@@ -1219,6 +1219,22 @@ function AppInner() {
           // reportUsage → native:usage-report → status:data cache path was dead
           // (nothing read its nativeUsageMap) and was removed in the whole-branch review.
           break;
+        case 'subagent-usage':
+          // Bookkeeping only — never touches the timeline, the turn state, or
+          // the subagent card's segments. It exists so the parent's totals can
+          // include the work it delegated (spec §2). Arrives on the PARENT's
+          // stream (native-session-host emits it there), and replays from the
+          // parent's record on resume like any other persisted event.
+          batchTranscriptDispatch({
+            type: 'TRANSCRIPT_SUBAGENT_USAGE',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            usage: event.data.usage ?? null,
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
+          });
+          break;
         case 'assistant-thinking': {
           // Text payload → real reasoning content (collapsible in chat).
           // No payload → lifecycle heartbeat only (existing behavior:

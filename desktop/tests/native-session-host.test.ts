@@ -3680,9 +3680,18 @@ describe('NativeSessionHost', () => {
       expect(events[taskIdx + 1].data.parentAgentToolUseId).toBe(events[taskIdx].data.toolUseId);
       // Every stamped (agentId-bearing) event is display-safe — nothing else
       // rode along under the parent's id.
-      const stamped = events.filter((e) => e.data.agentId);
+      //
+      // 'subagent-usage' is excluded because it is NOT a stamped copy of a
+      // child event: it is the PARENT's own bookkeeping event (the finished
+      // specialist's total spend), emitted on the parent's stream and written
+      // to the parent's own file. It carries agentId only to name which child
+      // the money belongs to. Its own coverage is in
+      // tests/subagent-usage-event.test.ts.
+      const stamped = events.filter((e) => e.data.agentId && e.type !== 'subagent-usage');
       expect(stamped.length).toBeGreaterThan(0);
       expect(stamped.every((e) => SUBAGENT_DISPLAY_TYPES.has(e.type))).toBe(true);
+      // …and that bookkeeping event really is on the parent's record exactly once.
+      expect(events.filter((e) => e.type === 'subagent-usage')).toHaveLength(1);
 
       await h2.destroyAll();
     });

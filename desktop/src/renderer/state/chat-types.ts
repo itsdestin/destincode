@@ -643,6 +643,20 @@ export type ChatAction =
       parentAgentToolUseId?: string;
       agentId?: string;
     }
+  | {
+      // One finished specialist's TOTAL spend, folded into the parent session's
+      // totals (spec §2). Deliberately NOT a turn event: it must not end a turn,
+      // create a timeline entry, or touch the subagent card. The child's own
+      // turn-complete is never counted, precisely so this event can be — see the
+      // WHY block on TRANSCRIPT_TURN_COMPLETE in chat-reducer.ts.
+      type: 'TRANSCRIPT_SUBAGENT_USAGE';
+      sessionId: string;
+      uuid: string;
+      timestamp: number;
+      usage: TurnUsage | null;
+      parentAgentToolUseId?: string;
+      agentId?: string;
+    }
   // Dispatched when the transcript watcher detects Claude Code's
   // user-interrupt markers ("[Request interrupted by user]" / "...for tool
   // use"). Task 5 consumes this in the reducer to end the in-flight turn

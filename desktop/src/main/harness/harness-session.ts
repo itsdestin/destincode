@@ -739,6 +739,37 @@ export class HarnessSession extends EventEmitter {
     if (free !== undefined) this.opts.free = free;
   }
 
+  /** What this session's CURRENT model costs to run, as resolved when the
+   *  session was created and re-resolved by every setBinding swap above.
+   *
+   *  WHY expose it rather than re-resolve: NativeSessionHost reads this off a
+   *  FINISHED specialist to price its run for the parent (see emitSubagentUsage
+   *  below). Re-asking the catalog would be a second, independent answer that
+   *  could disagree with the rate the child's own turns were actually priced
+   *  at; reading the child's own card makes the two agree by construction. It
+   *  also carries `free`, which a bare price lookup cannot produce — telling a
+   *  local engine apart from a metered model needs the provider type, which the
+   *  host resolved once, here. */
+  get priceCard(): { pricing: ModelPricing | null | undefined; free: boolean } {
+    return { pricing: this.opts.pricing, free: this.opts.free ?? false };
+  }
+
+  /** Report a finished specialist's TOTAL spend on THIS (parent) session's
+   *  stream. Goes through emitEvent so wire()'s existing listener persists it to
+   *  the parent's record and forwards it to the renderer — no second
+   *  persistence path, no new IPC channel. */
+  emitSubagentUsage(data: {
+    usage: {
+      inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number;
+      costUsd: number | null; free: boolean;
+    };
+    model: string;
+    parentAgentToolUseId: string;
+    agentId: string;
+  }): void {
+    this.emitEvent('subagent-usage', data);
+  }
+
   /** Task 5 (MOIM pattern): NativeSessionHost.wire() calls this on every ROOT
    *  session right after construction — opts is already built by then, so this
    *  is the same late-bind-onto-opts shape setBinding uses above, not a new

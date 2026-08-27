@@ -47,7 +47,7 @@ import { APPROX_CHARS_PER_TOKEN } from './message-size';
 import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
-import { isFreePricing, type ModelPricing } from './pricing';
+import { costForUsage, isFreePricing, type ModelPricing } from './pricing';
 import { log } from '../logger';
 // Same import PermissionStore uses, for the same reason: the project slug MUST
 // come from ONE function everywhere, or the host and the store would disagree
@@ -911,6 +911,37 @@ export class NativeSessionHost extends EventEmitter {
       // has finished, `run` is a value this method owns, so a bookkeeping
       // failure below can no longer discard work the child genuinely produced.
       const run = await this.runSpecialist(childId, opts.prompt);
+      // The child's spend is the parent's spend (spec §2). runSpecialist has
+      // summed `usage` across the child's turns since plan 1b — until now it
+      // was returned and thrown away, which is why a session that delegated all
+      // its work reported almost nothing.
+      //
+      // Priced with the CHILD's own price card, which can name a different
+      // model from the parent's (specialists/delegated-models.ts): a free local
+      // parent that delegates to a metered specialist really is spending money
+      // and has to say so, and the reverse — a metered parent delegating to a
+      // local specialist — is why `free` rides along too.
+      //
+      // Emitted HERE, before the ledger write and before the `finally`
+      // teardown, because the child must still be in `this.live` for its price
+      // card to be readable. Log-only try/catch, the same contract every other
+      // bookkeeping call in this method follows: a failed usage report must
+      // never discard the report the child actually produced.
+      try {
+        const parentSession = this.live.get(parentId)?.session;
+        const childSession = this.live.get(childId)?.session;
+        if (parentSession && childSession) {
+          const { pricing, free } = childSession.priceCard;
+          parentSession.emitSubagentUsage({
+            usage: { ...run.usage, costUsd: costForUsage(run.usage, pricing), free },
+            model: childSession.binding.modelId,
+            parentAgentToolUseId: opts.parentToolCallId,
+            agentId: childId,
+          });
+        }
+      } catch (usageErr) {
+        log('ERROR', 'NativeSessionHost', 'failed to report a finished specialist\'s spend to its parent — the parent\'s session totals will be short by this run', { childId, parentId, error: String(usageErr) });
+      }
       // WHY drain HERE, not at turn start (folded Task 3 concern): pendingSteers
       // is not reset per-turn by design (harness-session.ts), so anything left
       // in the CHILD's queue at this point is a steer that arrived too late to
