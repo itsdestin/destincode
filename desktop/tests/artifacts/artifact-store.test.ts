@@ -570,3 +570,30 @@ describe('renameArtifact — guards against a relative absolutePath (finding 2)'
     expect(sidecar.artifacts[0].absolutePath).toBe(join(projectRoot, 'renamed-outside.txt').replace(/\\/g, '/'));
   });
 });
+
+// 2026-08-27 OOM fix — see tests/artifacts/sidecar-cache.test.ts for the read
+// side. This pins the write side: the CAS check must not unpack the on-disk
+// file to read its one timestamp.
+describe('writeSidecar — CAS check reads the timestamp without parsing the file', () => {
+  let projectRoot: string;
+  beforeEach(() => {
+    projectRoot = mkdtempSync(join(tmpdir(), 'as-cas-probe-'));
+    mkdirSync(join(projectRoot, '.youcoded'));
+    writeFileSync(join(projectRoot, '.youcoded', 'artifacts.json'), JSON.stringify(sample, null, 2));
+  });
+  afterEach(() => { vi.restoreAllMocks(); rmSync(projectRoot, { recursive: true, force: true }); });
+
+  it('commits a matching write with ZERO JSON.parse calls on the CAS path', async () => {
+    const cur = (await readSidecar(projectRoot)) as ProjectSidecar;
+    const parse = vi.spyOn(JSON, 'parse');
+    const res = await writeSidecar(projectRoot, cur.updatedAt, cur);
+    expect(res.committed).toBe(true);
+    expect(parse).not.toHaveBeenCalled();
+  });
+
+  it('still rejects a stale token', async () => {
+    const cur = (await readSidecar(projectRoot)) as ProjectSidecar;
+    const res = await writeSidecar(projectRoot, '2000-01-01T00:00:00.000Z', cur);
+    expect(res.committed).toBe(false);
+  });
+});

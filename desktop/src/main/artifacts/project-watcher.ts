@@ -18,7 +18,7 @@
 import chokidar, { FSWatcher } from 'chokidar';
 import path from 'path';
 import { canonicalize } from '../../shared/artifacts/canonicalize';
-import { readSidecar } from './artifact-store';
+import { readSidecarShared } from './artifact-store';
 
 export type ExternalChangeKind = 'edit' | 'add' | 'remove';
 
@@ -123,7 +123,7 @@ async function resolveArtifactId(projectRoot: string, absPath: string): Promise<
   if (!cached || Date.now() - cached.at > SIDECAR_CACHE_TTL_MS) {
     const ids = new Map<string, string>();
     try {
-      const sidecar = await readSidecar(projectRoot);
+      const sidecar = await readSidecarShared(projectRoot);
       if (sidecar && !('corrupted' in sidecar)) {
         for (const a of sidecar.artifacts) {
           const p = a.kind === 'internal' ? path.join(projectRoot, a.path) : a.absolutePath;
