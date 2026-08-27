@@ -230,8 +230,8 @@ function AppInner() {
   // "Manage models…" in the unified ModelPicker. The picker renders inside
   // SessionStrip (which HeaderBar owns) and inside ResumeBrowser, so a prop
   // would have to drill through HeaderBar for a rarely-used escape hatch.
-  // Follows the existing deep-component→top-level-destination pattern
-  // (`youcoded:open-library`, ThemeScreen.tsx:229).
+  // Deep component → top-level destination via a window event, because a prop
+  // would have to drill through HeaderBar for a rarely-used escape hatch.
   useEffect(() => {
     const open = () => { setProvidersAutoOpen(true); setSettingsOpen(true); };
     window.addEventListener('youcoded:open-model-providers', open);
@@ -355,7 +355,6 @@ function AppInner() {
   const [marketplaceInitialDetailId, setMarketplaceInitialDetailId] = useState<string | undefined>(undefined);
   // Tab to show when Library opens — consumed by LibraryScreen (Task 5.2 wires
   // the prop; this state is lifted here so the event listener below can set it).
-  const [libraryInitialTab, setLibraryInitialTab] = useState<'skills' | 'themes' | 'updates' | undefined>(undefined);
 
   // Open the marketplace destination; `installed` routes to the Library
   // sibling. Omit `tab` (or pass undefined) to land on the discovery page
@@ -389,22 +388,6 @@ function AppInner() {
     [],
   );
 
-  // Listen for the global "open library" event dispatched by ThemeScreen's
-  // "Browse all themes" button. Opens Library to the requested tab and closes
-  // the Appearance popup (the popup is inside SettingsPanel which the user can
-  // close separately; we just navigate away by switching the active view).
-  useEffect(() => {
-    const onOpen = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      const tab = detail?.tab as 'skills' | 'themes' | 'updates' | undefined;
-      setLibraryInitialTab(tab);
-      setActiveView('library');
-      // Close settings panel so the Library fills the screen unobstructed.
-      setSettingsOpen(false);
-    };
-    window.addEventListener('youcoded:open-library', onOpen);
-    return () => window.removeEventListener('youcoded:open-library', onOpen);
-  }, []);
   const [publishThemeSlug, setPublishThemeSlug] = useState<string | null>(null);
   const [editorSkillId, setEditorSkillId] = useState<string | null>(null);
   const [shareSkillId, setShareSkillId] = useState<string | null>(null);
@@ -3381,9 +3364,8 @@ function AppInner() {
       )}
       {/* Full-screen glass marketplace + library destinations. MarketplaceProvider
           is now app-wide (root provider tree) so ThemeScreen can also consume it.
-          libraryInitialTab is lifted state set by the youcoded:open-library event
-          (dispatched by ThemeScreen's "Browse all themes" button); Task 5.2 wires
-          it to LibraryScreen's initialTab prop. */}
+          (The "Browse all themes" button that used to deep-link the Library's
+          Themes tab was removed in Phase C, 2026-08-27, so no initialTab is passed.) */}
       {(activeView === 'marketplace' || activeView === 'library') && (
         activeView === 'marketplace' ? (
           <MarketplaceScreen
@@ -3397,11 +3379,10 @@ function AppInner() {
           />
         ) : (
           <LibraryScreen
-            onExit={() => { setActiveView('chat'); setLibraryInitialTab(undefined); }}
+            onExit={() => setActiveView('chat')}
             onOpenMarketplace={() => setActiveView('marketplace')}
             onOpenShareSheet={(id) => setShareSkillId(id)}
             onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
-            initialTab={libraryInitialTab}
           />
         )
       )}
