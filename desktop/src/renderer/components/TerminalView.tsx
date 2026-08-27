@@ -10,18 +10,26 @@ import { registerTerminal, unregisterTerminal, notifyBufferReady } from '../hook
 import { createTerminalKeyHandler } from './terminal-key-handler';
 import { useTheme } from '../state/theme-context';
 import { isTouchDevice } from '../platform';
+import { isWorkbenchMode, workbenchTerminalBacking, TERMINAL_BACKING_STYLE } from '../workbench-mode';
 
 /** Terminal always uses Cascadia Code — user font selection applies to the
  *  chat UI only. Proportional or display fonts break xterm's character grid. */
 const TERMINAL_FONT = "'Cascadia Code', 'Cascadia Mono', Consolas, monospace";
 
 /** Read the current theme CSS variables and return an xterm ITheme.
- *  @param transparent — when true, xterm background is transparent so wallpaper shows through */
-function getXtermTheme(transparent: boolean): { background: string; foreground: string; cursor: string; selectionBackground: string } {
+ *  @param background — which theme token xterm paints as its OPAQUE background.
+ *  The app always uses 'canvas'; 'panel' exists for the UI Workbench's solid
+ *  backing mock-ups (workbench-mode.ts). This used to take a `transparent`
+ *  flag that returned the keyword 'transparent' — never use that: xterm's
+ *  css.toColor accepts only `#…` / `rgb(…)` and THROWS on keywords, falling
+ *  back to opaque black (measured 2026-08-27). */
+function getXtermTheme(background: 'canvas' | 'panel'): { background: string; foreground: string; cursor: string; selectionBackground: string } {
   const s = getComputedStyle(document.documentElement);
   const fg = s.getPropertyValue('--fg').trim() || '#E0E0E0';
   const accent = s.getPropertyValue('--accent').trim() || '#264f78';
-  const bg = transparent ? 'transparent' : (s.getPropertyValue('--canvas').trim() || '#0A0A0A');
+  const bg = background === 'panel'
+    ? (s.getPropertyValue('--panel').trim() || '#191919')
+    : (s.getPropertyValue('--canvas').trim() || '#0A0A0A');
   return { background: bg, foreground: fg, cursor: fg, selectionBackground: accent + '4D' };
 }
 
@@ -50,6 +58,16 @@ export default function TerminalView({ sessionId, visible }: Props) {
   // note there for why healing on mount is expensive.
   const wasVisibleRef = useRef<boolean | null>(null);
   const { activeTheme, reducedEffects } = useTheme();
+  // UI Workbench ONLY (`?mode=workbench&termBacking=`): which terminal surface
+  // mock-up to render — see workbench-mode.ts for the four variants and WHY the
+  // shipping version is a theme guarantee, not a query param. Read once per
+  // mount; in Electron / Android this is always 'today' and every branch on it
+  // below is a no-op, so the real PTY terminal is untouched.
+  const [workbenchBacking] = React.useState(workbenchTerminalBacking);
+  const backingStyle = workbenchBacking === 'today' ? null : TERMINAL_BACKING_STYLE[workbenchBacking];
+  // Which theme token xterm paints as its opaque background: always 'canvas'
+  // in the app; the workbench solid mock-ups switch it to 'panel'.
+  const xtermBackground = backingStyle?.xtermBackground ?? 'canvas';
 
   // Detect if the theme has a visual background (wallpaper image, gradient, or glassmorphism)
   const bg = activeTheme?.background;
@@ -77,7 +95,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
       if (!terminal) return;
       // Always use opaque xterm background — transparency is handled by the
       // container overlay, not by xterm itself. WebGL requires opaque backgrounds.
-      terminal.options.theme = getXtermTheme(false);
+      terminal.options.theme = getXtermTheme(xtermBackground);
 
       // Ensure WebGL is attached (may have been disposed by a previous version
       // or by a prior context loss). Delegates to attachWebgl from the mount
@@ -86,7 +104,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
         attachWebglRef.current?.();
       }
     });
-  }, [activeTheme]);
+  }, [activeTheme, xtermBackground]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -106,7 +124,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
       cursorInactiveStyle: 'none',
       fontSize: touch ? 12 : 14,
       fontFamily: TERMINAL_FONT,
-      theme: getXtermTheme(false),
+      theme: getXtermTheme(xtermBackground),
       disableStdin: touch,
     });
 
@@ -238,6 +256,28 @@ export default function TerminalView({ sessionId, visible }: Props) {
     //       only the PTY resize is delayed.
     let lastCols = 0;
     let lastRows = 0;
+    // UI Workbench ONLY: there is no PTY, so the pane would stay blank. Write a
+    // frozen Claude Code screen once, right after the first fit that actually
+    // ran, so the fixture's rules and prompt box are built for the real column
+    // count. NOT on the 100ms mount timer: the app boots in chat view with this
+    // container collapsed to 0×0 (measured 2026-08-27), so that timer's fit is
+    // skipped and a write there lands at xterm's default 80 columns — a prompt
+    // box half the pane wide, the same shape as ledger P-20.1. The dynamic
+    // import behind `import.meta.env.DEV` keeps the fixture out of the
+    // production bundle entirely (same pattern as index.tsx's workbench boot).
+    let wroteWorkbenchScreen = false;
+    let disposed = false;
+    const writeWorkbenchScreenOnce = () => {
+      // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+      if (wroteWorkbenchScreen || !(import.meta.env.DEV && isWorkbenchMode())) return;
+      wroteWorkbenchScreen = true;
+      import('../dev/workbench/fixtures/terminal-screen').then(({ renderTerminalScreen }) => {
+        // The import resolves asynchronously — bail if this terminal was
+        // disposed (session closed / remount) while it was loading.
+        if (disposed) return;
+        terminal.write(renderTerminalScreen(terminal.cols, terminal.rows));
+      }).catch((err) => console.warn('[workbench] terminal fixture failed to load', err));
+    };
     let pendingCols = 0;
     let pendingRows = 0;
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -272,6 +312,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
         const el = containerRef.current;
         if (!el || el.clientWidth === 0 || el.clientHeight === 0) return;
         fitAddon.fit();
+        writeWorkbenchScreenOnce();
         // Container height changed → thumb proportions need to recompute.
         updateThumb();
         const dims = fitAddon.proposeDimensions();
@@ -410,9 +451,10 @@ export default function TerminalView({ sessionId, visible }: Props) {
       // the disposed terminal between unmount and remount.
       attachWebglRef.current = null;
       webglRef.current = null;
+      disposed = true;
       terminal.dispose();
     };
-  }, [sessionId]);
+  }, [sessionId, xtermBackground]);
 
   // Visibility toggle side effects.
   // Fix: the ResizeObserver attached in the mount effect already fires a fit on
@@ -586,6 +628,7 @@ export default function TerminalView({ sessionId, visible }: Props) {
       />
       <div
         ref={containerRef}
+        data-term-backing={workbenchBacking}
         style={{
           position: 'absolute',
           // Content (the xterm grid) starts BELOW the header. Claude Code wipes
@@ -614,7 +657,9 @@ export default function TerminalView({ sessionId, visible }: Props) {
           // here like the top/side insets — NOT via .app-content margin, which
           // can't move this absolutely-positioned container (see globals.css).
           bottom: 'var(--terminal-bottom-inset, 0px)',
-          opacity: xtermOpacityStyle,
+          // Workbench backing mock-ups override the shipped opacity (`scrim`
+          // 0.85, `solid90` 0.9, `solid100` 1 — see workbench-mode.ts).
+          opacity: backingStyle ? backingStyle.xtermOpacity : xtermOpacityStyle,
           // xterm renders cell rows to a canvas; if container height isn't a
           // whole multiple of cell height (typical — fonts round irregularly),
           // there's a few-pixel uncovered strip at the bottom that reveals
@@ -623,7 +668,9 @@ export default function TerminalView({ sessionId, visible }: Props) {
           // input bar. Match the xterm theme background here so the strip is
           // indistinguishable from a rendered cell. Skip when a visual
           // background (wallpaper/gradient/glass) is active so we don't cover it.
-          backgroundColor: seeThrough ? undefined : 'var(--canvas)',
+          // (Matches xterm's own background token — 'panel' only under the
+          // workbench solid mock-ups.)
+          backgroundColor: seeThrough ? undefined : `var(--${xtermBackground})`,
         }}
       />
     </div>
