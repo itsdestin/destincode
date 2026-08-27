@@ -619,16 +619,17 @@ export function LocalModelRow({
     <div className={`rounded-lg bg-inset/50 overflow-hidden ${banner ? `border ${banner.border}` : ''}`.trim()}>
       {/* The banner names the state before any number is read — a stopped
           download is the thing this screen exists to make obvious. */}
-      {/* A small centred tab hanging off the top edge, not a full-bleed strip:
-          the state is an ACCENT on the row, not the row's main surface
-          (Destin, 2026-08-27). Still a SOLID fill with black text — that is
-          what carries the contrast (9.7 / 7.6 / 5.0), and softening it back to
-          a tint is what made the label invisible on the light themes. */}
+      {/* Full-bleed header strip, but SHORT: 9px type on 1px of padding, about
+          half its original height (Destin, 2026-08-27 — the state should read
+          as an accent, not as the row's main surface). Shrunk rather than
+          softened: it is still a SOLID fill with black text, because that is
+          what carries the contrast, and fading it back to a translucent tint is
+          exactly what made the label invisible on the light themes. Re-measured
+          at this size: 6.65:1 on Creme, against the 4.5 needed at 9px.
+          leading-tight is safe — the label is uppercase, so no descenders. */}
       {banner && (
-        <div className="flex justify-center">
-          <span className={`px-2 pb-px text-4xs font-medium tracking-wider uppercase rounded-b ${banner.strip}`}>
-            {banner.text}
-          </span>
+        <div className={`px-3 py-px text-4xs leading-tight font-medium tracking-wider uppercase text-center ${banner.strip}`}>
+          {banner.text}
         </div>
       )}
 
