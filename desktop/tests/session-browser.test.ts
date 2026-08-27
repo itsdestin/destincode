@@ -277,6 +277,58 @@ describe('listPastSessions — last model used (Claude Code)', () => {
     expect(sessions[0].lastUsedModel).toBeUndefined();
   });
 
+  it('skips CC\'s <synthetic> placeholder and reports the real model behind it', async () => {
+    // Regression (2026-08-26): Claude Code stamps `"model": "<synthetic>"` on
+    // assistant lines IT composed — "You've hit your session limit", "You're
+    // out of usage credits", "Please run /login · API Error: 401". Those land
+    // LAST, so the card labelled a 308-turn Opus conversation `<synthetic>`.
+    writeTranscript('C--proj-alpha', SID_A, {
+      model: 'claude-opus-5',
+      trailing: [
+        {
+          type: 'assistant', uuid: 'syn1', timestamp: '2026-06-01T10:06:00Z',
+          message: { model: '<synthetic>', stop_reason: 'end_turn', content: [{ type: 'text', text: "You've hit your session limit · resets 3:50am" }] },
+        },
+        {
+          type: 'assistant', uuid: 'syn2', timestamp: '2026-06-01T10:06:01Z',
+          message: { model: '<synthetic>', stop_reason: 'end_turn', content: [{ type: 'text', text: "You've hit your session limit · resets 3:50am" }] },
+        },
+      ],
+    });
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel?.modelId).toBe('claude-opus-5');
+  });
+
+  it('omits lastUsedModel when EVERY assistant line is a placeholder', async () => {
+    // A session that died on the very first turn (limit/auth) has no real model
+    // to report. No chip is the honest answer; a fallback to the app default
+    // would be a guess dressed as history.
+    writeTranscript('C--proj-alpha', SID_A, {
+      trailing: [{
+        type: 'assistant', uuid: 'syn1', timestamp: '2026-06-01T10:06:00Z',
+        message: { model: '<synthetic>', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Please run /login · API Error: 401' }] },
+      }],
+    });
+    const sessions = await listSessions();
+    expect(sessions[0].lastUsedModel).toBeUndefined();
+  });
+
+  it('still reports the last timestamp when the tail ends on a placeholder', async () => {
+    // The two values share one backwards pass. Skipping a line for the MODEL
+    // must not skip it for the TIMESTAMP — the placeholder line is still the
+    // last thing that happened in the conversation.
+    writeTranscript('C--proj-alpha', SID_A, {
+      model: 'claude-opus-5',
+      trailing: [{
+        type: 'assistant', uuid: 'syn1', timestamp: '2026-06-03T09:15:00Z',
+        message: { model: '<synthetic>', stop_reason: 'end_turn', content: [{ type: 'text', text: 'out of credits' }] },
+      }],
+    });
+    const sessions = await listSessions();
+    expect(sessions[0].lastModified).toBe(Date.parse('2026-06-03T09:15:00Z'));
+    expect(sessions[0].lastUsedModel?.modelId).toBe('claude-opus-5');
+  });
+
   it('still reports the last timestamp when a model is present', async () => {
     // Both values come from one backwards pass now; a regression in either
     // could silently break the other.

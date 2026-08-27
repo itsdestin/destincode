@@ -20,7 +20,7 @@ import { TagChip } from './tags/TagChip';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { TagGlyph } from './tags/glyphs';
 import { NoteEditor } from './tags/NoteEditor';
-import ModelPicker, { ModelIcon, type ModelChoice } from './model/ModelPicker';
+import ModelPicker, { ModelIcon, claudeAliasForModelId, type ModelChoice } from './model/ModelPicker';
 import type { ModelBinding } from '../../shared/provider-types';
 
 function formatRelativeTime(epochMs: number): string {
@@ -661,17 +661,41 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
     };
   }, [open]);
 
-  const handleSelectSession = (sessionId: string) => {
-    if (expandedId === sessionId) {
+  // Which Claude alias a row's dropdown should OPEN on.
+  //
+  // Fix: every card used to open on `defaultModel` — the app-wide Settings
+  // default — so resuming an Opus conversation silently offered Sonnet (or
+  // whatever the global default was) unless you noticed and changed it. The
+  // card already displays the real answer in its model chip; this feeds that
+  // same value into the control beside it.
+  //
+  // Falls back to the global default when the row records no model, or records
+  // one outside the four aliases the picker offers.
+  //
+  // Gated on the row being a Claude Code row: a native row's picker is driven
+  // by nativeResumeBinding, and its recorded model can be an OpenRouter id that
+  // merely CONTAINS a family word (`anthropic/claude-sonnet-4.5`). Letting that
+  // set the CC alias would put a value into the argument handleConfirmResume
+  // still forwards for native rows, on no evidence at all.
+  const claudeModelForRow = (s: PastSession): string => {
+    const recorded = s.provider !== 'native' ? s.lastUsedModel?.modelId : undefined;
+    return (recorded ? claudeAliasForModelId(recorded) : null) || defaultModel || 'sonnet';
+  };
+
+  // Takes the whole row, not just its id: the expanded pane's model dropdown
+  // starts on the model THIS conversation last ran on, which only the row
+  // knows. See claudeModelForRow.
+  const handleSelectSession = (s: PastSession) => {
+    if (expandedId === s.sessionId) {
       setExpandedId(null);
     } else {
-      setExpandedId(sessionId);
+      setExpandedId(s.sessionId);
       // Other half of the mutual exclusion (the tag button does the reverse):
       // a card shows the resume pane OR the tag sheet, never both. Clears any
       // card's open sheet, not just this one — two cards' panes open at once
       // would be the same stacking problem spread across rows.
       setOrganizeId(null);
-      setResumeModel(defaultModel || 'sonnet');
+      setResumeModel(claudeModelForRow(s));
       setResumeDangerous(defaultSkipPermissions || false);
       setResumeLaunchInNewWindow(false);
       setNativeResumeBinding(null);
@@ -919,7 +943,7 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
         // this device (synced in from elsewhere) OR whose transcript hasn't
         // synced here yet — either way there's nothing to resume into, so the
         // row shows a plain-words note instead of expanding.
-        onClick={() => { if (!inert) handleSelectSession(s.sessionId); }}
+        onClick={() => { if (!inert) handleSelectSession(s); }}
         aria-disabled={inert || undefined}
         aria-expanded={inert ? undefined : isExpanded}
         className={`w-full text-left p-3 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${
