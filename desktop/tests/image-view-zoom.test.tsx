@@ -8,12 +8,17 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { ImageView } from '../src/renderer/components/artifact-views/ImageView';
 
+const asked: string[] = [];
 function installMatchMedia(matches: boolean) {
-  (window as any).matchMedia = (q: string) => ({
-    matches, media: q, onchange: null,
-    addEventListener() {}, removeEventListener() {},
-    addListener() {}, removeListener() {}, dispatchEvent: () => true,
-  });
+  asked.length = 0;
+  (window as any).matchMedia = (q: string) => {
+    asked.push(q);
+    return {
+      matches, media: q, onchange: null,
+      addEventListener() {}, removeEventListener() {},
+      addListener() {}, removeListener() {}, dispatchEvent: () => true,
+    };
+  };
 }
 
 beforeEach(() => {
@@ -52,6 +57,17 @@ describe('ImageView zoom', () => {
     render(<ImageView {...props} />);
     await waitFor(() => screen.getByRole('button', { name: /zoom in/i }));
     expect(screen.queryByRole('button', { name: /magnif/i })).toBeNull();
+  });
+
+  it('asks any-hover, not the primary-pointer query', async () => {
+    // `(hover: hover)` asks about the PRIMARY pointer. On a touchscreen laptop
+    // that can be the finger, which would hide the magnifier on a machine with a
+    // trackpad right there. The question that matters is whether ANY device can
+    // hover — a phone still answers no.
+    render(<ImageView {...props} />);
+    await waitFor(() => screen.getByRole('button', { name: /zoom in/i }));
+    expect(asked.some((q) => q.includes('any-hover'))).toBe(true);
+    expect(asked.some((q) => /\(hover:/.test(q))).toBe(false);
   });
 
   it('marks its root data-zoomable so the app pinch handler yields', async () => {

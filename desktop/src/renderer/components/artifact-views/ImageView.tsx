@@ -11,10 +11,16 @@ const MIME: Record<string, string> = {
   bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
 };
 
-/** Below this pane width the pill is wider than the picture it would sit on.
- *  The content pane can be ~107px (MIN_DRAWER_WIDTH 320 minus the 210px file
- *  list), so this is a real case, not a theoretical one. */
-const MIN_WIDTH_FOR_PILL = 260;
+/** Below this width the pill would overflow the frame it sits in. Measured, not
+ *  guessed: the pill renders ~150px wide with the magnifier button, and sits 8px
+ *  in from the edge, so ~166px is where it stops fitting.
+ *
+ *  An earlier 260px was WRONG and hid the controls in the ordinary layout: with
+ *  the file list open the viewer is ~272px and the inset frame ~240px, so the
+ *  one place a picture is most shrunken had no way to zoom it. The genuinely
+ *  narrow case this guards is the ~107px minimum (MIN_DRAWER_WIDTH 320 minus the
+ *  210px file list). */
+const MIN_WIDTH_FOR_PILL = 170;
 
 export function ImageView({ absolutePath }: ArtifactViewProps) {
   // BinaryContent owns loading/error for the byte read.
@@ -41,8 +47,14 @@ function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath
   // one, and rendering a control that can do nothing is worse than omitting it.
   // A media query rather than a platform check — a remote browser on a desktop
   // has a real cursor and should get the lens.
+  //
+  // `any-hover`, NOT `hover`: the un-prefixed form asks about the PRIMARY
+  // pointer, and on a touchscreen laptop (Destin's is one) the primary pointer
+  // can be the finger — which would hide the magnifier on a machine that has a
+  // trackpad right there. `any-hover` asks the question that actually matters:
+  // is there any device here that can hover? A phone answers no.
   const canLoupe = typeof window !== 'undefined'
-    && window.matchMedia?.('(hover: hover) and (pointer: fine)')?.matches === true;
+    && window.matchMedia?.('(any-hover: hover) and (any-pointer: fine)')?.matches === true;
 
   // Build a blob: URL from the bytes (same-origin, works everywhere) instead of
   // an <img src="file://…">, which the renderer origin can't load.
@@ -98,7 +110,6 @@ function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath
 
   return (
     <div
-      ref={boxRef}
       data-zoomable
       className="relative h-full w-full overflow-hidden"
       // Only claim the touch gestures once there is something to pan; at fit the
@@ -106,6 +117,13 @@ function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath
       style={{ touchAction: zoom.isFit ? undefined : 'none' }}
       {...zoom.bind}
     >
+      {/* The picture lives in an inset frame, not against the pane edges: the
+          viewer has always given an image 16px of breathing room (the old
+          `p-4`), and losing it silently would be a visual change nobody asked
+          for. This inner box is also what gets MEASURED — clientWidth includes
+          padding, so measuring a padded outer box would over-report the space
+          available and fit the picture slightly too large. */}
+      <div ref={boxRef} className="absolute inset-4 overflow-hidden">
       <img
         ref={imgRef}
         src={url}
@@ -129,6 +147,7 @@ function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath
           cursor: zoom.isFit ? undefined : (zoom.dragging ? 'grabbing' : 'grab'),
         }}
       />
+      </div>
 
       {/* `box.w > 0 &&` matters: before the first measurement the width is 0 and
           we do NOT yet know it is narrow. Treating unknown as narrow would hide
