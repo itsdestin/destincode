@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { HISTORY_EXPAND_PROMPT_ID, shouldRenderAssistantTurn } from '../state/chat-types';
 import UserMessage from './UserMessage';
@@ -363,6 +363,17 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
     return () => window.removeEventListener('keydown', onKey, true);
   }, [visible]);
 
+  // The find row changes the scroll container's height (it takes its own row
+  // above the messages). Shrinking a container does not fire a scroll event
+  // and none of the ResizeObservers above watch the container itself, so a
+  // view pinned to the bottom would be left the row's height short of it.
+  // Re-pin synchronously after layout while still stuck; a user who scrolled
+  // up keeps their place (the browser preserves scrollTop) and just sees the
+  // messages shift down by the row, which is the intended behaviour.
+  useLayoutEffect(() => {
+    if (stickRef.current) scrollToBottom();
+  }, [findOpen, scrollToBottom, stickRef]);
+
   // Wheel scroll: burst acceleration + momentum ("flick") glide.
   //
   // Burst acceleration: rapid successive flicks compound — the 5th flick in a
@@ -720,20 +731,6 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
       <div className={`framed-shell${rightPaneOpen ? ' drawer-open' : ''}${drawerExpanded && !gameOpen ? ' drawer-expanded' : ''}`}>
         <div className="frame-edge" />
         <div className="chat-pane">
-          {/* Chat-history find bar — sibling of (not inside) the scroll/content
-              container so its own text isn't matched. Anchored below the
-              overlaid header chrome via the top offset. */}
-          {findOpen && (
-            <ContentFindBar
-              containerRef={contentRef}
-              scrollRef={scrollContainerRef}
-              highlightName="chat-find"
-              placeholder="Find in chat"
-              positionClassName="right-3 top-[calc(var(--top-chrome-height,3rem)+0.5rem)]"
-              resetKey={sessionId}
-              onClose={() => setFindOpen(false)}
-            />
-          )}
           {/* Empty-state hint — absolutely centered in the chat-pane between the
               top and bottom chrome. Uses --top-chrome-bottom (not the broken
               h-full centering it replaces) so it clears a FLOATING header pill,
@@ -748,7 +745,33 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
               Start a conversation with {assistantName(provider)}
             </div>
           )}
-          <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">
+          {/* Chat-history find bar — sibling of (not inside) the scroll/content
+              container so its own text isn't matched. Its own ROW above the
+              messages, like a browser's (P-14, Destin 2026-08-27): the old
+              floating card (right-3, just under the header) sat on top of the
+              first right-aligned user message and hid the end of it. In flow
+              here, .chat-pane (a flex column, globals.css) lets the scroll
+              container below take the remaining height, so the messages shift
+              down while the bar is open and back when it closes. `.find-row`'s
+              top margin clears the overlaid header (globals.css). */}
+          {findOpen && (
+            <ContentFindBar
+              layout="row"
+              containerRef={contentRef}
+              scrollRef={scrollContainerRef}
+              highlightName="chat-find"
+              placeholder="Find in chat"
+              resetKey={sessionId}
+              onClose={() => setFindOpen(false)}
+            />
+          )}
+          {/* flex-1 min-h-0 (was h-full): with the find row in flow above it,
+              h-full would overflow the pane by the row's height and clip the
+              last message under the input bar. chat-scroll--below-find-row
+              drops the header-clearing padding-top while the row is open —
+              the content no longer starts under the header, it starts under
+              the row. */}
+          <div ref={scrollContainerRef} className={`chat-scroll flex-1 min-h-0 overflow-y-auto${findOpen ? ' chat-scroll--below-find-row' : ''}`}>
            <div ref={contentRef}>
         {state.timeline.length === 0 && !state.isThinking ? null : (
           <>
