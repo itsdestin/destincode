@@ -596,23 +596,39 @@ export function LocalModelRow({
   // which version of the model it was (Destin, 2026-08-27).
   const quality = [model.quant, model.quantDescription].filter(Boolean).join(' · ');
 
-  const subtitle =
-    live
-      ? `${pct ?? 0}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
-        + (live.parts > 1 ? ` · part ${live.currentPart} of ${live.parts}` : '')
-    : model.status === 'complete'
-      ? gb(model.sizeBytes)
-    : model.status === 'unfinished' && pct != null
-      ? `${pct}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
+  // A bar is drawn whenever a download is short of its total — at rest as well
+  // as in flight. A paused download used to render its progress as grey text
+  // while the same row mid-download got a bar, which made the state hardest to
+  // see exactly when it mattered most.
+  const showBar = Boolean(live) || (model.status === 'unfinished' && pct != null);
+
+  // The progress numbers ride ABOVE the bar, centred on it, rather than sitting
+  // under the model name (Destin, 2026-08-27): they describe the bar, so they
+  // belong with it. A row with no bar has nothing to caption, and shows its size
+  // under the name as before.
+  const progressText = showBar
+    ? `${pct ?? 0}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
+      + (live && live.parts > 1 ? ` · part ${live.currentPart} of ${live.parts}` : '')
+    : null;
+
+  const subtitle = showBar ? null
+    : model.status === 'complete' ? gb(model.sizeBytes)
     : `${gb(model.sizeBytes)} downloaded`;
 
   return (
     <div className={`rounded-lg bg-inset/50 overflow-hidden ${banner ? `border ${banner.border}` : ''}`.trim()}>
       {/* The banner names the state before any number is read — a stopped
           download is the thing this screen exists to make obvious. */}
+      {/* A small centred tab hanging off the top edge, not a full-bleed strip:
+          the state is an ACCENT on the row, not the row's main surface
+          (Destin, 2026-08-27). Still a SOLID fill with black text — that is
+          what carries the contrast (9.7 / 7.6 / 5.0), and softening it back to
+          a tint is what made the label invisible on the light themes. */}
       {banner && (
-        <div className={`px-3 py-1 text-3xs font-medium tracking-wider uppercase text-center ${banner.strip}`}>
-          {banner.text}
+        <div className="flex justify-center">
+          <span className={`px-2 pb-px text-4xs font-medium tracking-wider uppercase rounded-b ${banner.strip}`}>
+            {banner.text}
+          </span>
         </div>
       )}
 
@@ -624,7 +640,7 @@ export function LocalModelRow({
                 Native title is the app's documented tool for a plain hover hint
                 (ui/AnchorTip.tsx header). */}
             <p className="text-xs text-fg font-medium truncate" title={model.id}>{displayName(model)}</p>
-            <p className="text-3xs text-fg-muted">{subtitle}</p>
+            {subtitle && <p className="text-3xs text-fg-muted">{subtitle}</p>}
             {/* Its own line, in full — Destin, 2026-08-27 (A3). It is free to wrap;
                 the room came from the detail line above, which handed its state
                 word ("Downloading…") to the banner. */}
@@ -655,12 +671,10 @@ export function LocalModelRow({
           )}
         </div>
 
-        {/* The bar is drawn whenever a download is short of its total — at rest
-            as well as in flight. A paused download used to render its progress
-            as grey text while the same row mid-download got a bar, which made
-            the state hardest to see exactly when it mattered most. */}
-        {(live || (model.status === 'unfinished' && pct != null)) && (
+        {showBar && (
           <div className="mt-2">
+            {/* Centred directly over the bar it describes. */}
+            <p className="text-3xs text-fg-muted text-center mb-1">{progressText}</p>
             <ProgressBar percent={pct ?? 0} aria-label="Download progress" />
           </div>
         )}
