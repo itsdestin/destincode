@@ -25,6 +25,7 @@ export interface BuildMetaInput {
   stats: Map<string, ConversationStats>;
   resolveTranscriptPath: (rec: ConversationRecord) => string;
   transcriptExists: (absPath: string) => boolean;
+  storeRoot: string;
 }
 
 const EMPTY_STATS: ConversationStats = {
@@ -85,6 +86,7 @@ export function buildMetaFile(input: BuildMetaInput): ChatsearchMetaFile {
     v: CHATSEARCH_FORMAT_VERSION,
     provider: input.provider,
     refreshedAt: input.refreshedAt,
+    storeRoot: input.storeRoot,
     conversations,
   };
 }

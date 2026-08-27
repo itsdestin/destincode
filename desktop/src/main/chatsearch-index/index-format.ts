@@ -46,6 +46,11 @@ export interface ChatsearchMetaFile {
   v: number;
   provider: string;
   refreshedAt: string;
+  /** Absolute path of the conversation store this index mirrors. WHY: the CLI
+   *  stamps it into outbox requests so an app instance with a DIFFERENT store
+   *  (a run-dev.sh copy sharing ~/.youcoded) leaves the request alone. Additive —
+   *  format version stays 1; the CLI ignores fields it doesn't know. */
+  storeRoot: string;
   conversations: Record<string, ChatsearchMetaEntry>;
 }
 

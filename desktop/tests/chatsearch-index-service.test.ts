@@ -52,6 +52,7 @@ describe('refreshChatsearchIndex', () => {
 
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'claude',
         lane: 'claude',
@@ -72,6 +73,7 @@ describe('refreshChatsearchIndex', () => {
   it('marks a conversation whose transcript never existed as a tombstone', async () => {
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'claude', lane: 'claude', records: [rec()],
         resolveTranscriptPath: () => path.join(tmp, 'missing.jsonl'),
@@ -88,6 +90,7 @@ describe('refreshChatsearchIndex', () => {
 
     const ran = await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{ provider: 'claude', lane: 'claude', records: [rec()], resolveTranscriptPath: () => '/nope' }],
       tagLabels: new Map(),
     });
@@ -114,6 +117,7 @@ describe('refreshChatsearchIndex', () => {
     // First, a normal successful build establishes a good, non-empty file.
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'claude', lane: 'claude', records: [rec()], resolveTranscriptPath: () => transcript,
       }],
@@ -128,6 +132,7 @@ describe('refreshChatsearchIndex', () => {
     // exactly like a transiently unreadable sync space would.
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{ provider: 'claude', lane: 'claude', records: [], resolveTranscriptPath: () => transcript }],
       tagLabels: new Map(),
     });
@@ -142,6 +147,7 @@ describe('refreshChatsearchIndex', () => {
   it('still writes an empty meta file on the very first build', async () => {
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{ provider: 'claude', lane: 'claude', records: [], resolveTranscriptPath: () => '/nope' }],
       tagLabels: new Map(),
     });
@@ -163,6 +169,7 @@ describe('refreshChatsearchIndex', () => {
 
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'claude',
         lane: 'claude',
@@ -204,6 +211,7 @@ describe('resolveTranscriptPathTwoStep (synced-space backstop)', () => {
 
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'claude', lane: 'claude', records: [rec()],
         resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
@@ -229,6 +237,7 @@ describe('resolveTranscriptPathTwoStep (synced-space backstop)', () => {
 
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'claude', lane: 'claude', records: [rec()],
         resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
@@ -248,6 +257,7 @@ describe('resolveTranscriptPathTwoStep (synced-space backstop)', () => {
 
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'claude', lane: 'claude', records: [rec()],
         resolveTranscriptPath: (r) => resolveTranscriptPathTwoStep(r, localPath, storeRoot),
@@ -304,6 +314,7 @@ describe('resolveTranscriptPathTwoStep (synced-space backstop)', () => {
 
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'claude',
         lane: 'claude',
@@ -348,6 +359,7 @@ describe('resolveTranscriptPathTwoStep (synced-space backstop)', () => {
 
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'native',
         lane: 'native',
@@ -369,6 +381,7 @@ describe('resolveTranscriptPathTwoStep (synced-space backstop)', () => {
 
     await refreshChatsearchIndex({
       homeRoot: tmp,
+      storeRoot: tmp,
       lanes: [{
         provider: 'native',
         lane: 'native',
