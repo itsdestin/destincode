@@ -168,14 +168,18 @@ export class ModelCatalog {
         m.supportsVision = inputSide.includes('image');
       }
       // OpenRouter pricing is USD-per-TOKEN strings; CatalogModel.pricing is
-      // USD per 1M tokens, hence the *1e6. Require NON-EMPTY STRINGS before
-      // Number(): Number(null) and Number('') are both 0, which would map a
-      // JSON null to "free" — violating "absent fields are omitted, never
-      // guessed" (header comment).
+      // USD per 1M tokens, hence the *1e6. Require strings with NON-WHITESPACE
+      // CONTENT before Number(): Number(null), Number('') and Number('  ') are
+      // all 0, which would map a JSON null — or a field the upstream padded
+      // with spaces — to "free", violating "absent fields are omitted, never
+      // guessed" (header comment). The .trim() is the load-bearing part: a
+      // padded field must read as "not published", NOT as a real rate of zero,
+      // which would silently bill the user's cached reads at $0. Matches the
+      // sibling parser in harness/eval/estimate.ts (isNumeric).
       const pricing = isObj(row.pricing) ? row.pricing : null;
       if (pricing
-          && typeof pricing.prompt === 'string' && pricing.prompt !== ''
-          && typeof pricing.completion === 'string' && pricing.completion !== '') {
+          && typeof pricing.prompt === 'string' && pricing.prompt.trim() !== ''
+          && typeof pricing.completion === 'string' && pricing.completion.trim() !== '') {
         const prompt = Number(pricing.prompt);
         const completion = Number(pricing.completion);
         if (Number.isFinite(prompt) && Number.isFinite(completion)) {
@@ -184,9 +188,9 @@ export class ModelCatalog {
           // a model that doesn't publish them leaves them UNSET, so the cost
           // chip falls back to the full input rate rather than pricing a
           // cached read at $0.
-          const cr = typeof pricing.input_cache_read === 'string' && pricing.input_cache_read !== ''
+          const cr = typeof pricing.input_cache_read === 'string' && pricing.input_cache_read.trim() !== ''
             ? Number(pricing.input_cache_read) : NaN;
-          const cw = typeof pricing.input_cache_write === 'string' && pricing.input_cache_write !== ''
+          const cw = typeof pricing.input_cache_write === 'string' && pricing.input_cache_write.trim() !== ''
             ? Number(pricing.input_cache_write) : NaN;
           if (Number.isFinite(cr)) m.pricing.cacheRead = cr * 1e6;
           if (Number.isFinite(cw)) m.pricing.cacheWrite = cw * 1e6;
