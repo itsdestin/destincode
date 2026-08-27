@@ -58,13 +58,20 @@ function totals(over: Record<string, unknown>) {
 }
 
 // The row a dimmed widget occupies: walk up from its label to the first
-// ancestor that also holds the reason line, then one level further, so the
+// ancestor that also holds the reason line, then TWO levels further, so the
 // element under test is at least the whole row however the row is stacked.
 // Deliberately not a class-name lookup — this file's point is structure.
+//
+// WHY two levels and not one (review of 7ec9e8e7): one level lands on the
+// opacity-50 wrapper, which is a SIBLING of the row's "(i)" info button, not
+// an ancestor of it. With one level the focusable-element test passed even
+// when the info button's `!reason` gate was removed entirely — it simply could
+// not see the button. Proven by mutation: un-gate the "(i)" at StatusBar.tsx
+// and this file must go red.
 function rowAround(label: HTMLElement, reason: string): HTMLElement {
   let el: HTMLElement | null = label;
   while (el && !(el.textContent ?? '').includes(reason)) el = el.parentElement;
-  return (el?.parentElement ?? el)!;
+  return (el?.parentElement?.parentElement ?? el)!;
 }
 
 describe('Customize Status Bar menu', () => {
