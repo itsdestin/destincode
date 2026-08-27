@@ -1410,7 +1410,14 @@ export default function StatusBar({
         const title = ccCost != null
           ? 'Estimated cost of this session, as counted by Claude Code.'
           : `${SCOPE_NOTE} Priced from published rates, prompt-cache discounts included.`
-            + (partial ? ' Models with no published price are not included in this total.' : '')
+            // Task 24 — "available", not "published". The price lookup returns
+            // nothing both for a model that genuinely has no rate and for a
+            // catalog that never loaded (dead network, empty cache), and the two
+            // are indistinguishable here, so claiming nothing was PUBLISHED
+            // states a cause nobody checked (docs/error-message-standards.md).
+            // Byte-identical to UsageCard's PARTIAL_NOTE on purpose — the bar and
+            // the card describe the same total, so they must word it the same way.
+            + (partial ? ' Models with no available price are not included in this total.' : '')
             // The count is dropped rather than printed as "0 specialists" if
             // the two numbers ever disagree — a wrong sentence is worse than a
             // missing one (docs/error-message-standards.md).

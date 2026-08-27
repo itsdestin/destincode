@@ -396,7 +396,17 @@ describe('Session Cost chip', () => {
     withWidgets(['session-cost']);
     render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
       nativeTotals={costTotals({ costUsd: 0.42, anyPriced: true, anyUnpriced: true })} />);
-    expect(screen.getByTitle(/no published price are not included/i)).toBeInTheDocument();
+    // Task 24: the full sentence, not a fragment. The chip's title is a
+    // concatenation, so this is matched inside it — but the whole sentence is
+    // pinned, byte-for-byte with UsageCard's PARTIAL_NOTE, because the bar and
+    // the card saying different things about the same total is the bug this
+    // pair of assertions exists to catch. "available", not "published": the
+    // price lookup returns nothing for a model with no rate AND for a catalog
+    // that never loaded, so "published" asserted a cause nobody checked
+    // (docs/error-message-standards.md).
+    expect(
+      screen.getByTitle(/Models with no available price are not included in this total\./),
+    ).toBeInTheDocument();
   });
 });
 

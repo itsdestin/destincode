@@ -3910,9 +3910,66 @@ describe('NativeSessionHost per-turn pricing', () => {
     // Turn 2 ran on the expensive model and must be billed at it — without the
     // re-apply this is still $7, priced at a model that had already been left.
     expect(turns[1].data.usage.costUsd).toBeCloseTo(70, 10);
-    // And the swap must not reach BACKWARDS: turn 1 keeps the price it ran at.
+    // Turn 1 keeps the price it ran at. Task 24 — be exact about what this
+    // half pins and what it does not. turn-complete builds `data.usage` as a
+    // fresh object at emit time and hands it straight to the listeners, so once
+    // a turn has been reported there is nothing left in-process that could
+    // rewrite it: this assertion is close to tautological and stands as a
+    // regression floor, NOT as proof of spec 5's "never applied retroactively".
+    //
+    // The shape that genuinely is at risk is a swap that lands while a turn is
+    // still STREAMING — setBinding writes opts immediately, so the in-flight
+    // turn gets stamped with the new model's name and billed at the new model's
+    // rate although the old model generated every token. Measured 2026-08-27
+    // on the delayedFactory rig: a turn generated on m-cheap came back
+    // {model: 'm-dear', costUsd: 70}. That is a separate defect whose fix is a
+    // production change (snapshot the price card at turn START), so it is left
+    // unpinned here on purpose rather than frozen at its current wrong answer.
     expect(turns[0].data.usage.costUsd).toBeCloseTo(7, 10);
     expect(turns[0].data.model).toBe('m-cheap');
     expect(turns[1].data.model).toBe('m-dear');
+  });
+
+  // Task 24. The line directly BELOW the one the test above pins —
+  // `if (free !== undefined) this.opts.free = free;` in HarnessSession.setBinding —
+  // was itself unguarded: deleting it left 151 tests green, because every
+  // pricing test until now ran all of its turns on ONE side of the
+  // free/metered line. It stopped being cosmetic when costUsd became
+  // `this.opts.free ? null : costForUsage(...)` (Task 22 item 1): a STALE
+  // `free` no longer merely mislabels a turn, it suppresses the bill outright.
+  // What the user would see: swap mid-session from a local model to an
+  // OpenRouter one and the Cost chip reports the session as free forever
+  // after, while OpenRouter bills every turn. Mutation-proved — with that line
+  // deleted turn 2 comes back {costUsd: null, free: true}.
+  it('re-reads whether the new model is free, across a local-engine to metered swap', async () => {
+    const h = new NativeSessionHost(
+      new SessionStore(new NativeHome(root)), factory, NO_CONTEXT,
+      // The provider TYPE is what makes a turn free, and it is what the swap
+      // changes — a rate card alone cannot tell these two turns apart.
+      async (b: any) => (b.providerId === 'local' ? 'local-engine' : 'openrouter') as any,
+      async () => null,
+      // Same scripted 3 in + 2 out either way: $1/token in + $2/token out = $7.
+      async (b: any) => (b.providerId === 'local' ? null : { in: 1_000_000, out: 2_000_000 }),
+    );
+    const turns: any[] = [];
+    h.on('transcript-event', (e) => { if (e.type === 'turn-complete') turns.push(e); });
+    await h.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'local', modelId: 'm-local' } });
+
+    h.send('s-1', 'hello');
+    await waitForTurnComplete(h, 1);
+    expect(await h.setBinding('s-1', { providerId: 'openrouter', modelId: 'm-hosted' })).toBe(true);
+    h.send('s-1', 'hello again');
+    await waitForTurnComplete(h, 1);
+    await h.drain('s-1');
+    await h.destroyAll();
+
+    expect(turns).toHaveLength(2);
+    // Turn 1 ran on the local engine: free to run, and never a false $0.00.
+    expect(turns[0].data.usage.free).toBe(true);
+    expect(turns[0].data.usage.costUsd).toBeNull();
+    // Turn 2 ran on OpenRouter and must be BILLED. Without the re-apply the
+    // session still carries free: true, which forces costUsd to null here.
+    expect(turns[1].data.usage.free).toBe(false);
+    expect(turns[1].data.usage.costUsd).toBeCloseTo(7, 10);
   });
 });

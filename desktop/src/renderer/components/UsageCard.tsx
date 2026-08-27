@@ -31,13 +31,13 @@ const SCOPE_NOTE = 'Counts this session so far, including specialists.';
 // "no price is published" asserts a cause the code never checked, which
 // docs/error-message-standards.md forbids.
 //
-// PARTIAL_NOTE still says "published" and carries that SAME unchecked claim.
-// It is copied as-is on purpose: the bar's copy of this sentence
-// (StatusBar.tsx, the cost chip's `partial` branch) is queued for a separate
-// wording task, and a card that fixes it early would disagree with the bar in
-// the meantime. FIX BOTH COPIES TOGETHER — searching for the sentence finds
-// them both.
-const PARTIAL_NOTE = 'Models with no published price are not included in this total.';
+// PARTIAL_NOTE carried that SAME unchecked claim until Task 24 reworded it and
+// the bar's copy (StatusBar.tsx, the cost chip's `partial` branch) together —
+// the two are byte-identical and must stay that way, because the bar and the
+// card are describing one total and a user who reads both must not be told two
+// different things. FIX BOTH COPIES TOGETHER — searching for the sentence
+// finds them both, and a test on each side pins the full sentence.
+const PARTIAL_NOTE = 'Models with no available price are not included in this total.';
 const UNPRICED_NOTE =
   "This provider bills for usage, but no price is available for this model here, so the session cost can't be totalled.";
 

@@ -92,7 +92,7 @@ describe('UsageCard in a native session', () => {
     // Byte-for-byte, not a substring: this sentence exists in StatusBar.tsx
     // too, and the whole point is that the two surfaces say the SAME thing.
     expect(
-      screen.getByText('Models with no published price are not included in this total.'),
+      screen.getByText('Models with no available price are not included in this total.'),
     ).toBeInTheDocument();
   });
 
