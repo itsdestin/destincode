@@ -5,10 +5,10 @@
 // subscription a native session doesn't spend; Fast mode is a Claude Code
 // toggle nothing native honours (spec §3).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import StatusBar from '../src/renderer/components/StatusBar';
-import { emptyTotals } from '../src/renderer/state/session-totals';
+import { emptyTotals, addTurnUsage, addSubagentUsage } from '../src/renderer/state/session-totals';
 
 // Multiple <StatusBar> renders share one jsdom document in this file — without
 // explicit cleanup a later test's queryByText/getByText would see the
@@ -392,5 +392,73 @@ describe('Session Cost chip', () => {
     render(<StatusBar statusData={statusData} provider="native" sessionId="s1"
       nativeTotals={costTotals({ costUsd: 0.42, anyPriced: true, anyUnpriced: true })} />);
     expect(screen.getByTitle(/no published price are not included/i)).toBeInTheDocument();
+  });
+});
+
+// Task 21 — the gap between two individually-correct unit tests. The totals
+// unit tests fed the accumulator hand-written flags; the chip tests fed the
+// bar hand-written flags. Neither ever fed the REAL bar what the REAL
+// accumulator produces from what main actually stamps, and the defect lived
+// exactly there: a local-engine turn is stamped `costUsd: null, free: true`
+// (a local model has no rate card), the accumulator read the null alone as
+// "unpriced", and the bar drew "Cost: not listed" with a tooltip claiming the
+// provider bills the user for a model running on their own machine.
+describe('Session Cost — a purely local session, end to end (Task 21)', () => {
+  // Built through the real accumulator, never by hand: hand-built flags are
+  // what let this through the first time.
+  const localSessionTotals = () => {
+    let t = emptyTotals();
+    t = addTurnUsage(t, { inputTokens: 1200, outputTokens: 340, costUsd: null, free: true });
+    t = addTurnUsage(t, { inputTokens: 1500, outputTokens: 120, costUsd: null, free: true });
+    return t;
+  };
+
+  it('draws no cost chip at all, and never the words "not listed"', () => {
+    withWidgets(['session-cost']);
+    const { container } = render(<StatusBar statusData={statusData} provider="native"
+      sessionId="s1" nativeTotals={localSessionTotals()} />);
+    expect(screen.queryByText('Cost:')).toBeNull();
+    expect(screen.queryByText('not listed')).toBeNull();
+    // textContent as well as queryByText: the string must not appear anywhere
+    // on the bar, however it happens to be split across elements.
+    expect(container.textContent).not.toContain('not listed');
+    expect(screen.queryByText(/\$/)).toBeNull();
+    // Positive control: every assertion above is an absence, and absences pass
+    // just as happily against a bar that never mounted.
+    expect(screen.getByText('Add tags')).toBeInTheDocument();
+  });
+
+  it('still draws no cost chip when that local session delegated to a free local specialist', () => {
+    withWidgets(['session-cost']);
+    let t = localSessionTotals();
+    t = addSubagentUsage(t, { inputTokens: 300, outputTokens: 60, costUsd: null, free: true });
+    const { container } = render(<StatusBar statusData={statusData} provider="native"
+      sessionId="s1" nativeTotals={t} />);
+    expect(screen.queryByText('Cost:')).toBeNull();
+    expect(container.textContent).not.toContain('not listed');
+    expect(screen.getByText('Add tags')).toBeInTheDocument();
+  });
+
+  // The other half of the same defect: the Customize menu's local sentence is
+  // gated on !anyUnpriced, so a wrongly-unpriced local session made it
+  // unreachable dead code. Same real totals, driven through the real menu.
+  it('offers the Cost row with the local sentence the defect made unreachable', () => {
+    render(<StatusBar statusData={statusData} provider="native"
+      sessionId="s1" nativeTotals={localSessionTotals()} />);
+    fireEvent.click(screen.getByRole('button', { name: /status bar widgets|customize/i }));
+    expect(screen.getByText("Models on your own machine don't cost anything to run")).toBeInTheDocument();
+    expect(screen.queryByText('not listed')).toBeNull();
+  });
+
+  // Guard the other direction so the fix can't be "never mark anything
+  // unpriced": a metered model with no published rate is a different state and
+  // still has to say so.
+  it('still says "not listed" for a metered session whose model has no published price', () => {
+    withWidgets(['session-cost']);
+    let t = emptyTotals();
+    t = addTurnUsage(t, { inputTokens: 1200, outputTokens: 340, costUsd: null });
+    render(<StatusBar statusData={statusData} provider="native" sessionId="s1" nativeTotals={t} />);
+    expect(screen.getByText('Cost:')).toBeInTheDocument();
+    expect(screen.getByText('not listed')).toBeInTheDocument();
   });
 });

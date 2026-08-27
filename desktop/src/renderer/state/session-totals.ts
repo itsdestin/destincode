@@ -32,8 +32,10 @@ export interface SessionTotals {
   costUsd: number;
   /** Some counted work had a published price → a cost figure means something. */
   anyPriced: boolean;
-  /** Some counted work had NO published price → the figure is incomplete, and
-   *  the tooltip has to say so. */
+  /** Some counted work was METERED with no published price → the figure is
+   *  incomplete, and the tooltip has to say so. Free work does NOT land here:
+   *  a free model has no rate card because there is nothing to charge, which
+   *  is anyFree below (see the two causes of costUsd === null in addUsage). */
   anyUnpriced: boolean;
   /** Some counted work ran on a model that costs nothing to run (a local
    *  engine). Distinct from anyUnpriced, which means "metered, but we have no
@@ -56,9 +58,11 @@ export interface TurnUsageLike {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
-  /** number = priced; null = native work with no published price; ABSENT = no
-   *  pricing information at all (a Claude Code turn, whose cost comes from the
-   *  statusline instead). The three cases are deliberately distinct. */
+  /** number = priced; null = no published price, which means either metered-
+   *  but-unlisted (→ anyUnpriced) or free-to-run when `free` is also set (→
+   *  anyFree only); ABSENT = no pricing information at all (a Claude Code turn,
+   *  whose cost comes from the statusline instead). The cases are deliberately
+   *  distinct. */
   costUsd?: number | null;
   /** True when the work ran on a model that costs nothing to run (a local
    *  engine). Main stamps it, because the renderer cannot tell a free local
@@ -87,8 +91,14 @@ function addUsage(t: SessionTotals, u: TurnUsageLike): SessionTotals {
   const hasTokens = !!(u.inputTokens || u.outputTokens || u.cacheReadTokens || u.cacheCreationTokens);
   // costUsd carries information even when it's 0 or null — only a fully
   // absent field means "nothing to add" here. null still means something
-  // ("priced work with no published price") and must produce a new object.
-  const hasCost = u.costUsd !== undefined;
+  // ("metered work with no published price") and must produce a new object —
+  // UNLESS the turn is free, where the null is just "a local model has no rate
+  // card" and says nothing this totals object doesn't already record via
+  // anyFree. Keeping that case a no-op preserves the referential stability the
+  // header comment describes: every turn of a local session carries this exact
+  // shape, so allocating a lookalike object for it would churn the
+  // useSyncExternalStore snapshot on every single turn.
+  const hasCost = u.costUsd !== undefined && !(u.costUsd === null && u.free === true);
   // WHY `&& !t.anyFree` and not just `u.free`: anyFree is a latch — once set it
   // can never change again, so a free turn arriving at already-free totals
   // changes NOTHING. Every turn of a local session carries free: true, so
@@ -108,7 +118,20 @@ function addUsage(t: SessionTotals, u: TurnUsageLike): SessionTotals {
   if (typeof u.costUsd === 'number') {
     next.costUsd = t.costUsd + u.costUsd;
     next.anyPriced = true;
-  } else if (u.costUsd === null) {
+  } else if (u.costUsd === null && u.free !== true) {
+    // WHY the `free` guard: costUsd === null has TWO different causes, and
+    // only one of them is "unpriced".
+    //   1. The model is METERED but its provider publishes no rate for it — we
+    //      know the user is being charged, we just can't total it. That is
+    //      anyUnpriced, and the bar says "Cost: not listed".
+    //   2. The model is FREE — a local engine running on the user's own
+    //      machine has no rate card because there is nothing to charge. Main
+    //      stamps that turn `costUsd: null, free: true`.
+    // Before this guard, case 2 fell into case 1, so EVERY purely local session
+    // was marked unpriced and the bar told the user their own machine's model
+    // "bills for usage" at a price it couldn't see — false, and it also made
+    // the Customize menu's "Models on your own machine don't cost anything to
+    // run" unreachable, since that sentence is gated on !anyUnpriced.
     next.anyUnpriced = true;
   }
   // Set OUTSIDE the costUsd branches on purpose: "free to run" is a third state,

@@ -61,6 +61,39 @@ describe('session totals', () => {
     expect(t.costUsd).toBe(0);
   });
 
+  // Task 21 — `costUsd: null` has TWO causes and only ONE of them is
+  // "unpriced". Main stamps a local-engine turn as `costUsd: null, free: true`
+  // because a local model has no rate card at all; that is FREE, not "metered
+  // at a rate we can't see". Before this, every purely local session came out
+  // of here with anyUnpriced === true and the bar drew "Cost: not listed".
+  it('a costUsd: null turn that is FREE is free, not unpriced', () => {
+    let t = emptyTotals();
+    t = addTurnUsage(t, { inputTokens: 1200, outputTokens: 340, costUsd: null, free: true });
+    expect(t.anyFree).toBe(true);
+    expect(t.anyUnpriced).toBe(false);
+    expect(t.anyPriced).toBe(false);
+    expect(t.costUsd).toBe(0);
+  });
+
+  it('a costUsd: null turn that is NOT free is still unpriced', () => {
+    let t = emptyTotals();
+    t = addTurnUsage(t, { inputTokens: 1200, outputTokens: 340, costUsd: null });
+    expect(t.anyUnpriced).toBe(true);
+    expect(t.anyFree).toBe(false);
+  });
+
+  // The same rule on the specialist path: a free LOCAL specialist must not
+  // drag its parent session into "not listed" either.
+  it('a free local specialist run leaves the parent session priced-verdict-free', () => {
+    let t = emptyTotals();
+    t = addTurnUsage(t, { inputTokens: 10, outputTokens: 1, costUsd: null, free: true });
+    t = addSubagentUsage(t, { inputTokens: 90, outputTokens: 9, costUsd: null, free: true });
+    expect(t.anyUnpriced).toBe(false);
+    expect(t.anyFree).toBe(true);
+    expect(t.specialistRuns).toBe(1);
+    expect(t.specialistCostUsd).toBe(0);
+  });
+
   it('a priced parent turn is not specialist spend', () => {
     let t = emptyTotals();
     t = addTurnUsage(t, { inputTokens: 1, outputTokens: 1, costUsd: 0.5 });
@@ -159,6 +192,18 @@ describe('session totals', () => {
     const next = addTurnUsage(t, { free: true });
     expect(next).not.toBe(t);
     expect(next.anyFree).toBe(true);
+  });
+
+  // Identity, Task 21 side: a free turn's `costUsd: null` says nothing new
+  // once anyFree is latched, so a second one with no tokens must return the
+  // SAME object — the useSyncExternalStore contract this file's header
+  // describes. (Before the fix it set anyUnpriced and so allocated a lookalike
+  // copy on every local turn.)
+  it('returns the same reference for a repeated zero-token free turn (costUsd: null)', () => {
+    const t = addTurnUsage(emptyTotals(), { costUsd: null, free: true });
+    expect(t.anyFree).toBe(true);
+    expect(t.anyUnpriced).toBe(false);
+    expect(addTurnUsage(t, { costUsd: null, free: true })).toBe(t);
   });
 
   it('returns a different reference for an explicitly unpriced turn (costUsd: null)', () => {
