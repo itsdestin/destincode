@@ -8,14 +8,14 @@ import * as path from 'path';
 import { NativeHome } from '../native-home';
 import { EngineManager } from '../engine/engine-manager';
 import { readEngineConfig } from '../engine/engine-config';
-import { scanPartialFiles } from '../engine/cache-scan';
+import { readManifest } from './download-manifest';
 import { CuratedCatalog } from './curated-catalog';
 import { HfClient } from './hf-client';
 import { ModelDownloader } from './model-downloader';
 import { estimateFit, checkDiskSpace, checkMemoryForLoad, type MemoryVerdict } from './fit-estimator';
 import { detectGpu } from './gpu-detector';
 import type {
-  CuratedModel, DownloadProgress, FitEstimate, HFSearchHit, OrphanedPartial, QuantOption,
+  CuratedModel, DownloadProgress, FitEstimate, HFSearchHit, QuantOption,
 } from '../../shared/model-manager-types';
 
 export class ModelManager extends EventEmitter {
@@ -117,12 +117,30 @@ export class ModelManager extends EventEmitter {
     return sum;
   }
 
-  /** Disk guard (reserving in-flight downloads), then start; progress fans out
-   *  on 'download-progress'. */
+  /** Bytes of THIS download's file set already on disk — published parts plus
+   *  the .partial. Feeds the disk guard so a resume is judged on what is left. */
+  private bytesOnDiskFor(quant: QuantOption): number {
+    const dir = this.cacheDir();
+    let sum = 0;
+    for (const filePath of quant.files) {
+      const base = path.basename(filePath);
+      for (const candidate of [base, `${base}.partial`]) {
+        try { sum += fs.statSync(path.join(dir, candidate)).size; } catch { /* absent */ }
+      }
+    }
+    return sum;
+  }
+
+  /** Disk guard (reserving in-flight downloads and crediting bytes already
+   *  fetched), then start; progress fans out on 'download-progress'. */
   async download(repo: string, quant: QuantOption): Promise<{ downloadId: string }> {
     const free = this.freeBytesNear(this.cacheDir());
     if (free != null) {
-      const refusal = checkDiskSpace(quant.totalSizeBytes, Math.max(0, free - this.reservedBytes()));
+      const refusal = checkDiskSpace(
+        quant.totalSizeBytes,
+        Math.max(0, free - this.reservedBytes()),
+        this.bytesOnDiskFor(quant),
+      );
       if (refusal) throw new Error(refusal);
     }
     const dl = this.getDownloader();
@@ -139,14 +157,27 @@ export class ModelManager extends EventEmitter {
 
   cancel(downloadId: string): void { this.getDownloader().cancel(downloadId); }
 
-  /** `.partial` files in the cache dir with no live download attached — orphans
-   *  from a previous app run (quit/crash mid-download). The downloader only
-   *  tracks THIS session's downloads in memory, so these are otherwise invisible
-   *  to the UI. Listing only (v1): the panel cleans one via models:delete with
-   *  `modelId` (delete removes every part + .partial), or resumes by re-starting
-   *  the same repo+quant download (the Range request continues the partial). */
-  orphanedPartials(): OrphanedPartial[] {
-    const active = this.getDownloader().activePartialNames();
-    return scanPartialFiles(this.cacheDir()).filter((p) => !active.has(p.fileName));
+  /** Continue an interrupted download from the manifest beside it. Deliberately
+   *  no network: the interruption that stranded the download is often the
+   *  network itself. The downloader skips published parts and Range-continues
+   *  the .partial, so this is the original download(repo, quant) call replayed. */
+  async resume(modelId: string): Promise<{ downloadId: string }> {
+    const manifest = readManifest(this.cacheDir(), `${modelId}.gguf`);
+    if (!manifest) {
+      // Specific and accurate, per docs/error-message-standards.md — this names
+      // the real cause and what the user can do instead. The UI never offers
+      // Resume on such a row; this guards the IPC and remote surfaces.
+      throw new Error(
+        "This download has no record of where it came from, so it can't be resumed automatically. "
+        + 'Find the model in search and download it again — it will continue from where it stopped.'
+      );
+    }
+    return this.download(manifest.repo, {
+      quant: manifest.quant,
+      description: '',
+      files: manifest.files,
+      totalSizeBytes: manifest.totalSizeBytes,
+      sha256ByFile: manifest.sha256ByFile,
+    });
   }
 }
