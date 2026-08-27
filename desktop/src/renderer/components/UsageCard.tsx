@@ -109,6 +109,15 @@ function UsageBar({ percent, color, label }: { percent: number; color: string; l
 
 export default function UsageCard({ snapshot: s }: Props) {
   const cacheTotal = (s.cacheReadTokens ?? 0) + (s.cacheCreationTokens ?? 0);
+  // The zero rule, in the status bar's own words. `cacheTotal > 0` used to gate
+  // this cell, which threw away a REAL Claude Code zero: a cold or expired
+  // prompt cache genuinely reads 0 cached tokens, and the bar (which bails on
+  // null, deliberately not on falsy) printed "Cached: 0" while this card
+  // printed nothing at all about one session. A native zero never reaches here
+  // — the snapshot collapses it to null upstream, because emptyTotals() starts
+  // every native session at all-zero before a turn has run — so `!= null` is
+  // exactly "somebody measured this".
+  const cacheMeasured = s.cacheReadTokens != null || s.cacheCreationTokens != null;
   const cacheHitRate =
     cacheTotal > 0 && s.cacheReadTokens != null
       ? s.cacheReadTokens / cacheTotal
@@ -131,9 +140,15 @@ export default function UsageCard({ snapshot: s }: Props) {
   // than leaving a silent gap that looks identical to a session that spent
   // nothing. Mirrors the bar's "Cost: not listed" chip.
   const showUnpriced = !showCost && !!s.costIsPartial;
-  const showTokens = s.inputTokens != null || s.outputTokens != null || cacheTotal > 0;
+  const showTokens = s.inputTokens != null || s.outputTokens != null || cacheMeasured;
   const showLines = !!(s.linesAdded || s.linesRemoved);
   const showSessionSection = showCost || showUnpriced || s.duration != null || showTokens || showLines;
+  const showSubscription = s.fiveHourUtilization != null || s.sevenDayUtilization != null;
+  // Rule 1 taken to its end: when EVERY row is omitted the card was nothing but
+  // a heading and a timestamp — furniture, and the normal state of a native
+  // session that has not run a turn yet and has no Claude usage cache on disk.
+  // One line instead, so the card reads as working-but-empty rather than broken.
+  const nothingMeasured = !showSessionSection && s.contextPercent == null && !showSubscription;
 
   return (
     <div className="flex justify-start px-4 py-1">
@@ -156,6 +171,15 @@ export default function UsageCard({ snapshot: s }: Props) {
                 about a concept it hasn't met. */}
             {!!s.specialistRuns &&
               ` ${s.specialistRuns} specialist run${s.specialistRuns === 1 ? '' : 's'} so far.`}
+          </p>
+        )}
+
+        {/* Empty state (spec §3, rule 1 taken to its end). A session that has
+            measured nothing has no row to show — say that in one plain line
+            rather than leaving a heading floating over blank space. */}
+        {nothingMeasured && (
+          <p className="text-xs text-fg-muted">
+            No usage to show yet &mdash; numbers appear here after the assistant&apos;s first reply.
           </p>
         )}
 
@@ -213,7 +237,7 @@ export default function UsageCard({ snapshot: s }: Props) {
                 <div className="tabular-nums">{formatTokens(s.outputTokens)}</div>
               </div>
             )}
-            {cacheTotal > 0 && (
+            {cacheMeasured && (
               <div>
                 <div className="text-fg-muted text-xs mb-0.5">
                   Cache{cacheHitRate != null && ` · ${Math.round(cacheHitRate * 100)}% hit`}
@@ -240,7 +264,7 @@ export default function UsageCard({ snapshot: s }: Props) {
         {/* Claude subscription limits. NOT gated on the kind of session — this
             card is where a native session goes to see them, because the status
             bar no longer shows them there. */}
-        {(s.fiveHourUtilization != null || s.sevenDayUtilization != null) && (
+        {showSubscription && (
           <div className="space-y-2 pt-3 border-t border-edge-dim">
             {s.fiveHourUtilization != null && (
               <div>

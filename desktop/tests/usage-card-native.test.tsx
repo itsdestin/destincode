@@ -139,3 +139,100 @@ describe('UsageCard in a Claude Code session', () => {
     expect(screen.getByText(/across your whole Claude account/i)).toBeInTheDocument();
   });
 });
+
+describe('UsageCard rows that a session either has or genuinely lacks', () => {
+  // Task 26 item 1: a native session at 61% context showed a context pill on the
+  // status bar and NO context row here, because the snapshot only ever carried
+  // Claude Code's statusline figure. Both surfaces now read one source; this
+  // pins that the card actually renders what it is handed.
+  it('shows the context row a native session now has', () => {
+    render(<UsageCard snapshot={{ ...nativeSnapshot, contextPercent: 61 }} />);
+    expect(screen.getByText('Context used')).toBeInTheDocument();
+    expect(screen.getByText('61%')).toBeInTheDocument();
+    expect(screen.getByRole('progressbar', { name: 'Context used' })).toHaveAttribute('aria-valuenow', '61');
+  });
+
+  // Task 26 item 4: the cache cell used to be gated on `cacheTotal > 0`, which
+  // threw away a real Claude Code zero. The status bar deliberately bails on
+  // null and NOT on falsy for exactly this reason — a cold or expired prompt
+  // cache genuinely read 0 cached tokens, and the bar printed "Cached: 0" while
+  // the card printed nothing. The two surfaces must agree about one session.
+  const coldCache: UsageSnapshot = {
+    ...nativeSnapshot,
+    countsFromSessionTotals: false,
+    costUsd: null,
+    costIsPartial: false,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    contextPercent: null,
+    linesAdded: null,
+    linesRemoved: null,
+    fiveHourUtilization: null,
+    fiveHourResetsAt: null,
+    sevenDayUtilization: null,
+    sevenDayResetsAt: null,
+  };
+
+  it('shows a Claude Code cold-cache zero, because zero is what it measured', () => {
+    render(<UsageCard snapshot={coldCache} />);
+    expect(screen.getByText('Cache')).toBeInTheDocument();
+    expect(screen.getByText('0')).toBeInTheDocument();
+  });
+
+  it('claims no hit rate it cannot compute', () => {
+    // 0 of 0 is not 0% and is not 100% — it is unanswerable, so the label stays
+    // bare rather than inventing a statistic.
+    render(<UsageCard snapshot={coldCache} />);
+    expect(screen.queryByText(/hit/i)).toBeNull();
+  });
+
+  it('hides the cache cell for a native session that has measured nothing', () => {
+    // The snapshot collapses a native totals zero to null upstream (nothing has
+    // run yet), so absent stays absent here.
+    render(<UsageCard snapshot={{ ...coldCache, cacheReadTokens: null, cacheCreationTokens: null, inputTokens: 5 }} />);
+    expect(screen.queryByText('Cache')).toBeNull();
+  });
+});
+
+describe('UsageCard for a session that has measured nothing', () => {
+  // Task 26 item 3: a brand-new native session with no turn yet and no Claude
+  // subscription cache on disk rendered only the "SESSION USAGE" heading and a
+  // timestamp — a card of pure furniture. One line, so the user knows the card
+  // works and the session simply has no numbers yet.
+  const blank: UsageSnapshot = {
+    entryId: 'u-blank',
+    timestamp: 1,
+    costUsd: null,
+    costIsPartial: false,
+    countsFromSessionTotals: true,
+    specialistRuns: 0,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheCreationTokens: null,
+    contextTokens: null,
+    contextPercent: null,
+    duration: null,
+    apiDuration: null,
+    linesAdded: null,
+    linesRemoved: null,
+    fiveHourUtilization: null,
+    fiveHourResetsAt: null,
+    sevenDayUtilization: null,
+    sevenDayResetsAt: null,
+  };
+
+  it('says so in one plain line instead of rendering an empty card', () => {
+    render(<UsageCard snapshot={blank} />);
+    expect(
+      screen.getByText("No usage to show yet — numbers appear here after the assistant's first reply."),
+    ).toBeInTheDocument();
+  });
+
+  it('does not say it on a card that has numbers', () => {
+    render(<UsageCard snapshot={nativeSnapshot} />);
+    expect(screen.queryByText(/No usage to show yet/i)).toBeNull();
+  });
+});
