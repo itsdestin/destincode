@@ -467,20 +467,45 @@ function displayName(model: InstalledLocalModel): string {
   return name || model.id;
 }
 
-/** The banner strip across the top of an interrupted or damaged row.
- *  Two tones, matching the app's standing warn/danger split: amber for
- *  "stopped, you can carry on", destructive for "stopped, and you can't".
- *  Status colours stay hardcoded per desktop/CLAUDE.md. */
+/** The banner strip across the top of a row that is not simply "finished".
+ *  Three states on the app's own status palette (globals.css:291-294 — the
+ *  THREE colours it holds constant across every theme): green = moving,
+ *  amber = stopped but you can carry on, red = stopped and you can't.
+ *
+ *  SOLID fill with BLACK text, and both halves of that were measured, not
+ *  guessed (2026-08-27):
+ *    - The first version used a 15% tint with coloured text. On Creme that
+ *      scored 1.07:1 and on Light 1.14:1 — the label was invisible on both
+ *      light themes while reading 5.62:1 on Midnight. A translucent strip
+ *      takes its final colour from the theme behind it, so no single text
+ *      colour can be safe in all six; a solid strip can.
+ *    - The second version used white text on `amber-700`, assuming Tailwind's
+ *      #B45309 (5.02:1). It is NOT: globals.css:294 remaps --color-amber-700
+ *      to #FF9800, where white scores 2.06:1 — still failing. Black on the
+ *      app's three status colours scores 9.74 / 7.56 / 4.98, so black it is.
+ *  Deliberately `red-400` rather than `bg-destructive`: this is a STATUS
+ *  indicator, not a destructive-action surface, and --destructive is
+ *  community-overridable with no contrast guard. */
 const ROW_BANNER = {
+  downloading: {
+    text: 'Downloading',
+    strip: 'bg-green-400 text-black',
+    border: 'border-green-400/40',
+  },
+  verifying: {
+    text: 'Verifying',
+    strip: 'bg-green-400 text-black',
+    border: 'border-green-400/40',
+  },
   interrupted: {
     text: 'Download interrupted',
-    strip: 'bg-amber-500/15 text-amber-400',
-    border: 'border-amber-500/40',
+    strip: 'bg-amber-700 text-black',
+    border: 'border-amber-700/40',
   },
   damaged: {
     text: 'Damaged',
-    strip: 'bg-destructive/15 text-destructive-fg',
-    border: 'border-destructive/40',
+    strip: 'bg-red-400 text-black',
+    border: 'border-red-400/40',
   },
 } as const;
 
@@ -507,9 +532,10 @@ export function LocalModelRow({
   const total = live ? live.totalBytes : model.totalSizeBytes;
   const pct = percentOf(onDisk, total);
 
-  // A stopped download wears a banner; one that is moving does not — it is not
-  // interrupted, it is running. Pausing clears `live` and the banner returns.
-  const banner = live ? null
+  // Every state except "finished" wears a banner, so the row's condition reads
+  // before any number does. Only a complete model has none.
+  const banner = live
+    ? (live.state === 'verifying' ? ROW_BANNER.verifying : ROW_BANNER.downloading)
     : model.status === 'unfinished' ? ROW_BANNER.interrupted
     : model.status === 'untraceable' ? ROW_BANNER.damaged
     : null;
@@ -572,7 +598,7 @@ export function LocalModelRow({
 
   const subtitle =
     live
-      ? `${live.state === 'verifying' ? 'Verifying…' : 'Downloading…'} · ${pct ?? 0}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
+      ? `${pct ?? 0}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
         + (live.parts > 1 ? ` · part ${live.currentPart} of ${live.parts}` : '')
     : model.status === 'complete'
       ? gb(model.sizeBytes)
@@ -585,7 +611,7 @@ export function LocalModelRow({
       {/* The banner names the state before any number is read — a stopped
           download is the thing this screen exists to make obvious. */}
       {banner && (
-        <div className={`px-3 py-1 text-3xs font-medium tracking-wider uppercase ${banner.strip}`}>
+        <div className={`px-3 py-1 text-3xs font-medium tracking-wider uppercase text-center ${banner.strip}`}>
           {banner.text}
         </div>
       )}
@@ -599,10 +625,10 @@ export function LocalModelRow({
                 (ui/AnchorTip.tsx header). */}
             <p className="text-xs text-fg font-medium truncate" title={model.id}>{displayName(model)}</p>
             <p className="text-3xs text-fg-muted">{subtitle}</p>
-            {/* One line, always: the gloss ("Balanced quality and size — recommended")
-                wraps to two lines at this width and would add a line to EVERY row,
-                undoing the height the (i) just saved. Full text on hover. */}
-            {quality && <p className="text-3xs text-fg-muted truncate" title={quality}>{quality}</p>}
+            {/* Its own line, in full — Destin, 2026-08-27 (A3). It is free to wrap;
+                the room came from the detail line above, which handed its state
+                word ("Downloading…") to the banner. */}
+            {quality && <p className="text-3xs text-fg-muted">{quality}</p>}
           </div>
           {!confirming && (
             <div className="flex items-center gap-1.5 shrink-0">
