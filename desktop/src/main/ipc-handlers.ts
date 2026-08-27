@@ -3,6 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
+import { CHATSEARCH_IPC } from './chatsearch-index/ipc-channels';
+import { resolveConversations, readConversation } from './chatsearch-index/refs-service';
+import type { ChatsearchReadRequest } from '../shared/chatsearch-refs';
 import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
@@ -3599,6 +3602,13 @@ export function registerIpcHandlers(
   ipcMain.handle(PROJECT_IPC.WRITE_CONTEXT_FILE, async (_e, projectPath: string, absolutePath: string, content: string) => {
     return writeContextFile(projectPath, absolutePath, content);
   });
+
+  // Session references (spec 2026-08-10): resolve the chatsearch short ids a
+  // search printed against the index the app writes, and read bounded
+  // transcript slices by id. Both go through refs-service so this handler and
+  // the remote WebSocket case cannot assemble paths differently.
+  ipcMain.handle(CHATSEARCH_IPC.RESOLVE, async (_e, shortIds: string[]) => resolveConversations(shortIds));
+  ipcMain.handle(CHATSEARCH_IPC.READ, async (_e, req: ChatsearchReadRequest) => readConversation(req));
 
   // Project counting/discovery helpers moved to ./artifacts/projects-index so
   // the remote WebSocket server can compute the IDENTICAL result. They used to

@@ -3607,6 +3607,15 @@ class SessionService : Service() {
             //    (list-project, include-external, exclude, delete-project) are
             //    desktop-only in v1. ──────────────────────────────────────────────
 
+            // Android has no chatsearch index; the shared UI falls back to plain
+            // shell output when resolve answers not-implemented, so a search
+            // result on a phone reads as the CLI's own table rather than a card.
+            "chatsearch:resolve",
+            "chatsearch:read" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
             "artifacts:list-project" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }

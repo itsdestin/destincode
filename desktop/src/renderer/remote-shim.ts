@@ -1317,6 +1317,13 @@ export function installShim(): void {
       writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
         invoke('project:write-context-file', { projectPath, absolutePath, content }),
     },
+    // Session references. Object payloads, like project.* above — the remote
+    // server reads named fields off `payload`, never positional arguments.
+    chatsearch: {
+      resolve: (shortIds: string[]) => invoke('chatsearch:resolve', { shortIds }),
+      read: (req: { provider: string; id: string; tail: number; before?: number }) =>
+        invoke('chatsearch:read', req),
+    },
     // System namespace — hardware back button bridge for Android.
     // notifyStackState: React tells Android whether the dismissal stack is
     //   non-empty. Android sets OnBackPressedCallback.isEnabled accordingly

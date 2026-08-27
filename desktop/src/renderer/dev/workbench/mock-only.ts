@@ -6,9 +6,9 @@
 // Adding an entry is the SUPPORTED way to design UI ahead of its backend.
 // Deleting the guard test because a channel is "obviously fine" is not.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  // Session references (spec 2026-08-10): designed in the workbench first.
-  // These come OFF the list in Phase B when the real IPC lands — the contract
-  // test fails if they stay here after preload.ts gains the channel.
-  { channel: 'chatsearch.resolve', feature: 'chatsearch session references — Preview/Resume cards' },
-  { channel: 'chatsearch.read', feature: 'chatsearch session references — transcript preview pane' },
+  // Empty on purpose. chatsearch.resolve / chatsearch.read lived here while the
+  // cards were designed ahead of their backend, and came off when the real IPC
+  // landed (Task 11) — the contract test fails if a channel stays listed after
+  // preload.ts gains it. The workbench's fake chatsearch namespace STAYS: it is
+  // what lets the tool gallery show every row state without a real index.
 ];
