@@ -147,9 +147,9 @@ describe('UsageCard rows that a session either has or genuinely lacks', () => {
   // pins that the card actually renders what it is handed.
   it('shows the context row a native session now has', () => {
     render(<UsageCard snapshot={{ ...nativeSnapshot, contextPercent: 61 }} />);
-    expect(screen.getByText('Context used')).toBeInTheDocument();
+    expect(screen.getByText('Context remaining')).toBeInTheDocument();
     expect(screen.getByText('61%')).toBeInTheDocument();
-    expect(screen.getByRole('progressbar', { name: 'Context used' })).toHaveAttribute('aria-valuenow', '61');
+    expect(screen.getByRole('progressbar', { name: 'Context remaining' })).toHaveAttribute('aria-valuenow', '61');
   });
 
   // Task 26 item 4: the cache cell used to be gated on `cacheTotal > 0`, which
@@ -234,5 +234,63 @@ describe('UsageCard for a session that has measured nothing', () => {
   it('does not say it on a card that has numbers', () => {
     render(<UsageCard snapshot={nativeSnapshot} />);
     expect(screen.queryByText(/No usage to show yet/i)).toBeNull();
+  });
+});
+
+// Task 29 item 1: the number in this row is context REMAINING, not used.
+// statusline.sh writes `remaining_percentage` to the .context-* file the main
+// process reads, and the native figure is (window - used) / window as well
+// (StatusBar.tsx: "contextPct is REMAINING context"), and the status bar's own
+// pill says "Context: n% remaining". The card printed that same n as
+// "Context used" and coloured it with the UTILISATION scale (red at 80+), so a
+// session with 90% of its window still free rendered a red bar filled to 90%
+// labelled "used", two clicks from a green pill saying 90% remaining. One
+// number, two opposite readings. These pin the wording AND the direction of the
+// colour, because either alone can go backwards on its own.
+describe('UsageCard context row — remaining, not used', () => {
+  const ctx = (pct: number): UsageSnapshot => ({ ...nativeSnapshot, contextPercent: pct });
+  // The coloured fill inside the bar (ProgressBar renders track > fill).
+  const fillOf = (bar: HTMLElement) => bar.firstElementChild as HTMLElement;
+
+  it('labels the row by what the number actually means', () => {
+    render(<UsageCard snapshot={ctx(90)} />);
+    expect(screen.getByText('Context remaining')).toBeInTheDocument();
+    expect(screen.queryByText(/context used/i)).toBeNull();
+  });
+
+  it('reads the same to a screen reader as it looks to a sighted user', () => {
+    render(<UsageCard snapshot={ctx(90)} />);
+    const bar = screen.getByRole('progressbar', { name: 'Context remaining' });
+    expect(bar).toHaveAttribute('aria-valuenow', '90');
+    expect(screen.queryByRole('progressbar', { name: 'Context used' })).toBeNull();
+  });
+
+  it('colours a mostly-free context window green, not red', () => {
+    render(<UsageCard snapshot={ctx(90)} />);
+    expect(screen.getByText('90%')).toHaveStyle({ color: '#10b981' });
+    expect(fillOf(screen.getByRole('progressbar', { name: 'Context remaining' }))).toHaveStyle({
+      backgroundColor: '#10b981',
+    });
+  });
+
+  it('colours a nearly-full context window red', () => {
+    render(<UsageCard snapshot={ctx(12)} />);
+    expect(screen.getByText('12%')).toHaveStyle({ color: '#ef4444' });
+    expect(fillOf(screen.getByRole('progressbar', { name: 'Context remaining' }))).toHaveStyle({
+      backgroundColor: '#ef4444',
+    });
+  });
+
+  it('warns in amber once most of the window is gone', () => {
+    render(<UsageCard snapshot={ctx(35)} />);
+    expect(screen.getByText('35%')).toHaveStyle({ color: '#f59e0b' });
+  });
+
+  // The 5-hour and 7-day bars are UTILISATION — high really is bad there — so
+  // the inverted context scale must not have been applied to them.
+  it('leaves the subscription bars on the utilisation scale', () => {
+    render(<UsageCard snapshot={{ ...nativeSnapshot, fiveHourUtilization: 90, sevenDayUtilization: 12 }} />);
+    expect(screen.getByText('90%')).toHaveStyle({ color: '#ef4444' });
+    expect(screen.getByText('12%')).toHaveStyle({ color: '#10b981' });
   });
 });

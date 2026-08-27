@@ -91,6 +91,25 @@ function utilizationColor(pct: number | null): string {
   return '#10b981';
 }
 
+// Context is REMAINING, not used — so its colour scale is the INVERSE of the
+// one above. statusline.sh writes `remaining_percentage` to the file the main
+// process reads ("context remaining %"), and the native figure is
+// (window - used) / window too (StatusBar.tsx: "contextPct is REMAINING
+// context"). Running that number through utilizationColor painted a session
+// with 90% of its window still FREE bright red — the opposite of what the
+// status bar's own green "90% remaining" pill said about the same number.
+// Thresholds are StatusBar.tsx's contextColor (red under 20 left, amber under
+// 50) so the bar and this card cannot disagree; the hues are this card's own
+// palette, shared with the two utilisation bars beside it.
+// Deliberately NOT a tweak to utilizationColor: the 5-hour and 7-day bars are
+// utilisation, where high really IS bad.
+function contextRemainingColor(pct: number | null): string {
+  if (pct == null) return 'var(--fg-muted)';
+  if (pct < 20) return '#ef4444';
+  if (pct < 50) return '#f59e0b';
+  return '#10b981';
+}
+
 // Change 46: the shared bar, keeping this card's status hue via the `color` prop
 // (§1.8 explicitly preserved UsageCard's inline threshold colors — they are
 // status, not theme, so rule 5 does not apply). The bar also gains
@@ -125,7 +144,7 @@ export default function UsageCard({ snapshot: s }: Props) {
 
   const fiveHourColor = utilizationColor(s.fiveHourUtilization);
   const sevenDayColor = utilizationColor(s.sevenDayUtilization);
-  const contextColor = utilizationColor(s.contextPercent);
+  const contextColor = contextRemainingColor(s.contextPercent);
 
   // Rule 1 (spec §3): no value, no row. Every one of these used to render a
   // literal "--" — forever in a native session, where the statusline that fed
@@ -248,16 +267,20 @@ export default function UsageCard({ snapshot: s }: Props) {
           </div>
         )}
 
-        {/* Context usage */}
+        {/* Context left in the model's window. The figure is how much is LEFT,
+            so the words, the bar's fill and the screen-reader label all have to
+            say "remaining" — the status bar's pill already does, and a sighted
+            user and a screen-reader user must not get opposite readings of one
+            number. */}
         {s.contextPercent != null && (
           <div className="mb-3">
             <div className="flex justify-between text-xs mb-1">
-              <span className="text-fg-muted">Context used</span>
+              <span className="text-fg-muted">Context remaining</span>
               <span className="tabular-nums" style={{ color: contextColor }}>
                 {Math.round(s.contextPercent)}%
               </span>
             </div>
-            <UsageBar percent={s.contextPercent} color={contextColor} label="Context used" />
+            <UsageBar percent={s.contextPercent} color={contextColor} label="Context remaining" />
           </div>
         )}
 

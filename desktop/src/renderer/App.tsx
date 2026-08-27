@@ -2083,9 +2083,13 @@ function AppInner() {
   }, [sessionId, activeSessionModel, sessionModels, pendingModel]);
 
   // Snapshot factory for /cost and /usage. Pulls live stats from statusData
-  // and freezes them as a point-in-time snapshot. Returns null if stats haven't
-  // arrived yet (status line hook runs after each command, so a brand-new session
-  // may have no data for a few seconds).
+  // and freezes them as a point-in-time snapshot. Returns null only when the
+  // session has nothing at all to describe — that is a Claude Code session
+  // whose statusline hook hasn't run yet (it runs after each command, so a
+  // brand-new one has no data for a few seconds). A NATIVE session always has
+  // its own session totals to fall back on (Task 14), so it gets a card
+  // immediately; "returns null if stats haven't arrived" stopped being true
+  // then.
   const getUsageSnapshot = useCallback(
     // The derivation itself lives in state/usage-snapshot.ts — a pure function,
     // so the thing /usage is entirely made of can be tested without rendering

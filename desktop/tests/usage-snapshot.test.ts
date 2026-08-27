@@ -129,8 +129,39 @@ describe('buildUsageSnapshot — context', () => {
     // A CC session writes no native turn usage, but the gate is explicit rather
     // than incidental: the runtime split is what keeps one label from meaning
     // two different measurements.
-    const snap = buildUsageSnapshot({ ...base, isNative: false, contextPercent: 30, session: nativeSession(usage) });
-    expect(snap!.contextPercent).toBe(30);
+    //
+    // Task 29 item 3: this fixture used to also pass `contextPercent: 30`, so
+    // the statusline figure won no matter what the gate did and the test stayed
+    // green with `isNative ?` deleted — it proved nothing its name claimed.
+    // With no statusline reading at all, the ONLY way a number can appear here
+    // is the native fallback firing where it must not.
+    const snap = buildUsageSnapshot({ ...base, isNative: false, session: nativeSession(usage), usage: { five_hour: { utilization: 10, resets_at: 'x' } } });
+    expect(snap!.contextPercent).toBeNull();
+  });
+
+  // Task 29 item 2: EVERY fixture in this file had a single-entry timeline, so
+  // `lastTurnUsage` walking FORWARD instead of backward passed all 30 tests.
+  // The regression that hides behind that: a native session that has run
+  // several turns shows turn 1's context on this card and turn N's on the
+  // status bar — two surfaces disagreeing about one session, which is the exact
+  // failure this whole branch exists to stop.
+  it('reads the LATEST completed turn, not the first one', () => {
+    const first = turn({ contextLength: 200_000, contextUsedTokens: 20_000 });   // 90% remaining
+    const latest = turn({ contextLength: 200_000, contextUsedTokens: 150_000 }); // 25% remaining
+    const snap = buildUsageSnapshot({
+      ...base,
+      isNative: true,
+      session: {
+        timeline: [
+          { kind: 'assistant-turn' as const, turnId: 't1' },
+          { kind: 'assistant-turn' as const, turnId: 't2' },
+        ],
+        assistantTurns: new Map([['t1', { usage: first }], ['t2', { usage: latest }]]),
+        totals: emptyTotals(),
+      },
+    });
+    expect(snap!.contextPercent).toBe(25);
+    expect(snap!.contextPercent).not.toBe(90);
   });
 });
 
