@@ -1588,6 +1588,9 @@ export const IPC = {
   MODELS_DOWNLOAD_PROGRESS: 'models:download-progress',  // push
   MODELS_DELETE: 'models:delete',
   MODELS_INSTALLED: 'models:installed',
+  // Resume an interrupted download from its manifest (2026-08-26) — invoke(modelId)
+  // → { downloadId }. Replaces MODELS_ORPHANED_PARTIALS, removed the same day.
+  MODELS_RESUME: 'models:resume',
   // Orphaned .partial scan (2026-07-15) — invoke → OrphanedPartial[]; lists
   // .partial files left by a PREVIOUS app run so the UI can clean/resume them.
   MODELS_ORPHANED_PARTIALS: 'models:orphaned-partials',

@@ -25,6 +25,11 @@ function gb(bytes: number): string {
   return `${(bytes / 1073741824).toFixed(1)} GB`;
 }
 
+// The number alone, for "74.2 of 113.0 GB" — one unit at the end of the phrase.
+function gbNum(bytes: number): string {
+  return (bytes / 1073741824).toFixed(1);
+}
+
 // Fit → a status color. These are theme-independent status colors (the app's
 // standing rule keeps green/amber/red hardcoded); the label text is plain words
 // straight from the estimator.
@@ -62,10 +67,17 @@ export default function LocalModelsSection({ embedded = false }: { embedded?: bo
     // Curated + installed load once; downloads stay live via the subscription.
     void window.claude.models.curated().then((c: any) => setCurated(c)).catch(() => setCurated([]));
     void refreshInstalled();
+    const seen = new Set<string>();
     const off = window.claude.models.onDownloadProgress((p: DownloadProgress) => {
       setDownloads((prev) => ({ ...prev, [p.downloadId]: p }));
-      // A finished download becomes an installed model — refresh that list.
-      if (p.state === 'done') void refreshInstalled();
+      // Refresh on the FIRST event for a download (a brand-new one has no row in
+      // the list yet) and on every terminal state (spec §3.5a). No race: the
+      // manifest is written synchronously inside start(), before any event.
+      const first = !seen.has(p.downloadId);
+      seen.add(p.downloadId);
+      if (first || p.state === 'done' || p.state === 'error' || p.state === 'cancelled') {
+        void refreshInstalled();
+      }
     });
     return off;
   }, [supported, refreshInstalled]);
@@ -91,7 +103,6 @@ export default function LocalModelsSection({ embedded = false }: { embedded?: bo
           downloads={downloads}
           quantOptsByKeyRef={quantOptsByKeyRef}
           onRefreshInstalled={refreshInstalled}
-          setDownloads={setDownloads}
         />
 
         {/* Other local apps (Ollama / LM Studio). */}
@@ -138,14 +149,13 @@ function DownloadProgressRow({ dl }: { dl: DownloadProgress }) {
 // ── Model browser (recommended + installed + search, one filterable list) ────
 
 function ModelBrowser({
-  curated, installed, downloads, quantOptsByKeyRef, onRefreshInstalled, setDownloads,
+  curated, installed, downloads, quantOptsByKeyRef, onRefreshInstalled,
 }: {
   curated: CuratedModel[] | null;
   installed: InstalledLocalModel[] | null;
   downloads: Record<string, DownloadProgress>;
   quantOptsByKeyRef: React.MutableRefObject<Record<string, QuantWithFit>>;
   onRefreshInstalled: () => Promise<void>;
-  setDownloads: React.Dispatch<React.SetStateAction<Record<string, DownloadProgress>>>;
 }) {
   const [query, setQuery] = useState('');
   // Hugging Face results for the current query (null = not searched this query).
@@ -178,7 +188,16 @@ function ModelBrowser({
 
   // Installed (filtered) + in-progress / partial downloads.
   const installedFiltered = (installed ?? []).filter((m) => matches(m.id, m.quant, m.quantDescription));
-  const partials = Object.values(downloads).filter((d) => d.state !== 'done' && matches(d.repo, d.quant));
+  // A download and its disk row are ONE row — matched on repo + quant, both of
+  // which a resumable row carries from its manifest (spec §3.5a). The NEWEST
+  // event wins, in any state: ulids sort by creation time, so after Resume the
+  // fresh attempt's events replace the failed attempt's error line.
+  const progressFor = (m: InstalledLocalModel): DownloadProgress | undefined =>
+    m.repo
+      ? Object.values(downloads)
+        .filter((d) => d.repo === m.repo && d.quant === m.quant)
+        .sort((a, b) => (a.downloadId < b.downloadId ? 1 : -1))[0]
+      : undefined;
 
   // Recommended (filtered).
   const curatedFiltered = (curated ?? []).filter((m) => matches(m.label, m.hfRepo, m.notes));
@@ -189,7 +208,7 @@ function ModelBrowser({
 
   const searching = q.length >= 2;
   const nothing =
-    installedFiltered.length === 0 && partials.length === 0 && curatedFiltered.length === 0 &&
+    installedFiltered.length === 0 && curatedFiltered.length === 0 &&
     (!searching || (hfState === 'idle' && hfFiltered.length === 0));
 
   const toggle = (repo: string) => setExpandedRepo((cur) => (cur === repo ? null : repo));
@@ -230,20 +249,11 @@ function ModelBrowser({
       ) : (
         <div className="space-y-3">
           {/* Installed (+ in-progress) */}
-          {(installedFiltered.length > 0 || partials.length > 0) && (
+          {installedFiltered.length > 0 && (
             <div className="space-y-2">
               <p className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Installed</p>
               {installedFiltered.map((m) => (
-                <InstalledRow key={m.id} model={m} onRefresh={onRefreshInstalled} />
-              ))}
-              {partials.map((dl) => (
-                <PartialRow
-                  key={dl.downloadId}
-                  dl={dl}
-                  quantOptsByKeyRef={quantOptsByKeyRef}
-                  onRefresh={onRefreshInstalled}
-                  setDownloads={setDownloads}
-                />
+                <LocalModelRow key={m.id} model={m} progress={progressFor(m)} onRefresh={onRefreshInstalled} />
               ))}
             </div>
           )}
@@ -429,193 +439,164 @@ function RepoCard({
   );
 }
 
-// ── Installed rows ───────────────────────────────────────────────────────────
+// ── Local model rows ─────────────────────────────────────────────────────────
 
-function InstalledRow({ model, onRefresh }: { model: InstalledLocalModel; onRefresh: () => Promise<void> }) {
+/** Percent of a download that is on disk. Returns null when the total is
+ *  unknown (an untraceable row) — the caller then shows NO percentage rather
+ *  than inventing a denominator. */
+function percentOf(onDisk: number, total: number | null): number | null {
+  if (total == null || total <= 0) return null;
+  return Math.min(100, Math.round((onDisk / total) * 100));
+}
+
+// Exported (named) so tests can pin each row state without booting the whole
+// LocalModelsSection (which needs the full models API mocked).
+export function LocalModelRow({
+  model, progress, onRefresh,
+}: {
+  model: InstalledLocalModel;
+  /** The NEWEST download-progress event for this model this session, in ANY
+   *  state — matched on repo + quant by the parent (spec §3.5a). Undefined
+   *  when nothing has been downloaded this session. */
+  progress?: DownloadProgress;
+  onRefresh: () => Promise<void>;
+}) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
-  // WHY: a failed delete used to leave the confirm strip open with no feedback.
-  const [delError, setDelError] = useState<string | null>(null);
+  // Failures of the buttons on this row (resume refused, delete failed).
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const doDelete = async () => {
+  const live = progress && (progress.state === 'downloading' || progress.state === 'verifying')
+    ? progress : undefined;
+  const onDisk = live ? live.receivedBytes : model.sizeBytes;
+  const total = live ? live.totalBytes : model.totalSizeBytes;
+  const pct = percentOf(onDisk, total);
+
+  // WHY a download's own failure is read from the progress stream: resume()
+  // returns the moment the download STARTS, so a click handler never sees an
+  // HTTP error or an integrity failure — those arrive later as an 'error'
+  // event, and this line is the only place that message reaches the user.
+  const downloadError = progress?.state === 'error' ? (progress.message ?? 'Download failed') : null;
+  const error = actionError ?? downloadError;
+
+  const resume = async () => {
     setBusy(true);
-    setDelError(null);
+    setActionError(null);
     try {
-      await window.claude.models.delete(model.id);
-      setConfirming(false);
+      await window.claude.models.resume(model.id);
       await onRefresh();
     } catch (e) {
-      setDelError(e instanceof Error ? e.message : 'Could not delete the model.');
+      // Surface the real refusal (disk guard, already downloading, no manifest).
+      // A resume that silently did nothing was the original PartialRow bug.
+      setActionError(e instanceof Error ? e.message : 'Could not resume the download.');
     } finally {
       setBusy(false);
     }
   };
+
+  const remove = async () => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      // If a download of this model is still live, cancel it and AWAIT the
+      // 'cancelled' event FIRST — removing the .partial out from under an open
+      // write stream races.
+      if (live) {
+        await new Promise<void>((resolve) => {
+          const off = window.claude.models.onDownloadProgress((p: DownloadProgress) => {
+            if (p.downloadId === live.downloadId && p.state === 'cancelled') { off(); resolve(); }
+          });
+          window.claude.models.downloadCancel(live.downloadId).catch(() => { off(); resolve(); });
+          // Safety net so a lost cancelled event can't hang the button forever.
+          setTimeout(() => { off(); resolve(); }, 5000);
+        });
+      }
+      await window.claude.models.delete(model.id);
+      setConfirming(false);
+      await onRefresh();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : 'Could not delete the model.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Spec §3.2: an unfinished download is DISCARDED; a model (complete, or one
+  // we can't resume) is DELETED. Destin decides at the workbench gate whether
+  // one word should serve both.
+  const removeLabel = model.status === 'unfinished' ? 'Discard' : 'Delete';
+
+  const subtitle =
+    live
+      ? `${live.state === 'verifying' ? 'Verifying…' : 'Downloading…'} · ${pct ?? 0}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
+        + (live.parts > 1 ? ` · part ${live.currentPart} of ${live.parts}` : '')
+    : model.status === 'complete'
+      ? [gb(model.sizeBytes), model.quant, model.quantDescription].filter(Boolean).join(' · ')
+    : model.status === 'unfinished' && pct != null
+      ? `${pct}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
+    : `Unfinished — ${gb(model.sizeBytes)} downloaded`;
 
   return (
     <div className="bg-inset/50 rounded-lg px-3 py-2.5">
       <div className="flex items-center justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="text-xs text-fg font-medium truncate">{model.id}</p>
-          <p className="text-3xs text-fg-muted">
-            {gb(model.sizeBytes)}
-            {model.quant ? ` · ${model.quant}` : ''}
-            {model.quantDescription ? ` · ${model.quantDescription}` : ''}
-          </p>
+          <p className="text-3xs text-fg-muted">{subtitle}</p>
         </div>
         {!confirming && (
-          <Button variant="danger-outline" onClick={() => setConfirming(true)} className="shrink-0">
-            Delete
-          </Button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {model.status === 'unfinished' && !live && (
+              <Button variant="secondary" size="sm" onClick={() => void resume()} disabled={busy}>
+                Resume
+              </Button>
+            )}
+            {live && (
+              // Same word as the RepoCard's in-flight control (DownloadProgressRow):
+              // one download, one verb wherever it appears.
+              <Button variant="secondary" size="sm" onClick={() => void window.claude.models.downloadCancel(live.downloadId)}>
+                Cancel
+              </Button>
+            )}
+            <Button variant="danger-outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="shrink-0">
+              {removeLabel}
+            </Button>
+          </div>
         )}
       </div>
 
-      {/* Consequence-gated delete — plain-language warning before the file is removed. */}
-      {confirming && (
-        /* K9: the consequence moves into a danger callout, kept with the control
-           it describes. Copy unchanged — it already named the real size and the
-           real cost.
+      {live && (
+        <div className="mt-2">
+          <ProgressBar percent={pct ?? 0} aria-label="Download progress" />
+        </div>
+      )}
 
-           NO "Danger zone" LABEL HERE, deliberately. K9's label + always-last
-           placement are for a menu SECTION; this is a per-item action inside a
-           list, and an uppercase eyebrow above every model row would be noise.
-           The callout-with-control half of K9 is what applies. */
+      {/* An untraceable row is NOT a dead end — say what to do about it. */}
+      {model.status === 'untraceable' && !confirming && (
+        <p className="text-3xs text-fg-muted mt-1">
+          This download started before the app kept track of where downloads come from.
+          Find the model in search and download it again — it will continue from where it stopped.
+        </p>
+      )}
+
+      {/* Consequence-gated removal — plain-language warning naming the real size. */}
+      {confirming && (
         <div className="mt-2 space-y-2">
           <Callout tone="danger">
-            This removes the model file ({gb(model.sizeBytes)}) from this computer. Re-downloading it later will take a while.
+            {model.status === 'complete'
+              ? `This removes the model file (${gb(model.sizeBytes)}) from this computer. Re-downloading it later will take a while.`
+              : `${removeLabel} ${gb(model.sizeBytes)}? This removes every downloaded piece of this model.`}
           </Callout>
           <div className="flex gap-2">
-            {/* Keep collapses the confirm rather than closing anything, so it
-                survives the "no redundant text cancel" rule. */}
             <Button variant="secondary" onClick={() => setConfirming(false)} className="flex-1">
               Keep
             </Button>
-            <Button
-              variant="danger"
-              onClick={() => void doDelete()}
-              disabled={busy}
-              className="flex-1"
-            >
-              {busy ? 'Deleting…' : 'Delete model'}
+            <Button variant="danger" onClick={() => void remove()} disabled={busy} className="flex-1">
+              {busy ? 'Removing…' : model.status === 'complete' ? 'Delete model' : `${removeLabel} download`}
             </Button>
           </div>
-          {delError && <p className="text-3xs text-destructive-fg">{delError}</p>}
         </div>
       )}
-    </div>
-  );
-}
-
-// Exported (named) so tests can pin the resume error path without booting the
-// whole LocalModelsSection (which needs the full models API mocked).
-export function PartialRow({
-  dl, quantOptsByKeyRef, onRefresh, setDownloads,
-}: {
-  dl: DownloadProgress;
-  quantOptsByKeyRef: React.MutableRefObject<Record<string, QuantWithFit>>;
-  onRefresh: () => Promise<void>;
-  setDownloads: React.Dispatch<React.SetStateAction<Record<string, DownloadProgress>>>;
-}) {
-  const [busy, setBusy] = useState(false);
-  // WHY: a failed resume used to be a SILENT no-op (see resume() below) —
-  // same inline error line as RepoCard / QuantDownloadRow / InstalledRow.
-  const [resumeError, setResumeError] = useState<string | null>(null);
-  const isLive = dl.state === 'downloading' || dl.state === 'verifying';
-
-  // The router-served id of part 1 (basename minus .gguf) — deleteModel removes
-  // every sibling part's .gguf AND .gguf.partial from that id.
-  const part1Id = (): string | null => {
-    const opt = quantOptsByKeyRef.current[key(dl.repo, dl.quant)];
-    if (!opt || opt.files.length === 0) return null;
-    const base = opt.files[0].split('/').pop() ?? '';
-    return base.replace(/\.gguf$/i, '') || null;
-  };
-
-  const resume = async () => {
-    setBusy(true);
-    setResumeError(null); // clear any prior failure before retrying
-    try {
-      let opt: QuantWithFit | undefined = quantOptsByKeyRef.current[key(dl.repo, dl.quant)];
-      if (!opt) {
-        // The option cache is per-session; a partial from a prior session needs
-        // a fresh quants() to reconstruct the QuantOption download() expects.
-        const opts = await window.claude.models.quants(dl.repo) as QuantWithFit[];
-        for (const o of opts) quantOptsByKeyRef.current[key(dl.repo, o.quant)] = o;
-        opt = opts.find((o) => o.quant === dl.quant);
-      }
-      if (!opt) {
-        // quants() answered but this quant is no longer listed for the repo —
-        // previously this fell through as a silent no-op too.
-        setResumeError(`Couldn't resume: ${dl.quant} is no longer listed for ${dl.repo}.`);
-        return;
-      }
-      await window.claude.models.download(dl.repo, opt); // resumes from the .partial
-    } catch (e) {
-      // WHY: this used to be an inner `catch {}` — clicking Resume while
-      // Hugging Face was unreachable did NOTHING (no error, no state change).
-      // Surface the real failure, mirroring QuantDownloadRow's error line
-      // (per docs/error-message-standards.md: specific and accurate).
-      setResumeError(e instanceof Error ? e.message : 'Could not resume the download.');
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const discard = async () => {
-    setBusy(true);
-    try {
-      // If the download is still live, cancel it and AWAIT the 'cancelled' event
-      // FIRST — rm-ing the .partial out from under an open writestream races.
-      if (isLive) {
-        await new Promise<void>((resolve) => {
-          const off = window.claude.models.onDownloadProgress((p: DownloadProgress) => {
-            if (p.downloadId === dl.downloadId && p.state === 'cancelled') { off(); resolve(); }
-          });
-          window.claude.models.downloadCancel(dl.downloadId).catch(() => { off(); resolve(); });
-          // Safety net so a lost cancelled event can't hang the button forever.
-          setTimeout(() => { off(); resolve(); }, 5000);
-        });
-      }
-      const id = part1Id();
-      if (id) await window.claude.models.delete(id);
-      // Drop this download from the section map and refresh installed.
-      setDownloads((prev) => { const n = { ...prev }; delete n[dl.downloadId]; return n; });
-      await onRefresh();
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const label =
-    dl.state === 'error' ? (dl.message ?? 'Download failed')
-    : dl.state === 'cancelled' ? 'Paused'
-    : dl.state === 'verifying' ? 'Verifying…'
-    : 'Downloading…';
-
-  return (
-    <div className="bg-inset/50 rounded-lg px-3 py-2.5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs text-fg font-medium truncate">{dl.repo}</p>
-          <p className="text-3xs text-fg-muted">
-            {dl.quant} · {label}
-            {dl.totalBytes > 0 ? ` · ${gb(dl.receivedBytes)} of ${gb(dl.totalBytes)}` : ''}
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Button variant="secondary" size="sm" onClick={() => void resume()} disabled={busy}>
-            Resume
-          </Button>
-          {/* Discard deletes the partial file on disk -> danger-outline. The
-              hand-rolled red-500/40 border becomes the --destructive token, so
-              community packs can restyle it (#C62828 today — no longer identical
-              to the fixed status red #DD4444, which stayed put). */}
-          <Button variant="danger-outline" size="sm" onClick={() => void discard()} disabled={busy}>
-            Discard
-          </Button>
-        </div>
-      </div>
-      {/* Same error-line placement as QuantDownloadRow (:mt-1 under the row). */}
-      {resumeError && <p className="text-3xs text-destructive-fg mt-1">{resumeError}</p>}
+      {error && <p className="text-3xs text-destructive-fg mt-1">{error}</p>}
     </div>
   );
 }
