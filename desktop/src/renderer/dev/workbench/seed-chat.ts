@@ -60,7 +60,7 @@ const NATIVE_TOKENS = {
   inputTokens: 84_000, outputTokens: 3_200, cacheReadTokens: 61_000, cacheCreationTokens: 900,
 } as const;
 
-// Task 17: free and unpriced are now different things, so these five stopped
+// Task 17: free and unpriced are now different things, so these four stopped
 // saying what their names claim and are corrected here. 'statusbar-local' is a
 // local engine (free, nothing unpriced); 'statusbar-unpriced' is metered with no
 // published rate (NOT free); 'statusbar-delegated' is a free local parent whose
