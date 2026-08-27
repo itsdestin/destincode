@@ -21,6 +21,7 @@ import {
   providerCostFromMetadata, costDisagreement,
   COST_DISAGREEMENT_THRESHOLD, COST_COMPARE_FLOOR_USD,
   addComparableTurn, sessionCostDisagreement, NO_SESSION_COST_TOTALS,
+  COST_GAP_RELOG_FACTOR,
 } from '../src/main/harness/pricing';
 
 // A streamed OpenRouter response, byte-for-byte in the wire shape OpenRouter
@@ -404,6 +405,9 @@ describe('the provider’s figure rides the turn beside ours', () => {
 async function sessionOfTurns(
   turns: { inTok: number; outTok: number; cost?: number }[],
   over: Record<string, unknown> = {},
+  // Runs between turns on the SAME session — the only way to stage something
+  // that happens mid-conversation, like /clear, against a running accumulator.
+  betweenTurns?: (session: HarnessSession, justFinished: number) => void,
 ) {
   const model = costScriptedModel(turns);
   const session = new HarnessSession(
@@ -417,7 +421,10 @@ async function sessionOfTurns(
   );
   const seen: any[] = [];
   session.on('transcript-event', (e: any) => seen.push(e));
-  for (let i = 0; i < turns.length; i++) await session.send(`turn ${i}`);
+  for (let i = 0; i < turns.length; i++) {
+    await session.send(`turn ${i}`);
+    betweenTurns?.(session, i);
+  }
   return seen.filter((e) => e.type === 'turn-complete').map((e) => e.data.usage);
 }
 
@@ -478,5 +485,65 @@ describe('the session sum catches what no single turn could', () => {
   it('stays silent across a session whose sums agree', async () => {
     await sessionOfTurns(Array.from({ length: 8 }, () => ({ inTok: 3000, outTok: 100, cost: 0.00034 })), { pricing: CHEAP });
     expect(costWarnings()).toHaveLength(0);
+  });
+
+  // A one-shot line would go permanently deaf on exactly the models this check
+  // was built for. On an expensive model the per-turn line keeps firing, so a
+  // gap that gets worse is still reported turn after turn; on a CHEAP one the
+  // per-turn check is below the floor forever, so after that single session
+  // line nothing is ever reported again however much worse it gets.
+  it('re-logs once the gap has WORSENED by the escalation factor — never deaf, never per-turn', async () => {
+    // Turns 1-6: we report double what the provider charged. The sums clear the
+    // floor at turn six and the first line fires there, at a gap of 1.0.
+    // Turns 7-13: the provider's charge collapses to a rounding-error figure
+    // while our rate card keeps charging the old rate — the shape of a
+    // rate-card regression landing mid-session. By turn thirteen the gap has
+    // passed 3x the gap already on record, which is a different fault from the
+    // one that was reported, not a repeat of it.
+    const turns = [
+      ...Array.from({ length: 6 }, () => ({ inTok: 3000, outTok: 100, cost: 0.00017 })),
+      ...Array.from({ length: 7 }, () => ({ inTok: 3000, outTok: 100, cost: 0.000001 })),
+    ];
+    await sessionOfTurns(turns, { pricing: CHEAP });
+    // Nothing here loosens the per-turn floor: every one of these turns is
+    // still far too small to compare on its own.
+    expect(turnWarnings()).toHaveLength(0);
+    expect(sessionWarnings()).toHaveLength(2);
+    expect(sessionWarnings()[0][3]).toMatchObject({ comparableTurns: 6, relativeGap: 1 });
+    const escalated = sessionWarnings()[1][3] as { comparableTurns: number; relativeGap: number };
+    expect(escalated.comparableTurns).toBe(13);
+    expect(escalated.relativeGap).toBeGreaterThanOrEqual(1 * COST_GAP_RELOG_FACTOR);
+  });
+
+  it('stays on ONE line while the gap worsens by less than the factor', async () => {
+    // The same session stopped one turn earlier: twelve turns in, the gap has
+    // grown from 1.0 to about 2.98 — worse, but not the step-change that means
+    // something new. A line every turn would bury the one that matters.
+    const turns = [
+      ...Array.from({ length: 6 }, () => ({ inTok: 3000, outTok: 100, cost: 0.00017 })),
+      ...Array.from({ length: 6 }, () => ({ inTok: 3000, outTok: 100, cost: 0.000001 })),
+    ];
+    await sessionOfTurns(turns, { pricing: CHEAP });
+    expect(sessionWarnings()).toHaveLength(1);
+    expect(sessionWarnings()[0][3]).toMatchObject({ comparableTurns: 6, relativeGap: 1 });
+  });
+
+  // /clear is a CONTEXT barrier, not a state reset. These sums measure whether
+  // OUR pricing arithmetic matches the provider's bill — a property of the
+  // code, not of the conversation the model can still see — so clearing must
+  // leave them exactly where they were.
+  it('/clear does NOT reset the running cost sums', async () => {
+    // Five cheap turns sit under the comparison floor, so nothing has been
+    // reported yet; turn six is where the running total first clears it. Reset
+    // the sums on /clear and this session goes silent instead — the cheap-model
+    // check killed at exactly the point it exists to fire, with the whole suite
+    // green.
+    const turns = Array.from({ length: 6 }, () => ({ inTok: 3000, outTok: 100, cost: 0.00017 }));
+    await sessionOfTurns(turns, { pricing: CHEAP }, (session, justFinished) => {
+      if (justFinished === 4) expect(session.clearHistory()).toEqual({ ok: true });
+    });
+    expect(sessionWarnings()).toHaveLength(1);
+    // Six comparable turns, not the one turn since the clear.
+    expect(sessionWarnings()[0][3]).toMatchObject({ comparableTurns: 6, relativeGap: 1 });
   });
 });

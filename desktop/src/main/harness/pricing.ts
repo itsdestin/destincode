@@ -241,6 +241,27 @@ export function addComparableTurn(
   };
 }
 
+/** How much WORSE the session gap must get before it is worth saying again.
+ *
+ *  CHOSEN, NOT MEASURED — and chosen to sit between two failure modes rather
+ *  than from any observation of real bills.
+ *
+ *  A line every turn would bury the finding: once the sums disagree they keep
+ *  disagreeing, so the log would fill with identical warnings carrying nothing
+ *  new. But a strict one-shot goes permanently DEAF on exactly the models this
+ *  session check exists for. On an expensive model the per-turn line keeps
+ *  firing, so later divergence is still reported; on a cheap one every turn is
+ *  below the comparison floor forever, so after that single session line no
+ *  further divergence is ever reported however much worse it gets — a rate-card
+ *  regression at turn 300 that triples the gap would be silent.
+ *
+ *  A TRIPLING is the smallest step that plainly is not the reported fault
+ *  drifting: rounding and unmodelled price overrides move a gap by a few
+ *  percent, not by 200%. And because the bar multiplies each time it is met,
+ *  the ladder from the 5% threshold is 15%, 45%, 135%, … — a handful of lines
+ *  at most in the worst session imaginable, never one per turn. */
+export const COST_GAP_RELOG_FACTOR = 3;
+
 /** How far our running total sits from the provider's, as a fraction of the
  *  provider's — or `null` when there is nothing honest to compare yet.
  *

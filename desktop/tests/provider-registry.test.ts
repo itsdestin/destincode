@@ -141,6 +141,21 @@ describe('ProviderRegistry', () => {
     expect(typeof (model as any).modelId).toBe('string');
   });
 
+  // Same bug as the local-engine pin below, on the branch that serves Ollama,
+  // LM Studio and every custom endpoint: @ai-sdk/openai-compatible only sends
+  // `stream_options:{include_usage:true}` when includeUsage is configured, and
+  // a STREAMING response without it carries no usage block at all — so every
+  // turn records inputTokens:0 and falls back to a chars/4 guess, starving both
+  // the context gauge and the compaction trigger that read the same number.
+  // This branch had no test of its own: deleting the flag here left the whole
+  // desktop suite green (found reviewing 51e8b80e), and it is the same defect
+  // the local branch actually shipped on 2026-07-28.
+  it('openai-compatible: asks the server for real token counts', async () => {
+    const id = await reg.upsert({ type: 'openai-compatible', label: 'Ollama', baseUrl: 'http://localhost:11434/v1', enabled: true });
+    const model = await reg.languageModel({ providerId: id, modelId: 'llama3' });
+    expect((model as any).config.includeUsage).toBe(true);
+  });
+
   it('upsert partial update keeps omitted fields (baseUrl survives a label-only edit)', async () => {
     const id = await reg.upsert({ type: 'openai-compatible', label: 'Before', baseUrl: 'http://localhost:1234/v1', enabled: true });
     // Omit baseUrl entirely — the on-disk value must survive the merge.

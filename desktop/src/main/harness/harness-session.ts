@@ -142,7 +142,8 @@ import type { ReadyServer } from './mcp/mcp-manager';
 import {
   costForUsage, providerCostFromMetadata, costDisagreement,
   COST_DISAGREEMENT_THRESHOLD, addComparableTurn, sessionCostDisagreement,
-  NO_SESSION_COST_TOTALS, type ModelPricing, type SessionCostTotals,
+  NO_SESSION_COST_TOTALS, COST_GAP_RELOG_FACTOR,
+  type ModelPricing, type SessionCostTotals,
 } from './pricing';
 import { log } from '../logger';
 
@@ -588,10 +589,17 @@ export class HarnessSession extends EventEmitter {
    *  not of the conversation. On resume it simply starts again from the turns
    *  this process runs — the check is continuous, not a per-session report. */
   private sessionCostTotals: SessionCostTotals = NO_SESSION_COST_TOTALS;
-  /** The session line is a one-shot. Once the sums disagree they keep
-   *  disagreeing, and repeating an identical warning on every later turn would
-   *  bury the finding rather than sharpen it. */
-  private sessionCostGapLogged = false;
+  /** The gap the last session line reported, or null if none has been logged.
+   *
+   *  NOT a one-shot flag (which is what this was until the review of 51e8b80e).
+   *  Once the sums disagree they keep disagreeing, so repeating an identical
+   *  warning every turn would bury the finding — but stopping after one line
+   *  goes permanently DEAF on a cheap model, where the per-turn line is below
+   *  the comparison floor forever and can report nothing later either. Keeping
+   *  the last figure lets the next line fire only when the gap has got
+   *  materially WORSE (COST_GAP_RELOG_FACTOR), which is a different fault
+   *  rather than a repeat of the reported one. */
+  private lastLoggedSessionCostGap: number | null = null;
   binding: ModelBinding;
 
   // Tool runtime state (Task 9). readRegistry + todos are per-SESSION runtime
@@ -2045,9 +2053,14 @@ export class HarnessSession extends EventEmitter {
       // message states what was observed without naming a cause.
       this.sessionCostTotals = addComparableTurn(this.sessionCostTotals, costUsd, providerCostUsd);
       const sessionCostGap = sessionCostDisagreement(this.sessionCostTotals);
-      if (!this.sessionCostGapLogged && sessionCostGap !== null
-          && sessionCostGap > COST_DISAGREEMENT_THRESHOLD) {
-        this.sessionCostGapLogged = true;
+      // Logged the first time the sums cross the threshold, and again only once
+      // the gap has multiplied since the last line — see the field and
+      // COST_GAP_RELOG_FACTOR for why neither "every turn" nor "once, ever" is
+      // safe here.
+      if (sessionCostGap !== null && sessionCostGap > COST_DISAGREEMENT_THRESHOLD
+          && (this.lastLoggedSessionCostGap === null
+              || sessionCostGap >= this.lastLoggedSessionCostGap * COST_GAP_RELOG_FACTOR)) {
+        this.lastLoggedSessionCostGap = sessionCostGap;
         log('WARN', 'HarnessSession', 'our cost figures and the provider\u2019s own disagree across this session', {
           sessionId: this.opts.sessionId,
           // The LATEST turn's model, not "the model these totals are for": a
