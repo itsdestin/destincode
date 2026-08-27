@@ -20,7 +20,8 @@ import { TagChip } from './tags/TagChip';
 import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { TagGlyph } from './tags/glyphs';
 import { NoteEditor } from './tags/NoteEditor';
-import ModelPicker, { ModelIcon, claudeAliasForModelId, type ModelChoice } from './model/ModelPicker';
+import ModelPicker, { ModelIcon, type ModelChoice } from './model/ModelPicker';
+import { claudeAliasForModelId } from '../../shared/model-ids';
 import type { ModelBinding } from '../../shared/provider-types';
 
 function formatRelativeTime(epochMs: number): string {
@@ -237,16 +238,18 @@ interface PastSession {
   // below when it matches a model available on THIS device, and drives the
   // model chip on the card.
   //
-  // ONLY NATIVE SESSIONS CARRY IT TODAY — verified 2026-07-31. The single
-  // writer is noteModelUsed (main/conversations/service.ts), fed exclusively by
-  // resolvePortableModel → nativeHost.getBinding (ipc-handlers.ts:2154), which
-  // returns null for a Claude Code session because there is no native binding
-  // to resolve. So a CC card shows no chip. The data EXISTS to fix that — CC
-  // transcripts carry `message.model` on every assistant message
-  // (transcript-watcher.ts:174) — but session.browse() never opens the
-  // transcript, so wiring it is backend work, not a renderer change. Do NOT
-  // "fix" the blank by falling back to the app default: that would print a
-  // guess as history.
+  // BOTH runtimes carry it now. Native rows get it from noteModelUsed
+  // (main/conversations/service.ts) at bind time; CC rows get it from
+  // session-browser's backwards scan of the transcript's own `message.model`
+  // (readSessionTranscriptMeta), which is also what claudeModelForRow below
+  // reads to open an expanded card's dropdown on the right model. (This
+  // comment said "native only, verified 2026-07-31" long after the CC side
+  // landed — it was stale, not a constraint.)
+  //
+  // Still absent for a conversation whose transcript records no real model —
+  // CC's `<synthetic>` placeholder lines are skipped, and a session that died
+  // on its first turn has nothing else. Do NOT "fix" the blank by falling back
+  // to the app default: that would print a guess as history.
   lastUsedModel?: import('../../shared/types').PortableModelRef;
 }
 

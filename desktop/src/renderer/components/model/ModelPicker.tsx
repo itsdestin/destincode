@@ -29,47 +29,19 @@ import type { PortableModelRef } from '../../../shared/types';
 // Native Runtime Parity Program's standing rule is "full parity is the end
 // state; build real features, no interim 'not available yet' shims".
 
+import { CLAUDE_ALIASES, type ClaudeAlias } from '../../../shared/model-ids';
+
 export type ModelChoice =
   | { runtime: 'claude'; alias: string }
   | { runtime: 'native'; providerId: string; modelId: string };
 
-/** The four Claude Code aliases. Mirrors StatusBar's MODELS order. */
-const CLAUDE_MODELS: { alias: string; label: string }[] = [
-  { alias: 'haiku', label: 'Haiku' },
-  { alias: 'sonnet', label: 'Sonnet' },
-  { alias: 'opus[1m]', label: 'Opus' },
-  { alias: 'fable', label: 'Fable' },
-];
-
-/**
- * Map a Claude Code model id from a transcript onto one of the four aliases
- * above, or null when nothing matches.
- *
- * WHY: a transcript records the CONCRETE model a turn ran on
- * (`claude-opus-5`, `claude-sonnet-4-6-20260401`), and occasionally the bare
- * alias the user typed (`sonnet`). The picker offers aliases. The Resume
- * Browser needs the bridge so an expanded card can start on the model that
- * conversation actually used instead of the app-wide default.
- *
- * Matched on the FAMILY word, not an id table: Anthropic ships new dated ids
- * continuously, and a table would silently stop prefilling every time one
- * landed. Order follows CLAUDE_MODELS so the mapping is read alongside the
- * list it targets. Unknown ids (including CC's `<synthetic>` placeholder)
- * return null, which callers treat as "no opinion" — never a substitute pick.
- *
- * Note: `opus` maps to `opus[1m]` because that is the only Opus entry the
- * picker offers.
- */
-export function claudeAliasForModelId(modelId: string): string | null {
-  const id = modelId.toLowerCase();
-  for (const { alias } of CLAUDE_MODELS) {
-    // 'opus[1m]' -> 'opus'; the bracketed suffix is a context-window variant,
-    // not part of the family name a transcript id carries.
-    const family = alias.replace(/\[.*$/, '');
-    if (id.includes(family)) return alias;
-  }
-  return null;
-}
+/** Labels for the shared alias list. The ALIASES are canonical in
+ *  shared/model-ids.ts (StatusBar derives from the same place); only the
+ *  display labels are picker-local. Labels are model-class only, by design. */
+const CLAUDE_LABELS: Record<ClaudeAlias, string> = {
+  haiku: 'Haiku', sonnet: 'Sonnet', 'opus[1m]': 'Opus', fable: 'Fable',
+};
+const CLAUDE_MODELS = CLAUDE_ALIASES.map((alias) => ({ alias, label: CLAUDE_LABELS[alias] }));
 
 const CLAUDE_SOURCE = 'claude';
 

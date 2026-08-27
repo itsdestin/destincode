@@ -16,6 +16,7 @@ import { SessionTagsChip } from './tags/SessionTagsChip';
 import SpecialistsChip from './SpecialistsChip';
 import { Dialog } from './ui';
 import { resolveModelBrand, type ProviderIconKey } from './provider-brand';
+import { CLAUDE_ALIASES, type ClaudeAlias } from '../../shared/model-ids';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -50,13 +51,13 @@ interface StatusData {
   syncWarnings: SyncWarning[] | null;
 }
 
-// Model aliases sent to the CC CLI via `/model <alias>`. `opus[1m]` keeps the
-// bracket form so CC selects Opus's 1M-context variant; the alias→transcript
-// matcher (App.tsx) strips the `[...]` before substring-matching the raw model
-// id (`'claude-fable-5'.includes('fable')`), so a bare `fable` alias slots in
-// with no collision. Labels are model-class only (no version numbers) by design.
-const MODELS = ['haiku', 'sonnet', 'opus[1m]', 'fable'] as const;
-type ModelAlias = typeof MODELS[number];
+// Model aliases sent to the CC CLI via `/model <alias>`. Canonical list lives
+// in shared/model-ids.ts alongside claudeAliasForModelId, the alias→transcript
+// matcher every surface now shares; re-exported here because this module has
+// been the import site for both since before the shared module existed.
+// Labels are model-class only (no version numbers) by design.
+const MODELS = CLAUDE_ALIASES;
+type ModelAlias = ClaudeAlias;
 
 const MODEL_DISPLAY: Record<ModelAlias | 'unknown', { label: string; color: string; border: string; icon?: ProviderIconKey }> = {
   // Restyle: chips now use the standard `bg-panel` surface (set via className

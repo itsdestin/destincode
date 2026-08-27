@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from 'vite
 import { render, screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import ResumeBrowser from '../src/renderer/components/ResumeBrowser';
-import { claudeAliasForModelId } from '../src/renderer/components/model/ModelPicker';
+import { claudeAliasForModelId, isPlaceholderModelId } from '../src/shared/model-ids';
 
 beforeAll(() => {
   if (typeof window.ResizeObserver === 'undefined') {
@@ -86,11 +86,24 @@ describe('claudeAliasForModelId', () => {
   });
 
   it('returns null for anything outside the four families', () => {
-    // `<synthetic>` should never reach here (session-browser drops it), but the
-    // mapping must not invent a pick if one ever does.
+    // `<synthetic>` should never reach here (every caller drops it first), but
+    // the mapping must not invent a pick if one ever does.
     expect(claudeAliasForModelId('<synthetic>')).toBeNull();
     expect(claudeAliasForModelId('gpt-5.6-sol')).toBeNull();
     expect(claudeAliasForModelId('')).toBeNull();
+    expect(claudeAliasForModelId('   ')).toBeNull();
+  });
+});
+
+describe('isPlaceholderModelId', () => {
+  it('matches CC placeholders, padded or not, and nothing else', () => {
+    expect(isPlaceholderModelId('<synthetic>')).toBe(true);
+    expect(isPlaceholderModelId('  <synthetic>  ')).toBe(true);
+    expect(isPlaceholderModelId('<>')).toBe(true);
+    expect(isPlaceholderModelId('claude-opus-5')).toBe(false);
+    expect(isPlaceholderModelId('')).toBe(false);
+    // Not a placeholder just because it CONTAINS brackets.
+    expect(isPlaceholderModelId('claude-opus-5<beta')).toBe(false);
   });
 });
 

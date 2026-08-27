@@ -72,6 +72,33 @@ describe('useActiveSessionModel', () => {
     expect(result.current.model).toBe('haiku');      // recomputed for s2
   });
 
+  it('looks past a <synthetic> turn to the real model behind it', () => {
+    // Regression (2026-08-26): CC stamps `<synthetic>` on assistant turns IT
+    // composed — "You've hit your session limit", "You're out of usage
+    // credits", "Please run /login". Those are the LAST turn precisely when you
+    // hit a limit, so stopping on one returned null, and AppInner's
+    // drift-reconciliation effect bails on null — leaving a pill stuck on the
+    // red 'unknown' sentinel instead of self-healing.
+    let sid: string | null = 's1';
+    const { result } = renderHook(() => useHarness(() => sid), { wrapper: Providers });
+    seedTurn(result.current.dispatch, 's1', 'claude-opus-5', 'm1');
+    act(() => {
+      result.current.dispatch({ type: 'TRANSCRIPT_USER_MESSAGE', sessionId: 's1', uuid: 'm2-u', text: 'more', timestamp: 3 });
+      result.current.dispatch({ type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: 's1', uuid: 'm2-a', text: "You've hit your session limit", timestamp: 4, model: '<synthetic>' });
+    });
+    expect(result.current.model).toBe('opus[1m]');
+  });
+
+  it('returns null when EVERY turn is <synthetic>', () => {
+    // A session that hit the limit on its first turn ran no model at all. Null
+    // is the honest answer — the pill keeps whatever it had rather than being
+    // reconciled to a guess.
+    let sid: string | null = 's1';
+    const { result } = renderHook(() => useHarness(() => sid), { wrapper: Providers });
+    seedTurn(result.current.dispatch, 's1', '<synthetic>', 'm1');
+    expect(result.current.model).toBe(null);
+  });
+
   it('returns null for an unrecognized model string', () => {
     let sid: string | null = 's1';
     const { result } = renderHook(() => useHarness(() => sid), { wrapper: Providers });

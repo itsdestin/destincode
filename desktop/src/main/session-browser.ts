@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { PastSession, HistoryMessage, SessionFlagName } from '../shared/types';
+import { isPlaceholderModelId } from '../shared/model-ids';
 // ccProjectSlug drive-normalizes before slugifying, so a store originalPath with
 // a lowercase Windows drive still maps to CC's uppercase-drive project dir.
 // nativeStoreSlug is the FROZEN app-private rule for native rows (deliberately
@@ -255,18 +256,6 @@ export interface SessionTranscriptMeta {
    * the read to 256KB recovers only 2 of them — not worth 4x the IO per browse.
    */
   lastModelId: string | null;
-}
-
-/**
- * True for Claude Code's bracketed placeholder model ids (`<synthetic>`).
- *
- * CC writes these on assistant lines it composed itself — limit/credit/auth
- * notices — so they say nothing about which model the conversation ran on.
- * Matching the SHAPE rather than the literal string covers any future
- * placeholder CC adds; no real model id is bracketed.
- */
-function isPlaceholderModelId(id: string): boolean {
-  return /^<.*>$/.test(id.trim());
 }
 
 /** Collapse whitespace and trim a derived title to a word boundary. */
