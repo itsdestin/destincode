@@ -5,7 +5,7 @@
 import React, { useMemo, useState, useEffect } from "react";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
-import { Button, CloseButton, EmptyState, SegmentedTabs } from "../ui";
+import { Button, CloseButton, EmptyState, SegmentedTabs, SegmentedTabLabel, PluginIcon, PaletteIcon } from "../ui";
 import MarketplaceCard from "../marketplace/MarketplaceCard";
 import WallpaperBackdrop from "../WallpaperBackdrop";
 import MarketplaceGrid from "../marketplace/MarketplaceGrid";
@@ -206,11 +206,12 @@ export default function LibraryScreen({
           tabs={[
             {
               id: 'skills',
-              label: <TabLabel icon={<SkillIcon />} text="Skills" count={mp.installedSkills.length} active={tab === 'skills'} />,
+              // "Plugins", not "Skills" — Destin unified the word across both switchers (2026-08-27).
+              label: <SegmentedTabLabel icon={<PluginIcon />} text="Plugins" count={mp.installedSkills.length} active={tab === 'skills'} />,
             },
             {
               id: 'themes',
-              label: <TabLabel icon={<PaletteIcon />} text="Themes" count={installedThemeCount} active={tab === 'themes'} />,
+              label: <SegmentedTabLabel icon={<PaletteIcon />} text="Themes" count={installedThemeCount} active={tab === 'themes'} />,
             },
             ...(updateCount > 0 ? [{ id: 'updates', label: `Updates · ${updateCount}` }] : []),
           ]}
@@ -224,7 +225,7 @@ export default function LibraryScreen({
              plugin's marketplace detail overlay. */}
         {tab === 'skills' && (
           <>
-            <Section title="Favorites" empty="Star an installed skill and it appears here.">
+            <Section title="Favorites" empty="Star an installed plugin and it appears here.">
               {mp.installedSkills.filter(s => favSet.has(s.id)).length > 0 && (
                 <MarketplaceGrid>
                   {mp.installedSkills.filter(s => favSet.has(s.id)).map(renderSkillCard)}
@@ -312,41 +313,5 @@ function Section({ title, empty, action, children }: {
       <h2 className="text-lg font-medium text-fg px-1 mb-2">{title}</h2>
       {hasContent ? children : <EmptyState message={empty} action={action} />}
     </section>
-  );
-}
-
-// Segment contents for the pill switcher: icon + label + count. Count styling
-// mirrors ProjectView's segments — subdued on the active (accent) segment,
-// muted on inactive ones — so the two screens read as one control.
-function TabLabel({ icon, text, count, active }: { icon: React.ReactNode; text: string; count: number; active: boolean }) {
-  return (
-    <>
-      <span className="shrink-0 inline-flex" aria-hidden>{icon}</span>
-      <span>{text}</span>
-      <span className={`text-2xs shrink-0 ${active ? 'opacity-80' : 'text-fg-muted'}`}>{count}</span>
-    </>
-  );
-}
-
-// Inline icons sized to match ProjectView's segment icons (16px, 2px stroke).
-function SkillIcon() {
-  // Four-point sparkle — the app's "skill" mark.
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z" />
-    </svg>
-  );
-}
-
-function PaletteIcon() {
-  // Painter's palette with four paint wells.
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 1.4-3.4 2 2 0 0 1 1.4-3.4H19a2.5 2.5 0 0 0 2.5-2.5A9 9 0 0 0 12 3z" />
-      <circle cx="7.5" cy="12" r="1" />
-      <circle cx="10" cy="7.5" r="1" />
-      <circle cx="15" cy="7.5" r="1" />
-      <circle cx="17.5" cy="11.5" r="1" />
-    </svg>
   );
 }

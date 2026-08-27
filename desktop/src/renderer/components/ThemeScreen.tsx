@@ -96,13 +96,22 @@ interface Props {
 // and user themes serve preview.png from their folder). If the picture cannot load — no
 // preview.png, or a remote client that cannot resolve theme-asset:// — the card falls
 // back to the token gradient the cards used to show, so nothing is ever blank.
+// A theme can be customized when it is the user's own (accent/roundness/particles) or
+// when it has a wallpaper/gradient to tune glass against. Flat built-in and flat
+// community themes have nothing behind the pencil — see ThemeEditView's Glass gate.
+function canCustomize(theme: LoadedTheme): boolean {
+  if (theme.source === 'user') return true;
+  const bg = theme.background?.type;
+  return bg === 'image' || bg === 'gradient';
+}
+
 function ThemePreviewStrip({ theme }: { theme: LoadedTheme }) {
   const [failed, setFailed] = useState(false);
   const src = themePreviewSrc(theme);
   if (!src || failed) {
-    return <div className="absolute inset-x-0 top-0 h-10" style={{ background: `linear-gradient(90deg, ${theme.tokens.canvas}, ${theme.tokens.accent})` }} aria-hidden="true" />;
+    return <div className="absolute inset-x-0 top-0 h-[72px]" style={{ background: `linear-gradient(90deg, ${theme.tokens.canvas}, ${theme.tokens.accent})` }} aria-hidden="true" />;
   }
-  return <img src={src} alt="" className="absolute inset-x-0 top-0 h-10 w-full object-cover object-top" onError={() => setFailed(true)} />;
+  return <img src={src} alt="" className="absolute inset-x-0 top-0 h-[72px] w-full object-cover object-top" onError={() => setFailed(true)} />;
 }
 
 const PencilIcon = ({ className = 'w-3 h-3' }: { className?: string }) => (
@@ -204,7 +213,9 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
                   // row ("active"), so its row-mate stretched to match and showed an
                   // empty strip with a floating pencil. Now nothing ever grows: name,
                   // "active" and the pencil share ONE row at the bottom.
-                  className={`relative h-16 rounded-lg overflow-hidden border text-left transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
+                  // Round 2 (2026-08-27): h-24 instead of h-16 so the preview shows a real slice of
+                  // the mock chat, not a sliver; `group` lets the star appear only on hover.
+                  className={`group relative h-24 rounded-lg overflow-hidden border text-left transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-accent ${isActive ? 'border-accent' : 'border-edge-dim hover:border-edge'}`}
                   style={{ background: t.tokens.canvas }}
                 >
                   <ThemePreviewStrip theme={t} />
@@ -215,7 +226,13 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
                       beside the name; the star keeps the top-right corner. */}
                   <button
                     type="button"
-                    onClick={e => { e.stopPropagation(); openEditor(t.slug); }}
+                    // Round 2 (Destin, 2026-08-27, Q #1): a flat-colour theme that is not the
+                    // user's own has NO customization behind the pencil (the editor hides the
+                    // Glass sliders when there is no wallpaper/gradient to see through), so the
+                    // pencil is greyed with a tooltip instead of opening an empty dialog.
+                    // aria-disabled (not `disabled`) so the tooltip still shows on hover.
+                    aria-disabled={!canCustomize(t)}
+                    onClick={e => { e.stopPropagation(); if (canCustomize(t)) openEditor(t.slug); }}
                     // Change 41: retires the app's last raw `hover:bg-black/20`.
                     // The obvious swap — the ghost Button's hover:bg-inset — would
                     // be WRONG here: this button floats on a swatch painted in the
@@ -224,21 +241,24 @@ export default function ThemeScreen({ onClose, onSendInput, onRunCommand, onOpen
                     // to the inline `color` below, i.e. that theme's own fg, so the
                     // hover is legible on a light and a dark swatch alike. 20% black
                     // could not do that — it vanished on dark themes.
-                    className="w-5 h-5 shrink-0 rounded-sm flex items-center justify-center hover:bg-current/15 coarse-hit transition-colors"
+                    className={`w-5 h-5 shrink-0 rounded-sm flex items-center justify-center coarse-hit transition-colors ${canCustomize(t) ? 'hover:bg-current/15' : 'opacity-40 cursor-not-allowed'}`}
                     style={{ color: t.tokens.fg }}
-                    title="Edit theme"
-                    aria-label={`Edit ${t.name}`}
+                    title={canCustomize(t) ? 'Edit theme' : 'Customization unavailable for this theme'}
+                    aria-label={canCustomize(t) ? `Edit ${t.name}` : `Customization unavailable for ${t.name}`}
                   >
                     <PencilIcon />
                   </button>
                   </div>
-                  {/* Star — toggles this theme in/out of the Appearance panel favorites. */}
-                  <FavoriteStar
-                    filled={isFav}
-                    onToggle={() => mp.favoriteTheme(t.slug, !isFav).catch(() => {})}
-                    size="sm"
-                    corner
-                  />
+                  {/* Star — toggles this theme in/out of the Appearance panel favorites.
+                      Round 2 (Destin, 2026-08-27): hidden until the card is hovered or the
+                      star itself has keyboard focus, so the preview picture stays clean. */}
+                  <div className="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                    <FavoriteStar
+                      filled={isFav}
+                      onToggle={() => mp.favoriteTheme(t.slug, !isFav).catch(() => {})}
+                      size="sm"
+                    />
+                  </div>
                 </div>
               );
             })}

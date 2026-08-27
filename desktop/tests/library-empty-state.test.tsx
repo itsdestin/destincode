@@ -95,7 +95,7 @@ describe('LibraryScreen empty state', () => {
     await renderLibrary({ onOpenMarketplace });
 
     expect(screen.getByText('Nothing installed yet.')).toBeInTheDocument();
-    expect(screen.getByText('Star an installed skill and it appears here.')).toBeInTheDocument();
+    expect(screen.getByText('Star an installed plugin and it appears here.')).toBeInTheDocument();
 
     const browse = screen.getByRole('button', { name: 'Browse the Marketplace' });
     expect(browse).toBeInTheDocument();
@@ -122,10 +122,10 @@ describe('LibraryScreen empty state', () => {
     // Pill container recipe shared with ProjectView's header switcher.
     expect(tablist.className).toContain('layer-surface');
     expect(tablist.className).toContain('!rounded-full');
-    const skills = screen.getByRole('tab', { name: /Skills/ });
+    const skills = screen.getByRole('tab', { name: /Plugins/ });
     expect(skills.className).toContain('rounded-full');
     // Count of installed skills — 0 with an empty marketplace.
-    expect(skills).toHaveTextContent('Skills0');
+    expect(skills).toHaveTextContent('Plugins0');
     expect(screen.getByRole('tab', { name: /Themes/ })).toHaveTextContent('Themes0');
   });
 });

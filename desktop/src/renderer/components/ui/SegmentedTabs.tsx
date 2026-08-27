@@ -112,3 +112,41 @@ export function SegmentedTabs({
     </div>
   );
 }
+
+// Shared by the Library's Plugins | Themes switcher and the Marketplace's All | Plugins |
+// Themes switch (Destin, 2026-08-27: 'make this match the skills/themes toggle surface').
+// Segment contents for the pill switcher: icon + label + count. Count styling
+// mirrors ProjectView's segments — subdued on the active (accent) segment,
+// muted on inactive ones — so the two screens read as one control.
+export function SegmentedTabLabel({ icon, text, count, active }: { icon: React.ReactNode; text: string; count: number; active: boolean }) {
+  return (
+    <>
+      <span className="shrink-0 inline-flex" aria-hidden>{icon}</span>
+      <span>{text}</span>
+      <span className={`text-2xs shrink-0 ${active ? 'opacity-80' : 'text-fg-muted'}`}>{count}</span>
+    </>
+  );
+}
+
+// Inline icons sized to match ProjectView's segment icons (16px, 2px stroke).
+export function PluginIcon() {
+  // Four-point sparkle — the app's plugin/skill mark.
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z" />
+    </svg>
+  );
+}
+
+export function PaletteIcon() {
+  // Painter's palette with four paint wells.
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 1.4-3.4 2 2 0 0 1 1.4-3.4H19a2.5 2.5 0 0 0 2.5-2.5A9 9 0 0 0 12 3z" />
+      <circle cx="7.5" cy="12" r="1" />
+      <circle cx="10" cy="7.5" r="1" />
+      <circle cx="15" cy="7.5" r="1" />
+      <circle cx="17.5" cy="11.5" r="1" />
+    </svg>
+  );
+}

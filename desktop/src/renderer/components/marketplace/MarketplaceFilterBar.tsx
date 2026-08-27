@@ -15,7 +15,8 @@
 
 import React, { useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { Button, SearchFilterPill, SegmentedTabs } from "../ui";
+import { Button, SearchFilterPill, SegmentedTabs, SegmentedTabLabel, PluginIcon, PaletteIcon } from "../ui";
+import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useNarrowViewport } from "../../hooks/use-narrow-viewport";
 
@@ -46,11 +47,19 @@ function activeFilterCount(f: FilterState): number {
 
 // The Type switch always shows a selection (a tab row can't be "nothing lit"
 // the way the old chips were), so "All" stands in for "no type filter".
-const TYPE_TABS = [
-  { id: "all", label: "All" },
-  { id: "skill", label: "Plugins" },
-  { id: "theme", label: "Themes" },
-] as const;
+// Round 2 (Destin, 2026-08-27): the switch is the SAME pill as the Library's Plugins |
+// Themes switcher — icon + label + count, variant="pill" — so the two surfaces read as one
+// control. Counts are registry sizes (what you can browse), the Library's are installed.
+function useTypeTabs(active: string) {
+  const mp = useMarketplace();
+  const plugins = mp.skillEntries.length;
+  const themes = mp.themeEntries.length;
+  return [
+    { id: "all", label: <SegmentedTabLabel icon={null} text="All" count={plugins + themes} active={active === "all"} /> },
+    { id: "skill", label: <SegmentedTabLabel icon={<PluginIcon />} text="Plugins" count={plugins} active={active === "skill"} /> },
+    { id: "theme", label: <SegmentedTabLabel icon={<PaletteIcon />} text="Themes" count={themes} active={active === "theme"} /> },
+  ];
+}
 
 interface Props {
   value: FilterState;
@@ -60,6 +69,7 @@ interface Props {
 export default function MarketplaceFilterBar({ value, onChange }: Props) {
   const compact = useNarrowViewport();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const typeTabs = useTypeTabs(value.type ?? "all");
 
   const toggleMulti = (key: "vibes" | "meta", v: any) => {
     const next = { ...value, vibes: new Set(value.vibes), meta: new Set(value.meta) };
@@ -114,7 +124,8 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
       {/* P-1 #1: pick-one Type switch, visually distinct from the pick-any
           chips that follow. Same position as the old Plugins/Themes chips. */}
       <SegmentedTabs
-        tabs={TYPE_TABS}
+        variant="pill"
+        tabs={typeTabs}
         value={value.type ?? "all"}
         onChange={setTypeTab}
         aria-label="Type"
@@ -166,6 +177,7 @@ function FilterSheet({
   // FilterSheet pushes onto the EscClose LIFO stack — closes top-down ahead of
   // MarketplaceScreen's own ESC handler without a gate change in the screen.
   useEscClose(true, onClose);
+  const typeTabs = useTypeTabs(value.type ?? "all");
 
   const clearAll = () => {
     // Preserve the search query (it's still visible in the sticky bar) but
@@ -198,7 +210,8 @@ function FilterSheet({
           <SheetGroup label="Type">
             {/* P-1 #1: same pick-one switch as the wide bar. */}
             <SegmentedTabs
-              tabs={TYPE_TABS}
+              variant="pill"
+              tabs={typeTabs}
               value={value.type ?? "all"}
               onChange={setTypeTab}
               aria-label="Type"
