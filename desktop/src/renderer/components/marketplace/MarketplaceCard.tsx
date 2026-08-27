@@ -182,10 +182,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
         <div className="flex-1 min-w-0">
           <h3 className="font-medium text-fg truncate">{title}</h3>
           {author && <p className="text-xs text-fg-dim truncate">{author}</p>}
-          {/* P-21 #2 (mock-up for Destin, 2026-08-27): theme cards reserve the two description
-          lines even when a theme has none, so a row of theme cards ends its text at one
-          height. Plugin cards are unchanged. */}
-      {(blurb || kind === "theme") && <p className="text-xs text-fg-2 line-clamp-2 min-h-[2lh]">{blurb}</p>}
+          {blurb && <p className="text-xs text-fg-2 line-clamp-2">{blurb}</p>}
           {(rating != null && ratingCount > 0) || installs > 0 || likes > 0 ? (
             <div className="mt-1 flex items-center gap-3 text-xs text-fg-dim">
               {rating != null && ratingCount > 0 && (
@@ -363,10 +360,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           </span>
         )}
       </div>
-      {/* P-21 #2 (mock-up for Destin, 2026-08-27): theme cards reserve the two description
-          lines even when a theme has none, so a row of theme cards ends its text at one
-          height. Plugin cards are unchanged. */}
-      {(blurb || kind === "theme") && <p className="text-xs text-fg-2 line-clamp-2 min-h-[2lh]">{blurb}</p>}
+      {blurb && <p className="text-xs text-fg-2 line-clamp-2">{blurb}</p>}
       {/* Plugin-name badge — jumps to the parent plugin's detail page.
           Only rendered for skills that belong to a marketplace plugin;
           stopPropagation prevents the card's own onClick from firing. */}
@@ -380,7 +374,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           {pluginBadge.name}
         </button>
       )}
-      <div className={`mt-auto flex items-center gap-2 sm:gap-3 text-xs text-fg-dim pt-1 min-w-0 ${kind === "theme" ? "min-h-[1.75rem]" : ""}`}>
+      <div className="mt-auto flex items-center gap-2 sm:gap-3 text-xs text-fg-dim pt-1 min-w-0">
         {/* Author appears here at narrow only — keeps the byline visible without
             spending a whole row on it. Hidden at sm+ since it has its own line
             under the title up top. */}

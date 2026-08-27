@@ -44,8 +44,10 @@ const TAB_INACTIVE = 'text-fg-2 hover:bg-inset';
 // w-fit: the pill hugs its segments like the Projects header does — as a plain `flex`
 // in a block parent it stretched across the whole Library page (seen in the Phase C
 // after-sweep, 2026-08-27).
-const PILL_CONTAINER = 'w-fit flex items-center gap-1 p-1 layer-surface !rounded-full';
-const PILL_TAB_BASE = `shrink-0 px-3.5 py-1.5 rounded-full text-sm-tight font-medium inline-flex items-center justify-center gap-2 transition-colors ${FOCUS_RING}`;
+// Compact (Destin, 2026-08-27, review 2): segments are px-3 py-1 text-sm — the same box as
+// the marketplace filter chips — so the switch and the chips beside it read as one size.
+const PILL_CONTAINER = 'w-fit flex items-center gap-0.5 p-0.5 layer-surface !rounded-full';
+const PILL_TAB_BASE = `shrink-0 px-3 py-1 rounded-full text-sm font-medium inline-flex items-center justify-center gap-1.5 transition-colors ${FOCUS_RING}`;
 const PILL_TAB_INACTIVE = 'text-fg-2 hover:text-fg hover:bg-inset';
 
 export function SegmentedTabs({
