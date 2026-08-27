@@ -309,6 +309,11 @@ declare global {
       };
       // Remembered "Always allow" rules (M5 2a). Keyed by PROJECT SLUG, not
       // cwd — permissions.json never stored the cwd, and the slug is lossy.
+      // First bytes of a user-chosen file for a preview tile (composer
+      // attachment cards). Capped in main; see shared/read-head.ts.
+      fs: {
+        readHead: (filePath: string, maxBytes?: number) => Promise<import('../../shared/read-head').ReadHeadResult>;
+      };
       permissions: {
         list: () => Promise<import('../../shared/permission-types').StoredProject[]>;
         remove: (slug: string, rule: import('../../shared/permission-types').PermissionRule) => Promise<boolean>;

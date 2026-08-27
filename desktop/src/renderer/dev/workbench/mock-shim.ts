@@ -2,6 +2,8 @@ import type { MockStore } from './mock-store';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
+import { previewKind } from '../../../shared/artifacts/categorization';
+import { READ_HEAD_DEFAULT_BYTES, READ_HEAD_MAX_BYTES } from '../../../shared/read-head';
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
@@ -25,6 +27,25 @@ const OVERSIZE_FIXTURES: Record<string, number> = {
   'a-huge-dump': 500 * 1024 * 1024,   // above it -> no load action
 };
 
+// Canned file heads for the mock fs.readHead (attachment cards). The markdown
+// one deliberately opens with a `##` heading plus bold and a list: the whole
+// point of the preview is that those render as markup, not as literal text.
+const WORKBENCH_MARKDOWN_HEAD = [
+  '## Design notes',
+  '',
+  'Composer chips become **cards** with a real preview.',
+  '',
+  '- image → thumbnail',
+  '- markdown → rendered',
+  '- text → mono block',
+].join('\n');
+const WORKBENCH_TEXT_HEADS: Record<string, string> = {
+  txt: 'Call Sam about the venue\nOrder 40 chairs\nConfirm catering by Fri\nPrint name tags',
+  json: '{\n  "name": "youcoded",\n  "version": "1.3.0",\n  "private": true\n}',
+  csv: 'item,qty,cost\nchairs,40,320\ntables,8,560\ncatering,1,1400',
+  ts: 'interface Attachment {\n  path: string;\n  name: string;\n}',
+};
+
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
  *  (tests/workbench-mock-contract.test.ts) checks each against preload.ts. */
@@ -40,6 +61,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
+  'fs.readHead',
   // Specialists 1c — real backend as of Task 8 (see the contract test's
   // remote-shim/preload scan); still hand-written here so the workbench has
   // fixture data to serve instead of a real filesystem/ledger.
@@ -1008,6 +1030,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     getFeatured: async () => (marketplaceEmpty ? { hero: [], rails: [] } : JSON.parse(JSON.stringify(FEATURED))),
   };
+  // fs:read-head — the first bytes of an attached file, for the composer's
+  // attachment cards. Canned per file kind so the screenshot rig sees a REAL
+  // rendered-markdown preview for the `composer-attachments` fixture
+  // (/home/destin/Documents/design-notes.md) and something honest for the
+  // rest; anything non-text gets the same refusal the real handler gives.
+  const fs: Ns<'fs'> = {
+    readHead: async (filePath: string, maxBytes?: number) => {
+      const cap = Math.min(READ_HEAD_MAX_BYTES, Math.max(1, maxBytes ?? READ_HEAD_DEFAULT_BYTES));
+      const kind = previewKind(filePath);
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+      let text: string | null = null;
+      if (kind === 'markdown') text = WORKBENCH_MARKDOWN_HEAD;
+      else if (kind === 'text') text = WORKBENCH_TEXT_HEADS[ext] ?? WORKBENCH_TEXT_HEADS.txt;
+      if (text === null) return { ok: false as const, error: 'binary' };
+      return { ok: true as const, text: text.slice(0, cap), truncated: text.length > cap };
+    },
+  };
   const marketplace = {
     getPackages: async () => (marketplaceEmpty ? {} : JSON.parse(JSON.stringify(INSTALLED_PACKAGES))),
   };
@@ -1015,6 +1054,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, appearance, specialists, shell,
-    skills, marketplace, folders,
+    skills, marketplace, folders, fs,
   } as unknown as Record<string, Record<string, unknown>>;
 }

@@ -279,6 +279,38 @@ function ArtifactDrawerButton({ activeSessionId, projectRoot }: { activeSessionI
   );
 }
 
+/** The Settings gear. ONE component for both the session header and the
+ *  welcome-screen bare header (P-6, 2026-08-27): Destin asked for the welcome
+ *  gear to be byte-identical to the session one, so the class string, badges
+ *  and Android hit-size live here and nowhere else. Copying the JSX would let
+ *  the two drift on the next tweak. */
+function SettingsGearButton({ settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge }: {
+  settingsOpen: boolean;
+  onToggleSettings: () => void;
+  settingsBadge?: boolean;
+  settingsDangerBadge?: boolean;
+}) {
+  return (
+    <button
+      onClick={onToggleSettings}
+      className={`relative ${isAndroid() ? 'p-2' : 'p-1'} rounded-sm hover:bg-inset transition-colors shrink-0 ${settingsOpen ? 'text-fg' : 'text-fg-muted'}`}
+      title="Settings"
+    >
+      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+      {/* Red dot takes precedence over blue remote-connection badge —
+          danger-level sync warnings indicate data-loss risk and must be visible. */}
+      {settingsDangerBadge && !settingsOpen ? (
+        <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" />
+      ) : settingsBadge && !settingsOpen ? (
+        <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500" />
+      ) : null}
+    </button>
+  );
+}
+
 export default function HeaderBar({
   sessions, activeSessionId, onSelectSession, onCreateSession, onCloseSession,
   viewMode, onToggleView,
@@ -443,23 +475,12 @@ export default function HeaderBar({
             challengePending={challengePending}
           />
         ) : (
-        <button
-          onClick={onToggleSettings}
-          className={`relative ${isAndroid() ? 'p-2' : 'p-1'} rounded-sm hover:bg-inset transition-colors shrink-0 ${settingsOpen ? 'text-fg' : 'text-fg-muted'}`}
-          title="Settings"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
-          {/* Red dot takes precedence over blue remote-connection badge —
-              danger-level sync warnings indicate data-loss risk and must be visible. */}
-          {settingsDangerBadge && !settingsOpen ? (
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" />
-          ) : settingsBadge && !settingsOpen ? (
-            <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-blue-500" />
-          ) : null}
-        </button>
+          <SettingsGearButton
+            settingsOpen={settingsOpen}
+            onToggleSettings={onToggleSettings}
+            settingsBadge={settingsBadge}
+            settingsDangerBadge={settingsDangerBadge}
+          />
         )}
         {/* Projects button — wide layouts only; narrow reaches it via ||| . */}
         {!narrow && <ProjectsButton />}
@@ -544,6 +565,56 @@ export default function HeaderBar({
         </div>
 
         {/* Custom caption buttons (Windows/Linux only) */}
+        {showCaptionButtons && <CaptionButtons />}
+      </div>
+    </div>
+  );
+}
+
+/** The welcome screen's header (P-6, Destin 2026-08-27: "a full frame around
+ *  the welcome screen, as exists in terminal view, with settings/projects/
+ *  minimize/maximize/close. no sessions switch ... no status bar chips or chat
+ *  bar. just bare frame like terminal view").
+ *
+ *  A separate component rather than a `bare` prop on HeaderBar: HeaderBar's
+ *  cluster-measurement hooks, session-strip reservation and view-toggle state
+ *  are all session-scoped, and gating its JSX on a flag would still run every
+ *  one of them for a bar with nothing to measure. This renders ONLY what works
+ *  without a session — the Mac traffic-light pill, the shared gear, the Projects
+ *  button (Project View is a full-screen overlay that needs no session) and the
+ *  Windows/Linux caption buttons. No OverflowMenu on narrow viewports either:
+ *  its rows are session-scoped (Session Files, Connect 4), so the two app-level
+ *  buttons render directly at every width.
+ *
+ *  Same `.header-bar` class + `WebkitAppRegion: drag` as HeaderBar, so the
+ *  frameless window is still draggable from the welcome screen, globals.css's
+ *  `.header-bar button { no-drag }` keeps the buttons clickable, the theme
+ *  engine's header styles apply, and useChromeMeasurements (which queries
+ *  `.header-bar` inside App's headerRef wrapper) publishes --top-chrome-height
+ *  for the chrome-glass frame exactly as it does for a session. */
+export function BareHeaderBar({ settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge }: {
+  settingsOpen: boolean;
+  onToggleSettings: () => void;
+  settingsBadge?: boolean;
+  settingsDangerBadge?: boolean;
+}) {
+  // MacTrafficLights measures the .header-bar element it sits in.
+  const headerRef = useRef<HTMLDivElement>(null);
+  return (
+    <div ref={headerRef} className="header-bar flex items-center h-10 px-2 sm:px-3 shrink-0" style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
+      <MacTrafficLights headerRef={headerRef} />
+      <div className="flex items-center gap-1 sm:gap-2">
+        <SettingsGearButton
+          settingsOpen={settingsOpen}
+          onToggleSettings={onToggleSettings}
+          settingsBadge={settingsBadge}
+          settingsDangerBadge={settingsDangerBadge}
+        />
+        <ProjectsButton />
+      </div>
+      {/* Empty middle — stays part of the drag region. */}
+      <div className="flex-1 min-w-0" />
+      <div className="flex items-center justify-end gap-1 sm:gap-2">
         {showCaptionButtons && <CaptionButtons />}
       </div>
     </div>

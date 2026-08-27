@@ -370,9 +370,12 @@ html, body, #root {
      cell row (because xterm sizes cells to whole rows; the viewport is
      usually 3-12px taller than xterm-screen depending on font metrics). On
      touch platforms with no native scrollbar, that strip reads as a black
-     bar between xterm and the InputBar. Match the canvas token so any
-     uncovered strip blends with the terminal background. */
-  background-color: var(--canvas) !important;
+     bar between xterm and the InputBar. Match the terminal's backing token
+     so any uncovered strip blends with the grid: --terminal-backing is set by
+     theme-engine.ts (P-20.2) to var(--panel) under a wallpaper/gradient theme
+     and var(--canvas) on a flat one — the fallback keeps it --canvas before
+     the first theme apply, exactly the old literal. */
+  background-color: var(--terminal-backing, var(--canvas)) !important;
 }
 
 .xterm-screen {
@@ -1921,6 +1924,17 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
      specificity on the SAME element makes the substitution resolve 10px. */
   --bottom-chrome-total: calc(var(--frame-edge) + var(--vvp-offset, 0px));
 }
+/* Welcome screen's bare frame (P-6): same donut as terminal view — header on
+   top, --frame-edge strips down the sides and along the bottom. Without this
+   the polygon would reserve the 5rem --bottom-chrome-height fallback for an
+   input bar the welcome screen doesn't have, painting a thick empty band.
+   Both vars set on the same element for the same substitution reason as the
+   terminal rule above. Not gated on platform: Android/remote have no window
+   chrome but do have the frame, exactly as their terminal view does. */
+.chrome-glass--bare {
+  --bottom-chrome-height: var(--frame-edge);
+  --bottom-chrome-total: calc(var(--frame-edge) + var(--vvp-offset, 0px));
+}
 
 /* ─── Terminal-view right-slot overlay (Bug #2) ──────────────────────────
    TerminalRightSlot renders a framed-shell clone over the terminal so the
@@ -1990,6 +2004,43 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
   min-width: 0;
   overflow: hidden;
   position: relative;
+  /* Column so the chat find row (.find-row, P-14) can sit in flow above the
+     scroll container and hand it the remaining height (.chat-scroll is
+     flex-1 min-h-0). Every other child of the pane is position:absolute
+     (empty-state hint, queued strip, the corner pseudos), so nothing else
+     changes. */
+  display: flex;
+  flex-direction: column;
+}
+
+/* Chat find row (Ctrl+F, P-14): a browser-style strip above the messages
+   rather than a card floating over them. The header is absolute over the top
+   of the pane, so the row starts at the header's bottom — --top-chrome-bottom
+   (window y of the header's bottom edge), not -height, so a floating header
+   pill's own top margin is cleared too; same var the empty-state hint and
+   .drawer-pane use. On wallpaper themes it takes the header's translucency
+   so it reads as part of the chrome rather than an opaque bar over the
+   picture. */
+.chat-pane > .find-row {
+  margin-top: var(--top-chrome-bottom, 3rem);
+}
+[data-chrome-style='floating'] .chat-pane > .find-row,
+[data-input-style='floating'] .chat-pane > .find-row {
+  /* 6px breathing room under the floating pill — matches .drawer-pane. */
+  margin-top: calc(var(--top-chrome-bottom, 3rem) + 6px);
+}
+/* The lane itself paints nothing (the pill inside carries the panel colour and
+   border), so a wallpaper shows through around the pill exactly as it does
+   around a floating one. */
+/* While the row is open the scroll container starts BELOW it, not under the
+   header, so the header-clearing padding-top (and the matching scrollbar-track
+   inset) would be dead space above the first message. Two classes so this
+   beats the single-class .chat-scroll rules without !important. */
+.chat-scroll.chat-scroll--below-find-row {
+  padding-top: 0.5rem;
+}
+.chat-scroll.chat-scroll--below-find-row::-webkit-scrollbar-track {
+  margin-top: 0;
 }
 
 /* Rounded-inset corner pieces. ::before is a thin strip at the top of the

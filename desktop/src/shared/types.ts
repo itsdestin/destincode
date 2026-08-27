@@ -1550,6 +1550,10 @@ export const IPC = {
   // Keyed by PROJECT SLUG, not cwd — permissions.json never stored the cwd for
   // pre-existing entries and nativeStoreSlug is lossy, so the slug is the only
   // stable handle the renderer can send back.
+  // ---- fs:read-head — first bytes of a user-chosen file for a preview tile ----
+  // Capped in main at READ_HEAD_MAX_BYTES (shared/read-head.ts) whatever the
+  // renderer asks for; sensitive paths refused. See main/fs-read-head.ts.
+  FS_READ_HEAD: 'fs:read-head',
   PERMISSIONS_LIST: 'permissions:list',
   PERMISSIONS_REMOVE: 'permissions:remove',
   PERMISSIONS_REMOVE_PROJECT: 'permissions:remove-project',

@@ -250,6 +250,20 @@ if (import.meta.env.DEV && __buddyMode === 'workbench') {
         __mount.render(<ThemeProvider><ChatProvider><CompareView /></ChatProvider></ThemeProvider>);
         return;
       }
+      // Attachment-chip page (dev/workbench/mockups/AttachmentChips.tsx) — the
+      // two unpicked mock-ups (A, B) beside the SHIPPING card (C, the real
+      // AttachmentChip) over the same sample files, so the page can't drift
+      // from the composer. Own surface like the two above; ThemeProvider so it
+      // reads correctly in all six themes, no ChatProvider because nothing in
+      // it touches chat state.
+      if (__view === 'attachments') {
+        const [{ AttachmentChipsMockup }, { ThemeProvider }] = await Promise.all([
+          import('./dev/workbench/mockups/AttachmentChips'),
+          import('./state/theme-context'),
+        ]);
+        __mount.render(<ThemeProvider><AttachmentChipsMockup /></ThemeProvider>);
+        return;
+      }
       // App is already statically imported above (Root renders it).
       __mount.render(<App />);
       return;

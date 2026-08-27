@@ -71,3 +71,75 @@ const GROUP_LABELS: Record<FileTypeGroup, string> = {
 export function fileTypeLabel(path: string): string {
   return GROUP_LABELS[fileTypeGroup(path)];
 }
+
+// ── File kinds for tiles and chips ───────────────────────────────────────────
+// A finer split again, for surfaces that show a per-file glyph and decide what
+// preview a tile can cheaply render (the composer's attachment cards, first).
+// Layers pdf / audio / video / archive / text / markdown / unknown buckets over
+// fileTypeGroup(), whose 'code' group is really "everything else" — a `.dat`
+// sensor log is not code, and a tile that calls it code would lie. Moved here
+// from the attachment-chip mock-up when design C shipped (2026-08-27) so the
+// composer, the mock-up page, and any future tile share ONE mapping.
+export type FileKind =
+  | 'image' | 'sheet' | 'document' | 'code' | 'text' | 'markdown'
+  | 'pdf' | 'audio' | 'video' | 'archive' | 'unknown';
+
+const AUDIO_EXTENSIONS: ReadonlySet<string> = new Set(['mp3', 'wav', 'm4a', 'ogg', 'flac', 'aac']);
+const VIDEO_EXTENSIONS: ReadonlySet<string> = new Set(['mp4', 'mov', 'webm', 'mkv', 'avi']);
+const ARCHIVE_EXTENSIONS: ReadonlySet<string> = new Set(['zip', 'tar', 'gz', 'tgz', '7z', 'rar']);
+const MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set(['md', 'markdown']);
+const PLAIN_TEXT_EXTENSIONS: ReadonlySet<string> = new Set(['txt', 'text', 'log']);
+// Extensions we are confident hold source/config text. Anything else that
+// lands in fileTypeGroup's 'code' bucket is 'unknown' for tile purposes.
+const KNOWN_CODE_EXTENSIONS: ReadonlySet<string> = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'py', 'kt', 'kts', 'java', 'rs', 'go', 'rb', 'sh',
+  'bash', 'zsh', 'fish', 'ps1', 'bat', 'json', 'yaml', 'yml', 'toml', 'ini', 'cfg', 'conf',
+  'css', 'scss', 'less', 'sql', 'c', 'h', 'cpp', 'hpp', 'cs', 'swift', 'xml', 'lua', 'php',
+  'gradle', 'properties',
+]);
+
+/** Lowercase extension without the dot; '' for none or a leading-dot dotfile. */
+export function fileExtension(path: string): string {
+  const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+  const filename = lastSlash >= 0 ? path.slice(lastSlash + 1) : path;
+  const lastDot = filename.lastIndexOf('.');
+  return lastDot > 0 ? filename.slice(lastDot + 1).toLowerCase() : '';
+}
+
+export function fileKind(path: string): FileKind {
+  const ext = fileExtension(path);
+  if (ext === 'pdf') return 'pdf';
+  if (AUDIO_EXTENSIONS.has(ext)) return 'audio';
+  if (VIDEO_EXTENSIONS.has(ext)) return 'video';
+  if (ARCHIVE_EXTENSIONS.has(ext)) return 'archive';
+  if (MARKDOWN_EXTENSIONS.has(ext)) return 'markdown';
+  if (PLAIN_TEXT_EXTENSIONS.has(ext)) return 'text';
+  const group = fileTypeGroup(path);
+  if (group === 'code') return KNOWN_CODE_EXTENSIONS.has(ext) ? 'code' : 'unknown';
+  return group;
+}
+
+// What a tile can show for a file without opening a viewer:
+//   'image'    — the picture itself
+//   'markdown' — the first bytes, RENDERED (headings, bold, lists — never a raw
+//                `##`; Destin's rule, 2026-08-27)
+//   'text'     — the first bytes in a small mono block (plain text, code, csv)
+//   'glyph'    — the big type icon + extension in caps (pdf, office, media, …)
+export type PreviewKind = 'image' | 'markdown' | 'text' | 'glyph';
+
+const IMAGE_PREVIEW_EXTENSIONS: ReadonlySet<string> = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+
+export function previewKind(path: string): PreviewKind {
+  const kind = fileKind(path);
+  const ext = fileExtension(path);
+  // Only the formats today's composer chip already thumbnails (its
+  // isImagePath set). svg/ico/avif stay on the glyph: an <img> from an
+  // arbitrary path can't be trusted to decode them, and a broken picture is
+  // worse than an honest icon.
+  if (kind === 'image') return IMAGE_PREVIEW_EXTENSIONS.has(ext) ? 'image' : 'glyph';
+  if (kind === 'markdown') return 'markdown';
+  if (kind === 'text' || kind === 'code') return 'text';
+  // csv/tsv are tabular TEXT — the first rows are a real preview; xls(x) is not.
+  if (kind === 'sheet' && (ext === 'csv' || ext === 'tsv')) return 'text';
+  return 'glyph';
+}

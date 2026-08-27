@@ -116,6 +116,7 @@ import { ensureProject, ensureProjectCoalesced, applyGitTreatmentCoalesced } fro
 import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
+import { readFileHead } from './fs-read-head';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES, FULL_READ_MAX_BYTES, READ_BINARY_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
@@ -3955,6 +3956,13 @@ export function registerIpcHandlers(
       return { ok: false, error: e?.code === 'ENOENT' ? 'orphan' : String(e?.message ?? e) };
     }
   });
+
+  // First bytes of a user-chosen file, for the composer's attachment cards
+  // (rendered markdown / mono text preview). The cap, the deny list and the
+  // reasoning for NOT roots-gating it live in main/fs-read-head.ts +
+  // shared/read-head.ts; remote-server.ts calls the same function.
+  ipcMain.handle(IPC.FS_READ_HEAD, (_e, filePath: string, maxBytes?: number) =>
+    readFileHead(filePath, maxBytes));
 
   ipcMain.handle(ARTIFACT_IPC.SAVE, async (
     _e,
