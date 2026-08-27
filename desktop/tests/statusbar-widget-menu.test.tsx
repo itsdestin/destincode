@@ -41,8 +41,11 @@ const statusData = {
   gitBranch: null, sessionStats: null, syncWarnings: [],
 } as any;
 
-async function openMenu(provider: 'claude' | 'native', nativeTotals?: any) {
-  render(<StatusBar statusData={statusData} provider={provider} sessionId="s1" nativeTotals={nativeTotals ?? null} />);
+async function openMenu(provider: 'claude' | 'native', nativeTotals?: any, sessionStats?: any) {
+  // sessionStats is only needed by the bar/menu agreement table below, which
+  // renders a Claude Code session that already has a cost figure.
+  const data = sessionStats ? { ...statusData, sessionStats } : statusData;
+  render(<StatusBar statusData={data} provider={provider} sessionId="s1" nativeTotals={nativeTotals ?? null} />);
   fireEvent.click(screen.getByRole('button', { name: /status bar widgets|customize/i }));
 }
 
@@ -116,10 +119,24 @@ describe('Customize Status Bar menu', () => {
     expect(screen.queryByText('No published price for this model')).toBeNull();
   });
 
-  it('still says "no published price" for a metered model with no rate', async () => {
+  // Task 20, defect A. This row used to read "No published price for this
+  // model" while the bar was drawing a `Cost: not listed` chip — a chip on the
+  // bar whose switch looked unavailable, and which the user could not turn off.
+  it('leaves the Cost row switchable for a metered model with no published rate', async () => {
     await openMenu('native', totals({ anyUnpriced: true }));
-    expect(screen.queryByText('No published price for this model')).toBeTruthy();
+    expect(screen.queryByText('No published price for this model')).toBeNull();
     expect(screen.queryByText("Models on your own machine don't cost anything to run")).toBeNull();
+    expect(screen.getByText('Session Cost').closest('button')).toBeTruthy();
+  });
+
+  // Task 20, defect B. A free local parent that delegated to a metered
+  // specialist has anyFree AND anyUnpriced: metered work really ran, so the
+  // "costs nothing to run" sentence would be false (spec §5 names exactly this
+  // delegation shape as the one that must not be hidden).
+  it('never tells a session it is free to run when metered work also ran', async () => {
+    await openMenu('native', totals({ anyFree: true, anyUnpriced: true }));
+    expect(screen.queryByText("Models on your own machine don't cost anything to run")).toBeNull();
+    expect(screen.getByText('Session Cost').closest('button')).toBeTruthy();
   });
 
   it('stacks the reason under the label instead of beside it', async () => {
@@ -153,4 +170,102 @@ describe('Customize Status Bar menu', () => {
     const themeRow = screen.getByText('Theme').parentElement!.parentElement!;
     expect(themeRow.querySelectorAll('button').length > 0).toBe(true);
   });
+});
+
+// The bar and the Customize menu are ONE rule written in two places: the chip's
+// render condition in StatusBar.tsx and the session-cost branch in
+// status-widgets.ts. This table is what keeps them honest — it drives both
+// surfaces from a SINGLE render of the real <StatusBar/>, so changing either
+// one alone turns it red. The invariant that matters (spec §9) is stated at the
+// bottom of the test body: the bar must never draw a chip whose switch looks
+// unavailable.
+describe('the bar and the Customize menu agree about Cost', () => {
+  // chip:       the value the bar draws, or null when it draws no chip at all.
+  // rowEnabled: whether the menu row is still a switch the user can operate —
+  //             a dimmed row renders its label in a plain div, an offered row
+  //             renders it inside the checkbox <button>.
+  // reason:     the dimmed row's sentence, asserted byte-for-byte.
+  const shapes: Array<{
+    name: string;
+    provider: 'claude' | 'native';
+    sessionStats?: Record<string, unknown>;
+    totals: Record<string, unknown> | null;
+    chip: string | null;
+    rowEnabled: boolean;
+    reason: string | null;
+  }> = [
+    {
+      name: 'a Claude Code session with its own figure',
+      provider: 'claude', sessionStats: { costUsd: 0.42 }, totals: null,
+      chip: '$0.42', rowEnabled: true, reason: null,
+    },
+    {
+      name: 'a metered native session with priced work',
+      provider: 'native', totals: totals({ costUsd: 1.37, anyPriced: true }),
+      chip: '$1.37', rowEnabled: true, reason: null,
+    },
+    {
+      name: 'a metered model with no published rate',
+      provider: 'native', totals: totals({ anyUnpriced: true }),
+      chip: 'not listed', rowEnabled: true, reason: null,
+    },
+    {
+      name: 'a free local session',
+      provider: 'native', totals: totals({ anyFree: true }),
+      chip: null, rowEnabled: false,
+      reason: "Models on your own machine don't cost anything to run",
+    },
+    {
+      name: 'a free local parent whose specialist ran unpriced',
+      provider: 'native', totals: totals({ anyFree: true, anyUnpriced: true }),
+      chip: 'not listed', rowEnabled: true, reason: null,
+    },
+    {
+      name: 'a free local parent whose specialist cost real money',
+      provider: 'native',
+      totals: totals({
+        costUsd: 0.61, anyPriced: true, anyUnpriced: true, anyFree: true,
+        specialistRuns: 3, specialistCostUsd: 0.61,
+      }),
+      chip: '$0.61', rowEnabled: true, reason: null,
+    },
+    {
+      name: 'a session that has measured nothing yet',
+      provider: 'native', totals: totals({}),
+      chip: null, rowEnabled: true, reason: null,
+    },
+  ];
+
+  for (const shape of shapes) {
+    it(`${shape.name}: bar ${shape.chip ? `shows "${shape.chip}"` : 'shows nothing'}, menu row ${shape.rowEnabled ? 'stays a switch' : 'is dimmed'}`, async () => {
+      // Session Cost is defaultVisible:false — switch it on, or the bar would
+      // be silent for a reason that has nothing to do with pricing.
+      window.localStorage.setItem('youcoded-statusbar-widgets', JSON.stringify(['session-cost']));
+      await openMenu(shape.provider, shape.totals, shape.sessionStats);
+
+      // --- what the bar drew ---
+      const chipLabel = screen.queryByText('Cost:');
+      if (shape.chip === null) {
+        expect(chipLabel).toBeNull();
+      } else {
+        expect(chipLabel).toBeTruthy();
+        expect(screen.queryByText(shape.chip)).toBeTruthy();
+      }
+
+      // --- what the menu offered ---
+      const label = screen.getByText('Session Cost');
+      const rowEnabled = label.closest('button') !== null;
+      expect(rowEnabled).toBe(shape.rowEnabled);
+      if (shape.reason === null) {
+        // Nothing but the label on the row — no sentence at all.
+        expect(label.parentElement!.textContent).toBe('Session Cost');
+      } else {
+        expect(label.nextElementSibling!.textContent).toBe(shape.reason);
+      }
+
+      // --- the invariant, checked for every shape ---
+      // spec §9: the bar can never show a chip the menu won't offer.
+      if (chipLabel !== null) expect(rowEnabled).toBe(true);
+    });
+  }
 });

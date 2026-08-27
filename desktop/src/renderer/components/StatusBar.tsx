@@ -1755,7 +1755,9 @@ export default function StatusBar({
         onClose={() => setPopupOpen(false)}
         visible={visible}
         toggle={toggle}
-        relevance={{ runtime, hasPricedWork: nativeTotals?.anyPriced ?? true, runsLocally: nativeTotals?.anyFree ?? false }}
+        // anyUnpriced rides along because the bar draws a "Cost: not listed"
+        // chip for it — the menu has to offer the row whenever the chip is up.
+        relevance={{ runtime, hasPricedWork: nativeTotals?.anyPriced ?? true, anyUnpriced: nativeTotals?.anyUnpriced ?? false, runsLocally: nativeTotals?.anyFree ?? false }}
       />
 
       {/* Update panel — opened from the version pill. Guard on updateStatus

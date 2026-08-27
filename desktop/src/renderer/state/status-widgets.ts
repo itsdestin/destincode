@@ -27,6 +27,11 @@ export interface RelevanceContext {
   /** Has any counted work in this session had a published price? Drives the
    *  cost chip's reason line only. */
   hasPricedWork: boolean;
+  /** Did any counted work run on a METERED model whose price is not published?
+   *  The bar draws a `Cost: not listed` chip for this, so the menu has to know
+   *  about it — see the session-cost branch below. Rides the totals from main
+   *  as `anyUnpriced`. */
+  anyUnpriced: boolean;
   /** Did any counted work run on a model that costs nothing to run (a local
    *  engine)? A local model and a metered model with no published rate BOTH
    *  produce no cost figure, but they are opposite situations and must not
@@ -63,10 +68,26 @@ export function widgetUnavailableReason(id: WidgetId, ctx: RelevanceContext): st
   if (CLAUDE_ONLY.has(id)) return 'Claude Code sessions only';
   // "yet" promised a feature that is not on the roadmap (checkpoint #7).
   if (UNMEASURED_IN_NATIVE.has(id)) return 'Not available in this kind of session';
-  if (id === 'session-cost' && !ctx.hasPricedWork) {
-    return ctx.runsLocally
-      ? "Models on your own machine don't cost anything to run"
-      : 'No published price for this model';
+  // Cost is the one row whose availability the BAR also decides, so this
+  // condition deliberately mirrors the chip's render condition in
+  // StatusBar.tsx (the `show('session-cost')` block): the chip draws a figure
+  // when some work was priced, and draws "Cost: not listed" when nothing was
+  // priced but the provider bills anyway. In both cases the chip is on screen,
+  // so the row must stay a switch the user can actually turn off — a visible
+  // chip whose switch looks unavailable is the exact disagreement this module
+  // exists to prevent (spec §9). THE TWO ARE ONE RULE WRITTEN IN TWO PLACES:
+  // change this branch and the chip block together, or the bar/menu agreement
+  // table in statusbar-widget-menu.test.tsx will say so.
+  if (id === 'session-cost' && !ctx.hasPricedWork && !ctx.anyUnpriced) {
+    // Only a session that is genuinely free to run gets a sentence. A session
+    // that has simply not run anything yet gets NONE: "No published price for
+    // this model" was false there — nothing had been priced because nothing had
+    // happened — and a reason must be true or absent (spec §4). git-branch is
+    // the precedent: a widget can be empty without being unavailable.
+    // Checking anyUnpriced first also settles the delegation case, where a free
+    // local parent used a metered specialist: metered work ran, so the row is
+    // offered rather than told it costs nothing (spec §5).
+    return ctx.runsLocally ? "Models on your own machine don't cost anything to run" : null;
   }
   return null;
 }
