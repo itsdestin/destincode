@@ -11,7 +11,7 @@
 // consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
-import { Button, InputGroup, ProgressBar, Callout } from './ui';
+import { Button, InputGroup, ProgressBar, Callout, AnchorTip } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
@@ -135,11 +135,14 @@ function DownloadProgressRow({ dl }: { dl: DownloadProgress }) {
           {dl.state === 'verifying' ? 'Verifying…' : `${gb(dl.receivedBytes)} of ${gb(dl.totalBytes)}`}
           {dl.parts > 1 ? ` · part ${dl.currentPart} of ${dl.parts}` : ''}
         </p>
+        {/* "Pause", not "Cancel": stopping keeps every downloaded byte, and the
+            row below uses the same word for the same action (Destin, 2026-08-27).
+            No longer red — pausing destroys nothing. */}
         <button
           onClick={() => void window.claude.models.downloadCancel(dl.downloadId)}
-          className="text-3xs font-medium text-red-500 hover:underline"
+          className="text-3xs font-medium text-fg-muted hover:text-fg hover:underline"
         >
-          Cancel
+          Pause
         </button>
       </div>
     </div>
@@ -442,12 +445,44 @@ function RepoCard({
 // ── Local model rows ─────────────────────────────────────────────────────────
 
 /** Percent of a download that is on disk. Returns null when the total is
- *  unknown (an untraceable row) — the caller then shows NO percentage rather
- *  than inventing a denominator. */
+ *  unknown (a damaged row) — the caller then shows NO percentage rather than
+ *  inventing a denominator. */
 function percentOf(onDisk: number, total: number | null): number | null {
   if (total == null || total <= 0) return null;
   return Math.min(100, Math.round((onDisk / total) * 100));
 }
+
+/** The name a person recognises, with the two machine suffixes stripped:
+ *  the quality tag (now shown on its own line below) and the -00001-of-00004
+ *  split marker (a split model is ONE model; its part count already appears in
+ *  the progress line while it downloads). "Qwen3.5-9B-Q8_0" → "Qwen3.5-9B".
+ *  Destin, 2026-08-27: quality belongs on the detail line, not in the title. */
+function displayName(model: InstalledLocalModel): string {
+  let name = model.id.replace(/-\d{5}-of-\d{5}$/i, '');
+  if (model.quant) {
+    const at = name.toLowerCase().lastIndexOf(`-${model.quant.toLowerCase()}`);
+    if (at > 0) name = name.slice(0, at);
+  }
+  // Never return an empty title: a model whose whole id IS its quant keeps the id.
+  return name || model.id;
+}
+
+/** The banner strip across the top of an interrupted or damaged row.
+ *  Two tones, matching the app's standing warn/danger split: amber for
+ *  "stopped, you can carry on", destructive for "stopped, and you can't".
+ *  Status colours stay hardcoded per desktop/CLAUDE.md. */
+const ROW_BANNER = {
+  interrupted: {
+    text: 'Download interrupted',
+    strip: 'bg-amber-500/15 text-amber-400',
+    border: 'border-amber-500/40',
+  },
+  damaged: {
+    text: 'Damaged',
+    strip: 'bg-destructive/15 text-destructive-fg',
+    border: 'border-destructive/40',
+  },
+} as const;
 
 // Exported (named) so tests can pin each row state without booting the whole
 // LocalModelsSection (which needs the full models API mocked).
@@ -471,6 +506,13 @@ export function LocalModelRow({
   const onDisk = live ? live.receivedBytes : model.sizeBytes;
   const total = live ? live.totalBytes : model.totalSizeBytes;
   const pct = percentOf(onDisk, total);
+
+  // A stopped download wears a banner; one that is moving does not — it is not
+  // interrupted, it is running. Pausing clears `live` and the banner returns.
+  const banner = live ? null
+    : model.status === 'unfinished' ? ROW_BANNER.interrupted
+    : model.status === 'untraceable' ? ROW_BANNER.damaged
+    : null;
 
   // WHY a download's own failure is read from the progress stream: resume()
   // returns the moment the download STARTS, so a click handler never sees an
@@ -498,9 +540,11 @@ export function LocalModelRow({
     setBusy(true);
     setActionError(null);
     try {
-      // If a download of this model is still live, cancel it and AWAIT the
-      // 'cancelled' event FIRST — removing the .partial out from under an open
-      // write stream races.
+      // If the event stream still shows this download running, stop it and AWAIT
+      // the 'cancelled' event FIRST — removing the .partial out from under an
+      // open write stream races. The row hides Delete while a download is live
+      // (Destin, 2026-08-27), so this is the guard for a STALE stream: progress
+      // events lag the real download, and a click can land inside that window.
       if (live) {
         await new Promise<void>((resolve) => {
           const off = window.claude.models.onDownloadProgress((p: DownloadProgress) => {
@@ -521,82 +565,113 @@ export function LocalModelRow({
     }
   };
 
-  // Spec §3.2: an unfinished download is DISCARDED; a model (complete, or one
-  // we can't resume) is DELETED. Destin decides at the workbench gate whether
-  // one word should serve both.
-  const removeLabel = model.status === 'unfinished' ? 'Discard' : 'Delete';
+  // Quality tag + its plain-language gloss, now a line of its own for EVERY
+  // state — an interrupted download used to be the only row that never said
+  // which version of the model it was (Destin, 2026-08-27).
+  const quality = [model.quant, model.quantDescription].filter(Boolean).join(' · ');
 
   const subtitle =
     live
       ? `${live.state === 'verifying' ? 'Verifying…' : 'Downloading…'} · ${pct ?? 0}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
         + (live.parts > 1 ? ` · part ${live.currentPart} of ${live.parts}` : '')
     : model.status === 'complete'
-      ? [gb(model.sizeBytes), model.quant, model.quantDescription].filter(Boolean).join(' · ')
+      ? gb(model.sizeBytes)
     : model.status === 'unfinished' && pct != null
       ? `${pct}% — ${gbNum(onDisk)} of ${gb(total ?? 0)}`
-    : `Unfinished — ${gb(model.sizeBytes)} downloaded`;
+    : `${gb(model.sizeBytes)} downloaded`;
 
   return (
-    <div className="bg-inset/50 rounded-lg px-3 py-2.5">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <p className="text-xs text-fg font-medium truncate">{model.id}</p>
-          <p className="text-3xs text-fg-muted">{subtitle}</p>
+    <div className={`rounded-lg bg-inset/50 overflow-hidden ${banner ? `border ${banner.border}` : ''}`.trim()}>
+      {/* The banner names the state before any number is read — a stopped
+          download is the thing this screen exists to make obvious. */}
+      {banner && (
+        <div className={`px-3 py-1 text-3xs font-medium tracking-wider uppercase ${banner.strip}`}>
+          {banner.text}
         </div>
-        {!confirming && (
-          <div className="flex items-center gap-1.5 shrink-0">
-            {model.status === 'unfinished' && !live && (
-              <Button variant="secondary" size="sm" onClick={() => void resume()} disabled={busy}>
-                Resume
-              </Button>
-            )}
-            {live && (
-              // Same word as the RepoCard's in-flight control (DownloadProgressRow):
-              // one download, one verb wherever it appears.
-              <Button variant="secondary" size="sm" onClick={() => void window.claude.models.downloadCancel(live.downloadId)}>
-                Cancel
-              </Button>
-            )}
-            <Button variant="danger-outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="shrink-0">
-              {removeLabel}
-            </Button>
+      )}
+
+      <div className="px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            {/* title= carries the full id on hover: the name is truncated by the
+                buttons beside it, and the tail is what tells two builds apart.
+                Native title is the app's documented tool for a plain hover hint
+                (ui/AnchorTip.tsx header). */}
+            <p className="text-xs text-fg font-medium truncate" title={model.id}>{displayName(model)}</p>
+            <p className="text-3xs text-fg-muted">{subtitle}</p>
+            {/* One line, always: the gloss ("Balanced quality and size — recommended")
+                wraps to two lines at this width and would add a line to EVERY row,
+                undoing the height the (i) just saved. Full text on hover. */}
+            {quality && <p className="text-3xs text-fg-muted truncate" title={quality}>{quality}</p>}
+          </div>
+          {!confirming && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              {model.status === 'unfinished' && !live && (
+                <Button variant="secondary" size="sm" onClick={() => void resume()} disabled={busy}>
+                  Resume
+                </Button>
+              )}
+              {live ? (
+                // The ONLY control while bytes are moving. "Pause" rather than
+                // "Cancel" because every downloaded byte is kept — that is the
+                // whole point of this feature (Destin, 2026-08-27). Delete is
+                // deliberately absent here: two stop-shaped buttons differing
+                // only in whether you lose 74 GB is a mistake waiting to happen.
+                <Button variant="secondary" size="sm" onClick={() => void window.claude.models.downloadCancel(live.downloadId)}>
+                  Pause
+                </Button>
+              ) : (
+                <Button variant="danger-outline" size="sm" onClick={() => setConfirming(true)} disabled={busy} className="shrink-0">
+                  Delete
+                </Button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* The bar is drawn whenever a download is short of its total — at rest
+            as well as in flight. A paused download used to render its progress
+            as grey text while the same row mid-download got a bar, which made
+            the state hardest to see exactly when it mattered most. */}
+        {(live || (model.status === 'unfinished' && pct != null)) && (
+          <div className="mt-2">
+            <ProgressBar percent={pct ?? 0} aria-label="Download progress" />
           </div>
         )}
-      </div>
 
-      {live && (
-        <div className="mt-2">
-          <ProgressBar percent={pct ?? 0} aria-label="Download progress" />
-        </div>
-      )}
-
-      {/* An untraceable row is NOT a dead end — say what to do about it. */}
-      {model.status === 'untraceable' && !confirming && (
-        <p className="text-3xs text-fg-muted mt-1">
-          This download started before the app kept track of where downloads come from.
-          Find the model in search and download it again — it will continue from where it stopped.
-        </p>
-      )}
-
-      {/* Consequence-gated removal — plain-language warning naming the real size. */}
-      {confirming && (
-        <div className="mt-2 space-y-2">
-          <Callout tone="danger">
-            {model.status === 'complete'
-              ? `This removes the model file (${gb(model.sizeBytes)}) from this computer. Re-downloading it later will take a while.`
-              : `${removeLabel} ${gb(model.sizeBytes)}? This removes every downloaded piece of this model.`}
-          </Callout>
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => setConfirming(false)} className="flex-1">
-              Keep
-            </Button>
-            <Button variant="danger" onClick={() => void remove()} disabled={busy} className="flex-1">
-              {busy ? 'Removing…' : model.status === 'complete' ? 'Delete model' : `${removeLabel} download`}
-            </Button>
+        {/* A damaged row is NOT a dead end — the way out lives behind the (i)
+            rather than as a permanent paragraph under the least useful row. */}
+        {model.status === 'untraceable' && !confirming && (
+          <div className="mt-1.5 flex items-center gap-1">
+            <AnchorTip label="Why this download is damaged" title="Damaged download" widthClass="w-72">
+              This download started before the app kept track of where downloads come from,
+              so it can&rsquo;t be resumed automatically. Find the model in search and download
+              it again — it will continue from where it stopped.
+            </AnchorTip>
+            <span className="text-3xs text-fg-muted">Why can&rsquo;t this be resumed?</span>
           </div>
-        </div>
-      )}
-      {error && <p className="text-3xs text-destructive-fg mt-1">{error}</p>}
+        )}
+
+        {/* Consequence-gated removal — plain-language warning naming the real size. */}
+        {confirming && (
+          <div className="mt-2 space-y-2">
+            <Callout tone="danger">
+              {model.status === 'complete'
+                ? `This removes the model file (${gb(model.sizeBytes)}) from this computer. Re-downloading it later will take a while.`
+                : `Delete ${gb(model.sizeBytes)}? This removes every downloaded piece of this model.`}
+            </Callout>
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => setConfirming(false)} className="flex-1">
+                Keep
+              </Button>
+              <Button variant="danger" onClick={() => void remove()} disabled={busy} className="flex-1">
+                {busy ? 'Removing…' : model.status === 'complete' ? 'Delete model' : 'Delete download'}
+              </Button>
+            </div>
+          </div>
+        )}
+        {error && <p className="text-3xs text-destructive-fg mt-1">{error}</p>}
+      </div>
     </div>
   );
 }

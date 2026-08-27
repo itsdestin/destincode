@@ -600,6 +600,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   const progressListeners = new Set<(p: DownloadProgress) => void>();
   const emitProgress = (p: DownloadProgress) => { for (const cb of progressListeners) cb(p); };
   let fakeTimer: ReturnType<typeof setInterval> | null = null;
+  let lastReceived = 0;
 
   const models: Ns<'models'> = {
     // RuntimeBinding.tsx only calls this for the local-engine provider. The
@@ -628,9 +629,11 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         totalBytes: m.totalSizeBytes ?? 0, parts: m.parts, currentPart: 3,
       };
       if (fakeTimer) clearInterval(fakeTimer);
+      lastReceived = received;
       setTimeout(() => emitProgress({ ...base, state: 'downloading', receivedBytes: received }), 300);
       fakeTimer = setInterval(() => {
         received += 1_000_000_000;
+        lastReceived = received;
         emitProgress({ ...base, state: 'downloading', receivedBytes: received });
       }, 400);
       return { downloadId: base.downloadId };
@@ -638,6 +641,11 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     downloadCancel: async (downloadId: string) => {
       if (fakeTimer) { clearInterval(fakeTimer); fakeTimer = null; }
       const m = LOCAL_MODELS[1];
+      // Pausing banks the bytes fetched so far — the real models:installed
+      // re-reads the directory, so the row must come back at where it STOPPED,
+      // not at where it started. Without this the demo pauses at 73% and the
+      // row snaps back to 66%, which is the opposite of what resume promises.
+      m.sizeBytes = Math.max(m.sizeBytes, lastReceived);
       emitProgress({
         downloadId, repo: m.repo ?? '', quant: m.quant ?? '', state: 'cancelled',
         receivedBytes: m.sizeBytes, totalBytes: m.totalSizeBytes ?? 0, parts: m.parts, currentPart: 3,
