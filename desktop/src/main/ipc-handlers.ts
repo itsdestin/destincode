@@ -2331,6 +2331,23 @@ export function registerIpcHandlers(
       const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
       return hit?.supportsVision ?? null;
     },
+    // Price resolver (Task 11, spec §5): reads the SAME catalog the model
+    // picker shows, so the price the user sees when choosing a model is the
+    // price the session-cost chip charges. Short-circuits local-engine before
+    // touching the catalog — a model running on this machine costs nothing to
+    // run and its rows carry no price anyway; the host stamps those turns
+    // `free` instead. modelCatalog.get() never throws (its own contract: a
+    // dead network degrades to stale cache or an empty list), and a model
+    // that isn't in the catalog falls through to null, which means "no
+    // published price" — never a guessed zero.
+    async (binding) => {
+      const providers = await providerRegistry.list();
+      const p = providers.find((x) => x.id === binding.providerId);
+      if (p?.type === 'local-engine') return null;
+      const models = await modelCatalog.get(providers);
+      const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
+      return hit?.pricing ?? null;
+    },
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).

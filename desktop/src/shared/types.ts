@@ -192,6 +192,18 @@ export interface TranscriptEvent {
        *  last step's prompt plus its output. Distinct from inputTokens, which
        *  sums every step and therefore re-counts the history once per step. */
       contextUsedTokens?: number;
+      /** Native runtime only: USD for THIS turn, priced at the model that ran
+       *  it. `null` means the model has no published price — distinct from
+       *  absent, which means no pricing information at all (a Claude Code turn).
+       *  The renderer sums these; it never multiplies tokens by a rate itself. */
+      costUsd?: number | null;
+      /** Native runtime only: this turn ran on a model that costs nothing to
+       *  run — a local engine, or a metered model published at a rate of zero.
+       *  Deliberately NOT the same as `costUsd: null`, which means "metered,
+       *  but no published rate": the status bar words the two differently
+       *  ("runs on your machine" vs "no published price"). Only main can tell
+       *  them apart — it is the only side that knows the provider type. */
+      free?: boolean;
     };
     /**
      * Populated only on events emitted from a subagent JSONL — identifies

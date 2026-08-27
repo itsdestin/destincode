@@ -61,6 +61,16 @@ export interface TurnUsage {
    *  step's prompt + its output). Drives the context pill; inputTokens cannot,
    *  because it sums across steps and re-counts history each time. */
   contextUsedTokens?: number;
+  /** Native runtime only: USD for THIS turn, priced in main at the model that
+   *  ran it (spec §5). null = the model has no published price; ABSENT = no
+   *  pricing information at all (a CC turn). Without this field a priced turn
+   *  could not reach the session totals at all — App.tsx forwards the whole
+   *  usage object, so widening the TYPE is what lets the number through. */
+  costUsd?: number | null;
+  /** Native runtime only: the turn ran on a model that costs nothing (a local
+   *  engine, or a rate card of zeroes). Distinct from an absent costUsd —
+   *  see session-totals.ts's anyFree/anyUnpriced. */
+  free?: boolean;
 }
 
 export interface AssistantTurn {

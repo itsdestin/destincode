@@ -47,6 +47,7 @@ import { APPROX_CHARS_PER_TOKEN } from './message-size';
 import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
+import { isFreePricing, type ModelPricing } from './pricing';
 import { log } from '../logger';
 // Same import PermissionStore uses, for the same reason: the project slug MUST
 // come from ONE function everywhere, or the host and the store would disagree
@@ -686,11 +687,11 @@ export class NativeSessionHost extends EventEmitter {
 
     const preset = resolvePreset(this.presetIdFor.get(parentId));
     const binding = header.binding;
-    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(binding);
     const title = header.title ?? record.title;
 
     const session = this.buildSpecialistSession(
-      parentId, opts.childId, workDir, title, specialist, binding, contextLength, profile, opts.parentToolCallId, preset, parent,
+      parentId, opts.childId, workDir, title, specialist, binding, contextLength, profile, pricing, free, opts.parentToolCallId, preset, parent,
     );
     // Cold state rebuilt from the child's OWN transcript — seedHistory resets
     // readRegistry + todos too (the same reset-on-resume contract root
@@ -1807,6 +1808,16 @@ export class NativeSessionHost extends EventEmitter {
     // reason that one sits after contextAndSlotsFor: all three are resolved
     // together for every create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
+    // Fourth per-binding catalog fact (Task 11), resolved at the same three
+    // moments as its siblings above (create / resume / swap): what the bound
+    // model costs. Returns null when the catalog has no published price for it
+    // — never a zero, which would tell the user a metered turn was free.
+    // Defaults to "no published price" so the ~70 existing five-argument test
+    // constructions keep compiling, same rationale as permissionStore below;
+    // the real wiring (ipc-handlers) injects the catalog lookup. A default of
+    // null is not a guess — it is the honest "we don't know a rate", and the
+    // cost chip stays absent rather than showing a made-up number.
+    private pricingFor: (binding: ModelBinding) => Promise<ModelPricing | null> = async () => null,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
     // a no-op so the many existing 5-arg test constructions (store, modelFactory,
     // contextAndSlotsFor, providerTypeFor, visionSupportFor — these five have no
@@ -2026,7 +2037,7 @@ export class NativeSessionHost extends EventEmitter {
    *  ceiling (Task 5's registry clamp); the profile is resolved from the binding's
    *  provider type + model id + that clamped context. An unknown provider type
    *  falls back to 'openrouter' — the cloud-safe default (full posture). */
-  private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile }> {
+  private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile; pricing: ModelPricing | null; free: boolean }> {
     // Fix pass 2 (Task 13): ONE call gets both the context window and the
     // engine's real slot count — see the contextAndSlotsFor constructor
     // param's comment for why this replaces two separately-injected closures
@@ -2058,7 +2069,18 @@ export class NativeSessionHost extends EventEmitter {
       // queries the engine for those.
       totalSlots: discoveredSlots,
     });
-    return { contextLength, profile };
+    // Task 11 (spec §5): the price this binding runs at, and whether it costs
+    // anything at all. Resolved here so create/resume/swap all get it from the
+    // one place that already resolves the binding's other catalog facts.
+    const pricing = await this.pricingFor(binding);
+    // Two ways to be free, and they must not be confused with "no published
+    // price": the model runs on this machine (local-engine), or its published
+    // rate card is all zeroes (an OpenRouter ':free' variant — see
+    // pricing.ts's isFreePricing for why a zero rate is not a $0.00 bill).
+    // `type` is post-fallback, so a provider we could not identify counts as
+    // metered — we never claim free without knowing it.
+    const free = type === 'local-engine' || isFreePricing(pricing);
+    return { contextLength, profile, pricing, free };
   }
 
   /** Tool + permission + prompt wiring shared by create() and resume(). Both v1
@@ -2355,7 +2377,7 @@ export class NativeSessionHost extends EventEmitter {
       await this.destroy(opts.sessionId);
     }
     const preset = resolvePreset(opts.presetId);
-    const { contextLength, profile } = await this.resolveContextAndProfile(opts.binding);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(opts.binding);
     await this.store.create({
       v: 1,
       sessionId: opts.sessionId,
@@ -2382,7 +2404,7 @@ export class NativeSessionHost extends EventEmitter {
       // app's lifetime. Release the hold and rethrow the ORIGINAL error
       // unchanged (never guess/replace a cause — error-message-standards.md).
       session = new HarnessSession(
-        { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
+        { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile, pricing, free,
           ...(mcpServers ? { mcpServers } : {}),
           ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
         this.modelFactory,
@@ -2447,7 +2469,7 @@ export class NativeSessionHost extends EventEmitter {
     // to the parent's own binding exactly as every pre-Task-14 child did.
     const preset = resolvePreset(this.presetIdFor.get(parentId));
     const binding = opts.binding ?? parent.session.binding;
-    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(binding);
 
     // Task 8 (1a naming easter egg): drawn HERE, before the session is built,
     // rather than after as plan 1a originally had it — plan 1b's Task 8
@@ -2466,7 +2488,7 @@ export class NativeSessionHost extends EventEmitter {
     // the header write would leave a session file on disk for a child that
     // never existed.
     const session = this.buildSpecialistSession(
-      parentId, childId, workDir, title, opts.specialist, binding, contextLength, profile, opts.parentToolCallId, preset, parent,
+      parentId, childId, workDir, title, opts.specialist, binding, contextLength, profile, pricing, free, opts.parentToolCallId, preset, parent,
     );
 
     // `title` was drawn earlier (before this session was built — see that
@@ -2509,12 +2531,16 @@ export class NativeSessionHost extends EventEmitter {
   private buildSpecialistSession(
     parentId: string, childId: string, workDir: string, title: string, specialist: SpecialistDefinition,
     binding: ModelBinding, contextLength: number | null, profile: CapabilityProfile,
+    // A specialist can run on a DIFFERENT model from its parent, so it carries
+    // its own price — that is the whole reason a free local parent can still
+    // ring up real money through a metered specialist (spec §5).
+    pricing: ModelPricing | null, free: boolean,
     parentToolCallId: string, preset: ResolvedPreset, parent: LiveEntry,
   ): HarnessSession {
     const allowed = new Set(specialist.allowedTools);
     return new HarnessSession(
       {
-        sessionId: childId, cwd: workDir, binding, contextLength, profile,
+        sessionId: childId, cwd: workDir, binding, contextLength, profile, pricing, free,
         // STEP CAP: the definition's own budget, not the model-tier default.
         // harness-session reads opts.harness.limits?.maxSteps and falls back to
         // stepBudgetFor(modelId) — without this line stepCap would be decorative.
@@ -2780,7 +2806,7 @@ export class NativeSessionHost extends EventEmitter {
     // the header. Profiling header.binding here would size the context window and
     // tool posture for the wrong model on every overridden resume.
     const binding = bindingOverride ?? header.binding;
-    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(binding);
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
@@ -2805,7 +2831,7 @@ export class NativeSessionHost extends EventEmitter {
       // error unchanged (error-message-standards.md).
       session = new HarnessSession(
         // `binding` (not header.binding) — same override reason as above.
-        { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
+        { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile, pricing, free,
           ...(mcpServers ? { mcpServers } : {}),
           ...this.toolWiring(sessionId, cwd, preset, profile) },
         this.modelFactory,
@@ -3444,8 +3470,8 @@ export class NativeSessionHost extends EventEmitter {
     // Re-resolve BOTH context + profile on a swap: a cloud → small-local swap
     // (or vice versa) crosses capability tiers, so the driver must pick up the
     // new doom-loop window / tool posture on the next turn.
-    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
-    entry.session.setBinding(binding, contextLength, profile);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(binding);
+    entry.session.setBinding(binding, contextLength, profile, pricing, free);
     if (oldModelId !== binding.modelId) {
       // Swap the ref-count: releasing the old model may unload it if this was
       // its last session (#1); retain the new one so it isn't unloaded.

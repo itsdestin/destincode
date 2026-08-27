@@ -139,12 +139,21 @@ import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
 import { mcpToolsFor, estimateToolSchemaTokens } from './mcp/mcp-tools';
 import type { ReadyServer } from './mcp/mcp-manager';
+import { costForUsage, type ModelPricing } from './pricing';
 import { log } from '../logger';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
   /** Model context window (from the catalog); null → conservative 32k default. */
   contextLength?: number | null;
+  /** Resolved price for the bound model, or null when none is published.
+   *  Re-resolved on setBinding, so a mid-session model swap prices only the
+   *  turns that run AFTER it — a turn is never repriced retroactively. */
+  pricing?: ModelPricing | null;
+  /** The bound model costs nothing to run (local engine, or a published rate
+   *  card of all zeroes). Resolved by the host alongside `pricing`, because
+   *  only the host knows the provider type. */
+  free?: boolean;
   // --- Plan A (Task 9) additions — all injected by NativeSessionHost: ---
   /** The tool set this session may call. Absent/[] = v0 chat behavior (the
    *  Chat-preset path: plain text, no tool plumbing invoked). */
@@ -718,10 +727,16 @@ export class HarnessSession extends EventEmitter {
   /** Mid-session model swap (next turn uses the new binding). A swap can cross
    *  capability tiers (e.g. cloud → small local), so the host re-resolves the
    *  profile and passes it in; applied only when provided. */
-  setBinding(binding: ModelBinding, contextLength?: number | null, profile?: CapabilityProfile): void {
+  setBinding(binding: ModelBinding, contextLength?: number | null, profile?: CapabilityProfile,
+             pricing?: ModelPricing | null, free?: boolean): void {
     this.binding = binding;
     if (contextLength !== undefined) this.opts.contextLength = contextLength;
     if (profile) this.profile = profile;
+    // Same applied-only-when-provided shape as contextLength: a swap to a
+    // model with no published price must be able to CLEAR a price the old
+    // model had, so `null` is a real value here and only `undefined` skips.
+    if (pricing !== undefined) this.opts.pricing = pricing;
+    if (free !== undefined) this.opts.free = free;
   }
 
   /** Task 5 (MOIM pattern): NativeSessionHost.wire() calls this on every ROOT
@@ -1934,6 +1949,15 @@ export class HarnessSession extends EventEmitter {
           contextUsedTokens: lastInputTokens > 0
             ? lastInputTokens + lastOutputTokens
             : this.estimateContextTokens(),
+          // Priced HERE, where the model that ran this turn is known. A
+          // mid-session swap re-resolves opts.pricing, so already-counted turns
+          // keep the price they actually ran at (spec §5).
+          costUsd: costForUsage(turnUsage, this.opts.pricing),
+          // Reported separately from costUsd because "free to run" and "no
+          // published price" are different facts with different wording — see
+          // the field comment in shared/types.ts. Defaults to false: never
+          // claim a turn was free without having established it.
+          free: this.opts.free ?? false,
         },
       });
     } catch (err: any) {
