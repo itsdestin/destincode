@@ -1253,3 +1253,51 @@ describe('fs:* channel parity', () => {
     expect(kt).toContain(`coerceIn(1, ${READ_HEAD_MAX_BYTES})`);
   });
 });
+
+// Four-surface parity for the marketplace feedback channels (overhaul Plan 1,
+// Task 8). FOUR, not five: marketplace write channels have no remote-server.ts
+// WS case — `marketplace:rate` has none either, so the remote browser cannot
+// rate today and cannot vote either. This block pins the status quo; it does
+// not fix it (ROADMAP).
+describe('marketplace feedback channel parity', () => {
+  // Three channels, not two: reading your OWN vote is an authed GET, so it
+  // cannot be a direct renderer fetch the way the public comment list is —
+  // the sign-in token lives in the main process.
+  const NEW_TYPES = ['marketplace:thumb', 'marketplace:thumb:get', 'marketplace:comment'];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in marketplace-api-handlers.ts', () => {
+    const src = read('src', 'main', 'marketplace-api-handlers.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from marketplace-api-handlers.ts`).toContain(`"${t}"`);
+  });
+  it('handled by SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+  });
+  it('the shim sends an OBJECT payload for every one, never a bare id', () => {
+    // Android reads `msg.payload.optString("plugin_id")`. A bare string payload
+    // is not a JSON object there, so the id arrives empty and the call silently
+    // does nothing on a phone — no error on either side. The two legal shapes are
+    // an object literal (`{ plugin_id: pluginId }`) or the conventional `input`
+    // variable, which is always an object type; anything else — `pluginId`,
+    // `themeId`, `slug` — is the bug.
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) {
+      const call = src.match(new RegExp(`invoke\\('${t}',\\s*([^)]*)\\)`));
+      expect(call, `no invoke('${t}', ...) found in remote-shim.ts`).toBeTruthy();
+      const arg = call![1]!.trim();
+      expect(
+        arg.startsWith('{') || arg === 'input',
+        `invoke('${t}') must pass an object literal or \`input\`, got: ${arg}`,
+      ).toBe(true);
+    }
+  });
+});

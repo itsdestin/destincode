@@ -18,6 +18,10 @@ import { wrap, makeClearSessionOn401 } from "./handler-utils";
 // one-way (this → social-handlers) so there's no runtime import cycle.
 import { notifySignedOut } from "./social-handlers";
 
+/** Shape returned by `marketplace:thumb` — the caller's new vote AND the plugin's
+ *  new totals, so the button can move the number without re-fetching /stats. */
+type Thumbs = { vote: "up" | "down" | null; thumbs_up: number; thumbs_down: number };
+
 // ── Discriminated union returned by all API-calling handlers ─────────────────
 // WHY: Custom Error fields (MarketplaceApiError.status) are dropped by
 // structuredClone across the contextBridge. Returning a plain object preserves
@@ -48,6 +52,9 @@ const CHANNELS = [
   "marketplace:install",
   "marketplace:rate",
   "marketplace:rate:delete",
+  "marketplace:thumb",
+  "marketplace:thumb:get",
+  "marketplace:comment",
   "marketplace:theme:like",
   "marketplace:report",
 ] as const;
@@ -242,6 +249,30 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
 
   ipcMain.handle("marketplace:rate:delete", (_e, pluginId: string): Promise<ApiResult<void>> =>
     wrap(() => client.deleteRating(pluginId))
+  );
+
+  // Marketplace overhaul (spec §1.7): one-tap vote and comment. Both go through
+  // main because the sign-in token lives here — the renderer's own API client is
+  // built with `getToken: () => null` and can never authenticate.
+  ipcMain.handle("marketplace:thumb", (_e, input: { plugin_id: string; value: "up" | "down" | null }): Promise<ApiResult<Thumbs>> =>
+    wrap(async () => {
+      const r = await client.setThumb(input);
+      // Pass the totals through: the renderer moves the number from THIS
+      // response rather than re-fetching /stats, which is served max-age=300
+      // and so could not show the new count for five minutes.
+      return { vote: r.vote, thumbs_up: r.thumbs_up, thumbs_down: r.thumbs_down };
+    })
+  );
+
+  ipcMain.handle("marketplace:thumb:get", (_e, pluginId: string): Promise<ApiResult<{ vote: "up" | "down" | null }>> =>
+    wrap(async () => ({ vote: (await client.getThumb(pluginId)).vote }))
+  );
+
+  ipcMain.handle("marketplace:comment", (_e, input: { plugin_id: string; text: string }): Promise<ApiResult<{ id: string; hidden: boolean }>> =>
+    wrap(async () => {
+      const r = await client.postComment(input);
+      return { id: r.id, hidden: r.hidden };
+    })
   );
 
   ipcMain.handle("marketplace:theme:like", (_e, themeId: string): Promise<ApiResult<{ liked: boolean }>> =>

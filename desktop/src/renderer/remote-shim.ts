@@ -1006,6 +1006,17 @@ export function installShim(): void {
       likeTheme: (themeId: string): Promise<ApiResult<unknown>> =>
         invoke('marketplace:theme:like', { themeId }),
       // WHY: pass input flat — same rationale as rate above.
+      thumb: (input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<ApiResult<unknown>> =>
+        invoke('marketplace:thumb', input),
+      // WHY the object wrapper: every shim call sends an OBJECT payload, and the
+      // Android arm reads `msg.payload.optString("plugin_id")`. A bare string
+      // makes `payload` not a JSON object, so Android reads an empty id and the
+      // thumb never lights up on a phone — silently, with no error either side.
+      myThumb: (pluginId: string): Promise<ApiResult<unknown>> =>
+        invoke('marketplace:thumb:get', { plugin_id: pluginId }),
+      comment: (input: { plugin_id: string; text: string }): Promise<ApiResult<unknown>> =>
+        invoke('marketplace:comment', input),
+      // WHY: pass input flat — same rationale as rate above.
       report: (input: { rating_user_id: string; rating_plugin_id: string; reason?: string }): Promise<ApiResult<unknown>> =>
         invoke('marketplace:report', input),
     },

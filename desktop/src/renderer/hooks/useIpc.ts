@@ -205,6 +205,13 @@ declare global {
         }): Promise<ApiResult<{ hidden: boolean }>>;
         deleteRating(pluginId: string): Promise<ApiResult<void>>;
         likeTheme(themeId: string): Promise<ApiResult<{ liked: boolean }>>;
+        /** Marketplace overhaul: one-tap vote. Returns the plugin's NEW totals
+         *  with the write, so the button moves the number without re-fetching
+         *  /stats (which is max-age=300 and would lag five minutes). */
+        thumb(input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<ApiResult<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>>;
+        /** The caller's own vote, so the buttons don't forget it between visits. */
+        myThumb(pluginId: string): Promise<ApiResult<{ vote: 'up' | 'down' | null }>>;
+        comment(input: { plugin_id: string; text: string }): Promise<ApiResult<{ id: string; hidden: boolean }>>;
         report(input: {
           rating_user_id: string;
           rating_plugin_id: string;
