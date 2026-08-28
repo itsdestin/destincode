@@ -156,16 +156,21 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
     <div className="layer-surface sticky top-0 z-20 flex flex-nowrap items-center gap-2 p-3">
       {/* P-1 #1: pick-one Type switch, visually distinct from the pick-one
           dropdowns that follow. */}
-      <SegmentedTabs
-        variant="pill"
-        tabs={typeTabs}
-        value={value.type ?? "all"}
-        onChange={setTypeTab}
-        aria-label="Type"
-      />
+      {/* shrink-0 on the switch and fixed-width boxes around the dropdowns:
+          the dropdown draws itself full-width, so without a box it took the
+          whole row and squeezed the switch to nothing (round 2 first cut). */}
+      <div className="shrink-0">
+        <SegmentedTabs
+          variant="pill"
+          tabs={typeTabs}
+          value={value.type ?? "all"}
+          onChange={setTypeTab}
+          aria-label="Type"
+        />
+      </div>
       <Divider />
-      <Select size="sm" aria-label="Vibe" options={VIBE_OPTIONS} value={value.vibe ?? ""} onChange={setVibe} className="w-36 shrink-0" />
-      <Select size="sm" aria-label="Show" options={VIEW_OPTIONS} value={value.view} onChange={setView} className="w-40 shrink-0" />
+      <div className="w-32 shrink-0"><Select size="sm" aria-label="Vibe" options={VIBE_OPTIONS} value={value.vibe ?? ""} onChange={setVibe} /></div>
+      <div className="w-40 shrink-0"><Select size="sm" aria-label="Show" options={VIEW_OPTIONS} value={value.view} onChange={setView} /></div>
       <div className="ml-auto min-w-[9rem] w-56 shrink">
         {/* P-1 #2: the same SearchFilterPill as the narrow bar, minus the
             sliders trigger — the dropdowns beside it ARE the filters. */}
@@ -243,10 +248,10 @@ function FilterSheet({
             </div>
           </SheetGroup>
           <SheetGroup label="Vibe">
-            <Select size="md" aria-label="Vibe" options={VIBE_OPTIONS} value={value.vibe ?? ""} onChange={setVibe} className="w-full" />
+            <Select size="md" aria-label="Vibe" options={VIBE_OPTIONS} value={value.vibe ?? ""} onChange={setVibe} />
           </SheetGroup>
           <SheetGroup label="Show">
-            <Select size="md" aria-label="Show" options={VIEW_OPTIONS} value={value.view} onChange={setView} className="w-full" />
+            <Select size="md" aria-label="Show" options={VIEW_OPTIONS} value={value.view} onChange={setView} />
           </SheetGroup>
         </div>
         <footer className="sticky bottom-0 z-10 px-4 py-3 border-t border-edge-dim bg-panel">
@@ -268,7 +273,7 @@ function SheetGroup({ label, children }: { label: string; children: React.ReactN
   return (
     <div className="flex flex-col gap-2">
       <h3 className="text-xs uppercase tracking-wide text-fg-dim">{label}</h3>
-      <div className="flex flex-wrap gap-2">{children}</div>
+      <div className="flex flex-wrap gap-2 [&>*]:w-full [&>*]:min-w-0">{children}</div>
     </div>
   );
 }
