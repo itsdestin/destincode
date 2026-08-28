@@ -127,7 +127,7 @@ function buildSchema(roster: SpecialistRoster) {
       + "belongs to a different conversation or never existed at all — you can only manage specialists you yourself started.",
     ),
     interrupt: z.boolean().optional().describe('With task_id: cancel that specialist instead of steering or resuming it.'),
-  });
+  }).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 }
 
 type TaskArgs = z.infer<ReturnType<typeof buildSchema>>;

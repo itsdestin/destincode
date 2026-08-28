@@ -72,7 +72,7 @@ export const ReadTool = defineTool({
     file_path: z.string().describe('Absolute or workspace-relative path'),
     offset: z.number().int().min(1).optional().describe('1-based first line to read'),
     limit: z.number().int().min(1).optional().describe('Max lines to return'),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   caps: { maxChars: 100_000 },
   // Static fallback for composeNotice's no-bounds branch (Task 19): `bounds`
   // below is only set when the requested slice stops before EOF (`more`).

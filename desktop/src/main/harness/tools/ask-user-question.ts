@@ -15,7 +15,7 @@ const questionSchema = z.object({
   options: z.array(optionSchema).min(2).max(4),
   multiSelect: z.boolean(),
 });
-const inputSchema = z.object({ questions: z.array(questionSchema).min(1).max(4) });
+const inputSchema = z.object({ questions: z.array(questionSchema).min(1).max(4) }).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 export type AskUserQuestionInput = z.infer<typeof inputSchema>;
 
 const NO_SELECTION = '(no selection — the user did not answer this one)';

@@ -16,7 +16,7 @@ import type { SkillCatalog } from '../skills/skill-catalog';
 
 const schema = z.object({
   skill: z.string().describe("The id of the skill to load, exactly as listed in this tool's description."),
-});
+}).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 
 type SkillArgs = z.infer<typeof schema>;
 

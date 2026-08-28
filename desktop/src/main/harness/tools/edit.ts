@@ -56,7 +56,7 @@ export const EditTool = defineTool({
     old_string: z.string(),
     new_string: z.string(),
     replace_all: z.boolean().optional(),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   permissionSubject: (a) => a.file_path,
   async execute(args, ctx) {
     const abs = resolveP(args.file_path, ctx.cwd);
