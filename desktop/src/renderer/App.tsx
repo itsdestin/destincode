@@ -3078,7 +3078,8 @@ function AppInner() {
                 on the same headerRef) publishes --top-chrome-height for the
                 glass cutout. `chrome-glass--bare` gives the donut a thin
                 --frame-edge bottom strip, like terminal view, instead of the
-                5rem fallback reserved for an input bar that isn't here. */}
+                5rem fallback reserved for an input bar that isn't here — as
+                wide as the header, so the frame closes evenly top and bottom. */}
             <div className="chrome-glass chrome-glass--bare" />
             <div ref={headerRef} className="chrome-wrapper bg-canvas">
               <BareHeaderBar
@@ -3095,7 +3096,10 @@ function AppInner() {
             // bare frame's bottom strip) rather than behind it. --top-chrome-
             // bottom, not -height, so a floating header pill's own margin is
             // cleared too — same reason ChatView's empty-state hint uses it.
-            style={{ paddingTop: 'var(--top-chrome-bottom, 2.5rem)', paddingBottom: 'var(--frame-edge, 10px)' }}
+            // paddingBottom matches the bottom strip, which is now the header's
+            // own height (globals.css .chrome-glass--bare), so the content
+            // still centres in the open middle instead of drifting downward.
+            style={{ paddingTop: 'var(--top-chrome-bottom, 2.5rem)', paddingBottom: 'var(--top-chrome-height, 2.5rem)' }}
           >
             <p className="text-xl text-fg-muted">No Active Session</p>
             {/* scene: the hero surface renders the theme's companions (sun,
