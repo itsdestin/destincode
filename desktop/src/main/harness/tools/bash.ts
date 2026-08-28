@@ -15,7 +15,7 @@ import { workspaceRootMissHint } from './guards';
 import { spillDirFor, sweepOldSpillFilesOnce } from './spill-paths';
 import { takeHeadLines, takeTailLines } from './truncate';
 import type { ToolResultPayload } from './types';
-import { spawnDetached, killTree } from '../shell-registry';
+import { spawnDetached, killTree, MAX_EXPLICIT_RUNNING } from '../shell-registry';
 import { CWD_SENTINEL, ENV_SENTINEL, stripAnsi } from './shell-text';
 // Why re-exported: harness-tools-core.test.ts and other callers import
 // stripAnsi from here; moving the implementation into shell-text.ts (so the
@@ -395,11 +395,17 @@ function bashDescription(): string {
     'Prefer the dedicated tools for files — Read (not cat/head/tail), Grep (not grep/rg), ' +
     'Glob (not find/ls), Edit (not sed/awk) — they are reviewable and permission-aware, ' +
     'and Edit only accepts files seen via Read. ' +
-    // Fix (2026-08-10 review): 3 of 5 models found the old `exit ?` timeout marker
-    // opaque. A timeout now reports exit 124 (matching `timeout(1)` and Codex CLI) —
-    // stated here so the model recognizes it without guessing.
-    'Long-running commands time out (default 2 minutes, max 10 via `timeout`); a timeout ' +
-    'force-kills the process (SIGKILL) and is reported as exit 124.'
+    // G-1 (2026-08-28): a time limit is no longer a kill. The old "SIGKILL /
+    // exit 124" sentence is gone on purpose — a foreground command that is
+    // still running at its timeout is handed off to the background (Task 4);
+    // only a leading `sleep` still simply times out.
+    'Long commands: pass `run_in_background: true` to start a command and return at once with a ' +
+    'shell id — for servers, long builds, anything over a couple of minutes. You are told when it ' +
+    'finishes; BashOutput reads its new output (or lists your background commands); KillShell stops it. ' +
+    'A foreground command still running at its timeout (default 2 minutes, max 10 via `timeout`) is ' +
+    'handed off to the background the same way instead of being killed — except a leading `sleep`, ' +
+    'which simply times out. Only a foreground command changes your working directory; a background ' +
+    'or handed-off command never changes it and never carries `persistent_env`.'
   );
 }
 
@@ -427,6 +433,11 @@ export const BashTool = defineTool({
       .boolean()
       .optional()
       .describe('Carry this call\'s exported env vars (not aliases/functions) to your next Bash call. Default off.'),
+    // G-1 (2026-08-28): start the command and return at once with a shell id.
+    run_in_background: z
+      .boolean()
+      .optional()
+      .describe('Start the command and return at once with a shell id; you are told when it finishes. For servers, long builds, anything over a couple of minutes.'),
   }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   caps: { maxChars: 30_000 },
   // Static fallback for composeNotice's no-bounds branch (Task 19): Bash's own
@@ -479,6 +490,32 @@ export const BashTool = defineTool({
     const envNotice = envCulprits.length
       ? `\nNote: ${envCulprits.join(', ')} won't persist to your next Bash call (env resets each call) — pass persistent_env: true to carry it forward, or use it in this same command.`
       : '';
+    // G-1: an explicit background start (spec §4.1). No cwd probe, no env
+    // capture (D6) — the registry runs the bare command; stdin is closed
+    // there (D4). The call resolves with the launch acknowledgment; the
+    // finished notice arrives on its own at the next idle boundary.
+    if (args.run_in_background) {
+      if (args.persistent_env) {
+        return { text: 'Bash rejected: persistent_env cannot be combined with run_in_background — a background command never reports its environment back. Drop one of the two.', isError: true };
+      }
+      if (!ctx.shells) {
+        return { text: 'Bash rejected: background execution is not available in this session.', isError: true };
+      }
+      const started = ctx.shells.start({
+        toolUseId: ctx.toolCallId ?? 'unknown', command: args.command, cwd: startCwd,
+        shellCmd: shell.cmd, shellArgs: shell.args, env: spawnEnv,
+      });
+      if (!started.ok) {
+        if (started.reason === 'cap') {
+          return { text: `${MAX_EXPLICIT_RUNNING} background commands are already running (${started.running.join(', ')}). Stop one with KillShell before starting another.`, isError: true };
+        }
+        return { text: `Failed to start shell: ${started.detail} (shell=${shell.cmd}; cwd=${startCwd})`, isError: true };
+      }
+      return {
+        text: `Started in the background (shell id ${started.run.shellId}). You'll be told when it finishes. BashOutput reads new output (or lists runs); KillShell stops it. Running now: ${started.runningExplicit} of ${MAX_EXPLICIT_RUNNING}.`,
+      };
+    }
+
     return new Promise((resolve) => {
       // spawn() throws SYNCHRONOUSLY when the shell path or startCwd has a
       // non-directory prefix (e.g. a stale/deleted tracked cwd that raced past
