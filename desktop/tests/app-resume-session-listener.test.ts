@@ -39,16 +39,18 @@ describe('App.tsx: youcoded:resume-session listener', () => {
     expect(callIdx).toBeGreaterThan(guardIdx);
   });
 
-  it('calls handleResumeSession with the event\'s three required fields, provider passed through, and launchInNewWindow undefined', () => {
+  it('passes the popover\'s model/skip-permissions through, and keeps launchInNewWindow undefined', () => {
     // Positional: (claudeSessionId, projectSlug, projectPath, resumeModel,
     // resumeDangerous, launchInNewWindow, provider, nativeBinding). The
     // spec (A2, Destin: "not new 'window' just new tab in session") requires
     // launchInNewWindow (arg 6) to be explicitly undefined, not omitted —
     // omitting it would read the same at the call site but is the harder
     // invariant to keep true across a future signature change, so pin the
-    // literal.
+    // literal. Args 4/5/8 carry what the preview header's Resume popover
+    // collected (2026-08-27 gate, M-header); a search row sends none of them
+    // and they arrive undefined, which is the behaviour this used to pin.
     expect(src).toMatch(
-      /handleResumeSession\(d\.claudeSessionId, d\.projectSlug, d\.projectPath, undefined, undefined, undefined, d\.provider\)/,
+      /handleResumeSession\(d\.claudeSessionId, d\.projectSlug, d\.projectPath, d\.model, d\.dangerous, undefined, d\.provider, d\.binding\)/,
     );
   });
 

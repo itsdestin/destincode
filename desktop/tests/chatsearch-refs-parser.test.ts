@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  describeChatsearchCall, isChatsearchCommand, parseFindShortIds, parseShowId, providerLabel, TRUNCATION_MARKERS,
+  describeChatsearchCall, isChatsearchCommand, parseFindQuery, parseFindShortIds, parseShowId, providerLabel, TRUNCATION_MARKERS,
 } from '../src/shared/chatsearch-refs';
 import type { ToolCallState } from '../src/shared/types';
 
@@ -71,9 +71,22 @@ describe('isChatsearchCommand', () => {
   });
 });
 
+describe('parseFindQuery', () => {
+  it('reads the query out of a command-line request and a heredoc alike', () => {
+    expect(parseFindQuery(CMD)).toBe('sync');
+    expect(parseFindQuery(`cat <<'JSON' | node "/x/chatsearch.js"\n{"cmd":"find","query":"native runtime"}\nJSON`)).toBe('native runtime');
+  });
+  it('unescapes an escaped quote instead of cutting the query short', () => {
+    expect(parseFindQuery(`node "/x/chatsearch.js" '{"query":"the \\"auto\\" mode"}'`)).toBe('the "auto" mode');
+  });
+  it('returns empty when there is no query to read — the card then prints no line at all', () => {
+    expect(parseFindQuery(`node "/x/chatsearch.js" '{"cmd":"find"}'`)).toBe('');
+  });
+});
+
 describe('describeChatsearchCall', () => {
   it('describes a find call from its output', () => {
-    expect(describeChatsearchCall(bash(CMD, FIND_OUT))).toEqual({ cmd: 'find', shortIds: ['a3f2', '9c14', '1b07f'] });
+    expect(describeChatsearchCall(bash(CMD, FIND_OUT))).toEqual({ cmd: 'find', query: 'sync', shortIds: ['a3f2', '9c14', '1b07f'] });
   });
   it('describes a show call from its output, even when the command says nothing about show', () => {
     const stdinCmd = `cat <<'JSON' | node "/x/chatsearch.js"\n{"cmd":"show","id":"7736"}\nJSON`;

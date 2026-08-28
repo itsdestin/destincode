@@ -16,11 +16,11 @@ import { useGitFileStatus } from '../hooks/useGitFileStatus';
 import { gitFooterState } from '../utils/git-footer';
 import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
 import SessionPreviewPane from './SessionPreviewPane';
-// 6b: COPY/providerLabel were originally added ONLY for the "Referenced
+// 6b: COPY was originally added ONLY for the "Referenced
 // conversations" list block below (a cut candidate — see Task 6 brief 6b).
 // The A1/A2/A4 preview header (Resume + tag/note sheet) now uses COPY too, so
 // this import no longer goes away if that block is cut.
-import { COPY, providerLabel } from '../../shared/chatsearch-refs';
+import { COPY } from '../../shared/chatsearch-refs';
 import { useArtifactContent } from './artifact-views/useArtifactContent';
 import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
@@ -38,7 +38,9 @@ import { useResolvedConversations } from '../hooks/useResolvedConversations';
 import { useTagRegistry } from '../hooks/useTagRegistry';
 import { usePreviewMeta } from '../hooks/usePreviewMeta';
 import { useNarrowViewport } from '../hooks/use-narrow-viewport';
-import { resumeBlockedReason, requestResume } from './tool-views/SessionRefActions';
+import { resumeBlockedReason } from './tool-views/SessionRefActions';
+import ResumeOptionsPopover from './tool-views/ResumeOptionsPopover';
+import { ChatResumeIcon } from './Icons';
 import { TagGlyph } from './tags/glyphs';
 import { TagNoteEditor } from './tags/TagNoteEditor';
 
@@ -166,6 +168,21 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   const narrowViewport = useNarrowViewport();
   const [previewSheetOpen, setPreviewSheetOpen] = useState(false);
   const previewSheetWrapRef = useRef<HTMLDivElement>(null);
+  // The Resume options popover (M-header). Its own click-away/Escape live in
+  // ResumeOptionsPopover; this side only owns open/closed and the anchor.
+  const [resumeSheetOpen, setResumeSheetOpen] = useState(false);
+  const resumeSheetWrapRef = useRef<HTMLDivElement>(null);
+  // The same two session defaults the Resume Browser is handed by App. Read
+  // here rather than threaded through the drawer's props: the drawer is
+  // rendered from three places (chat, terminal, expanded) and none of them
+  // carries them today.
+  const [sessionDefaults, setSessionDefaults] = useState({ model: 'sonnet', skipPermissions: false });
+  useEffect(() => {
+    (window as unknown as { claude?: { defaults?: { get?: () => Promise<{ model?: string; skipPermissions?: boolean }> } } })
+      .claude?.defaults?.get?.()
+      .then((d) => { if (d) setSessionDefaults({ model: d.model ?? 'sonnet', skipPermissions: !!d.skipPermissions }); })
+      .catch(() => {});
+  }, []);
   useEscClose(previewSheetOpen, () => setPreviewSheetOpen(false));
   useEffect(() => {
     if (!previewSheetOpen) return;
@@ -177,6 +194,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
   }, [previewSheetOpen]);
+  useEffect(() => { setResumeSheetOpen(false); }, [activePreview?.id]);
   // Sheet must not survive a preview swap/close — reopening on a DIFFERENT
   // conversation's Preview click must not silently show the outgoing one's
   // still-open tag sheet.
@@ -625,12 +643,11 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           ))
         )}
       </div>
-      {/* ── 6b cut-candidate BEGIN — "Referenced conversations" list ──
-          Destin decides whether this stays at the next checkpoint (spec keeps
-          it; the reviewer flagged it as the one surface with no evidence of
-          need). Self-contained: remove this block plus the `referenced`
-          const above and the SESSION_REFERENCED dispatch in
-          useSessionPreviewListener.ts to cut it cleanly. */}
+      {/* "Referenced conversations" — KEPT. Destin, 2026-08-27 gate (D1):
+          picked "keep it", with "just show title in this list, not assistant
+          or whateva", so the lane label that used to trail each row is gone.
+          The row is deliberately title-only: at the list's width anything
+          after the title truncates the title itself. */}
       {referenced.length > 0 && (
         <div className="mt-3 border-t border-edge pt-2">
           <div className="px-3 pb-1 text-2xs uppercase tracking-wider text-fg-muted">{COPY.referencedHeading}</div>
@@ -644,12 +661,10 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               onClick={() => guardUnsaved(() => dispatch({ type: 'SESSION_PREVIEW_SET', sessionId, provider: r.provider, id: r.id, title: r.title }))}
             >
               <span className="truncate flex-1">{r.title || COPY.untitled}</span>
-              <span className="text-2xs text-fg-muted">{providerLabel(r.provider)}</span>
             </button>
           ))}
         </div>
       )}
-      {/* ── 6b cut-candidate END ── */}
     </>
   );
 
@@ -807,20 +822,6 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             below stay `active &&`-gated exactly as before. */}
         {activePreview && (
           <>
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={previewResumeDisabled}
-              title={previewResumeTitle}
-              // Narrow (<640px, spec: checked at 390px): collapse the label to
-              // the same glyph "Review Changes" already uses for "continue" —
-              // the button becomes icon-only, so its accessible name has to
-              // move from the text node to aria-label.
-              aria-label={narrowViewport ? previewResumeLabel : undefined}
-              onClick={previewOk && !previewBlockedReason ? () => requestResume(previewOk) : undefined}
-            >
-              {narrowViewport ? <Ic name="forward" size={14} /> : previewResumeLabel}
-            </Button>
             <div ref={previewSheetWrapRef} className="relative">
               <button
                 type="button"
@@ -868,6 +869,39 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         {active && <IconBtn name="copypath" title="Copy path" onClick={handleCopyPath} />}
         {active && isElectron && <IconBtn title="Reveal in folder" glyph={<RevealFolderIc />} onClick={handleReveal} />}
         <IconBtn name={expanded ? 'shrink' : 'expand'} title={expanded ? 'Shrink panel' : 'Expand panel'} active={expanded} onClick={() => dispatch({ type: 'DRAWER_EXPAND_TOGGLED' })} />
+        {/* Resume sits between expand and close — Destin, 2026-08-27 gate
+            (M-header): "i want resume to be between expand and X button."
+            It no longer resumes on click; it opens the options popover below,
+            which is where the model / skip-permissions choice and the final
+            confirm live. */}
+        {activePreview && (
+          <div ref={resumeSheetWrapRef} className="relative">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={previewResumeDisabled}
+              title={previewResumeTitle}
+              // Narrow (<640px, checked at 390px): the label collapses to a
+              // chat bubble with a play triangle — Destin (M-narrow) on the
+              // plain forward arrow that used to sit here. Icon-only means the
+              // accessible name moves to aria-label.
+              aria-label={narrowViewport ? previewResumeLabel : undefined}
+              aria-haspopup="dialog"
+              aria-expanded={resumeSheetOpen}
+              onClick={previewOk && !previewBlockedReason ? () => setResumeSheetOpen((v) => !v) : undefined}
+            >
+              {narrowViewport ? <ChatResumeIcon className="w-3.5 h-3.5" /> : previewResumeLabel}
+            </Button>
+            {resumeSheetOpen && previewOk && (
+              <ResumeOptionsPopover
+                conversation={previewOk}
+                defaultModel={sessionDefaults.model}
+                defaultSkipPermissions={sessionDefaults.skipPermissions}
+                onClose={() => setResumeSheetOpen(false)}
+              />
+            )}
+          </div>
+        )}
         <IconBtn name="close" title="Close" onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))} />
       </div>
 

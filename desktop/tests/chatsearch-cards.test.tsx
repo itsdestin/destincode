@@ -53,11 +53,32 @@ describe('ChatsearchFindCard', () => {
     const p = (await screen.findByRole('button', { name: COPY.preview })) as HTMLButtonElement;
     expect(p.disabled).toBe(true); expect(p.title).toBe(COPY.previewTombstone);
   });
-  it('keeps an unknown id as an inert row that says so', async () => {
-    (window as any).claude.chatsearch.resolve.mockResolvedValue({ ok: true, results: [{ status: 'unknown', query: 'zzzz' }] });
-    render(<ChatsearchFindCard shortIds={['zzzz']} />);
-    expect(await screen.findByText(/zzzz/)).toBeTruthy();
-    expect(screen.getByText(COPY.unknownId)).toBeTruthy();
+  // Destin, 2026-08-27 gate (M-states): "should just hide dead." A row naming a
+  // conversation this device has never heard of is an id and nothing else.
+  it('hides an id it could not resolve, and counts it so the header stays honest', async () => {
+    (window as any).claude.chatsearch.resolve.mockResolvedValue({
+      ok: true,
+      results: [ok({}), { status: 'unknown', query: 'dead' }],
+    });
+    render(<ChatsearchFindCard shortIds={['a3f2', 'dead']} />);
+    await screen.findByText('Permission ask timeout');
+    expect(screen.queryByText(/dead/)).toBeNull();
+    expect(screen.queryByText(COPY.unknownId)).toBeNull();
+    // The card header counts what the SEARCH returned, so a hidden row must be
+    // accounted for here or the card would show fewer than it claims.
+    expect(screen.getByText(COPY.hiddenNotHere(1))).toBeTruthy();
+  });
+  it('shows no footnote when every id resolved', async () => {
+    (window as any).claude.chatsearch.resolve.mockResolvedValue({ ok: true, results: [ok({})] });
+    render(<ChatsearchFindCard shortIds={['a3f2']} />);
+    await screen.findByText('Permission ask timeout');
+    expect(screen.queryByText(/not on this device/)).toBeNull();
+  });
+  it('greys out Resume too when the transcript is gone — resuming reads the same file', async () => {
+    (window as any).claude.chatsearch.resolve.mockResolvedValue({ ok: true, results: [ok({ tombstone: true })] });
+    render(<ChatsearchFindCard shortIds={['a3f2']} />);
+    const r = (await screen.findByRole('button', { name: COPY.resume })) as HTMLButtonElement;
+    expect(r.disabled).toBe(true); expect(r.title).toBe(COPY.previewTombstone);
   });
   it('never shows the raw lane name', async () => {
     (window as any).claude.chatsearch.resolve.mockResolvedValue({ ok: true, results: [ok({ provider: 'native' })] });

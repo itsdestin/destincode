@@ -37,6 +37,9 @@ describe('chatsearch tool-gallery fixtures parse as intended', () => {
     const call = describeChatsearchCall(loadToolFixture('chatsearch-find'));
     expect(call).toEqual({
       cmd: 'find',
+      // The words the model actually searched for, read off the request it
+      // sent the CLI — the card prints these where "Raw output" used to be.
+      query: 'sync',
       shortIds: ['a3f2', '9c14', '1b07', '5e11', '7a21', 'c0de', 'ee00', 'dead'],
     });
   });

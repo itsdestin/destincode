@@ -88,6 +88,11 @@ function mockWindowClaude() {
     },
     session: { getMeta: vi.fn().mockResolvedValue({ tags: [], note: '', supported: true, flags: {} }) },
     tags: { list: vi.fn().mockResolvedValue([]) },
+  // The Resume options popover mounts ModelPicker, which asks for the model
+    // lists on mount. Without these it throws on the undefined `.providers`
+    // before anything renders.
+    providers: { list: vi.fn().mockResolvedValue([]), catalog: vi.fn().mockResolvedValue([]) },
+    defaults: { get: vi.fn().mockResolvedValue({ model: 'sonnet', skipPermissions: false }) },
   };
 }
 
@@ -110,8 +115,11 @@ describe('SessionDrawer: one header for a previewed conversation', () => {
 
     // The read-only/lane line the old pane header carried is still shown
     // somewhere (now a quiet caption inside the scroll area), just not as a
-    // second header.
-    expect(await screen.findByText(new RegExp(`Past conversation.*${providerLabel(PREVIEW.provider)}`))).toBeTruthy();
+    // second header. Destin, 2026-08-27 gate (M-caption): "remove 'past
+    // conversation'. put read-only to the right of the assistant." — so the
+    // lane name leads and "read-only" trails it.
+    expect(await screen.findByText(new RegExp(`${providerLabel(PREVIEW.provider)}.*read-only`))).toBeTruthy();
+    expect(screen.queryByText(/Past conversation/)).toBeNull();
   });
 
   it('the ☰ list toggle and the bar layout work the same as they do for a file', async () => {
@@ -203,6 +211,11 @@ function mockWindowClaudeFor(row: ResolvedConversation | null, opts: {
       setNote: opts.setNote ?? vi.fn().mockResolvedValue({ ok: true }),
     },
     tags: { list: vi.fn().mockResolvedValue(TAGS), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+  // The Resume options popover mounts ModelPicker, which asks for the model
+    // lists on mount. Without these it throws on the undefined `.providers`
+    // before anything renders.
+    providers: { list: vi.fn().mockResolvedValue([]), catalog: vi.fn().mockResolvedValue([]) },
+    defaults: { get: vi.fn().mockResolvedValue({ model: 'sonnet', skipPermissions: false }) },
   };
 }
 
@@ -246,7 +259,11 @@ describe('Resume button (spec A2)', () => {
     expect(btn).not.toBeDisabled();
   });
 
-  it('clicking an enabled Resume dispatches youcoded:resume-session with the resolved conversation\'s data', async () => {
+  // Destin, 2026-08-27 gate (M-header): Resume no longer launches on click. It
+  // opens a small options popover — model, skip-permissions, then a confirm —
+  // "same as resume menus used elsewhere". The click itself must therefore
+  // dispatch NOTHING; the confirm inside the popover is what resumes.
+  it('clicking an enabled Resume opens the options popover instead of resuming', async () => {
     mockWindowClaudeFor(okRow({ projectSlug: 'my-slug', projectPath: '/my/path' }));
     renderDrawerWithPreview();
     const btn = await screen.findByTitle(COPY.resumeHint);
@@ -255,13 +272,31 @@ describe('Resume button (spec A2)', () => {
     window.addEventListener('youcoded:resume-session', (e: any) => heard(e.detail));
     fireEvent.click(btn);
 
+    expect(await screen.findByRole('dialog', { name: 'Resume options' })).toBeTruthy();
+    expect(heard).not.toHaveBeenCalled();
+  });
+
+  it('the popover\'s confirm dispatches youcoded:resume-session with the conversation and the picked options', async () => {
+    mockWindowClaudeFor(okRow({ projectSlug: 'my-slug', projectPath: '/my/path' }));
+    renderDrawerWithPreview();
+    fireEvent.click(await screen.findByTitle(COPY.resumeHint));
+    await screen.findByRole('dialog', { name: 'Resume options' });
+
+    const heard = vi.fn();
+    window.addEventListener('youcoded:resume-session', (e: any) => heard(e.detail));
+    fireEvent.click(screen.getByRole('button', { name: /Resume Session/ }));
+
     // requestResume (tool-views/SessionRefActions.tsx) is reused verbatim —
-    // this is the same four-field shape App.tsx's listener expects.
+    // the same shape App.tsx's listener expects, now carrying what the popover
+    // collected. `binding` stays undefined on the Claude lane.
     expect(heard).toHaveBeenCalledWith({
       claudeSessionId: PREVIEW.id,
       projectSlug: 'my-slug',
       projectPath: '/my/path',
       provider: 'claude',
+      model: 'sonnet',
+      dangerous: false,
+      binding: undefined,
     });
   });
 
@@ -275,6 +310,7 @@ describe('Resume button (spec A2)', () => {
     fireEvent.click(btn);
 
     expect(heard).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: 'Resume options' })).toBeNull();
   });
 });
 

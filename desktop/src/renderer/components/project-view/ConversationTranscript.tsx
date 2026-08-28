@@ -5,6 +5,7 @@
 // not where this conversation happened).
 import { useEffect, useRef } from 'react';
 import MarkdownContent from '../MarkdownContent';
+import { TerminalIcon } from '../Icons';
 import type { HistoryMessage } from '../../../shared/types';
 import { COPY } from '../../../shared/chatsearch-refs';
 
@@ -43,7 +44,29 @@ export default function ConversationTranscript({ messages, olderHint, scrollToEn
           {!!m.droppedToolCalls && (
             // The reader dropped tool activity here. Say so — a seamless join
             // would present an edited conversation as the whole one.
-            <div className="my-2 text-center text-[11.5px] text-fg-muted">— {COPY.toolsNotShown(m.droppedToolCalls)} —</div>
+            // Destin (2026-08-27 gate, M-toolgap): draw it as a tool card, not
+            // a centred dash line — same border/padding/`|` separator as the
+            // real group header in AssistantTurnBubble.tsx, so a gap in a past
+            // conversation looks like what it is. No chevron and no button:
+            // there is nothing behind it to open.
+            <div className="my-2 flex justify-start">
+              {/* Byte-for-byte the collapsed tool-group header from
+                  AssistantTurnBubble.tsx — glyph, the `|` separator, the label,
+                  same border/radius/padding — with two deliberate differences:
+                  no chevron, because there is nothing behind this to open, and
+                  it sizes to its own text rather than filling the row, since a
+                  full-width card with an empty right end is what made it read
+                  as a stretched pill instead of a tool card.
+                  The glyph is the terminal mark, NOT the check the real header
+                  shows on success: the reader dropped these tools without
+                  reading their results, so claiming they all completed would be
+                  asserting something nobody checked. */}
+              <div className="w-fit max-w-[85%] border border-edge rounded-lg px-3 py-1.5 flex items-center gap-1.5">
+                <TerminalIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+                <span className="text-fg-faint text-xs select-none">|</span>
+                <span className="text-xs text-fg-dim">{COPY.toolsNotShown(m.droppedToolCalls)}</span>
+              </div>
+            </div>
           )}
           <div className={`mb-3 flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
             {/* user-bubble / assistant-bubble: the SAME hook classes the real

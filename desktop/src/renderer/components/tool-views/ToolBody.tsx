@@ -956,7 +956,14 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
               {cs.cmd === 'find'
                 ? <ChatsearchFindCard shortIds={cs.shortIds} onUnavailable={() => setChatsearchUnavailable(true)} />
                 : <ChatsearchShowCard id={cs.id} provider={cs.provider} onUnavailable={() => setChatsearchUnavailable(true)} />}
-              <details className="text-xs text-fg-muted"><summary className="cursor-pointer">{COPY.rawOutput}</summary><ShellView tool={tool} commandField="command" /></details>
+              {/* Destin (2026-08-27 gate, M-row): the "Raw output" disclosure is
+                  gone — it hid the CLI's own text behind a click nobody made.
+                  In its place, one quiet line saying what Claude actually asked
+                  for. A find whose query cannot be read prints nothing at all
+                  rather than inventing a search term. */}
+              {cs.cmd === 'find'
+                ? cs.query ? <div className="px-1 text-3xs text-fg-muted">{COPY.searchedFor(cs.query)}</div> : null
+                : <div className="px-1 text-3xs text-fg-muted">{COPY.readConversation}</div>}
             </div>
           );
         }

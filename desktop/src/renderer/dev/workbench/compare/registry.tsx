@@ -4247,6 +4247,101 @@ function PresentInlineMentions() {
   );
 }
 
+
+// ── Round 8: a reference block inside the assistant's own message ─────────────
+// Destin, 2026-08-27 gate (M-show / D4): "display" stops being a tool and
+// becomes a renderer trick. The assistant writes the references into its own
+// sentence in a set format; the renderer parses the bubble and draws them.
+// His sketch: "This project is blah blah, working on blah blah, see: [convo 1]
+// [convo 2] [convo 3]. This other project is blah, working on blah: convo 4."
+//
+// So the question this round asks is NOT density — R4–R6 were rejected as a
+// family for re-asking that ("not a fan of any of these"). Every candidate here
+// uses the SAME settled row (R5's present-row-split: title/date on line one,
+// project/buttons on line two) and answers only: how does a group of references
+// attach to the prose around it? Each candidate therefore shows TWO groups
+// separated by a sentence, because one group in isolation cannot show it.
+const REF_GROUP_A: Extract<ResolvedConversation, { status: 'ok' }>[] = [
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_RESUMABLE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NOT_SYNCED)!,
+];
+const REF_GROUP_B: Extract<ResolvedConversation, { status: 'ok' }>[] = [
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NATIVE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_MISSING_PROJECT)!,
+];
+const REF_LEAD_A = 'The permission work is mostly settled — the ask timeout and the sync gap both trace back to these:';
+const REF_LEAD_B = 'The newsletter is a separate thread, and the older one\u2019s project folder isn\u2019t on this machine:';
+
+/** The message shell every candidate below shares: real assistant bubble, two
+ *  leads, two groups. Only `group` differs between candidates. */
+function PresentRefMessage({ group }: { group: (rows: Extract<ResolvedConversation, { status: 'ok' }>[]) => React.ReactNode }) {
+  return (
+    <PresentInBubble>
+      <p className="m-0">{REF_LEAD_A}</p>
+      {group(REF_GROUP_A)}
+      <p className="m-0">{REF_LEAD_B}</p>
+      {group(REF_GROUP_B)}
+    </PresentInBubble>
+  );
+}
+
+/** A — the group is a bordered card between the paragraphs. Closest to what the
+ *  app already draws; the block is unmistakably a separate object. */
+function PresentRefBoxed() {
+  return (
+    <PresentRefMessage
+      group={(rows) => (
+        <div className="my-2 rounded-lg border border-edge bg-well overflow-hidden">
+          <div className="flex flex-col gap-1.5 p-2">
+            {rows.map((r) => <PresentRowSplitEntry key={r.id} r={r} />)}
+          </div>
+        </div>
+      )}
+    />
+  );
+}
+
+/** B — no box. A rule down the left and an indent, the way a quotation hangs off
+ *  the sentence that introduced it; the rows read as part of the message. */
+function PresentRefHanging() {
+  return (
+    <PresentRefMessage
+      group={(rows) => (
+        <div className="my-2 border-l-2 border-edge pl-3 flex flex-col gap-1.5">
+          {rows.map((r) => <PresentRowSplitEntry key={r.id} r={r} />)}
+        </div>
+      )}
+    />
+  );
+}
+
+/** C — a real table: one line per conversation, columns that line up ACROSS both
+ *  groups. Nothing wraps the block at all; only spacing separates it from the
+ *  prose. The trade-off is width — at a narrow bubble the title column is the
+ *  first thing squeezed, which is exactly what this candidate is here to show. */
+function PresentRefTableRow({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="flex items-center gap-2 py-1.5">
+      <span className="min-w-0 flex-[3] truncate text-xs text-fg">{r.title || COPY.untitled}</span>
+      <span className="min-w-0 flex-[2] truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+      {!blocked && <span className="shrink-0 text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>}
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+function PresentRefTable() {
+  return (
+    <PresentRefMessage
+      group={(rows) => (
+        <div className="my-2 divide-y divide-edge-dim border-y border-edge-dim">
+          {rows.map((r) => <PresentRefTableRow key={r.id} r={r} />)}
+        </div>
+      )}
+    />
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -4815,12 +4910,20 @@ const ALL_SURFACES: CompareSurface[] = [
     frame: 'canvas',
     // Was 420 (the chat-column width) through Round 6, three panes at a time.
     // Round 7 compares FOUR candidates — at 420 they don't fit side by side on
-    // a normal window, so this narrows to ~380 for the whole surface (there is
+    // a normal window, so this narrowed to ~380 for the whole surface (there is
     // no per-round override in CompareSurface) so four panes have a better
     // chance of sitting in one row. Every candidate above still renders at its
     // real chat-bubble width regardless of this value — panes never stretch
     // wider than it, but nothing stops a candidate from being narrower.
-    paneWidth: 380,
+    //
+    // Raised to 500 for Round 8 (back to three panes). At 380 the bubble came
+    // out ~320 wide, which is NARROWER than any real chat column — and the
+    // table candidate, the only one whose columns compete for width, was the
+    // one that suffered: it truncated titles to two characters. Judging a
+    // layout at a width it never actually gets is how a candidate loses on a
+    // problem it does not have. The earlier rounds re-render wider; their
+    // recorded picks stand, since none of them turned on width.
+    paneWidth: 500,
     rounds: [
       {
         n: 1,
@@ -4992,6 +5095,30 @@ const ALL_SURFACES: CompareSurface[] = [
             label: 'Chips inside the sentence',
             note: 'Defers the entire block — no card, no list. A conversation becomes a small chip inside the assistant\'s own sentence, styled like the app\'s inline filepath pill. Gets everything back — date, project, tags, both buttons — in a popover that opens beneath the chip on click. The most radical option: it removes the block and makes a past conversation something the assistant can refer to mid-sentence, at the cost of being far less scannable than any list.',
             render: () => <PresentInlineMentions />,
+          },
+        ],
+      },
+      {
+        n: 8,
+        basis: 'Destin, 2026-08-27 gate (M-show / D4): "display" is no longer a tool — the assistant writes references into its own message in a set format and the renderer draws them. Every candidate reuses R5/R6\'s settled row unchanged and answers ONE new question: how does a group of references attach to the prose around it? Each shows TWO groups split by a sentence, because a single group in isolation cannot show it.',
+        candidates: [
+          {
+            id: 'present-ref-boxed',
+            label: 'Boxed group',
+            note: 'Each group sits in its own bordered card between the paragraphs — the same border and background the app\'s other blocks use. Unmistakably a separate object you can act on, at the cost of two hard-edged boxes inside one message.',
+            render: () => <PresentRefBoxed />,
+          },
+          {
+            id: 'present-ref-hanging',
+            label: 'Hanging off the sentence',
+            note: 'No box. A rule down the left and an indent, the way a quotation hangs off the line that introduced it. The references read as part of what the assistant is saying rather than an attachment to it — but they are also less obviously a thing you can click.',
+            render: () => <PresentRefHanging />,
+          },
+          {
+            id: 'present-ref-table',
+            label: 'Table, columns lined up',
+            note: 'One line per conversation with columns that line up across BOTH groups, hairlines above and below, nothing wrapping the block. The most scannable when several conversations are named at once. The trade-off it is here to show: the title column is the first thing squeezed as the bubble narrows.',
+            render: () => <PresentRefTable />,
           },
         ],
       },

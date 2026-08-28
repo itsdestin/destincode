@@ -139,12 +139,14 @@ describe('chatsearch wiring — ToolBody + ToolCard', () => {
     (window as any).claude.chatsearch.resolve.mockResolvedValue({ ok: false, error: 'not-implemented-on-mobile' });
     render(<ChatProvider><ToolCard tool={finishedBash(FIND_CMD, FIND_OUT)} sessionId="s1" /></ChatProvider>);
     openCard();
-    // Positive, BEFORE the resolve promise settles: the card view is up, with
-    // its "Raw output" disclosure — the same raw command text sits nested
-    // inside <details> here, so text presence alone can't prove the fallback;
-    // the disclosure disappearing is what proves ToolBody actually swapped.
-    expect(screen.getByText(COPY.rawOutput)).toBeTruthy();
-    await waitFor(() => expect(screen.queryByText(COPY.rawOutput)).toBeNull());
+    // Positive, BEFORE the resolve promise settles: the card view is up, and
+    // the only thing under it is the line naming what Claude searched for.
+    // (This replaced the "Raw output" disclosure at the 2026-08-27 gate.) The
+    // raw command text is on screen in BOTH states, so its presence alone
+    // cannot prove the fallback — this line disappearing is what proves
+    // ToolBody actually swapped to the plain shell view.
+    expect(screen.getByText(COPY.searchedFor('sync'))).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(COPY.searchedFor('sync'))).toBeNull());
     // Positive: the plain shell view is now the WHOLE body — same raw command,
     // just promoted out from behind the disclosure.
     expect(screen.getByText(FIND_CMD)).toBeTruthy();

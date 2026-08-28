@@ -6,7 +6,7 @@ import { Button, Radio, RadioGroup } from './ui';
 // The card renders the widths this SHARED derivation produced and sends back only
 // which one was chosen — it never builds a rule pattern of its own.
 import { bashGrantOptions, bashNoGrantNote, type GrantScope } from '../../shared/bash-grant-shapes';
-import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon } from './Icons';
+import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon, ChatIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
@@ -978,6 +978,8 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   // is pure ceremony. Render header only, no chevron, non-interactive, with a
   // lighter dashed border so it reads as an annotation, not an expandable card.
   const isCompactSkill = tool.toolName === 'Skill';
+  // Same helper the header label and the body use, so all three agree.
+  const isChatsearch = !!describeChatsearchCall(tool);
 
   const cardBorder = isCompactSkill
     ? 'border border-dashed border-edge-dim/60'
@@ -999,8 +1001,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
         // the generic check used by every other tool, since "skill ran"
         // carries different meaning ("Claude consulted instructions/notes")
         // than "command finished." Failed skills still use the FailIcon.
+        // A chatsearch card gets the chat bubble for the same reason (Destin,
+        // 2026-08-27 gate, M-row): a tick says "the command exited 0", which
+        // is the least interesting thing about a list of past conversations.
         isCompactSkill ? (
           <NoteIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        ) : isChatsearch ? (
+          <ChatIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         ) : (
           <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         )
