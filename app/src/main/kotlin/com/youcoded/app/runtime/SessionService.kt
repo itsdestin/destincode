@@ -3840,6 +3840,10 @@ class SessionService : Service() {
             "native:set-permission-mode",
             "native:get-permission-mode",
             "native:sessions-list",
+            // G-1 background Bash: Stop a desktop command. Android has no
+            // native harness, so this is the honest refusal; the phone stops a
+            // DESKTOP command through the remote WebSocket path instead.
+            "native:kill-shell",
             "provider:list",
             "provider:upsert",
             "provider:remove",

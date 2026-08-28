@@ -18,9 +18,10 @@
 // reference cards were designed ahead of their backend, and came off when the
 // real IPC landed. Same rule, same reason: their fake namespace stays so the
 // tool gallery can show every row state without a real index.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  // G-1 background Bash (design 2026-08-28): the card's Stop button. Real
-  // backend = `native:kill-shell` on all five surfaces, killing the process
-  // family the session's shell registry holds.
-  { channel: 'native.killShell', feature: 'background-bash' },
-];
+//
+// G-1 background Bash's `native.killShell` was listed here while the card was
+// designed ahead of its backend, and came off when `native:kill-shell` landed
+// on all five surfaces (2026-08-28). Same rule, same reason as the rows above:
+// the fake in mock-shim.ts stays so the tool gallery can show every card state
+// without a real process — only the "no real backend" claim goes.
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];

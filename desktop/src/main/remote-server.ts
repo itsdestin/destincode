@@ -19,7 +19,7 @@ import type { LocalSkillProvider } from './skill-provider';
 import type { SerializedChatState } from '../renderer/state/chat-types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import type { NativeSessionHost } from './harness/native-session-host';
-import type { NativeSendResult, SessionProvider, HookEvent, SpecialistsEvent } from '../shared/types';
+import type { NativeSendResult, SessionProvider, HookEvent, SpecialistsEvent, ShellEvent } from '../shared/types';
 import type { ProviderRegistry } from './providers/provider-registry';
 import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
@@ -98,6 +98,8 @@ export class RemoteServer {
   // every intermediate one). Filled by bufferSpecialistRun(), called from
   // the same ipc-handlers.ts listener that broadcasts 'specialists-event'.
   private specialistRunBuffers = new Map<string, Map<string, SpecialistsEvent>>();
+  // G-1: sessionId -> shellId -> latest run view, same latest-per-key shape.
+  private shellRunBuffers = new Map<string, Map<string, ShellEvent>>();
   // statusInterval removed — status data now fed by ipc-handlers.ts via broadcastStatusData()
   private failedAttempts = new Map<string, { count: number; resetAt: number }>();
   // Last-known topic names, fed by ipc-handlers.ts via setLastTopic()
@@ -528,6 +530,14 @@ export class RemoteServer {
     byChild.set(event.run.childId, event);
   }
 
+  /** G-1: connect-time catch-up for a background command's card — latest per
+   *  shell id, never an append-only log (same reasoning as bufferSpecialistRun). */
+  bufferShellRun(event: ShellEvent): void {
+    let byShell = this.shellRunBuffers.get(event.sessionId);
+    if (!byShell) { byShell = new Map(); this.shellRunBuffers.set(event.sessionId, byShell); }
+    byShell.set(event.run.shellId, event);
+  }
+
   private onSessionCreated = (info: any) => {
     this.broadcast({ type: 'session:created', payload: info });
   };
@@ -540,6 +550,7 @@ export class RemoteServer {
     // ever reconnect asking for this session's run status again, so clear it
     // the same way the buffers above already do.
     this.specialistRunBuffers.delete(sessionId);
+    this.shellRunBuffers.delete(sessionId);   // G-1
     // Forward exitCode so the remote shim can surface 'session-died' banners
     // when Claude's process dies mid-turn on the host machine.
     this.broadcast({ type: 'session:destroyed', payload: { sessionId, exitCode } });
@@ -838,6 +849,12 @@ export class RemoteServer {
           ws.send(JSON.stringify({ type: 'specialists:event', payload: event }));
         }
       }
+      // G-1: latest shell run per command, same position as the specialist replay.
+      for (const [_sessionId, byShell] of this.shellRunBuffers) {
+        for (const event of byShell.values()) {
+          ws.send(JSON.stringify({ type: 'native:shell-event', payload: event }));
+        }
+      }
 
     }, 500); // 500ms gives React time to render App and register SESSION_INIT
   }
@@ -940,6 +957,15 @@ export class RemoteServer {
       }
       case 'native:sessions-list': {
         this.respond(client.ws, type, id, this.nativeRuntime ? this.nativeRuntime.nativeHost.list() : []);
+        break;
+      }
+      case 'native:kill-shell': {
+        // G-1: the phone's Stop button. Mirrors the desktop invoke's result
+        // shape exactly, so the card's refusal handling is identical on both.
+        const result = this.nativeRuntime
+          ? await this.nativeRuntime.nativeHost.killShell(payload.sessionId, payload.shellId)
+          : { ok: false, reason: 'not-live' };
+        this.respond(client.ws, type, id, result);
         break;
       }
       case 'provider:list': {
