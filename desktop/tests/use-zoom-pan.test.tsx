@@ -51,6 +51,38 @@ describe('useZoomPan', () => {
     expect(api.percent).toBe(150);
   });
 
+  it('a press on a control is not a drag, so the button keeps its click', () => {
+    // Reported 2026-08-27: "goes from 12 to 50 and then freezes and +/- dont
+    // work anymore". Above fit, a press ANYWHERE started a pan and captured the
+    // pointer — including a press on "+", which then never saw its own pointerup,
+    // so every button went dead after the first zoom. At fit there is nothing to
+    // pan, which is exactly why the first click always worked.
+    render(<Probe />);
+    act(() => api.zoomIn());                 // above fit — the drag path is live
+    expect(api.isFit).toBe(false);
+
+    const captured: number[] = [];
+    const container = document.createElement('div');
+    (container as any).setPointerCapture = (id: number) => captured.push(id);
+    const button = document.createElement('button');
+    container.appendChild(button);
+    document.body.appendChild(container);
+
+    const press = (target: Element, pointerId: number) => act(() => {
+      api.bind.onPointerDown({
+        pointerId, clientX: 10, clientY: 10, target, currentTarget: container,
+      } as unknown as React.PointerEvent);
+    });
+
+    press(button, 1);
+    expect(captured).toEqual([]);            // the control keeps its own click
+    act(() => api.bind.onPointerUp({ pointerId: 1, currentTarget: container } as unknown as React.PointerEvent));
+
+    press(container, 2);
+    expect(captured).toEqual([2]);           // the picture still pans
+    container.remove();
+  });
+
   it('re-fits when the pane is resized, instead of stranding a stale scale', () => {
     const { rerender } = render(<Probe />);
     expect(api.percent).toBe(20);                        // 400/2000

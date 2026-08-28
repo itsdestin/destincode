@@ -62,6 +62,13 @@ export function useZoomPan(sizes: Sizes) {
       return;
     }
     if (current <= fit + 1e-6) return;   // nothing to pan while fitted
+    // A press that STARTS on a control is not a drag. Without this the pan
+    // capture below swallowed the button's own click: pressing "+" bubbled to
+    // this handler, the container captured the pointer, and the button never saw
+    // the pointerup — so zoom worked exactly once and then every button in the
+    // pill was dead (reported 2026-08-27: "goes from 12 to 50 and then freezes").
+    // Only reachable above fit, which is why the FIRST click always worked.
+    if ((e.target as Element | null)?.closest?.('[data-loupe-block], button, input, a')) return;
     drag.current = { id: e.pointerId, startX: e.clientX, startY: e.clientY, base: offset, live: false };
     (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
   }, [current, fit, offset]);
@@ -91,6 +98,9 @@ export function useZoomPan(sizes: Sizes) {
   }, [applyScale, current, sizes]);
 
   const onPointerUp = useCallback((e: React.PointerEvent) => {
+    // Hand the pointer back explicitly rather than relying on the implicit
+    // release, so nothing downstream is left waiting on a captured pointer.
+    (e.currentTarget as Element).releasePointerCapture?.(e.pointerId);
     pinch.current.delete(e.pointerId);
     if (pinch.current.size < 2) pinchStart.current = null;
     if (drag.current?.id === e.pointerId) drag.current = null;
