@@ -23,7 +23,10 @@ export function useZoomPan(sizes: Sizes) {
   const [offset, setOffset] = useState<Offset>({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
 
-  const current = scale ?? fit;
+  // Clamped to fit at READ time, not only when set: widening the pane raises the
+  // fit scale, and a scale stored before that can end up BELOW it — leaving the
+  // picture smaller than fitted with "zoom out" still offered.
+  const current = Math.max(fit, scale ?? fit);
   const rungs = useMemo(() => ladderFor(fit), [fit]);
   const ceiling = rungs.length ? rungs[rungs.length - 1] : fit;
 

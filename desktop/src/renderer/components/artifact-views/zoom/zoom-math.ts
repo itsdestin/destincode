@@ -2,8 +2,18 @@
 // jsdom reports every getBoundingClientRect as zeros, so anything measured from
 // the DOM is untestable. Callers pass sizes in; these functions decide.
 
-/** The rungs the +/- buttons walk, as scale factors (1 = 100%). */
-export const ZOOM_RUNGS: readonly number[] = [0.5, 0.75, 1, 1.5, 2, 4, 8];
+/** The rungs the +/- buttons walk, as scale factors (1 = 100%).
+ *
+ *  12.5 and 25 exist for the FIRST press. A large picture fits at 10-20%, and a
+ *  ladder starting at 50% meant one press made it four times bigger — reported
+ *  as the steps feeling "weird and inconsistent". These are deliberately the
+ *  familiar round numbers rather than a constant ratio (Destin's call). */
+export const ZOOM_RUNGS: readonly number[] = [0.125, 0.25, 0.5, 0.75, 1, 1.5, 2, 4, 8];
+
+/** A rung this close to the fit scale is not worth a press — it would look like
+ *  the button did nothing. 8% is enough to see, small enough that the next rung
+ *  is rarely a leap. */
+const MIN_STEP_RATIO = 1.08;
 
 export interface Sizes { containerW: number; containerH: number; contentW: number; contentH: number }
 export interface Offset { x: number; y: number }
@@ -20,7 +30,7 @@ export function fitScale(s: Sizes): number {
  *  otherwise a small image (fit === 1) would offer 50% and 75%, which is zooming
  *  out past the pane for no reason, and would leave "−" enabled at the floor. */
 export function ladderFor(fit: number): number[] {
-  return ZOOM_RUNGS.filter((r) => r > fit + 1e-6);
+  return ZOOM_RUNGS.filter((r) => r > fit * MIN_STEP_RATIO);
 }
 
 /** The next stop above or below `scale`. `fit` is the floor AND a stop in its

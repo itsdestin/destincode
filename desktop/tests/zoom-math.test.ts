@@ -26,7 +26,17 @@ describe('ladderFor', () => {
     expect(ladderFor(1)).toEqual([1.5, 2, 4, 8]);     // a small image starts fitted at 100%
   });
   it('keeps every rung above a small fit', () => {
-    expect(ladderFor(0.2)).toEqual([...ZOOM_RUNGS]);
+    expect(ladderFor(0.05)).toEqual([...ZOOM_RUNGS]);
+  });
+  it('drops a rung too close to fit to be worth a press', () => {
+    // fit 12% with a 12.5% rung would be a 4% change — the button would look
+    // broken. The next real step is 25%.
+    expect(ladderFor(0.12)[0]).toBe(0.25);
+  });
+  it('gives a big picture a first step that is not a leap', () => {
+    // The reported complaint: from a 12% fit the first press used to land on
+    // 50%, more than four times bigger.
+    expect(ladderFor(0.12)[0] / 0.12).toBeLessThan(2.5);
   });
 });
 
@@ -45,8 +55,9 @@ describe('stepScale', () => {
     expect(stepScale(1.7, 0.2, 1)).toBe(2);
     expect(stepScale(1.7, 0.2, -1)).toBe(1.5);
   });
-  it('treats fit itself as a stop on the way down from the first rung', () => {
-    expect(stepScale(0.5, 0.2, -1)).toBeCloseTo(0.2);
+  it('treats fit itself as a stop below the lowest reachable rung', () => {
+    expect(stepScale(0.5, 0.2, -1)).toBe(0.25);        // the rung between
+    expect(stepScale(0.25, 0.2, -1)).toBeCloseTo(0.2); // then fit
   });
 });
 

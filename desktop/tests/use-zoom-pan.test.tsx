@@ -28,8 +28,8 @@ describe('useZoomPan', () => {
   it('walks the ladder and stops at the ceiling', () => {
     render(<Probe />);
     act(() => api.zoomIn());
-    expect(api.percent).toBe(50);
-    for (let i = 0; i < 10; i++) act(() => api.zoomIn());
+    expect(api.percent).toBe(25);        // fit is 20%: the next round rung up
+    for (let i = 0; i < 12; i++) act(() => api.zoomIn());
     expect(api.percent).toBe(800);
     expect(api.canZoomIn).toBe(false);
   });
@@ -91,11 +91,16 @@ describe('useZoomPan', () => {
     expect(api.isFit).toBe(true);
   });
 
-  it('holds an explicit zoom across a resize', () => {
+  it('never ends up smaller than fitted after the pane grows', () => {
+    // Widening the pane raises the fit scale. A scale chosen before that can be
+    // below the new fit, which would leave the picture smaller than fitted with
+    // "zoom out" still on offer.
     const { rerender } = render(<Probe />);
-    act(() => api.zoomIn());                             // 50%, explicit
+    act(() => api.zoomIn());                             // 25%, explicit
+    expect(api.percent).toBe(25);
     rerender(<Probe sizes={{ ...SIZES, containerW: 1000, containerH: 800 }} />);
-    expect(api.percent).toBe(50);
-    expect(api.isFit).toBe(true);                        // fit is now 50% too
+    expect(api.percent).toBe(50);                        // pulled up to the new fit
+    expect(api.isFit).toBe(true);
+    expect(api.canZoomOut).toBe(false);
   });
 });
