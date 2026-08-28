@@ -267,6 +267,14 @@ export class EngineManager extends EventEmitter {
       // and the next launch will pick the update up anyway.
       if (this.supervisor && this.supervisor.status() !== 'stopped') return;
       await this.install();
+      // Leave the engine exactly as this method found it: STOPPED. install()
+      // deliberately leaves it running (someone who just pressed Install wants to
+      // use it), but nobody asked for this one — and without the stop, the first
+      // launch after an engine bump would silently start a llama-server that
+      // previously only appeared on the first message. An unexplained new process
+      // at startup is the kind of change a user cannot trace back to anything.
+      if (this.supervisor) await this.supervisor.stop();
+      this.emit('status-changed');
     } catch {
       // Swallowed on purpose: this is unattended background work the user did not
       // ask for, so it must never surface an error they cannot act on. install()

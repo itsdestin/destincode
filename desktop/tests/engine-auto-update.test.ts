@@ -80,6 +80,18 @@ describe('EngineManager.autoUpdateOnLaunch', () => {
     expect(install).not.toHaveBeenCalled();
   });
 
+  it('leaves the engine STOPPED afterwards — nobody asked for a process at startup', async () => {
+    plant(OLD);
+    const mgr = new EngineManager(home, userData, 9999);
+    const stop = vi.fn(async () => {});
+    // install() leaves the engine running by design; the auto path must undo that.
+    vi.spyOn(mgr, 'install').mockImplementation(async () => {
+      (mgr as unknown as { supervisor: unknown }).supervisor = { status: () => 'running', stop };
+    });
+    await mgr.autoUpdateOnLaunch();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
   it('never throws, and leaves the working engine in place, when the update fails', async () => {
     const oldDir = plant(OLD);
     const mgr = new EngineManager(home, userData, 9999);
