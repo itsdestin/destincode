@@ -31,6 +31,9 @@ const SESSION_FOR: Record<string, string> = {
   'claude-code': 'wb-1',
   native: 'wb-2',
   specialists: 'wb-11',
+  // Landing-page embed (scenario=site): site.jsonl plays into the one session
+  // that scenario seeds (fixtures/sessions.ts siteSessions), not wb-2.
+  site: 'site-1',
 };
 
 /** `?stalled=1` replays the fixture's parked-turn line so the red
@@ -42,6 +45,11 @@ const SESSION_FOR: Record<string, string> = {
 function stalledRequested(): boolean {
   if (typeof location === 'undefined') return false;
   return new URLSearchParams(location.search).get('stalled') === '1';
+}
+
+function seedRequested(): string | null {
+  if (typeof location === 'undefined') return null;
+  return new URLSearchParams(location.search).get('seed');
 }
 
 /** `?scenario=` reader, mirroring `stalledRequested()` above — same node-test
@@ -104,6 +112,11 @@ export function buildHydratePayload(): SerializedChatState {
   for (const [path, raw] of Object.entries(convos).sort(([a], [b]) => a.localeCompare(b))) {
     const name = path.split('/').pop()!.replace('.jsonl', '');
     const sessionId = SESSION_FOR[name];
+    // `?seed=none` (site scenario): leave the embed's conversation EMPTY so a
+    // filmed loop starts with the user's first message. Every landing-page loop
+    // used to open on the same "plan my week" thread, which had nothing to do
+    // with what the loop then showed (Destin, 2026-08-28 loop review).
+    if (name === 'site' && seedRequested() === 'none') continue;
     if (!sessionId) {
       console.warn(`[workbench] conversation fixture "${name}" has no session mapping — skipped`);
       continue;

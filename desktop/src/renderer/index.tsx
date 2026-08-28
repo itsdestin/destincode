@@ -222,7 +222,11 @@ function Root() {
 // existing buddyMode branches, so <App/> falls through to the main app.
 const __mount = createRoot(document.getElementById('root')!);
 // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
-if (import.meta.env.DEV && __buddyMode === 'workbench') {
+// Site mode: the landing page embeds the workbench as a live demo, built with
+// `npm run build:site` (VITE_WORKBENCH=1). Any other production build still
+// tree-shakes this whole branch — VITE_WORKBENCH is unset, so the condition is
+// statically false and the workbench chunks never ship in the app.
+if ((import.meta.env.DEV || import.meta.env.VITE_WORKBENCH === '1') && __buddyMode === 'workbench') {
   // `child=1` is the iframe the workbench frame hosts (see WorkbenchFrame.tsx
   // for why it is an iframe): it renders the app itself, at the iframe's own
   // viewport width, so useNarrowViewport() sees a real narrow viewport. The

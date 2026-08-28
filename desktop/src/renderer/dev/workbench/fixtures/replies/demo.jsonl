@@ -1,0 +1,5 @@
+{"type":"assistant_text","text":"Got it. I'll start with what's in your Documents folder and check with you before I change anything.","delay":500}
+{"type":"tool_use","id":"d1","name":"Glob","input":{"pattern":"Documents/**/*"},"delay":600}
+{"type":"tool_result","tool_use_id":"d1","content":"Documents/week-plan.md\nDocuments/chem-notes.md\nDocuments/shift-schedule.png","delay":700}
+{"type":"assistant_text","text":"Three files. Tell me what you'd like done with them, or pick a different folder — nothing happens until you say so.","delay":400}
+{"type":"turn_complete","delay":300}

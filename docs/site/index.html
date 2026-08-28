@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <!-- interactive-widget=resizes-visual: when the soft keyboard appears, shrink
+       the VISUAL viewport and leave the layout viewport alone. useVisualViewport
+       reads that as (innerHeight - visualViewport.height) and drives --vvp-offset,
+       so the input bar rises with the keyboard in one smooth, OS-synced animation.
+
+       Fix: this used to say overlays-content, which the old comment described as
+       "overlay it and report geometry via visualViewport". That is not what the
+       spec says — under overlays-content NEITHER viewport resizes, and the only
+       source of keyboard geometry is the VirtualKeyboard API. That API requires a
+       secure context, so over plain-HTTP remote access (a phone on the LAN IP) it
+       is undefined and NOTHING reported the keyboard: measured on Chrome/Android
+       with the keyboard open, innerHeight 732 vs visualViewport.height 733, and
+       navigator.virtualKeyboard absent. The input bar stayed pinned under the
+       keyboard. resizes-visual is what the hook was always written against. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-visual" />
+  <title>YouCoded</title>
+  <!-- Inline boot skeleton. Everything here must stay inline: the point is to
+       paint SOMETHING before the entry chunk (~2 MB) has parsed. A linked
+       stylesheet would be one more blocking round-trip and defeat it.
+
+       Remote clients feel this most — over remote access the app is not mounted
+       until the WebSocket has connected AND authenticated (index.tsx Root), so
+       the pre-React window is seconds, not milliseconds, and it used to be a
+       blank WHITE page that reads as a hung browser tab.
+
+       #030712 is gray-950 — the same color App.tsx's own loading gate paints,
+       so this hands off to the app without a flash. -->
+  <style>
+    html { background: #030712; color-scheme: dark; }
+    body { margin: 0; }
+    #boot { position: fixed; inset: 0; display: flex; align-items: center;
+            justify-content: center; }
+    #boot > div { width: 28px; height: 28px; border-radius: 50%;
+                  border: 2px solid rgba(255, 255, 255, 0.15);
+                  border-top-color: rgba(255, 255, 255, 0.7);
+                  animation: boot-spin 0.7s linear infinite; }
+    /* Respect reduced-motion: show a static ring rather than a spinner. */
+    @media (prefers-reduced-motion: reduce) { #boot > div { animation: none; } }
+    @keyframes boot-spin { to { transform: rotate(360deg); } }
+  </style>
+  <script type="module" crossorigin src="./assets/index-DiPGiPu2.js"></script>
+  <link rel="modulepreload" crossorigin href="./assets/rolldown-runtime-DaJ6WEGw.js">
+  <link rel="modulepreload" crossorigin href="./assets/react-BJoyWkjz.js">
+  <link rel="modulepreload" crossorigin href="./assets/jsx-runtime-cM__dR4X.js">
+  <link rel="modulepreload" crossorigin href="./assets/Select-BZetXNBh.js">
+  <link rel="modulepreload" crossorigin href="./assets/theme-context-DzswAf2E.js">
+  <link rel="modulepreload" crossorigin href="./assets/platform-e3lXEAur.js">
+  <link rel="modulepreload" crossorigin href="./assets/chat-reducer-mjhYArv5.js">
+  <link rel="modulepreload" crossorigin href="./assets/TagChip-DCECM4Q8.js">
+  <link rel="modulepreload" crossorigin href="./assets/ChatsearchMetaLine-C9phzUUp.js">
+  <link rel="modulepreload" crossorigin href="./assets/ui-Dz_Jh_AF.js">
+  <link rel="stylesheet" crossorigin href="./assets/index-CIGJj0hY.css">
+</head>
+<body>
+  <!-- Lives inside #root so React's first commit clears it — createRoot()
+       replaces the container's existing children, so no teardown code needed.
+
+       id="boot" is LOAD-BEARING beyond styling: main.ts's dev-load-recovery
+       watchdog decides "did React mount?" by checking this element is gone
+       (src/main/dev-mount-probe.ts). Renaming or removing it, or adding other
+       pre-React content inside #root, breaks the only recovery path for a dev
+       window whose module fetches were aborted mid-boot — and breaks it
+       SILENTLY, which is exactly what happened for the six days after this
+       skeleton landed. tests/dev-load-recovery.test.tsx runs that probe against
+       this file, so it fails instead of rotting. -->
+  <div id="root">
+    <div id="boot" role="status" aria-label="Loading YouCoded"><div></div></div>
+  </div>
+</body>
+</html>

@@ -1,4 +1,5 @@
 import type { MockStore } from './mock-store';
+import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
 import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
@@ -14,6 +15,12 @@ import { resolveFixture, CS_ERR_READ } from './fixtures/chatsearch';
 import type { MockState, MockSessionMeta } from './scenarios';
 import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
 import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
+// Scripted replies (site scenario / phase-2 play-through): a typed message
+// gets a fixture-driven answer instead of being swallowed by the catch-all.
+import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns } from './reply-script';
+// Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
+// fake-party.ts for why this exists and what it stands in for.
+import { JAKE_ID, JAKE_USERNAME } from './fake-party';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
 // states (partial-view banner, handoff) against the fake backend.
@@ -58,12 +65,20 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'off', 'removeAllListeners',
   'session.list', 'session.create', 'session.browse', 'session.destroy',
   'session.setFlag', 'session.setTag', 'session.setNote', 'session.getMeta',
+  'session.sendInput', 'session.respondToPermission', 'on.transcriptEvent', 'on.hookEvent',
+  'native.send', 'native.setBinding',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
   // Local Models rows + Resume (2026-08-26). WHY these must be listed: the
   // contract test only checks members named here, so a hand-written mock left
   // off this list escapes the real-or-registered check entirely.
   'models.installed', 'models.curated', 'models.delete', 'models.resume',
   'models.onDownloadProgress', 'models.downloadCancel',
+  // Engine card (site row8 loop) — real backend (engine-handlers); hand-written so the
+  // card has a version and backend to print instead of "undefined". detectEndpoints: the
+  // panel calls it at mount.
+  'models.detectEndpoints',
+  'engine.status', 'engine.models', 'engine.install', 'engine.restart', 'engine.setContext',
+  'engine.onInstallProgress', 'engine.onStatusChanged', 'engine.onModelsChanged',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
@@ -97,8 +112,22 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
+  // Multiplayer games (Task 7c) — friends graph + presence socket. Real
+  // backend (social-handlers.ts / preload.ts), hand-written here so Connect
+  // Four has a scripted friend ("Jake") instead of sitting on "Connecting…"
+  // forever (see fake-party.ts).
+  'social.lookupHandle', 'social.sendRequest', 'social.listRequests',
+  'social.acceptRequest', 'social.declineRequest', 'social.cancelRequest',
+  'social.listFriends', 'social.unfriend', 'social.block', 'social.unblock',
+  'social.listBlocks', 'social.presenceConnect', 'social.presenceDisconnect',
+  'social.presenceSend', 'social.onPresenceEvent',
+  // Multi-window leader election (Task 7c fix) — see the WHY comment at
+  // WORKBENCH_WINDOW_ID. Without these, `isLeader` in App.tsx is false in
+  // EVERY workbench session, and presence (Connect Four's lobby, and any
+  // future feature gated on isLeader) never connects.
+  'window.getId', 'detach.getDirectory',
   'appearance.getFavoriteThemes', 'appearance.favoriteTheme', 'appearance.get',
-  'appearance.set', 'appearance.broadcast',
+  'appearance.set', 'appearance.broadcast', 'appearance.onSync',
   'skills.listMarketplace', 'skills.list', 'skills.getFavorites', 'skills.setFavorite', 'skills.getFeatured',
   'marketplace.getPackages', 'theme.marketplace',
   // Real, but served by remote-shim.ts rather than preload.ts — Electron
@@ -345,6 +374,16 @@ const themeAssets = import.meta.glob('./fixtures/themes/*/assets/**/*', {
   query: '?url', import: 'default', eager: true,
 }) as Record<string, string>;
 
+// Reply fixtures for scripted replies (`?reply=<name>`, defaults to `demo`) —
+// eager + `?raw` so the shim can pick a script at sendInput() time without an
+// async fetch (matches the theme-manifest loading pattern just above).
+// @ts-ignore TS1343 — Vite rewrites import.meta.glob statically at build time.
+const REPLY_SCRIPTS = import.meta.glob('./fixtures/replies/*.jsonl', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+function replyScriptName(): string {
+  if (typeof location === 'undefined') return 'demo';
+  return new URLSearchParams(location.search).get('reply') ?? 'demo';
+}
+
 const slugOf = (path: string) => path.split('/fixtures/themes/')[1].split('/')[0];
 
 /** `halftone-dimension` -> { 'assets/pattern.svg': '/…/pattern.svg', … } */
@@ -480,6 +519,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     destroyed: new Set<(id: string) => void>(),
     renamed: new Set<(id: string, name: string) => void>(),
     meta: new Set<(id: string, meta: any) => void>(),
+    // Scripted replies: transcript/hook subscribers a played reply emits into.
+    transcript: new Set<(e: any) => void>(),
+    hook: new Set<(e: any) => void>(),
   };
 
   /** Applies a mutation only when writes are allowed, so the refused scenario
@@ -492,6 +534,44 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     mutate();
     return Promise.resolve({ ok: true });
   };
+
+  // Site mode / phase-2 play-through: a typed message gets a scripted answer
+  // (`?reply=<name>`, fixtures/replies/). Shared by BOTH send channels —
+  // `session.sendInput` (Claude/PTY sessions) and `native.send` (native
+  // sessions, e.g. the `site` scenario's embed session) — because App picks
+  // the channel by `session.provider`, not by anything the reply machinery
+  // cares about; duplicating the lookup+play body per channel would just be
+  // two copies to keep in sync.
+  // A fixture may hold SEVERAL turns (one `turn_complete` each): the Nth
+  // message sent in a session plays the Nth turn, wrapping around at the end.
+  // The site's row-1 loop is a three-message skit (Claude declines, the model
+  // is switched, Grok answers, the user reacts) — replaying one fixed answer
+  // to every message could not film it. One-turn fixtures behave as before.
+  const replyCursor = new Map<string, number>();
+  const startReply = (sessionId: string, text: string) => {
+    const raw = REPLY_SCRIPTS[`./fixtures/replies/${replyScriptName()}.jsonl`];
+    if (!raw) { console.warn(`[workbench] no reply script "${replyScriptName()}"`); return; }
+    const turns = splitTurns(parseReplyScript(raw));
+    if (turns.length === 0) return;
+    const n = replyCursor.get(sessionId) ?? 0;
+    // Control bytes (\r, ESC) must not advance the cursor — playReply ignores them
+    // (same predicate, so the two can't drift). Note `?autoplay=` spends turn 1
+    // through this path too: the first message TYPED into an autoplayed window
+    // plays turn 2 — intended for the sync row's phone half.
+    if (!isControl(text)) replyCursor.set(sessionId, n + 1);
+    void playReply(sessionId, text, turns[n % turns.length], {
+      transcript: (e) => subs.transcript.forEach((f) => f(e)),
+      hook: (e) => subs.hook.forEach((f) => f(e)),
+    });
+  };
+
+  // `?autoplay=<ms>`: play the fixture's first turn into the first seeded session
+  // with nothing typed — a message "arriving" (sync row, phone half). The fixture
+  // supplies the user bubble via a user_message line.
+  if (typeof location !== 'undefined') {
+    const ms = Number(new URLSearchParams(location.search).get('autoplay'));
+    if (ms > 0) setTimeout(() => { const id = store.getState().sessions[0]?.id; if (id) startReply(id, '(autoplay)'); }, ms);
+  }
 
   const session: Ns<'session'> & UntypedSessionWrites = {
     list: async () => store.getState().sessions,
@@ -531,6 +611,14 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       subs.destroyed.forEach((f) => f(sessionId));
       return true;
     },
+
+    // Claude/PTY sessions only (native sessions use `native.send` below).
+    // Control bytes are ignored inside playReply so the PTY-shaped calls App
+    // makes for Claude Code sessions ('\r', '\x1b') never start a script.
+    sendInput: (sessionId: string, text: string) => startReply(sessionId, text),
+    // Real signature is Promise<boolean> (useIpc.ts/preload.ts), not {ok} —
+    // resolvePermission already returns a boolean (false = stale/unknown id).
+    respondToPermission: async (requestId: string, _decision: object) => resolvePermission(requestId),
 
     // Reads the live-session meta slice, falling back to a `past` row of the
     // same id, then to empty. `supported: true` always — the desktop refuses
@@ -710,6 +798,26 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       });
       return true;
     },
+    detectEndpoints: async () => [],
+  };
+
+  // The local llama.cpp engine card (EngineCard.tsx). Without a hand-written
+  // status the catch-all's truthy `[]` reached the card with no fields, and it
+  // rendered "Installed undefined · undefined" — which the landing-page loop
+  // for the builders row (row8) filmed verbatim on 2026-08-27. Shape:
+  // shared/engine-types.ts EngineStatus.
+  const engine: Ns<'engine'> = {
+    status: async () => ({
+      installed: true, installedVersion: 'b9986', pinnedVersion: 'b9986', backend: 'vulkan' as const,
+      state: 'stopped' as const, cacheDir: '/home/you/.youcoded/models', contextSize: 32768, port: 8080,
+    }),
+    models: async () => [],
+    install: async () => undefined,
+    restart: async () => undefined,
+    setContext: async () => undefined,
+    onInstallProgress: () => () => {},
+    onStatusChanged: () => () => {},
+    onModelsChanged: () => () => {},
   };
 
   const defaults: Ns<'defaults'> = {
@@ -719,9 +827,37 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     }),
   };
 
-  // G-1: the card's Stop just resolves — the gallery fixture stays in its
-  // captured state rather than spawning anything real.
-  const native = { supported: true, killShell: async (_sessionId: string, _shellId: string) => ({ ok: true }) } as unknown as Ns<'native'>;
+  const native: Ns<'native'> = {
+    supported: true,
+    // Native sessions (no PTY) send through THIS channel, not
+    // `session.sendInput` — see native-send.ts / pty-input-gate.ts's
+    // `canPtySend`, which refuses provider:'native' outright. The `site`
+    // scenario's embed session is native, so without this the landing-page
+    // demo's composer looked broken (message accepted, nothing ever answers).
+    // Shares startReply with session.sendInput — see that helper's WHY.
+    send: async (sessionId: string, text: string, _attachments?: string[]) => {
+      if (store.refuseWrites) return { status: 'failed', reason: 'not-live' };
+      startReply(sessionId, text);
+      return { status: 'sent' };
+    },
+    // Model picker (ModelPickerPopup.tsx:304). Real backend rebinds the
+    // provider/model on the live session; here it updates the row the status
+    // bar and picker read from, so the chip changes on screen. No `subs.*`
+    // emit needed — App.tsx:3378 updates its `sessions` state directly from
+    // the popup's onNativeModelChanged callback rather than re-listening or
+    // re-fetching session.list().
+    setBinding: async (sessionId, b) => {
+      if (store.refuseWrites) return false;
+      store.setState((s) => ({
+        ...s,
+        sessions: s.sessions.map((x: any) => x.id === sessionId ? { ...x, model: b.modelId, providerId: b.providerId } : x),
+      }));
+      return true;
+    },
+    // G-1: the card's Stop just resolves — the gallery fixture stays in its
+    // captured state rather than spawning anything real.
+    killShell: async (_sessionId: string, _shellId: string) => ({ ok: true }),
+  };
 
   // Fix (final review): SpecialistsSection's "Open folder" button reads
   // shell.openPath's resolved value as an error message whenever it's truthy —
@@ -950,10 +1086,97 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // `[]` is a truthy object with no `handle` — so HandlePrompt concluded the
   // user had just signed in without a handle and threw a modal over the whole
   // app on every load.
+  // `?signedIn=1` flips account.signedIn/user/refresh for filming — the
+  // landing page's games scene needs Connect Four past its sign-in wall.
+  // Signed OUT stays the default (see above) so the sign-in states themselves
+  // stay reviewable.
+  const signedInSwitch = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('signedIn') === '1';
+  const FIXTURE_USER: MarketplaceUser = {
+    id: 'workbench:you', login: 'you', avatar_url: '', display_name: 'You', handle: 'you',
+  };
   const account: Ns<'account'> = {
-    signedIn: async () => false,
-    user: async () => null,
-    refresh: async () => null,
+    signedIn: async () => signedInSwitch,
+    user: async () => (signedInSwitch ? FIXTURE_USER : null),
+    // account-context.tsx calls refresh() from a window "focus" listener that
+    // attaches as soon as signedIn flips true (confirmed empirically: it fires
+    // within seconds of the panel opening, well inside any real recording
+    // session). Leaving this on the old `async () => null` silently flipped
+    // `signedIn` back to false the first time the recording window regained
+    // focus — sabotaging the exact scene Fix 2 exists for. Must mirror the switch.
+    refresh: async () => (signedInSwitch ? FIXTURE_USER : null),
+  };
+
+  // Multiplayer games (Task 7c). Before this, `social` fell through to the
+  // Proxy catch-all entirely — every call resolved `[]`/no-op, and
+  // `onPresenceEvent` never invoked its callback, so GameLobby.tsx never left
+  // its "Connecting…" spinner. This gives the workbench one scripted friend,
+  // "Jake" — already added, already online — so the lobby (and, via
+  // GameLobby.tsx's own auto-play effect, an actual game) work without a real
+  // account or a real friend on the other end. Gated on signedInSwitch so a
+  // signed-out workbench is unaffected: GameLobby.tsx shows SignInScreen
+  // before any of this runs, and `presenceConnect` is never called either
+  // (usePresence only connects when `useAccount().signedIn` is true, and that
+  // reads from `account` above — same switch).
+  const jakeNowSec = Math.floor(Date.now() / 1000);
+  const JAKE_FRIEND = {
+    id: JAKE_ID, display_name: JAKE_USERNAME, handle: 'jake', avatar_url: null,
+    last_seen_at: jakeNowSec, created_at: jakeNowSec - 86_400,
+  };
+  // Holds the one onPresenceEvent callback the app registers (usePresence.ts
+  // subscribes exactly once) so presenceConnect can push events into it.
+  let presenceListener: ((ev: { type: string; [k: string]: unknown }) => void) | null = null;
+  let presenceLive = false;
+  const social: Ns<'social'> = {
+    lookupHandle: async () => ({ ok: false, status: 404, message: 'No one has that handle' }),
+    sendRequest: async () => ({ ok: false, status: 404, message: 'No one has that handle' }),
+    listRequests: async () => ({ ok: true, value: { incoming: [], outgoing: [] } }),
+    acceptRequest: async () => ({ ok: true, value: undefined }),
+    declineRequest: async () => ({ ok: true, value: undefined }),
+    cancelRequest: async () => ({ ok: true, value: undefined }),
+    // The only friend that exists in the workbench — Jake, always present so
+    // FriendsScreen has something to show even before presence reports him
+    // online (mirrors a real friends list, which loads independently of who's
+    // currently connected).
+    listFriends: async () => ({ ok: true, value: signedInSwitch ? [JAKE_FRIEND] : [] }),
+    unfriend: async () => ({ ok: true, value: undefined }),
+    block: async () => ({ ok: true, value: undefined }),
+    unblock: async () => ({ ok: true, value: undefined }),
+    listBlocks: async () => ({ ok: true, value: [] }),
+    presenceConnect: async () => {
+      presenceLive = true;
+      // Fire on a tick, not synchronously — usePresence.ts's onPresenceEvent
+      // subscription and its presenceConnect() call happen in the same effect
+      // (subscription first), but a real IPC round trip always has *some* gap,
+      // and DEFAULT_LATENCY_MS-style delay here is what would surface a
+      // "connected fires before anyone is listening" bug if one existed.
+      setTimeout(() => {
+        if (!presenceLive) return; // disconnected again before this fired
+        presenceListener?.({ type: 'connected' });
+        presenceListener?.({
+          type: 'presence',
+          users: [{ id: JAKE_FRIEND.id, display_name: JAKE_FRIEND.display_name, handle: JAKE_FRIEND.handle, status: 'idle' }],
+        });
+      }, 150);
+      return { ok: true };
+    },
+    presenceDisconnect: async () => {
+      presenceLive = false;
+      // No `code` → the reducer's silent "deliberate teardown" path, matching
+      // what a real incognito toggle / sign-out looks like to usePresence.ts.
+      presenceListener?.({ type: 'disconnected' });
+      return { ok: true };
+    },
+    // Challenge/accept round-tripping isn't implemented — GameLobby.tsx's
+    // auto-play effect skips straight to a game instead of waiting for a
+    // click-through handshake with a bot. A real challenge send still needs
+    // to resolve `ok` so `usePresence.challengePlayer` doesn't synthesize a
+    // CHALLENGE_FAILED for a button a developer clicks while poking around.
+    presenceSend: async () => ({ ok: true }),
+    onPresenceEvent: (cb) => {
+      presenceListener = cb;
+      return () => { if (presenceListener === cb) presenceListener = null; };
+    },
   };
 
   // Settings → Appearance shows FAVOURITED themes plus the active one as a
@@ -979,7 +1202,16 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     get: async () => null,
     set: async () => true,
     broadcast: () => {},
+    // ThemeProvider subscribes here for cross-window theme changes and applies
+    // them LIVE (no reload). The landing page's embed uses that path: its theme
+    // swatches call `__workbenchAppearanceSync({ theme })` on the iframe window
+    // instead of reloading the app — a reload flashed the poster for a second.
+    onSync: (cb: (prefs: unknown) => void) => { appearanceSyncSubs.add(cb); return () => { appearanceSyncSubs.delete(cb); }; },
   };
+  const appearanceSyncSubs = new Set<(prefs: unknown) => void>();
+  if (typeof window !== 'undefined') {
+    (window as any).__workbenchAppearanceSync = (prefs: unknown) => { appearanceSyncSubs.forEach((f) => f(prefs)); return appearanceSyncSubs.size; };
+  }
 
   // Project View and the artifact panel. Without these both render as empty
   // shells — the catch-all's `[]` is not `{ ok, projects }`, so every consumer
@@ -1109,6 +1341,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // `openDetached` is real (preload:959) but missing from useIpc.ts's `detach`
   // block, so it cannot come from Ns<'detach'>. Note the real signature takes an
   // OBJECT, not a positional sessionId.
+  // The workbench is always a single window, so it IS the leader — but
+  // nothing said so before Task 7c: `window.getId` and `detach.getDirectory`
+  // both fell through to the catch-all, which resolves everything to `[]`.
+  // App.tsx's `isLeader = myWindowId != null && leaderWindowId === myWindowId`
+  // then compared `[] === -1` (the catch-all id vs. the useState default) —
+  // never equal, so `isLeader` stayed false forever and `usePresence` never
+  // called `presenceConnect()`. That is the ACTUAL reason Connect Four sat on
+  // "Connecting…": not the game socket (party-client.ts), the leader check
+  // gating whether presence even tries to connect. One fixed id for both
+  // sides of the comparison is enough — there is only ever one workbench tab.
+  const WORKBENCH_WINDOW_ID = 1;
+  // `window` is Electron-only plumbing absent from useIpc.ts entirely (like
+  // `theme` below) — no Ns<'window'> to type against, so this stays a plain
+  // object.
+  const windowNs = {
+    getId: async () => WORKBENCH_WINDOW_ID,
+  };
   const detach: Ns<'detach'> & { openDetached: (payload: { sessionId: string }) => void } = {
     // Present so `detachAvailable` is true and the "Launch in New Window"
     // toggle renders (SessionStrip.tsx:191, ResumeBrowser.tsx:242 both test
@@ -1117,6 +1366,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     openDetached: () => {
       console.warn('[workbench] detach is not available in a browser tab');
     },
+    // App.tsx calls this on mount specifically to avoid racing the
+    // onDirectoryUpdated push — pulling `leaderWindowId: WORKBENCH_WINDOW_ID`
+    // here is what makes `isLeader` resolve true.
+    getDirectory: async () => ({ leaderWindowId: WORKBENCH_WINDOW_ID, windows: [] }),
   };
 
   // No `tags` namespace exists in useIpc.ts at all, so none of this is
@@ -1202,6 +1455,11 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     get: async () => ({ fast: activeScenario === 'statusbar-cc', effort: 'auto' }),
     set: async () => ({ ok: true }),
   };
+  // Scripted replies: the transcript/hook events a played reply fixture emits
+  // (playReply in sendInput above). Same attachment pattern as specialistEvent
+  // below — Ns<'on'> doesn't carry these members.
+  (on as any).transcriptEvent = (cb: (e: any) => void) => { subs.transcript.add(cb); return () => { subs.transcript.delete(cb); }; };
+  (on as any).hookEvent = (cb: (e: any) => void) => { subs.hook.add(cb); return () => { subs.hook.delete(cb); }; };
   // Specialists 1c: the delegation feed (run records + delivered notes). Not
   // on Ns<'on'> yet (no real channel) — attached separately so the typed
   // members above stay compiler-checked.
@@ -1300,8 +1558,8 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   };
 
   return {
-    session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch,
+    session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
+    terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs,
   } as unknown as Record<string, Record<string, unknown>>;
 }

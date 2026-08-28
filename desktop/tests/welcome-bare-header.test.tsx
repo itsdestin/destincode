@@ -116,6 +116,20 @@ describe('BareHeaderBar (welcome screen frame)', () => {
     expect(win.maximize).toHaveBeenCalledTimes(1);
     expect(win.close).toHaveBeenCalledTimes(1);
   });
+
+  it('renders NO caption buttons on Android even when the bridge exposes window (workbench ?platform=android)', () => {
+    // Pins the render-time isAndroid() gate in CaptionButtons: the import-time
+    // showCaptionButtons is already true here (jsdom, __PLATFORM__ unset at import),
+    // so without that gate the buttons would paint on a phone whose bridge
+    // happens to carry window.* (the workbench's does — window.getId).
+    (window as any).__PLATFORM__ = 'android';
+    (window as any).claude = { window: { minimize: vi.fn(), maximize: vi.fn(), close: vi.fn() } };
+    try {
+      renderBare();
+      expect(screen.queryByTitle('Minimize')).toBeNull();
+      expect(screen.queryByTitle('Close')).toBeNull();
+    } finally { delete (window as any).__PLATFORM__; }
+  });
 });
 
 describe('welcome screen wiring (source)', () => {

@@ -39,7 +39,13 @@ const toggleOnLeft = typeof navigator !== 'undefined'
 
 function CaptionButtons() {
   const claude = (window as any).claude;
-  if (!claude?.window) return null;
+  // Android has no OS window controls in-app. A RENDER-time check is needed on
+  // top of the bridge check: the workbench declares `__PLATFORM__` only after the
+  // module graph has loaded (index.tsx imports App statically, installMock runs
+  // later), so import-time constants like `toggleOnLeft` above can't see
+  // `?platform=android` — and the workbench bridge does expose `window` (getId).
+  // On real Android `__PLATFORM__` is set before any import, so this only narrows.
+  if (!claude?.window || isAndroid()) return null;
 
   const btnClass = "px-2 py-1 rounded-[var(--radius-toggle)] transition-colors text-fg-dim hover:text-fg-2 flex items-center justify-center";
 

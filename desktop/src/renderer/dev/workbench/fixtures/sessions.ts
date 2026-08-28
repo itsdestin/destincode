@@ -148,3 +148,23 @@ export function sessions(): SessionInfo[] {
     },
   ];
 }
+
+// Landing-page embed (scenario=site): ONE native session so the first thing a
+// visitor sees is a conversation with a locally running model, not a strip of
+// eleven tabs. Field shape mirrors wb-2 above (provider + harnessId mark it native).
+export function siteSessions(): SessionInfo[] {
+  return [
+    {
+      id: 'site-1',
+      name: 'plan my week',
+      cwd: '/home/you/Documents',
+      permissionMode: 'normal',
+      skipPermissions: false,
+      status: 'idle',
+      createdAt: 1_753_790_000_000,
+      provider: 'native',
+      harnessId: 'coder',
+      model: 'qwen3-coder-30b-a3b-instruct',
+    },
+  ];
+}

@@ -215,11 +215,74 @@ describe('mock shim Proxy semantics', () => {
     expect(DEFAULT_LATENCY).toBeGreaterThan(0);
   });
 
+  // `?signedIn=1` is the switch that lets the games scene be filmed past the
+  // sign-in wall. Signed-out stays the default so the sign-in states remain
+  // reviewable — this pins all three legs of that contract. `refresh` matters
+  // as much as `signedIn`/`user`: account-context.tsx's window-focus listener
+  // calls it (confirmed empirically against the running workbench — it fires
+  // within seconds of sign-in), and a `refresh` that always resolved null
+  // silently flipped `signedIn` back to false the moment the recording window
+  // regained focus, even though `signedIn()`/`user()` still said true.
+  it('account.signedIn/user/refresh follow the ?signedIn=1 URL switch', async () => {
+    vi.stubGlobal('location', { search: '?signedIn=1' });
+    const c = shim();
+    expect(await c.account.signedIn()).toBe(true);
+    expect(await c.account.user()).toMatchObject({ handle: 'you' });
+    expect(await c.account.refresh()).toMatchObject({ handle: 'you' });
+    vi.unstubAllGlobals();
+  });
+
+  it('account.signedIn/user/refresh stay signed out without the switch', async () => {
+    const c = shim();
+    expect(await c.account.signedIn()).toBe(false);
+    expect(await c.account.user()).toBeNull();
+    expect(await c.account.refresh()).toBeNull();
+  });
+
   it('applies latency to channel results when set', async () => {
     setLatency(60);
     const started = performance.now();
     await shim().skills.list();
     expect(performance.now() - started).toBeGreaterThanOrEqual(50);
     setLatency(0);
+  });
+
+  // Native sessions (the `site` scenario's embed session, `provider: 'native'`)
+  // send through `native.send`, NOT `session.sendInput` — App's canPtySend
+  // refuses the PTY channel outright for provider:'native'. Pins that the two
+  // channels share the same reply machinery (startReply in mock-shim.ts) so a
+  // native send actually answers, and that the ack shape matches the real
+  // `NativeSendResult` contract (shared/types.ts) rather than session.sendInput's
+  // fire-and-forget `void`.
+  it('native.send answers a message and resolves the real ack shape', async () => {
+    vi.useFakeTimers();
+    const c = createMockShim(createStore('site')) as any;
+    const transcript: any[] = [];
+    c.on.transcriptEvent((e: any) => transcript.push(e));
+
+    const ack = c.native.send('site-1', 'hello');
+    await expect(ack).resolves.toEqual({ status: 'sent' });
+
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(transcript.length).toBeGreaterThan(0);
+    // No user-message echo — the app renders the user's bubble itself.
+    expect(transcript[0]).toMatchObject({ type: 'assistant-text' });
+    expect(transcript.at(-1)).toMatchObject({ type: 'turn-complete' });
+    vi.useRealTimers();
+  });
+});
+
+describe('site mode additions', () => {
+  it('native.setBinding rebinds the session model', async () => {
+    const store = createStore('site');
+    const shim = createMockShim(store);
+    const ok = await shim.native.setBinding('site-1', { providerId: 'openrouter', modelId: 'anthropic/claude-sonnet-5' });
+    expect(ok).toBe(true);
+    const s = (await shim.session.list()).find((x: any) => x.id === 'site-1');
+    expect(s.model).toBe('anthropic/claude-sonnet-5');
+  });
+  it('theme.list includes the vendored golden-sunbreak pack', async () => {
+    const shim = createMockShim(createStore('default'));
+    expect(await shim.theme.list()).toContain('golden-sunbreak');
   });
 });

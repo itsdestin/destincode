@@ -1,0 +1,4 @@
+{"type": "assistant_text", "text": "In the real app I'd get to work on that: read and edit your files, run the steps on your computer, search the web, and ask before changing anything. This demo only talks \u2014 but the interface is the real one. Try the model chip at the bottom, or the theme swatches under this window.", "delay": 500}
+{"type": "turn_complete", "delay": 300}
+{"type": "assistant_text", "text": "Still just a demo \u2014 in the app that would already be done. Download it below and pick any model to try for real.", "delay": 500}
+{"type": "turn_complete", "delay": 300}

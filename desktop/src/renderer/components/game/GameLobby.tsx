@@ -6,6 +6,10 @@ import { GameConnection } from '../../state/game-types';
 import { mergeFriends, statusLabel } from './friends-data';
 import { Button, InputGroup } from '../ui';
 import type { FriendRow, RequestsPayload } from '../../state/marketplace-api-client';
+// Task 7c, workbench-only auto-play — see the effect below and
+// dev/workbench/fake-party.ts. isWorkbenchAutoplay() is false in every
+// shipped build (it checks for a global only install-mock.ts ever sets).
+import { isWorkbenchAutoplay, JAKE_ID } from '../../dev/workbench/fake-party';
 
 // Local mirror of the renderer/main ApiResult shape (useIpc.ts declares it but
 // doesn't export it — keeping a copy avoids importing across that boundary).
@@ -679,6 +683,22 @@ function SignInScreen() {
 export default function GameLobby({ connection, incognito, onToggleIncognito }: Props) {
   const state = useGameState();
   const { signedIn } = useAccount();
+
+  // WORKBENCH ONLY (Task 7c): the landing-page film needs a live board within
+  // ~1s of opening the panel, with no add-friend / Challenge / Accept
+  // click-through against a bot who can't actually click Accept. The instant
+  // the fake presence layer reports connected, challenge "Jake" ourselves —
+  // exactly what a real Accept button does (connection.challengePlayer),
+  // just without the human step. isWorkbenchAutoplay() is only true when
+  // dev/workbench/install-mock.ts has run AND `?signedIn=1` is set, so this
+  // can never fire in the shipped app or a signed-out workbench.
+  useEffect(() => {
+    if (incognito || !isWorkbenchAutoplay()) return;
+    if (state.connected && state.screen === 'lobby') {
+      connection.challengePlayer(JAKE_ID);
+    }
+  }, [state.connected, state.screen, incognito, connection]);
+
   // Sign-in gate comes BEFORE the error/spinner branches — not being signed in
   // isn't a failure or a slow connection, it's a prerequisite. Incognito keeps
   // its own UI (you don't need to sign in to stay intentionally disconnected).

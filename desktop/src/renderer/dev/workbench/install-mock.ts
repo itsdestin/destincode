@@ -5,6 +5,10 @@
 import { createStore } from './mock-store';
 import { createMockShim } from './mock-shim';
 import { SCENARIO_IDS, type ScenarioId } from './scenarios';
+// Task 7c: swaps the real PartyKit socket for an in-page fake so Connect Four
+// is playable (and filmable) with no network. See fake-party.ts for the WHY.
+import { FakePartySocket, isWorkbenchAutoplay } from './fake-party';
+import { __setPartySocketFactory } from '../../game/party-client';
 import type { WidgetId } from '../../state/status-widgets';
 
 /** Scenario comes from ?scenario= so a reload lands on the same seed. An
@@ -77,6 +81,14 @@ function presetStatusBarWidgets(scenario: ScenarioId): void {
  *  (platform.ts), which is the answer we want anyway. */
 function declarePlatform(): void {
   const w = window as any;
+  // `?platform=android` films the phone half of the landing page's sync row —
+  // the header drops its window buttons and the shell lays out as the phone does.
+  // Caveat: this runs AFTER the module graph loaded, so CSS and render-time
+  // `isAndroid()` checks are right, but import-time consts (HeaderBar's
+  // toggleOnLeft) still see 'electron' — film the phone NARROW (390 wide), where
+  // the narrow layout hides that toggle anyway.
+  // `typeof location` guard: workbench-install-mock.test.ts runs this in Node.
+  if (!w.__PLATFORM__ && typeof location !== 'undefined' && new URLSearchParams(location.search).get('platform') === 'android') w.__PLATFORM__ = 'android';
   if (!w.__PLATFORM__) w.__PLATFORM__ = 'electron';
   if (typeof document !== 'undefined' && !document.documentElement.dataset.platform) {
     document.documentElement.dataset.platform = w.__PLATFORM__;
@@ -93,4 +105,11 @@ export function installMock(): void {
   // app's provider tree having to thread the store through.
   (window as any).__workbenchStore = store;
   (window as any).claude = createMockShim(store);
+  // Only when filming with `?signedIn=1` (Task 7c) — a signed-out workbench
+  // never touches party-client.ts, so `__setPartySocketFactory` stays unset
+  // and the (unreachable, since the game panel needs an account) real
+  // PartySocket path is exactly what it was before this file existed.
+  if (isWorkbenchAutoplay()) {
+    __setPartySocketFactory(FakePartySocket);
+  }
 }

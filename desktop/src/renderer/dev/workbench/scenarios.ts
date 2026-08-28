@@ -2,7 +2,7 @@ import type { SessionInfo } from '../../../shared/types';
 import type { TagRecord } from '../../../shared/tags';
 import type { StoredProject } from '../../../shared/permission-types';
 import type { FlagName } from '../../components/resume-browser-filters';
-import { sessions } from './fixtures/sessions';
+import { sessions, siteSessions } from './fixtures/sessions';
 import { permissions as seedPermissions, stressPermissions } from './fixtures/permissions';
 import { providers as seedProviders, catalog as seedCatalog, type ProviderRow, type CatalogRow } from './fixtures/providers';
 import { tags as seedTags } from './fixtures/tags';
@@ -14,11 +14,14 @@ export type ScenarioId =
   // bar is the only thing on screen worth looking at. 'statusbar-cc' reuses wb-1
   // (Claude Code); the other four reuse wb-2 (native) with different totals —
   // see STATUSBAR_TOTALS_OVERRIDE in seed-chat.ts for the exact numbers.
-  | 'statusbar-cc' | 'statusbar-local' | 'statusbar-metered' | 'statusbar-unpriced' | 'statusbar-delegated';
+  | 'statusbar-cc' | 'statusbar-local' | 'statusbar-metered' | 'statusbar-unpriced' | 'statusbar-delegated'
+  // Landing-page embed + its recorded loops (site/1.3-rebuild).
+  | 'site';
 
 export const SCENARIO_IDS: readonly ScenarioId[] = [
   'default', 'empty', 'no-providers', 'refused', 'stress',
   'statusbar-cc', 'statusbar-local', 'statusbar-metered', 'statusbar-unpriced', 'statusbar-delegated',
+  'site',
 ];
 
 /** A row in the Resume Browser's list. Mirrors ResumeBrowser.tsx's local
@@ -161,8 +164,27 @@ function stressPast(): PastSession[] {
   });
 }
 
+// Landing-page embed (scenario=site): two short past rows so the Resume list
+// isn't empty behind the one live session, without dragging in the full
+// eleven-row developer fixture (spec: a visitor sees a friendly conversation,
+// not a dev harness).
+function sitePast(): PastSession[] {
+  return [
+    past(0, 'draft the club newsletter', {
+      provider: 'native',
+      lastUsedModel: { modelId: 'qwen3-coder-30b-a3b-instruct', providerType: 'local-engine', providerLabel: 'Local' },
+    }),
+    past(1, 'compare two laptops', { tags: ['tag_work'] }),
+  ];
+}
+
 /** Builds a fresh state for a scenario. Every call re-runs the fixture
  *  factories, so two stores never share a mutable array. */
+function siteParam(name: 'title' | 'model'): string | null {
+  if (typeof location === 'undefined') return null;   // Node unit tests import this module
+  return new URLSearchParams(location.search).get(name);
+}
+
 export function seed(scenario: ScenarioId): MockState {
   const base: MockState = {
     sessions: sessions(),
@@ -192,6 +214,12 @@ export function seed(scenario: ScenarioId): MockState {
       return { ...base, providers: base.providers.map((p) => ({ ...p, ready: false })), catalog: [] };
     case 'stress':
       return { ...base, past: stressPast(), permissions: stressPermissions() };
+    case 'site':
+      // Landing-page embed: providers/catalog/tags/defaults as default, one
+      // native session, two past rows, no pre-set meta.
+      // `?title=` renames the one session — a loop that starts empty (`?seed=none`)
+      // should not sit under a "plan my week" tab either.
+      return { ...base, sessions: siteSessions().map((r) => ({ ...r, name: siteParam('title') ?? r.name, model: siteParam('model') ?? r.model })), past: sitePast(), meta: {} };
     // Status-bar relevance review: ONE session on screen, nothing else to
     // scroll past. `sessions()` always puts wb-1 (Claude Code) first and wb-2
     // (native) second, so `list[0]` — the workbench's own default-session pick

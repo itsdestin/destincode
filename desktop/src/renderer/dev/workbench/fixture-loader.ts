@@ -105,6 +105,23 @@ export function loadFixture(
         };
         state = chatReducer(state, action);
         actions.push(action);
+      } else if (parsed.type === 'turn_complete') {
+        // Without this a seeded conversation is frozen MID-TURN: the thinking
+        // chip ("Contemplating…") and the stop button stay up forever, which
+        // the landing page's live embed showed to every visitor. Mirrors
+        // App.tsx's 'turn-complete' dispatch (metadata null — a fixture has none).
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_TURN_COMPLETE',
+          sessionId,
+          uuid: `${name}-end-${actions.length}`,
+          timestamp: FIXTURE_T0 + actions.length * 1000,
+          stopReason: 'end_turn',
+          model: null,
+          anthropicRequestId: null,
+          usage: null,
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
       } else if (parsed.type === 'assistant_text' && typeof parsed.text === 'string') {
         const action: ChatAction = {
           type: 'TRANSCRIPT_ASSISTANT_TEXT',
