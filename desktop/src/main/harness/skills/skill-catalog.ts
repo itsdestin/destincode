@@ -44,6 +44,12 @@ export class SkillAmbiguous extends Error {
   }
 }
 
+
+// The literal placeholder a plugin skill writes in its SKILL.md. It is data, not a
+// template we evaluate — so the lint rule that warns about ${...} inside a plain
+// string is disabled here on purpose.
+// eslint-disable-next-line no-template-curly-in-string
+const PLUGIN_ROOT_TOKEN = '${CLAUDE_PLUGIN_ROOT}';
 export class SkillUnreadable extends Error {
   constructor(public readonly id: string, public readonly cause: string) {
     // Specific and accurate per docs/error-message-standards.md — surface the
@@ -92,7 +98,7 @@ export function createSkillCatalog(entries: SkillEntry[] = scanSkills()): SkillC
       // WHY: Claude Code fills ${CLAUDE_PLUGIN_ROOT} when it renders a plugin skill;
       // our harness must too, or every plugin's documented command runs as `node /skills/…`.
       const pluginRoot = path.dirname(path.dirname(entry.skillDir));
-      const body = stripFrontmatter(raw).trim().split('${CLAUDE_PLUGIN_ROOT}').join(pluginRoot);
+      const body = stripFrontmatter(raw).trim().split(PLUGIN_ROOT_TOKEN).join(pluginRoot);
       // entry.id, NOT the requested id: a bare name resolves to a qualified one,
       // and the caller labels the injected block with what actually ran.
       return { id: entry.id, displayName: entry.displayName, description: entry.description, body, file };
