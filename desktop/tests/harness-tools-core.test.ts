@@ -1318,6 +1318,82 @@ describe('Glob', () => {
     expect(r.text).toBe('No files matched.');
   });
 
+  // Ledger G-8 (2026-08-26 native-tools investigation, §6/§8): a bare "*.ts"
+  // used to match ONLY files sitting directly in the search root, because the
+  // hand-rolled matcher anchors the pattern to the root-relative path. Every
+  // model expects Claude Code's behaviour ("*.ts" finds nested files too —
+  // Cursor auto-prepends "**/"), and nothing in the description said
+  // otherwise, so a model got "No files matched." for files that existed.
+  describe('a pattern with no "/" searches every folder (G-8)', () => {
+    it('bare *.ts finds nested files, like **/*.ts', async () => {
+      fs.mkdirSync(path.join(dir, 'a/b'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'top.ts'), '');
+      fs.writeFileSync(path.join(dir, 'a/b/deep.ts'), '');
+      const r = await GlobTool.execute({ pattern: '*.ts' }, ctx);
+      expect(r.text).toContain('top.ts');
+      expect(r.text).toContain('a/b/deep.ts');
+    });
+
+    it('a pattern containing "/" is matched as written: src/*.ts does NOT recurse', async () => {
+      fs.mkdirSync(path.join(dir, 'src/deep'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/f.ts'), '');
+      fs.writeFileSync(path.join(dir, 'src/deep/g.ts'), '');
+      const r = await GlobTool.execute({ pattern: 'src/*.ts' }, ctx);
+      expect(r.text).toContain('src/f.ts');
+      expect(r.text).not.toContain('src/deep/g.ts');
+    });
+  });
+
+  // Ledger G-8, second half: hidden entries (".git/", ".cache/", dotfiles)
+  // were the bulk of the walks that hit WALK_CEILING. They are now skipped
+  // unless the pattern itself names a dot-leading segment.
+  describe('hidden files and folders are skipped unless the pattern names them (G-8)', () => {
+    it('**/*.ts skips a hidden folder and a hidden file by default', async () => {
+      fs.mkdirSync(path.join(dir, '.cache/sub'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.cache/sub/cached.ts'), '');
+      fs.writeFileSync(path.join(dir, '.hidden.ts'), '');
+      fs.writeFileSync(path.join(dir, 'shown.ts'), '');
+      const r = await GlobTool.execute({ pattern: '**/*.ts' }, ctx);
+      expect(r.text).toContain('shown.ts');
+      expect(r.text).not.toContain('cached.ts');
+      expect(r.text).not.toContain('.hidden.ts');
+    });
+
+    it('.github/**/*.yml opts the named hidden folder back in (and no other)', async () => {
+      fs.mkdirSync(path.join(dir, '.github/workflows'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.github/workflows/ci.yml'), '');
+      fs.mkdirSync(path.join(dir, '.other'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.other/x.yml'), '');
+      const r = await GlobTool.execute({ pattern: '.github/**/*.yml' }, ctx);
+      expect(r.text).toContain('.github/workflows/ci.yml');
+      expect(r.text).not.toContain('.other/x.yml');
+    });
+
+    it('**/.env* finds dotfiles at any depth inside visible folders', async () => {
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.env'), '');
+      fs.writeFileSync(path.join(dir, 'app/.env.local'), '');
+      fs.writeFileSync(path.join(dir, 'app/config.ts'), ''); // must NOT match
+      // A hidden FOLDER the pattern does not name stays skipped even when it
+      // holds a file the last segment would match.
+      fs.mkdirSync(path.join(dir, '.cache'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.cache/.env'), '');
+      const r = await GlobTool.execute({ pattern: '**/.env*' }, ctx);
+      expect(r.text).toContain('.env');
+      expect(r.text).toContain('app/.env.local');
+      expect(r.text).not.toContain('config.ts');
+      expect(r.text).not.toContain('.cache/.env');
+    });
+
+    it('the tool and the pattern parameter both say so', () => {
+      // The no-slash rule is the surprising one — it belongs on the parameter
+      // the model fills in, not only in the tool blurb.
+      expect(GlobTool.inputSchema.shape.pattern.description).toMatch(/no "\/"/);
+      expect(GlobTool.description).toMatch(/no "\/"/);
+      expect(GlobTool.description).toMatch(/hidden files and folders are skipped unless the pattern names them/i);
+    });
+  });
+
   // Regression pin (2026-08-10 review, Claim 3): our hand-rolled glob->regex
   // converter used to ESCAPE '{'/'}' as literal characters, so
   // '**/*.{ts,kt,toml}' compiled to a regex requiring the literal substring
