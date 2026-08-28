@@ -237,6 +237,12 @@ export class LocalSkillProvider implements SkillProvider {
       sourceMarketplace: marketplaceEntry.sourceMarketplace,
       description: marketplaceEntry.description,
       author: marketplaceEntry.author,
+      // WHY: this was never wired through, which left installFromLocal's
+      // version-mismatch cache refresh as dead code — the cache could only
+      // ever refresh on the 1 h timer, never because the marketplace index
+      // bumped a version mid-window. entry.version lets a fresh install pick
+      // up a just-released fix immediately instead of waiting out the gate.
+      version: marketplaceEntry.version,
       // Decomposition v3 §9.5: pass through postInstall + recommends so
       // installer can run trusted-org-gated scripts / surface soft deps
       postInstall: marketplaceEntry.postInstall,
