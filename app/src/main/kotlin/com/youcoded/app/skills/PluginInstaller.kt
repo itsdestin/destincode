@@ -54,6 +54,12 @@ class PluginInstaller(
         // is NOT a trust boundary (comes from fetchable JSON, can be spoofed).
         private val TRUSTED_POSTINSTALL_ORGS = listOf("itsdestin/", "destinationunknown/")
 
+        // Task B5 (Android port of upgradeFromLocal): plugin ids ultimately come
+        // from BundledPlugins.IDS (fixed) or a marketplace index entry (external
+        // JSON) — reject anything that isn't a safe path segment before it's used
+        // to build a filesystem path.
+        private val SAFE_ID_RE = Regex("^[a-zA-Z0-9_-]+$")
+
         /**
          * Phase 3a: Map sourceMarketplace to its git repo URL.
          * YouCoded/YouCoded local entries live in itsdestin/wecoded-marketplace
@@ -262,6 +268,119 @@ class PluginInstaller(
         return InstallResult.Success
     }
 
+    // ── Task B5: bundled-plugin upgrade (port of desktop's readPluginVersion /
+    // refreshLocalMarketplaceCache / upgradePluginFromLocal in plugin-installer.ts) ──
+
+    /**
+     * Read the "version" field out of a plugin's manifest, checking both
+     * layouts Claude Code accepts (root plugin.json, then .claude-plugin/plugin.json).
+     * Used both to read the REAL on-disk version of an install (not the
+     * marketplace index's claimed version) and to read the cached copy's
+     * version to decide whether an upgrade is available.
+     */
+    fun readPluginVersion(dir: File): String? {
+        for (candidate in listOf(File(dir, "plugin.json"), File(dir, ".claude-plugin/plugin.json"))) {
+            if (!candidate.exists()) continue
+            val v = try { JSONObject(candidate.readText()).optString("version") } catch (_: Exception) { null }
+            if (!v.isNullOrEmpty()) return v
+        }
+        return null
+    }
+
+    /** Where a source ref resolves to inside the local marketplace cache clone. */
+    fun cacheSourceDir(sourceRef: String, sourceMarketplace: String?): File =
+        File(File(cacheDir, getCacheRepoName(sourceMarketplace)), sourceRef)
+
+    /**
+     * Refresh the marketplace cache clone on its own, independent of an
+     * install — the launch-time reconciler calls this before comparing
+     * versions, so an already-installed bundled plugin's upgrade can be
+     * detected without the user re-running the install flow. Clones if the
+     * cache is missing; otherwise only fetches/resets once the 1 h gate
+     * (CACHE_REFRESH_MS — same constant installFromLocal already uses) has
+     * elapsed, since reconcile runs on EVERY launch and without the gate
+     * that's a GitHub round-trip on every app start, on a phone.
+     */
+    suspend fun refreshLocalMarketplaceCache(sourceMarketplace: String?): Boolean = withContext(Dispatchers.IO) {
+        val cacheRepo = File(cacheDir, getCacheRepoName(sourceMarketplace))
+        val repoUrl = getMarketplaceRepo(sourceMarketplace)
+        if (!cacheRepo.exists()) {
+            cacheDir.mkdirs()
+            val ok = runGit("clone", "--depth", "1", repoUrl, cacheRepo.absolutePath)
+            if (ok) setCacheTimestamp(cacheRepo)
+            return@withContext ok
+        }
+        if (System.currentTimeMillis() - getCacheTimestamp(cacheRepo) < CACHE_REFRESH_MS) return@withContext true
+        if (!runGit("-C", cacheRepo.absolutePath, "fetch", "origin")) return@withContext false
+        val resetOk = runGit("-C", cacheRepo.absolutePath, "reset", "--hard", "origin/master")
+        if (resetOk) setCacheTimestamp(cacheRepo)
+        resetOk
+    }
+
+    /**
+     * Replace an already-installed plugin's tree with the cache clone's copy,
+     * in place. Never deletes the live install directory before the new copy
+     * is staged — a crash mid-copy must not leave the user with no plugin at
+     * all. The old tree is parked at `.old-<id>` until the swap fully
+     * succeeds, and is put BACK if anything throws in between (matches
+     * desktop's upgradePluginFromLocal in plugin-installer.ts).
+     */
+    suspend fun upgradeFromLocal(id: String, sourceRef: String, sourceMarketplace: String?): InstallResult = withContext(Dispatchers.IO) {
+        if (!SAFE_ID_RE.matches(id)) return@withContext InstallResult.Failed("Invalid plugin id")
+        val cacheRepo = File(cacheDir, getCacheRepoName(sourceMarketplace))
+        val sourceDir = cacheSourceDir(sourceRef, sourceMarketplace)
+        // Security: prevent sourceRef from escaping the cache directory (e.g. "../../.ssh").
+        if (!isContainedIn(sourceDir, cacheRepo)) return@withContext InstallResult.Failed("Invalid source ref (path traversal blocked)")
+        if (!sourceDir.isDirectory) return@withContext InstallResult.Failed("Source not found in marketplace cache: $sourceRef")
+        pluginsDir.mkdirs()
+        val target = File(pluginsDir, id)
+        val staging = File(pluginsDir, ".upgrade-$id")
+        val retired = File(pluginsDir, ".old-$id")
+        // Stale leftovers from a killed prior attempt must not make copyRecursively
+        // merge into a half-written staging dir.
+        staging.deleteRecursively()
+        retired.deleteRecursively()
+        try {
+            sourceDir.copyRecursively(staging, overwrite = true)
+            if (target.exists() && !target.renameTo(retired)) {
+                return@withContext InstallResult.Failed("could not move the old plugin aside")
+            }
+            if (!staging.renameTo(target)) {
+                // WHY: put the old tree back immediately — a user must never end
+                // up with the plugin directory entirely gone.
+                if (!retired.renameTo(target)) Log.e(TAG, "upgrade rollback failed for $id: could not restore $retired")
+                return@withContext InstallResult.Failed("could not move the new plugin into place")
+            }
+        } catch (e: Exception) {
+            // WHY: same rollback as above — the swap died mid-copy/rename.
+            if (!target.exists() && retired.exists()) {
+                try { retired.renameTo(target) } catch (_: Exception) { /* nothing better to do */ }
+            }
+            staging.deleteRecursively()
+            return@withContext InstallResult.Failed("upgrade copy failed: ${e.message}")
+        }
+        // WHY: deleting the retired tree is cleanup AFTER the swap already
+        // succeeded — the new files are live at `target` at this point. A
+        // failure here must not be reported as an upgrade failure (matches
+        // desktop's WHY at upgradePluginFromLocal): the upgrade DID work, and
+        // reporting failure would skip the registerPluginInstall call below,
+        // leaving installed_plugins.json stuck on the old version forever.
+        try { retired.deleteRecursively() } catch (_: Exception) { /* best-effort cleanup only */ }
+        // Register with the REAL version read off the newly-swapped-in disk
+        // copy, not a hardcoded default — this is the whole point of the upgrade.
+        val version = readPluginVersion(target) ?: "1.0.0"
+        try {
+            ClaudeCodeRegistry.registerPluginInstall(homeDir, ClaudeCodeRegistry.RegisterInput(
+                id = id,
+                installPath = target.absolutePath,
+                version = version,
+            ))
+        } catch (e: Exception) {
+            return@withContext InstallResult.Failed("Registry write failed: ${e.message}")
+        }
+        InstallResult.Success
+    }
+
     private suspend fun installFromUrl(id: String, url: String): InstallResult {
         val targetDir = File(pluginsDir, id)
         if (targetDir.exists()) targetDir.deleteRecursively()
@@ -312,6 +431,13 @@ class PluginInstaller(
         try {
             File(cacheRepo, ".youcoded-last-pull").writeText(System.currentTimeMillis().toString())
         } catch (_: Exception) { /* non-fatal — retry next install */ }
+    }
+
+    /** Security: resolved `child` must stay inside `parent` (blocks a spoofed sourceRef like "../../.ssh"). */
+    private fun isContainedIn(child: File, parent: File): Boolean {
+        val c = child.canonicalFile
+        val p = parent.canonicalFile
+        return c == p || c.path.startsWith(p.path + File.separator)
     }
 
     private fun isPostInstallTrusted(entry: JSONObject): Boolean {

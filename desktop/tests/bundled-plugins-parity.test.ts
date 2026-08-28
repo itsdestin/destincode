@@ -27,4 +27,17 @@ describe('bundled plugin parity', () => {
   it('includes chatsearch on both platforms', () => {
     expect([...BUNDLED_PLUGIN_IDS]).toContain('youcoded-chatsearch');
   });
+
+  // Task B5: Android's PluginInstaller/LocalSkillProvider must expose the
+  // same reconcile entry points desktop's plugin-installer.ts/skill-provider.ts
+  // added in Track B (readPluginVersion, refreshLocalMarketplaceCache,
+  // upgradePluginFromLocal, reconcileBundledPlugins) — a bundled-plugin
+  // upgrade fix that lands on only one platform is worse than no fix at all.
+  it('the Kotlin installer implements the same reconcile entry points', () => {
+    const kt = (f: string) => fs.readFileSync(path.resolve(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'skills', f), 'utf8');
+    expect(kt('LocalSkillProvider.kt')).toMatch(/fun reconcileBundledPlugins\(/);
+    expect(kt('PluginInstaller.kt')).toMatch(/fun upgradeFromLocal\(/);
+    expect(kt('PluginInstaller.kt')).toMatch(/fun refreshLocalMarketplaceCache\(/);
+    expect(kt('VersionCompare.kt')).toMatch(/fun isNewer\(/);
+  });
 });
