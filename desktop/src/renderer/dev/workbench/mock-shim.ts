@@ -21,6 +21,7 @@ import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns }
 // Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
+import { buildCatalog } from './fixtures/marketplace/catalog';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
 // states (partial-view banner, handoff) against the fake backend.
@@ -1525,7 +1526,11 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     setChips: async (next: { skillId?: string; label: string; prompt: string }[]) => {
       chipList = next.map((c) => ({ ...c }));
     },
-    listMarketplace: async () => (marketplaceEmpty ? [] : MARKETPLACE_PLUGINS.map((p) => ({ ...p }))),
+    // Marketplace overhaul (2026-08-27): every bundle gets its catalog block
+    // (type / origin / scan / capabilities), and the list also carries the
+    // member rows (skills, specialists, tools INSIDE bundles) plus a few
+    // standalone items — the shape the real catalog will return once built.
+    listMarketplace: async () => (marketplaceEmpty ? [] : buildCatalog(MARKETPLACE_PLUGINS)),
     list: async () => (marketplaceEmpty ? [] : INSTALLED_SKILLS.map((s) => ({ ...s }))),
     getFavorites: async () => [...skillFavourites],
     setFavorite: async (id: string, favorited: boolean) => {

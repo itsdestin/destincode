@@ -15,12 +15,17 @@
 
 import React, { useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { Button, FilterChip, SearchFilterPill, SegmentedTabs, SegmentedTabLabel, PluginIcon, PaletteIcon } from "../ui";
+import { Button, FilterChip, SearchFilterPill, SegmentedTabs, SegmentedTabLabel, PaletteIcon } from "../ui";
+import { CATALOG_ITEM_TYPES, CATALOG_TYPE_LABEL, catalogType, type CatalogItemType } from "../../../shared/catalog-types";
+import { typeIcon } from "./type-icons";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useNarrowViewport } from "../../hooks/use-narrow-viewport";
 
-export type TypeChip = "skill" | "theme";
+// Marketplace overhaul (2026-08-27, decision #1): the type switch names the
+// five installable kinds plus themes. "skill" used to mean "any plugin"; it
+// now means an actual skill, and "plugin" is the bundle.
+export type TypeChip = CatalogItemType | "theme";
 export type MetaChip = "new" | "popular" | "picks";
 
 const VIBES = ["school", "work", "creative", "health", "personal", "finance", "home"] as const;
@@ -50,13 +55,27 @@ function activeFilterCount(f: FilterState): number {
 // Round 2 (Destin, 2026-08-27): the switch is the SAME pill as the Library's Plugins |
 // Themes switcher — icon + label + count, variant="pill" — so the two surfaces read as one
 // control. Counts are registry sizes (what you can browse), the Library's are installed.
+// Overhaul: one segment per kind — Plugins · Skills · Specialists · Tools ·
+// Prompts · Themes — each counting every row of that kind, INCLUDING the
+// ones that live inside a bundle (that is what picking a type is for:
+// "grouped when browsing, split when looking for something specific").
+// "All" counts only what the grouped grid shows (bundles + standalone items
+// + themes), so the two numbers say what you will actually see.
 function useTypeTabs(active: string) {
   const mp = useMarketplace();
-  const plugins = mp.skillEntries.length;
+  const counts: Record<CatalogItemType, number> = { plugin: 0, skill: 0, specialist: 0, tool: 0, prompt: 0 };
+  let grouped = 0;
+  for (const s of mp.skillEntries) {
+    counts[catalogType(s.catalog)] += 1;
+    if (!s.catalog?.partOf) grouped += 1;
+  }
   const themes = mp.themeEntries.length;
   return [
-    { id: "all", label: <SegmentedTabLabel icon={null} text="All" count={plugins + themes} active={active === "all"} /> },
-    { id: "skill", label: <SegmentedTabLabel icon={<PluginIcon />} text="Plugins" count={plugins} active={active === "skill"} /> },
+    { id: "all", label: <SegmentedTabLabel icon={null} text="All" count={grouped + themes} active={active === "all"} /> },
+    ...CATALOG_ITEM_TYPES.map((t) => ({
+      id: t,
+      label: <SegmentedTabLabel icon={typeIcon(t)} text={CATALOG_TYPE_LABEL[t].many} count={counts[t]} active={active === t} />,
+    })),
     { id: "theme", label: <SegmentedTabLabel icon={<PaletteIcon />} text="Themes" count={themes} active={active === "theme"} /> },
   ];
 }
@@ -208,14 +227,18 @@ function FilterSheet({
         </header>
         <div className="flex-1 flex flex-col gap-4 p-4">
           <SheetGroup label="Type">
-            {/* P-1 #1: same pick-one switch as the wide bar. */}
-            <SegmentedTabs
-              variant="pill"
-              tabs={typeTabs}
-              value={value.type ?? "all"}
-              onChange={setTypeTab}
-              aria-label="Type"
-            />
+            {/* P-1 #1: same pick-one switch as the wide bar. Overhaul: seven
+                segments no longer fit a phone — the row scrolls sideways and
+                bleeds to the sheet's edges (§4.8) instead of being clipped. */}
+            <div className="w-full -mx-4 px-4 overflow-x-auto" style={{ width: 'calc(100% + 2rem)' }}>
+              <SegmentedTabs
+                variant="pill"
+                tabs={typeTabs}
+                value={value.type ?? "all"}
+                onChange={setTypeTab}
+                aria-label="Type"
+              />
+            </div>
           </SheetGroup>
           <SheetGroup label="Vibe">
             {VIBES.map((v) => (

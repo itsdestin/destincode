@@ -1,3 +1,5 @@
+import type { CatalogMeta } from './catalog-types';
+
 // 'auto' is Claude Code's classifier-backed mode (CC v2.1.83+, March 2026).
 // Sits between 'auto-accept' (only file edits + 7 safe bash) and 'bypass'
 // (no checks): a background classifier blocks risky actions like mass deletion
@@ -857,6 +859,11 @@ export interface SkillEntry {
   // pick the right cache clone / repo when refreshing and upgrading a
   // bundled plugin — 'youcoded' vs 'youcoded-core' vs upstream Anthropic.
   sourceMarketplace?: string;
+
+  // Marketplace overhaul (2026-08-27): type / origin / scan / capabilities /
+  // membership for the new catalog. Optional — today's registry has none of
+  // it, and the UI treats an absent block as "a plugin, community, unchecked".
+  catalog?: CatalogMeta;
 
   // Absolute path to the skill's own directory (the one holding SKILL.md).
   // Populated by scanSkills for filesystem-discovered skills. The native harness

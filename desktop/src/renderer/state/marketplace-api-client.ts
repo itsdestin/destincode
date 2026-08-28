@@ -36,8 +36,23 @@ export type AuthPollResponse =
 
 export interface StatsResponse {
   generated_at: number;
-  plugins: Record<string, { installs: number; review_count: number; rating: number }>;
+  // thumbs_up / thumbs_down: marketplace overhaul (2026-08-27) — one-tap
+  // feedback replaces star ratings. Optional until the Worker ships them; the
+  // UI shows nothing (not "0%") when they are absent.
+  plugins: Record<string, { installs: number; review_count: number; rating: number; thumbs_up?: number; thumbs_down?: number }>;
   themes: Record<string, { likes: number }>;
+}
+
+// One comment on a plugin — GET /comments/:plugin_id (marketplace overhaul,
+// no Worker route yet; the workbench answers it from fixtures).
+export interface CommentEntry {
+  id: string;
+  user_id: string;
+  user_login: string;
+  user_avatar_url: string;
+  text: string;
+  /** Unix timestamp in seconds */
+  created_at: number;
 }
 
 // Shape of a single rating entry from GET /ratings/:plugin_id
@@ -110,6 +125,15 @@ export interface MarketplaceApiClient {
   /** Fetch all visible ratings for a plugin. Unauthenticated; newest-first, LIMIT 50.
    *  Pass an AbortSignal to cancel in-flight requests on unmount or refresh. */
   listRatings(pluginId: string, signal?: AbortSignal): Promise<ListRatingsResponse>;
+
+  // ── Marketplace overhaul (2026-08-27) — thumbs + comments. NO Worker routes
+  //    exist yet; see fixtures/marketplace/worker-api-mock.ts for the shapes the
+  //    design assumes. Both auth'd; thumbs additionally require a prior install
+  //    (same rule as ratings today, so strangers can't game the number). ──
+  listComments(pluginId: string, signal?: AbortSignal): Promise<{ comments: CommentEntry[] }>;
+  postComment(input: { plugin_id: string; text: string }): Promise<{ id: string }>;
+  /** `null` clears the user's vote. */
+  setThumb(input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<void>;
 
   // ── Social graph (accounts Phase 2). All auth'd. The Worker 404s an unknown or
   //    blocked handle (indistinguishable — no enumeration oracle), 429s on caps,
@@ -246,6 +270,13 @@ export function createMarketplaceApiClient(opts: {
     // signal allows callers to cancel mid-flight on unmount or refreshKey change.
     listRatings: (plugin_id, signal?) =>
       request<ListRatingsResponse>(`/ratings/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
+    listComments: (plugin_id, signal?) =>
+      request<{ comments: CommentEntry[] }>(`/comments/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
+    postComment: (input) =>
+      request<{ id: string }>("/comments", { method: "POST", body: JSON.stringify(input), auth: true }),
+    setThumb: async (input) => {
+      await request("/thumbs", { method: "POST", body: JSON.stringify(input), auth: true });
+    },
 
     // ── Social graph (accounts Phase 2). All auth'd; path params URL-encoded. The
     //    action endpoints (accept/decline/cancel/unfriend/block/unblock) return

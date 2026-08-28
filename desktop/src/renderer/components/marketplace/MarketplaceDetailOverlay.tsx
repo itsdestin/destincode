@@ -13,10 +13,13 @@ import { useTheme } from "../../state/theme-context";
 import type { SkillEntry, SkillComponents } from "../../../shared/types";
 import { isBundledPlugin, BUNDLED_REASON } from "../../../shared/bundled-plugins";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
-import StarRating from "./StarRating";
-import RatingSubmitModal from "./RatingSubmitModal";
-import ReviewList from "./ReviewList";
 import LikeButton from "./LikeButton";
+// Marketplace overhaul (2026-08-27): trust line, "What this can do", and the
+// Feedback section (thumbs + comments) replace star reviews.
+import { OriginBadge, ScanBadge } from "./TrustBadges";
+import { CapabilityList } from "./CapabilityList";
+import FeedbackSection from "./FeedbackSection";
+import { CATALOG_TYPE_LABEL } from "../../../shared/catalog-types";
 import FileViewerOverlay, { type FileViewerTarget } from "./FileViewerOverlay";
 import { Button, CloseButton } from "../ui";
 
@@ -32,10 +35,14 @@ interface Props {
   // works standalone in tests.
   onOpenShareSheet?(skillId: string): void;
   onOpenThemeShare?(themeSlug: string): void;
+  // Overhaul: jump to another item's page from this one — a member's
+  // "Part of …" link, or a bundle's "What's inside" rows. The screen owns
+  // the target, so this just swaps it.
+  onNavigate?(target: DetailTarget): void;
 }
 
 export default function MarketplaceDetailOverlay({
-  target, onClose, onOpenShareSheet, onOpenThemeShare,
+  target, onClose, onOpenShareSheet, onOpenThemeShare, onNavigate,
 }: Props) {
   const mp = useMarketplace();
   // Needed for Apply action and isActive check in ThemeBody
@@ -58,9 +65,18 @@ export default function MarketplaceDetailOverlay({
       // for any plugin that ships skills, only namespaced ids appear in
       // installedSkills and the bare id never matches. See MarketplaceScreen
       // installedIds memo for the same fix at the grid level.
+      // Overhaul: a member row counts as installed when its bundle is.
+      const bundleId = entry.catalog?.partOf?.id;
       const installed = mp.installedSkills.some(
-        (e) => e.id === target.id || e.pluginName === target.id,
+        (e) => e.id === target.id || e.pluginName === target.id
+          || (!!bundleId && (e.id === bundleId || e.pluginName === bundleId)),
       );
+      // Members reachable from a bundle's "What's inside": `<bundle>/<name>`
+      // rows the catalog shipped. Absent → fall back to the file viewer.
+      const memberId = (name: string): string | null => {
+        const id = `${entry.id}/${name}`;
+        return mp.skillEntries.some((e) => e.id === id) ? id : null;
+      };
       const favorited = mp.favorites.includes(target.id);
       const installing = mp.installingIds.has(`skill:${target.id}`);
       const errEntry = mp.installError.get(`skill:${target.id}`);
@@ -71,6 +87,8 @@ export default function MarketplaceDetailOverlay({
           favorited={favorited}
           isInstalling={installing}
           installError={errEntry?.message ?? null}
+          onNavigate={onNavigate}
+          memberId={memberId}
           onInstall={() => mp.installSkill(entry.id).catch(() => undefined)}
           onUninstall={() => mp.uninstallSkill(entry.id).catch(() => undefined)}
           onToggleFavorite={() => mp.setFavorite(entry.id, !favorited).catch(() => undefined)}
@@ -202,7 +220,7 @@ function ShareIcon() {
 
 function SkillBody({
   entry, installed, favorited, isInstalling, installError,
-  onInstall, onUninstall, onToggleFavorite, onShare,
+  onInstall, onUninstall, onToggleFavorite, onShare, onNavigate, memberId,
 }: {
   entry: SkillEntry;
   installed: boolean;
@@ -213,18 +231,14 @@ function SkillBody({
   onUninstall(): void;
   onToggleFavorite(): void;
   onShare?(): void;
+  onNavigate?(target: DetailTarget): void;
+  memberId(name: string): string | null;
 }) {
-  const stats = useMarketplaceStats();
-  const pluginStats = stats.plugins[entry.id];
-  const rating = pluginStats?.rating;
-  const reviewCount = pluginStats?.review_count ?? 0;
-
-  const auth = useAccount();
-  const [ratingOpen, setRatingOpen] = useState(false);
-  const [reviewRefresh, setReviewRefresh] = useState(0);
   // File viewer for items in the "What's inside" peek — nested layer-3 overlay
   // that reads local install first, remote raw URL as fallback.
   const [fileTarget, setFileTarget] = useState<FileViewerTarget | null>(null);
+  const catalog = entry.catalog;
+  const typeLabel = catalog ? CATALOG_TYPE_LABEL[catalog.itemType].one : null;
 
   return (
     <article className="flex flex-col gap-4 max-w-3xl mx-auto">
@@ -233,7 +247,27 @@ function SkillBody({
       <header className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-semibold text-fg">{entry.displayName}</h1>
-          {entry.author && <p className="text-sm text-fg-dim">{entry.author}</p>}
+          {(entry.author || typeLabel) && (
+            <p className="text-sm text-fg-dim">{[typeLabel, entry.author].filter(Boolean).join(" · ")}</p>
+          )}
+          {/* Overhaul: the trust line — who made it, was it checked, and
+              where it came from. Two badges, then plain text; never a score. */}
+          {catalog && (
+            <div className="mt-2 flex items-center gap-1.5 flex-wrap text-xs text-fg-dim" data-trust-line>
+              <OriginBadge tier={catalog.origin.tier} size="md" />
+              <ScanBadge scan={catalog.scan} size="md" />
+              {catalog.origin.mirroredFrom && <span>from {catalog.origin.mirroredFrom}</span>}
+              {catalog.partOf && (
+                <button
+                  type="button"
+                  onClick={onNavigate ? () => onNavigate({ kind: "skill", id: catalog.partOf!.id }) : undefined}
+                  className="underline decoration-dotted underline-offset-2 text-fg-2 hover:text-accent"
+                >
+                  Part of {catalog.partOf.displayName}
+                </button>
+              )}
+            </div>
+          )}
           {entry.tagline && <p className="mt-2 text-sm sm:text-base text-fg-2">{entry.tagline}</p>}
         </div>
         <div className="shrink-0 flex items-center gap-2 flex-wrap">
@@ -304,6 +338,10 @@ function SkillBody({
         </div>
       </header>
 
+      {/* Overhaul (decision #3): what it does to your machine, in plain
+          words, BEFORE the description — read it, then decide. */}
+      {catalog && <CapabilityList catalog={catalog} />}
+
       {/* Tags + audience + life area — only render when at least one is set,
           so legacy entries without these fields don't get an empty row. */}
       <MetadataChips entry={entry} />
@@ -321,54 +359,26 @@ function SkillBody({
 
       <ComponentsPeek
         components={entry.components}
-        onOpenFile={(kind, name) => setFileTarget({
-          pluginId: entry.id,
-          pluginName: entry.displayName,
-          kind,
-          name,
-        })}
+        onOpenFile={(kind, name) => {
+          // Overhaul (decision #1): a member with its own catalog row opens
+          // its own page (with its own Install); otherwise the raw file.
+          const id = memberId(name);
+          if (id && onNavigate) { onNavigate({ kind: "skill", id }); return; }
+          setFileTarget({ pluginId: entry.id, pluginName: entry.displayName, kind, name });
+        }}
       />
 
-      {/* Reviews section — shown for all marketplace skills. Write button
-          gated behind signed-in + installed (server also enforces this). */}
-      <section>
-        <div className="flex items-center justify-between mb-2">
-          <div className="flex items-center gap-3">
-            <h2 className="text-sm uppercase tracking-wide text-fg-dim">Reviews</h2>
-            {rating != null && reviewCount > 0 && (
-              <StarRating value={rating} count={reviewCount} size="sm" />
-            )}
-          </div>
-          {/* Disabled when not installed — the label switches to "Install to
-              review" in that case so touch users can see the gate reason
-              without a hover tooltip (which Android has no way to surface). */}
-          <button
-            type="button"
-            onClick={() => setRatingOpen(true)}
-            disabled={!installed}
-            className="text-sm px-3 py-1 rounded-md border border-edge-dim hover:border-edge text-fg-2 hover:text-fg disabled:opacity-50 disabled:cursor-not-allowed"
-            title={
-              !installed ? "Install to review"
-                : !auth.signedIn ? "Sign in to write a review"
-                : "Write a review"
-            }
-          >
-            {installed ? "Write a review" : "Install to review"}
-          </button>
-        </div>
-        <ReviewList pluginId={entry.id} refreshKey={reviewRefresh} />
-      </section>
-
-      <RatingSubmitModal
-        pluginId={entry.id}
-        open={ratingOpen}
-        onClose={() => setRatingOpen(false)}
-        onSubmitted={() => setReviewRefresh((n) => n + 1)}
-      />
+      {/* Overhaul (decision #4): thumbs + comments replace star reviews. */}
+      <FeedbackSection pluginId={entry.id} installed={installed} />
 
       {entry.repoUrl && (
-        <footer className="text-xs text-fg-dim">
-          Source: <a className="underline" href={entry.repoUrl} target="_blank" rel="noreferrer">{entry.repoUrl}</a>
+        <footer className="text-xs text-fg-dim flex flex-wrap gap-x-2">
+          <span>Source: <a className="underline" href={entry.repoUrl} target="_blank" rel="noreferrer">{entry.repoUrl}</a></span>
+          {/* Overhaul: the licence and the exact upstream version we pinned —
+              the two facts a mirrored listing owes its author and its user. */}
+          {catalog?.license && <span>· {catalog.license}</span>}
+          {catalog?.sourceCommit && <span title="The listing is pinned to this exact upstream version; an author can't swap the files after we checked them.">· pinned to {catalog.sourceCommit}</span>}
+          {catalog && !catalog.license && <span>· licence not stated</span>}
         </footer>
       )}
 
