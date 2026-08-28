@@ -245,7 +245,7 @@ export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
         toolGroupIds: [],
       };
       pendingReasoning = null;
-    } else {
+    } else if (seg.type === 'tool-group') {
       // Tool-group segment. Fix (M1 BUG A): the native harness streams
       // reasoning live but batches tool-use events after each step's stream,
       // so a multi-step turn interleaves as [text₁, toolGroupA, reasoning₂,
@@ -265,6 +265,13 @@ export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
         pendingReasoning = null;
       }
       current.toolGroupIds.push(seg.groupId);
+    } else {
+      // A segment type this bundle does not know about. The remote browser and
+      // the Android WebView load a bundle that can be OLDER than the host that
+      // sends them turns, so this is reachable in normal use, not a corruption.
+      // Render nothing: the previous `else` treated anything unrecognised as a
+      // tool group, which pushed `undefined` as a group id and drew an empty
+      // card for a segment it could not read.
     }
   }
   if (current) bubbles.push(current);
