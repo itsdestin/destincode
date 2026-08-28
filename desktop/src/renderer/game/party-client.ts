@@ -7,6 +7,29 @@ const PARTYKIT_HOST =
   (typeof __PARTYKIT_HOST__ !== 'undefined' ? __PARTYKIT_HOST__ : null)
   ?? "youcoded-games.itsdestin.partykit.dev";
 
+// Structural subset of PartySocket (really: ReconnectingWebSocket) that this
+// file actually calls. The real PartySocket satisfies it automatically; a
+// workbench fake only has to implement these five members, not the whole
+// partysocket surface.
+interface PartySocketSubset {
+  addEventListener(type: string, cb: (event: any) => void): void;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+  readonly readyState: number;
+}
+
+// Workbench-only injection point (Task 7c). usePartyGame.ts constructs
+// `new PartyClient(options)` with no way to pass a socket class, so a module-
+// level override is the only seam that doesn't touch that production hook.
+// Only dev/workbench/install-mock.ts ever calls this — it is gated there on
+// the same `?signedIn=1` switch the rest of the workbench mock uses, and this
+// stays null (real `PartySocket`, real server) in every shipped build.
+type PartySocketCtor = new (options: { host: string; room?: string; party?: string; query?: Record<string, string | undefined | null> }) => PartySocketSubset;
+let socketFactoryOverride: PartySocketCtor | null = null;
+export function __setPartySocketFactory(factory: PartySocketCtor | null): void {
+  socketFactoryOverride = factory;
+}
+
 export type MessageHandler = (data: any) => void;
 
 // Close info forwarded to onClose so callers can surface the reason a socket
@@ -42,11 +65,12 @@ const DEFAULT_SLOW_MS = 10_000;
 const WS_OPEN = 1;
 
 export class PartyClient {
-  private socket: PartySocket;
+  private socket: PartySocketSubset;
   private slowTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: PartyClientOptions) {
-    this.socket = new PartySocket({
+    const SocketCtor: PartySocketCtor = socketFactoryOverride ?? PartySocket;
+    this.socket = new SocketCtor({
       host: options.host ?? PARTYKIT_HOST,
       room: options.room,
       party: options.party,

@@ -5,6 +5,10 @@
 import { createStore } from './mock-store';
 import { createMockShim } from './mock-shim';
 import { SCENARIO_IDS, type ScenarioId } from './scenarios';
+// Task 7c: swaps the real PartyKit socket for an in-page fake so Connect Four
+// is playable (and filmable) with no network. See fake-party.ts for the WHY.
+import { FakePartySocket, isWorkbenchAutoplay } from './fake-party';
+import { __setPartySocketFactory } from '../../game/party-client';
 
 /** Scenario comes from ?scenario= so a reload lands on the same seed. An
  *  unrecognised value falls back to 'default' rather than throwing — a typo in
@@ -55,4 +59,11 @@ export function installMock(): void {
   // app's provider tree having to thread the store through.
   (window as any).__workbenchStore = store;
   (window as any).claude = createMockShim(store);
+  // Only when filming with `?signedIn=1` (Task 7c) — a signed-out workbench
+  // never touches party-client.ts, so `__setPartySocketFactory` stays unset
+  // and the (unreachable, since the game panel needs an account) real
+  // PartySocket path is exactly what it was before this file existed.
+  if (isWorkbenchAutoplay()) {
+    __setPartySocketFactory(FakePartySocket);
+  }
 }

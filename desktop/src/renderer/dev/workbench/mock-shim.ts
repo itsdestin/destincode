@@ -16,6 +16,9 @@ import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PA
 // Scripted replies (site scenario / phase-2 play-through): a typed message
 // gets a fixture-driven answer instead of being swallowed by the catch-all.
 import { playReply, resolvePermission, parseReplyScript } from './reply-script';
+// Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
+// fake-party.ts for why this exists and what it stands in for.
+import { JAKE_ID, JAKE_USERNAME } from './fake-party';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
 // states (partial-view banner, handoff) against the fake backend.
@@ -90,6 +93,20 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
+  // Multiplayer games (Task 7c) — friends graph + presence socket. Real
+  // backend (social-handlers.ts / preload.ts), hand-written here so Connect
+  // Four has a scripted friend ("Jake") instead of sitting on "Connecting…"
+  // forever (see fake-party.ts).
+  'social.lookupHandle', 'social.sendRequest', 'social.listRequests',
+  'social.acceptRequest', 'social.declineRequest', 'social.cancelRequest',
+  'social.listFriends', 'social.unfriend', 'social.block', 'social.unblock',
+  'social.listBlocks', 'social.presenceConnect', 'social.presenceDisconnect',
+  'social.presenceSend', 'social.onPresenceEvent',
+  // Multi-window leader election (Task 7c fix) — see the WHY comment at
+  // WORKBENCH_WINDOW_ID. Without these, `isLeader` in App.tsx is false in
+  // EVERY workbench session, and presence (Connect Four's lobby, and any
+  // future feature gated on isLeader) never connects.
+  'window.getId', 'detach.getDirectory',
   'appearance.getFavoriteThemes', 'appearance.favoriteTheme', 'appearance.get',
   'appearance.set', 'appearance.broadcast',
   'skills.listMarketplace', 'skills.list', 'skills.getFavorites', 'skills.setFavorite', 'skills.getFeatured',
@@ -865,6 +882,78 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     refresh: async () => (signedInSwitch ? FIXTURE_USER : null),
   };
 
+  // Multiplayer games (Task 7c). Before this, `social` fell through to the
+  // Proxy catch-all entirely — every call resolved `[]`/no-op, and
+  // `onPresenceEvent` never invoked its callback, so GameLobby.tsx never left
+  // its "Connecting…" spinner. This gives the workbench one scripted friend,
+  // "Jake" — already added, already online — so the lobby (and, via
+  // GameLobby.tsx's own auto-play effect, an actual game) work without a real
+  // account or a real friend on the other end. Gated on signedInSwitch so a
+  // signed-out workbench is unaffected: GameLobby.tsx shows SignInScreen
+  // before any of this runs, and `presenceConnect` is never called either
+  // (usePresence only connects when `useAccount().signedIn` is true, and that
+  // reads from `account` above — same switch).
+  const jakeNowSec = Math.floor(Date.now() / 1000);
+  const JAKE_FRIEND = {
+    id: JAKE_ID, display_name: JAKE_USERNAME, handle: 'jake', avatar_url: null,
+    last_seen_at: jakeNowSec, created_at: jakeNowSec - 86_400,
+  };
+  // Holds the one onPresenceEvent callback the app registers (usePresence.ts
+  // subscribes exactly once) so presenceConnect can push events into it.
+  let presenceListener: ((ev: { type: string; [k: string]: unknown }) => void) | null = null;
+  let presenceLive = false;
+  const social: Ns<'social'> = {
+    lookupHandle: async () => ({ ok: false, status: 404, message: 'No one has that handle' }),
+    sendRequest: async () => ({ ok: false, status: 404, message: 'No one has that handle' }),
+    listRequests: async () => ({ ok: true, value: { incoming: [], outgoing: [] } }),
+    acceptRequest: async () => ({ ok: true, value: undefined }),
+    declineRequest: async () => ({ ok: true, value: undefined }),
+    cancelRequest: async () => ({ ok: true, value: undefined }),
+    // The only friend that exists in the workbench — Jake, always present so
+    // FriendsScreen has something to show even before presence reports him
+    // online (mirrors a real friends list, which loads independently of who's
+    // currently connected).
+    listFriends: async () => ({ ok: true, value: signedInSwitch ? [JAKE_FRIEND] : [] }),
+    unfriend: async () => ({ ok: true, value: undefined }),
+    block: async () => ({ ok: true, value: undefined }),
+    unblock: async () => ({ ok: true, value: undefined }),
+    listBlocks: async () => ({ ok: true, value: [] }),
+    presenceConnect: async () => {
+      presenceLive = true;
+      // Fire on a tick, not synchronously — usePresence.ts's onPresenceEvent
+      // subscription and its presenceConnect() call happen in the same effect
+      // (subscription first), but a real IPC round trip always has *some* gap,
+      // and DEFAULT_LATENCY_MS-style delay here is what would surface a
+      // "connected fires before anyone is listening" bug if one existed.
+      setTimeout(() => {
+        if (!presenceLive) return; // disconnected again before this fired
+        presenceListener?.({ type: 'connected' });
+        presenceListener?.({
+          type: 'presence',
+          users: [{ id: JAKE_FRIEND.id, display_name: JAKE_FRIEND.display_name, handle: JAKE_FRIEND.handle, status: 'idle' }],
+        });
+      }, 150);
+      return { ok: true };
+    },
+    presenceDisconnect: async () => {
+      presenceLive = false;
+      // No `code` → the reducer's silent "deliberate teardown" path, matching
+      // what a real incognito toggle / sign-out looks like to usePresence.ts.
+      presenceListener?.({ type: 'disconnected' });
+      return { ok: true };
+    },
+    // Challenge/accept round-tripping isn't implemented — GameLobby.tsx's
+    // auto-play effect skips straight to a game instead of waiting for a
+    // click-through handshake with a bot. A real challenge send still needs
+    // to resolve `ok` so `usePresence.challengePlayer` doesn't synthesize a
+    // CHALLENGE_FAILED for a button a developer clicks while poking around.
+    presenceSend: async () => ({ ok: true }),
+    onPresenceEvent: (cb) => {
+      presenceListener = cb;
+      return () => { if (presenceListener === cb) presenceListener = null; };
+    },
+  };
+
   // Settings → Appearance shows FAVOURITED themes plus the active one as a
   // fallback (ThemeScreen.tsx:111-117) — the full list lives behind "Browse all
   // themes". With no favourites the panel renders exactly one card, which reads
@@ -998,6 +1087,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // `openDetached` is real (preload:959) but missing from useIpc.ts's `detach`
   // block, so it cannot come from Ns<'detach'>. Note the real signature takes an
   // OBJECT, not a positional sessionId.
+  // The workbench is always a single window, so it IS the leader — but
+  // nothing said so before Task 7c: `window.getId` and `detach.getDirectory`
+  // both fell through to the catch-all, which resolves everything to `[]`.
+  // App.tsx's `isLeader = myWindowId != null && leaderWindowId === myWindowId`
+  // then compared `[] === -1` (the catch-all id vs. the useState default) —
+  // never equal, so `isLeader` stayed false forever and `usePresence` never
+  // called `presenceConnect()`. That is the ACTUAL reason Connect Four sat on
+  // "Connecting…": not the game socket (party-client.ts), the leader check
+  // gating whether presence even tries to connect. One fixed id for both
+  // sides of the comparison is enough — there is only ever one workbench tab.
+  const WORKBENCH_WINDOW_ID = 1;
+  // `window` is Electron-only plumbing absent from useIpc.ts entirely (like
+  // `theme` below) — no Ns<'window'> to type against, so this stays a plain
+  // object.
+  const windowNs = {
+    getId: async () => WORKBENCH_WINDOW_ID,
+  };
   const detach: Ns<'detach'> & { openDetached: (payload: { sessionId: string }) => void } = {
     // Present so `detachAvailable` is true and the "Launch in New Window"
     // toggle renders (SessionStrip.tsx:191, ResumeBrowser.tsx:242 both test
@@ -1006,6 +1112,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     openDetached: () => {
       console.warn('[workbench] detach is not available in a browser tab');
     },
+    // App.tsx calls this on mount specifically to avoid racing the
+    // onDirectoryUpdated push — pulling `leaderWindowId: WORKBENCH_WINDOW_ID`
+    // here is what makes `isLeader` resolve true.
+    getDirectory: async () => ({ leaderWindowId: WORKBENCH_WINDOW_ID, windows: [] }),
   };
 
   // No `tags` namespace exists in useIpc.ts at all, so none of this is
@@ -1143,7 +1253,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, appearance, specialists, shell,
-    skills, marketplace, folders, fs,
+    terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
+    skills, marketplace, folders, fs, window: windowNs,
   } as unknown as Record<string, Record<string, unknown>>;
 }
