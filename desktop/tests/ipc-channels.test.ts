@@ -939,9 +939,10 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     ['models:download-cancel', 'MODELS_DOWNLOAD_CANCEL'],
     ['models:delete', 'MODELS_DELETE'],
     ['models:installed', 'MODELS_INSTALLED'],
-    // Orphaned .partial scan (2026-07-15) — Android stubs it like the rest of
-    // the desktop-only model-manager surface.
-    ['models:orphaned-partials', 'MODELS_ORPHANED_PARTIALS'],
+    // Resume an interrupted download from its manifest (2026-08-26). Replaced
+    // models:orphaned-partials, whose listing folded into models:installed —
+    // two lists over one directory could disagree, which was the bug.
+    ['models:resume', 'MODELS_RESUME'],
     ['endpoints:detect', 'ENDPOINTS_DETECT'],
   ];
   const pushChannels = ['models:download-progress'];
@@ -1177,5 +1178,40 @@ describe('specialists:* channel parity', () => {
     // Never a request stub: unlike the five channels above, this is push-only
     // and must not appear in Kotlin's not-implemented list at all.
     expect(kt).not.toContain(`"specialists:event"`);
+  });
+});
+
+// Five-surface parity for fs:read-head — the composer attachment card's head
+// read (rendered markdown / mono text preview). Cloned from the permissions:*
+// block: a channel missing from remote-shim.ts or SessionService.kt would
+// silently turn every preview into the glyph on remote or Android.
+describe('fs:* channel parity', () => {
+  const NEW_TYPES = ['fs:read-head'];
+  const CHANNEL_TO_CONST: Record<string, string> = { 'fs:read-head': 'IPC.FS_READ_HEAD' };
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    for (const t of NEW_TYPES) expect(src.includes(`'${t}'`) || src.includes(CHANNEL_TO_CONST[t]), `${t} missing from ipc-handlers.ts`).toBe(true);
+  });
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`'${t}'`);
+  });
+  it('handled by SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+  });
+  it('the Android cap mirrors READ_HEAD_MAX_BYTES', async () => {
+    const { READ_HEAD_MAX_BYTES } = await import('../src/shared/read-head');
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    expect(kt).toContain(`coerceIn(1, ${READ_HEAD_MAX_BYTES})`);
   });
 });

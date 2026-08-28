@@ -14,6 +14,10 @@ function highlightsSupported(): boolean {
 }
 
 function clearHighlights(hl: string, hlCurrent: string) {
+  // `CSS` itself can be absent (jsdom, and any WebView without the CSSOM
+  // global) — reading `.highlights` off undefined threw from the unmount
+  // cleanup, which is the one place a throw takes React's whole tree down.
+  if (typeof CSS === 'undefined') return;
   const h = (CSS as any).highlights;
   if (h) { h.delete(hl); h.delete(hlCurrent); }
 }
@@ -42,7 +46,7 @@ function computeRanges(root: HTMLElement, query: string): Range[] {
   return ranges;
 }
 
-export function ContentFindBar({ containerRef, onClose, resetKey, highlightName = 'artifact-find', placeholder = 'Find in document', positionClassName = 'top-2 right-2', scrollRef }: {
+export function ContentFindBar({ containerRef, onClose, resetKey, highlightName = 'artifact-find', placeholder = 'Find in document', positionClassName = 'top-2 right-2', scrollRef, layout = 'floating' }: {
   containerRef: React.RefObject<HTMLElement | null>;
   onClose: () => void;
   resetKey: string; // changes when the active artifact changes → reset the search
@@ -61,6 +65,15 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
   // it must pass the scroll element here or the off-screen check never fires
   // (the content div's rect spans the full scroll height).
   scrollRef?: React.RefObject<HTMLElement | null>;
+  // 'floating' (default): the original absolutely-positioned card, anchored by
+  // positionClassName — the artifact viewer's mode, untouched.
+  // 'row': the same controls, right-aligned in a full-width strip that sits in
+  // normal flow above the searched content like a browser's find bar (P-14,
+  // Destin 2026-08-27). The floating card covered the end of the first
+  // (right-aligned) user message in chat; a row shifts the messages down
+  // while it is open instead. The caller owns the strip's top offset (chat
+  // sits under an overlaid header) via CSS on `.find-row`.
+  layout?: 'floating' | 'row';
 }) {
   const HL = highlightName;
   const HL_CURRENT = `${highlightName}-current`;
@@ -109,8 +122,10 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
 
   const shown = count > 0 ? `${((current % count) + count) % count + 1}/${count}` : (query ? '0/0' : '');
 
-  return (
-    <div className={`absolute ${positionClassName} z-20 flex items-center gap-1 px-1.5 py-1 rounded-lg bg-panel border border-edge shadow-lg`}>
+  // One set of controls, two wrappers — the input/counter/prev/next/close and
+  // their key handling are identical in both layouts by construction.
+  const controls = (
+    <>
       {/* Change 20: this was the gray-focus variant (bg-canvas + rounded-md +
           focus:border-fg-muted) — all three retired by the shared FIELD surface.
           Enter / Shift+Enter / Escape handling and the autofocus ref are unchanged.
@@ -153,6 +168,27 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
           <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
         </svg>
       </button>
+    </>
+  );
+
+  // One pill, both layouts. Destin's review of P-14 (2026-08-27): "i still want it
+  // to be its own element/pill with border, i just don't want it to overlap my
+  // message" — so the in-flow row is a transparent lane that RESERVES the height,
+  // and the same bordered pill the artifact viewer floats sits at its right edge.
+  const pill = 'flex items-center gap-1 px-1.5 py-1 rounded-lg bg-panel border border-edge shadow-lg';
+  if (layout === 'row') {
+    return (
+      // px-2 sm:px-3 = the header bar's own horizontal rhythm, so the pill lines
+      // up with the chrome above it. shrink-0: it is a flex-column sibling of the
+      // scroll container and must never be squeezed by it.
+      <div className="find-row shrink-0 flex justify-end px-2 sm:px-3 py-1">
+        <div className={pill}>{controls}</div>
+      </div>
+    );
+  }
+  return (
+    <div className={`absolute ${positionClassName} z-20 ${pill}`}>
+      {controls}
     </div>
   );
 }

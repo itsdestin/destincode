@@ -116,6 +116,7 @@ import { ensureProject, ensureProjectCoalesced, applyGitTreatmentCoalesced } fro
 import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
+import { readFileHead } from './fs-read-head';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { searchProjectContent } from './artifacts/content-search';
 import { looksBinary, EDIT_MAX_BYTES, FULL_READ_MAX_BYTES, READ_BINARY_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
@@ -2817,10 +2818,10 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.MODELS_DOWNLOAD_CANCEL, async (_e, downloadId: string) => { modelManager.cancel(downloadId); return true; });
   ipcMain.handle(IPC.MODELS_DELETE, async (_e, id: string) => { await engineManager.deleteModel(id); return true; });
   ipcMain.handle(IPC.MODELS_INSTALLED, async () => engineManager.installedModels());
-  // Orphaned .partial scan (2026-07-15): .partial files left by a PREVIOUS app
-  // run are invisible to the in-memory downloader — this lets the UI list them
-  // (clean via models:delete; resume by re-starting the same download).
-  ipcMain.handle(IPC.MODELS_ORPHANED_PARTIALS, async () => modelManager.orphanedPartials());
+  // Resume an interrupted download (2026-08-26). Reads the manifest written
+  // beside the .partial — no Hugging Face round trip, so it works when the
+  // network is the reason the download stopped.
+  ipcMain.handle(IPC.MODELS_RESUME, async (_e, modelId: string) => modelManager.resume(modelId));
   ipcMain.handle(IPC.ENDPOINTS_DETECT, async () =>
     detectEndpoints(fetch, ((await providerRegistry.list()) as any[])));
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens
@@ -3972,6 +3973,13 @@ export function registerIpcHandlers(
       return { ok: false, error: e?.code === 'ENOENT' ? 'orphan' : String(e?.message ?? e) };
     }
   });
+
+  // First bytes of a user-chosen file, for the composer's attachment cards
+  // (rendered markdown / mono text preview). The cap, the deny list and the
+  // reasoning for NOT roots-gating it live in main/fs-read-head.ts +
+  // shared/read-head.ts; remote-server.ts calls the same function.
+  ipcMain.handle(IPC.FS_READ_HEAD, (_e, filePath: string, maxBytes?: number) =>
+    readFileHead(filePath, maxBytes));
 
   ipcMain.handle(ARTIFACT_IPC.SAVE, async (
     _e,

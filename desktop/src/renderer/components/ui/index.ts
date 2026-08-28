@@ -57,6 +57,9 @@ export type { ProgressBarProps } from './ProgressBar';
 
 export { SearchFilterPill } from './SearchFilterPill';
 export type { SearchFilterPillProps } from './SearchFilterPill';
+
+export { FilterChip } from './FilterChip';
+export type { FilterChipProps } from './FilterChip';
 export { Dialog, DIALOG_WIDTHS } from './Dialog';
 export type { DialogProps, DialogSize } from './Dialog';
 

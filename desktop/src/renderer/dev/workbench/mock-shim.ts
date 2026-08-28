@@ -1,7 +1,10 @@
 import type { MockStore } from './mock-store';
+import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
+import { previewKind } from '../../../shared/artifacts/categorization';
+import { READ_HEAD_DEFAULT_BYTES, READ_HEAD_MAX_BYTES } from '../../../shared/read-head';
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
@@ -25,6 +28,25 @@ const OVERSIZE_FIXTURES: Record<string, number> = {
   'a-huge-dump': 500 * 1024 * 1024,   // above it -> no load action
 };
 
+// Canned file heads for the mock fs.readHead (attachment cards). The markdown
+// one deliberately opens with a `##` heading plus bold and a list: the whole
+// point of the preview is that those render as markup, not as literal text.
+const WORKBENCH_MARKDOWN_HEAD = [
+  '## Design notes',
+  '',
+  'Composer chips become **cards** with a real preview.',
+  '',
+  '- image → thumbnail',
+  '- markdown → rendered',
+  '- text → mono block',
+].join('\n');
+const WORKBENCH_TEXT_HEADS: Record<string, string> = {
+  txt: 'Call Sam about the venue\nOrder 40 chairs\nConfirm catering by Fri\nPrint name tags',
+  json: '{\n  "name": "youcoded",\n  "version": "1.3.0",\n  "private": true\n}',
+  csv: 'item,qty,cost\nchairs,40,320\ntables,8,560\ncatering,1,1400',
+  ts: 'interface Attachment {\n  path: string;\n  name: string;\n}',
+};
+
 /** Dotted paths this shim implements by hand (`'session.list'`), plus dotless
  *  top-level bridge members (`'getPlatform'`). The contract test
  *  (tests/workbench-mock-contract.test.ts) checks each against preload.ts. */
@@ -36,10 +58,16 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'session.list', 'session.create', 'session.browse', 'session.destroy',
   'session.setFlag', 'session.setTag', 'session.setNote', 'session.getMeta',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
+  // Local Models rows + Resume (2026-08-26). WHY these must be listed: the
+  // contract test only checks members named here, so a hand-written mock left
+  // off this list escapes the real-or-registered check entirely.
+  'models.installed', 'models.curated', 'models.delete', 'models.resume',
+  'models.onDownloadProgress', 'models.downloadCancel',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
+  'fs.readHead',
   // Specialists 1c — real backend as of Task 8 (see the contract test's
   // remote-shim/preload scan); still hand-written here so the workbench has
   // fixture data to serve instead of a real filesystem/ledger.
@@ -589,6 +617,42 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
   };
 
+  // One fixture per row state, so a design review sees all three at once.
+  // Byte counts are Destin's real 2026-08-26 interruption — a four-file split
+  // GGUF stranded at part 3 — so the sheets show realistic numbers rather than
+  // round ones that hide formatting bugs. NOTE the app's gb() divides by 1024^3:
+  // 79_674_559_677 renders as 74.2 GB, 121_334_654_784 as 113.0 GB.
+  const LOCAL_MODELS: InstalledLocalModel[] = [
+    {
+      id: 'Qwen3.5-9B-Q8_0',
+      sizeBytes: 9_527_502_048,
+      quant: 'Q8_0', quantDescription: 'Highest quality quantization — near-original output',
+      parts: 1, status: 'complete', partsPresent: 1,
+      totalSizeBytes: null, repo: null,
+    },
+    {
+      id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004',
+      sizeBytes: 79_674_559_677,
+      quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
+      parts: 4, status: 'unfinished', partsPresent: 2,
+      totalSizeBytes: 121_334_654_784, repo: 'unsloth/Qwen3.8-Flash-Next-GGUF',
+    },
+    {
+      id: 'Older-Model-UD-Q4_K_XL-00001-of-00002',
+      sizeBytes: 4_100_000_000,
+      quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
+      parts: 2, status: 'untraceable', partsPresent: 1,
+      totalSizeBytes: null, repo: null,
+    },
+  ];
+
+  // A fake progress stream so the MID-RESUME state (spec §4) can be photographed:
+  // Resume emits a 'downloading' event at ~70% and then creeps, never finishing.
+  const progressListeners = new Set<(p: DownloadProgress) => void>();
+  const emitProgress = (p: DownloadProgress) => { for (const cb of progressListeners) cb(p); };
+  let fakeTimer: ReturnType<typeof setInterval> | null = null;
+  let lastReceived = 0;
+
   const models: Ns<'models'> = {
     // RuntimeBinding.tsx only calls this for the local-engine provider. The
     // verdict union is checked by the compiler — useIpc.ts:329.
@@ -599,6 +663,46 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         detail: 'Loading it may evict another resident model.',
       }
       : { verdict: 'ok' as const, headline: '', detail: '' }),
+
+    installed: async () => LOCAL_MODELS,
+    curated: async () => [],
+    delete: async () => true,
+    onDownloadProgress: (cb: (p: DownloadProgress) => void) => {
+      progressListeners.add(cb);
+      return () => { progressListeners.delete(cb); };
+    },
+    resume: async (modelId: string) => {
+      const m = LOCAL_MODELS.find((x) => x.id === modelId);
+      if (!m || m.status !== 'unfinished' || !m.repo) throw new Error('Nothing to resume.');
+      let received = 85_000_000_000;
+      const base = {
+        downloadId: 'wb-resume-1', repo: m.repo, quant: m.quant ?? '',
+        totalBytes: m.totalSizeBytes ?? 0, parts: m.parts, currentPart: 3,
+      };
+      if (fakeTimer) clearInterval(fakeTimer);
+      lastReceived = received;
+      setTimeout(() => emitProgress({ ...base, state: 'downloading', receivedBytes: received }), 300);
+      fakeTimer = setInterval(() => {
+        received += 1_000_000_000;
+        lastReceived = received;
+        emitProgress({ ...base, state: 'downloading', receivedBytes: received });
+      }, 400);
+      return { downloadId: base.downloadId };
+    },
+    downloadCancel: async (downloadId: string) => {
+      if (fakeTimer) { clearInterval(fakeTimer); fakeTimer = null; }
+      const m = LOCAL_MODELS[1];
+      // Pausing banks the bytes fetched so far — the real models:installed
+      // re-reads the directory, so the row must come back at where it STOPPED,
+      // not at where it started. Without this the demo pauses at 73% and the
+      // row snaps back to 66%, which is the opposite of what resume promises.
+      m.sizeBytes = Math.max(m.sizeBytes, lastReceived);
+      emitProgress({
+        downloadId, repo: m.repo ?? '', quant: m.quant ?? '', state: 'cancelled',
+        receivedBytes: m.sizeBytes, totalBytes: m.totalSizeBytes ?? 0, parts: m.parts, currentPart: 3,
+      });
+      return true;
+    },
   };
 
   const defaults: Ns<'defaults'> = {
@@ -1092,6 +1196,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     getFeatured: async () => (marketplaceEmpty ? { hero: [], rails: [] } : JSON.parse(JSON.stringify(FEATURED))),
   };
+  // fs:read-head — the first bytes of an attached file, for the composer's
+  // attachment cards. Canned per file kind so the screenshot rig sees a REAL
+  // rendered-markdown preview for the `composer-attachments` fixture
+  // (/home/destin/Documents/design-notes.md) and something honest for the
+  // rest; anything non-text gets the same refusal the real handler gives.
+  const fs: Ns<'fs'> = {
+    readHead: async (filePath: string, maxBytes?: number) => {
+      const cap = Math.min(READ_HEAD_MAX_BYTES, Math.max(1, maxBytes ?? READ_HEAD_DEFAULT_BYTES));
+      const kind = previewKind(filePath);
+      const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+      let text: string | null = null;
+      if (kind === 'markdown') text = WORKBENCH_MARKDOWN_HEAD;
+      else if (kind === 'text') text = WORKBENCH_TEXT_HEADS[ext] ?? WORKBENCH_TEXT_HEADS.txt;
+      if (text === null) return { ok: false as const, error: 'binary' };
+      return { ok: true as const, text: text.slice(0, cap), truncated: text.length > cap };
+    },
+  };
   const marketplace = {
     getPackages: async () => (marketplaceEmpty ? {} : JSON.parse(JSON.stringify(INSTALLED_PACKAGES))),
   };
@@ -1099,6 +1220,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   return {
     session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, appearance, specialists, shell,
-    skills, marketplace, folders, modes,
+    skills, marketplace, folders, fs, modes,
   } as unknown as Record<string, Record<string, unknown>>;
 }

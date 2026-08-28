@@ -15,7 +15,7 @@
 
 import React, { useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { Button, SearchFilterPill, SegmentedTabs, SegmentedTabLabel, PluginIcon, PaletteIcon } from "../ui";
+import { Button, FilterChip, SearchFilterPill, SegmentedTabs, SegmentedTabLabel, PluginIcon, PaletteIcon } from "../ui";
 import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useNarrowViewport } from "../../hooks/use-narrow-viewport";
@@ -254,22 +254,12 @@ function SheetGroup({ label, children }: { label: string; children: React.ReactN
   );
 }
 
+// P-9 #1 (2026-08-27): the pick-any chip is the shared <FilterChip> now — this
+// bar's local Chip was extracted verbatim so the skills drawer could draw the
+// same control. Kept as a one-line alias so the JSX below reads unchanged;
+// tests/filter-chip.test.tsx pins that the recipe rendered here is identical.
 function Chip({ active, onClick, children }: { active: boolean; onClick(): void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={active}
-      onClick={onClick}
-      className={`px-3 py-1 rounded-full text-sm transition-colors ${
-        active
-          ? "bg-accent text-on-accent"
-          : "bg-inset text-fg-2 hover:text-fg border border-edge hover:border-edge-dim"
-      }`}
-    >
-      {children}
-    </button>
-  );
+  return <FilterChip active={active} onClick={onClick}>{children}</FilterChip>;
 }
 
 function ChipGroup({ label, children }: { label: string; children: React.ReactNode }) {

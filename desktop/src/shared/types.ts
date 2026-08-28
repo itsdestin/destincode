@@ -1591,6 +1591,10 @@ export const IPC = {
   // Keyed by PROJECT SLUG, not cwd — permissions.json never stored the cwd for
   // pre-existing entries and nativeStoreSlug is lossy, so the slug is the only
   // stable handle the renderer can send back.
+  // ---- fs:read-head — first bytes of a user-chosen file for a preview tile ----
+  // Capped in main at READ_HEAD_MAX_BYTES (shared/read-head.ts) whatever the
+  // renderer asks for; sensitive paths refused. See main/fs-read-head.ts.
+  FS_READ_HEAD: 'fs:read-head',
   PERMISSIONS_LIST: 'permissions:list',
   PERMISSIONS_REMOVE: 'permissions:remove',
   PERMISSIONS_REMOVE_PROJECT: 'permissions:remove-project',
@@ -1625,9 +1629,9 @@ export const IPC = {
   MODELS_DOWNLOAD_PROGRESS: 'models:download-progress',  // push
   MODELS_DELETE: 'models:delete',
   MODELS_INSTALLED: 'models:installed',
-  // Orphaned .partial scan (2026-07-15) — invoke → OrphanedPartial[]; lists
-  // .partial files left by a PREVIOUS app run so the UI can clean/resume them.
-  MODELS_ORPHANED_PARTIALS: 'models:orphaned-partials',
+  // Resume an interrupted download from its manifest (2026-08-26) — invoke(modelId)
+  // → { downloadId }. Replaces MODELS_ORPHANED_PARTIALS, removed the same day.
+  MODELS_RESUME: 'models:resume',
   ENDPOINTS_DETECT: 'endpoints:detect',
   // ---- Model memory lifecycle (2026-07-14): per-model residency + guards ----
   ENGINE_MODELS: 'engine:models',                 // invoke → EngineModel[] with live state

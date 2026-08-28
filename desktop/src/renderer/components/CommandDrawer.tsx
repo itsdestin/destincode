@@ -6,6 +6,7 @@ import { useMarketplace } from '../state/marketplace-context';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useEscClose } from '../hooks/use-esc-close';
 import { isAndroid } from '../platform';
+import { EmptyState, FilterChip } from './ui';
 
 interface Props {
   open: boolean;
@@ -114,6 +115,16 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
       .sort((a, b) => a.displayName.localeCompare(b.displayName)),
     [categoryFiltered, skillFavSet],
   );
+
+  // P-9 #3 (2026-08-27): which browse-mode section is the LAST one on screen.
+  // "Add Skills" is rendered as the final card of THAT section's grid so it
+  // fills the empty slot at the end of the row instead of always starting a
+  // new row of its own. When neither section shows, the drawer body needs an
+  // empty state — see the browse-mode JSX for the three cases.
+  const showOthers = !favoritesOnly && othersSorted.length > 0;
+  const showFavs = favsSorted.length > 0;
+  const addSkillsIn: 'others' | 'favorites' | null = showOthers ? 'others' : showFavs ? 'favorites' : null;
+  const openMarketplace = () => { onClose(); onOpenMarketplace(); };
 
   // Render a slash-command card in search results. Unclickable CC built-ins
   // show greyed-out with a "run in terminal view" style disabledReason.
@@ -271,9 +282,10 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
         </div>
 
         {/* Scrollable content.
-             "Add Skills +" is always the last box in the drawer so the marketplace
-             is always one click away. When a search has zero matches, it stands
-             alone as the empty-state affordance. */}
+             "Add Skills +" is the last box of whatever list is showing, so the
+             marketplace is always one click away. When a search has zero matches
+             it stands alone; when NOTHING is listed in browse mode an <EmptyState>
+             with a "Browse the Marketplace" button takes its place (P-9 #3). */}
         {/* Padding lives on an inner wrapper so the scroll-fade element itself has
             no padding — sticky fade pseudos sit flush with the drawer's outer edges.
             The drawer's own overflow:hidden + rounded-t-xl clips the top corners. */}
@@ -284,64 +296,92 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
             <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
               {searchFiltered.map(renderSkillCard)}
               {commandSearchFiltered.map(renderCommandCard)}
-              <AddSkillsCard onClick={() => { onClose(); onOpenMarketplace(); }} />
+              <AddSkillsCard onClick={openMarketplace} />
             </div>
           ) : (
             // Browse mode: sticky category chip row + two flat sections
             <>
-              {/* Sticky filter chip row — category filters + favorites-only toggle */}
+              {/* Sticky filter chip row — category filters + favorites-only toggle.
+                  P-9 #1 (2026-08-27): every pill is the shared <FilterChip> — the
+                  same control as the Marketplace's Vibe/Meta chips (text-sm,
+                  px-3 py-1). The old hand-rolled chips were 12px, the only
+                  filter pills in the app that small. Favorites-only now sits
+                  right after the last category (no ml-auto) and lights up like
+                  any other applied filter — its ★ is what marks it as different,
+                  not a third "on" colour. The row is a few px taller; expected. */}
               <div className="sticky top-0 z-10 bg-panel px-2 py-1.5 border-b border-edge-dim flex flex-wrap gap-1.5">
                 {categoryChips.map((c) => (
-                  <button
+                  <FilterChip
                     key={c}
-                    type="button"
+                    active={categoryFilter === c}
                     onClick={() => setCategoryFilter((prev) => prev === c ? null : c)}
-                    className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
-                      categoryFilter === c
-                        ? 'bg-accent text-on-accent border-accent'
-                        : 'bg-inset text-fg-2 border-edge-dim hover:border-edge'
-                    }`}
                   >
                     {c.charAt(0).toUpperCase() + c.slice(1)}
-                  </button>
+                  </FilterChip>
                 ))}
-                <button
-                  type="button"
+                <FilterChip
+                  active={favoritesOnly}
                   onClick={() => setFavoritesOnly((v) => !v)}
-                  className={`text-xs px-2 py-0.5 rounded-full border ml-auto transition-colors ${
-                    favoritesOnly
-                      ? 'bg-accent/20 text-accent border-accent/50'
-                      : 'bg-inset text-fg-2 border-edge-dim hover:border-edge'
-                  }`}
+                  aria-label="Favorites only"
                 >
                   ★ Favorites only
-                </button>
+                </FilterChip>
               </div>
 
-              {/* Favorites section */}
-              {favsSorted.length > 0 && (
+              {/* Favorites section. Hosts "Add Skills" only when it is the last
+                  section on screen (favorites-only on, or nothing else installed). */}
+              {showFavs && (
                 <section className="px-2 pt-2">
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 px-1">Favorites</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {favsSorted.map(renderSkillCard)}
+                    {addSkillsIn === 'favorites' && <AddSkillsCard onClick={openMarketplace} />}
                   </div>
                 </section>
               )}
 
-              {/* All installed (non-favorites) — hidden when favoritesOnly toggle is on */}
-              {!favoritesOnly && othersSorted.length > 0 && (
+              {/* All installed (non-favorites) — hidden when favoritesOnly toggle is on.
+                  P-9 #3: "Add Skills" is the last card IN this grid, so it takes the
+                  spare slot at the end of the row rather than a row of its own. */}
+              {showOthers && (
                 <section className="px-2 pt-3">
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 px-1">All installed</h3>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                     {othersSorted.map(renderSkillCard)}
+                    <AddSkillsCard onClick={openMarketplace} />
                   </div>
                 </section>
               )}
 
-              {/* Add Skills + always trails at the end */}
-              <div className="px-2 pt-3 grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                <AddSkillsCard onClick={() => { onClose(); onOpenMarketplace(); }} />
-              </div>
+              {/* Nothing to list. Three reasons, told apart in plain words —
+                  before P-9 #3 all three showed one dashed "Add Skills" card
+                  hugging the left edge, which read as a broken grid. */}
+              {addSkillsIn === null && (
+                drawerSkills.length === 0 ? (
+                  // Truly nothing installed: the standard empty state with the
+                  // marketplace as the way out (same action Add Skills has).
+                  <EmptyState
+                    className="px-4"
+                    message="No skills installed yet."
+                    action={{ label: 'Browse the Marketplace', onClick: openMarketplace }}
+                  />
+                ) : favoritesOnly ? (
+                  // Favorites-only is on but nothing is starred (in this
+                  // category, if one is picked). No action: the fix is a star
+                  // on a card, and the toggle is right above.
+                  <EmptyState
+                    className="px-4"
+                    message={categoryFilter ? 'No favorites in this category yet.' : 'No favorites yet.'}
+                  />
+                ) : (
+                  // A category is picked and nothing installed matches it.
+                  <EmptyState
+                    className="px-4"
+                    message={`No ${categoryFilter} skills installed yet.`}
+                    action={{ label: 'Browse the Marketplace', onClick: openMarketplace }}
+                  />
+                )
+              )}
             </>
           )}
           </div>

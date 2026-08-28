@@ -4,6 +4,8 @@
 // ProjectSwitcher, the tabs, and the context popups each carried their own copy
 // of the same paths. One module keeps the glyph language in lockstep.
 
+import type { FileKind } from '../../../shared/artifacts/categorization';
+
 interface IconProps { size?: number; strokeWidth?: number }
 
 function base(size: number, strokeWidth: number) {
@@ -140,4 +142,81 @@ export function CogIcon({ size = 15, strokeWidth = 2 }: IconProps) {
       <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
     </svg>
   );
+}
+
+// ── File-kind glyphs ─────────────────────────────────────────────────────────
+// One icon per shared/artifacts/categorization.ts FileKind. Image / sheet /
+// doc / code above are reused; these fill the buckets that file didn't have
+// (text, pdf, audio, video, archive, unknown). Moved out of the attachment-chip
+// mock-up when design C shipped so every tile draws the same glyph per kind.
+
+export function TextLinesIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" />
+      <path d="M8 13h8" /><path d="M8 17h8" />
+    </svg>
+  );
+}
+
+export function PdfIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" />
+      <path d="M9 18v-6h2a2 2 0 0 1 0 4H9" />
+    </svg>
+  );
+}
+
+export function AudioIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
+    </svg>
+  );
+}
+
+export function VideoIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="M2 9h20" /><path d="M2 15h20" /><path d="M7 4v16" /><path d="M17 4v16" />
+    </svg>
+  );
+}
+
+export function ArchiveIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <rect x="2" y="3" width="20" height="5" rx="1" />
+      <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" /><path d="M10 12h4" />
+    </svg>
+  );
+}
+
+export function UnknownFileIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" />
+      <path d="M10 12.5a2 2 0 1 1 2.5 2c-.4.2-.5.5-.5 1" /><path d="M12 18h.01" />
+    </svg>
+  );
+}
+
+/** The glyph for a FileKind. Markdown and plain text share the lined page —
+ *  the preview (rendered vs mono) is what tells them apart, not the icon. */
+export function FileKindIcon({ kind, size = 15 }: { kind: FileKind; size?: number }) {
+  switch (kind) {
+    case 'image': return <ImageIcon size={size} />;
+    case 'sheet': return <SheetIcon size={size} />;
+    case 'code': return <CodeGlyphIcon size={size} />;
+    case 'text':
+    case 'markdown': return <TextLinesIcon size={size} />;
+    case 'pdf': return <PdfIcon size={size} />;
+    case 'audio': return <AudioIcon size={size} />;
+    case 'video': return <VideoIcon size={size} />;
+    case 'archive': return <ArchiveIcon size={size} />;
+    case 'unknown': return <UnknownFileIcon size={size} />;
+    default: return <DocIcon size={size} />;
+  }
 }

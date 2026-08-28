@@ -6,7 +6,7 @@ import './bootstrap/terminal-bridge';
 import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import TerminalView from './components/TerminalView';
 import ChatView from './components/ChatView';
-import HeaderBar from './components/HeaderBar';
+import HeaderBar, { BareHeaderBar } from './components/HeaderBar';
 import InputBar, { type InputBarHandle } from './components/InputBar';
 import StatusBar from './components/StatusBar';
 import { MODELS, type ModelAlias } from './components/StatusBar';
@@ -1676,6 +1676,9 @@ function AppInner() {
   // crash/reload, where main kept every session alive but this is a brand-new React tree).
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
+      // Perf lab: boot-time session fetch has resolved (catches pre-existing
+      // sessions on mount — see comment above this effect).
+      performance.mark('yc:sessions-listed');
       if (!list || list.length === 0) return;
 
       // Fix: this per-session seeding used to run INSIDE the setSessions updater
@@ -3065,7 +3068,35 @@ function AppInner() {
               </div>
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3">
+          <>
+            {/* Welcome screen gets the app's bare frame (P-6, Destin
+                2026-08-27: "a full frame around the welcome screen, as exists
+                in terminal view ... just bare frame like terminal view").
+                Same chrome-glass + chrome-wrapper + headerRef as the session
+                branch so a wallpaper theme paints this header exactly the way
+                it paints the session header, and useChromeMeasurements (keyed
+                on the same headerRef) publishes --top-chrome-height for the
+                glass cutout. `chrome-glass--bare` gives the donut a thin
+                --frame-edge bottom strip, like terminal view, instead of the
+                5rem fallback reserved for an input bar that isn't here. */}
+            <div className="chrome-glass chrome-glass--bare" />
+            <div ref={headerRef} className="chrome-wrapper bg-canvas">
+              <BareHeaderBar
+                settingsOpen={settingsOpen}
+                onToggleSettings={() => setSettingsOpen(prev => !prev)}
+                settingsBadge={settingsBadge}
+                settingsDangerBadge={settingsDangerBadge}
+              />
+            </div>
+          <div
+            className="flex-1 flex flex-col items-center justify-center gap-3"
+            // The header is position:absolute over the top of this area, so
+            // center the welcome content in the space BELOW it (and above the
+            // bare frame's bottom strip) rather than behind it. --top-chrome-
+            // bottom, not -height, so a floating header pill's own margin is
+            // cleared too — same reason ChatView's empty-state hint uses it.
+            style={{ paddingTop: 'var(--top-chrome-bottom, 2.5rem)', paddingBottom: 'var(--frame-edge, 10px)' }}
+          >
             <p className="text-xl text-fg-muted">No Active Session</p>
             {/* scene: the hero surface renders the theme's companions (sun,
                 motes, sparkles) orbiting the mascot — big canvas, no clipping. */}
@@ -3224,6 +3255,7 @@ function AppInner() {
               )}
             </div>
           </div>
+          </>
         )}
       </div>
 
@@ -3640,6 +3672,9 @@ function AppInnerProfiler({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // Perf lab: React has mounted the app shell (first commit).
+  useEffect(() => { performance.mark('yc:app-mounted'); }, []);
+
   // Auto-show buddy on launch if the user previously enabled it. The effect
   // is called unconditionally (React rules-of-hooks) but no-ops inside
   // buddy windows themselves — only the main window should re-open the
