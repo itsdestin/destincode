@@ -38,10 +38,18 @@ class SkillConfigStoreChipsTest {
             .put("favorites", JSONArray())
             .put("chips", JSONArray().apply { chips.forEach { put(it) } })
             .put("overrides", JSONObject())
+            // `migrated` short-circuits the one-time toolkit/theme migration in
+            // load(), which would otherwise walk plugin directories this test has none of.
+            .put("migrated", true)
             .put("packages", JSONObject().put("journaling-assistant", JSONObject()))
         File(tmpHome, ".claude").mkdirs()
         File(tmpHome, ".claude/youcoded-skills.json").writeText(cfg.toString())
     }
+
+    /** load() is NOT called by the constructor — `config` starts empty, so a store
+     *  that has not loaded answers getChips() with defaultChipsJson(). Every caller
+     *  in the app loads first. */
+    private fun store() = SkillConfigStore(tmpHome).apply { load() }
 
     @Before
     fun setUp() { tmpHome = createTempDir(prefix = "youcoded-chips-") }
@@ -55,9 +63,9 @@ class SkillConfigStoreChipsTest {
             chip("Journal", "let's journal", "journaling-assistant"),
             chip("Git Status", "run git status"),
         )
-        SkillConfigStore(tmpHome).removePackage("journaling-assistant")
+        store().removePackage("journaling-assistant")
 
-        val chips = SkillConfigStore(tmpHome).getChips()
+        val chips = store().getChips()
         assertEquals(1, chips.length())
         assertEquals("Git Status", chips.getJSONObject(0).getString("label"))
         assertEquals("run git status", chips.getJSONObject(0).getString("prompt"))
@@ -69,9 +77,9 @@ class SkillConfigStoreChipsTest {
             chip("Git Status", "run git status and summarize"),
             chip("Review PR", "review the latest PR"),
         )
-        SkillConfigStore(tmpHome).removePackage("journaling-assistant")
+        store().removePackage("journaling-assistant")
 
-        val chips = SkillConfigStore(tmpHome).getChips()
+        val chips = store().getChips()
         assertEquals(2, chips.length())
         // The bug turned each element into a stringified blob here, which the
         // migration then flattened into an empty prompt.
@@ -85,9 +93,9 @@ class SkillConfigStoreChipsTest {
     @Test
     fun `a chip with no skillId is never cascaded away`() {
         seed(chip("Draft Text", "help me draft a text to "))
-        SkillConfigStore(tmpHome).removePackage("journaling-assistant")
+        store().removePackage("journaling-assistant")
 
-        val chips = SkillConfigStore(tmpHome).getChips()
+        val chips = store().getChips()
         assertEquals(1, chips.length())
         assertEquals("Draft Text", chips.getJSONObject(0).getString("label"))
     }
