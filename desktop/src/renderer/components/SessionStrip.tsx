@@ -207,7 +207,7 @@ function DragGrip() {
 // second line under the name, so the name gets the row's full width.
 function SessionName({ name }: { name: string }) {
   return (
-    <span className="block truncate leading-snug text-[13px]" title={name}>
+    <span className="block truncate leading-snug text-sm-tight" title={name}>
       {name}
     </span>
   );
