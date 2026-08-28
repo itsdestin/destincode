@@ -146,6 +146,27 @@ export type TranscriptEventType =
   // makes the card open the real file in the artifact viewer.
   | 'skill-invoked';
 
+/**
+ * Opaque-to-the-renderer handle for "the page before this one". `offset` is the
+ * byte at which the page it came from STARTS, so the next (older) page is read
+ * with `endOffset = offset`. For NATIVE sessions the same field carries an array
+ * index instead of a byte offset — the renderer never inspects it either way.
+ * `sizeAtRead` lets the reader notice a /clear or /compact rewrite.
+ */
+export interface PageCursor {
+  path: string;
+  offset: number;
+  sizeAtRead: number;
+}
+
+/** One page of conversation history, oldest -> newest within the page. */
+export interface TranscriptPageResult {
+  events: TranscriptEvent[];
+  /** The handle for the NEXT (older) page; null when hasMore is false. */
+  cursor: PageCursor | null;
+  hasMore: boolean;
+}
+
 export interface TranscriptEvent {
   type: TranscriptEventType;
   sessionId: string; // desktop session ID
@@ -175,6 +196,11 @@ export interface TranscriptEvent {
      *  Deliverables auto-open rule (deliverable-auto-open.ts) reads this; native
      *  events keep their original `timestamp` through replay and need no field. */
     recordedAt?: number;
+    /** Byte offset of this JSONL line's start in the transcript file, stamped by
+     *  the paged-history reader (transcript-page.ts) on user-message events.
+     *  The seed for a future eviction cursor (cycle 3); unused today. Absent on
+     *  live-tailer events, which never know their own offset. */
+    offset?: number;
     // Task 1.1: widened turn-complete payload so the reducer can attach the
     // per-turn model, token/cache usage, and the Anthropic requestId to the
     // completing AssistantTurn for UI surfacing. All optional — the field is
