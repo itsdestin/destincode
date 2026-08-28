@@ -47,4 +47,73 @@ describe('plugin-installer upgrade primitives', () => {
     const r = await mod.upgradePluginFromLocal('nope', 'nope', 'youcoded');
     expect(r.status).toBe('failed'); if (r.status === 'failed') expect(r.error).toMatch(/Source not found in cache: nope/);
   });
+  // Review finding 2: the "never leave the user with no plugin" guarantee is
+  // the entire reason upgradePluginFromLocal stages into a temp dir instead
+  // of deleting-then-copying — nothing exercised the actual crash-mid-swap
+  // restore path until this test.
+  it('restores the old tree, reports failed, and cleans up staging when the swap dies mid-rename', async () => {
+    const mod = await import('../src/main/plugin-installer');
+    w(path.join(cacheDir(), 'youcoded-chatsearch', 'plugin.json'), '{"name":"youcoded-chatsearch","version":"0.2.0"}');
+    w(path.join(cacheDir(), 'youcoded-chatsearch', 'skills', 'x', 'SKILL.md'), 'new');
+    w(path.join(pluginsDir(), 'youcoded-chatsearch', 'plugin.json'), '{"name":"youcoded-chatsearch","version":"0.1.0"}');
+    w(path.join(pluginsDir(), 'youcoded-chatsearch', 'original.txt'), 'still here');
+
+    const realRename = fs.renameSync;
+    let renameCalls = 0;
+    // First renameSync call (live tree -> retired) must go through for real so
+    // the retired copy actually exists to restore from; the SECOND call
+    // (staging -> live) is the one that throws, simulating e.g. a Windows
+    // handle still open on a file in the tree being replaced.
+    const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+      renameCalls += 1;
+      if (renameCalls === 2) throw new Error('EPERM: simulated rename failure mid-swap');
+      return (realRename as (f: fs.PathLike, t: fs.PathLike) => void)(from, to);
+    }) as typeof fs.renameSync);
+
+    try {
+      const r = await mod.upgradePluginFromLocal('youcoded-chatsearch', 'youcoded-chatsearch', 'youcoded');
+      expect(r.status).toBe('failed');
+      if (r.status === 'failed') expect(r.error).toMatch(/EPERM: simulated rename failure mid-swap/);
+      // Old plugin tree is back at its original path with its original contents.
+      expect(fs.existsSync(path.join(pluginsDir(), 'youcoded-chatsearch', 'original.txt'))).toBe(true);
+      expect(fs.readFileSync(path.join(pluginsDir(), 'youcoded-chatsearch', 'plugin.json'), 'utf8')).toBe(
+        '{"name":"youcoded-chatsearch","version":"0.1.0"}',
+      );
+      // Staging directory was cleaned up, and no retired dir left behind either.
+      expect(fs.readdirSync(pluginsDir()).filter((n) => n.startsWith('.'))).toEqual([]);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+  // Review finding 1: cleanup of the retired (old) tree happens AFTER the
+  // swap already succeeded, so a failure there must not be reported as an
+  // upgrade failure, and must not skip registering the new version.
+  it('still reports installed with the new version when only retired-tree cleanup fails', async () => {
+    const mod = await import('../src/main/plugin-installer');
+    w(path.join(cacheDir(), 'youcoded-chatsearch', 'plugin.json'), '{"name":"youcoded-chatsearch","version":"0.2.0"}');
+    w(path.join(pluginsDir(), 'youcoded-chatsearch', 'plugin.json'), '{"name":"youcoded-chatsearch","version":"0.1.0"}');
+
+    const realRm = fs.rmSync;
+    // Only the retired-tree removal (`.old-<id>-<pid>`) throws; the staging
+    // cleanup at the top of the function must still run for real, or this
+    // test can't tell the two rmSync call sites apart.
+    const rmSpy = vi.spyOn(fs, 'rmSync').mockImplementation(((target: fs.PathLike, opts?: fs.RmOptions) => {
+      if (String(target).includes(`${path.sep}.old-youcoded-chatsearch-`)) {
+        throw new Error('EBUSY: simulated retired-tree cleanup failure');
+      }
+      return (realRm as (t: fs.PathLike, o?: fs.RmOptions) => void)(target, opts);
+    }) as typeof fs.rmSync);
+
+    try {
+      const r = await mod.upgradePluginFromLocal('youcoded-chatsearch', 'youcoded-chatsearch', 'youcoded');
+      expect(r.status).toBe('installed');
+      expect(fs.readFileSync(path.join(pluginsDir(), 'youcoded-chatsearch', 'plugin.json'), 'utf8')).toBe(
+        '{"name":"youcoded-chatsearch","version":"0.2.0"}',
+      );
+      const db = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'plugins', 'installed_plugins.json'), 'utf8'));
+      expect(db.plugins['youcoded-chatsearch@youcoded'][0].version).toBe('0.2.0');
+    } finally {
+      rmSpy.mockRestore();
+    }
+  });
 });

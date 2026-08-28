@@ -365,7 +365,6 @@ export async function upgradePluginFromLocal(id: string, sourceRef: string, sour
     copyDirSync(sourceDir, staging);
     if (fs.existsSync(targetDir)) fs.renameSync(targetDir, retired);
     fs.renameSync(staging, targetDir);
-    fs.rmSync(retired, { recursive: true, force: true });
   } catch (err: any) {
     // WHY: put the old tree back if the swap died half-way — a user must
     // never end up with the plugin directory entirely gone.
@@ -374,6 +373,20 @@ export async function upgradePluginFromLocal(id: string, sourceRef: string, sour
     }
     fs.rmSync(staging, { recursive: true, force: true });
     return { status: 'failed', error: `upgrade copy failed: ${err?.message || String(err)}` };
+  }
+  // WHY: deleting the retired tree is cleanup AFTER the swap already
+  // succeeded — the new files are live at targetDir at this point. A
+  // failure here (e.g. Windows still holding a file in the old tree open)
+  // must not be reported as an upgrade failure: the upgrade DID work, and
+  // reporting 'failed' would both lie about what's on disk and skip
+  // registerPluginInstall below, leaving installed_plugins.json stuck on
+  // the old version forever (the app would retry the "upgrade" every
+  // launch). Leaving `.old-<id>-<pid>` behind is harmless clutter, not a
+  // correctness problem, so this is swallowed rather than surfaced.
+  try {
+    fs.rmSync(retired, { recursive: true, force: true });
+  } catch {
+    /* best-effort cleanup only — see WHY above */
   }
   // Register with the REAL version read off the newly-swapped-in disk copy,
   // not a hardcoded '1.0.0' — this is the whole point of the upgrade path.
