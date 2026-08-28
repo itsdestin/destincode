@@ -278,11 +278,28 @@ export function BubbleFeed({ sessionId }: Props) {
       }
     });
 
-    // Request replay AFTER the listener is wired so no historical events can
-    // race past us. The callers in SessionPill/BuddyChat used to call this —
-    // they no longer do (removed in the same commit) so this is the sole
-    // request-replay site for the buddy window.
-    window.claude.detach.requestTranscriptReplay(sessionId);
+    // Request the most recent PAGE of history AFTER the listener is wired so no
+    // live event can race past us. Perf cycle 2: this used to be
+    // requestTranscriptReplay, which streamed the WHOLE transcript into the
+    // buddy's own reducer — the same cost the main window just stopped paying,
+    // duplicated in a second BrowserWindow.
+    //
+    // The buddy has no scroll-up sentinel this cycle: it is a glanceable recent
+    // view, not a place to read back through a conversation.
+    void (async () => {
+      dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId });
+      try {
+        const page = await (window as any).claude?.detach?.requestTranscriptPage?.({ sessionId, beforeCursor: null });
+        if (cancelled) return;
+        if (page) {
+          dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
+        } else {
+          dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+        }
+      } catch {
+        if (!cancelled) dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+      }
+    })();
 
     return () => {
       cancelled = true;
