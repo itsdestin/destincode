@@ -152,6 +152,49 @@ describe('useEntryFolding', () => {
     expect(result.current.registerEntry).toBe(first);  // and the ref did not
   });
 
+  it('folds an entry that was off-screen BEFORE it was ever measured, once it has been seen', () => {
+    // THE 6% BUG, pinned. An entry prepended above the viewport is observed while
+    // already outside the band, so its one and only out-of-view report arrives
+    // before it has ever been measured. The first version drained a queue and
+    // cleared it, so that entry was skipped and — since IntersectionObserver
+    // reports TRANSITIONS, and it never transitions again — could never be folded
+    // for the rest of the session. Measured: 741 of 12,100 entries folded.
+    const { result } = renderHook(() => useEntryFolding(true));
+    const el = entry('late', 180);
+    act(() => { result.current.registerEntry(el); });
+
+    // Reported out of view before ever being seen: correctly NOT folded yet.
+    act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
+    expect(result.current.isFolded('late')).toBe(false);
+
+    // It is seen once (measured), then leaves again.
+    act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
+    act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
+    expect(result.current.isFolded('late')).toBe(true);
+    expect(result.current.heightOf('late')).toBe(180);
+  });
+
+  it('folds entries still out of view from an EARLIER report, not only newly-reported ones', () => {
+    // The flush must re-evaluate membership rather than drain a queue: two
+    // entries leave the viewport, only one triggers the flush window, and both
+    // must end up folded.
+    const { result } = renderHook(() => useEntryFolding(true));
+    const a = entry('m1', 100);
+    const b = entry('m2', 100);
+    act(() => { result.current.registerEntry(a); result.current.registerEntry(b); });
+    act(() => {
+      fire([{ target: a, isIntersecting: true }, { target: b, isIntersecting: true }]);
+      vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS);
+    });
+    act(() => { fire([{ target: a, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
+    expect(result.current.isFolded('m1')).toBe(true);
+    // b leaves later; the flush it triggers must fold BOTH, and must not have
+    // forgotten a.
+    act(() => { fire([{ target: b, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
+    expect(result.current.isFolded('m1')).toBe(true);
+    expect(result.current.isFolded('m2')).toBe(true);
+  });
+
   it('returns a cleanup even with no element or no observer', () => {
     // Same contract as useObservedRef: returning undefined puts the ref on
     // React's null-call convention and the next detach re-enters with null.

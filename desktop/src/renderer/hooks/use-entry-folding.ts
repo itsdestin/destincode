@@ -84,8 +84,17 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
   // of elements at a time, and this hook exists to make rendering cheaper.
   const heights = useRef(new Map<string, number>());
   const folded = useRef(new Set<string>());
-  const pendingUnfold = useRef(new Set<string>());
-  const pendingFold = useRef(new Set<string>());
+  // MEMBERSHIP, not a queue — and that distinction is the whole correctness
+  // argument. The first version drained a `pendingFold` queue and cleared it,
+  // skipping any entry with no measured height yet. An entry prepended above the
+  // viewport is observed while ALREADY outside the band, so its one and only
+  // out-of-view report arrives before it has ever been seen or measured: it was
+  // skipped, cleared, and — because IntersectionObserver reports TRANSITIONS and
+  // it never transitions again — could never be folded for the rest of the
+  // session. Measured: 741 of 12,100 entries folded, 6%. Holding membership
+  // instead means every flush re-evaluates every out-of-view entry, so one that
+  // becomes measurable later is picked up by the next flush.
+  const outOfView = useRef(new Set<string>());
   const observer = useRef<IntersectionObserver | null>(null);
   const unfoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const foldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -99,25 +108,23 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
   const flushUnfold = useCallback(() => {
     unfoldTimer.current = null;
     let changed = false;
-    for (const key of pendingUnfold.current) {
-      if (folded.current.delete(key)) changed = true;
+    for (const key of folded.current) {
+      if (!outOfView.current.has(key)) { folded.current.delete(key); changed = true; }
     }
-    pendingUnfold.current.clear();
     if (changed) publish();
   }, [publish]);
 
   const flushFold = useCallback(() => {
     foldTimer.current = null;
-    if (!enabledRef.current) { pendingFold.current.clear(); return; }
+    if (!enabledRef.current) return;
     let changed = false;
-    for (const key of pendingFold.current) {
+    for (const key of outOfView.current) {
       // Never fold an entry whose height was never measured: the spacer would be
-      // 0px tall and the scroll height would collapse under the reader. An entry
-      // reaches this state only if it was created off-screen and never seen.
+      // 0px tall and the scroll height would collapse under the reader. It stays
+      // in outOfView, so the next flush reconsiders it once it has been seen.
       if (!heights.current.has(key)) continue;
       if (!folded.current.has(key)) { folded.current.add(key); changed = true; }
     }
-    pendingFold.current.clear();
     if (changed) publish();
   }, [publish]);
 
@@ -136,12 +143,10 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
             const h = (entry.target as HTMLElement).offsetHeight;
             if (h > 0) heights.current.set(key, h);
           }
-          pendingFold.current.delete(key);
-          pendingUnfold.current.add(key);
+          outOfView.current.delete(key);
           if (unfoldTimer.current == null) unfoldTimer.current = setTimeout(flushUnfold, UNFOLD_DEBOUNCE_MS);
         } else {
-          pendingUnfold.current.delete(key);
-          pendingFold.current.add(key);
+          outOfView.current.add(key);
           // Restarted on every out-of-view report, so this only fires once the
           // scroll has actually settled.
           if (foldTimer.current != null) clearTimeout(foldTimer.current);
@@ -165,7 +170,6 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
   useEffect(() => {
     if (enabled) return;
     if (foldTimer.current != null) { clearTimeout(foldTimer.current); foldTimer.current = null; }
-    pendingFold.current.clear();
     if (folded.current.size === 0) return;
     folded.current.clear();
     publish();
