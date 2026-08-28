@@ -55,6 +55,8 @@ describe('buildMetaFile', () => {
     transcriptExists: () => true,
   };
 
+  const baseInput = () => ({ ...base, storeRoot: '/tmp/store' });
+
   it('denormalizes a record into a metadata entry', () => {
     const out = buildMetaFile({ ...base, records: [rec()] });
     expect(out.v).toBe(CHATSEARCH_FORMAT_VERSION);
@@ -135,5 +137,10 @@ describe('buildMetaFile', () => {
       const out = buildMetaFile({ ...base, records: [rec({ title: t })] });
       expect(out.conversations.c1.title).toBe('');
     }
+  });
+
+  it('records the store root the index was built from', () => {
+    const meta = buildMetaFile({ ...baseInput(), records: [rec()] });
+    expect(meta.storeRoot).toBe('/tmp/store');
   });
 });

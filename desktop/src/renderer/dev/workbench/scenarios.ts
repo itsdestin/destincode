@@ -8,10 +8,17 @@ import { providers as seedProviders, catalog as seedCatalog, type ProviderRow, t
 import { tags as seedTags } from './fixtures/tags';
 import { defaults as seedDefaults, type MockDefaults } from './fixtures/defaults';
 
-export type ScenarioId = 'default' | 'empty' | 'no-providers' | 'refused' | 'stress';
+export type ScenarioId =
+  | 'default' | 'empty' | 'no-providers' | 'refused' | 'stress'
+  // Status-bar relevance design review (Task 9): each isolates ONE session so the
+  // bar is the only thing on screen worth looking at. 'statusbar-cc' reuses wb-1
+  // (Claude Code); the other four reuse wb-2 (native) with different totals —
+  // see STATUSBAR_TOTALS_OVERRIDE in seed-chat.ts for the exact numbers.
+  | 'statusbar-cc' | 'statusbar-local' | 'statusbar-metered' | 'statusbar-unpriced' | 'statusbar-delegated';
 
 export const SCENARIO_IDS: readonly ScenarioId[] = [
   'default', 'empty', 'no-providers', 'refused', 'stress',
+  'statusbar-cc', 'statusbar-local', 'statusbar-metered', 'statusbar-unpriced', 'statusbar-delegated',
 ];
 
 /** A row in the Resume Browser's list. Mirrors ResumeBrowser.tsx's local
@@ -163,7 +170,13 @@ export function seed(scenario: ScenarioId): MockState {
     // The live CC session starts with a tag and Priority set, so the StatusBar
     // chip and the close prompt both have something to render without the
     // reviewer having to click first.
-    meta: { 'wb-1': { tags: ['tag_work'], note: '', flags: { priority: true } } },
+    // Enough variety for the All Sessions menu's tag marks to be reviewable:
+    // a priority + tag row, a two-tag row, and a row whose only mark is a note.
+    meta: {
+      'wb-1': { tags: ['tag_work'], note: '', flags: { priority: true } },
+      'wb-3': { tags: ['tag_bug', 'tag_idea'], note: '', flags: {} },
+      'wb-5': { tags: [], note: 'check the openrouter key before resuming', flags: {} },
+    },
     providers: seedProviders(),
     catalog: seedCatalog(),
     tags: seedTags(),
@@ -179,6 +192,20 @@ export function seed(scenario: ScenarioId): MockState {
       return { ...base, providers: base.providers.map((p) => ({ ...p, ready: false })), catalog: [] };
     case 'stress':
       return { ...base, past: stressPast(), permissions: stressPermissions() };
+    // Status-bar relevance review: ONE session on screen, nothing else to
+    // scroll past. `sessions()` always puts wb-1 (Claude Code) first and wb-2
+    // (native) second, so `list[0]` — the workbench's own default-session pick
+    // (App.tsx: `setSessionId((prev) => prev ?? list[0].id)`) — lands correctly
+    // with no extra wiring. Totals for the four native scenarios are applied to
+    // wb-2's chat state in seed-chat.ts (STATUSBAR_TOTALS_OVERRIDE), keyed off
+    // the same `?scenario=` the caller is already reading here.
+    case 'statusbar-cc':
+      return { ...base, sessions: base.sessions.filter((s) => s.id === 'wb-1') };
+    case 'statusbar-local':
+    case 'statusbar-metered':
+    case 'statusbar-unpriced':
+    case 'statusbar-delegated':
+      return { ...base, sessions: base.sessions.filter((s) => s.id === 'wb-2') };
     case 'refused':
     case 'default':
     default:

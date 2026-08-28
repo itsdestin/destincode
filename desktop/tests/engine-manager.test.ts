@@ -5,6 +5,7 @@ import * as path from 'path';
 import { NativeHome } from '../src/main/native-home';
 import { EngineManager, selectInstallAsset } from '../src/main/engine/engine-manager';
 import { ENGINE_VERSION } from '../src/main/engine/engine-pin';
+import { updateEngineConfig } from '../src/main/engine/engine-config';
 
 let root: string;
 let userData: string;
@@ -86,11 +87,14 @@ describe('EngineManager', () => {
     await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir } }));
     const mgr = new EngineManager(home, userData, 9999);
     const models = await mgr.installedModels();
-    // sizeBytes is summed across parts (scanGgufCache folds part 2 into part 1).
+    // sizeBytes is summed across the set's published parts. The row also
+    // carries the download state (2026-08-27): both parts are present, so this
+    // one is complete, and a complete row needs no manifest fields.
     expect(models).toEqual([{
       id: 'M-UD-Q4_K_XL-00001-of-00002', sizeBytes: 5,
       quant: 'UD-Q4_K_XL', quantDescription: expect.stringMatching(/unsloth/i),
-      parts: 2,
+      parts: 2, partsPresent: 2, status: 'complete',
+      totalSizeBytes: null, repo: null,
     }]);
   });
 
@@ -103,6 +107,83 @@ describe('EngineManager', () => {
     await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir } }));
     const mgr = new EngineManager(home, userData, 9999);
     await mgr.deleteModel('M-UD-Q4_K_XL-00001-of-00002');
+    expect(fs.readdirSync(cacheDir)).toEqual([]);
+  });
+});
+
+describe('EngineManager — local downloads', () => {
+  let cacheDir: string;
+  let manager: EngineManager;
+
+  beforeEach(async () => {
+    // A real cache dir under the per-test tmp root. Without this the manager
+    // reads ~/.cache/llama.cpp — the developer's actual models.
+    cacheDir = path.join(root, 'cache');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    await updateEngineConfig(home, { cacheDir });
+    manager = new EngineManager(home, userData, 9999);
+  });
+
+  const manifest = (repo: string, files: string[], totalSizeBytes: number) => JSON.stringify({
+    v: 1, repo, quant: 'UD-Q4_K_XL', files, totalSizeBytes, sha256ByFile: {}, startedAt: 1,
+  });
+
+  it('reports a complete model, an unfinished one with its manifest, and an untraceable one', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf'), Buffer.alloc(50));
+    fs.writeFileSync(path.join(cacheDir, 'Half-UD-Q4_K_XL-00001-of-00004.gguf'), Buffer.alloc(10));
+    fs.writeFileSync(path.join(cacheDir, 'Half-UD-Q4_K_XL-00003-of-00004.gguf.partial'), Buffer.alloc(5));
+    fs.writeFileSync(path.join(cacheDir, 'Half-UD-Q4_K_XL-00001-of-00004.gguf.download.json'),
+      manifest('unsloth/Half-GGUF', ['Half-UD-Q4_K_XL-00001-of-00004.gguf'], 100));
+    fs.writeFileSync(path.join(cacheDir, 'Old-UD-Q4_K_XL-00001-of-00002.gguf'), Buffer.alloc(20));
+
+    const rows = await manager.installedModels();
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+
+    expect(byId['Whole-Q4_K_M']).toMatchObject({
+      status: 'complete', sizeBytes: 50, parts: 1, partsPresent: 1,
+      totalSizeBytes: null, repo: null,
+    });
+    expect(byId['Half-UD-Q4_K_XL-00001-of-00004']).toMatchObject({
+      status: 'unfinished', sizeBytes: 15, parts: 4, partsPresent: 1,
+      totalSizeBytes: 100, repo: 'unsloth/Half-GGUF', quant: 'UD-Q4_K_XL',
+    });
+    expect(byId['Old-UD-Q4_K_XL-00001-of-00002']).toMatchObject({
+      status: 'untraceable', sizeBytes: 20, parts: 2, partsPresent: 1,
+      totalSizeBytes: null, repo: null,
+    });
+  });
+
+  it('a download that stopped before its first byte is an unfinished row at 0 bytes', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'New-Q4_K_M.gguf.download.json'),
+      manifest('unsloth/New-GGUF', ['New-Q4_K_M.gguf'], 100));
+    const rows = await manager.installedModels();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'New-Q4_K_M', status: 'unfinished', sizeBytes: 0, totalSizeBytes: 100, repo: 'unsloth/New-GGUF',
+    });
+  });
+
+  it('an unreadable manifest with no bytes is nothing the user can act on — dropped and removed', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'Junk-Q4_K_M.gguf.download.json'), '{not json');
+    expect(await manager.installedModels()).toEqual([]);
+    expect(fs.existsSync(path.join(cacheDir, 'Junk-Q4_K_M.gguf.download.json'))).toBe(false);
+  });
+
+  it('removes a stale manifest left beside a COMPLETE set', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf'), Buffer.alloc(50));
+    fs.writeFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf.download.json'),
+      manifest('a/b', ['Whole-Q4_K_M.gguf'], 50));
+    const rows = await manager.installedModels();
+    expect(rows[0].status).toBe('complete');
+    expect(fs.existsSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf.download.json'))).toBe(false);
+  });
+
+  it('deleteModel removes the manifest along with the parts', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'M-Q4_K_M.gguf.partial'), Buffer.alloc(10));
+    fs.writeFileSync(path.join(cacheDir, 'M-Q4_K_M.gguf.download.json'), '{}');
+    // No supervisor is running in this fixture, so refreshModels() is a no-op
+    // — deleteModel needs no engine.
+    await manager.deleteModel('M-Q4_K_M');
     expect(fs.readdirSync(cacheDir)).toEqual([]);
   });
 });

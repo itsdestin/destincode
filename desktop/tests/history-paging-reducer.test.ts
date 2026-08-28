@@ -99,6 +99,32 @@ describe('history paging reducer', () => {
     expect(st.get('s')!.timeline.filter((e) => e.kind === 'assistant-turn')).toHaveLength(1);
   });
 
+  it('folds the page\'s usage totals into the session', () => {
+    // session-totals' contract is "rebuilt for free when a resumed session
+    // replays its record" — true while resume replayed the WHOLE transcript.
+    // Paging replays onto a scratch state, so the page's totals have to be
+    // folded in explicitly or a resumed session counts nothing at all.
+    let st = withSession('s');
+    const turn = (uuid: string, out: number): TranscriptEvent => ({
+      type: 'turn-complete', sessionId: 's', uuid, timestamp: 3,
+      data: { stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: out, cacheReadTokens: 0, cacheCreationTokens: 0 } },
+    } as TranscriptEvent);
+    st = chatReducer(st, {
+      type: 'HISTORY_PAGE_LOADED', sessionId: 's',
+      events: [userEvent('s', 'u1', 'hi'), asstEvent('s', 'a1', 'yo'), turn('t1', 40)],
+      cursor: { path: 'p', offset: 5, sizeAtRead: 9 }, hasMore: true,
+    });
+    expect(st.get('s')!.totals.outputTokens).toBe(40);
+
+    // A second, older page ADDS to the running figure rather than replacing it.
+    st = chatReducer(st, {
+      type: 'HISTORY_PAGE_LOADED', sessionId: 's',
+      events: [userEvent('s', 'u0', 'older'), asstEvent('s', 'a0', 'older reply'), turn('t0', 25)],
+      cursor: null, hasMore: false,
+    });
+    expect(st.get('s')!.totals.outputTokens).toBe(65);
+  });
+
   it('HISTORY_PAGE_FAILED clears loading and keeps the cursor', () => {
     let st = withSession('s');
     st = chatReducer(st, {

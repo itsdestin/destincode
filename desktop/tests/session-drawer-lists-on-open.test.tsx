@@ -33,6 +33,9 @@ function baseState(drawerOpen: boolean) {
     gitReviewBySession: {},
     pillError: {},
     drawerExpanded: false,
+    // Added by the artifact-zoom / session-preview work merged from master.
+    activeSessionPreviewBySession: {},
+    referencedSessionsBySession: {},
   };
 }
 

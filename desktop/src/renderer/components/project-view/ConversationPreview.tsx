@@ -1,15 +1,17 @@
 // ConversationPreview — read-only transcript preview shown in the shared centered
 // detail overlay (Task 3.2). Loads a session's message history via the
 // project:conversation-history IPC (which does NOT launch Claude — it parses the
-// JSONL transcript on disk) and renders it as role-labelled plain-text blocks.
+// JSONL transcript on disk) and renders it via the shared ConversationTranscript
+// bubble list (markdown-rendered, no filepath chips — see that component).
 //
 // IMPORTANT: This component NEVER spawns a Claude process. Only the explicit
 // "Resume in Claude" button leads to a live session, and that is handled entirely
 // by the parent via the `onResume` prop. "Open full transcript" just re-fetches
 // the same read-only history with `all: true`.
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { PastSession, HistoryMessage } from '../../../shared/types';
 import { ProjectDetailOverlay } from './ProjectDetailOverlay';
+import ConversationTranscript from './ConversationTranscript';
 import { TOOL_BTN_ACCENT, TOOL_BTN_NEUTRAL, PlayIcon } from './detail-tool-icons';
 // Compact relative-time for the meta strip (shared util).
 import { formatRelativeTime as relTime } from '../../utils/format-time';
@@ -27,15 +29,6 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
   // `all` flips to true once the user clicks "Open full transcript"; we re-fetch
   // with count=0/all=true and disable the button so a second click is a no-op.
   const [all, setAll] = useState(false);
-  // Bottom anchor — the preview opens at the LATEST message (like the real chat
-  // view) and scrolls UPWARD through history, so we jump here after each load.
-  const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!loading && messages.length > 0) {
-      // 'auto' (instant) — a smooth scroll from the top on open reads as janky.
-      endRef.current?.scrollIntoView({ block: 'end' });
-    }
-  }, [loading, messages]);
 
   // Load the (preview-length) history on mount and whenever the session changes.
   // A `cancelled` flag guards against a late response from a previous session
@@ -121,36 +114,24 @@ export function ConversationPreview({ project, session, onClose, onResume }: Con
         ) : messages.length === 0 ? (
           <p className="text-sm text-fg-muted">No messages to preview.</p>
         ) : (
-          <div className="max-w-[680px] mx-auto">
-            {/* The "there's more above" hint sits at the TOP — that's the OLDER
-                side now that the preview anchors to the latest message. */}
-            {showOlderHint && (
+          // Bubbles mirror the real chat view: user on the RIGHT in accent
+          // (UserMessage.tsx), Claude on the LEFT in inset (AssistantTurnBubble.tsx)
+          // — same rounding + max-widths, so the preview reads as the same
+          // conversation the user remembers. No role captions; the sides carry
+          // that, like the live chat. Rendered by the same ConversationTranscript
+          // the Session Drawer's SessionPreviewPane uses, so both surfaces agree
+          // on markdown rendering and gap markers.
+          <ConversationTranscript
+            messages={messages}
+            scrollToEndKey={loading}
+            olderHint={showOlderHint ? (
+              // The "there's more above" hint sits at the TOP — that's the OLDER
+              // side now that the preview anchors to the latest message.
               <div className="text-center text-[11.5px] text-fg-muted py-2">
-                — showing the last {shownCount} messages — use “Open full transcript” for everything —
+                — showing the last {shownCount} messages — use "Open full transcript" for everything —
               </div>
-            )}
-            {/* Bubbles mirror the real chat view: user on the RIGHT in accent
-                (UserMessage.tsx), Claude on the LEFT in inset
-                (AssistantTurnBubble.tsx) — same rounding + max-widths, so the
-                preview reads as the same conversation the user remembers. No
-                role captions; the sides carry that, like the live chat. */}
-            {messages.map((m, i) => (
-              <div key={i} className={`mb-3 flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                {/* Plain text only — whitespace-pre-wrap + break-words. We do NOT
-                    execute markdown/HTML here; this is a lightweight read-only preview. */}
-                <div
-                  className={`break-words whitespace-pre-wrap rounded-2xl px-5 py-3 text-sm ${
-                    m.role === 'user'
-                      ? 'max-w-[80%] rounded-br-sm bg-accent text-on-accent'
-                      : 'max-w-[85%] rounded-bl-sm bg-inset text-fg'
-                  }`}
-                >
-                  {m.content}
-                </div>
-              </div>
-            ))}
-            <div ref={endRef} />
-          </div>
+            ) : null}
+          />
         )}
       </div>
     </ProjectDetailOverlay>

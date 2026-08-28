@@ -26,6 +26,7 @@ import { assistantName } from '../utils/assistant-name';
 import { ContentFindBar } from './ContentFindBar';
 import { isTypingTarget } from '../utils/is-typing-target';
 import { useStickToBottom } from '../hooks/use-stick-to-bottom';
+import { useSessionPreviewListener } from '../hooks/useSessionPreviewListener';
 
 /** How long the prepend anchor keeps correcting for late-laying-out content
  *  (code blocks, images) before it lets go. Long enough for markdown to settle,
@@ -74,6 +75,13 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
   // Artifact drawer state — read from ArtifactContext so ChatView reacts to
   // the drawer toggle without needing a prop threaded down from App.tsx.
   const { state: artifactState, dispatch: artifactDispatch } = useArtifact();
+  // Preview cards (SessionRefActions, deep in the chat tree) ask for a past
+  // conversation by event. Mounted here — not in SessionDrawer, which is
+  // unmounted until it opens — so it hears the very first Preview click.
+  // `sessionActive` gates which of the many mounted ChatViews actually
+  // responds — see the WHY comment inside the hook (deliberately not
+  // `visible`, which also depends on the chat/terminal toggle).
+  useSessionPreviewListener(sessionId, sessionActive, artifactDispatch);
   // Drawer open/closed is per-session — read this session's flag (absent → closed).
   const drawerOpen = artifactState.drawerOpenBySession[sessionId] ?? false;
   const drawerExpanded = artifactState.drawerExpanded;

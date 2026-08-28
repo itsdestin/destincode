@@ -140,12 +140,26 @@ import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
 import { mcpToolsFor, estimateToolSchemaTokens } from './mcp/mcp-tools';
 import type { ReadyServer } from './mcp/mcp-manager';
+import {
+  costForUsage, providerCostFromMetadata, costDisagreement,
+  COST_DISAGREEMENT_THRESHOLD, addComparableTurn, sessionCostDisagreement,
+  NO_SESSION_COST_TOTALS, COST_GAP_RELOG_FACTOR,
+  type ModelPricing, type SessionCostTotals,
+} from './pricing';
 import { log } from '../logger';
 
 export interface HarnessSessionOpts {
   sessionId: string; cwd: string; harness: HarnessManifest; binding: ModelBinding;
   /** Model context window (from the catalog); null → conservative 32k default. */
   contextLength?: number | null;
+  /** Resolved price for the bound model, or null when none is published.
+   *  Re-resolved on setBinding, so a mid-session model swap prices only the
+   *  turns that run AFTER it — a turn is never repriced retroactively. */
+  pricing?: ModelPricing | null;
+  /** The bound model costs nothing to run (local engine, or a published rate
+   *  card of all zeroes). Resolved by the host alongside `pricing`, because
+   *  only the host knows the provider type. */
+  free?: boolean;
   // --- Plan A (Task 9) additions — all injected by NativeSessionHost: ---
   /** The tool set this session may call. Absent/[] = v0 chat behavior (the
    *  Chat-preset path: plain text, no tool plumbing invoked). */
@@ -251,6 +265,13 @@ interface StepUsage { inputTokens: number; outputTokens: number; cacheReadTokens
 interface StepResult {
   text: string; toolCalls: ToolCall[]; usage: StepUsage;
   finishReason: string | undefined; interrupted: boolean;
+  /** What the PROVIDER itself says this one request cost, in USD — OpenRouter
+   *  reports it on every response (pricing.ts's openRouterCostExtractor).
+   *  `undefined` means the provider reported nothing, which is every other
+   *  provider and must never be read as $0. Deliberately NOT on StepUsage:
+   *  that is the fixed transcript token shape, and this is a dollar figure
+   *  from a different source. */
+  providerCostUsd?: number;
   /** Milliseconds from this step's FIRST real output chunk to the end of its
    *  stream — i.e. time actually spent generating. Excludes prefill (before the
    *  first chunk) and everything outside the stream (tool execution, permission
@@ -568,6 +589,29 @@ export class HarnessSession extends EventEmitter {
   // is a full prefill" (first step, or history rewritten by compaction, which
   // invalidates the cached prefix).
   private lastStepPromptTokens = 0;
+  /** Running pair for the SESSION-wide cost self-check (Task 30). The per-turn
+   *  check can never fire on a cheap model — a whole turn there costs a
+   *  fraction of the comparison floor — but these sums cross it, so a
+   *  systematic pricing error shows up where no single turn could show it.
+   *  Only turns that had BOTH figures are folded in, so the two sums always
+   *  cover exactly the same turns (see pricing.ts for why that matters).
+   *
+   *  Deliberately NOT reset by /clear or resume: this measures OUR pricing
+   *  arithmetic against the provider's bill, which is a property of the code,
+   *  not of the conversation. On resume it simply starts again from the turns
+   *  this process runs — the check is continuous, not a per-session report. */
+  private sessionCostTotals: SessionCostTotals = NO_SESSION_COST_TOTALS;
+  /** The gap the last session line reported, or null if none has been logged.
+   *
+   *  NOT a one-shot flag (which is what this was until the review of 51e8b80e).
+   *  Once the sums disagree they keep disagreeing, so repeating an identical
+   *  warning every turn would bury the finding — but stopping after one line
+   *  goes permanently DEAF on a cheap model, where the per-turn line is below
+   *  the comparison floor forever and can report nothing later either. Keeping
+   *  the last figure lets the next line fire only when the gap has got
+   *  materially WORSE (COST_GAP_RELOG_FACTOR), which is a different fault
+   *  rather than a repeat of the reported one. */
+  private lastLoggedSessionCostGap: number | null = null;
   binding: ModelBinding;
 
   // Tool runtime state (Task 9). readRegistry + todos are per-SESSION runtime
@@ -730,10 +774,47 @@ export class HarnessSession extends EventEmitter {
   /** Mid-session model swap (next turn uses the new binding). A swap can cross
    *  capability tiers (e.g. cloud → small local), so the host re-resolves the
    *  profile and passes it in; applied only when provided. */
-  setBinding(binding: ModelBinding, contextLength?: number | null, profile?: CapabilityProfile): void {
+  setBinding(binding: ModelBinding, contextLength?: number | null, profile?: CapabilityProfile,
+             pricing?: ModelPricing | null, free?: boolean): void {
     this.binding = binding;
     if (contextLength !== undefined) this.opts.contextLength = contextLength;
     if (profile) this.profile = profile;
+    // Same applied-only-when-provided shape as contextLength: a swap to a
+    // model with no published price must be able to CLEAR a price the old
+    // model had, so `null` is a real value here and only `undefined` skips.
+    if (pricing !== undefined) this.opts.pricing = pricing;
+    if (free !== undefined) this.opts.free = free;
+  }
+
+  /** What this session's CURRENT model costs to run, as resolved when the
+   *  session was created and re-resolved by every setBinding swap above.
+   *
+   *  WHY expose it rather than re-resolve: NativeSessionHost reads this off a
+   *  FINISHED specialist to price its run for the parent (see emitSubagentUsage
+   *  below). Re-asking the catalog would be a second, independent answer that
+   *  could disagree with the rate the child's own turns were actually priced
+   *  at; reading the child's own card makes the two agree by construction. It
+   *  also carries `free`, which a bare price lookup cannot produce — telling a
+   *  local engine apart from a metered model needs the provider type, which the
+   *  host resolved once, here. */
+  get priceCard(): { pricing: ModelPricing | null | undefined; free: boolean } {
+    return { pricing: this.opts.pricing, free: this.opts.free ?? false };
+  }
+
+  /** Report a finished specialist's TOTAL spend on THIS (parent) session's
+   *  stream. Goes through emitEvent so wire()'s existing listener persists it to
+   *  the parent's record and forwards it to the renderer — no second
+   *  persistence path, no new IPC channel. */
+  emitSubagentUsage(data: {
+    usage: {
+      inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number;
+      costUsd: number | null; free: boolean;
+    };
+    model: string;
+    parentAgentToolUseId: string;
+    agentId: string;
+  }): void {
+    this.emitEvent('subagent-usage', data);
   }
 
   /** Task 5 (MOIM pattern): NativeSessionHost.wire() calls this on every ROOT
@@ -1668,6 +1749,20 @@ export class HarnessSession extends EventEmitter {
 
     const startedAt = Date.now();
     const turnUsage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+    // The PROVIDER's own bill for this turn, summed over the same steps
+    // turnUsage covers, so the two figures are comparable.
+    //
+    // WHY the two counters: the provider bills per REQUEST while costForUsage
+    // prices a whole TURN of N steps. Summing both is only honest while both
+    // sums cover the SAME steps. A turn where some steps reported a cost and
+    // some did not (a mid-turn model swap to a provider that reports nothing,
+    // or a response that simply omitted the field) would otherwise publish
+    // part of a bill next to all of a turn — a fake disagreement, silently, in
+    // the cheap direction. When the counts differ, the turn reports no
+    // provider figure at all.
+    let turnProviderCostUsd: number | undefined;
+    let stepsCounted = 0;
+    let stepsWithProviderCost = 0;
     // Time spent GENERATING, summed over the turn's steps. Not wall-clock: a turn
     // includes prefill, tool execution and permission waits, and dividing output
     // tokens by all of that reports a decode speed several times slower than the
@@ -1760,6 +1855,11 @@ export class HarnessSession extends EventEmitter {
         turnUsage.outputTokens += step.usage.outputTokens;
         turnUsage.cacheReadTokens += step.usage.cacheReadTokens;
         turnUsage.cacheCreationTokens += step.usage.cacheCreationTokens;
+        stepsCounted++;
+        if (step.providerCostUsd !== undefined) {
+          stepsWithProviderCost++;
+          turnProviderCostUsd = (turnProviderCostUsd ?? 0) + step.providerCostUsd;
+        }
         generationMs += step.generationMs;
 
         // v0 interrupt semantics: push the partial, emit user-interrupt, return.
@@ -1954,6 +2054,63 @@ export class HarnessSession extends EventEmitter {
       // wall-clock only when no step ever produced output, where the ratio is 0
       // either way and the fallback just avoids dividing by zero.
       const seconds = Math.max((generationMs || (Date.now() - startedAt)) / 1000, 0.001);
+      // Hoisted out of the emit below so the same number can be checked against
+      // the provider's own before it ships.
+      const costUsd = this.opts.free ? null : costForUsage(turnUsage, this.opts.pricing);
+      // Published ONLY when every counted step reported one — see the counters'
+      // declaration for why a partially-covered turn reports nothing.
+      const providerCostUsd = stepsCounted > 0 && stepsWithProviderCost === stepsCounted
+        ? turnProviderCostUsd
+        : undefined;
+      // Our arithmetic, checked against the only authority there is. This is a
+      // DIAGNOSTIC line in ~/.claude/desktop.log and nothing else: a gap is a
+      // bug for us to fix, not something to put in front of a user, so no
+      // transcript event and no UI. `costDisagreement` returns null — never a
+      // number — whenever there is nothing honest to compare (no provider
+      // figure, no rate card of ours, or a bill too small for the ratio to
+      // mean anything), so silence here is never a claim that the two agreed.
+      // The message states only what was observed; it names no cause, because
+      // none has been established (docs/error-message-standards.md).
+      const costGap = costDisagreement(costUsd, providerCostUsd);
+      if (costGap !== null && costGap > COST_DISAGREEMENT_THRESHOLD) {
+        log('WARN', 'HarnessSession', 'our cost figure and the provider\u2019s own disagree for this turn', {
+          sessionId: this.opts.sessionId,
+          model: this.binding.modelId,
+          ourCostUsd: costUsd,
+          providerCostUsd,
+          relativeGap: Number(costGap.toFixed(4)),
+        });
+      }
+      // ...and the same comparison across the whole session (Task 30). The
+      // per-turn line above localises a fault to ONE turn but is silent
+      // forever on a cheap model, where a whole turn costs a third of the
+      // floor; these sums cross the floor after a handful of turns, so a
+      // systematic pricing error finally becomes visible. Only turns that had
+      // BOTH figures are in either sum, so a session that mixed a reporting
+      // provider with a silent one never puts part of a bill next to all of
+      // our arithmetic. Same rules as above: diagnostic only, no UI, and the
+      // message states what was observed without naming a cause.
+      this.sessionCostTotals = addComparableTurn(this.sessionCostTotals, costUsd, providerCostUsd);
+      const sessionCostGap = sessionCostDisagreement(this.sessionCostTotals);
+      // Logged the first time the sums cross the threshold, and again only once
+      // the gap has multiplied since the last line — see the field and
+      // COST_GAP_RELOG_FACTOR for why neither "every turn" nor "once, ever" is
+      // safe here.
+      if (sessionCostGap !== null && sessionCostGap > COST_DISAGREEMENT_THRESHOLD
+          && (this.lastLoggedSessionCostGap === null
+              || sessionCostGap >= this.lastLoggedSessionCostGap * COST_GAP_RELOG_FACTOR)) {
+        this.lastLoggedSessionCostGap = sessionCostGap;
+        log('WARN', 'HarnessSession', 'our cost figures and the provider\u2019s own disagree across this session', {
+          sessionId: this.opts.sessionId,
+          // The LATEST turn's model, not "the model these totals are for": a
+          // session can swap models mid-flight, so the sums may span several.
+          modelOfLatestTurn: this.binding.modelId,
+          comparableTurns: this.sessionCostTotals.turns,
+          ourCostUsd: this.sessionCostTotals.ourUsd,
+          providerCostUsd: this.sessionCostTotals.theirUsd,
+          relativeGap: Number(sessionCostGap.toFixed(4)),
+        });
+      }
       this.emitEvent('turn-complete', {
         model: this.binding.modelId,
         stopReason,
@@ -1973,6 +2130,29 @@ export class HarnessSession extends EventEmitter {
           contextUsedTokens: lastInputTokens > 0
             ? lastInputTokens + lastOutputTokens
             : this.estimateContextTokens(),
+          // Priced HERE, where the model that ran this turn is known. A
+          // mid-session swap re-resolves opts.pricing, so already-counted turns
+          // keep the price they actually ran at (spec §5).
+          //
+          // `free` WINS over any rate card (Task 22): the two facts are
+          // resolved from different sources — the provider type says free, the
+          // catalog says the price — and nothing else stopped them
+          // contradicting each other. A local-engine binding whose model id
+          // happens to carry a published rate would otherwise ship
+          // {"costUsd": 7, "free": true}: a turn billed $7 that also cost
+          // nothing to run. Free means free; a bill is never stamped on it.
+          costUsd,
+          // Reported separately from costUsd because "free to run" and "no
+          // published price" are different facts with different wording — see
+          // the field comment in shared/types.ts. Defaults to false: never
+          // claim a turn was free without having established it.
+          free: this.opts.free ?? false,
+          // Spread, so a turn the provider said nothing about carries no key at
+          // all. A `providerCostUsd: 0` would read as "the provider agrees this
+          // was free", which is the exact confusion pricing.ts exists to
+          // prevent — and it would be wrong for every non-OpenRouter provider,
+          // which is most of them.
+          ...(providerCostUsd === undefined ? {} : { providerCostUsd }),
         },
       });
     } catch (err: any) {
@@ -2462,6 +2642,9 @@ export class HarnessSession extends EventEmitter {
     }
 
     const usage = await result.usage;
+    // Sibling promise of result.usage. Carries OpenRouter's own dollar figure
+    // for THIS request when the provider reported one; undefined otherwise.
+    const providerCostUsd = providerCostFromMetadata(await result.providerMetadata);
     const finishReason = await result.finishReason;
     // `preparing` entries are NOT deleted when their call completes (the card
     // transitions in place under the same id), so filter by completed
@@ -2482,6 +2665,10 @@ export class HarnessSession extends EventEmitter {
       },
       finishReason,
       interrupted: false,
+      // Spread so a provider that reported nothing leaves the key ABSENT
+      // rather than present-and-undefined — the turn accumulator counts
+      // reporting steps, and "present but undefined" would muddy that.
+      ...(providerCostUsd === undefined ? {} : { providerCostUsd }),
       generationMs: firstChunkAt ? Date.now() - firstChunkAt : 0,
     };
   }

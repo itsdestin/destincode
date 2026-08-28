@@ -310,12 +310,6 @@ class SessionService : Service() {
         startStatusBroadcast(bs)
         skillProvider = LocalSkillProvider(bs.homeDir, applicationContext)
         skillProvider?.ensureMigrated()
-        // Fire-and-forget: install bundled plugins if missing. Silent retry on
-        // every launch. Dispatched on IO so service startup isn't blocked by
-        // marketplace HTTP.
-        serviceScope.launch(Dispatchers.IO) {
-            skillProvider?.ensureBundledPluginsInstalled()
-        }
         // Command drawer — builds the merged commands list from CC built-ins, plugins, and skills.
         commandProvider = CommandProvider(
             homeDir = bs.homeDir,
@@ -329,6 +323,23 @@ class SessionService : Service() {
         // Wire up plugin installer and reload callback so LocalSkillProvider
         // handles all install/uninstall routing (consolidates SessionService logic)
         skillProvider?.pluginInstaller = pluginInstaller
+        // Fire-and-forget: install bundled plugins if missing. Silent retry on
+        // every launch. Dispatched on IO so service startup isn't blocked by
+        // marketplace HTTP.
+        //
+        // Fix (Track B final review, Finding F13): this launch used to sit
+        // ABOVE the `pluginInstaller = PluginInstaller(...)` assignment two
+        // lines below. reconcileBundledPlugins() reads skillProvider.pluginInstaller
+        // and bails out with a single "installer not initialized" row if it's
+        // still null — a real race, not hypothetical: if the IO-dispatched
+        // coroutine started running before this thread reached the
+        // assignment, nothing reconciles until the next launch. Was
+        // pre-existing as a one-time-install race; Track B makes it cost an
+        // upgrade per lost race instead. Moved below the assignment so the
+        // installer is guaranteed non-null before the coroutine can read it.
+        serviceScope.launch(Dispatchers.IO) {
+            skillProvider?.ensureBundledPluginsInstalled()
+        }
         skillProvider?.onPluginsChanged = {
             // Mirror of desktop's SessionManager.broadcastReloadPlugins gating
             // (stray-Enter fix, youcoded#110): typing "/reload-plugins\r" while a
@@ -3701,6 +3712,15 @@ class SessionService : Service() {
             //    (list-project, include-external, exclude, delete-project) are
             //    desktop-only in v1. ──────────────────────────────────────────────
 
+            // Android has no chatsearch index; the shared UI falls back to plain
+            // shell output when resolve answers not-implemented, so a search
+            // result on a phone reads as the CLI's own table rather than a card.
+            "chatsearch:resolve",
+            "chatsearch:read" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
             "artifacts:list-project" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
@@ -3869,7 +3889,7 @@ class SessionService : Service() {
             "models:download-cancel",
             "models:delete",
             "models:installed",
-            "models:orphaned-partials",  // orphaned .partial scan (2026-07-15) — desktop-only
+            "models:resume",  // resume an interrupted download (2026-08-26) — desktop-only
             "endpoints:detect",
             // Model memory lifecycle (2026-07-14) — per-model residency, memory
             // guard, [Reload Model]. Desktop-only; no Android runtime. The push

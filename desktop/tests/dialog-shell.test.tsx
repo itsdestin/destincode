@@ -158,6 +158,12 @@ const NOT_DIALOGS: Record<string, string> = {
   'AnchorTip.tsx': 'tooltip anchored to its trigger via computed coordinates',
   'Select.tsx': 'dropdown list anchored under its trigger',
   'Toast.tsx': 'transient notification docked to a screen edge, no scrim',
+  // Evidence, not a class string: ZoomPill sets NO position of its own — it has
+  // no `fixed`/`absolute`, no top/left, and no transform anywhere in the file.
+  // Its one caller (ImageView) anchors it `absolute top-2 left-2` inside the
+  // viewer's own relative box. Corner-anchored, no scrim, never centered, never
+  // modal — the same shape as ZoomOverlay above, which it shares its look with.
+  'ZoomPill.tsx': 'in-pane zoom control anchored to a corner by its caller, no scrim',
 };
 
 describe('dialog shell adoption', () => {

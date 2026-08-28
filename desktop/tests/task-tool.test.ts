@@ -917,7 +917,7 @@ describe('Task tool — task_id management surface (Task 6)', () => {
     // wires the child session, it never dispatches a turn.
     const neverCalledFactory = async () => { throw new Error('model factory should never be called in this test — no turn ever runs'); };
     const host = new NativeSessionHost(
-      store, neverCalledFactory, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, neverCalledFactory, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     try {

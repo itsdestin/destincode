@@ -1,6 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { SessionStatusColor } from './StatusDot';
+import { SessionStatusColor, STATUS_LABEL } from './StatusDot';
 import { Button, Toggle } from './ui';
 import { isAndroid } from '../platform';
 import FolderSwitcher from './FolderSwitcher';
@@ -11,6 +11,12 @@ import { packSessions, type SessionMeasurement, type PackResult } from './header
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
 import { isTypingTarget } from '../utils/is-typing-target';
+import { useTagRegistry } from '../hooks/useTagRegistry';
+import { useSessionMeta } from '../hooks/useSessionMeta';
+import { PRIORITY_TAG } from './tags/built-in-tags';
+import { NotePageGlyph } from './tags/glyphs';
+import { TagChip } from './tags/TagChip';
+import type { TagRecord } from '../../shared/tags';
 
 interface SessionEntry {
   id: string;
@@ -95,6 +101,88 @@ function SessionDot({ color, isActive }: { color: SessionStatusColor; isActive: 
   );
 }
 
+/* ── Status pill ─────────────────────────────────────────── */
+
+// P-8 (2026-08-28): the menu used to show the bare dot and nothing else, so the
+// colour was the whole message and you had to remember what amber meant. The
+// pill says it in words. Background and border are the dot's own colour at low
+// strength; the WORD is the theme's text colour, because the dot palette is
+// fixed (bg-green-400 and friends) and a green word on a pale theme measured
+// well under a readable contrast.
+const STATUS_PILL: Record<SessionStatusColor, string> = {
+  green: 'bg-green-400/15 border-green-400/30',
+  red: 'bg-red-400/15 border-red-400/30',
+  amber: 'bg-amber-400/15 border-amber-400/30',
+  blue: 'bg-blue-400/15 border-blue-400/30',
+  gray: 'bg-gray-500/15 border-gray-500/30',
+};
+
+// `label` exists for ONE caller: the mock-up page that shows two candidate
+// wordings side by side. Everywhere in the app it is omitted, so STATUS_LABEL
+// stays the single source of the words.
+export function StatusPill({ color, isActive, label }: { color: SessionStatusColor; isActive: boolean; label?: string }) {
+  return (
+    <span className={`shrink-0 inline-flex items-center gap-1 pl-1 pr-1.5 py-[1px] rounded-full border text-4xs leading-none text-fg-2 ${STATUS_PILL[color]}`}>
+      <SessionDot color={color} isActive={isActive} />
+      {label ?? STATUS_LABEL[color]}
+    </span>
+  );
+}
+
+/* ── Project folder mark ─────────────────────────────────── */
+
+function FolderMark({ className = '' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <path d="M3 7.5A1.5 1.5 0 014.5 6h4l2 2.5h7A1.5 1.5 0 0119 10v7a1.5 1.5 0 01-1.5 1.5h-13A1.5 1.5 0 013 17V7.5z" />
+    </svg>
+  );
+}
+
+/* ── Tag marks (a named chip per tag, plus a page when there is a note) ── */
+
+// The tags a session carries, as the same named chips the tag picker and the
+// Resume Browser card use — spelled out, not colour-coded dots (Destin, P-8
+// review 2, 2026-08-28: "tags should not be dots, but full chips with spelled
+// names"). Priority is a reserved flag rather than a tag and leads the row, the
+// way it leads the status-bar chip.
+const MAX_CHIPS = 3;
+
+function SessionTagMarks({ sessionId, byId }: { sessionId: string; byId: Map<string, TagRecord> }) {
+  // One getMeta per open row. The menu holds the live sessions of ONE window,
+  // so this is a handful of cheap reads while it is open, and nothing at all
+  // when it is shut. A bulk read would need a new channel on all five surfaces.
+  const meta = useSessionMeta(sessionId);
+  const applied = [...meta.tags].map((id) => byId.get(id)).filter((t): t is TagRecord => !!t);
+  const marks: { label: string; color: string }[] = [
+    ...(meta.flags.priority ? [{ label: PRIORITY_TAG.label, color: PRIORITY_TAG.color as string }] : []),
+    ...applied.map((t) => ({ label: t.label, color: t.color as string })),
+  ];
+  if (marks.length === 0 && !meta.note) return null;
+  // Names cost width, so past three the rest collapse into a count that names
+  // them on hover — a row must never push the status pill off its own line.
+  const shown = marks.slice(0, MAX_CHIPS);
+  const rest = marks.slice(MAX_CHIPS);
+  return (
+    <span className="shrink-0 flex items-center gap-1">
+      {shown.map((m, i) => (
+        <TagChip key={i} tag={{ label: m.label, color: m.color as TagRecord['color'] }} />
+      ))}
+      {rest.length > 0 && (
+        <span className="text-3xs text-fg-muted" title={rest.map((m) => m.label).join(', ')}>
+          +{rest.length}
+        </span>
+      )}
+      {meta.note && (
+        <span title="This session has a note" className="flex items-center">
+          <NotePageGlyph className="w-3 h-3 text-fg-faint" />
+        </span>
+      )}
+    </span>
+  );
+}
+
 /* ── Drag grip icon (6-dot braille pattern) ──────────────── */
 
 function DragGrip() {
@@ -112,41 +200,14 @@ function DragGrip() {
 
 /* ── Adaptive session name — shrinks font / adds lines to fit ── */
 
+// P-8 (2026-08-28): one line, cut with an ellipsis, full name on hover.
+// This used to wrap to three lines and shrink to 11px to fit the whole name,
+// which made six of ten rows two or three lines tall (70px against 42px) and
+// left the menu's rows visibly uneven. The project folder now sits on its own
+// second line under the name, so the name gets the row's full width.
 function SessionName({ name }: { name: string }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const [fontSize, setFontSize] = useState(13);
-
-  // After mount (and on name change), check if the text overflows at
-  // the default 13px size.  If so, step down to 11px so the full name
-  // is always readable.  Three lines at 11px comfortably fits names up
-  // to ~60 chars in the available width.
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    // Reset to default size before measuring
-    setFontSize(13);
-    // Measure after the browser paints at 13px
-    requestAnimationFrame(() => {
-      if (!el) return;
-      if (el.scrollHeight > el.clientHeight) {
-        setFontSize(11);
-      }
-    });
-  }, [name]);
-
   return (
-    <span
-      ref={ref}
-      className="leading-snug flex-1 min-w-0"
-      style={{
-        fontSize: `${fontSize}px`,
-        display: '-webkit-box',
-        WebkitLineClamp: 3,
-        WebkitBoxOrient: 'vertical',
-        overflow: 'hidden',
-        wordBreak: 'break-word',
-      }}
-    >
+    <span className="block truncate leading-snug text-sm-tight" title={name}>
       {name}
     </span>
   );
@@ -161,6 +222,10 @@ export default function SessionStrip({
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   windowDirectory, myWindowId,
 }: Props) {
+  // One registry read for the whole menu: the rows need tag COLOURS, and a hook
+  // per row would be one tags.list() per row.
+  const tagsById = useTagRegistry().byId;
+
   // Artifact dispatch — SessionStrip renders only in the main window, inside
   // the ArtifactContext provider, so calling the hook at top level is safe.
   // Used by the FolderSwitcher "Manage projects…" footer to open Project View.
@@ -882,14 +947,19 @@ export default function SessionStrip({
       {menuOpen && createPortal(
         <div
           ref={dropdownRef}
-          className="glass-overlay overlay-no-drag fixed w-72 bg-panel border border-edge rounded-lg shadow-lg z-[9000] overflow-hidden"
+          // P-8 (2026-08-28): w-72 (288px) was too narrow for a session name and
+          // its project side by side. 28rem with an 88vw ceiling keeps it inside
+          // a phone-width window.
+          className="glass-overlay overlay-no-drag fixed w-[min(28rem,88vw)] bg-panel border border-edge rounded-lg shadow-lg z-[9000] overflow-hidden"
           style={(() => {
             const triggerRect = triggerBtnRef.current?.getBoundingClientRect();
             const pillRect = pillBarRef.current?.getBoundingClientRect();
             const pillCenter = pillRect
               ? pillRect.left + pillRect.width / 2
               : undefined;
-            const halfDropdown = 144; // w-72 = 288px / 2
+            // Half the rendered width, which is min(448px, 88vw) — the clamp below
+            // keeps the menu on screen, so it has to track the real width.
+            const halfDropdown = Math.min(448, window.innerWidth * 0.88) / 2;
             // Compute left-edge directly (no transform: translateX(-50%))
             // so backdrop-filter isn't broken by a persistent transform
             return {
@@ -909,8 +979,11 @@ export default function SessionStrip({
               </div>
             </>
           )}
+          {/* P-8 (2026-08-28): 336px held six and a half of the old wrapped rows;
+              432px holds eight of the new one-line rows plus a sliced ninth, which
+              is the list's only "there is more below" cue. */}
           {sessions.length > 0 && (
-            <div ref={sessionListRef} className="scroll-fade" style={{ maxHeight: 'min(336px, 50vh)' }}>
+            <div ref={sessionListRef} className="scroll-fade" style={{ maxHeight: 'min(432px, 55vh)' }}>
               <div className="py-1">
               {sessions.map((s, idx) => {
                 const color = sessionStatuses?.get(s.id) || 'gray';
@@ -948,20 +1021,28 @@ export default function SessionStrip({
                     </span>
                     <button
                       onClick={() => { if (!suppressClick.current) { onSelectSession(s.id); setMenuOpen(false); } }}
-                      className="flex-1 text-left pl-1 pr-1.5 py-2 flex items-center gap-2 min-w-0"
+                      className="flex-1 text-left pl-1 pr-1.5 py-1.5 flex items-center min-w-0"
                     >
-                      <SessionDot color={color} isActive={s.id === activeSessionId} />
-                      {/* Session name — shrinks font and allows up to 3 lines to
-                          ensure the full name is always visible */}
-                      <SessionName name={s.name} />
-                      <span className="shrink-0 flex flex-col items-end gap-0.5 ml-auto">
-                        {s.permissionMode === 'bypass' && (
-                          <span className="text-4xs font-medium px-1 py-0.5 rounded-sm bg-[#DD4444]/20 text-[#DD4444]">
-                            DANGER
+                      {/* P-8 (2026-08-28): name and project start at the SAME left
+                          edge, one under the other; what used to be a bare dot at
+                          the left is now the named status pill at the right of the
+                          name, with the session's tag marks under it. */}
+                      <span className="flex-1 min-w-0 flex flex-col gap-0.5">
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className="flex-1 min-w-0"><SessionName name={s.name} /></span>
+                          {s.permissionMode === 'bypass' && (
+                            <span className="shrink-0 text-4xs font-medium px-1 py-0.5 rounded-sm bg-[#DD4444]/20 text-[#DD4444]">
+                              DANGER
+                            </span>
+                          )}
+                          <StatusPill color={color} isActive={s.id === activeSessionId} />
+                        </span>
+                        <span className="flex items-center gap-2 min-w-0">
+                          <span className="flex-1 min-w-0 flex items-center gap-1 text-3xs text-fg-muted">
+                            <FolderMark className="w-3 h-3 shrink-0 text-fg-faint" />
+                            <span className="truncate">{s.cwd.replace(/\\/g, '/').split('/').pop()}</span>
                           </span>
-                        )}
-                        <span className="text-3xs text-fg-muted whitespace-nowrap">
-                          {s.cwd.replace(/\\/g, '/').split('/').pop()}
+                          <SessionTagMarks sessionId={s.id} byId={tagsById} />
                         </span>
                       </span>
                     </button>
@@ -1021,7 +1102,7 @@ export default function SessionStrip({
                           className="w-full text-left pl-3 pr-2 py-2 flex items-center gap-2 text-fg-dim hover:bg-inset hover:text-fg transition-colors"
                         >
                           <SessionDot color={color} isActive={false} />
-                          <SessionName name={s.name} />
+                          <span className="flex-1 min-w-0"><SessionName name={s.name} /></span>
                           <span className="ml-auto shrink-0 text-3xs text-fg-muted whitespace-nowrap flex items-center gap-1">
                             <span>→</span>
                             <span>{g.label}</span>

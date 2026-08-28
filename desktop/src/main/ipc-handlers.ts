@@ -3,6 +3,9 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
+import { CHATSEARCH_IPC } from './chatsearch-index/ipc-channels';
+import { resolveConversations, readConversation } from './chatsearch-index/refs-service';
+import type { ChatsearchReadRequest } from '../shared/chatsearch-refs';
 import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
@@ -152,6 +155,29 @@ import { tagFlagKey, isTagColor, TagColor } from '../shared/tags';
 import { getRepoInfo } from './project-repo';
 import { listContext, readContextFile, writeContextFile } from './project-context';
 
+// WHY: the chatsearch outbox drainer lives outside registerIpcHandlers but must
+// fire the SAME renderer + remote broadcast the IPC tag/flag/note handlers fire,
+// or the conversation list won't repaint when the CLI changes something.
+// sendForSession and remoteServer are function-local, so the handler registers
+// this bridge at startup — same hand-out pattern as setSessionMetaWiring.
+type MetaBroadcaster = (sessionId: string, payload: Record<string, unknown>) => void;
+let metaBroadcaster: MetaBroadcaster | null = null;
+export function broadcastSessionMeta(sessionId: string, payload: { flag: string; value: boolean } | { note: string }): void {
+  metaBroadcaster?.(sessionId, payload);
+}
+
+// WHY: same rationale as broadcastSessionMeta above — the outbox drainer
+// creates tags directly via getTagRegistry().create(), bypassing the
+// TAGS_CREATE handler below (the only other place a new tag reaches a
+// renderer/remote broadcast), so without this hand-out a tag the drainer
+// creates is invisible to an open window's tag registry and filter list
+// until a restart, even though the conversation it tagged already shows it.
+type TagsBroadcaster = () => void;
+let tagsBroadcaster: TagsBroadcaster | null = null;
+export function broadcastTagsChanged(): void {
+  tagsBroadcaster?.();
+}
+
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
 
@@ -250,6 +276,11 @@ export function registerIpcHandlers(
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
   };
 
+  metaBroadcaster = (sessionId, payload) => {
+    sendForSession(sessionId, IPC.SESSION_META_CHANGED, sessionId, payload);
+    remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId, ...payload } });
+  };
+
   // Broadcast a session-scoped channel to EVERY registered main window. Use this
   // (not sendForSession) when the payload is self-scoping — i.e. the renderer only
   // acts on it if it's actually displaying that session — AND the session may have
@@ -280,6 +311,15 @@ export function registerIpcHandlers(
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     }
+  };
+
+  // WHY defined here (not next to metaBroadcaster above): it needs
+  // broadcastToAllWindows, which doesn't exist yet at that point in the
+  // function — same hand-out pattern, just wired where its dependency is
+  // available. Fires the identical pair the TAGS_CREATE handler below fires.
+  tagsBroadcaster = () => {
+    remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
+    broadcastToAllWindows(IPC.TAGS_CHANGED, {});
   };
 
   // --- Theme file watcher ---
@@ -2372,6 +2412,23 @@ export function registerIpcHandlers(
       const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
       return hit?.supportsVision ?? null;
     },
+    // Price resolver (Task 11, spec §5): reads the SAME catalog the model
+    // picker shows, so the price the user sees when choosing a model is the
+    // price the session-cost chip charges. Short-circuits local-engine before
+    // touching the catalog — a model running on this machine costs nothing to
+    // run and its rows carry no price anyway; the host stamps those turns
+    // `free` instead. modelCatalog.get() never throws (its own contract: a
+    // dead network degrades to stale cache or an empty list), and a model
+    // that isn't in the catalog falls through to null, which means "no
+    // published price" — never a guessed zero.
+    async (binding) => {
+      const providers = await providerRegistry.list();
+      const p = providers.find((x) => x.id === binding.providerId);
+      if (p?.type === 'local-engine') return null;
+      const models = await modelCatalog.get(providers);
+      const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
+      return hit?.pricing ?? null;
+    },
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).
@@ -2855,10 +2912,10 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.MODELS_DOWNLOAD_CANCEL, async (_e, downloadId: string) => { modelManager.cancel(downloadId); return true; });
   ipcMain.handle(IPC.MODELS_DELETE, async (_e, id: string) => { await engineManager.deleteModel(id); return true; });
   ipcMain.handle(IPC.MODELS_INSTALLED, async () => engineManager.installedModels());
-  // Orphaned .partial scan (2026-07-15): .partial files left by a PREVIOUS app
-  // run are invisible to the in-memory downloader — this lets the UI list them
-  // (clean via models:delete; resume by re-starting the same download).
-  ipcMain.handle(IPC.MODELS_ORPHANED_PARTIALS, async () => modelManager.orphanedPartials());
+  // Resume an interrupted download (2026-08-26). Reads the manifest written
+  // beside the .partial — no Hugging Face round trip, so it works when the
+  // network is the reason the download stopped.
+  ipcMain.handle(IPC.MODELS_RESUME, async (_e, modelId: string) => modelManager.resume(modelId));
   ipcMain.handle(IPC.ENDPOINTS_DETECT, async () =>
     detectEndpoints(fetch, ((await providerRegistry.list()) as any[])));
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens
@@ -3765,6 +3822,13 @@ export function registerIpcHandlers(
   ipcMain.handle(PROJECT_IPC.WRITE_CONTEXT_FILE, async (_e, projectPath: string, absolutePath: string, content: string) => {
     return writeContextFile(projectPath, absolutePath, content);
   });
+
+  // Session references (spec 2026-08-10): resolve the chatsearch short ids a
+  // search printed against the index the app writes, and read bounded
+  // transcript slices by id. Both go through refs-service so this handler and
+  // the remote WebSocket case cannot assemble paths differently.
+  ipcMain.handle(CHATSEARCH_IPC.RESOLVE, async (_e, shortIds: string[]) => resolveConversations(shortIds));
+  ipcMain.handle(CHATSEARCH_IPC.READ, async (_e, req: ChatsearchReadRequest) => readConversation(req));
 
   // Project counting/discovery helpers moved to ./artifacts/projects-index so
   // the remote WebSocket server can compute the IDENTICAL result. They used to

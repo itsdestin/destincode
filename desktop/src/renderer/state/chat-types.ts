@@ -1,4 +1,5 @@
 import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState, type SpecialistRunView, type PageCursor, type TranscriptEvent } from '../../shared/types';
+import { emptyTotals, type SessionTotals } from './session-totals';
 // Re-export so test files and future consumers can import these types from
 // chat-types directly, without reaching into the shared/types boundary.
 export type { ToolCallState, AttentionState };
@@ -60,6 +61,16 @@ export interface TurnUsage {
    *  step's prompt + its output). Drives the context pill; inputTokens cannot,
    *  because it sums across steps and re-counts history each time. */
   contextUsedTokens?: number;
+  /** Native runtime only: USD for THIS turn, priced in main at the model that
+   *  ran it (spec §5). null = the model has no published price; ABSENT = no
+   *  pricing information at all (a CC turn). Without this field a priced turn
+   *  could not reach the session totals at all — App.tsx forwards the whole
+   *  usage object, so widening the TYPE is what lets the number through. */
+  costUsd?: number | null;
+  /** Native runtime only: the turn ran on a model that costs nothing (a local
+   *  engine, or a rate card of zeroes). Distinct from an absent costUsd —
+   *  see session-totals.ts's anyFree/anyUnpriced. */
+  free?: boolean;
 }
 
 export interface AssistantTurn {
@@ -113,10 +124,33 @@ export interface UsageSnapshot {
   apiDuration: number | null;
   linesAdded: number | null;
   linesRemoved: number | null;
+  /** Utilization of the Claude SUBSCRIPTION, as a PERCENT (0-100) — the unit
+   *  the cache file uses (~/.claude/.usage-cache.json → "utilization": 42) and
+   *  the unit the status bar prints. NOT a 0-1 ratio. */
   fiveHourUtilization: number | null;
   fiveHourResetsAt: string | null;
   sevenDayUtilization: number | null;
   sevenDayResetsAt: string | null;
+
+  // --- Native (YouCoded-runtime) sessions (spec §10) ---
+  // A native session runs no Claude Code statusline, so the fields above are
+  // filled from this app's own per-turn accounting instead. These three say
+  // where the numbers came from and how complete they are, so the card can be
+  // honest about both rather than guessing.
+
+  /** True when the session figures above came from this app's own per-turn
+   *  totals rather than from Claude Code's statusline. Gates the "Counts this
+   *  session so far, including specialists." sentence — a promise this app can
+   *  only make about numbers it counted itself. */
+  countsFromSessionTotals?: boolean;
+  /** True when some counted work ran on a METERED model whose provider
+   *  publishes no rate, so the cost above (if any) leaves that work out.
+   *  Distinct from work that is FREE to run — a local model has nothing to
+   *  charge, which is not the same as a missing price and must never be
+   *  worded as one. */
+  costIsPartial?: boolean;
+  /** How many specialist runs are folded into the session figures. */
+  specialistRuns?: number;
 }
 
 // Thin divider entry — shown when a slash command produced a side-effect
@@ -319,6 +353,11 @@ export interface SessionChatState {
    * have shown, so the drain-side removal can content-match it.
    */
   queuedMessages: Array<{ queueId: string; content: string; timestamp: number }>;
+
+  /** Session-so-far totals for the status bar and /usage (spec §2). Accumulated
+   *  as events arrive rather than walked on demand — see session-totals.ts for
+   *  why, and for exactly what is counted. */
+  totals: SessionTotals;
 }
 
 export function createSessionChatState(): SessionChatState {
@@ -348,6 +387,7 @@ export function createSessionChatState(): SessionChatState {
     seenUuids: new Set(),
     queuedMessages: [],
     history: { cursor: null, hasMore: false, loading: false },
+    totals: emptyTotals(),
   };
 }
 
@@ -663,6 +703,20 @@ export type ChatAction =
       parentAgentToolUseId?: string;
       agentId?: string;
     }
+  | {
+      // One finished specialist's TOTAL spend, folded into the parent session's
+      // totals (spec §2). Deliberately NOT a turn event: it must not end a turn,
+      // create a timeline entry, or touch the subagent card. The child's own
+      // turn-complete is never counted, precisely so this event can be — see the
+      // WHY block on TRANSCRIPT_TURN_COMPLETE in chat-reducer.ts.
+      type: 'TRANSCRIPT_SUBAGENT_USAGE';
+      sessionId: string;
+      uuid: string;
+      timestamp: number;
+      usage: TurnUsage | null;
+      parentAgentToolUseId?: string;
+      agentId?: string;
+    }
   // Dispatched when the transcript watcher detects Claude Code's
   // user-interrupt markers ("[Request interrupted by user]" / "...for tool
   // use"). Task 5 consumes this in the reducer to end the in-flight turn
@@ -786,6 +840,10 @@ export interface SerializedSessionChatState {
   queuedMessages?: Array<{ queueId: string; content: string; timestamp: number }>;
   // Optional so a pre-field snapshot from an older host still deserializes.
   history?: { cursor: PageCursor | null; hasMore: boolean; loading: boolean };
+  // Optional so a pre-field snapshot from an older host still deserializes —
+  // it comes back as empty totals, which read as "nothing counted yet" rather
+  // than as a crash or a wrong number.
+  totals?: SessionTotals;
 }
 
 export interface SerializedChatState {
@@ -830,6 +888,7 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         // belongs to the client that started it, and a hydrating client that
         // inherited loading:true would never fetch again.
         history: { ...s.history, loading: false },
+        totals: s.totals,
       },
     ]);
   }
@@ -882,6 +941,9 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       history: ser.history
         ? { cursor: ser.history.cursor ?? null, hasMore: !!ser.history.hasMore, loading: false }
         : { cursor: null, hasMore: false, loading: false },
+      // Older hosts (and a pre-field snapshot) predate totals — default to
+      // empty totals rather than undefined.
+      totals: ser.totals ?? emptyTotals(),
     });
   }
   return result;

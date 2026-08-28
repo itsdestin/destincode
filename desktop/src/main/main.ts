@@ -56,6 +56,7 @@ import { upsertSelf } from './sync-spaces/device-registry';
 import { startConversationStore, stopConversationStore, materializeOne, resumeSweeps, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
 import { runSlugRepair } from './conversations/slug-repair';
 import { startChatsearchIndex, stopChatsearchIndex } from './chatsearch-index/index-service';
+import { startOutboxDrain, stopOutboxDrain } from './chatsearch-index/outbox-drain';
 // One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
 import { sweepProjectSymlinks } from './conversations/symlink-sweep';
 import { startTagRegistry } from './conversations/tag-registry-service';
@@ -215,9 +216,26 @@ sessionManager.setReloadPluginsGate((sessionId) => hookRelay.hasPendingPermissio
 const remoteConfig = new RemoteConfig();
 const skillProvider = new LocalSkillProvider();
 skillProvider.ensureMigrated();
-// Fire-and-forget: install bundled plugins if missing. Silent retry on
-// every launch. See docs/superpowers/specs/2026-04-20-bundled-default-plugins-design.md.
-void skillProvider.ensureBundledPluginsInstalled();
+// Fix (Track B minor hardening review): ensureBundledPluginsInstalled() and
+// repairPackageVersions() both write ~/.claude/youcoded-skills.json's
+// `packages` map. Firing them back to back with two bare `void` calls only
+// stayed safe because reconcileBundledPlugins() (called by
+// ensureBundledPluginsInstalled) suspends at its first `await this.fetchIndex()`
+// before any recordPackageInstall/updatePackageVersion call, so repair's
+// fully-synchronous body always ran to completion first by accident — add
+// one `await` inside repairPackageVersions() later and the two would
+// silently interleave writes to the same in-memory config object. Wrapping
+// in an async IIFE makes the ordering explicit: repair (still synchronous
+// today, so this costs nothing at boot) completes before reconcile is even
+// started. See the WHY on repairPackageVersions() in skill-provider.ts for
+// what breaks without the repair (permanently stale "Update available"
+// state for every in-repo plugin other than the three bundled ids).
+void (async () => {
+  await skillProvider.repairPackageVersions();
+  // Fire-and-forget: install bundled plugins if missing. Silent retry on
+  // every launch. See docs/superpowers/specs/2026-04-20-bundled-default-plugins-design.md.
+  void skillProvider.ensureBundledPluginsInstalled();
+})();
 
 // commandProvider is constructed after skillProvider so it can read skills
 // for dedup. getProjectCwd returns the most recently active session's cwd,
@@ -2037,6 +2055,9 @@ void app.whenReady().then(async () => {
 
   // After the store AND tag registry — the index denormalizes both.
   startChatsearchIndex();
+  // WHY after the index: the drainer reads the same store root; requests it
+  // applies trigger the index rebuild through emitConversationMetaChanged.
+  startOutboxDrain();
 
   // The legacy session-end backup push (SyncService.pushSession) was removed in
   // sync-legacy-demolition. Conversations now travel via the sync-spaces
@@ -2089,6 +2110,7 @@ async function runShutdown(): Promise<void> {
   // listener, clears the periodic reconciler + pending debounce timers. Sync fn.
   try { stopConversationStore(); } catch {}
   try { stopChatsearchIndex(); } catch {}
+  try { stopOutboxDrain(); } catch {}
   // Plan 2b Task 8: tear down the lease client so its per-session renew timers
   // don't linger past a hard quit (destroy clears all held timers). Sync fn.
   try { leaseClient?.destroy(); } catch {}

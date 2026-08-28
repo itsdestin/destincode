@@ -389,14 +389,17 @@ export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: bo
 export async function listPastSessions(
   activeSessionIds?: Set<string>,
   nativeEntries?: (NativeSessionListEntry & { provider: 'native' })[],
+  // Injectable ONLY so subagent-exclusion.test.ts can point the scan at a temp
+  // tree. Production callers pass nothing and get the real projects folder.
+  projectsDir: string = PROJECTS_DIR,
 ): Promise<PastSession[]> {
   let slugs: string[];
   try {
-    const entries = await withRetry(() => fs.promises.readdir(PROJECTS_DIR));
+    const entries = await withRetry(() => fs.promises.readdir(projectsDir));
     const statResults = await Promise.all(
       entries.map(async (f) => {
         try {
-          const stat = await withRetry(() => fs.promises.stat(path.join(PROJECTS_DIR, f)));
+          const stat = await withRetry(() => fs.promises.stat(path.join(projectsDir, f)));
           return stat.isDirectory() ? f : null;
         } catch { return null; }
       })
@@ -417,7 +420,7 @@ export async function listPastSessions(
   const allSessions: PastSession[] = [];
 
   for (const slug of slugs) {
-    const slugDir = path.join(PROJECTS_DIR, slug);
+    const slugDir = path.join(projectsDir, slug);
     let files: string[];
     try {
       files = (await withRetry(() => fs.promises.readdir(slugDir))).filter((f) => f.endsWith('.jsonl'));

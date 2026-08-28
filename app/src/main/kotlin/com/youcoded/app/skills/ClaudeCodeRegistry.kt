@@ -43,6 +43,16 @@ object ClaudeCodeRegistry {
     fun pluginKey(id: String): String = "$id@$YOUCODED_MARKETPLACE_ID"
 
     /**
+     * True for a directory that looks like a real, installed plugin: has a
+     * manifest at either accepted location. Used both to filter
+     * listInstalledPluginDirs() below and (as PluginInstaller.isInstalledOnDisk)
+     * to decide install-vs-upgrade — kept as one predicate so the two answers
+     * can't drift apart.
+     */
+    fun hasPluginManifest(dir: File): Boolean =
+        File(dir, "plugin.json").exists() || File(dir, ".claude-plugin/plugin.json").exists()
+
+    /**
      * Enumerate every directory that should be treated as an installed
      * plugin by reconcilers and skill-provider introspection. Two sources:
      *   1. The core toolkit clone at ~/.claude/plugins/<id>/ (top-level
@@ -54,6 +64,22 @@ object ClaudeCodeRegistry {
      * Top-level non-plugin entries (installed_plugins.json,
      * known_marketplaces.json, the `marketplaces` subtree) are filtered
      * out by the plugin.json check.
+     *
+     * Fix (review round 2, Finding 1a): the marketplace-subtree loop used to
+     * add EVERY child directory unconditionally, no manifest check, no
+     * dot-prefix skip. PluginInstaller.upgradeFromLocal() stages an upgrade
+     * at `.upgrade-<id>` and parks the retired tree at `.old-<id>`, both
+     * inside this same marketplace subtree — if the process dies mid-swap,
+     * that leftover directory (a full copy of the plugin, complete with its
+     * own plugin.json) got scanned here as a SECOND installed plugin and fed
+     * into HookReconciler/McpReconciler, registering duplicate hooks/MCP
+     * servers. A plugin id can never start with "." (PluginInstaller.SAFE_ID_RE
+     * forbids it), so the dot-skip can never hide a real plugin. Matches the
+     * manifest predicate PluginInstaller.isInstalledOnDisk() already used.
+     * NOTE: desktop's listInstalledPluginDirs() (claude-code-registry.ts) has
+     * this identical gap in its marketplace-subtree loop — unfixed there as
+     * of this change since this task is scoped to Android; flagged for a
+     * follow-up.
      */
     fun listInstalledPluginDirs(homeDir: File): List<File> {
         val dirs = mutableListOf<File>()
@@ -61,8 +87,7 @@ object ClaudeCodeRegistry {
         if (cache.exists()) {
             cache.listFiles { f -> f.isDirectory }?.forEach { child ->
                 if (child.name == "marketplaces") return@forEach
-                if (File(child, "plugin.json").exists() ||
-                    File(child, ".claude-plugin/plugin.json").exists()) {
+                if (hasPluginManifest(child)) {
                     dirs.add(child)
                 }
             }
@@ -70,7 +95,10 @@ object ClaudeCodeRegistry {
         val marketplaceRoot = youcodedPluginsDir(homeDir)
         if (marketplaceRoot.exists()) {
             marketplaceRoot.listFiles { f -> f.isDirectory }?.forEach { child ->
-                dirs.add(child)
+                if (child.name.startsWith(".")) return@forEach
+                if (hasPluginManifest(child)) {
+                    dirs.add(child)
+                }
             }
         }
         return dirs

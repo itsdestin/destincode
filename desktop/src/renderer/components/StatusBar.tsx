@@ -7,6 +7,7 @@ import type { NativePermissionMode } from '../../shared/permission-types';
 import { isExpired } from '../../shared/announcement';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveWarningSeverity } from '../state/sync-display-state';
+import { type WidgetId, type SessionRuntime, type RelevanceContext, widgetApplies, widgetUnavailableReason } from '../state/status-widgets';
 import { FastIcon } from './Icons';
 import UpdatePanel from './UpdatePanel';
 import ContextPopup from './ContextPopup';
@@ -16,6 +17,7 @@ import { SessionTagsChip } from './tags/SessionTagsChip';
 import SpecialistsChip from './SpecialistsChip';
 import { Dialog } from './ui';
 import { resolveModelBrand, type ProviderIconKey } from './provider-brand';
+import type { SessionTotals } from '../state/session-totals';
 import { CLAUDE_ALIASES, type ClaudeAlias } from '../../shared/model-ids';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
@@ -421,6 +423,10 @@ interface Props {
    *  auto-detect the brand color when the model id alone is ambiguous. Unused
    *  for CC sessions (they use MODEL_DISPLAY keyed on the alias). */
   modelProviderType?: string | null;
+  /** The session's runtime. Gates the two Claude-subscription chips and the
+   *  Fast toggle — see status-widgets.ts. Absent → treated as 'claude', so a
+   *  caller that hasn't been wired yet hides nothing (spec §11). */
+  provider?: SessionRuntime;
   // No onCycleModel: the model chip opens the picker (onOpenModelPicker) and
   // click-to-cycle now lives on Shift+Space in App.tsx. The prop was still declared
   // and passed but never called, so it read as a working affordance that did nothing.
@@ -453,6 +459,10 @@ interface Props {
    *  is the same number meaning two very different things. Absent → treated as
    *  a first turn, so an unwired caller errs toward the calm reading. */
   turnsWithUsage?: 0 | 1 | 2;
+  /** Native sessions only: session-so-far totals (spec §2) — tokens, cost and
+   *  edited lines, specialists included. Absent for CC sessions, which take the
+   *  same numbers from the statusline instead. */
+  nativeTotals?: SessionTotals | null;
 }
 
 
@@ -462,14 +472,6 @@ const warnStyles = {
 };
 
 // --- Widget visibility system ---
-
-type WidgetId =
-  | 'usage-5h' | 'usage-7d' | 'context' | 'git-branch' | 'sync-warnings' | 'theme' | 'version'
-  | 'session-cost' | 'tokens-in' | 'tokens-out' | 'cache-stats' | 'code-changes' | 'session-time'
-  | 'cache-hit-rate' | 'active-ratio' | 'output-speed'
-  | 'announcement'
-  | 'open-tasks'
-  | 'session-tags';
 
 // Widget categories and definitions with info tooltips
 // defaultVisible: true = shown for new installs, false = opt-in only
@@ -835,11 +837,14 @@ function ProviderIcon({ icon, className = '' }: { icon: ProviderIconKey; classNa
 // --- Config Popup ---
 // Centered modal (matches SettingsPanel popup style) for customizing status bar widgets
 
-function WidgetConfigPopup({ open, onClose, visible, toggle }: {
+function WidgetConfigPopup({ open, onClose, visible, toggle, relevance }: {
   open: boolean;
   onClose: () => void;
   visible: Set<WidgetId>;
   toggle: (id: WidgetId) => void;
+  /** What this session can actually show — the SAME values the bar itself
+   *  gates on, so the menu can never offer a chip the bar refuses to draw. */
+  relevance: RelevanceContext;
 }) {
   useEscClose(open, onClose);
   // Track which widget's (i) tooltip is expanded
@@ -884,11 +889,36 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                     const isExpanded = expandedInfo === w.id;
                     const isThemeRow = w.id === 'theme';
                     const showCycleEditor = isThemeRow && cycleEditorOpen;
+                    const reason = widgetUnavailableReason(w.id, relevance);
                     return (
                       <div key={w.id}>
                         <div className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-inset transition-colors">
                           {/* Toggle checkbox — locked widgets (fixed controls)
-                              render always-checked and non-interactive. */}
+                              render always-checked and non-interactive. When the
+                              widget doesn't apply to this session's runtime,
+                              swap the button for a plain, non-focusable row: it
+                              is not a control here, so it must not look or
+                              behave like one. The saved on/off choice is
+                              untouched and returns when the user switches to a
+                              session where the widget applies. */}
+                          {reason ? (
+                            /* Label on its own line, reason on the line beneath
+                               it. WHY not side by side (how this used to read):
+                               a long reason squeezed the label and wrapped
+                               "Session Duration" onto two lines, so that one row
+                               stood taller than every other row in the menu.
+                               Stacked, each part gets a full line and every
+                               dimmed row is the same height. The empty spacer
+                               keeps the label's left edge on the same x as the
+                               enabled rows, whose labels sit after a checkbox. */
+                            <div className="flex items-start gap-2 flex-1 text-left opacity-50">
+                              <span className="w-3.5 h-3.5 flex-shrink-0" />
+                              <div className="flex-1 min-w-0">
+                                <div className="text-2xs text-fg">{w.label}</div>
+                                <div className="text-3xs text-fg-muted italic">{reason}</div>
+                              </div>
+                            </div>
+                          ) : (
                           <button
                             onClick={() => { if (!w.locked) toggle(w.id); }}
                             disabled={w.locked}
@@ -910,11 +940,15 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                             <span className="text-2xs text-fg">{w.label}</span>
                             {w.locked && <span className="text-4xs text-fg-muted">always on</span>}
                           </button>
+                          )}
 
                           {/* Pencil — Theme widget only. Opens the cycle editor
                               (which themes the pill rotates through). Moved here
-                              from per-card checkmarks in the Appearance popup. */}
-                          {isThemeRow && (
+                              from per-card checkmarks in the Appearance popup.
+                              Gated on !reason too (belt-and-braces: 'theme' never
+                              gets a reason today, but a dimmed row must never
+                              carry a focusable element, full stop). */}
+                          {isThemeRow && !reason && (
                             <button
                               onClick={() => {
                                 setCycleEditorOpen(v => !v);
@@ -932,19 +966,25 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
                             </button>
                           )}
 
-                          {/* (i) info toggle */}
-                          <button
-                            onClick={() => {
-                              setExpandedInfo(isExpanded ? null : w.id);
-                              if (isThemeRow) setCycleEditorOpen(false);
-                            }}
-                            className={`flex-shrink-0 p-0.5 rounded-sm transition-colors ${
-                              isExpanded ? 'text-accent' : 'text-fg-faint hover:text-fg-muted'
-                            }`}
-                            title="More info"
-                          >
-                            <InfoIcon />
-                          </button>
+                          {/* (i) info toggle — hidden for a dimmed row. The row
+                              already isn't a control (it's just explained why),
+                              and the reason line itself is the info; a second
+                              focusable element here would be the same defect as
+                              leaving the checkbox tabbable. */}
+                          {!reason && (
+                            <button
+                              onClick={() => {
+                                setExpandedInfo(isExpanded ? null : w.id);
+                                if (isThemeRow) setCycleEditorOpen(false);
+                              }}
+                              className={`flex-shrink-0 p-0.5 rounded-sm transition-colors ${
+                                isExpanded ? 'text-accent' : 'text-fg-faint hover:text-fg-muted'
+                              }`}
+                              title="More info"
+                            >
+                              <InfoIcon />
+                            </button>
+                          )}
                         </div>
 
                         {/* Expanded info panel */}
@@ -1015,12 +1055,26 @@ function WidgetConfigPopup({ open, onClose, visible, toggle }: {
 
 // --- Main StatusBar component ---
 
+// One vocabulary for every session-scoped chip (spec §2). Repeated wording is
+// the point: three chips and the /usage card must not each invent their own
+// description of the same scope.
+const SCOPE_NOTE = 'Counts this session so far, including specialists.';
+// One money formatter for the cost chip AND its tooltip. WHY shared: toFixed(2)
+// rounds anything under half a cent to "$0.00", and a bar (or a tooltip) that
+// reads "$0.00" while money is being spent reads as broken — spec §5 forbids
+// that false zero. Extracted when the tooltip gained a second figure (the
+// specialist split): two call sites formatting money two different ways is how
+// a chip and its own tooltip end up disagreeing.
+const formatCostUsd = (usd: number) => (usd < 0.01 ? '<$0.01' : `$${usd.toFixed(2)}`);
+
+const INPUT_NOTE = 'Input is counted per request — a long turn re-sends its history each step, and that is what you are billed for.';
+
 export default function StatusBar({
-  statusData, onRunSync, onOpenSync, model, modelProviderType,
+  statusData, onRunSync, onOpenSync, model, modelProviderType, provider,
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
-  nativeUsage, nativeContextLength, turnsWithUsage,
+  nativeUsage, nativeContextLength, turnsWithUsage, nativeTotals,
 }: Props) {
   const { usage, updateStatus, contextPercent, gitBranch, sessionStats, syncWarnings } = statusData;
 
@@ -1036,7 +1090,11 @@ export default function StatusBar({
   const [updatePanelOpen, setUpdatePanelOpen] = useState(false);
   const [contextPopupOpen, setContextPopupOpen] = useState(false);
 
-  const show = (id: WidgetId) => visible.has(id);
+  // Runtime gate (spec §3, Rule 2): a widget that belongs to the OTHER runtime
+  // never renders here, whatever the user's saved on/off choice says. The choice
+  // itself is untouched and returns the moment they switch back.
+  const runtime: SessionRuntime = provider ?? 'claude';
+  const show = (id: WidgetId) => visible.has(id) && widgetApplies(id, runtime);
   const ss = sessionStats; // shorthand
 
   // Native-runtime chips (Task 12). Non-null only for native sessions that have
@@ -1045,17 +1103,34 @@ export default function StatusBar({
   // context % is accurate for the local model, not a hardcoded guess.
   const nativeChips = selectNativeStatusChips(nativeUsage, nativeContextLength);
 
-  // In/Out come from the CC statusline for CC sessions and from turn-complete
-  // usage for native ones. Native used to render its OWN "Tokens" chip (just
-  // in+out summed) while these two sat at "--" forever, because sessionStats is
-  // only ever written by CC — two dead chips beside a redundant third
-  // (Destin, 2026-07-28). One concept, one chip, whichever runtime feeds it.
-  const inTokens = ss?.inputTokens ?? nativeChips?.inputTokens ?? null;
-  const outTokens = ss?.outputTokens ?? nativeChips?.outputTokens ?? null;
+  // In/Out come from the CC statusline for CC sessions and from SESSION TOTALS
+  // for native ones. They used to come from the last completed turn, which made
+  // one label mean two different measurements depending on the runtime — the
+  // defect this change exists to remove (spec §6). Totals include specialists;
+  // input is counted per request, because that is what a provider bills for.
+  //
+  // Fix: the "zero means nothing measured yet" collapse belongs ONLY to the
+  // native branch, not to the shared variable. A statusline zero (ss?.xxx) is
+  // a REAL measurement — e.g. a cold or expired prompt cache genuinely reads 0
+  // cached tokens — and must pass through untouched, including a literal 0.
+  // A native zero is ambiguous (emptyTotals() starts every session at all-zero,
+  // before any turn has run), so ONLY nativeTotals collapses 0 -> null here;
+  // the render gates below then use `!= null` to hide just that null, not a
+  // real measured 0 from the statusline.
+  const inTokens = ss?.inputTokens ?? (nativeTotals && nativeTotals.inputTokens > 0 ? nativeTotals.inputTokens : null);
+  const outTokens = ss?.outputTokens ?? (nativeTotals && nativeTotals.outputTokens > 0 ? nativeTotals.outputTokens : null);
+  // Cached/Reuse get the identical treatment: CC's statusline first (real
+  // measurement, 0 included), then session totals for native (0 -> null,
+  // nothing measured yet) — never the last-turn nativeChips, which would
+  // blend "this session so far" and "the last turn" under one label again.
+  const cacheReadTotal = ss?.cacheReadTokens ?? (nativeTotals && nativeTotals.cacheReadTokens > 0 ? nativeTotals.cacheReadTokens : null);
+  const cacheCreationTotal = ss?.cacheCreationTokens ?? (nativeTotals && nativeTotals.cacheCreationTokens > 0 ? nativeTotals.cacheCreationTokens : null);
   // Speed had the identical problem: a CC chip stuck at "--" for native sessions
   // beside a native chip that duplicated it AND ignored show('output-speed'), so
   // hiding Speed in settings didn't hide it. CC derives it from the statusline's
   // apiDuration; native's provider already reports tokens/sec on turn-complete.
+  // Unlike In/Out/Cached/Reuse above, this one stays LAST-TURN for both runtimes
+  // — it measures a moment (how fast is it going right now), not a session total.
   const speedTokPerSec = ss?.outputTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
     ? Math.round(ss.outputTokens / ss.apiDuration)
     : nativeChips?.tokensPerSecond ?? null;
@@ -1116,8 +1191,11 @@ export default function StatusBar({
         })()
       ))}
 
-      {/* Fast mode chip — only rendered when on. Click opens the ModelPickerPopup. */}
-      {fast && (
+      {/* Fast mode is a Claude Code toggle read from the app-wide model-modes
+          file — nothing in a native session honours it, so rendering it there
+          is a control that lies (spec §1). Not a registry widget, so it takes
+          the runtime gate directly rather than going through show(). */}
+      {fast && runtime === 'claude' && (
         <button
           onClick={onOpenModelPicker}
           className="flex items-center px-1.5 py-0.5 rounded-sm border border-yellow-500/40 bg-yellow-500/15 text-yellow-500 cursor-pointer hover:brightness-125 transition-colors"
@@ -1272,94 +1350,232 @@ export default function StatusBar({
         </>
       )}
 
-      {/* Session cost — estimated USD cost for this session */}
-      {show('session-cost') && (
-        <span
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title="Estimated session cost (informational for Pro/Max subscribers)"
-        >
-          <span>Cost:</span>
-          <span className="text-fg-2">
-            {ss?.costUsd != null ? `$${ss.costUsd < 0.01 ? '<0.01' : ss.costUsd.toFixed(2)}` : '--'}
+      {/* Session cost.
+          CC sessions show Claude Code's own figure. Native sessions show the
+          sum of per-turn costs priced in main, specialists included.
+          The chip renders only when SOME counted work had a published price —
+          not when "the session's model is metered": a free local session that
+          delegated to an OpenRouter specialist really is spending money
+          (spec §5). Nothing priced → no chip, never "$0.00". */}
+      {show('session-cost') && (() => {
+        const ccCost = ss?.costUsd ?? null;
+        const nativeCost = nativeTotals?.anyPriced ? nativeTotals.costUsd : null;
+        const cost = ccCost ?? nativeCost;
+        if (cost == null) {
+          // NEW branch (checkpoint #3). Nothing could be priced — but WHY not
+          // has two opposite answers, and until now the bar gave the same
+          // silent chipless row for both (verified with `magick compare`: the
+          // local and unpriced review scenarios were pixel-identical). One of
+          // those two is quietly spending the user's money.
+          //   - anyUnpriced: the provider DOES bill, we just have no published
+          //     rate for this model → say so, dimmed. Reaching here means
+          //     nothing was priced at all, because a single priced turn would
+          //     have made `cost` a real number above and won this slot.
+          //   - anyFree only (a local model), or nothing measured at all →
+          //     render nothing, exactly as before. Destin declined a "Free"
+          //     chip (checkpoint #2); silence stays the answer there.
+          if (ccCost == null && nativeTotals?.anyUnpriced) {
+            return (
+              <span
+                className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+                // "available", not "published" (Task 22): the price lookup
+                // returns nothing for ANY model missing from the catalog, and
+                // a catalog that never loaded (dead network, empty cache)
+                // looks identical to a model that genuinely has no rate.
+                // Saying "no price is published" asserts a cause nobody
+                // checked — docs/error-message-standards.md forbids that.
+                title={"This provider bills for usage, but no price is available for this model here, so the session cost can't be totalled."}
+              >
+                <span className="text-fg-muted">Cost:</span>
+                {/* Muted, not accent-coloured: this is an ABSENCE of a figure,
+                    not an alert. Same treatment as the Reuse chip's "New". */}
+                <span className="text-fg-muted">not listed</span>
+              </span>
+            );
+          }
+          return null;
+        }
+        // WHY the sub-cent guard (formatCostUsd): toFixed(2) rounds any real
+        // cost under half a cent down to "$0.00", and a bar that reads "$0.00"
+        // while money is actually being spent reads as broken — it's the false
+        // zero spec §5 forbids ("Never $0.00"). The first turn of a native
+        // session on a cheap metered model is a few hundred tokens ≈ $0.0004,
+        // so this is the COMMON first thing a user sees, not an edge case. A
+        // cost that is above zero but below a cent renders "<$0.01"; an exact
+        // zero isn't a rounding artifact at all and takes the no-chip path
+        // above, same as "nothing was priced".
+        if (cost <= 0) return null;
+        const partial = ccCost == null && nativeTotals?.anyUnpriced;
+        // Checkpoint #4 — name where the money came from. Only on the NATIVE
+        // figure: a Claude Code session's cost is Claude Code's own total, and
+        // this app's specialist accounting is no part of it, so attributing a
+        // slice of it here would be a claim we cannot back.
+        const specialistCost = ccCost == null ? (nativeTotals?.specialistCostUsd ?? 0) : 0;
+        const specialistRuns = ccCost == null ? (nativeTotals?.specialistRuns ?? 0) : 0;
+        const title = ccCost != null
+          ? 'Estimated cost of this session, as counted by Claude Code.'
+          : `${SCOPE_NOTE} Priced from published rates, prompt-cache discounts included.`
+            // Task 24 — "available", not "published". The price lookup returns
+            // nothing both for a model that genuinely has no rate and for a
+            // catalog that never loaded (dead network, empty cache), and the two
+            // are indistinguishable here, so claiming nothing was PUBLISHED
+            // states a cause nobody checked (docs/error-message-standards.md).
+            // Byte-identical to UsageCard's PARTIAL_NOTE on purpose — the bar and
+            // the card describe the same total, so they must word it the same way.
+            + (partial ? ' Models with no available price are not included in this total.' : '')
+            // The count is dropped rather than printed as "0 specialists" if
+            // the two numbers ever disagree — a wrong sentence is worse than a
+            // missing one (docs/error-message-standards.md).
+            + (specialistCost > 0 && specialistRuns > 0
+              ? ` ${formatCostUsd(specialistCost)} of this was spent by ${specialistRuns} specialist${specialistRuns === 1 ? '' : 's'} this session delegated to.`
+              : '')
+            + ' Not exact — a few models charge more above very large prompts.';
+        return (
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+            title={title}
+          >
+            <span className="text-fg-muted">Cost:</span>
+            <span className="text-fg-2">{formatCostUsd(cost)}</span>
+            {/* Shown only when the session actually delegated: most never do,
+                and this bar is already crowded. */}
+            {specialistCost > 0 && <span className="text-fg-muted">· specialists</span>}
           </span>
-        </span>
-      )}
+        );
+      })()}
 
-      {/* Session duration — wall time and API thinking time */}
-      {show('session-time') && (
+      {/* Session duration — wall time and API thinking time.
+          Rule 1 (spec §3): no value, no chip. This used to render a literal
+          '--' — forever in a native session, where the statusline that feeds
+          it never runs, and briefly in a CC session before the first stats
+          arrive. An empty chip is furniture that teaches the user to ignore
+          the bar. */}
+      {show('session-time') && ss?.duration != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.duration != null && ss?.apiDuration != null ? `Wall: ${formatDuration(ss.duration)} | API: ${formatDuration(ss.apiDuration)}` : 'Session duration'}
+          title={ss.apiDuration != null ? `Wall: ${formatDuration(ss.duration)} | API: ${formatDuration(ss.apiDuration)}` : 'Session duration'}
         >
-          <span>{ss?.duration != null ? formatDuration(ss.duration) : '--'}</span>
-          {ss?.duration != null && ss?.apiDuration != null && (
+          <span>{formatDuration(ss.duration)}</span>
+          {ss.apiDuration != null && (
             <span className="text-fg-muted hidden sm:inline">({formatDuration(ss.apiDuration)} API)</span>
           )}
         </span>
       )}
 
-      {/* Input tokens */}
-      {show('tokens-in') && (
+      {/* Input tokens. Rule 1 (spec §3): no value, no chip. In a native session
+          this is a SESSION TOTAL (nativeTotals), not the last turn — see the
+          inTokens derivation above (spec §6). Fix: the chip's DISPLAYED value
+          stays formatTokens' abbreviated "12.3k" — a session total compounds
+          across many turns and grows well past the point where a raw digit
+          string is glanceable, which is exactly why the abbreviation exists.
+          The exact count moves to the tooltip instead, where there's room.
+          Gate is `!= null`, not truthy: a native zero is already collapsed to
+          null above (nothing measured yet, since createSessionChatState()
+          seeds a brand-new native session's totals at emptyTotals() — all
+          ZERO), so `!= null` correctly hides it — but a REAL statusline
+          measurement of 0 input tokens must still render, and a truthy check
+          would wrongly swallow it too. */}
+      {show('tokens-in') && inTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={inTokens != null ? `Input tokens: ${inTokens.toLocaleString()}` : 'Input tokens'}
+          title={ss == null && nativeTotals != null
+            ? `Input tokens: ${inTokens.toLocaleString()}. ${SCOPE_NOTE} ${INPUT_NOTE}`
+            : `Input tokens: ${inTokens.toLocaleString()}`}
         >
           <span className="text-fg-muted">In:</span>
-          <span className="text-fg-2">{inTokens != null ? formatTokens(inTokens) : '--'}</span>
+          <span className="text-fg-2">{formatTokens(inTokens)}</span>
         </span>
       )}
 
-      {/* Output tokens */}
-      {show('tokens-out') && (
+      {/* Output tokens. Rule 1 (spec §3): no value, no chip. Session total for
+          native (spec §6); see the In chip above for why this stays
+          abbreviated with the exact count in the tooltip.
+          Gate is `!= null`, same reasoning as In above: a native zero is
+          already collapsed to null (nothing measured yet), so `!= null`
+          hides it correctly — but a statusline 0 (a real measured turn that
+          genuinely produced no output tokens) must still render, and a
+          truthy check would wrongly hide that real measurement too. */}
+      {show('tokens-out') && outTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={outTokens != null ? `Output tokens: ${outTokens.toLocaleString()}` : 'Output tokens'}
+          title={ss == null && nativeTotals != null
+            ? `Output tokens: ${outTokens.toLocaleString()}. ${SCOPE_NOTE}`
+            : `Output tokens: ${outTokens.toLocaleString()}`}
         >
           <span className="text-fg-muted">Out:</span>
-          <span className="text-fg-2">{outTokens != null ? formatTokens(outTokens) : '--'}</span>
+          <span className="text-fg-2">{formatTokens(outTokens)}</span>
         </span>
       )}
 
-      {/* Cache efficiency. WHY the ?? nativeChips fallback: sessionStats is written
+      {/* Cache efficiency. WHY the ?? nativeTotals fallback: sessionStats is written
           by Claude Code's statusline, which native sessions never run — so these two
           chips sat at '--' forever while the harness shipped the numbers on every
-          turn-complete. Same fix the In/Out and Speed chips got on 2026-07-28.
+          turn-complete. Native reads SESSION TOTALS here (spec §6), not the last
+          turn — same reasoning as In/Out above.
           cr/cc are resolved ONCE so the title, the value and the hit-rate math can
-          never disagree about which source they came from. */}
+          never disagree about which source they came from.
+          Rule 1 (spec §3): no value, no chip — bail before rendering.
+          Bail on null, not on falsy: a native zero is already collapsed to
+          null above (a brand-new native session's cache totals start at 0,
+          indistinguishable from "no turn has run yet to read from cache"),
+          so bailing on null hides that case correctly — but a statusline 0
+          (a real cold or expired prompt cache genuinely reading 0 cached
+          tokens, which is common) is a measured value and must still render;
+          bailing on falsy would wrongly hide that real 0 too. */}
       {show('cache-stats') && (() => {
-        const cr = ss?.cacheReadTokens ?? nativeChips?.cacheReadTokens ?? null;
-        const cc = ss?.cacheCreationTokens ?? nativeChips?.cacheCreationTokens ?? null;
+        const cr = cacheReadTotal;
+        if (cr == null) return null;
+        const cc = cacheCreationTotal;
         return (
           <span
             className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-            title={cr != null ? `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}` : 'Cache efficiency'}
+            title={ss == null && nativeTotals != null
+              ? `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}. ${SCOPE_NOTE}`
+              : `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}`}
           >
             <span className="text-fg-muted">Cached:</span>
-            <span className="text-[#4CAF50]">{cr != null ? formatTokens(cr) : '--'}</span>
+            <span className="text-[#4CAF50]">{formatTokens(cr)}</span>
           </span>
         );
       })()}
 
       {/* Context reuse — how much of the prompt came from cache instead of being
-          re-read. See selectCacheReuse for why this is NOT reads/(reads+writes). */}
+          re-read. See selectCacheReuse for why this is NOT reads/(reads+writes).
+          Session total for native (spec §6): reads nativeTotals, not the last
+          turn's nativeChips, so this stops meaning something different from the
+          In/Out/Cached chips beside it.
+          Rule 1 (spec §3): 'unknown' means no data to report — bail before
+          rendering. 'first-turn' is a real, known state (nothing to reuse yet)
+          and keeps rendering "New", same as before. */}
       {show('cache-hit-rate') && (() => {
-        const reuse = selectCacheReuse(ss, nativeChips);
+        const reuse = selectCacheReuse(ss, nativeTotals);
         const display = selectReuseDisplay(reuse, turnsWithUsage);
+        if (display.kind === 'unknown') return null;
         const prompt = (reuse.promptTokens ?? 0).toLocaleString();
-        const title = display.kind === 'unknown'
-          ? 'How much of the prompt was reused from cache'
+        const usingTotals = ss == null && nativeTotals != null;
+        // Fix: zero reuse on a session TOTAL (as opposed to a single turn)
+        // reads as an accusation — "Reused 0 of X" sounds like the cache is
+        // broken, when it's just as likely nothing has been reused yet.
+        // Reaching this branch already means promptTokens > 0 (selectCacheReuse
+        // returns ratio: null, filtered above, whenever it isn't), so
+        // readTokens === 0 here is a real "read fresh" measurement, not an
+        // absent one — same friendlier framing the CC per-turn path already
+        // uses for its own 0% case below.
+        const title = usingTotals
+          ? (reuse.readTokens === 0
+            ? `None of this session's prompt tokens came from cache; all ${prompt} were read fresh. ${SCOPE_NOTE}`
+            : `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this session's ${prompt} prompt tokens from cache. ${SCOPE_NOTE}`)
           : display.kind === 'first-turn'
-            ? `Nothing to reuse yet — this is the session's first turn, so all ${prompt} prompt tokens were read fresh.`
-            : display.pct === 0
-              ? `None of this turn's prompt came from cache; all ${prompt} tokens were read fresh. Caches expire after a few minutes idle, and reset when the model or tool list changes.`
-              : `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this turn's ${prompt} prompt tokens from cache — that part was cheaper and faster than re-reading it.`;
+          ? `Nothing to reuse yet — this is the session's first turn, so all ${prompt} prompt tokens were read fresh.`
+          : display.pct === 0
+            ? `None of this turn's prompt came from cache; all ${prompt} tokens were read fresh. Caches expire after a few minutes idle, and reset when the model or tool list changes.`
+            : `Reused ${(reuse.readTokens ?? 0).toLocaleString()} of this turn's ${prompt} prompt tokens from cache — that part was cheaper and faster than re-reading it.`;
         return (
           <span
             className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
             title={title}
           >
             <span className="text-fg-muted">Reuse:</span>
-            {display.kind === 'unknown' && <span className="text-fg-2">--</span>}
             {display.kind === 'first-turn' && <span className="text-fg-muted">New</span>}
             {display.kind === 'percent' && (
               <span className={display.pct >= 80 ? 'text-[#4CAF50]' : display.pct >= 50 ? 'text-[#FF9800]' : 'text-[#DD4444]'}>
@@ -1370,51 +1586,65 @@ export default function StatusBar({
         );
       })()}
 
-      {/* Active ratio — derived: apiDuration / duration */}
-      {show('active-ratio') && (
+      {/* Active ratio — derived: apiDuration / duration. Rule 1 (spec §3): no
+          value, no chip. */}
+      {show('active-ratio') && ss?.duration != null && ss?.apiDuration != null && ss.duration > 0 && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.duration != null && ss?.apiDuration != null ? `Claude thinking: ${formatDuration(ss.apiDuration)} of ${formatDuration(ss.duration)} total` : 'Active ratio'}
+          title={`Claude thinking: ${formatDuration(ss.apiDuration)} of ${formatDuration(ss.duration)} total`}
         >
           <span className="text-fg-muted">Active:</span>
           <span className="text-fg-2">
-            {ss?.duration != null && ss?.apiDuration != null && ss.duration > 0
-              ? `${Math.round((ss.apiDuration / ss.duration) * 100)}%`
-              : '--'}
+            {Math.round((ss.apiDuration / ss.duration) * 100)}%
           </span>
         </span>
       )}
 
-      {/* Output speed — derived: outputTokens / apiDuration */}
-      {show('output-speed') && (
+      {/* Output speed — derived: outputTokens / apiDuration. Rule 1 (spec §3):
+          no value, no chip. Deliberately stays LAST-TURN for both runtimes (see
+          the speedTokPerSec comment above) — never fed by nativeTotals.
+          WHY the ternary's fallback branch is NOT dead: ss (sessionStats) is
+          always null in a native session, so speedTokPerSec there falls back to
+          nativeChips and this chip renders with the generic string below — do
+          not "simplify" this back to one branch. */}
+      {show('output-speed') && speedTokPerSec != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
           title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output tokens per second on the last turn'}
         >
           <span className="text-fg-muted">Speed:</span>
           <span className="text-fg-2">
-            {speedTokPerSec != null ? `${speedTokPerSec} tok/s` : '--'}
+            {speedTokPerSec} tok/s
           </span>
         </span>
       )}
 
-      {/* Code changes — lines added/removed */}
-      {show('code-changes') && (
-        <span
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.linesAdded != null ? `Lines added: ${ss.linesAdded} | Lines removed: ${ss.linesRemoved ?? 0}` : 'Code changes'}
-        >
-          {ss?.linesAdded != null || ss?.linesRemoved != null ? (
-            <>
-              <span className="text-[#4CAF50]">+{ss?.linesAdded ?? 0}</span>
-              <span className="text-[#DD4444]">-{ss?.linesRemoved ?? 0}</span>
-              <span className="text-fg-muted hidden sm:inline">lines</span>
-            </>
-          ) : (
-            <span className="text-fg-muted">No changes</span>
-          )}
-        </span>
-      )}
+      {/* Code changes — lines added/removed.
+          CC sessions keep the statusline count: it is Claude Code's own number
+          and covers edits made through ANY path, including shell commands.
+          Native sessions use the derived count (structuredPatch hunks stored on
+          tool calls AND on specialist segments). The two are not comparable
+          across runtimes; each is the most complete number its runtime has.
+          Nothing edited yet → the chip does not render. It used to say "No
+          changes", which was FALSE in every native session (spec §1). */}
+      {show('code-changes') && (() => {
+        const added = ss?.linesAdded ?? nativeTotals?.linesAdded ?? null;
+        const removed = ss?.linesRemoved ?? nativeTotals?.linesRemoved ?? null;
+        if (!added && !removed) return null;
+        const title = ss?.linesAdded != null
+          ? `Lines added: ${added ?? 0} | Lines removed: ${removed ?? 0}`
+          : `${SCOPE_NOTE} Counts edits made through the model's editing tools; edits made by shell commands are not counted.`;
+        return (
+          <span
+            className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
+            title={title}
+          >
+            <span className="text-[#4CAF50]">+{added ?? 0}</span>
+            <span className="text-[#DD4444]">-{removed ?? 0}</span>
+            <span className="text-fg-muted hidden sm:inline">lines</span>
+          </span>
+        );
+      })()}
 
       {/* Git branch — reads from statusline.sh's .gitbranch-{sessionId} file */}
       {show('git-branch') && gitBranch && (
@@ -1543,6 +1773,9 @@ export default function StatusBar({
         onClose={() => setPopupOpen(false)}
         visible={visible}
         toggle={toggle}
+        // anyUnpriced rides along because the bar draws a "Cost: not listed"
+        // chip for it — the menu has to offer the row whenever the chip is up.
+        relevance={{ runtime, hasPricedWork: nativeTotals?.anyPriced ?? true, anyUnpriced: nativeTotals?.anyUnpriced ?? false, runsLocally: nativeTotals?.anyFree ?? false }}
       />
 
       {/* Update panel — opened from the version pill. Guard on updateStatus

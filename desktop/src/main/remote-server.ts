@@ -47,6 +47,7 @@ import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGit
 import { installGh } from './github-auth';
 import { combinedGithubStatus } from './github-client';
 import { getGithubConnect, disconnectGithub } from './github-connect';
+import { resolveConversations, readConversation } from './chatsearch-index/refs-service';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
 const HOOK_BUFFER_SIZE = 10_000; // ~10MB max, covers full conversations without excessive memory
@@ -1351,10 +1352,14 @@ export class RemoteServer {
         }
         break;
       }
-      // Orphaned .partial scan (2026-07-15) — mirrors the Electron IPC handler.
-      case 'models:orphaned-partials': {
+      // Resume an interrupted download (2026-08-26) — mirrors the Electron IPC
+      // handler. Replaces the orphaned-.partial scan, whose listing folded into
+      // models:installed.
+      case 'models:resume': {
         try {
-          const res = this.nativeRuntime ? this.nativeRuntime.modelManager.orphanedPartials() : [];
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.modelManager.resume(payload.modelId ?? payload)
+            : { downloadId: '' };
           this.respond(client.ws, type, id, res);
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
@@ -2118,6 +2123,19 @@ export class RemoteServer {
       // lease client (query) and requester flow (takeover/force), matching the
       // desktop ipc handlers. When wiring is absent (sync disabled) they degrade
       // to a free/error answer so the remote resume gate proceeds (spec §3 never-block).
+      // Session references (spec 2026-08-10). Both go through refs-service, the
+      // same functions ipc-handlers calls, so a phone and the desktop cannot
+      // disagree about which folders may be read.
+      case 'chatsearch:resolve': {
+        this.respond(client.ws, type, id, resolveConversations(payload?.shortIds));
+        break;
+      }
+      case 'chatsearch:read': {
+        // async — await before respond (unlike ipcMain.handle, respond does not
+        // unwrap promises).
+        this.respond(client.ws, type, id, await readConversation(payload as never));
+        break;
+      }
       case 'syncspaces:lease-query': {
         // query() is async — await before respond (unlike ipcMain.handle, respond
         // doesn't unwrap promises).

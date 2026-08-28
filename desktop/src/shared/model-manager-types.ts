@@ -62,27 +62,46 @@ export interface DownloadProgress {
   message?: string;           // plain language, present for state 'error'
 }
 
-// lastUsedAt + defaultForTier were CUT from v1 (Amendment 2026-07-14 G).
+/** What state a download on disk is in. A model is only usable when every
+ *  declared part is published — see docs/active/specs/2026-08-26-model-download-resume-design.md.
+ *    complete    — every part present; the ordinary case
+ *    unfinished  — short of parts (a .partial, or nothing but a manifest yet),
+ *                  WITH a manifest → resumable
+ *    untraceable — short of parts, NO manifest (downloaded before manifests
+ *                  existed) → we cannot know where it came from, so no Resume */
+export type LocalModelStatus = 'complete' | 'unfinished' | 'untraceable';
+
 export interface InstalledLocalModel {
   id: string;                 // the router-served model id (filename minus .gguf)
-  sizeBytes: number;          // summed across all parts for a split model
-  quant: string | null;       // parsed from filename; null when unrecognized
+  sizeBytes: number;          // bytes ON DISK: published parts, plus the .partial when unfinished
+  // From the manifest when there is one (the exact string Hugging Face used,
+  // which is what live download-progress events carry), else parsed from the
+  // filename; null when unrecognized. WHY: the renderer matches a live download
+  // to its row on repo + quant, so the row must carry the same quant string.
+  quant: string | null;
   quantDescription: string | null;
-  parts: number;              // 1 for single-file models
+  parts: number;              // declared part count; 1 for single-file models
+  status: LocalModelStatus;
+  partsPresent: number;       // published .gguf files found for this set
+  // From the manifest — null for 'complete' (not needed) and 'untraceable' (unknown).
+  // WHY totalSizeBytes may be null: an untraceable row must show NO percentage.
+  // A denominator we cannot know would be a fabricated number in a shipping UI.
+  totalSizeBytes: number | null;
+  repo: string | null;        // e.g. 'unsloth/Qwen3.8-Flash-Next-GGUF'
 }
 
-/** A `.gguf.partial` file in the cache dir with NO live download attached —
- *  orphaned by an app restart/crash mid-download. The downloader only tracks
- *  THIS session's downloads in memory, so without this scan an orphan is
- *  invisible to the UI (it can't be resumed or cleaned). Listing only in v1:
- *  clean via models:delete with `modelId` (it removes every part + .partial),
- *  resume by re-starting the same repo+quant download (the Range request picks
- *  the partial bytes back up). */
-export interface OrphanedPartial {
-  fileName: string;   // e.g. 'M-Q4_K_M.gguf.partial' — the on-disk file
-  modelId: string;    // the id models:delete expects (first-part id for splits)
-  sizeBytes: number;  // bytes downloaded so far
-  mtimeMs: number;    // last write time — shows how stale the orphan is
+/** Written next to a download BEFORE its first byte, so a leftover .partial can
+ *  still be resumed after a crash. Carries the whole QuantOption, not just the
+ *  repo name, so resume needs no Hugging Face round trip — the interruption
+ *  that stranded the download is often the network itself. */
+export interface DownloadManifest {
+  v: 1;
+  repo: string;
+  quant: string;
+  files: string[];                              // repo-relative paths, part 1 first
+  totalSizeBytes: number;
+  sha256ByFile: Record<string, string | null>;
+  startedAt: number;                            // epoch ms
 }
 
 export interface DetectedEndpoint {

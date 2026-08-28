@@ -4,6 +4,7 @@ import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/typ
 import { assistantName } from '../utils/assistant-name';
 import { hasNestedAsk } from '../utils/specialist-cards';
 import MarkdownContent from './MarkdownContent';
+import { SessionRefsEnabled } from './session-refs-context';
 import ToolCard from './ToolCard';
 import { DeliverablesCard, isSentFilesTool } from './DeliverablesCard';
 import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon } from './Icons';
@@ -286,7 +287,7 @@ export function splitIntoBubbles(turn: Pick<AssistantTurn, 'segments'>): VisualB
         toolGroupIds: [],
       };
       pendingReasoning = null;
-    } else {
+    } else if (seg.type === 'tool-group') {
       // Tool-group segment. Fix (M1 BUG A): the native harness streams
       // reasoning live but batches tool-use events after each step's stream,
       // so a multi-step turn interleaves as [text₁, toolGroupA, reasoning₂,
@@ -306,6 +307,13 @@ export function splitIntoBubbles(turn: Pick<AssistantTurn, 'segments'>): VisualB
         pendingReasoning = null;
       }
       current.toolGroupIds.push(seg.groupId);
+    } else {
+      // A segment type this bundle does not know about. The remote browser and
+      // the Android WebView load a bundle that can be OLDER than the host that
+      // sends them turns, so this is reachable in normal use, not a corruption.
+      // Render nothing: the previous `else` treated anything unrecognised as a
+      // tool group, which pushed `undefined` as a group id and drew an empty
+      // card for a segment it could not read.
     }
   }
   if (current) bubbles.push(current);
@@ -477,7 +485,14 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
               {bubble.text && (
                 // Pass sessionId so MarkdownContent can render inline FilepathToken chips
                 // for detected file paths in this session's artifact set.
-                <MarkdownContent content={bubble.text.content} sessionId={sessionId} />
+                // SessionRefsEnabled: this is the ONE place a `conversations`
+                // fence becomes a reference block with live Preview/Resume rows.
+                // Everywhere else MarkdownContent renders (a previewed past
+                // conversation, an artifact) it stays plain text — ids from
+                // another device would resolve to a block of dead rows.
+                <SessionRefsEnabled.Provider value={true}>
+                  <MarkdownContent content={bubble.text.content} sessionId={sessionId} />
+                </SessionRefsEnabled.Provider>
               )}
               {bubble.plan && (
                 <PlanBubbleContent

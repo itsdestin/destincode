@@ -1925,15 +1925,24 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
   --bottom-chrome-total: calc(var(--frame-edge) + var(--vvp-offset, 0px));
 }
 /* Welcome screen's bare frame (P-6): same donut as terminal view — header on
-   top, --frame-edge strips down the sides and along the bottom. Without this
+   top, --frame-edge strips down the sides, and a bottom band. Without this
    the polygon would reserve the 5rem --bottom-chrome-height fallback for an
    input bar the welcome screen doesn't have, painting a thick empty band.
    Both vars set on the same element for the same substitution reason as the
    terminal rule above. Not gated on platform: Android/remote have no window
-   chrome but do have the frame, exactly as their terminal view does. */
+   chrome but do have the frame, exactly as their terminal view does.
+   BOTTOM BAND = HEADER HEIGHT (Destin 2026-08-27: "make the bottom border the
+   same width as the top border"). The welcome screen has no input bar, so the
+   only thing closing the frame at the bottom is this strip; at --frame-edge
+   (10px) it read as a hairline under a ~48px header and the frame looked
+   lopsided. --top-chrome-height is published on <html> by useChromeMeasurements
+   from the same headerRef this branch renders, so the band tracks the header
+   whatever a theme sizes it to. NOT --top-chrome-bottom: that includes a
+   floating header pill's margin, and floating-chrome themes hide chrome-glass
+   entirely, so there is no band to match there anyway. */
 .chrome-glass--bare {
-  --bottom-chrome-height: var(--frame-edge);
-  --bottom-chrome-total: calc(var(--frame-edge) + var(--vvp-offset, 0px));
+  --bottom-chrome-height: var(--top-chrome-height, 3rem);
+  --bottom-chrome-total: calc(var(--top-chrome-height, 3rem) + var(--vvp-offset, 0px));
 }
 
 /* ─── Terminal-view right-slot overlay (Bug #2) ──────────────────────────
