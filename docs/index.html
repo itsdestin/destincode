@@ -574,7 +574,10 @@
     line-height: inherit;
     opacity: 0;
     transform: translateY(110%);
-    animation-duration: 1.7s;
+    /* MUST be shorter than the gap between words (1.0s below): a word's exit
+       is its last 15%, so anything longer than the gap leaves two words on
+       screen at once — 1.7s on a 1.2s gap did exactly that (2026-08-28). */
+    animation-duration: 1.05s;
     animation-fill-mode: forwards;
     animation-iteration-count: 1;
     animation-timing-function: linear;
@@ -586,12 +589,12 @@
     transition: color 0.5s;
   }
   /* Words 1–2 bump through: enter with overshoot, settle, hold, bumped out.
-     Three states total (Useful. → Fun. → Yours.), 1.2s apart — the intro is
-     over in ~4s instead of ~6s. */
+     Three states total (Useful. → Fun. → Yours.), 1.0s apart — the intro is
+     over in ~3.5s instead of ~6s. */
   .cycler-word-1,
   .cycler-word-2 { animation-name: bump-through; }
-  .cycler-word-1 { animation-delay: 1.1s; color: color-mix(in srgb, var(--title-highlight) 100%, #fff 0%); }
-  .cycler-word-2 { animation-delay: 2.3s; color: color-mix(in srgb, var(--title-highlight) 80%, #fff 20%); }
+  .cycler-word-1 { animation-delay: 0.9s; color: color-mix(in srgb, var(--title-highlight) 100%, #fff 0%); }
+  .cycler-word-2 { animation-delay: 1.9s; color: color-mix(in srgb, var(--title-highlight) 80%, #fff 20%); }
   /* Final word: enters at the same pace as the others, then stays pinned
      (fill-mode: forwards on bump-final holds the final keyframe forever).
      The text-stroke adds extra optical weight on top of font-weight 900 —
@@ -599,7 +602,7 @@
      "display headline" territory so "Yours." lands with real impact. */
   .cycler-word-3 {
     animation-name: bump-final;
-    animation-delay: 3.5s;
+    animation-delay: 2.9s;
     font-style: italic;
     font-weight: 900;
     letter-spacing: -0.02em;
@@ -1980,9 +1983,11 @@
     // Swap fires (-0.1s): 1.0s / 2.2s / 3.4s
     // Word settles + theme completes (both):  1.44s / 2.64s / 3.84s
     var HERO_THEME_SEQUENCE = [
-      { theme: 'midnight', at: 1000 },
-      { theme: 'halftone', at: 2200 },
-      { theme: 'creme',    at: 3400 }
+      // 100 ms ahead of each word (0.9 / 1.9 / 2.9 s in the cycler CSS) so the
+      // 0.5 s crossfade lands as the word does.
+      { theme: 'midnight', at: 800 },
+      { theme: 'halftone', at: 1800 },
+      { theme: 'creme',    at: 2800 }
     ];
     var heroSyncCancelled = false;
     var heroSyncTimers = [];
@@ -2067,7 +2072,7 @@
       var exitId = setTimeout(function() {
         if (heroSyncCancelled) return;
         exitIntroMode();
-      }, 4300);
+      }, 3700); // ~0.8 s after 'Yours.' lands (was 4300 for the 1.2 s spacing)
       heroSyncTimers.push(exitId);
     }
 
