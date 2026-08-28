@@ -36,7 +36,6 @@ interface Props {
    *  the root element's style block for why the two axes are hidden
    *  differently. */
   sessionActive: boolean;
-  resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
   /** Working directory of the session — used to resolve the active project for the artifact drawer. */
   cwd?: string;
   /** Game pane content, when the multiplayer panel is open. Rendered in the
@@ -62,49 +61,7 @@ interface Props {
   onEditQueued?: (sessionId: string, queueId: string, text: string) => void;
 }
 
-function HistoryExpandButton({ sessionId, resumeInfo }: {
-  sessionId: string;
-  resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
-}) {
-  const dispatch = useChatDispatch();
-  const [loading, setLoading] = useState(false);
-
-  const handleExpand = async () => {
-    const info = resumeInfo?.get(sessionId);
-    if (!info) return;
-    setLoading(true);
-    try {
-      const allMessages = await (window as any).claude.session.loadHistory(
-        info.claudeSessionId, info.projectSlug, 0, true
-      );
-      if (allMessages.length > 0) {
-        dispatch({
-          type: 'HISTORY_LOADED',
-          sessionId,
-          messages: allMessages,
-          hasMore: false,
-        });
-      }
-    } catch {
-      // Ignore
-    }
-    setLoading(false);
-  };
-
-  return (
-    <div className="flex justify-center py-3">
-      <button
-        onClick={handleExpand}
-        disabled={loading}
-        className="text-xs text-fg-muted hover:text-fg-2 transition-colors disabled:opacity-50"
-      >
-        {loading ? 'Loading...' : '\u2191 See previous messages'}
-      </button>
-    </div>
-  );
-}
-
-export default function ChatView({ sessionId, visible, sessionActive, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
+export default function ChatView({ sessionId, visible, sessionActive, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
@@ -292,6 +249,71 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
   // state, invisible to ChatView. Watch the content wrapper's size instead and
   // re-stick to bottom on any growth while still stuck.
   const contentRef = useRef<HTMLDivElement>(null);
+
+  // --- Paged history (perf cycle 2) ------------------------------------------
+  // Opening a huge conversation renders only its most recent ~30 turns. Older
+  // turns arrive when a 1px sentinel above the first entry scrolls into view —
+  // the same "don't do the work until it's needed" shape ResumeBrowser uses for
+  // its row list.
+  const history = state.history ?? { cursor: null, hasMore: false, loading: false };
+  const historySentinelRef = useRef<HTMLDivElement | null>(null);
+  // Scroll anchoring: remember how tall the content was BEFORE a page is
+  // prepended, so the layout effect below can put the reader back where they
+  // were instead of letting the older turns shove the view down.
+  const preservedHeightRef = useRef<number | null>(null);
+
+  const loadOlderPage = useCallback(async () => {
+    const cursor = history.cursor;
+    if (!cursor || history.loading) return;
+    const scroller = scrollContainerRef.current;
+    preservedHeightRef.current = scroller ? scroller.scrollHeight : null;
+    // Announce FIRST: `loading` is the one-in-flight guard, so a second sentinel
+    // hit in the same frame must already see it set.
+    dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId });
+    try {
+      const page = await (window as any).claude?.detach?.requestTranscriptPage?.({ sessionId, beforeCursor: cursor });
+      if (page) {
+        dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
+      } else {
+        dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+      }
+    } catch {
+      // Clear the flag so the next scroll retries — a stuck `loading` would make
+      // the rest of the conversation permanently unreachable.
+      dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+    }
+  }, [dispatch, sessionId, history.cursor, history.loading]);
+
+  useEffect(() => {
+    if (!history.hasMore || history.loading || !history.cursor) return;
+    // No IntersectionObserver (an exotic WebView): fall back to nothing rather
+    // than eagerly loading the whole conversation, which is the cost this
+    // feature exists to avoid. The keyboard/scrollbar still reach the top; the
+    // scroll handler below covers that case.
+    if (typeof IntersectionObserver === 'undefined') return;
+    const el = historySentinelRef.current;
+    const root = scrollContainerRef.current;
+    if (!el || !root) return;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) void loadOlderPage(); },
+      { root, rootMargin: '400px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [history.hasMore, history.loading, history.cursor, loadOlderPage]);
+
+  // Restore the reading position after a page is prepended. Runs BEFORE paint
+  // (useLayoutEffect), so the older turns are never seen to push the view down.
+  useLayoutEffect(() => {
+    const before = preservedHeightRef.current;
+    if (before == null) return;
+    const scroller = scrollContainerRef.current;
+    if (!scroller) { preservedHeightRef.current = null; return; }
+    const grew = scroller.scrollHeight - before;
+    if (grew > 0) scroller.scrollTop += grew;
+    preservedHeightRef.current = null;
+  }, [state.timeline]);
+
   useEffect(() => {
     const node = contentRef.current;
     if (!node) return;
@@ -794,6 +816,12 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
               the row. */}
           <div ref={scrollContainerRef} className={`chat-scroll flex-1 min-h-0 overflow-y-auto${findOpen ? ' chat-scroll--below-find-row' : ''}`}>
            <div ref={contentRef}>
+        {/* Paged history: crossing this loads the previous ~30 turns. Rendered
+            only while there IS older history, so reaching the beginning of the
+            conversation stops the fetching for good. */}
+        {history.hasMore && (
+          <div ref={historySentinelRef} data-history-sentinel className="h-px" aria-hidden="true" />
+        )}
         {state.timeline.length === 0 && !state.isThinking ? null : (
           <>
             {(() => {
@@ -854,13 +882,11 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                   break;
                 }
                 case 'prompt':
-                  if (entry.prompt.promptId === HISTORY_EXPAND_PROMPT_ID && !entry.prompt.completed) {
-                    return (
-                      <div key={entry.prompt.promptId} ref={observeEntry} className="timeline-entry">
-                        <HistoryExpandButton sessionId={sessionId} resumeInfo={resumeInfo} />
-                      </div>
-                    );
-                  }
+                  // Perf cycle 2: the "See previous messages" marker is retired —
+                  // older turns now stream in as the top of the list scrolls into
+                  // view. A timeline persisted by an OLDER build can still carry
+                  // one, so it is skipped rather than rendered as a dead prompt.
+                  if (entry.prompt.promptId === HISTORY_EXPAND_PROMPT_ID) return null;
                   key = entry.prompt.promptId;
                   content = (
                     <PromptCard
