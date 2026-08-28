@@ -23,31 +23,42 @@ function ThumbIcon({ down = false }: { down?: boolean }) {
 
 /** The one-line summary used on cards and in the section header. Returns
  *  null when there are no votes yet, so nothing renders instead of "0%". */
-export function thumbsSummary(up?: number, down?: number): { pct: number; total: number } | null {
+export function thumbsSummary(up?: number, down?: number): { pct: number; total: number; up: number } | null {
   const u = up ?? 0; const d = down ?? 0;
   const total = u + d;
   if (total === 0) return null;
-  return { pct: Math.round((u / total) * 100), total };
-}
-
-/** Cards show only the percentage (the vote count sat between the % and the
- *  install count and read as one run of digits); the detail page shows both. */
-export function ThumbsSummary({ up, down, size = 'sm', showTotal = false }: { up?: number; down?: number; size?: 'sm' | 'md'; showTotal?: boolean }) {
-  const s = thumbsSummary(up, down);
-  if (!s) return null;
-  const cls = size === 'md' ? 'text-sm' : 'text-xs';
-  return (
-    <span className={`inline-flex items-center gap-1 ${cls} text-fg-dim whitespace-nowrap`} title={`${s.pct}% of ${s.total.toLocaleString()} people who installed this found it helpful`} data-thumbs>
-      <span className="inline-flex text-fg-dim"><ThumbIcon /></span>
-      <span className="text-fg-2">{s.pct}%</span>
-      {showTotal && <span className="text-fg-muted ml-1">{s.total.toLocaleString()}</span>}
-    </span>
-  );
+  return { pct: Math.round((u / total) * 100), total, up: u };
 }
 
 /** Below this many votes a percentage is theatre: one up-vote is not "100%",
  *  and "1 votes" is not English. */
 export const MIN_VOTES_FOR_PCT = 5;
+
+/** Cards show only the percentage (the vote count sat between the % and the
+ *  install count and read as one run of digits); the detail page shows both.
+ *
+ *  EXCEPT below MIN_VOTES_FOR_PCT, where a percentage is a lie the card cannot
+ *  qualify: one like rendered "100%", which reads as "everyone loved this"
+ *  rather than "one person clicked". Under the threshold the card shows the raw
+ *  count instead — "1" next to a thumb is honest and unmistakably not a
+ *  percentage. */
+export function ThumbsSummary({ up, down, size = 'sm', showTotal = false }: { up?: number; down?: number; size?: 'sm' | 'md'; showTotal?: boolean }) {
+  const s = thumbsSummary(up, down);
+  if (!s) return null;
+  const cls = size === 'md' ? 'text-sm' : 'text-xs';
+  const low = s.total < MIN_VOTES_FOR_PCT;
+  const title = low
+    ? `${s.up} of ${s.total} ${s.total === 1 ? 'person' : 'people'} who installed this found it helpful`
+    : `${s.pct}% of ${s.total.toLocaleString()} people who installed this found it helpful`;
+  return (
+    <span className={`inline-flex items-center gap-1 ${cls} text-fg-dim whitespace-nowrap`} title={title} data-thumbs>
+      <span className="inline-flex text-fg-dim"><ThumbIcon /></span>
+      <span className="text-fg-2">{low ? s.up : `${s.pct}%`}</span>
+      {showTotal && !low && <span className="text-fg-muted ml-1">{s.total.toLocaleString()}</span>}
+    </span>
+  );
+}
+
 const people = (n: number) => `${n} ${n === 1 ? 'person' : 'people'}`;
 
 /** The LOW-COUNT summary only. At or above MIN_VOTES_FOR_PCT this returns null
@@ -94,6 +105,9 @@ export default function FeedbackSection({ pluginId, installed }: { pluginId: str
       .then((r) => {
         if (!live || !r.ok) return;
         setVote(r.value.vote);
+        // Cards read plugins[id] from the stats context, so push it there too —
+        // otherwise the card behind this page keeps its app-start number.
+        stats.applyThumbs(pluginId, r.value.thumbs_up, r.value.thumbs_down);
         // Take the TOTALS from this read too. Seeding only the vote is what
         // produced a lit thumb beside "No votes yet" on reopen: the vote was
         // fresh from the server while the count still came from the /stats
@@ -132,6 +146,11 @@ export default function FeedbackSection({ pluginId, installed }: { pluginId: str
           // minutes — plus it raises a global loading flag every card reads and
           // re-downloads the whole marketplace's totals on every click.
           setLocalTotals({ up: r.value.thumbs_up, down: r.value.thumbs_down });
+          // …and into the shared stats, so the CARD you just voted on changes
+          // too. Without this the detail page and its own card disagree: the
+          // header says 0% while the card still says 100%. refresh() cannot fix
+          // it — /stats is Cache-Control max-age=300.
+          stats.applyThumbs(pluginId, r.value.thumbs_up, r.value.thumbs_down);
           return;
         }
         // Never swallow: a vote that did not save must not look like it did.

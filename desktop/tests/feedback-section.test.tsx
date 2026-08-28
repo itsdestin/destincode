@@ -7,6 +7,7 @@ const myThumb = vi.fn();
 const thumb = vi.fn();
 const comment = vi.fn();
 const refresh = vi.fn();
+const applyThumbs = vi.fn();
 
 vi.mock('../src/renderer/state/account-context', () => ({ useAccount: () => ({ signedIn: true }) }));
 vi.mock('../src/renderer/state/marketplace-stats-context', () => ({
@@ -14,6 +15,7 @@ vi.mock('../src/renderer/state/marketplace-stats-context', () => ({
     plugins: { p1: { installs: 3, review_count: 0, rating: 0, thumbs_up: 9, thumbs_down: 1 } },
     themes: {},
     refresh,
+    applyThumbs,
     loading: false,
   }),
 }));
@@ -25,7 +27,7 @@ vi.mock('../src/renderer/components/marketplace/CommentList', () => ({
 }));
 vi.mock('../src/renderer/components/marketplace/SignInPromptModal', () => ({ default: () => null }));
 
-import FeedbackSection, { thumbsLabel } from '../src/renderer/components/marketplace/FeedbackSection';
+import FeedbackSection, { thumbsLabel, ThumbsSummary } from '../src/renderer/components/marketplace/FeedbackSection';
 
 beforeEach(() => {
   commentListProps.length = 0;
@@ -33,6 +35,7 @@ beforeEach(() => {
   thumb.mockReset().mockResolvedValue({ ok: true, value: { vote: 'up', thumbs_up: 10, thumbs_down: 1 } });
   comment.mockReset().mockResolvedValue({ ok: true, value: { id: 'c1', hidden: false } });
   refresh.mockReset();
+  applyThumbs.mockReset();
   (window as unknown as { claude: unknown }).claude = { marketplaceApi: { thumb, myThumb, comment } };
 });
 afterEach(cleanup);
@@ -158,6 +161,16 @@ describe('FeedbackSection', () => {
     expect(screen.getByText(/1 person found this helpful/i)).toBeTruthy();
   });
 
+  it('pushes the new totals into the shared stats, so the CARD updates too', async () => {
+    // Cards read plugins[id] from the stats context. Without this the detail
+    // page and its own card disagree after a vote — header 0%, card 100% —
+    // and refresh() cannot reconcile them (/stats is max-age=300).
+    thumb.mockResolvedValueOnce({ ok: true, value: { vote: 'down', thumbs_up: 0, thumbs_down: 1 } });
+    render(<FeedbackSection pluginId="p1" installed />);
+    fireEvent.click(screen.getByRole('button', { name: /not for me/i }));
+    await waitFor(() => expect(applyThumbs).toHaveBeenCalledWith('p1', 0, 1));
+  });
+
   it('renders no Report control on a comment (no backend for it in v1)', () => {
     render(<FeedbackSection pluginId="p1" installed />);
     expect(screen.queryByRole('button', { name: /report/i })).toBeNull();
@@ -177,5 +190,36 @@ describe('FeedbackSection', () => {
     // Not installed means no vote can exist; asking anyway costs a round-trip
     // per plugin page open.
     await waitFor(() => expect(myThumb).not.toHaveBeenCalled());
+  });
+});
+
+describe('ThumbsSummary (the card)', () => {
+  it('shows a COUNT, not a percentage, below the threshold', () => {
+    // One like rendered "100%", which reads as "everyone loved this" rather
+    // than "one person clicked" — and it is the number on every card.
+    const { container } = render(<ThumbsSummary up={1} down={0} />);
+    expect(container.textContent).toContain('1');
+    expect(container.textContent).not.toContain('%');
+  });
+
+  it('still shows a percentage once there are enough votes', () => {
+    const { container } = render(<ThumbsSummary up={9} down={1} />);
+    expect(container.textContent).toContain('90%');
+  });
+
+  it('renders nothing at all when nobody has voted', () => {
+    const { container } = render(<ThumbsSummary up={0} down={0} />);
+    expect(container.textContent).toBe('');
+  });
+
+  it('explains the low-count form in its tooltip, in words', () => {
+    const { container } = render(<ThumbsSummary up={2} down={1} />);
+    expect(container.querySelector('[data-thumbs]')?.getAttribute('title'))
+      .toBe('2 of 3 people who installed this found it helpful');
+  });
+
+  it('drops the separate total in the low-count form — the number IS the count', () => {
+    const { container } = render(<ThumbsSummary up={3} down={0} showTotal />);
+    expect(container.textContent).toBe('3');
   });
 });
