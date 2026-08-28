@@ -363,6 +363,6 @@ describe('createHolderTakeover', () => {
     expect(survivor).toHaveLength(0);
 
     await host.destroyAll();
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 });

@@ -46,7 +46,7 @@ beforeEach(() => {
 
 afterEach(() => {
   (os as any).homedir = origHomedir;
-  try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(tmpHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); } catch {}
 });
 
 // session-browser captures CLAUDE_DIR from os.homedir() at module load —

@@ -158,7 +158,7 @@ describe('workspaceMatchFor — an outside path the model meant to write as a wo
     fs.writeFileSync(path.join(root, 'ROADMAP.md'), '# roadmap');
     fs.writeFileSync(path.join(root, 'src', 'index.ts'), 'export {};');
   });
-  afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => { fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
   it('recovers the workspace file when the model prefixed the project folder name', () => {
     // The exact live failure: cwd basename repeated as a fake root segment.
@@ -178,7 +178,7 @@ describe('workspaceMatchFor — an outside path the model meant to write as a wo
     try {
       expect(workspaceMatchFor(path.join(outside, 'ROADMAP.md'), root, realExists)).toBeNull();
     } finally {
-      fs.rmSync(outside, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
     }
   });
 

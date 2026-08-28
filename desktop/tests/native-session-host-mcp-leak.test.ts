@@ -53,6 +53,6 @@ describe('NativeSessionHost — MCP acquire/release leak guard (fix pass 1, Find
     // non-live id).
     expect(h.isNative('s-1')).toBe(false);
 
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 });

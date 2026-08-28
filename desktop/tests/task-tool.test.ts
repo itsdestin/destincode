@@ -36,6 +36,17 @@ import { resolveSpecialist as resolveRealSpecialist, type SpecialistDefinition, 
 import { ruleMatches } from '../src/shared/subject-glob';
 import type { PermissionRule } from '../src/shared/permission-types';
 
+// Windows resolves a POSIX-absolute fixture path onto the CURRENT DRIVE
+// (`/proj` -> `D:\proj`), which `toPosix` then renders as `D:/proj`. Hardcoding
+// '/proj' in an expectation therefore asserts POSIX, not the tool's contract —
+// that was 7 of the 19 tests red on the Windows CI leg, whose redness had been
+// written off as "pre-existing". Resolve the fixture exactly the way
+// permissionSubject does (`toPosix(resolveP(work_dir, sessionCwd ?? cwd))`) so
+// the assertion states the contract on both platforms and is unchanged on POSIX.
+const subjectDir = (workDir: string, sessionCwd?: string): string =>
+  path.resolve(sessionCwd ?? process.cwd(), workDir).replace(/\\/g, '/');
+
+
 interface RunOpts {
   slotFree?: boolean;
   writerBusy?: boolean;
@@ -219,9 +230,9 @@ describe('Task tool — typed refusals (plan 1a)', () => {
       const tool = createTaskTool();
       // explorer is read-only (specialists/builtins.ts); worker is read-write.
       expect(tool.permissionSubject({ agent: 'explorer', work_dir: '/proj', description: 'd', prompt: 'p' } as any))
-        .toBe('read-only:/proj');
+        .toBe(`read-only:${subjectDir('/proj')}`);
       expect(tool.permissionSubject({ agent: 'worker', work_dir: '/proj', description: 'd', prompt: 'p' } as any))
-        .toBe('read-write:/proj');
+        .toBe(`read-write:${subjectDir('/proj')}`);
     });
 
     it('falls back to the bare work_dir for an unresolvable agent name', () => {
@@ -230,7 +241,7 @@ describe('Task tool — typed refusals (plan 1a)', () => {
       // declined anyway — never a real standing grant.
       const tool = createTaskTool();
       expect(tool.permissionSubject({ agent: 'wizard', work_dir: '/proj', description: 'd', prompt: 'p' } as any))
-        .toBe('/proj');
+        .toBe(subjectDir('/proj'));
     });
 
     // Task 11 (ROADMAP fold-in): '.', './x', and the absolute form of the SAME
@@ -451,12 +462,12 @@ describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
     const tool = createTaskTool(MIXED_ROSTER);
     const builtinSubject = tool.permissionSubject!({ agent: 'worker', work_dir: '/proj' } as any);
     const fileSubject = tool.permissionSubject!({ agent: 'repo-worker', work_dir: '/proj' } as any);
-    expect(builtinSubject).toBe('read-write:/proj');                    // unchanged shape — old grants still match
-    expect(fileSubject).toBe('read-write:/proj:file:repo-worker@bbbbbbbbbbbb'); // file's own id AND its contents
+    expect(builtinSubject).toBe(`read-write:${subjectDir('/proj')}`);                    // unchanged shape — old grants still match
+    expect(fileSubject).toBe(`read-write:${subjectDir('/proj')}:file:repo-worker@bbbbbbbbbbbb`); // file's own id AND its contents
 
     // A user's PRE-EXISTING remembered grant for the built-in Worker at this
     // path (the exact shape harness-session.ts's remember-rule persists).
-    const workerGrant: PermissionRule = { tool: 'Task', pattern: 'read-write:/proj', action: 'allow', match: 'exact' };
+    const workerGrant: PermissionRule = { tool: 'Task', pattern: `read-write:${subjectDir('/proj')}`, action: 'allow', match: 'exact' };
     expect(ruleMatches(workerGrant, builtinSubject!)).toBe(true);   // still covers the built-in it was granted for
     expect(ruleMatches(workerGrant, fileSubject!)).toBe(false);     // must NOT auto-approve a repo-shipped helper
   });
@@ -523,7 +534,7 @@ describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
       const worker = resolveRealSpecialist('worker')!;
       const tool = createTaskTool(rosterOf(worker));
       expect(tool.permissionSubject!({ agent: 'worker', work_dir: '/proj' } as any))
-        .toBe('read-write:/proj');
+        .toBe(`read-write:${subjectDir('/proj')}`);
     });
   });
 
@@ -574,7 +585,7 @@ describe('Task tool — one roster lookup per id, per tool instance (D2)', () =>
     const tool = createTaskTool(roster);
     // The card the user sees is built from this subject...
     const subject = tool.permissionSubject!(ARGS as any);
-    expect(subject).toBe('read-write:/proj:file:docs-writer@aaaaaaaaaaaa');
+    expect(subject).toBe(`read-write:${subjectDir('/proj')}:file:docs-writer@aaaaaaaaaaaa`);
 
     const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
     const ctx: ToolContext = {
@@ -632,13 +643,13 @@ describe('Task tool — work_dir resolves against the SESSION folder (D2)', () =
 
   it('a relative work_dir resolves against the session folder the host passes', () => {
     const tool = createTaskTool(undefined, '/sess/root');
-    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: 'sub' } as any)).toBe('read-only:/sess/root/sub');
-    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: '.' } as any)).toBe('read-only:/sess/root');
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: 'sub' } as any)).toBe(`read-only:${subjectDir('sub', '/sess/root')}`);
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: '.' } as any)).toBe(`read-only:${subjectDir('.', '/sess/root')}`);
   });
 
   it('an absolute work_dir is unaffected by the session folder', () => {
     const tool = createTaskTool(undefined, '/sess/root');
-    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: '/elsewhere' } as any)).toBe('read-only:/elsewhere');
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: '/elsewhere' } as any)).toBe(`read-only:${subjectDir('/elsewhere', '/sess/root')}`);
   });
 
   // THE hazard: two conversations in two different projects, both hiring with
@@ -961,7 +972,7 @@ describe('Task tool — task_id management surface (Task 6)', () => {
       expect(owned.text).toMatch(/^Interrupted/);
     } finally {
       await host.destroyAll();
-      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
     }
   });
 

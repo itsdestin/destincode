@@ -16,6 +16,41 @@ import { OWNER, DelegationLedger } from '../src/main/harness/specialists/delegat
 import { ModelSearchTool } from '../src/main/harness/tools/model-search';
 import type { CatalogModel } from '../src/shared/provider-types';
 
+/** Ceiling for this file's fire-and-forget-write polls, as a tries count at the
+ *  10ms interval each loop already uses (1,500 x 10ms = 15s, matching the
+ *  vi.waitFor default in tests/setup-waitfor.ts).
+ *
+ *  These loops DO wait on a real signal — the condition they break on — so the
+ *  only thing wrong with them was the ceiling: 50 tries is 500ms, a number that
+ *  held on an idle machine and lost on ubuntu CI 2026-08-28
+ *  (`expected [] to deep equally contain …` — the permission rule was persisted,
+ *  just not within half a second under load). An empty result then reads as
+ *  "the feature did not run" rather than "this was slow". */
+const POLL_TRIES = 1_500;
+
+
+/** Remove a temp root a live NativeSessionHost was writing into.
+ *
+ *  `destroyAll()` does not drain the delegation ledger's writes — they are
+ *  fire-and-forget by design (native-session-host.ts documents this: a failed
+ *  bookkeeping write must never cost the user their session). So a `mutateJson`
+ *  can still land inside `<root>/.youcoded/sessions` a tick after teardown
+ *  begins, and a plain recursive remove then dies with
+ *  `ENOTEMPTY: directory not empty` — a file appeared during its own walk.
+ *  `force: true` does NOT cover that; it only swallows ENOENT.
+ *
+ *  Observed on ubuntu CI 2026-08-28 (a run otherwise fully green), failing a
+ *  test that had already passed, because the teardown throws INTO the test.
+ *
+ *  maxRetries is Node's own answer: fs.rm retries EBUSY/EMFILE/ENFILE/ENOTEMPTY
+ *  /EPERM with a linear backoff. Nothing is masked — a root that is genuinely
+ *  un-removable still throws after the retries.
+ */
+function rmHostRoot(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+}
+
+
 // One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
 // tool result — stops with text. A FRESH instance per factory call so the
 // per-step counter resets each turn. Write is chosen because it is permission-
@@ -106,6 +141,38 @@ function waitForTurnComplete(host: NativeSessionHost, n: number): Promise<void> 
   });
 }
 
+// Resolve once `sessionId`'s turn is genuinely IN FLIGHT — the condition a LIVE
+// steer needs (postSteer delivers to a session mid-turn and parks the steer
+// otherwise). Waiting on the session's own first transcript event replaces a
+// fixed `setTimeout(…, 20)`, which was a guess that the turn had started: on a
+// loaded machine it had not, postSteer missed, the steer PARKED, and the
+// assertions below then failed as though the live-delivery logic were broken
+// (ROADMAP 2026-08-16, "a fixed 20ms delay stands in for a real completion
+// signal"). Attaching after send() is safe for the same reason
+// waitForTurnComplete documents: the async turn cannot run until the current
+// synchronous stack empties.
+function waitForTurnInFlight(host: NativeSessionHost, sessionId: string, timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onEvent = (e: any) => {
+      // A child's events reach the host's listeners re-stamped under the
+      // PARENT's session id, with `data.agentId` naming the child that spoke
+      // (native-session-host.ts, createChild's transcript subscription) — so
+      // matching on e.sessionId alone never fires for a child.
+      if (e?.sessionId !== sessionId && e?.data?.agentId !== sessionId) return;
+      clearTimeout(timer);
+      host.off('transcript-event', onEvent);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      host.off('transcript-event', onEvent);
+      // Named, not a bare timeout: if this ever fires the turn never started,
+      // which is a different bug from the one the test is about.
+      reject(new Error(`no transcript event from session ${sessionId} within ${timeoutMs}ms — its turn never started`));
+    }, timeoutMs);
+    host.on('transcript-event', onEvent);
+  });
+}
+
 // A ModelFactory whose FIRST call throws (HarnessSession.send() catches this
 // inside its try/await and emits session-error, never a rejection) and whose
 // every later call succeeds via the plain `factory` stream — proves a
@@ -125,7 +192,7 @@ describe('NativeSessionHost', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-'));
     host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
   });
-  afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host.destroyAll(); rmHostRoot(root); });
 
   it('pendingAskEventsFor delegates to the broker for one session', () => {
     // Task 0 (ROADMAP #permissions): TRANSCRIPT_REPLAY needs a host-level
@@ -912,7 +979,7 @@ describe('NativeSessionHost', () => {
       // remember() is fire-and-forget off the turn (mutateJson under a file lock);
       // poll until the persisted rule appears.
       let rules: any[] = [];
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         rules = await store.rulesFor(root);
         if (rules.some((r) => r.tool === 'Write' && r.action === 'allow')) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -1009,7 +1076,7 @@ describe('NativeSessionHost', () => {
      *  a file lock), so wait for it to land before revoking — otherwise remove()
      *  could run BEFORE the write and report a miss that is really a race. */
     async function waitForStoredRule(store: PermissionStore, cwd: string): Promise<PermissionRule> {
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         const hit = (await store.rulesFor(cwd)).find((r) => r.tool === 'Write' && r.action === 'allow');
         if (hit) return hit;
         await new Promise((r) => setTimeout(r, 10));
@@ -1813,7 +1880,7 @@ describe('NativeSessionHost', () => {
       expect(steerSpy).toHaveBeenCalledTimes(1); // the steer still happens — this fix must not regress it
 
       let rules: any[] = [];
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         rules = await store.rulesFor(root);
         if (rules.some((r) => r.specialist === 'worker')) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -1855,7 +1922,7 @@ describe('NativeSessionHost', () => {
       await noticeArrived; // the host-notice half still fires — this fix must not regress it
 
       let rules: any[] = [];
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         rules = await store.rulesFor(root);
         if (rules.some((r) => r.specialist === 'worker')) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -1903,7 +1970,7 @@ describe('NativeSessionHost', () => {
       await noticeArrived;
 
       let rules: any[] = [];
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         rules = await store.rulesFor(root);
         if (rules.some((r) => r.specialist === 'worker')) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -2008,7 +2075,7 @@ describe('NativeSessionHost', () => {
 
         // Fire-and-forget disk persist (same contract as the root path) — poll.
         let rules: any[] = [];
-        for (let i = 0; i < 50; i++) {
+        for (let i = 0; i < POLL_TRIES; i++) {
           rules = await store.rulesFor(root);          // the PARENT's cwd, never the child's workDir
           if (rules.some((r) => r.specialist === 'worker')) break;
           await new Promise((r) => setTimeout(r, 10));
@@ -2065,7 +2132,7 @@ describe('NativeSessionHost', () => {
         const sendPromise = childSession(h, childId).send('go');
         h.respondPermission(await askArrived, { decision: { behavior: 'allow' }, updatedPermissions: [{ tool: 'Bash' }] });
         await sendPromise;
-        for (let i = 0; i < 50; i++) {
+        for (let i = 0; i < POLL_TRIES; i++) {
           if ((await store.rulesFor(root)).some((r) => r.specialist === 'worker')) break;
           await new Promise((r) => setTimeout(r, 10));
         }
@@ -2147,7 +2214,7 @@ describe('NativeSessionHost', () => {
       expect(res.data.toolResult).not.toMatch(/user declined|dismissed/i); // no user was ever asked
       expect(res.data.toolResult).not.toMatch(/No approval handler is wired/i);
       expect(asks).toEqual([]); // never reached the broker/card at all — an instant, local deny
-      fs.rmSync(external, { recursive: true, force: true });
+      fs.rmSync(external, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
       await h.destroyAll();
     });
 
@@ -2432,7 +2499,7 @@ describe('NativeSessionHost', () => {
       // a lock-contended write must never make teardown appear to hang), so
       // poll for it to land rather than assuming it's synchronous with quiesce.
       let rec: any;
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
         if (rec?.status === 'interrupted') break;
         await new Promise((r) => setTimeout(r, 10));
@@ -2583,7 +2650,7 @@ describe('NativeSessionHost', () => {
       // never blocks the caller on disk I/O), so poll for it to land rather
       // than assuming it's synchronous.
       let recBefore: any;
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         recBefore = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
         if (recBefore?.missedSteers?.length > 0) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -2660,7 +2727,7 @@ describe('NativeSessionHost', () => {
       const steerResult = h.steerSpecialist('root-1', childId, 'focus on auth.ts instead');
       expect(steerResult.status).toBe('ok');
       let recBefore: any;
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         recBefore = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
         if (recBefore?.missedSteers?.length > 0) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -2949,7 +3016,7 @@ describe('NativeSessionHost', () => {
       const steerResult = h.steerSpecialist('root-1', childId, 'focus on auth.ts instead');
       expect(steerResult.status).toBe('ok');
       let recBefore: any;
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         recBefore = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
         if (recBefore?.missedSteers?.length > 0) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -3182,7 +3249,7 @@ describe('NativeSessionHost', () => {
     describe('resume refuses a definition file that changed since the hire (D2)', () => {
       let projectDir: string;
       beforeEach(() => { projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-resume-fp-')); });
-      afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true }); });
+      afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
       /** A real project-shipped helper file, so its fingerprint is the REAL
        *  content hash the loader stamps — never a hand-written string that
@@ -3378,7 +3445,7 @@ describe('NativeSessionHost', () => {
         status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
       });
       const turn = childSession(h, liveChildId).send('go');
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForTurnInFlight(h, liveChildId);
 
       const events: any[] = [];
       h.on('specialists-event', (e) => events.push(e));
@@ -3393,7 +3460,7 @@ describe('NativeSessionHost', () => {
       // flight, and the "exactly one event" assertion below then read an empty
       // array. Green on Linux for months; ubuntu CI lost the race 2026-08-28.
       let liveRec: any;
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         liveRec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === liveChildId);
         if (liveRec?.notes?.length > 0 && events.some((e) => e.run.childId === liveChildId)) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -3425,7 +3492,7 @@ describe('NativeSessionHost', () => {
 
       // Same two-signal wait as the live case above — record AND event.
       let parkedRec: any;
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         parkedRec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === parkedChildId);
         if (parkedRec?.missedSteers?.length > 0 && events.some((e) => e.run.childId === parkedChildId)) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -3509,7 +3576,7 @@ describe('NativeSessionHost', () => {
       // The RECORDED note is clamped and visibly marked as cut, not silently
       // truncated (the chat card renders note.text verbatim).
       let rec: any;
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
         if (rec?.notes?.length > 0) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -3551,7 +3618,7 @@ describe('NativeSessionHost', () => {
       expect(result.status).toBe('ok');
 
       let rec: any;
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < POLL_TRIES; i++) {
         rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
         if (rec?.notes?.length > 0) break;
         await new Promise((r) => setTimeout(r, 10));
@@ -3718,7 +3785,7 @@ describe('NativeSessionHost', () => {
       const verdict = checkPathGuard(otherTranscript, root, session.opts.internalReadRoots);
       expect(verdict.kind).toBe('external');
 
-      fs.rmSync(homeDir, { recursive: true, force: true });
+      fs.rmSync(homeDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 
       await h.destroyAll();
     });
@@ -4555,7 +4622,7 @@ describe('NativeSessionHost', () => {
     }
 
     beforeEach(() => { projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-cat-proj-')); });
-    afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true }); });
+    afterEach(() => { fs.rmSync(projectDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
     it("create() loads the catalog for the cwd BEFORE the Task tool is built — a personal file present at create time is in the first turn's Task description", async () => {
       fs.mkdirSync(projectAgentsDir(), { recursive: true });
@@ -4675,7 +4742,7 @@ describe('NativeSessionHost', () => {
 describe('NativeSessionHost per-turn pricing', () => {
   let root: string;
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-price-')); });
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  afterEach(() => rmHostRoot(root));
 
   // The scripted stream reports 3 input + 2 output tokens (CHUNKS, top of file).
   async function firstTurnUsage(opts: {
@@ -4868,7 +4935,7 @@ describe('G-1 background Bash — registry lifetime and finished notices', () =>
     host = new NativeSessionHost(store, chatty, NO_CONTEXT, async () => null, async () => null);
     await host.create({ sessionId: 'p1', cwd: root, binding });
   });
-  afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host.destroyAll(); rmHostRoot(root); });
 
   it('every live session has a registry, reachable by the tool as ctx.shells', () => {
     expect(reg('p1')).toBeTruthy();

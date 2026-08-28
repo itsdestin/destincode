@@ -30,7 +30,7 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 // makeSession/scriptModel/drainTurn (2026-08-11 review fixes) reused from the
 // compaction suite's own scaffolding rather than hand-rolling a second way to
 // force the summarize branch.
-import { HARNESS, makeOpts, fakeTool, makeSession, scriptModel, drainTurn } from './helpers/harness-fakes';
+import { HARNESS, makeOpts, fakeTool, makeSession, scriptModel, drainTurn, FAKE_SESSION_CWD } from './helpers/harness-fakes';
 import { CLOUD_DEFAULT } from '../src/main/harness/capability-profile';
 
 function collect(session: HarnessSession): TranscriptEvent[] {
@@ -414,7 +414,7 @@ describe('HarnessSession — multi-step turn driver', () => {
       root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-path-'));
       fs.writeFileSync(path.join(root, 'ROADMAP.md'), '# roadmap');
     });
-    afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+    afterEach(() => { fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
     it('Read: no ask at all — the model is told the real workspace path', async () => {
       const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
@@ -468,7 +468,7 @@ describe('HarnessSession — multi-step turn driver', () => {
         expect(askUser).toHaveBeenCalledTimes(1);
         expect((read as any).calls).toHaveLength(1);
       } finally {
-        fs.rmSync(outside, { recursive: true, force: true });
+        fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
       }
     });
 
@@ -544,8 +544,16 @@ describe('HarnessSession — multi-step turn driver', () => {
   // same as production. This test now drives THAT real tool (profile.canDelegate
   // defaults to true — CLOUD_DEFAULT) with an absolute work_dir chosen to
   // reproduce the exact subject the old fake hardcoded ('read-write:/etc/x' —
-  // 'worker' is read-write, and '/etc/x' is already absolute, so resolveP
-  // returns it unchanged regardless of cwd).
+  // 'worker' is read-write). NOTE: this comment used to continue "and '/etc/x'
+  // is already absolute, so resolveP returns it unchanged regardless of cwd",
+  // which is a POSIX-only claim stated as a universal one — on Windows
+  // path.resolve('/etc/x') attaches the current drive and yields 'D:/etc/x', so
+  // the hardcoded expectation below was red on that CI leg. It is now computed
+  // the same way the tool computes it — resolved against FAKE_SESSION_CWD
+  // ('C:/x'), which is the session's cwd and therefore the base resolveP uses.
+  // Resolving against process.cwd() instead was still wrong on Windows: it
+  // picked up the RUNNER's drive ('D:/etc/x') while the session produced
+  // 'C:/etc/x'.
   it('tool-layer guard: Task is exempt (NON_PATH_SUBJECT_TOOLS) — its subject is a consent key, not a path', async () => {
     const decide = vi.fn(async () => ALLOW);
     const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
@@ -559,7 +567,7 @@ describe('HarnessSession — multi-step turn driver', () => {
     // Consulted DIRECTLY (never short-circuited to a forced ask) — the guard
     // never ran checkPathGuard against "read-write:/etc/x" as though it were
     // an absolute path outside C:/x.
-    expect(decide).toHaveBeenCalledWith('Task', 'read-write:/etc/x');
+    expect(decide).toHaveBeenCalledWith('Task', `read-write:${path.resolve(FAKE_SESSION_CWD, '/etc/x').replace(/\\/g, '/')}`);
     expect(askUser).not.toHaveBeenCalled();
   });
 
@@ -1199,7 +1207,7 @@ describe('image tool-results (2026-08-11 spec)', () => {
     return d;
   }
   afterEach(() => {
-    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 
   it('a delivered image lands as a content-type output AND its path on the event', async () => {
@@ -1416,7 +1424,7 @@ describe('shown-image cache reset on history-discarding events (Fixes 1 & 2, 202
     return d;
   }
   afterEach(() => {
-    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 
   it('Fix 1: /clear resets the dedupe cache — a re-Read of the same unchanged file after /clear delivers again, not "already visible"', async () => {

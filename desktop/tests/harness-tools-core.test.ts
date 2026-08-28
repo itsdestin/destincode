@@ -35,9 +35,21 @@ import type { ToolContext } from '../src/main/harness/tools/types';
 let dir: string;
 let ctx: ToolContext;
 
+// PER-PROCESS, not the bare literal 'test'. Bash's spill files land in
+// `os.tmpdir()/youcoded-harness-bash-output/<sessionId>` — a fixed path OUTSIDE
+// the vitest HOME sandbox (spill-paths.ts resolves it from os.tmpdir() directly,
+// which is correct for production). With a shared id, every concurrent vitest
+// run wrote spills into ONE directory and the afterEach below deleted it out
+// from under the others: six concurrent full suites failed
+// `expect(fs.existsSync(r.outputPath)).toBe(true)` on 2026-08-28 — the file had
+// been written, then removed by a different run between the write and the read.
+// Same shape as the shared TEST_HOME fixed in #362, in a path that redirect
+// cannot reach.
+const TEST_SESSION_ID = `test-${process.pid}`;
+
 function makeCtx(cwd: string, signal?: AbortSignal): ToolContext {
   return {
-    sessionId: 'test',
+    sessionId: TEST_SESSION_ID,
     cwd,
     signal: signal ?? new AbortController().signal,
     readRegistry: new Map(),
@@ -51,7 +63,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   try {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   } catch {
     /* best-effort */
   }
@@ -1004,7 +1016,9 @@ describe('Bash', () => {
     afterEach(() => {
       // Best-effort: don't leave spill files behind between test runs.
       try {
-        fs.rmSync(path.join(os.tmpdir(), 'youcoded-harness-bash-output', 'test'), { recursive: true, force: true });
+        // THIS run's spill dir only — never the shared parent, and never
+        // another process's sibling (see TEST_SESSION_ID above).
+        fs.rmSync(path.join(os.tmpdir(), 'youcoded-harness-bash-output', TEST_SESSION_ID), { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
       } catch {
         /* best-effort */
       }
@@ -1222,7 +1236,7 @@ describe('Bash cwd vocabulary', () => {
 
   afterEach(() => {
     try { fs.unlinkSync(link); } catch { /* best-effort */ }
-    try { fs.rmSync(real, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { fs.rmSync(real, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); } catch { /* best-effort */ }
   });
 
   it('rebaseReportedCwd returns the ROOT spelling when the shell reports the resolved one', () => {
@@ -1238,7 +1252,7 @@ describe('Bash cwd vocabulary', () => {
     try {
       expect(rebaseReportedCwd(link, outside)).toBeNull();
     } finally {
-      fs.rmSync(outside, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
     }
   });
 
@@ -1257,7 +1271,7 @@ describe('Bash cwd vocabulary', () => {
     } finally {
       if (created) {
         try {
-          fs.rmSync(sibling, { recursive: true, force: true });
+          fs.rmSync(sibling, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
         } catch {
           /* best-effort */
         }
@@ -1286,7 +1300,7 @@ describe('Bash cwd vocabulary', () => {
       const r = await BashTool.execute({ command: `cd ${JSON.stringify(outside)}` }, c);
       expect(r.text).toMatch(/Shell cwd was reset to/);
     } finally {
-      fs.rmSync(outside, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
     }
   });
 });
@@ -1561,7 +1575,7 @@ describe('Grep', () => {
     try {
       expect(resolveRgPath(asarPath)).toBe(unpackedPath);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
     }
     // Already-unpacked input is returned unchanged (no app.asar.unpacked.unpacked):
     // the (?!\.unpacked) lookahead must not match. With no unpacked file on disk
@@ -1571,7 +1585,7 @@ describe('Grep', () => {
       const already = path.join(rootW, 'app.asar.unpacked', 'node_modules', '@vscode', 'ripgrep-linux-x64', 'bin', 'rg');
       expect(resolveRgPath(already)).toBe(already);
     } finally {
-      fs.rmSync(rootW, { recursive: true, force: true });
+      fs.rmSync(rootW, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
     }
   });
 
@@ -1587,7 +1601,7 @@ describe('Grep', () => {
       const missing = path.join(root, 'app.asar', 'node_modules', '@vscode', 'ripgrep-linux-x64', 'bin', 'rg');
       expect(resolveRgPath(missing)).toBe(missing);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
     }
   });
 

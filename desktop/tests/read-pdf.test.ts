@@ -221,3 +221,32 @@ describe('Read: PDF text layer (ledger G-6)', () => {
     expect(ReadTool.moreHint).toMatch(/pages/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// pdf.js "factory url" contract (Windows regression, 2026-08-28)
+// ---------------------------------------------------------------------------
+describe('pdfjsAssetDirs — pdf.js factory-url contract', () => {
+  it('ends both asset dirs with a FORWARD slash, on every platform', async () => {
+    // pdf.js validates these inside getDocument():
+    //   if (val.endsWith("/")) return val;
+    //   throw new Error(`Invalid factory url: "${val}" must include trailing slash.`)
+    // so a backslash tail makes EVERY PDF read throw before any parsing.
+    const { pdfjsAssetDirs } = await import('../src/main/harness/pdf-text');
+    const dirs = pdfjsAssetDirs();
+    expect(dirs.standardFontDataUrl?.endsWith('/')).toBe(true);
+    expect(dirs.cMapUrl?.endsWith('/')).toBe(true);
+  });
+
+  it('does not build those dirs with path.sep — the assertion above is VACUOUS on POSIX', () => {
+    // WHY a source scan and not just the contract test above: on Linux and macOS
+    // `path.sep` IS '/', so the previous test passes whether the bug is present
+    // or not. It shipped for exactly that reason — the only machine that could
+    // see it was the Windows CI leg, whose redness was being read as noise.
+    // This check fails on the developer's own machine the moment someone
+    // "tidies" the literal back into path.sep.
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'harness', 'pdf-text.ts'), 'utf8');
+    const body = src.slice(src.indexOf('export function pdfjsAssetDirs'), src.indexOf('export const DEFAULT_PDF_PAGES'));
+    expect(body.length).toBeGreaterThan(0); // the slice found the function
+    expect(body, 'pdfjsAssetDirs must append a literal "/" — path.sep is "\\" on Windows and pdf.js rejects it').not.toContain('path.sep');
+  });
+});

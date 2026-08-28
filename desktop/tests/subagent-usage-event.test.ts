@@ -206,7 +206,7 @@ describe('subagent-usage — the producer half', () => {
   ];
 
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-subusage-')); });
-  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
   async function runOne(childModelId: string, providerType: string | null = null) {
     boot(RUN, providerType);

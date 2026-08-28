@@ -58,7 +58,10 @@ export default defineConfig({
     globalSetup: ['tests/global-setup.ts'],
     // Per-file DOM shims (ResizeObserver). Inert under the 'node' environment —
     // the file checks for `window` before touching anything.
-    setupFiles: ['tests/setup-dom.ts'],
+    // setup-waitfor.ts supplies the vi.waitFor/waitUntil default timeout that
+    // vitest has no config option for (its own default is 1s, which the 30s
+    // testTimeout below does NOT cover). See that file for the failure it fixes.
+    setupFiles: ['tests/setup-dom.ts', 'tests/setup-waitfor.ts'],
     // Node is the default; a test that needs DOM APIs opts in PER FILE with a
     // `// @vitest-environment jsdom` docblock on line 1.
     //

@@ -9,12 +9,21 @@ import { KillShellTool } from '../src/main/harness/tools/kill-shell';
 import { ShellRegistry } from '../src/main/harness/shell-registry';
 import type { ToolContext } from '../src/main/harness/tools/types';
 
+// Per-process. Background shell logs land in
+// `os.tmpdir()/youcoded-harness-bash-output/<sessionId>/bash-<ms>-<shellId>.txt`
+// — a fixed path outside the vitest HOME sandbox, and `shellId` restarts at 1 in
+// every process, so two concurrent runs could mint the SAME filename within one
+// millisecond and write over each other. Same class as the shared spill dir
+// fixed in harness-tools-core.test.ts (2026-08-28).
+const TEST_SESSION_ID = `bo-test-${process.pid}`;
+
+
 const posix = process.platform !== 'win32';
 const BASH = { shellCmd: '/bin/bash', shellArgs: ['-c'] };
 let dir: string;
 let reg: ShellRegistry;
 function ctx(over: Partial<ToolContext> = {}): ToolContext {
-  return { sessionId: 'bo-test', cwd: dir, signal: new AbortController().signal, readRegistry: new Map(), todos: [], shells: reg, ...over } as ToolContext;
+  return { sessionId: TEST_SESSION_ID, cwd: dir, signal: new AbortController().signal, readRegistry: new Map(), todos: [], shells: reg, ...over } as ToolContext;
 }
 function start(command: string, toolUseId = 'tu') {
   const r = reg.start({ toolUseId, command, cwd: dir, ...BASH, env: { ...process.env, NO_COLOR: '1' } });
@@ -25,8 +34,8 @@ function waitFor(cond: () => boolean, ms = 5_000): Promise<void> {
   const t0 = Date.now();
   return new Promise((res, rej) => { const tick = () => { if (cond()) return res(); if (Date.now() - t0 > ms) return rej(new Error('waitFor')); setTimeout(tick, 25); }; tick(); });
 }
-beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bo-')); reg = new ShellRegistry('bo-test'); });
-afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true }); });
+beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bo-')); reg = new ShellRegistry(TEST_SESSION_ID); });
+afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
 describe('schemas', () => {
   it('BashOutput: shell_id optional, strict; KillShell: shell_id required, strict; neither ever asks', () => {

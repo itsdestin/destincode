@@ -1465,7 +1465,7 @@ globalThis.fetch = async (url) => {
       if (fs.existsSync(dir)) {
         if (existed) {
           for (const entry of fs.readdirSync(dir)) {
-            if (!before.has(entry)) fs.rmSync(path.join(dir, entry), { recursive: true, force: true });
+            if (!before.has(entry)) fs.rmSync(path.join(dir, entry), { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
           }
           // Put back every pre-existing file's ORIGINAL bytes. A file the run
           // never touched round-trips to itself and restoreFile skips the
@@ -1473,7 +1473,7 @@ globalThis.fetch = async (url) => {
           // matters, not just why it's allowed).
           for (const [name, content] of beforeContent) restoreFile(name, content);
         } else {
-          fs.rmSync(dir, { recursive: true, force: true });
+          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
         }
       } else if (existed) {
         // The run deleted the directory outright. Recreate it and restore
