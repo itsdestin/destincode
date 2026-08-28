@@ -13,24 +13,18 @@ import * as which from 'which';
 import { z } from 'zod';
 import { defineTool } from './registry';
 import { workspaceRootMissHint } from './guards';
-import { spillDirFor, spillRoot } from './spill-paths';
+import { spillDirFor, sweepOldSpillFilesOnce } from './spill-paths';
 import { takeHeadLines, takeTailLines } from './truncate';
 import type { ToolResultPayload } from './types';
+import { CWD_SENTINEL, ENV_SENTINEL, stripAnsi } from './shell-text';
+// Why re-exported: harness-tools-core.test.ts and other callers import
+// stripAnsi from here; moving the implementation into shell-text.ts (so the
+// ShellRegistry can use it without an import cycle) must not move the import
+// path out from under them.
+export { stripAnsi };
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
-
-/** Marker the shell prints after the user's command so we can read the final
- *  $PWD back out of stdout. Scoped-persistence (ROADMAP 2026-07-17): before
- *  this, every Bash call spawned fresh at the session root and `cd` silently
- *  evaporated, costing ~6 wasted tool calls in one observed session. */
-const CWD_SENTINEL = '__YC_CWD__';
-
-/** Marker for the opt-in env-persistence probe (17/17 harness reviews, four
- *  rounds 2026-08-01 through 2026-08-09): announces the path of a bash-generated
- *  temp file holding the child's post-command exported vars. Only emitted when a
- *  call passes `persistent_env: true` — see withCwdProbe(). */
-const ENV_SENTINEL = '__YC_ENVFILE__';
 
 /** Bash vars that change on EVERY command regardless of what the user's command
  *  did (SHLVL increments per shell, `_`/RANDOM/SECONDS/LINENO are bash-volatile
@@ -41,18 +35,6 @@ const ENV_SENTINEL = '__YC_ENVFILE__';
 const ENV_PERSIST_DENYLIST = new Set([
   'PWD', 'OLDPWD', 'SHLVL', '_', 'RANDOM', 'SECONDS', 'LINENO', 'PPID', 'BASH', 'BASHPID',
 ]);
-
-/** Strip CSI (colour, cursor) and OSC (window title, hyperlink) sequences.
- *
- *  WHY both an env hint AND a strip: NO_COLOR/FORCE_COLOR cover most tools, but
- *  not all honour them — a vitest run rendered as
- *  `[1m[30m[46m RUN [49m[39m[22m` in the 2026-08-01 review. That is noise in every
- *  test result the model reads, and it looks like corruption to a non-developer
- *  reading the transcript. */
-export function stripAnsi(s: string): string {
-  // eslint-disable-next-line no-control-regex
-  return s.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
-}
 
 /** Newline count — the line currency's equivalent of `.length`. Used to measure
  *  how many lines the cwd/env probe's own sentinel added, so the reported line
@@ -425,58 +407,6 @@ function bashDescription(): string {
 // importing this file (2026-08-10 review — see the recommendation in
 // docs/active/investigations/2026-08-10-harness-output-truncation-prior-art.md).
 
-// WHY a module-level once-flag, not a timer (2026-08-10 review — OpenCode's
-// precedent is a 7-day TTL swept hourly): a spill-to-file design that never
-// cleans up is a slow disk leak, real in every surveyed design that adds this
-// affordance without a retention policy (even Claude Code's docs don't state
-// one). We have no scheduler primitive here worth adding a dependency for, so
-// instead sweep once per process lifetime, on the first spill this process
-// ever writes — for a long-running desktop app that lands close enough to
-// OpenCode's cadence without a timer that outlives every session.
-const SPILL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-let sweepScheduled = false;
-function sweepOldSpillFilesOnce(): void {
-  if (sweepScheduled) return;
-  sweepScheduled = true;
-  const root = spillRoot();
-  const cutoff = Date.now() - SPILL_TTL_MS;
-  fs.promises
-    .readdir(root, { withFileTypes: true })
-    .then(async (sessionDirs) => {
-      for (const d of sessionDirs) {
-        if (!d.isDirectory()) continue;
-        const sessDir = path.join(root, d.name);
-        let files: string[] = [];
-        try {
-          files = await fs.promises.readdir(sessDir);
-        } catch {
-          continue;
-        }
-        for (const f of files) {
-          const fp = path.join(sessDir, f);
-          try {
-            const st = await fs.promises.stat(fp);
-            if (st.mtimeMs < cutoff) await fs.promises.unlink(fp);
-          } catch {
-            // Best-effort: a file that vanished mid-sweep, or that we can't
-            // stat/unlink for permission reasons, isn't worth failing the
-            // whole sweep over — it'll be retried next process launch.
-          }
-        }
-        // Tidy up an emptied session dir too, so orphaned folders don't pile up.
-        try {
-          const remaining = await fs.promises.readdir(sessDir);
-          if (remaining.length === 0) await fs.promises.rmdir(sessDir);
-        } catch {
-          /* best-effort */
-        }
-      }
-    })
-    .catch(() => {
-      /* spillRoot() doesn't exist yet (first spill ever on this machine) — nothing to sweep */
-    });
-}
-
 export const BashTool = defineTool({
   name: 'Bash',
   // Placeholder: the real text comes from the getter installed below, which
@@ -611,8 +541,8 @@ export const BashTool = defineTool({
       // Started the MOMENT headBuf can no longer capture everything (inside
       // cap() below), not lazily at finish() — by finish() any un-retained
       // middle content is already gone from memory, so waiting would spill an
-      // incomplete file. spillDirFor/sweepOldSpillFilesOnce are declared at
-      // module scope, above BashTool.
+      // incomplete file. spillDirFor/sweepOldSpillFilesOnce come from
+      // spill-paths.ts, which owns both the layout and the 7-day sweep.
       let spillStream: fs.WriteStream | null = null;
       let spillPath: string | null = null;
       let spillError: string | null = null;
