@@ -112,9 +112,7 @@ class PluginInstaller(
             // missed the guard, re-ran installFromLocal, returned Success, fired
             // onPluginsChanged, and typed /reload-plugins into the active session.
             val targetDir = File(pluginsDir, id)
-            val hasManifest = File(targetDir, ".claude-plugin/plugin.json").exists() ||
-                File(targetDir, "plugin.json").exists()
-            if (targetDir.exists() && hasManifest) {
+            if (isInstalledOnDisk(id)) {
                 return@withContext InstallResult.AlreadyInstalled("YouCoded")
             }
 
@@ -204,6 +202,24 @@ class PluginInstaller(
     fun isInstalled(id: String): Boolean {
         val installed = configStore.getInstalledPlugins()
         return installed.has(id)
+    }
+
+    // Fix (review round 1, Finding 1): "is it installed?" must be answered from
+    // disk, not the config-store record, wherever the answer feeds a decision
+    // to install vs. upgrade. isInstalled() above trusts configStore, which can
+    // drift from disk in both directions — a reset/restored config with a real
+    // tree already present, or a crash mid-upgradeFromLocal leaving the record
+    // present but the tree gone (parked at .old-<id> instead). Either drift was
+    // previously PERMANENT: the install-missing branch re-hit this class's own
+    // on-disk AlreadyInstalled guard and reported "failed" forever, or the
+    // upgrade-compare branch read a null version and reported "unchanged"
+    // forever. Asking the disk directly lets a half-finished swap heal itself
+    // on the very next launch. Do not use this to replace isInstalled() — that
+    // has other callers that intentionally want the config-store's record.
+    fun isInstalledOnDisk(id: String): Boolean {
+        val dir = File(pluginsDir, id)
+        return dir.exists() &&
+            (File(dir, "plugin.json").exists() || File(dir, ".claude-plugin/plugin.json").exists())
     }
 
     /**
@@ -343,12 +359,25 @@ class PluginInstaller(
         try {
             sourceDir.copyRecursively(staging, overwrite = true)
             if (target.exists() && !target.renameTo(retired)) {
+                // Fix (review round 1, Finding 2): the copy above already staged a
+                // full second copy of the plugin at `.upgrade-<id>` — returning
+                // without deleting it left that copy on disk forever. Not just
+                // clutter: ClaudeCodeRegistry.listInstalledPluginDirs() adds EVERY
+                // subdirectory of pluginsDir with no manifest check and no
+                // dot-prefix skip, so a stranded ".upgrade-<id>" gets scanned as a
+                // second installed copy of the plugin and can register duplicate
+                // hooks/MCP servers. Clean up on every exit, not just the
+                // exception path below.
+                staging.deleteRecursively()
                 return@withContext InstallResult.Failed("could not move the old plugin aside")
             }
             if (!staging.renameTo(target)) {
                 // WHY: put the old tree back immediately — a user must never end
                 // up with the plugin directory entirely gone.
                 if (!retired.renameTo(target)) Log.e(TAG, "upgrade rollback failed for $id: could not restore $retired")
+                // Fix (review round 1, Finding 2): same staging leak as above —
+                // the rename failed but the staged copy is still sitting on disk.
+                staging.deleteRecursively()
                 return@withContext InstallResult.Failed("could not move the new plugin into place")
             }
         } catch (e: Exception) {

@@ -518,7 +518,15 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             invalidateMarketplaceIndexCache()
             index = fetcher.fetchIndex()
         }
-        installer.refreshLocalMarketplaceCache("youcoded")
+        // Fix (review round 1, Finding 3): a failed refresh (offline device, failed
+        // git fetch) was silently discarded — every plugin then compares against a
+        // stale cache and reports "unchanged" with no way to tell that apart from
+        // genuinely up to date. Log it and keep going: the reconcile must not abort
+        // just because the cache couldn't be refreshed, it should fall back to
+        // whatever's already cached (same as desktop's behavior).
+        if (!installer.refreshLocalMarketplaceCache("youcoded")) {
+            Log.w("BundledPlugins", "marketplace cache refresh failed; comparing against the last cached copy")
+        }
 
         for (id in BundledPlugins.IDS) {
             val entry = findEntry(id)
@@ -531,7 +539,11 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             val mp = entry.optString("sourceMarketplace").ifEmpty { "youcoded" }
             val installDir = File(ClaudeCodeRegistry.youcodedPluginsDir(homeDir), id)
 
-            if (!installer.isInstalled(id)) {
+            // Fix (review round 1, Finding 1): ask the disk, not the config-store
+            // record — a config reset/restore or a crash mid-upgrade both leave
+            // the record out of sync with the real tree, and isInstalled() alone
+            // made either drift permanent (see PluginInstaller.isInstalledOnDisk).
+            if (!installer.isInstalledOnDisk(id)) {
                 val r = installer.install(entry)
                 if (r !is PluginInstaller.InstallResult.Success) {
                     out.put(row.put("action", "failed").put("error", (r as? PluginInstaller.InstallResult.Failed)?.error ?: r.toString()))

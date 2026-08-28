@@ -12,6 +12,7 @@ import org.junit.Before
 import org.junit.Test
 import org.mockito.Mockito.mock
 import java.io.File
+import kotlin.io.path.createTempDirectory
 
 /**
  * Task B5: Android port of desktop's plugin-installer upgrade path
@@ -30,7 +31,9 @@ class PluginInstallerUpgradeTest {
 
     @Before
     fun setUp() {
-        tmpHome = createTempDir(prefix = "youcoded-upgrade-")
+        // Fix (review round 1, Finding 4): createTempDir() is deprecated since
+        // Kotlin 1.4 and prints a compiler warning on every build.
+        tmpHome = createTempDirectory(prefix = "youcoded-upgrade-").toFile()
     }
 
     @After
@@ -100,5 +103,93 @@ class PluginInstallerUpgradeTest {
             db.getJSONObject("plugins").getJSONArray("youcoded-chatsearch@youcoded").getJSONObject(0)
                 .getString("version"),
         )
+    }
+
+    // Fix (review round 1, Finding 4): the rollback paths were untested, which
+    // is why the staging leak (Finding 2) shipped in the first place.
+    //
+    // upgradeFromLocal has two early returns that both leave a full staged
+    // copy of the plugin at ".upgrade-<id>" unless it's explicitly deleted:
+    //   1. target exists but can't be moved aside to ".old-<id>"
+    //   2. the staged copy can't be moved into place at <id>
+    // Branch 2 can only be reached, in the real code, once branch 1's own
+    // rename has already SUCCEEDED (moved the old tree out of the way) — at
+    // which point the destination is guaranteed empty again, so a plain JVM
+    // test (no dependency injection around File I/O) cannot force branch 2's
+    // rename to fail without also blocking branch 1's. This test instead
+    // forces branch 1 to fail — by making ".old-<id>" itself a non-empty
+    // directory that survives the function's own startup cleanup (its
+    // permissions are set read-only, so `retired.deleteRecursively()` can't
+    // clear its contents) — which is the same staging-leak defect, on the
+    // other of the two early-return sites, and is deterministic to reproduce.
+    @Test
+    fun `upgradeFromLocal cleans up the staged copy when the old tree cannot be moved aside`() = runTest {
+        write(
+            ".claude/youcoded-marketplace-cache/wecoded-marketplace/youcoded-chatsearch/plugin.json",
+            """{"name":"youcoded-chatsearch","version":"0.2.0"}""",
+        )
+        write(
+            ".claude/plugins/marketplaces/youcoded/plugins/youcoded-chatsearch/plugin.json",
+            """{"name":"youcoded-chatsearch","version":"0.1.0"}""",
+        )
+        write(
+            ".claude/plugins/marketplaces/youcoded/plugins/youcoded-chatsearch/original.txt",
+            "keep me",
+        )
+        // Block the "move old tree aside" rename: pre-seed ".old-<id>" as a
+        // non-empty directory and strip its own write permission so the
+        // function's unconditional startup cleanup (retired.deleteRecursively())
+        // cannot empty it out. rename(2) refuses to replace a non-empty
+        // directory, so target.renameTo(retired) will return false.
+        val retiredDir = File(
+            tmpHome,
+            ".claude/plugins/marketplaces/youcoded/plugins/.old-youcoded-chatsearch",
+        )
+        write(".claude/plugins/marketplaces/youcoded/plugins/.old-youcoded-chatsearch/blocker.txt", "leftover")
+        retiredDir.setWritable(false)
+
+        val installer = PluginInstaller(tmpHome, mock(Bootstrap::class.java), SkillConfigStore(tmpHome))
+        try {
+            val r = installer.upgradeFromLocal("youcoded-chatsearch", "youcoded-chatsearch", "youcoded")
+            assertTrue(r is PluginInstaller.InstallResult.Failed)
+        } finally {
+            // Restore permissions so tearDown()'s deleteRecursively can clean up.
+            retiredDir.setWritable(true)
+        }
+
+        // The old tree was never moved — still at its original path with its
+        // original contents.
+        assertEquals(
+            "keep me",
+            File(tmpHome, ".claude/plugins/marketplaces/youcoded/plugins/youcoded-chatsearch/original.txt")
+                .readText(),
+        )
+        // Finding 2 regression: the staged copy must not be left on disk.
+        assertFalse(
+            File(tmpHome, ".claude/plugins/marketplaces/youcoded/plugins/.upgrade-youcoded-chatsearch").exists(),
+        )
+    }
+
+    @Test
+    fun `isInstalledOnDisk checks the real tree, not the config-store record`() {
+        // Fix (review round 1, Finding 1): isInstalledOnDisk is what reconcile
+        // now asks instead of the config-store record, so a config reset or a
+        // crash mid-upgrade heals itself on the next launch instead of getting
+        // stuck reporting the same wrong action forever. Resolves ids under the
+        // real plugins dir: .claude/plugins/marketplaces/youcoded/plugins/<id>.
+        write(
+            ".claude/plugins/marketplaces/youcoded/plugins/root-manifest/plugin.json",
+            """{"version":"1.0.0"}""",
+        )
+        write(
+            ".claude/plugins/marketplaces/youcoded/plugins/nested-manifest/.claude-plugin/plugin.json",
+            """{"version":"1.0.0"}""",
+        )
+        File(tmpHome, ".claude/plugins/marketplaces/youcoded/plugins/no-manifest").mkdirs()
+        val installer = PluginInstaller(tmpHome, mock(Bootstrap::class.java), SkillConfigStore(tmpHome))
+        assertTrue(installer.isInstalledOnDisk("root-manifest"))
+        assertTrue(installer.isInstalledOnDisk("nested-manifest"))
+        assertFalse(installer.isInstalledOnDisk("no-manifest"))
+        assertFalse(installer.isInstalledOnDisk("does-not-exist"))
     }
 }
