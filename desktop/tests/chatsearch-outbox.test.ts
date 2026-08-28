@@ -273,6 +273,52 @@ describe('drainOutboxOnce', () => {
     await drainOutboxOnce(opts());
     expect(fs.existsSync(p)).toBe(false);
   });
+  // F1: a request for another store is left alone while it's still plausibly
+  // going to be claimed by the instance it belongs to (existing behaviour,
+  // covered above) — but must expire if it never will be. Recent mtime case:
+  // still just sits there, unchanged from before this fix.
+  it('a foreign-store request with a recent mtime is still left alone, no receipt', async () => {
+    write('88888888-2222-3333-4444-555555555555.json', req([{ op: 'flag', targets: T, flag: 'complete', value: true }], { storeRoot: '/store/B' }));
+    expect(await drainOutboxOnce(opts())).toBe(0);
+    expect(fs.existsSync(path.join(outboxDir(home), '88888888-2222-3333-4444-555555555555.json'))).toBe(true);
+    expect(fs.existsSync(path.join(outboxDir(home), 'done', '88888888-2222-3333-4444-555555555555.ack.json'))).toBe(false);
+  });
+  // F1: a foreign-store request older than FOREIGN_STORE_TTL_MS (3 days) can
+  // never be claimed by any instance — the CLI already told the user it was
+  // "Queued," so it must get an error receipt naming the store it was
+  // addressed to (not a guessed cause), and must be removed from the outbox
+  // so it doesn't sit there forever.
+  it('a foreign-store request past the expiry threshold gets an error receipt naming the foreign root, and is removed', async () => {
+    write('aa111111-2222-3333-4444-555555555555.json', req([{ op: 'flag', targets: T, flag: 'complete', value: true }], { storeRoot: '/store/B' }));
+    const src = path.join(outboxDir(home), 'aa111111-2222-3333-4444-555555555555.json');
+    const old = new Date(Date.now() - 4 * 24 * 3600_000); fs.utimesSync(src, old, old); // 4 days old
+    expect(await drainOutboxOnce(opts())).toBe(0); // never applied to THIS store — nothing "handled"
+    expect(fs.existsSync(src)).toBe(false); // removed from the outbox
+    const ack = JSON.parse(fs.readFileSync(path.join(outboxDir(home), 'done', 'aa111111-2222-3333-4444-555555555555.ack.json'), 'utf8'));
+    expect(ack.error).toMatch(/\/store\/B/);
+    expect(ack.error).toMatch(/different conversation store/);
+    expect(ack.results).toEqual([]);
+    expect(flagCalls).toEqual([]); // never applied
+  });
+  // F6: the CLI's own crash-recovery litter (a tmp file left behind by a kill
+  // between writeFile and rename) must eventually be swept too, on the same
+  // age rule, with no receipt — there's no request to answer.
+  it('a stale CLI tmp file in the outbox root is removed, with no receipt', async () => {
+    const dir = outboxDir(home); fs.mkdirSync(dir, { recursive: true });
+    const tmp = path.join(dir, 'bb222222-2222-3333-4444-555555555555.json.tmp-12345');
+    fs.writeFileSync(tmp, '{"v":1');
+    const old = new Date(Date.now() - 4 * 24 * 3600_000); fs.utimesSync(tmp, old, old);
+    await drainOutboxOnce(opts());
+    expect(fs.existsSync(tmp)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'done', 'bb222222-2222-3333-4444-555555555555.ack.json'))).toBe(false);
+  });
+  it('a recent CLI tmp file in the outbox root is left alone', async () => {
+    const dir = outboxDir(home); fs.mkdirSync(dir, { recursive: true });
+    const tmp = path.join(dir, 'cc333333-2222-3333-4444-555555555555.json.tmp-12345');
+    fs.writeFileSync(tmp, '{"v":1');
+    await drainOutboxOnce(opts());
+    expect(fs.existsSync(tmp)).toBe(true);
+  });
   it('a file another instance already claimed is skipped, not applied twice', async () => {
     // WHY not two drainers in Promise.all: everything up to the rename claim is
     // synchronous, so the second call would always see an empty folder and the

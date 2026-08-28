@@ -16,6 +16,22 @@ import { log } from '../logger';
 const POLL_MS = 5_000;
 const RECEIPT_TTL_MS = 24 * 3600_000;
 const PROCESSING_STALE_MS = 10 * 60_000;
+// WHY 3 days: a request addressed to a store this instance doesn't own is left
+// in place for whichever instance DOES own it (see the storeRoot check below) —
+// but if that root has permanently diverged (a moved home directory, or the
+// index's empty-rebuild guard pinning a stale claude-meta.json root — see
+// finding F1), no instance will EVER claim it, and the CLI already told the
+// user "Queued — applies next time it opens," which becomes permanently false.
+// 3 days is comfortably longer than an ordinary weekend with the laptop off
+// (so it never fires on a request that's still going to be claimed), short
+// enough that a truly orphaned request doesn't sit for weeks. It outlives the
+// 24h receipt TTL by design: the error receipt this produces is swept 24h
+// after IT is written (same as any other receipt), so a CLI `receipt` call
+// made soon after expiry still sees it, and one made later falls back to the
+// existing "not applied yet, or cleaned up a day ago" message — which, for
+// this case, is now moot because the request is gone either way.
+const FOREIGN_STORE_TTL_DAYS = 3;
+const FOREIGN_STORE_TTL_MS = FOREIGN_STORE_TTL_DAYS * 24 * 3600_000;
 type Store = NonNullable<ReturnType<typeof getConversationStore>>;
 const STORE_DOWN = 'conversation storage is not available right now — retry with YouCoded open';
 
@@ -152,6 +168,23 @@ function sweepReceipts(dir: string): void {
   }
 }
 
+// Finding F6: the CLI writes '<uuid>.json.tmp-<pid>' then renames it into
+// place (see submitRequest in the CLI's chatsearch.js). A CLI killed between
+// those two calls leaves the tmp file behind in the outbox root forever — the
+// '.json' filter in drainOutboxOnce's main loop correctly never claims it (it
+// isn't a valid request name), but nothing else ever removed it either. Same
+// age rule as the foreign-store expiry above, and no receipt: there is no
+// request here to answer — the CLI already gave up on this particular write.
+function sweepStaleTmpFiles(dir: string): void {
+  let names: string[] = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  for (const n of names) {
+    if (!n.includes('.tmp-')) continue; // 'processing'/'done' subdirs and real requests never match
+    const p = path.join(dir, n);
+    try { if (Date.now() - fs.statSync(p).mtimeMs > FOREIGN_STORE_TTL_MS) fs.unlinkSync(p); } catch { /* best effort */ }
+  }
+}
+
 /** One pass over the outbox. Returns how many requests this instance handled. */
 export async function drainOutboxOnce(opts: DrainOpts): Promise<number> {
   if (opts.isDevInstance && !opts.devOverride) return 0;
@@ -159,6 +192,7 @@ export async function drainOutboxOnce(opts: DrainOpts): Promise<number> {
   if (!fs.existsSync(dir)) return 0;
   recoverStaleProcessing(dir);
   sweepReceipts(dir);
+  sweepStaleTmpFiles(dir);
   let handled = 0;
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith('.json')) continue; // the CLI's temp files end in .tmp-<pid>, so they never match
@@ -167,8 +201,28 @@ export async function drainOutboxOnce(opts: DrainOpts): Promise<number> {
     try { raw = fs.readFileSync(src, 'utf8'); } catch { continue; }
     const parsed = parseOutboxRequest(raw);
     // WHY check storeRoot BEFORE claiming: a request for another store must stay
-    // visible to the instance it belongs to.
+    // visible to the instance it belongs to — unless it's aged past
+    // FOREIGN_STORE_TTL_MS, at which point "the instance it belongs to" is
+    // never coming (see the constant's WHY above; finding F1).
     if (parsed.ok && parsed.req.storeRoot !== opts.storeRoot) {
+      let mtimeMs = Date.now();
+      try { mtimeMs = fs.statSync(src).mtimeMs; } catch { /* vanished between readdir and stat; treat as fresh */ }
+      if (Date.now() - mtimeMs > FOREIGN_STORE_TTL_MS) {
+        // WHY an error receipt naming the root we measured, not a guess at why
+        // it differs: the CLI's earlier "Queued" message told the user this
+        // was pending. It is now permanently dead, and the user needs the real
+        // fact (which store it was addressed to vs. this one) to investigate,
+        // not a hardcoded guess at the cause.
+        const id = name.replace(/\.json$/, '');
+        const receipt: OutboxReceipt = {
+          v: OUTBOX_FORMAT_VERSION, id, appliedAt: new Date().toISOString(), appVersion: opts.appVersion, results: [], createdTags: [],
+          error: `request was addressed to a different conversation store (${parsed.req.storeRoot}) than this device's current store, and sat unclaimed for over ${FOREIGN_STORE_TTL_DAYS} days — it will not be applied`,
+        };
+        try { writeJsonAtomic(path.join(dir, 'done', `${id}.ack.json`), receipt); } catch { /* best effort */ }
+        try { fs.unlinkSync(src); } catch { /* already gone */ }
+        foreignStoreLogged.delete(name);
+        continue;
+      }
       if (!foreignStoreLogged.has(name)) {
         foreignStoreLogged.add(name);
         log('INFO', 'chatsearch-outbox', 'request for another store left in place', { id: parsed.req.id, storeRoot: parsed.req.storeRoot });
@@ -248,7 +302,13 @@ export function startOutboxDrain(): void {
   // WHY a poll alongside fs.watch: Windows drops notifications; 5 s matches subagent-watcher.
   // Every pass also sweeps old receipts, so no separate sweep timer exists.
   pollTimer = setInterval(() => { void drainSerialized(); }, POLL_MS); pollTimer.unref?.();
-  void drainSerialized(); // launch drain — requests queued while the app was closed
+  // Fix (comment only): this call is NOT what applies requests queued while
+  // the app was closed. startOutboxDrain() runs from main.ts before
+  // startConversationStore()'s promise resolves (it's fired-and-forgotten,
+  // not awaited — main.ts:1958), so liveOpts() still sees getConversationStore()
+  // === null here and this pass is a no-op. Those requests actually apply on
+  // the first 5s poll below, once the store has finished starting.
+  void drainSerialized();
 }
 
 export function stopOutboxDrain(): void {
