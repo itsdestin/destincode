@@ -12,21 +12,21 @@ const MIME: Record<string, string> = {
 };
 
 /** Below this width the pill would overflow the frame it sits in. Measured, not
- *  guessed: the pill renders ~150px wide with the magnifier button, and sits 8px
- *  in from the edge, so ~166px is where it stops fitting.
+ *  guessed: the pill renders ~128px wide with the magnifier button, and sits 8px
+ *  in from the edge, so ~144px is where it stops fitting.
  *
  *  An earlier 260px was WRONG and hid the controls in the ordinary layout: with
  *  the file list open the viewer is ~272px and the inset frame ~240px, so the
  *  one place a picture is most shrunken had no way to zoom it. The genuinely
  *  narrow case this guards is the ~107px minimum (MIN_DRAWER_WIDTH 320 minus the
  *  210px file list). */
-const MIN_WIDTH_FOR_PILL = 170;
+const MIN_WIDTH_FOR_PILL = 150;
 
-export function ImageView({ absolutePath }: ArtifactViewProps) {
+export function ImageView({ absolutePath, findBarOpen }: ArtifactViewProps) {
   // BinaryContent owns loading/error for the byte read.
   return (
     <BinaryContent absolutePath={absolutePath} noun="image">
-      {(bytes) => <ImageContent bytes={bytes} absolutePath={absolutePath} />}
+      {(bytes) => <ImageContent bytes={bytes} absolutePath={absolutePath} findBarOpen={findBarOpen} />}
     </BinaryContent>
   );
 }
@@ -34,7 +34,8 @@ export function ImageView({ absolutePath }: ArtifactViewProps) {
 // All zoom/loupe state lives HERE, not in ImageView: BinaryContent keys this
 // child by absolutePath, so switching files remounts it and every file opens
 // plainly at fit size. State one level up would carry a stale zoom across.
-function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath: string }) {
+function ImageContent({ bytes, absolutePath, findBarOpen }:
+  { bytes: Uint8Array; absolutePath: string; findBarOpen?: boolean }) {
   const [url, setUrl] = useState<string | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -161,7 +162,9 @@ function ImageContent({ bytes, absolutePath }: { bytes: Uint8Array; absolutePath
           the pill on first paint and flash it in a frame later, on every file. */}
       {!(box.w > 0 && box.w < MIN_WIDTH_FOR_PILL) && (
         <ZoomPill
-          className="absolute top-2 left-2"
+          // Ctrl+F opens ContentFindBar in this exact corner (its default
+          // `top-2 right-2`), so step out from under it while it is up.
+          className={findBarOpen ? 'absolute top-14 right-2' : 'absolute top-2 right-2'}
           percent={zoom.percent}
           canZoomIn={zoom.canZoomIn}
           canZoomOut={zoom.canZoomOut}

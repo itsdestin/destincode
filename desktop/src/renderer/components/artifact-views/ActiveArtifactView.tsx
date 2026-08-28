@@ -116,11 +116,14 @@ export interface ActiveArtifactViewProps {
   controlsInHeader?: boolean;
   // Fires whenever editability / edit-mode changes so the host header can update.
   onEditStateChange?: (s: { isEditable: boolean; editing: boolean }) => void;
+  /** Host's Ctrl+F bar is open — forwarded so a viewer can move its own floating
+   *  controls out from under it. */
+  findBarOpen?: boolean;
 }
 
 export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifactViewProps>(function ActiveArtifactView({
   artifact, content, contentInfo, contentState, onRetryRead, projectRoot, projectId, projectName, sessionId, onContentChange, onDiskRead,
-  controlsInHeader = false, onEditStateChange,
+  controlsInHeader = false, onEditStateChange, findBarOpen = false,
 }, ref) {
   // Legacy default: a caller that doesn't thread contentState keeps the OLD
   // semantics (null content = missing) rather than silently losing the
@@ -583,6 +586,7 @@ export const ActiveArtifactView = forwardRef<ActiveArtifactHandle, ActiveArtifac
             onSaveEdit={handleSave}
             onCancelEdit={handleCancel}
             hideControls={controlsInHeader}
+            findBarOpen={findBarOpen}
           />
         </Suspense>
         </ViewerErrorBoundary>

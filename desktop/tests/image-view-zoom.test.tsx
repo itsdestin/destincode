@@ -70,6 +70,18 @@ describe('ImageView zoom', () => {
     expect(asked.some((q) => /\(hover:/.test(q))).toBe(false);
   });
 
+  it('steps out from under the find bar when it opens', async () => {
+    // Ctrl+F opens ContentFindBar in the SAME top-right corner (verified on a
+    // real capture, not assumed) — the pill has to move or it sits under it.
+    const { rerender } = render(<ImageView {...props} />);
+    const pillOf = () => screen.getByRole('button', { name: /zoom in/i }).closest('[data-layer]')!;
+    await waitFor(() => expect(pillOf().className).toContain('top-2'));
+
+    rerender(<ImageView {...props} findBarOpen />);
+    await waitFor(() => expect(pillOf().className).toContain('top-14'));
+    expect(pillOf().className).not.toContain('top-2');
+  });
+
   it('marks its root data-zoomable so the app pinch handler yields', async () => {
     const { container } = render(<ImageView {...props} />);
     await waitFor(() => screen.getByRole('button', { name: /zoom in/i }));

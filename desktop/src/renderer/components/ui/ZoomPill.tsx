@@ -34,7 +34,7 @@ export function ZoomPill({
   onZoomIn, onZoomOut, onReset, loupe, className = '',
 }: ZoomPillProps) {
   return (
-    <OverlayPanel layer={1} className={`flex items-center gap-0.5 px-1 py-0.5 ${className}`.trim()}>
+    <OverlayPanel layer={1} className={`flex items-center px-0.5 py-0.5 ${className}`.trim()}>
       <Button
         size="icon"
         variant="ghost"
@@ -50,7 +50,7 @@ export function ZoomPill({
         size="sm"
         variant="ghost"
         onClick={onReset}
-        className="min-w-[3.25rem] justify-center tabular-nums"
+        className="min-w-[2.5rem] px-1 justify-center tabular-nums"
         // The name says what clicking does; the label says where you are.
         aria-label={`Reset to fit (currently ${percent}%)`}
         title="Reset to fit"

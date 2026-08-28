@@ -5,6 +5,26 @@ import { OverlayPanel } from '../../overlays/Overlay';
  *  smaller than the lens has nothing to reveal. */
 export const LOUPE_DIAMETER = 180;
 
+/** A small crosshair at the lens centre marking the EXACT point being magnified.
+ *  The mouse cursor itself is drawn by the operating system on top of the whole
+ *  window, so it is never hidden by the lens — but it sits over a magnified
+ *  image, and without a mark it is ambiguous which pixel it is actually on.
+ *  Drawn as a dark stroke under a light one so it reads on any picture. */
+function drawCentreMark(ctx: CanvasRenderingContext2D, c: number) {
+  const arm = 7;
+  const gap = 3;
+  for (const [width, colour] of [[3, 'rgba(0,0,0,0.55)'], [1, 'rgba(255,255,255,0.95)']] as const) {
+    ctx.lineWidth = width;
+    ctx.strokeStyle = colour;
+    ctx.beginPath();
+    ctx.moveTo(c - arm - gap, c); ctx.lineTo(c - gap, c);
+    ctx.moveTo(c + gap, c); ctx.lineTo(c + arm + gap, c);
+    ctx.moveTo(c, c - arm - gap); ctx.lineTo(c, c - gap);
+    ctx.moveTo(c, c + gap); ctx.lineTo(c, c + arm + gap);
+    ctx.stroke();
+  }
+}
+
 export interface LoupeSource { el: CanvasImageSource & Element }
 
 export interface LoupeProps {
@@ -97,6 +117,7 @@ export function Loupe({
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(hit.el, diameter / 2 - nx * w, diameter / 2 - ny * h, w, h);
+      drawCentreMark(ctx, diameter / 2);
     });
 
     return () => {
