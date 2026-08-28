@@ -114,7 +114,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // future feature gated on isLeader) never connects.
   'window.getId', 'detach.getDirectory',
   'appearance.getFavoriteThemes', 'appearance.favoriteTheme', 'appearance.get',
-  'appearance.set', 'appearance.broadcast',
+  'appearance.set', 'appearance.broadcast', 'appearance.onSync',
   'skills.listMarketplace', 'skills.list', 'skills.getFavorites', 'skills.setFavorite', 'skills.getFeatured',
   'marketplace.getPackages', 'theme.marketplace',
   // Real, but served by remote-shim.ts rather than preload.ts — Electron
@@ -1035,7 +1035,16 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     get: async () => null,
     set: async () => true,
     broadcast: () => {},
+    // ThemeProvider subscribes here for cross-window theme changes and applies
+    // them LIVE (no reload). The landing page's embed uses that path: its theme
+    // swatches call `__workbenchAppearanceSync({ theme })` on the iframe window
+    // instead of reloading the app — a reload flashed the poster for a second.
+    onSync: (cb: (prefs: unknown) => void) => { appearanceSyncSubs.add(cb); return () => { appearanceSyncSubs.delete(cb); }; },
   };
+  const appearanceSyncSubs = new Set<(prefs: unknown) => void>();
+  if (typeof window !== 'undefined') {
+    (window as any).__workbenchAppearanceSync = (prefs: unknown) => { appearanceSyncSubs.forEach((f) => f(prefs)); return appearanceSyncSubs.size; };
+  }
 
   // Project View and the artifact panel. Without these both render as empty
   // shells — the catch-all's `[]` is not `{ ok, projects }`, so every consumer

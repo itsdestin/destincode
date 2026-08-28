@@ -679,6 +679,12 @@
   .embed-iframe { opacity: 0; transition: opacity .35s; }
   .embed-frame.live .embed-iframe { opacity: 1; }
   .embed-frame.live .embed-poster, .embed-frame.live .embed-start { display: none; }
+  /* Until the first click the iframe ignores the pointer (page scroll passes through). */
+  .embed-frame.live:not(.interactive) .embed-iframe { pointer-events: none; }
+  /* z-index: the iframe is a later positioned sibling and would paint over this. */
+  .embed-interact { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; background: transparent; border: 0; cursor: pointer; font: inherit; color: transparent; }
+  .embed-interact::after { content: "Click to try it"; position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); padding: 8px 16px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; font-size: 13px; font-weight: 600; backdrop-filter: blur(6px); }
+  .embed-frame.interactive .embed-interact { display: none; }
   .embed-start { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); padding: 14px 26px; border-radius: 999px; font: inherit; font-weight: 600; background: var(--title-highlight); color: #fff; border: 0; cursor: pointer; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
   /* The frame is always dark (#0b1020) regardless of the page theme, so the
      swatch labels get a fixed light color instead of inheriting the page's. */
@@ -1500,9 +1506,14 @@
       <div class="embed-frame reveal">
         <div class="embed-titlebar"><span></span><span></span><span></span></div>
         <div class="embed-stage">
-          <img class="embed-poster" src="media/row1-any-ai.webp" alt="YouCoded Assistant chat window" width="1440" height="900">
+          <!-- Its own poster (the embed's real first paint), not a row loop's frame — the row-1 poster is now that skit's last line. -->
+          <img class="embed-poster" src="media/embed.webp" alt="YouCoded Assistant chat window" width="1440" height="900">
           <button class="embed-start" type="button">Start the demo</button>
-          <iframe class="embed-iframe" title="YouCoded Assistant live demo" loading="lazy" data-src="site/index.html?mode=workbench&amp;child=1&amp;scenario=site&amp;latency=150&amp;reply=demo"></iframe>
+          <!-- Loads on scroll, but stays a picture until the visitor clicks once: an
+               interactive iframe under the wheel swallows the page scroll and traps the
+               visitor in the chat pane (the "janky" feel). One click hands it over. -->
+          <button class="embed-interact" type="button" hidden>Click to try it</button>
+          <iframe class="embed-iframe" title="YouCoded Assistant live demo" loading="lazy" data-src="site/index.html?mode=workbench&amp;child=1&amp;scenario=site&amp;latency=0&amp;reply=site"></iframe>
         </div>
         <div class="embed-swatches" role="group" aria-label="Change the theme">
           <button type="button" data-theme="midnight" style="--sw:#0b1020" aria-pressed="true">Midnight</button>
@@ -2161,17 +2172,18 @@
     // --- Live embed: boot the real app's interface in the iframe ---
     (function () {
       var frame = document.querySelector('.embed-frame'); if (!frame) return;
-      var iframe = frame.querySelector('.embed-iframe'), start = frame.querySelector('.embed-start');
+      var iframe = frame.querySelector('.embed-iframe'), start = frame.querySelector('.embed-start'), interact = frame.querySelector('.embed-interact');
       var theme = 'midnight', live = false;
       function boot() {
         if (live) return; live = true;
         start.hidden = true; // a theme swatch re-shows the poster during reload; the button must not come back with it
         // Same-origin: preset the app's theme before it boots (index.tsx:12 reads this key).
-        iframe.addEventListener('load', function () { frame.classList.add('live'); });
+        iframe.addEventListener('load', function () { frame.classList.add('live'); interact.hidden = false; });
         iframe.src = iframe.dataset.src + '#t=' + theme;
         try { iframe.contentWindow.localStorage.setItem('youcoded-theme', theme); } catch (e) {}
       }
-      start.addEventListener('click', boot);
+      start.addEventListener('click', function () { boot(); frame.classList.add('interactive'); });
+      interact.addEventListener('click', function () { frame.classList.add('interactive'); });
       // Also boot when the visitor scrolls it into view, unless they asked for less motion.
       if (!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObserver' in window) {
         new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) boot(); }); }, { threshold: 0.6 }).observe(frame);
@@ -2181,9 +2193,12 @@
           theme = b.dataset.theme;
           frame.querySelectorAll('.embed-swatches button').forEach(function (x) { x.setAttribute('aria-pressed', x === b); });
           if (!live) return;
-          // Theme lives in the app's localStorage; a reload applies it (assets are cached, so it is ~instant).
-          frame.classList.remove('live');
           try { iframe.contentWindow.localStorage.setItem('youcoded-theme', theme); } catch (e) {}
+          // Live switch through the app's own cross-window theme sync (no reload,
+          // no poster flash); the reload is only the fallback if that hook is missing.
+          var sync = null; try { sync = iframe.contentWindow.__workbenchAppearanceSync; } catch (e) {}
+          if (typeof sync === 'function' && sync({ theme: theme }) > 0) return;
+          frame.classList.remove('live');
           iframe.contentWindow.location.reload();
         });
       });
