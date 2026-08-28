@@ -19,7 +19,7 @@ const schema = z.object({
   // G-12 (2026-08-26 tools investigation): same shape as Claude Code's Skill
   // tool, so a model can hand a skill what the user asked for.
   args: z.string().optional().describe('Optional arguments to pass through to the skill.'),
-});
+}).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 
 type SkillArgs = z.infer<typeof schema>;
 

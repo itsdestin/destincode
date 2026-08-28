@@ -59,7 +59,7 @@ export const WriteTool = defineTool({
     + 'use Edit to change part of an existing file.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Create a new file or completely overwrite an existing one with new content.',
-  inputSchema: z.object({ file_path: z.string(), content: z.string() }),
+  inputSchema: z.object({ file_path: z.string(), content: z.string() }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   permissionSubject: (a) => a.file_path,
   async execute(args, ctx) {
     const abs = resolveP(args.file_path, ctx.cwd);

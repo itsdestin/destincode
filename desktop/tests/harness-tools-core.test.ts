@@ -1623,6 +1623,84 @@ describe('Grep', () => {
 // code. The confusion came from neither schema having a description at all,
 // letting the model infer a difference that isn't there. Fix the cause
 // (describe both, with the SAME string) rather than the symptom.
+// Ledger G-7 (2026-08-26 native-tools investigation): the four ripgrep flags
+// every other harness exposes. Each test checks BOTH the flag reached rg
+// (spawnSpy) and the observable search result, so a typo in the flag name
+// can't pass on the spy alone.
+describe('Grep flags (G-7): ignore_case, literal, type, multiline', () => {
+  function rgArgsFor(pattern: string): string[] {
+    const call = spawnSpy.mock.calls.find((c) => Array.isArray(c[1]) && c[1].includes(pattern));
+    expect(call, 'expected a spawn call running ripgrep for the search').toBeTruthy();
+    return call![1] as string[];
+  }
+
+  it('without ignore_case the search is case-sensitive; with it, -i is passed and case is ignored', async () => {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'FindMe here\n');
+    const strict = await GrepTool.execute({ pattern: 'findme', output_mode: 'content' }, ctx);
+    expect(strict.text).toBe('No matches found.');
+    spawnSpy.mockClear();
+    const loose = await GrepTool.execute({ pattern: 'findme', output_mode: 'content', ignore_case: true }, ctx);
+    expect(loose.text).toMatch(/1:FindMe here/);
+    expect(rgArgsFor('findme')).toContain('-i');
+  });
+
+  it('literal: true passes -F so regex metacharacters match themselves', async () => {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'call foo.bar(x)\ncall fooXbar(x)\n');
+    spawnSpy.mockClear();
+    const r = await GrepTool.execute({ pattern: 'foo.bar(', output_mode: 'content', literal: true }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/1:call foo\.bar\(x\)/);
+    expect(r.text).not.toMatch(/fooXbar/);           // the "." was literal, not "any char"
+    expect(rgArgsFor('foo.bar(')).toContain('-F');
+  });
+
+  it('type: "ts" passes --type and searches only that file type', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'needle\n');
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'needle\n');
+    spawnSpy.mockClear();
+    const r = await GrepTool.execute({ pattern: 'needle', type: 'ts' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('a.ts');
+    expect(r.text).not.toContain('b.txt');
+    expect(rgArgsFor('needle')).toContain('--type=ts');   // one token, so a value can never read as a flag
+  });
+
+  it('an unknown type surfaces ripgrep\'s own error verbatim plus how to fix it', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'needle\n');
+    const r = await GrepTool.execute({ pattern: 'needle', type: 'notatype' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('unrecognized file type: notatype');   // rg's words, not a guess
+    expect(r.text).toMatch(/glob/);                                  // and the way out
+  });
+
+  it('multiline: true passes -U --multiline-dotall so a pattern can span lines', async () => {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'start\nmiddle\nend\n');
+    const single = await GrepTool.execute({ pattern: 'start.*end', output_mode: 'content' }, ctx);
+    expect(single.text).toBe('No matches found.');
+    spawnSpy.mockClear();
+    const multi = await GrepTool.execute({ pattern: 'start.*end', output_mode: 'content', multiline: true }, ctx);
+    expect(multi.isError).toBeFalsy();
+    expect(multi.text).toMatch(/start/);
+    const args = rgArgsFor('start.*end');
+    expect(args).toContain('-U');
+    expect(args).toContain('--multiline-dotall');
+  });
+
+  it('none of the flags is passed when the parameters are omitted (default behaviour unchanged)', async () => {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'plain\n');
+    spawnSpy.mockClear();
+    await GrepTool.execute({ pattern: 'plain' }, ctx);
+    const args = rgArgsFor('plain');
+    for (const flag of ['-i', '-F', '-U', '--multiline-dotall']) expect(args).not.toContain(flag);
+    expect(args.some((a) => a.startsWith('--type='))).toBe(false);
+  });
+
+  it('the permission subject is still the search path, untouched by the new flags', () => {
+    expect(GrepTool.permissionSubject({ pattern: 'x', ignore_case: true, literal: true, type: 'ts', multiline: true } as any)).toBe('.');
+    expect(GrepTool.permissionSubject({ pattern: 'x', path: 'src', ignore_case: true } as any)).toBe('src');
+  });
+});
+
 describe('Grep/Glob schema descriptions', () => {
   it('path means the same thing on both tools and both schemas say so, in the same words', () => {
     const grepPath = GrepTool.inputSchema.shape.path;

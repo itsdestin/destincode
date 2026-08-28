@@ -67,7 +67,7 @@ export const EditTool = defineTool({
     ),
     new_string: z.string().describe('The replacement text (inserted literally, whitespace preserved)'),
     replace_all: z.boolean().optional().describe('Replace every occurrence instead of requiring a unique match'),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   permissionSubject: (a) => a.file_path,
   async execute(args, ctx) {
     const abs = resolveP(args.file_path, ctx.cwd);

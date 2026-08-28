@@ -497,7 +497,7 @@ export const BashTool = defineTool({
       .boolean()
       .optional()
       .describe('Carry this call\'s exported env vars (not aliases/functions) to your next Bash call. Default off.'),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   caps: { maxChars: 30_000 },
   // Static fallback for composeNotice's no-bounds branch (Task 19): Bash's own
   // visible budget (HEAD_CHARS_TARGET + TAIL_CHARS_TARGET = 4,000 chars, see

@@ -41,6 +41,11 @@ export function grepErrorMessage(stderr: string, resolvedPath: string, cwd: stri
   if (/regex parse error|error: (unclosed|repetition|unrecognized)/i.test(stderr)) {
     return `Grep failed: ${raw}. Check the regex syntax.`;
   }
+  if (/unrecognized file type/i.test(stderr)) {
+    // G-7: the `type` parameter is passed straight to rg, which is the
+    // authority on its own type list — quote its verdict, then say what to do.
+    return `Grep failed: ${raw}. \`type\` must be one of ripgrep's built-in type names (e.g. ts, js, py, rust, md); use \`glob\` (e.g. "*.myext") for anything else.`;
+  }
   if (/No such file or directory|IO error for operation/i.test(stderr)) {
     // WHY toPosix on resolvedPath but NOT cwd (2026-08-11): `--path-separator /`
     // on the rg invocation (below) only rewrites ripgrep's OWN stdout —
@@ -243,7 +248,16 @@ export const GrepTool = defineTool({
     '-A': z.number().int().nonnegative().optional().describe('Number of lines of context to show AFTER each match (like ripgrep/grep -A). Only affects output_mode: "content".'),
     '-B': z.number().int().nonnegative().optional().describe('Number of lines of context to show BEFORE each match (like ripgrep/grep -B). Only affects output_mode: "content".'),
     '-C': z.number().int().nonnegative().optional().describe('Number of lines of context to show before AND after each match (like ripgrep/grep -C). Only affects output_mode: "content".'),
-  }),
+    // Ledger G-7 (2026-08-26 native-tools investigation): the four ripgrep
+    // flags every other harness exposes and models keep trying to send. All
+    // straight pass-throughs; names match Claude Code's so a CC-trained model
+    // guesses right. Strict schema (D-2) means a wrong guess is now an error
+    // naming these, not a silently case-sensitive search.
+    ignore_case: z.boolean().optional().describe('Case-insensitive search (ripgrep -i). Default: case-sensitive.'),
+    literal: z.boolean().optional().describe('Treat `pattern` as a fixed string, not a regex (ripgrep -F) — for text containing . ( [ * etc.'),
+    type: z.string().min(1).optional().describe('Search only files of this ripgrep type, e.g. "ts", "js", "py", "rust", "md" (ripgrep --type). Use `glob` for anything not in ripgrep\'s built-in type list.'),
+    multiline: z.boolean().optional().describe('Let the pattern span lines: `.` also matches a newline (ripgrep -U --multiline-dotall). Default: one line at a time.'),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   caps: { maxChars: 30_000, maxLines: 250 },
   // Static fallback for composeNotice's no-bounds branch (Task 19): this is the
   // MEASURED common case, not a rare edge — a one-file, 400-match, content-mode
@@ -286,6 +300,16 @@ export const GrepTool = defineTool({
     if (args['-C'] != null) rgArgs.push('-C', String(args['-C']));
     if (args['-A'] != null) rgArgs.push('-A', String(args['-A']));
     if (args['-B'] != null) rgArgs.push('-B', String(args['-B']));
+    // G-7 flags — pass-throughs, only ever added when set, so an omitted flag
+    // leaves the rg command line byte-identical to before.
+    if (args.ignore_case) rgArgs.push('-i');
+    if (args.literal) rgArgs.push('-F');
+    // `--type=NAME` as ONE token (not `--type NAME`): a type value that itself
+    // starts with "-" can then never be read by rg as a separate flag. rg
+    // validates the name and reports an unknown one on stderr (see
+    // grepErrorMessage) — no local copy of `rg --type-list` to drift.
+    if (args.type) rgArgs.push(`--type=${args.type}`);
+    if (args.multiline) rgArgs.push('-U', '--multiline-dotall');
     // Hoisted so the exit-2 error message (below) can name the exact path that
     // failed, instead of a context-free "ripgrep error".
     const resolvedTarget = resolveP(args.path ?? '.', ctx.cwd);
