@@ -15,8 +15,8 @@ import { workspaceRootMissHint } from './guards';
 import { spillDirFor, sweepOldSpillFilesOnce } from './spill-paths';
 import { takeHeadLines, takeTailLines } from './truncate';
 import type { ToolResultPayload } from './types';
-import { spawnDetached, killTree, MAX_EXPLICIT_RUNNING } from '../shell-registry';
-import { CWD_SENTINEL, ENV_SENTINEL, stripAnsi } from './shell-text';
+import { spawnDetached, killTree, formatElapsed, MAX_EXPLICIT_RUNNING } from '../shell-registry';
+import { CWD_SENTINEL, ENV_SENTINEL, stripAnsi, stripSentinelLines } from './shell-text';
 // Why re-exported: harness-tools-core.test.ts and other callers import
 // stripAnsi from here; moving the implementation into shell-text.ts (so the
 // ShellRegistry can use it without an import cycle) must not move the import
@@ -35,6 +35,12 @@ const MAX_TIMEOUT_MS = 600_000;
 const ENV_PERSIST_DENYLIST = new Set([
   'PWD', 'OLDPWD', 'SHLVL', '_', 'RANDOM', 'SECONDS', 'LINENO', 'PPID', 'BASH', 'BASHPID',
 ]);
+
+/** A command whose first word is `sleep` is never handed off (spec §4.1):
+ *  backgrounding a sleep is pure churn — it runs to its timeout and reports
+ *  as before. Leading whitespace and `time`/`env` prefixes are not special-
+ *  cased on purpose; only the plain case is exempt. */
+const LEADING_SLEEP = /^\s*sleep\b/;
 
 /** Newline count — the line currency's equivalent of `.length`. Used to measure
  *  how many lines the cwd/env probe's own sentinel added, so the reported line
@@ -522,6 +528,9 @@ export const BashTool = defineTool({
       // the existsSync check above). That throw fires before the 'error' handler
       // at the bottom of this executor can attach, so catch it here — otherwise
       // it escapes to defineTool as a bare `Bash failed: spawn <CODE>`.
+      // G-1: when the command actually started, for the hand-off's "still
+      // running after N" — the real elapsed, never the configured limit.
+      const startedAt = Date.now();
       let child;
       try {
         // G-1 (a behaviour change): spawnDetached gives the command its own
@@ -634,6 +643,8 @@ export const BashTool = defineTool({
       child.stdout.on('data', (d) => cap(String(d)));
       child.stderr.on('data', (d) => cap(String(d)));
       let done = false;
+      /** G-1: set by the timeout timer once the registry adopted this process. */
+      let handedOffTo: string | null = null;
       // `timedOut` distinguishes a SIGKILL-on-timeout result from a normal
       // non-zero exit (2026-08-10 review: 3 of 5 models found the old `exit ?`
       // opaque; Opus wanted to know whether the process died cleanly or was
@@ -664,7 +675,16 @@ export const BashTool = defineTool({
         let reportedCwd: string | null = null;
         let resetTo: string | null = null;
 
-        if (probe) {
+        // G-1: a handed-off call must not apply the probe's results — the cwd
+        // and env belong to a command still running in the background (D6, and
+        // the registry unlinks the env temp file when it finally exits). The
+        // sentinels are stripped for display only. Guarded rather than left to
+        // timing: the timer can fire in the same instant the command finishes,
+        // and then the sentinel IS in the buffer.
+        if (probe && handedOffTo) {
+          headBuf = stripSentinelLines(headBuf);
+          tailBuf = stripSentinelLines(tailBuf);
+        } else if (probe) {
           // The sentinel is always the LAST thing printed (withCwdProbe), so it
           // always lives in whichever buffer holds the true tail: tailBuf when
           // truncated (headBuf can't see it — it stopped growing long ago), or
@@ -773,7 +793,7 @@ export const BashTool = defineTool({
           const elidedLines = Math.max(0, trueLines - headResult.lines - tailResult.lines);
           body = `${stripAnsi(headResult.text)}\n[...]\n${stripAnsi(tailResult.text)}`;
 
-          if (spillStream && spillPath) {
+          if (spillPath && (spillStream || handedOffTo)) {
             outputPath = spillPath;
           } else if (!spillError) {
             // truncated=true but the streaming trigger in cap() never fired —
@@ -819,7 +839,9 @@ export const BashTool = defineTool({
         // with `cd <root> &&`. This line costs ~15 tokens and removes that ritual.
         // It ABSORBS the old `(exit code N)` prefix rather than adding to it.
         const effectiveCwd = resetTo ?? reportedCwd ?? startCwd;
-        const meta = [`cwd: ${effectiveCwd}`, `exit ${code ?? '?'}`];
+        // A handed-off call has no exit yet — say so, and name the log the
+        // registry keeps growing (the model's way to the rest of the output).
+        const meta = [`cwd: ${effectiveCwd}`, handedOffTo ? `still running in the background · log: ${spillPath}` : `exit ${code ?? '?'}`];
         // Fix: label matches what's actually counted — UTF-16 code units (JS
         // string .length), never real UTF-8 byte counts. Calling that "bytes"
         // was wrong for any multi-byte output: 60,000 CJK characters (180,000
@@ -873,12 +895,13 @@ export const BashTool = defineTool({
         // `notice` carries a leading \n for the trailing position; strip it here.
         const leadNotice = notice ? notice.replace(/^\n/, '') + '\n\n' : '';
         const text = (leadNotice + combined + shellCwdMiss + envNotice).trim() + `\n[${meta.join(' · ')}]`;
-        const payload: ToolResultPayload & { truncated: boolean; outputPath?: string; timedOut: boolean } = {
+        const payload: ToolResultPayload & { truncated: boolean; outputPath?: string; timedOut: boolean; handedOffTo?: string } = {
           text,
           isError,
           truncated,
           outputPath,
           timedOut: !!timedOut,
+          ...(handedOffTo ? { handedOffTo } : {}),
           bounds: truncated
             ? {
                 shown: preAnsiShown,
@@ -891,21 +914,58 @@ export const BashTool = defineTool({
         // Flush the spill file to disk before resolving — otherwise the model
         // could Read the path from the notice before the write stream's buffer
         // has actually landed on disk.
-        if (spillStream && !(spillStream as fs.WriteStream).destroyed) {
+        // After a hand-off the REGISTRY owns the stream and ends it when the
+        // command exits — ending it here would truncate a live run's log.
+        if (spillStream && !handedOffTo && !(spillStream as fs.WriteStream).destroyed) {
           (spillStream as fs.WriteStream).end(() => resolve(payload));
         } else {
           resolve(payload);
         }
       };
       const timer = setTimeout(() => {
-        // Task 4 replaces this whole timer with a hand-off; until then a
-        // timeout still force-kills, now reaching the whole family.
-        killTree(child, { graceMs: 0 });
+        // G-1 (spec §5.5): the time limit is when to HAND OFF, not when to
+        // kill. The same process is adopted by the session's registry — never
+        // restarted — and this call resolves with the output so far. Two
+        // cases keep the old kill: no registry in this context (tests,
+        // one-off tools), and a leading `sleep` (backgrounding a sleep is churn).
+        if (!ctx.shells || LEADING_SLEEP.test(args.command)) {
+          killTree(child, { graceMs: 0 });
+          finish(
+            `Command timed out after ${timeout}ms. The process was force-killed (SIGKILL) — if it was mid-write to a file, that write may be incomplete.\n`,
+            true,
+            124,
+            true,
+          );
+          return;
+        }
+        // From here the registry reads the pipes; this call must stop
+        // listening or every byte would be counted twice.
+        child.stdout.removeAllListeners('data');
+        child.stderr.removeAllListeners('data');
+        child.removeAllListeners('close');
+        child.removeAllListeners('error');
+        // D4: a handed-off command can no longer be answered — close stdin so
+        // a prompt fails fast with its own error instead of hanging forever.
+        try { child.stdin?.end(); } catch { /* already closed */ }
+        const run = ctx.shells.adopt({
+          toolUseId: ctx.toolCallId ?? 'unknown', command: args.command, cwd: startCwd, child, startedAt,
+          // headBuf is complete when no spill has started (nothing dropped yet);
+          // otherwise the spill stream already holds everything.
+          seedLog: spillStream ? null : headBuf,
+          recent: tailBuf,
+          logPath: spillPath, logStream: spillStream,
+          captureEnv,
+        });
+        handedOffTo = run.shellId;
+        spillPath = run.logPath;
         finish(
-          `Command timed out after ${timeout}ms. The process was force-killed (SIGKILL) — if it was mid-write to a file, that write may be incomplete.\n`,
-          true,
-          124,
-          true,
+          // Real elapsed, not the configured limit: the two differ (the timer
+          // fires late under load), and "after 2m" must describe the command,
+          // not the setting.
+          `Still running after ${formatElapsed(Date.now() - startedAt)} — handed off to the background (shell id ${run.shellId}). You'll be told when it finishes. Output so far:\n`,
+          false,
+          undefined,
+          false,
         );
       }, timeout);
       // Interrupt kills the child (spec §2.1 interrupt-mid-tool ruling) and

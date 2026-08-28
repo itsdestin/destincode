@@ -96,3 +96,66 @@ describe.skipIf(!posix)('Task 3: run_in_background', () => {
     expect(r.text).toBe(`5 background commands are already running (${ids.join(', ')}). Stop one with KillShell before starting another.`);
   });
 });
+
+describe.skipIf(!posix)('Task 4: hand-off at the time limit', () => {
+  it('a foreground command at its limit is adopted — no SIGKILL, no exit 124, text names the id', async () => {
+    const r: any = await BashTool.execute({ command: 'echo early; node -e "setTimeout(()=>{}, 4000)"', timeout: 400 }, ctx());
+    expect(r.isError).toBeFalsy();
+    expect(r.timedOut).toBe(false);
+    expect(r.text).toMatch(/^Still running after \d+s — handed off to the background \(shell id sh-[0-9a-f]{4}\)\. You'll be told when it finishes\./);
+    expect(r.text).not.toMatch(/exit 124|SIGKILL|force-killed/);
+    expect(r.text).toContain('early');                       // output so far, under the usual bounds
+    const run = reg.list()[0];
+    expect(run.status).toBe('running');
+    expect(run.detached).toBe(true);
+    expect(run.explicit).toBe(false);
+    expect(r.handedOffTo).toBe(run.shellId);
+    expect(r.text).toContain(`log: ${run.logPath}`);
+    expect(alive(run.child.pid!)).toBe(true);                // the SAME process, never restarted
+    await reg.kill(run.shellId, 'assistant');
+  });
+
+  it('a leading `sleep` is never handed off — it times out and reports as today', async () => {
+    const r: any = await BashTool.execute({ command: 'sleep 5', timeout: 300 }, ctx());
+    expect(r.isError).toBe(true);
+    expect(r.timedOut).toBe(true);
+    expect(r.text).toContain('· exit 124]');
+    expect(reg.list()).toHaveLength(0);
+  }, 10_000);
+
+  it('a handed-off run applies neither cwd nor persistent_env; the env temp file is removed; the sentinel is filtered on read', async () => {
+    let tracked: string | undefined;
+    let env: unknown;
+    fs.mkdirSync(path.join(dir, 'sub'));
+    const r = await BashTool.execute(
+      { command: 'cd sub && export FOO=bar && sleep 1', timeout: 200, persistent_env: true },
+      ctx({ setShellCwd: (n) => { tracked = n; }, setShellEnv: (e) => { env = e; } }),
+    );
+    expect(r.text).toMatch(/handed off to the background/);
+    const run = reg.list()[0];
+    await run.exited;
+    expect(run.exitCode).toBe(0);
+    expect(tracked).toBeUndefined();
+    expect(env).toBeUndefined();
+    const raw = fs.readFileSync(run.logPath, 'utf8');
+    expect(raw).toContain('__YC_CWD__');
+    const envFile = /__YC_ENVFILE__(.+)/.exec(raw)![1].trim();
+    expect(fs.existsSync(envFile)).toBe(false);
+    const read = await reg.read(run.shellId);
+    expect(read!.text).not.toContain('__YC_');
+    expect(reg.tailText(run, 50)).not.toContain('__YC_');
+  });
+
+  it('hand-off at the cap still succeeds (D5)', async () => {
+    for (let i = 0; i < MAX_EXPLICIT_RUNNING; i++) await BashTool.execute({ command: 'sleep 5', run_in_background: true }, ctx());
+    const r = await BashTool.execute({ command: 'node -e "setTimeout(()=>{}, 4000)"', timeout: 200 }, ctx());
+    expect(r.text).toMatch(/handed off to the background/);
+    expect(reg.list()).toHaveLength(MAX_EXPLICIT_RUNNING + 1);
+  });
+
+  it('with no registry in the context the old kill still applies', async () => {
+    const r: any = await BashTool.execute({ command: 'node -e "setTimeout(()=>{}, 4000)"', timeout: 200 }, ctx({ shells: undefined }));
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('· exit 124]');
+  });
+});
