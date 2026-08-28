@@ -1065,6 +1065,15 @@ describe('heartbeat staleness (Task 7)', () => {
 
     // The child completes normally afterward — no abort, no interrupt, no
     // typed failure. spawnSpecialist resolves with its real report.
+    // Staleness is proven; everything below is the ordinary completion path, so
+    // hand time back to the real clock BEFORE waiting on it. Waiting under fake
+    // timers does not work here: vi.waitFor advances the fake clock on every
+    // check, so a 15s budget drives ~300 synthetic clock jumps through a system
+    // whose staleness logic is driven by that same clock — the wait perturbs the
+    // thing it is waiting for. Measured 2026-08-28: with fake timers still
+    // installed this wait ran its full budget and never saw 'completed'.
+    vi.useRealTimers();
+
     release();
     const { report } = await runPromise;
     expect(report).toContain('REPORT: done');
@@ -1074,8 +1083,7 @@ describe('heartbeat staleness (Task 7)', () => {
     // bookkeeping write must never cost the user their session). Reading the
     // status one-shot therefore races that write: macOS CI failed here with
     // `expected 'running' to be 'completed'` on 2026-08-28 while the report
-    // assertion above passed. Wait for the record the same way the Task 4
-    // completion tests in this file do.
+    // assertion above passed.
     await vi.waitFor(() => {
       const pending = ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
       expect(pending?.status).toBe('completed');

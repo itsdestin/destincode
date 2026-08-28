@@ -78,7 +78,7 @@ async function throughStore(events: TranscriptEvent[]): Promise<TranscriptEvent[
     await store.flushAll();
     return store.readEvents('s-1', HEADER.cwd);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   }
 }
 

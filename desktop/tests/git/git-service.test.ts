@@ -45,7 +45,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     sh(root, ['commit', '-m', 'initial']);
   });
   afterEach(async () => {
-    await fs.promises.rm(root, { recursive: true, force: true });
+    await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 
   it('fileStatus: clean tracked file -> no counts, hasHistory true', async () => {
@@ -64,7 +64,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
     try {
       const r = await gitFileStatus(bare, 'x.txt');
       expect(r).toMatchObject({ ok: true, isRepo: false, counts: null, hasHistory: false });
-    } finally { await fs.promises.rm(bare, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(bare, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); }
   });
 
   it('fileStatus: escaping relPath is refused', async () => {
@@ -79,7 +79,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       const r = await gitStage(bare, 'x.txt');
       expect(r.ok).toBe(false);
       expect(r.error).toBe('not-a-git-repository');
-    } finally { await fs.promises.rm(bare, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(bare, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); }
   });
 
   it('mutation op with an escaping relPath still reports path-outside-project', async () => {
@@ -129,7 +129,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       expect(r.ok).toBe(true);
       expect(r.uncommitted).toMatchObject({ untracked: true, binary: true, hunks: [] });
       expect(JSON.stringify(r)).not.toContain('TOP SECRET');
-    } finally { await fs.promises.rm(outside, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); }
   });
 
   it('fileStatus: untracked symlink outside the repo counts as 0/0, never follows the link', async () => {
@@ -143,7 +143,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       const r = await gitFileStatus(root, 'link2.txt');
       expect(r.ok).toBe(true);
       expect(r.counts).toEqual({ added: 0, removed: 0 });
-    } finally { await fs.promises.rm(outside, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); }
   });
 
   it('fileReview: oversize untracked file renders as a binary stub, not synthesized hunks', async () => {
@@ -234,7 +234,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       expect(r.uncommitted?.inHead).toBe(false);
       expect(r.uncommitted?.hunks[0].lines).toEqual(['+hello']);
       expect(r.log).toEqual([]);
-    } finally { await fs.promises.rm(fresh, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(fresh, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); }
   });
 
   it('discard on unborn HEAD unstages (rm --cached) then trashes, leaving the file untracked', async () => {
@@ -250,7 +250,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       // The mocked trash leaves the file on disk, so git now sees it as plain
       // untracked — proving rm --cached ran against the unresolvable HEAD.
       expect(sh(fresh, ['status', '--porcelain']).trim()).toBe('?? f.txt');
-    } finally { await fs.promises.rm(fresh, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(fresh, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); }
   });
 
   it('unstage on unborn HEAD falls back to rm --cached, leaving the file untracked', async () => {
@@ -263,7 +263,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       const r = await gitUnstage(fresh, 'f.txt');
       expect(r.ok).toBe(true);
       expect(sh(fresh, ['status', '--porcelain']).trim()).toBe('?? f.txt');
-    } finally { await fs.promises.rm(fresh, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(fresh, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); }
   });
 
   it('handles non-ASCII filenames despite core.quotepath default (fix: -c core.quotepath=false)', async () => {
@@ -398,7 +398,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       expect(review.ok).toBe(true);
       expect(review.uncommitted?.inHead).toBe(true);
       expect(review.uncommitted?.hunks.length).toBeGreaterThan(0);
-    } finally { await fs.promises.rm(parent, { recursive: true, force: true }); }
+    } finally { await fs.promises.rm(parent, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); }
   });
 
   // Reproduces the youcoded-dev workspace shape: `worktrees/<name>` is
@@ -436,7 +436,7 @@ describe.skipIf(!hasGit())('git-service (integration, real git)', () => {
       expect(r.hasHistory).toBe(true);
     } finally {
       try { sh(otherRepo, ['worktree', 'remove', '--force', path.join(root, 'worktrees', 'feature')]); } catch { /* best effort */ }
-      await fs.promises.rm(otherRepo, { recursive: true, force: true });
+      await fs.promises.rm(otherRepo, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
     }
   });
 

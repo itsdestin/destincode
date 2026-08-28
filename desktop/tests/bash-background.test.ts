@@ -33,7 +33,7 @@ function ctx(over: Partial<ToolContext> = {}): ToolContext {
   return { sessionId: TEST_SESSION_ID, cwd: dir, signal: new AbortController().signal, readRegistry: new Map(), todos: [], toolCallId: 'toolu_bg', shells: reg, ...over } as ToolContext;
 }
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bash-bg-')); reg = new ShellRegistry(TEST_SESSION_ID); });
-afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
 describe.skipIf(!posix)('Task 2: foreground interrupt kills the grandchild and still resolves immediately', () => {
   it('sleep 30 & wait — abort resolves at once, the grandchild is gone within the grace period', async () => {

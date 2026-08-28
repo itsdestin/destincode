@@ -249,7 +249,7 @@ describe('tags:update / tags:delete signal chatsearch (Task 5 gap)', () => {
   });
 
   afterEach(() => {
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    try { fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); } catch { /* best-effort cleanup */ }
   });
 
   function handlerFor(channel: string) {
@@ -316,7 +316,7 @@ describe('transcript:read-meta path containment', () => {
 
   afterEach(() => {
     homedirSpy.mockRestore();
-    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* best-effort cleanup */ }
+    try { fs.rmSync(tmpHome, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); } catch { /* best-effort cleanup */ }
   });
 
   function handlerFor(channel: string) {

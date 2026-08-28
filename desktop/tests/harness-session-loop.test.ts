@@ -414,7 +414,7 @@ describe('HarnessSession — multi-step turn driver', () => {
       root = fs.mkdtempSync(path.join(os.tmpdir(), 'invented-path-'));
       fs.writeFileSync(path.join(root, 'ROADMAP.md'), '# roadmap');
     });
-    afterEach(() => { fs.rmSync(root, { recursive: true, force: true }); });
+    afterEach(() => { fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
     it('Read: no ask at all — the model is told the real workspace path', async () => {
       const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
@@ -468,7 +468,7 @@ describe('HarnessSession — multi-step turn driver', () => {
         expect(askUser).toHaveBeenCalledTimes(1);
         expect((read as any).calls).toHaveLength(1);
       } finally {
-        fs.rmSync(outside, { recursive: true, force: true });
+        fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
       }
     });
 
@@ -1207,7 +1207,7 @@ describe('image tool-results (2026-08-11 spec)', () => {
     return d;
   }
   afterEach(() => {
-    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 
   it('a delivered image lands as a content-type output AND its path on the event', async () => {
@@ -1424,7 +1424,7 @@ describe('shown-image cache reset on history-discarding events (Fixes 1 & 2, 202
     return d;
   }
   afterEach(() => {
-    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 
   it('Fix 1: /clear resets the dedupe cache — a re-Read of the same unchanged file after /clear delivers again, not "already visible"', async () => {

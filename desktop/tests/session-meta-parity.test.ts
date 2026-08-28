@@ -124,7 +124,7 @@ beforeEach(async () => {
 afterEach(() => {
   stopConversationStore();
   vi.restoreAllMocks();
-  try { fs.rmSync(tmpConvRoot, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(tmpConvRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); } catch {}
 });
 
 describe('native session meta — round trip (Task 5 unlock)', () => {

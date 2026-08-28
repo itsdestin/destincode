@@ -68,7 +68,7 @@ describe.skipIf(!posix)('ShellRegistry (POSIX processes)', () => {
   let dir: string;
   let reg: ShellRegistry;
   beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shell-reg-')); reg = new ShellRegistry(`t-${path.basename(dir)}`); });
-  afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true }); });
+  afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
   it('start: mints an sh- id, logs from the first byte, exits with the real code, emits exit once', async () => {
     const exits: any[] = [];
@@ -237,6 +237,6 @@ describe('spill retention sweep (moved out of bash.ts so background logs are swe
     await sweepOldSpillFiles();
     expect(fs.existsSync(old)).toBe(false);
     expect(fs.existsSync(fresh)).toBe(true);
-    fs.rmSync(sess, { recursive: true, force: true });
+    fs.rmSync(sess, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 });

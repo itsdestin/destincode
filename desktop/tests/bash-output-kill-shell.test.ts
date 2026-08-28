@@ -35,7 +35,7 @@ function waitFor(cond: () => boolean, ms = 5_000): Promise<void> {
   return new Promise((res, rej) => { const tick = () => { if (cond()) return res(); if (Date.now() - t0 > ms) return rej(new Error('waitFor')); setTimeout(tick, 25); }; tick(); });
 }
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bo-')); reg = new ShellRegistry(TEST_SESSION_ID); });
-afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true }); });
+afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }); });
 
 describe('schemas', () => {
   it('BashOutput: shell_id optional, strict; KillShell: shell_id required, strict; neither ever asks', () => {

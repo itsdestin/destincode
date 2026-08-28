@@ -64,7 +64,7 @@ beforeEach(() => {
     binaryRelPath: path.join('build', 'bin', 'llama-server'),
   };
 });
-afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
+afterEach(() => fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 }));
 
 describe('EngineAcquisition', () => {
   it('installs: downloads, verifies, unpacks, writes .complete LAST, reports progress', async () => {

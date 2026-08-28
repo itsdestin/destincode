@@ -9,6 +9,14 @@ import {
 import { ccProjectSlug } from '../src/main/slug-encoding';
 import type { TranscriptEvent } from '../src/shared/types';
 
+/** Poll ceilings as tries counts, sized to ~15s at each loop's own interval —
+ *  same reasoning as POLL_TRIES in native-session-host.test.ts: these loops wait
+ *  on a real condition (`events.length > 0`), and only the ceiling was a guess.
+ *  Note the one loop in this file WITHOUT a break condition keeps a small fixed
+ *  count instead — see its own comment. */
+const POLL_TRIES_100MS = 150;
+
+
 // Fixed sleep. ONLY valid before a NEGATIVE assertion ("nothing emitted yet") or
 // as a settle that lets a WRONG extra event land before asserting it didn't —
 // a too-short sleep there fails safe. NEVER sleep before a POSITIVE assertion:
@@ -334,7 +342,7 @@ describe('TranscriptWatcher', () => {
     // Wait for fs.watch or polling to pick up the change.
     // readNewLinesForSession triggers an async read, so retry
     // until events arrive or timeout.
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < POLL_TRIES_100MS; i++) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       watcher.readNewLinesForSession(desktopSessionId);
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -369,6 +377,11 @@ describe('TranscriptWatcher', () => {
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
 
     // Negative assertion: give the read every chance to fire, then require silence.
+    // DELIBERATELY a small fixed count, NOT a poll ceiling: this loop has no
+    // break condition — it is "wait a bounded while and confirm nothing arrived",
+    // so every iteration is paid on every run. Sizing it like the wait-for-success
+    // loops below turned a 250ms pause into 15s and made this file 6x slower for
+    // no added confidence (caught 2026-08-28 by measuring, before it was pushed).
     for (let i = 0; i < 5; i++) {
       await new Promise((r) => setTimeout(r, 50));
       watcher.readNewLinesForSession(desktopSessionId);
@@ -379,7 +392,7 @@ describe('TranscriptWatcher', () => {
 
     // A genuinely NEW append still streams live.
     fs.appendFileSync(jsonlPath, makeLine('new-1', 'brand new') + '\n');
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < POLL_TRIES_100MS; i++) {
       await new Promise((r) => setTimeout(r, 100));
       watcher.readNewLinesForSession(desktopSessionId);
       await new Promise((r) => setTimeout(r, 50));

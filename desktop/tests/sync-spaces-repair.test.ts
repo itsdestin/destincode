@@ -70,7 +70,7 @@ describe('repair helpers (pure)', () => {
     expect(deleteZeroByteObjects(tmp)).toBe(2);
     expect(fs.existsSync(path.join(objects, 'cd', 'real'))).toBe(true);
     expect(fs.existsSync(path.join(objects, 'ab', 'empty1'))).toBe(false);
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 
   it('pruneBrokenBackups keeps only the newest backup', () => {
@@ -81,7 +81,7 @@ describe('repair helpers (pure)', () => {
     fs.mkdirSync(`${gd}.broken-2026-07-30T14-00-00`);
     pruneBrokenBackups(gd);
     expect(fs.readdirSync(tmp).sort()).toEqual(['sync.git.broken-2026-07-30T14-00-00']);
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
   });
 
   it('brokenBackupName is filesystem-safe (no colons — Windows)', () => {
