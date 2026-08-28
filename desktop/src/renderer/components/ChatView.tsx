@@ -203,6 +203,16 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
     return null;
   }, [state.timeline, state.assistantTurns]);
 
+  // Perf (cycle 1, N1): findArchiveBoundary walks the WHOLE timeline backwards
+  // looking for the last /compact or /clear marker — and in the common
+  // never-compacted case it walks all the way to index 0 and finds nothing. It
+  // used to run inline in the render body, i.e. once per render, and a
+  // streaming session renders once per delta. The timeline array's identity
+  // only changes when an entry is appended (a delta updates assistantTurns,
+  // not timeline), so memoising on it turns a once-per-token scan into a
+  // once-per-entry scan. Pinned by tests/chatview-archive-boundary-memo.test.tsx.
+  const archiveBoundary = useMemo(() => findArchiveBoundary(state.timeline), [state.timeline]);
+
   // PTY-buffer classifier drives the attention banner. Replaces the old
   // 30s thinking-timeout watchdog + TERMINAL_ACTIVITY heartbeat — the hook
   // reads the xterm buffer directly and decides 'ok' vs. 'stuck'/'shell-idle'/etc.
@@ -762,7 +772,7 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
               // context but still the user's to re-read. /clear used to WIPE the
               // timeline instead, which threw away readable history to express a
               // context reset (Destin, 2026-07-28).
-              const { index: lastArchiveIdx, kind: archiveKind } = findArchiveBoundary(state.timeline);
+              const { index: lastArchiveIdx, kind: archiveKind } = archiveBoundary;
               return state.timeline.map((entry, idx) => {
                 const isPreCompaction = lastArchiveIdx >= 0 && idx < lastArchiveIdx;
               let key: string;
