@@ -683,7 +683,7 @@
   .embed-frame.live:not(.interactive) .embed-iframe { pointer-events: none; }
   /* z-index: the iframe is a later positioned sibling and would paint over this. */
   .embed-interact { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; background: transparent; border: 0; cursor: pointer; font: inherit; color: transparent; }
-  .embed-interact::after { content: "Click to try it"; position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); padding: 8px 16px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; font-size: 13px; font-weight: 600; backdrop-filter: blur(6px); }
+  .embed-interact::after { content: "Click to try it"; position: absolute; left: 50%; top: 62%; transform: translate(-50%,-50%); padding: 8px 16px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; font-size: 13px; font-weight: 600; backdrop-filter: blur(6px); }
   .embed-frame.interactive .embed-interact { display: none; }
   .embed-start { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); padding: 14px 26px; border-radius: 999px; font: inherit; font-weight: 600; background: var(--title-highlight); color: #fff; border: 0; cursor: pointer; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
   /* The frame is always dark (#0b1020) regardless of the page theme, so the
