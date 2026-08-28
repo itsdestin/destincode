@@ -125,6 +125,7 @@ export function rememberedRuleFor(
   return { tool: toolName, pattern: subject, action: 'allow', match: 'exact' };
 }
 import { formatAnswers } from './tools/ask-user-question';
+import { formatArgErrors } from './tools/arg-errors';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
 import { adaptForWire } from './wire-adapter';
@@ -2703,7 +2704,10 @@ export class HarnessSession extends EventEmitter {
       } catch { /* not JSON — fall through to the normal arg error below */ }
     }
     if (!parsed.success) {
-      return { text: `Invalid arguments for ${call.toolName}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}. Fix the arguments and call again.`, isError: true };
+      // Worded in arg-errors.ts (ledger D-2): names the unknown / missing /
+      // mistyped parameter and, for an unknown one, the parameters that exist —
+      // the strict schemas below make that the common case for CC-trained models.
+      return { text: formatArgErrors(call.toolName, parsed.error, tool.inputSchema), isError: true };
     }
     const args = parsed.data;
 

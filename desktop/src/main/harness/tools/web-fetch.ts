@@ -32,7 +32,7 @@ export function __setWebFetchTestHooks(h: typeof testHooks): void { testHooks = 
 const inputSchema = z.object({
   url: z.string().describe('The URL to fetch (http/https only)'),
   prompt: z.string().optional().describe('What you want to learn from this page'),
-});
+}).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 
 const TEXT_TYPES = /^(text\/(plain|markdown|csv|xml)|application\/(json|xml|rss\+xml|atom\+xml))/;
 

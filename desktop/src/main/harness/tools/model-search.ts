@@ -12,7 +12,7 @@ const inputSchema = z.object({
     'Substring to match against model ids and display names (case-insensitive). '
     + 'Use this to find the exact id of a specific model the user asked for — not for routine delegation.',
   ),
-});
+}).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 
 const MAX_RESULTS = 20;
 const MIN_QUERY_CHARS = 2;
