@@ -37,6 +37,10 @@ const MARKETPLACE_REPO = 'https://github.com/anthropics/claude-plugins-official.
 // value would silently SIGTERM mid-clone and surface as a generic install
 // failure with no diagnostic context.
 const GIT_TIMEOUT = 5 * 60 * 1000;
+// Hoisted from installFromLocal so refreshLocalMarketplaceCache (Task B2) and
+// installFromLocal share ONE read of the env var instead of two call sites
+// that could theoretically disagree mid-process.
+const marketplaceBranch = process.env.YOUCODED_MARKETPLACE_BRANCH || 'master';
 
 // Security: only allow safe characters in plugin IDs to prevent path traversal
 const SAFE_ID_RE = /^[a-zA-Z0-9_-]+$/;
@@ -65,6 +69,15 @@ function getCacheRepoName(sourceMarketplace?: string): string {
     return 'wecoded-marketplace';
   }
   return 'claude-plugins-official';
+}
+
+// Task B3 review fix (Finding 2): the launch-time reconciler in skill-provider.ts
+// was hand-building this same path with 'wecoded-marketplace' hardcoded, which
+// silently disagreed with getCacheRepoName() the moment a bundled entry ever
+// carried a different sourceMarketplace. Exporting the single source of truth
+// both installFromLocal/upgradePluginFromLocal and the reconciler now share.
+export function marketplaceCacheDir(sourceMarketplace: string | undefined, sourceRef: string): string {
+  return path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace), sourceRef);
 }
 
 export interface InstallMeta {
@@ -139,7 +152,12 @@ function runGit(...args: string[]): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     execFile('git', args, { timeout: GIT_TIMEOUT, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
-        resolve({ ok: false, output: `${stderr}\n${stdout}`.trim() });
+        // WHY: when git itself never ran (e.g. not installed), stderr/stdout
+        // are both empty and `printed` collapses to '' — the caller's message
+        // becomes "fetch failed: " with nothing after it. Fall back to the OS
+        // error (err.message, e.g. "spawn git ENOENT") so the user sees why.
+        const printed = `${stderr}\n${stdout}`.trim();
+        resolve({ ok: false, output: printed || err.message });
       } else {
         resolve({ ok: true, output: stdout.trim() });
       }
@@ -219,11 +237,15 @@ function setCacheTimestamp(cacheRepo: string): void {
   } catch { /* non-fatal — just means we'll retry next install */ }
 }
 
-function readCachedPluginVersion(sourceDir: string): string | null {
+// Renamed from readCachedPluginVersion + exported: Task B3's launch-time
+// reconciler needs this to read the REAL installed version off disk (not
+// the hardcoded '1.0.0' installPlugin used to write), and to read the
+// cache's version to decide whether an upgrade is available.
+export function readPluginVersion(dir: string): string | null {
   // Check both standard plugin.json layouts.
   const candidates = [
-    path.join(sourceDir, 'plugin.json'),
-    path.join(sourceDir, '.claude-plugin', 'plugin.json'),
+    path.join(dir, 'plugin.json'),
+    path.join(dir, '.claude-plugin', 'plugin.json'),
   ];
   for (const p of candidates) {
     try {
@@ -234,6 +256,8 @@ function readCachedPluginVersion(sourceDir: string): string | null {
   }
   return null;
 }
+// Private alias so the existing call sites below compile unchanged.
+const readCachedPluginVersion = readPluginVersion;
 
 async function installFromLocal(id: string, sourceRef: string, sourceMarketplace?: string, expectedVersion?: string): Promise<InstallResult> {
   // Phase 3a: source-aware repo selection — YouCoded entries clone from
@@ -242,7 +266,6 @@ async function installFromLocal(id: string, sourceRef: string, sourceMarketplace
   // (e.g., running the decomposition-v3 branch on a scratch machine).
   const cacheRepo = path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace));
   const repoUrl = getMarketplaceRepo(sourceMarketplace);
-  const marketplaceBranch = process.env.YOUCODED_MARKETPLACE_BRANCH || 'master';
 
   // Ensure marketplace repo is cloned, or refresh it if:
   //   (a) it's been >1h since the last pull (time-based refresh), OR
@@ -295,6 +318,124 @@ async function installFromLocal(id: string, sourceRef: string, sourceMarketplace
   if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });
   copyDirSync(sourceDir, targetDir);
   return { status: 'installed' };
+}
+
+/**
+ * Task B2: refresh the marketplace cache clone on its own, independent of
+ * an install. Task B3's launch-time reconciler calls this before comparing
+ * versions, so a bundled plugin's upgrade can be detected without the user
+ * ever re-running the install flow. Clones if the cache is missing; otherwise
+ * only fetches/resets once the 1 h gate (CACHE_REFRESH_MS) has elapsed —
+ * reconcile runs on EVERY launch, so without the gate that's a GitHub
+ * round-trip on every app start.
+ */
+export async function refreshLocalMarketplaceCache(sourceMarketplace?: string): Promise<{ ok: boolean; refreshed: boolean; error?: string }> {
+  const cacheRepo = path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace));
+  const repoUrl = getMarketplaceRepo(sourceMarketplace);
+  if (!fs.existsSync(cacheRepo)) {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    const { ok, output } = await runGit('clone', '--depth', '1', '--branch', marketplaceBranch, repoUrl, cacheRepo);
+    if (!ok) return { ok: false, refreshed: false, error: `clone failed: ${output.slice(0, 200)}` };
+    setCacheTimestamp(cacheRepo);
+    return { ok: true, refreshed: true };
+  }
+  if (Date.now() - getCacheTimestamp(cacheRepo) < CACHE_REFRESH_MS) return { ok: true, refreshed: false };
+  const f = await runGit('-C', cacheRepo, 'fetch', 'origin');
+  if (!f.ok) return { ok: false, refreshed: false, error: `fetch failed: ${f.output.slice(0, 200)}` };
+  const r = await runGit('-C', cacheRepo, 'reset', '--hard', `origin/${marketplaceBranch}`);
+  if (!r.ok) return { ok: false, refreshed: false, error: `reset failed: ${r.output.slice(0, 200)}` };
+  setCacheTimestamp(cacheRepo);
+  return { ok: true, refreshed: true };
+}
+
+/**
+ * Task B2: replace an already-installed plugin's tree with the cache
+ * clone's copy, in place. Never deletes the live install directory before
+ * the new copy is staged — a crash mid-copy must not leave the user with no
+ * plugin at all. The old tree is parked under `.old-<id>-<pid>` until the
+ * swap fully succeeds, and is put BACK if anything throws in between.
+ */
+export async function upgradePluginFromLocal(id: string, sourceRef: string, sourceMarketplace?: string): Promise<InstallResult> {
+  if (!SAFE_ID_RE.test(id)) return { status: 'failed', error: 'Invalid plugin id' };
+  const cacheRepo = path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace));
+  const sourceDir = path.join(cacheRepo, sourceRef);
+  // Security: prevent sourceRef from escaping the cache directory (e.g. "../../.ssh")
+  if (!isContainedIn(sourceDir, cacheRepo)) return { status: 'failed', error: 'Invalid source ref (path traversal blocked)' };
+  if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) return { status: 'failed', error: `Source not found in cache: ${sourceRef}` };
+  fs.mkdirSync(PLUGINS_DIR, { recursive: true });
+  const targetDir = path.join(PLUGINS_DIR, id);
+  const staging = path.join(PLUGINS_DIR, `.upgrade-${id}-${process.pid}`);
+  const retired = path.join(PLUGINS_DIR, `.old-${id}-${process.pid}`);
+  try {
+    // Stale leftovers from a killed prior attempt (same id, same pid never
+    // recurs in practice, but be defensive) must not make copyDirSync merge
+    // into a half-written staging dir.
+    fs.rmSync(staging, { recursive: true, force: true });
+    copyDirSync(sourceDir, staging);
+    if (fs.existsSync(targetDir)) fs.renameSync(targetDir, retired);
+    fs.renameSync(staging, targetDir);
+  } catch (err: any) {
+    // WHY: put the old tree back if the swap died half-way — a user must
+    // never end up with the plugin directory entirely gone.
+    if (!fs.existsSync(targetDir) && fs.existsSync(retired)) {
+      try { fs.renameSync(retired, targetDir); } catch { /* nothing better to do */ }
+    }
+    fs.rmSync(staging, { recursive: true, force: true });
+    return { status: 'failed', error: `upgrade copy failed: ${err?.message || String(err)}` };
+  }
+  // WHY: deleting the retired tree is cleanup AFTER the swap already
+  // succeeded — the new files are live at targetDir at this point. A
+  // failure here (e.g. Windows still holding a file in the old tree open)
+  // must not be reported as an upgrade failure: the upgrade DID work, and
+  // reporting 'failed' would both lie about what's on disk and skip
+  // registerPluginInstall below, leaving installed_plugins.json stuck on
+  // the old version forever (the app would retry the "upgrade" every
+  // launch). Leaving `.old-<id>-<pid>` behind is harmless clutter, not a
+  // correctness problem, so this is swallowed rather than surfaced.
+  try {
+    fs.rmSync(retired, { recursive: true, force: true });
+  } catch {
+    /* best-effort cleanup only — see WHY above */
+  }
+  // Register with the REAL version read off the newly-swapped-in disk copy,
+  // not a hardcoded '1.0.0' — this is the whole point of the upgrade path.
+  const version = readPluginVersion(targetDir) ?? '1.0.0';
+  try {
+    registerPluginInstall({ id, installPath: targetDir, version });
+  } catch (err: any) {
+    return { status: 'failed', error: `Registry write failed: ${err?.message || String(err)}` };
+  }
+  return { status: 'installed' };
+}
+
+/**
+ * Fix (Track B final review, Finding F1): remove stale `.old-<id>-<pid>` /
+ * `.upgrade-<id>-<pid>` directories left behind by an upgradePluginFromLocal()
+ * that was killed mid-swap. Name-PREFIX match only (`.old-` / `.upgrade-`,
+ * not the full name) — desktop's staging names carry a `-<pid>` suffix that
+ * a kill leaves permanently mismatched with the current process's pid, so an
+ * exact-name check would never find it. Deliberately narrow so a real
+ * plugin id — which SAFE_ID_RE forbids from starting with "." — can never be
+ * swept by mistake. Matches Android's LocalSkillProvider.sweepStaleUpgradeDirs()
+ * (Task B5 review round 2, Finding 1b).
+ */
+export function sweepStaleUpgradeDirs(): void {
+  let children: fs.Dirent[];
+  try {
+    children = fs.readdirSync(PLUGINS_DIR, { withFileTypes: true });
+  } catch {
+    return; // directory doesn't exist yet — nothing to sweep
+  }
+  for (const child of children) {
+    if (!child.isDirectory()) continue;
+    if (!child.name.startsWith('.old-') && !child.name.startsWith('.upgrade-')) continue;
+    const target = path.join(PLUGINS_DIR, child.name);
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+    } catch (err: any) {
+      console.warn(`[plugin-installer] could not fully sweep stale ${child.name}: ${err?.message || String(err)}`);
+    }
+  }
 }
 
 async function installFromUrl(id: string, url: string): Promise<InstallResult> {
@@ -390,7 +531,12 @@ export async function installPlugin(entry: MarketplaceEntry): Promise<InstallRes
         registerPluginInstall({
           id,
           installPath: path.join(PLUGINS_DIR, id),
-          version: '1.0.0', // real version flows from the marketplace entry in skill-provider
+          // WHY: read the version that just landed on disk first — installFromLocal
+          // may have refreshed the cache to a newer copy than entry.version knew
+          // about. Fall back to the marketplace entry, then a static default,
+          // so Task B3's reconciler always has a real number to compare against
+          // instead of a permanent, never-updating '1.0.0'.
+          version: readPluginVersion(path.join(PLUGINS_DIR, id)) ?? entry.version ?? '1.0.0',
           description: entry.description,
           author: entry.author,
         });

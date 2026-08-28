@@ -480,15 +480,188 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
     }
 
     /**
-     * Install any bundled plugins that are missing. Runs fire-and-forget on
-     * every launch; silent retry next launch on failure. installMany is
-     * idempotent — already-installed plugins no-op.
+     * Task B5 (port of desktop's skill-provider.ts reconcileBundledPlugins,
+     * added when Track B taught the desktop app to upgrade its bundled
+     * plugins at launch instead of only installing them once): reconcile
+     * every bundled plugin against the marketplace cache — install it if
+     * missing, upgrade it if the cached plugin.json version is newer than
+     * the installed one, otherwise leave it alone. Runs on every app
+     * launch, unlike the old installMany()-only path, so an already-
+     * installed bundled plugin that ships a fix now actually reaches
+     * users who already have it.
+     *
+     * Returns a JSONArray of {id, action, from?, to?, error?} rows —
+     * action is one of "installed" | "upgraded" | "unchanged" | "failed".
+     * Android has no dev-instance concept (unlike desktop's YOUCODED_PROFILE
+     * guard, which exists only because a dev Electron instance shares
+     * ~/.claude with the real app) — this always runs for real.
+     */
+    suspend fun reconcileBundledPlugins(): JSONArray {
+        val out = JSONArray()
+        val installer = pluginInstaller
+            ?: return out.put(JSONObject().put("id", "").put("action", "failed").put("error", "installer not initialized"))
+
+        // Fix (review round 2, Finding 1b): a real process kill mid-swap in
+        // PluginInstaller.upgradeFromLocal() can leave `.upgrade-<id>` (a
+        // staged copy) or `.old-<id>` (the retired tree) behind in the
+        // marketplace plugins dir. ClaudeCodeRegistry.listInstalledPluginDirs()
+        // no longer scans them (Finding 1a), but nothing else clears them
+        // either — the only prior cleanup was the NEXT upgrade of that same
+        // id (upgradeFromLocal deletes its own staging/retired dirs at the
+        // start of its own run). Sweep on every launch so a crash's litter
+        // is cleared on the next launch, not left indefinitely. Only the two
+        // known staging prefixes are removed — never anything else here.
+        sweepStaleUpgradeDirs()
+
+        var index = fetcher.fetchIndex()
+        fun findEntry(id: String): JSONObject? {
+            for (i in 0 until index.length()) {
+                val e = index.getJSONObject(i)
+                if (e.optString("id") == id) return e
+            }
+            return null
+        }
+        if (BundledPlugins.IDS.any { id -> findEntry(id) == null }) {
+            // WHY: a newly bundled plugin isn't in a day-old cached index (24 h
+            // TTL in MarketplaceFetcher) — force one refetch, only for this case.
+            // MarketplaceFetcher has no invalidation hook of its own, so this
+            // deletes its on-disk cache file directly rather than adding one —
+            // see the WHY on invalidateMarketplaceIndexCache below.
+            invalidateMarketplaceIndexCache()
+            index = fetcher.fetchIndex()
+        }
+        // Fix (review round 1, Finding 3): a failed refresh (offline device, failed
+        // git fetch) was silently discarded — every plugin then compares against a
+        // stale cache and reports "unchanged" with no way to tell that apart from
+        // genuinely up to date. Log it and keep going: the reconcile must not abort
+        // just because the cache couldn't be refreshed, it should fall back to
+        // whatever's already cached (same as desktop's behavior).
+        //
+        // Fix (Track B final review, Finding F11): this used to hardcode
+        // "youcoded" while the compare a few lines below reads
+        // installer.cacheSourceDir(sourceRef, mp) using the entry's OWN `mp` —
+        // exactly the bug desktop's B3 review fixed (skill-provider.ts's
+        // reconcileBundledPlugins refreshes one cache per DISTINCT
+        // sourceMarketplace found among the bundled entries, not a hardcoded
+        // one). Latent today because all three bundled ids happen to be
+        // "youcoded", but the two halves silently disagreeing the moment
+        // that's no longer true is the same trap. Refresh every marketplace
+        // actually referenced by a bundled entry, not just one hardcoded name.
+        val marketplaces = BundledPlugins.IDS
+            .map { id -> findEntry(id)?.optString("sourceMarketplace")?.ifEmpty { "youcoded" } ?: "youcoded" }
+            .toSet()
+        for (mp in marketplaces) {
+            if (!installer.refreshLocalMarketplaceCache(mp)) {
+                Log.w("BundledPlugins", "marketplace cache refresh failed for $mp; comparing against the last cached copy")
+            }
+        }
+
+        for (id in BundledPlugins.IDS) {
+            val entry = findEntry(id)
+            val row = JSONObject().put("id", id)
+            if (entry == null) {
+                out.put(row.put("action", "failed").put("error", "not in the marketplace index"))
+                continue
+            }
+            val sourceRef = entry.optString("sourceRef").ifEmpty { id }
+            val mp = entry.optString("sourceMarketplace").ifEmpty { "youcoded" }
+            val installDir = File(ClaudeCodeRegistry.youcodedPluginsDir(homeDir), id)
+
+            // Fix (review round 1, Finding 1): ask the disk, not the config-store
+            // record — a config reset/restore or a crash mid-upgrade both leave
+            // the record out of sync with the real tree, and isInstalled() alone
+            // made either drift permanent (see PluginInstaller.isInstalledOnDisk).
+            if (!installer.isInstalledOnDisk(id)) {
+                val r = installer.install(entry)
+                if (r !is PluginInstaller.InstallResult.Success) {
+                    out.put(row.put("action", "failed").put("error", (r as? PluginInstaller.InstallResult.Failed)?.error ?: r.toString()))
+                    continue
+                }
+                installedCache = null
+                out.put(row.put("action", "installed").put("to", installer.readPluginVersion(installDir)))
+                continue
+            }
+
+            val installed = installer.readPluginVersion(installDir)
+            val available = installer.readPluginVersion(installer.cacheSourceDir(sourceRef, mp))
+            if (!VersionCompare.isNewer(installed, available)) {
+                out.put(row.put("action", "unchanged").put("from", installed))
+                continue
+            }
+            val r = installer.upgradeFromLocal(id, sourceRef, mp)
+            if (r !is PluginInstaller.InstallResult.Success) {
+                out.put(row.put("action", "failed").put("from", installed).put("to", available)
+                    .put("error", (r as? PluginInstaller.InstallResult.Failed)?.error ?: r.toString()))
+                continue
+            }
+            configStore.updatePackageVersion(id, available ?: "1.0.0")
+            installedCache = null
+            out.put(row.put("action", "upgraded").put("from", installed).put("to", available))
+        }
+
+        val changed = (0 until out.length()).any { i ->
+            out.getJSONObject(i).optString("action").let { it == "installed" || it == "upgraded" }
+        }
+        if (changed) {
+            onPluginsChanged?.invoke()
+            try { hookReconciler?.reconcile() } catch (e: Exception) {
+                Log.w("BundledPlugins", "hook reconcile after reconcile failed", e)
+            }
+            try { mcpReconciler?.reconcile() } catch (e: Exception) {
+                Log.w("BundledPlugins", "MCP reconcile after reconcile failed", e)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Remove stale `.old-<id>` / `.upgrade-<id>` directories left behind by
+     * an upgradeFromLocal() that was killed mid-swap. Name-prefix match
+     * only — deliberately narrow so a real plugin id (which SAFE_ID_RE
+     * forbids from starting with ".") can never be swept by mistake.
+     */
+    private fun sweepStaleUpgradeDirs() {
+        val dir = ClaudeCodeRegistry.youcodedPluginsDir(homeDir)
+        val children = dir.listFiles { f -> f.isDirectory } ?: return
+        for (child in children) {
+            if (!child.name.startsWith(".old-") && !child.name.startsWith(".upgrade-")) continue
+            try {
+                if (!child.deleteRecursively()) {
+                    Log.w("BundledPlugins", "could not fully sweep stale ${child.name}")
+                }
+            } catch (e: Exception) {
+                Log.w("BundledPlugins", "failed to sweep stale ${child.name}", e)
+            }
+        }
+    }
+
+    // WHY: MarketplaceFetcher writes its 24h-TTL index cache to a fixed,
+    // well-known path under its own cacheDir and doesn't expose an
+    // invalidation method — adding one there is out of scope for this
+    // reconcile path, so this deletes the file directly using the same path
+    // convention (mirrors desktop's invalidateCache(), which does the same
+    // unlink on its own INDEX_CACHE file). Best-effort: if the delete fails
+    // (e.g. file didn't exist), fetchIndex() just serves the same cached
+    // copy again and reconcile falls back to its "not in the marketplace
+    // index" failure path, retried on the next launch.
+    private fun invalidateMarketplaceIndexCache() {
+        try { File(homeDir, ".claude/youcoded-marketplace-cache/index.json").delete() } catch (_: Exception) {}
+    }
+
+    /**
+     * Reconcile bundled plugins on every app launch: install missing ones,
+     * upgrade stale ones. Never throws — callers invoke this fire-and-forget
+     * at boot and an exception here must not block startup.
      */
     suspend fun ensureBundledPluginsInstalled() {
         try {
-            installMany(BundledPlugins.IDS)
+            val results = reconcileBundledPlugins()
+            for (i in 0 until results.length()) {
+                val row = results.getJSONObject(i)
+                if (row.optString("action") != "unchanged") Log.i("BundledPlugins", row.toString())
+            }
         } catch (e: Exception) {
-            Log.w("BundledPlugins", "ensure failed", e)
+            Log.w("BundledPlugins", "reconcile failed", e)
         }
     }
 

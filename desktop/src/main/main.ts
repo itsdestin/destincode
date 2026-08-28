@@ -215,9 +215,26 @@ sessionManager.setReloadPluginsGate((sessionId) => hookRelay.hasPendingPermissio
 const remoteConfig = new RemoteConfig();
 const skillProvider = new LocalSkillProvider();
 skillProvider.ensureMigrated();
-// Fire-and-forget: install bundled plugins if missing. Silent retry on
-// every launch. See docs/superpowers/specs/2026-04-20-bundled-default-plugins-design.md.
-void skillProvider.ensureBundledPluginsInstalled();
+// Fix (Track B minor hardening review): ensureBundledPluginsInstalled() and
+// repairPackageVersions() both write ~/.claude/youcoded-skills.json's
+// `packages` map. Firing them back to back with two bare `void` calls only
+// stayed safe because reconcileBundledPlugins() (called by
+// ensureBundledPluginsInstalled) suspends at its first `await this.fetchIndex()`
+// before any recordPackageInstall/updatePackageVersion call, so repair's
+// fully-synchronous body always ran to completion first by accident — add
+// one `await` inside repairPackageVersions() later and the two would
+// silently interleave writes to the same in-memory config object. Wrapping
+// in an async IIFE makes the ordering explicit: repair (still synchronous
+// today, so this costs nothing at boot) completes before reconcile is even
+// started. See the WHY on repairPackageVersions() in skill-provider.ts for
+// what breaks without the repair (permanently stale "Update available"
+// state for every in-repo plugin other than the three bundled ids).
+void (async () => {
+  await skillProvider.repairPackageVersions();
+  // Fire-and-forget: install bundled plugins if missing. Silent retry on
+  // every launch. See docs/superpowers/specs/2026-04-20-bundled-default-plugins-design.md.
+  void skillProvider.ensureBundledPluginsInstalled();
+})();
 
 // commandProvider is constructed after skillProvider so it can read skills
 // for dedup. getProjectCwd returns the most recently active session's cwd,

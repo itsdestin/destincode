@@ -745,6 +745,10 @@ export interface SkillEntry {
   sourceType?: string;
   sourceRef?: string;
   sourceSubdir?: string;
+  // WHY: reconcileBundledPlugins (Task B3) needs the entry's marketplace to
+  // pick the right cache clone / repo when refreshing and upgrading a
+  // bundled plugin — 'youcoded' vs 'youcoded-core' vs upstream Anthropic.
+  sourceMarketplace?: string;
 
   // Absolute path to the skill's own directory (the one holding SKILL.md).
   // Populated by scanSkills for filesystem-discovered skills. The native harness
