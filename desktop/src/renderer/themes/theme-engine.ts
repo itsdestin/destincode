@@ -1,5 +1,50 @@
 import type { ThemeTokens, ThemeShape, ThemeFont, ThemeBackground, ThemeLayout, ThemeEffects, ThemeOverlay, ThemeDefinition } from './theme-types';
 
+/** True when the theme composites a real layer behind the chrome — a wallpaper
+ *  image or a gradient. This is THE predicate that stamps `[data-wallpaper]` on
+ *  <html> (which gates every glass/backdrop rule in globals.css) and it is what
+ *  the terminal's surface guarantee keys on too, so "has a wallpaper" means the
+ *  same thing everywhere in the renderer. A `panels-blur` on a solid theme does
+ *  NOT count: there is nothing behind the canvas to see through to. */
+export function hasBackgroundLayer(bg: ThemeBackground | undefined): boolean {
+  return (bg?.type === 'image' || bg?.type === 'gradient') && !!bg.value;
+}
+
+/** Terminal surface guarantee under wallpaper themes (UI review ledger P-20.2,
+ *  decided by Destin 2026-08-27): the terminal grid paints the theme's PANEL
+ *  colour and sits at no less than 80% opacity, so Claude Code's TUI text
+ *  reads over any wallpaper instead of being drawn straight onto the image at
+ *  60%. Flat themes are untouched — they keep the --canvas surface and the
+ *  theme's own `terminal-opacity` (default 0.6). */
+export const TERMINAL_WALLPAPER_OPACITY_FLOOR = 0.8;
+/** The pre-guarantee default, still what a flat theme gets when it declares
+ *  no `terminal-opacity`. */
+const TERMINAL_DEFAULT_OPACITY = 0.6;
+
+interface TerminalSurface {
+  /** Which theme token xterm paints as its OPAQUE background, and what the
+   *  grid container / `.xterm-viewport` fill with. */
+  backing: 'panel' | 'canvas';
+  /** The grid container's opacity (`--terminal-xterm-opacity`). */
+  opacity: number;
+}
+
+/** The ONE place the terminal's surface is decided. applyThemeToDom writes it
+ *  out as `--terminal-backing` / `--terminal-xterm-opacity`; TerminalView calls
+ *  it directly for the token name xterm needs (xterm wants a resolved colour,
+ *  not a var() reference, so it reads --panel / --canvas by name).
+ *
+ *  WHY a floor rather than a fixed 0.8: the guarantee exists for readability,
+ *  so a pack that asks for MORE solidity (0.9, 1) is honoured, while a pack
+ *  that asks for less (0.4) would defeat the point and is raised to 0.8. Pack
+ *  authors keep full control on flat themes, where readability was never the
+ *  problem. */
+export function computeTerminalSurface(bg: ThemeBackground | undefined): TerminalSurface {
+  const declared = bg?.['terminal-opacity'] ?? TERMINAL_DEFAULT_OPACITY;
+  if (!hasBackgroundLayer(bg)) return { backing: 'canvas', opacity: declared };
+  return { backing: 'panel', opacity: Math.max(declared, TERMINAL_WALLPAPER_OPACITY_FLOOR) };
+}
+
 /** Returns CSS custom property map for all 15 color tokens. */
 export function buildTokenCSS(tokens: ThemeTokens): Record<string, string> {
   const result: Record<string, string> = {};
@@ -435,9 +480,18 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   // but leaves opacity + brightness alone (same policy as panels-blur).
   const rawTerminalBlur = theme.background?.['terminal-blur'] ?? 8;
   const terminalBlur = reducedEffects ? 0 : rawTerminalBlur;
-  const terminalOpacity = theme.background?.['terminal-opacity'] ?? 0.6;
+  // Surface guarantee (P-20.2): under a wallpaper/gradient the backing is the
+  // panel colour and the opacity is floored at 0.8; flat themes get --canvas
+  // and their declared value, exactly as before. Decided in ONE place
+  // (computeTerminalSurface) so TerminalView can never disagree with the vars.
+  // `--terminal-backing` is consumed by the `.xterm-viewport` rule in
+  // globals.css (the strip below the last cell row must match the grid).
+  // Reduced-effects does not lift the floor: the wallpaper is still there,
+  // only sharper, so the text needs the backing at least as much.
+  const terminalSurface = computeTerminalSurface(theme.background);
   const terminalBrightness = theme.background?.['terminal-brightness'] ?? 0.86;
-  root.style.setProperty('--terminal-xterm-opacity', String(terminalOpacity));
+  root.style.setProperty('--terminal-xterm-opacity', String(terminalSurface.opacity));
+  root.style.setProperty('--terminal-backing', `var(--${terminalSurface.backing})`);
   root.style.setProperty('--terminal-bg-blur', `${terminalBlur}px`);
   root.style.setProperty('--terminal-bg-brightness', String(terminalBrightness));
 
@@ -465,8 +519,7 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   // Fix: gradient backgrounds also need the app-shell transparency + glass treatment
   // gated on [data-wallpaper]. Without this, the bg-canvas app-shell paints over the
   // #theme-bg gradient layer and the gradient appears as a flat canvas-colored screen.
-  const hasBackgroundLayer = (bg?.type === 'image' || bg?.type === 'gradient') && !!bg.value;
-  if (hasBackgroundLayer) {
+  if (hasBackgroundLayer(bg)) {
     root.setAttribute('data-wallpaper', '');
   } else {
     root.removeAttribute('data-wallpaper');
@@ -531,8 +584,7 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
     glassEl.id = glassCSSId;
     document.head.appendChild(glassEl);
   }
-  const hasGlassBackground = (bg?.type === 'image' || bg?.type === 'gradient') && !!bg.value;
-  if (hasGlassBackground && !reducedEffects && panelsBlur > 0) {
+  if (hasBackgroundLayer(bg) && !reducedEffects && panelsBlur > 0) {
     const scrimBlur = Math.min(panelsBlur, 8);
     const bubbleRule = bubbleBlur > 0 ? `
     [data-wallpaper] .in-view .bg-inset,

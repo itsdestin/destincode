@@ -14,7 +14,8 @@ import { EngineSupervisor } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
 import { readEngineConfig, updateEngineConfig } from './engine-config';
-import { scanGgufCache } from './cache-scan';
+import { readManifest, removeManifest } from '../models/download-manifest';
+import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
 import type {
   EngineBackend, EngineInstallProgress, EngineStatus, EngineModel,
@@ -438,18 +439,46 @@ export class EngineManager extends EventEmitter {
 
   /** Plan C: installed models with quant metadata (spec §4.5). lastUsedAt +
    *  defaultForTier were CUT from v1 (Amendment 2026-07-14 G). */
+  /** Every download in the cache dir, complete or not, with the state the Local
+   *  Models screen renders. Unlike liveModels() this deliberately does NOT
+   *  filter incomplete sets — Settings is where you act on them. */
   async installedModels(): Promise<InstalledLocalModel[]> {
-    const cfg = readEngineConfig(this.home);
-    return scanGgufCache(cfg.cacheDir).map((m) => {
-      const parsed = parseGgufName(`${m.id}.gguf`);
-      return {
-        id: m.id,
-        sizeBytes: m.sizeBytes ?? 0,   // scanGgufCache sums all parts for a split model
-        quant: parsed?.quant ?? null,
+    const cacheDir = readEngineConfig(this.home).cacheDir;
+    const rows: InstalledLocalModel[] = [];
+    for (const d of scanLocalDownloads(cacheDir)) {
+      const complete = isComplete(d);
+      if (complete && d.hasManifest) {
+        // The downloader removes the manifest on clean completion, so one here
+        // outlived a crash between publish and cleanup. A complete set has
+        // nothing to resume: best-effort cleanup, never a reason to fail the list.
+        try { removeManifest(cacheDir, d.firstFileName); } catch { /* best-effort */ }
+      }
+      const manifest = !complete && d.hasManifest ? readManifest(cacheDir, d.firstFileName) : null;
+      const bytesOnDisk = d.bytesPublished + d.bytesPartial;
+      if (!complete && bytesOnDisk === 0 && !manifest) {
+        // Only an unreadable manifest, no bytes: nothing to resume, nothing to
+        // delete, nothing to show. Remove the fragment so it cannot accumulate.
+        try { removeManifest(cacheDir, d.firstFileName); } catch { /* best-effort */ }
+        continue;
+      }
+      const parsed = parseGgufName(d.firstFileName);
+      rows.push({
+        id: d.modelId,
+        // Bytes on disk. For an unfinished set that includes the .partial, so
+        // the delete confirmation names what the user actually gives up.
+        sizeBytes: complete ? d.bytesPublished : bytesOnDisk,
+        // The manifest's quant is the exact string Hugging Face used — the one
+        // live progress events carry, so the renderer can match them to this row.
+        quant: manifest?.quant ?? parsed?.quant ?? null,
         quantDescription: parsed ? quantDescription(parsed.quant) : null,
-        parts: parsed?.part?.of ?? 1,
-      };
-    });
+        parts: d.partsDeclared,
+        status: complete ? 'complete' : manifest ? 'unfinished' : 'untraceable',
+        partsPresent: d.partsPresent,
+        totalSizeBytes: manifest?.totalSizeBytes ?? null,
+        repo: manifest?.repo ?? null,
+      });
+    }
+    return rows;
   }
 
   // noteModelUsed / setDefaultForTier were CUT from v1 (Amendment 2026-07-14 G).
@@ -479,6 +508,8 @@ export class EngineManager extends EventEmitter {
       fs.rmSync(path.join(cfg.cacheDir, name), { force: true });
       fs.rmSync(path.join(cfg.cacheDir, `${name}.partial`), { force: true });
     }
+    // The manifest describes files that no longer exist — remove it with them.
+    removeManifest(cfg.cacheDir, `${id}.gguf`);
     // Tell the router the file is gone, or it keeps advertising a model that
     // 400s on use — the delete-side twin of the post-download refresh.
     await this.refreshModels();

@@ -8,6 +8,9 @@ import { visitParents } from 'unist-util-visit-parents';
 import { detectFilepaths } from '../hooks/useInlineFilepathDetector';
 import { Button } from './ui';
 import { FilepathToken } from './FilepathToken';
+import { CONVERSATIONS_FENCE, parseConversationRefs } from '../../shared/chatsearch-refs';
+import ChatsearchRefBlock from './tool-views/ChatsearchRefBlock';
+import { SessionRefsEnabled } from './session-refs-context';
 
 /**
  * Rehype plugin: tag every <code> that lives inside a <pre> with data-block.
@@ -185,6 +188,15 @@ const mdComponents = {
   pre({ children, node, ...props }: any) {
     // Text comes from the source AST, not the rendered children — see hastText.
     const codeText = hastText(node);
+    // A `conversations` fence is not code: it is the assistant naming past
+    // conversations inside its own message, and the renderer draws them as a
+    // reference block (compare Round 8 A). Gated on the context so this only
+    // happens in a live assistant bubble — a PAST conversation being previewed
+    // could contain the same fence, and resolving ids from another device
+    // inside a read-only transcript would render a block of dead rows.
+    if (isConversationsFence(node)) {
+      return <ConversationsFence body={codeText} />;
+    }
     return (
       <div className="relative group my-3">
         {/* yc-code is the hook the globals.css rule needs to out-specify
@@ -256,13 +268,49 @@ const mdComponents = {
   },
 };
 
+/** Does this <pre> hold a fenced block whose language is `conversations`? */
+function isConversationsFence(node: any): boolean {
+  const code = node?.children?.find((c: any) => c?.tagName === 'code');
+  const classes = code?.properties?.className;
+  const list = Array.isArray(classes) ? classes : typeof classes === 'string' ? classes.split(/\s+/) : [];
+  return list.includes(`language-${CONVERSATIONS_FENCE}`);
+}
+
+function ConversationsFence({ body }: { body: string }) {
+  const enabled = React.useContext(SessionRefsEnabled);
+  const ids = React.useMemo(() => parseConversationRefs(body), [body]);
+  // Not enabled here: fall back to what the text says on its own, rather than
+  // silently swallowing the block.
+  if (!enabled) return <pre className="yc-code rounded-md bg-canvas border border-edge p-3 overflow-x-auto text-sm text-fg">{body}</pre>;
+  return <ChatsearchRefBlock shortIds={ids} />;
+}
+// Preview mode: the same renderer with NOTHING interactive in it. WHY: a file tile is itself a
+// <button> (FilesTab, Deliverables), and the code-block Copy button / links inside a rendered
+// markdown preview made a <button> inside a <button> — invalid HTML, a React error on every
+// Projects screen (found by the 2026-08-27 sweep). Code blocks keep their look, links read as text.
+const mdPreviewComponents = {
+  ...mdComponents,
+  pre({ children, node: _node, ...props }: any) {
+    return (
+      <pre className="yc-code rounded-md bg-canvas border border-edge p-3 overflow-x-auto text-sm text-fg my-3" {...props}>
+        {children}
+      </pre>
+    );
+  },
+  a({ href: _href, children, ...props }: any) {
+    return <span className="text-link underline" {...props}>{children}</span>;
+  },
+};
+
 interface Props {
   content: string;
   /** When provided, file paths detected in text are rendered as FilepathToken chips. */
   sessionId?: string;
+  /** Decorative rendering for tiles: no Copy buttons, no links — nothing focusable or clickable. */
+  preview?: boolean;
 }
 
-export default React.memo(function MarkdownContent({ content, sessionId }: Props) {
+export default React.memo(function MarkdownContent({ content, sessionId, preview }: Props) {
   // Memoize the rehype plugin array and the component map by sessionId so that:
   // (a) When sessionId is absent, we use the stable module-scope arrays (no allocation).
   // (b) When sessionId is present, the filepath-token component is added once and
@@ -276,6 +324,7 @@ export default React.memo(function MarkdownContent({ content, sessionId }: Props
   );
 
   const components = useMemo(() => {
+    if (preview) return mdPreviewComponents;
     if (!sessionId) return mdComponents;
     // Extend the base component map with a handler for our custom <filepath-token> hast element.
     // react-markdown lowercases custom element names, so 'filepath-token' matches the tagName.
@@ -290,7 +339,7 @@ export default React.memo(function MarkdownContent({ content, sessionId }: Props
       },
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [sessionId, preview]);
 
   return (
     <ReactMarkdown

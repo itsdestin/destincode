@@ -6,7 +6,7 @@ import './bootstrap/terminal-bridge';
 import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import TerminalView from './components/TerminalView';
 import ChatView from './components/ChatView';
-import HeaderBar from './components/HeaderBar';
+import HeaderBar, { BareHeaderBar } from './components/HeaderBar';
 import InputBar, { type InputBarHandle } from './components/InputBar';
 import StatusBar from './components/StatusBar';
 import { MODELS, type ModelAlias } from './components/StatusBar';
@@ -32,6 +32,7 @@ import { dispatchSlashCommand, type DispatcherResult } from './state/slash-comma
 import { runNativeSlashAction, routeSlashResult } from './state/native-slash-actions';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
+import { buildUsageSnapshot, type SubscriptionUsage } from './state/usage-snapshot';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
@@ -44,6 +45,7 @@ import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
 import { useNativeSessionUsage, useTurnsWithUsage } from './hooks/useNativeSessionUsage';
+import { useNativeSessionTotals } from './hooks/useNativeSessionTotals';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -1223,6 +1225,22 @@ function AppInner() {
           // reportUsage → native:usage-report → status:data cache path was dead
           // (nothing read its nativeUsageMap) and was removed in the whole-branch review.
           break;
+        case 'subagent-usage':
+          // Bookkeeping only — never touches the timeline, the turn state, or
+          // the subagent card's segments. It exists so the parent's totals can
+          // include the work it delegated (spec §2). Arrives on the PARENT's
+          // stream (native-session-host emits it there), and replays from the
+          // parent's record on resume like any other persisted event.
+          batchTranscriptDispatch({
+            type: 'TRANSCRIPT_SUBAGENT_USAGE',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            usage: event.data.usage ?? null,
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
+          });
+          break;
         case 'assistant-thinking': {
           // Text payload → real reasoning content (collapsible in chat).
           // No payload → lifecycle heartbeat only (existing behavior:
@@ -1658,6 +1676,9 @@ function AppInner() {
   // crash/reload, where main kept every session alive but this is a brand-new React tree).
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
+      // Perf lab: boot-time session fetch has resolved (catches pre-existing
+      // sessions on mount — see comment above this effect).
+      performance.mark('yc:sessions-listed');
       if (!list || list.length === 0) return;
 
       // Fix: this per-session seeding used to run INSIDE the setSessions updater
@@ -2116,35 +2137,27 @@ function AppInner() {
   }, [sessionId, activeSessionModel, sessionModels, pendingModel]);
 
   // Snapshot factory for /cost and /usage. Pulls live stats from statusData
-  // and freezes them as a point-in-time snapshot. Returns null if stats haven't
-  // arrived yet (status line hook runs after each command, so a brand-new session
-  // may have no data for a few seconds).
+  // and freezes them as a point-in-time snapshot. Returns null only when the
+  // session has nothing at all to describe — that is a Claude Code session
+  // whose statusline hook hasn't run yet (it runs after each command, so a
+  // brand-new one has no data for a few seconds). A NATIVE session always has
+  // its own session totals to fall back on (Task 14), so it gets a card
+  // immediately; "returns null if stats haven't arrived" stopped being true
+  // then.
   const getUsageSnapshot = useCallback(
-    (sid: string) => {
-      const stats = statusData.sessionStatsMap[sid];
-      const ctx = statusData.contextMap[sid] ?? null;
-      const usage = statusData.usage as { five_hour?: { utilization: number; resets_at: string }; seven_day?: { utilization: number; resets_at: string } } | null;
-      if (!stats && ctx == null && !usage) return null;
-      return {
-        entryId: `usage-${sid}-${Date.now()}`,
-        timestamp: Date.now(),
-        costUsd: stats?.costUsd ?? null,
-        inputTokens: stats?.inputTokens ?? null,
-        outputTokens: stats?.outputTokens ?? null,
-        cacheReadTokens: stats?.cacheReadTokens ?? null,
-        cacheCreationTokens: stats?.cacheCreationTokens ?? null,
-        contextTokens: stats?.contextTokens ?? null,
-        contextPercent: ctx,
-        duration: stats?.duration ?? null,
-        apiDuration: stats?.apiDuration ?? null,
-        linesAdded: stats?.linesAdded ?? null,
-        linesRemoved: stats?.linesRemoved ?? null,
-        fiveHourUtilization: usage?.five_hour?.utilization ?? null,
-        fiveHourResetsAt: usage?.five_hour?.resets_at ?? null,
-        sevenDayUtilization: usage?.seven_day?.utilization ?? null,
-        sevenDayResetsAt: usage?.seven_day?.resets_at ?? null,
-      };
-    },
+    // The derivation itself lives in state/usage-snapshot.ts — a pure function,
+    // so the thing /usage is entirely made of can be tested without rendering
+    // App (no test imports this file). This wrapper only gathers the inputs.
+    (sid: string) =>
+      buildUsageSnapshot({
+        sessionId: sid,
+        now: Date.now(),
+        stats: statusData.sessionStatsMap[sid],
+        contextPercent: statusData.contextMap[sid] ?? null,
+        usage: statusData.usage as SubscriptionUsage | null,
+        isNative: sessionsRef.current.find((x) => x.id === sid)?.provider === 'native',
+        session: chatStateMapRef.current.get(sid),
+      }),
     [statusData],
   );
 
@@ -2465,6 +2478,37 @@ function AppInner() {
     return true;
   }, [dispatch, currentModel, askTakeover]);
 
+  // Cards deep in the chat tree ask for a resume by event — the same
+  // deep-component→destination pattern as youcoded:open-library (~:397).
+  // It has to live HERE rather than next to that listener: it closes over
+  // handleResumeSession, a `const` declared just above, and referencing a
+  // later const from an earlier point in the same function body throws
+  // (temporal dead zone) — this is the earliest point after its declaration.
+  // launchInNewWindow is passed undefined on purpose (spec
+  // 2026-08-26-conversation-preview-header-design.md A2, Destin: "not new
+  // 'window' just new tab in session") — chat-search Resume always opens a
+  // tab, never the detached-window path SessionStrip/ResumeBrowser offer.
+  useEffect(() => {
+    const onResume = (e: Event) => {
+      const d = (e as CustomEvent).detail as {
+        claudeSessionId?: string; projectSlug?: string; projectPath?: string; provider?: string;
+        model?: string; dangerous?: boolean; binding?: ModelBinding;
+      };
+      // The three fields SessionRefActions.requestResume always sends
+      // (SessionDrawer's preview header sends the same shape). A detail
+      // missing any of them can't be resumed — silently drop it rather than
+      // calling handleResumeSession with a hole in its arguments.
+      if (!d?.claudeSessionId || !d.projectSlug || !d.projectPath) return;
+      // model / dangerous / binding arrive only from the preview header's
+      // Resume popover (M-header). A search row's own Resume sends none of
+      // them, and undefined here is what handleResumeSession already treated
+      // as "use the session defaults" — so that path is unchanged.
+      void handleResumeSession(d.claudeSessionId, d.projectSlug, d.projectPath, d.model, d.dangerous, undefined, d.provider, d.binding);
+    };
+    window.addEventListener('youcoded:resume-session', onResume);
+    return () => window.removeEventListener('youcoded:resume-session', onResume);
+  }, [handleResumeSession]);
+
   const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
 
   // Mirror the active view mode onto <html data-view-mode="..."> so CSS can
@@ -2589,6 +2633,9 @@ function AppInner() {
   // NOT gated on isNativeSession — CC turns carry usage too (the transcript
   // watcher stamps it), and the reuse chip serves both runtimes.
   const turnsWithUsage = useTurnsWithUsage(sessionId);
+  // Session-so-far totals for the bar's token / cost / code-change chips.
+  // Null for CC sessions, which take those numbers from the statusline.
+  const nativeTotals = useNativeSessionTotals(isNativeSession ? sessionId : null);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -3007,6 +3054,7 @@ function AppInner() {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
                   model={modelChip}
+                  provider={isNativeSession ? 'native' : 'claude'}
                   permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
                   onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}
                   fast={fastMode}
@@ -3046,11 +3094,44 @@ function AppInner() {
                   nativeUsage={nativeStatusUsage}
                   nativeContextLength={nativeStatusUsage?.contextLength ?? null}
                   turnsWithUsage={turnsWithUsage}
+                  nativeTotals={nativeTotals}
                 />
               </div>
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3">
+          <>
+            {/* Welcome screen gets the app's bare frame (P-6, Destin
+                2026-08-27: "a full frame around the welcome screen, as exists
+                in terminal view ... just bare frame like terminal view").
+                Same chrome-glass + chrome-wrapper + headerRef as the session
+                branch so a wallpaper theme paints this header exactly the way
+                it paints the session header, and useChromeMeasurements (keyed
+                on the same headerRef) publishes --top-chrome-height for the
+                glass cutout. `chrome-glass--bare` gives the donut a thin
+                --frame-edge bottom strip, like terminal view, instead of the
+                5rem fallback reserved for an input bar that isn't here — as
+                wide as the header, so the frame closes evenly top and bottom. */}
+            <div className="chrome-glass chrome-glass--bare" />
+            <div ref={headerRef} className="chrome-wrapper bg-canvas">
+              <BareHeaderBar
+                settingsOpen={settingsOpen}
+                onToggleSettings={() => setSettingsOpen(prev => !prev)}
+                settingsBadge={settingsBadge}
+                settingsDangerBadge={settingsDangerBadge}
+              />
+            </div>
+          <div
+            className="flex-1 flex flex-col items-center justify-center gap-3"
+            // The header is position:absolute over the top of this area, so
+            // center the welcome content in the space BELOW it (and above the
+            // bare frame's bottom strip) rather than behind it. --top-chrome-
+            // bottom, not -height, so a floating header pill's own margin is
+            // cleared too — same reason ChatView's empty-state hint uses it.
+            // paddingBottom matches the bottom strip, which is now the header's
+            // own height (globals.css .chrome-glass--bare), so the content
+            // still centres in the open middle instead of drifting downward.
+            style={{ paddingTop: 'var(--top-chrome-bottom, 2.5rem)', paddingBottom: 'var(--top-chrome-height, 2.5rem)' }}
+          >
             <p className="text-xl text-fg-muted">No Active Session</p>
             {/* scene: the hero surface renders the theme's companions (sun,
                 motes, sparkles) orbiting the mascot — big canvas, no clipping. */}
@@ -3209,6 +3290,7 @@ function AppInner() {
               )}
             </div>
           </div>
+          </>
         )}
       </div>
 
@@ -3625,6 +3707,9 @@ function AppInnerProfiler({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // Perf lab: React has mounted the app shell (first commit).
+  useEffect(() => { performance.mark('yc:app-mounted'); }, []);
+
   // Auto-show buddy on launch if the user previously enabled it. The effect
   // is called unconditionally (React rules-of-hooks) but no-ops inside
   // buddy windows themselves — only the main window should re-open the

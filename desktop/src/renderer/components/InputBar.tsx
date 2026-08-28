@@ -3,6 +3,7 @@ import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import TerminalToolbar from './TerminalToolbar';
 import { Button } from './ui';
+import { AttachmentChip } from './AttachmentChip';
 import { AttachIcon, CompassIcon } from './Icons';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
@@ -72,6 +73,9 @@ interface Props {
   provider?: 'claude' | 'native';
 }
 
+// isImage no longer drives the chip (AttachmentChip derives the preview kind
+// from the path itself) — it stays because the slash-command dispatcher's
+// `files` type still carries it.
 interface Attachment {
   path: string;
   name: string;
@@ -661,37 +665,18 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
 
       {attachments.length > 0 && (
         <div className="flex gap-2 px-3 py-2 overflow-x-auto">
+          {/* Design C (Destin, 2026-08-27, ledger P-19): a 128×96 card with a
+              real preview — picture, RENDERED markdown, or mono text — the name
+              in a strip along the bottom, and the ✕ always visible. The card
+              itself lives in AttachmentChip.tsx; the mock-up page renders the
+              same component so the two cannot drift. */}
           {attachments.map((att) => (
-            <div key={att.path} className="relative shrink-0 group">
-              {att.isImage ? (
-                <img
-                  src={`file://${att.path.replace(/\\/g, '/')}`}
-                  alt={att.name}
-                  loading="lazy"
-                  className="w-12 h-12 rounded-md object-cover border border-edge"
-                />
-              ) : (
-                <div className="w-12 h-12 rounded-md border border-edge bg-panel flex items-center justify-center">
-                  <span className="text-4xs text-fg-dim text-center leading-tight px-1 truncate">
-                    {att.name}
-                  </span>
-                </div>
-              )}
-              {/* In-chip remover, NOT a panel closer — CloseButton's 28px would be
-                  nearly as tall as the chip it sits on. Destin's call (spec §11.8 F):
-                  keep the 16px geometry, take the accessible name and focus ring.
-                  Still owed a `.coarse-hit` pass: 16px is well under the ~44dp touch
-                  guideline and this renderer is the Android UI too. */}
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={`Remove ${att.name ?? 'attachment'}`}
-                onClick={() => removeAttachment(att.path)}
-                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-inset text-fg-2 hover:bg-edge text-3xs leading-none opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-              >
-                ×
-              </Button>
-            </div>
+            <AttachmentChip
+              key={att.path}
+              path={att.path}
+              name={att.name}
+              onRemove={() => removeAttachment(att.path)}
+            />
           ))}
         </div>
       )}

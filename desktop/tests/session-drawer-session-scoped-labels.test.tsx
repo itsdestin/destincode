@@ -44,6 +44,15 @@ const ROOT = '/home/u/proj';
 
 afterEach(cleanup);
 
+// jsdom has no matchMedia — the preview header's narrow-viewport collapse
+// (spec 2026-08-26 A4) calls useNarrowViewport() unconditionally on every
+// SessionDrawer render now, same stub shape as use-narrow-viewport.test.tsx.
+(window as any).matchMedia = (window as any).matchMedia || ((q: string) => ({
+  matches: false, media: q, onchange: null,
+  addEventListener: () => {}, removeEventListener: () => {},
+  addListener: () => {}, removeListener: () => {}, dispatchEvent: () => true,
+}));
+
 describe('SessionDrawer row labels are scoped to THIS session', () => {
   it('shows "viewed" and the read\'s own timestamp for a file only read in this session, ignoring edits from other sessions', () => {
     const now = Date.now();
@@ -87,6 +96,11 @@ describe('SessionDrawer row labels are scoped to THIS session', () => {
         checkExistence: vi.fn().mockResolvedValue({ ok: true, missingIds: [] }),
         onChanged: undefined,
       },
+      // SessionDrawer's preview header (spec 2026-08-26 A1/A2/A4) calls
+      // useTagRegistry() UNCONDITIONALLY — not just while a preview is
+      // showing — so every SessionDrawer render needs this, even a test like
+      // this one that never opens a preview.
+      tags: { list: vi.fn().mockResolvedValue([]) },
     };
 
     const { container } = render(

@@ -43,7 +43,7 @@ describe('specialist foreground run (Task 7)', () => {
     const model = scriptedModel(scripts);
     store = new SessionStore(new NativeHome(root));
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, undefined, askHoldMs,
     );
     return model;
@@ -85,7 +85,14 @@ describe('specialist foreground run (Task 7)', () => {
     });
 
     // (a) display re-stamping: child events arrive under the PARENT's sessionId
-    const childStamped = events.filter((e) => e.data?.agentId === childId);
+    //
+    // 'subagent-usage' is excluded from this filter throughout: it is NOT a
+    // stamped copy of a child event, it is the PARENT's own bookkeeping event
+    // (the finished specialist's total spend, spec §2). It carries agentId only
+    // to name which child the money belongs to, and unlike a display copy it IS
+    // persisted to the parent's own record. Covered by
+    // tests/subagent-usage-event.test.ts.
+    const childStamped = events.filter((e) => e.data?.agentId === childId && e.type !== 'subagent-usage');
     expect(childStamped.length).toBeGreaterThan(0);
     for (const e of childStamped) {
       expect(e.sessionId).toBe('root-1');
@@ -122,7 +129,12 @@ describe('specialist foreground run (Task 7)', () => {
     // re-emission — the copy is for the renderer, never for the parent's disk
     // record, which must stay a faithful record of the parent's own turns).
     await host.drain('root-1');
-    expect(store.readEvents('root-1', root).filter((e) => e.data?.agentId)).toHaveLength(0);
+    const parentFile = store.readEvents('root-1', root);
+    expect(parentFile.filter((e) => e.data?.agentId && e.type !== 'subagent-usage')).toHaveLength(0);
+    // The ONE agentId-bearing event that DOES belong on the parent's disk: the
+    // specialist's spend. It has to persist, or a resumed session would forget
+    // every specialist it ever paid for (spec §2, consequence 3).
+    expect(parentFile.filter((e) => e.type === 'subagent-usage')).toHaveLength(1);
 
     // (e) the report comes back, wrapped with a header and a transcript pointer
     // — Task 8: the header carries the child's assigned fun title, not the
@@ -447,7 +459,7 @@ describe('specialist foreground run (Task 7)', () => {
       const home = new NativeHome(root);
       store = new SessionStore(new NativeHome(root));
       host = new NativeSessionHost(
-        store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+        store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
         undefined, undefined, undefined, undefined, undefined, home,
       );
       await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -533,7 +545,7 @@ describe('specialist foreground run (Task 7)', () => {
       const home = new NativeHome(root);
       store = new SessionStore(new NativeHome(root));
       host = new NativeSessionHost(
-        store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+        store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
         undefined, undefined, undefined, undefined, undefined, home,
       );
       await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -811,7 +823,7 @@ describe('heartbeat staleness (Task 7)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     return {
@@ -872,7 +884,7 @@ describe('heartbeat staleness (Task 7)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     return {
@@ -1080,7 +1092,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1134,7 +1146,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, factory, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, factory, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1189,7 +1201,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     // degrades to the static per-specialist cap when remaining is Infinity,
     // which would hide any difference concurrentReporters makes.
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: 3500, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: 3500, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1239,7 +1251,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1275,7 +1287,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1312,7 +1324,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const writeSpy = vi.spyOn(home, 'writeSessionArtifact');
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1354,7 +1366,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     vi.spyOn(home, 'readSessionArtifact').mockReturnValue(null);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1415,7 +1427,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1454,7 +1466,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1520,7 +1532,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1578,7 +1590,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1638,7 +1650,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1685,7 +1697,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1719,7 +1731,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1751,7 +1763,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     const home = new NativeHome(root);
     store = new SessionStore(home);
     host = new NativeSessionHost(
-      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null, undefined,
       undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
@@ -1834,7 +1846,7 @@ describe('R12 (Task 4, plan 1c) — a running child keeps its spawn-time definit
     store = new SessionStore(home);
     host = new NativeSessionHost(
       store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
-      undefined, undefined, undefined, undefined, undefined, home,
+      undefined, undefined, undefined, undefined, undefined, undefined, home,
     );
     await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
 

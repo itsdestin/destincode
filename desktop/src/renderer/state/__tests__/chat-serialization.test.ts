@@ -13,6 +13,37 @@ describe('chat state serialization', () => {
     expect(round).toEqual(state);
   });
 
+  it('round-trips a turn carrying every segment kind, with the plan segment intact', () => {
+    // The earlier round-trip used `segments: []`, so nothing pinned that a
+    // POPULATED segment list survives the JSON hop — and `plan` is the one that
+    // carries fields beyond content/messageId, which is exactly what a lossy
+    // serializer would quietly drop.
+    const session = createSessionChatState();
+    session.assistantTurns.set('turn-1', {
+      id: 'turn-1',
+      segments: [
+        { type: 'text', content: 'hello', messageId: 'm1' },
+        { type: 'reasoning', content: 'thinking', messageId: 'm2' },
+        { type: 'tool-group', groupId: 'g1' },
+        { type: 'plan', content: '# Plan', messageId: 'm3', planFilePath: '/p/plan.md', allowedPrompts: ['go'] },
+      ],
+      timestamp: 1,
+      stopReason: null,
+      model: null,
+      usage: null,
+      anthropicRequestId: null,
+    } as never);
+    const state: ChatState = new Map([['session-a', session]]);
+
+    const serialized = serializeChatState(state);
+    const json = JSON.stringify(serialized);
+    expect(json).toContain('"type":"plan"');
+    const round = deserializeChatState(JSON.parse(json));
+
+    expect(round.get('session-a')!.assistantTurns.get('turn-1')!.segments)
+      .toEqual(session.assistantTurns.get('turn-1')!.segments);
+  });
+
   it('round-trips a session with tool calls, turns, and an active turn set', () => {
     const session = createSessionChatState();
     const toolCall: ToolCallState = {

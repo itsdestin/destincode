@@ -1337,6 +1337,13 @@ export function installShim(): void {
       writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
         invoke('project:write-context-file', { projectPath, absolutePath, content }),
     },
+    // Session references. Object payloads, like project.* above — the remote
+    // server reads named fields off `payload`, never positional arguments.
+    chatsearch: {
+      resolve: (shortIds: string[]) => invoke('chatsearch:resolve', { shortIds }),
+      read: (req: { provider: string; id: string; tail: number; before?: number }) =>
+        invoke('chatsearch:read', req),
+    },
     // System namespace — hardware back button bridge for Android.
     // notifyStackState: React tells Android whether the dismissal stack is
     //   non-empty. Android sets OnBackPressedCallback.isEnabled accordingly
@@ -1604,6 +1611,11 @@ export function installShim(): void {
     // (payload.slug / payload.rule); the desktop preload passes the same values
     // positionally. The section is NOT gated on native.supported, so this route
     // is the one a phone over remote access actually uses.
+    // Object payload (this transport's convention) — remote-server.ts reads
+    // payload.filePath / payload.maxBytes. Same clamp + deny list as desktop.
+    fs: {
+      readHead: (filePath: string, maxBytes?: number) => invoke('fs:read-head', { filePath, maxBytes }),
+    },
     permissions: {
       list: () => invoke('permissions:list'),
       remove: (slug: string, rule: unknown) => invoke('permissions:remove', { slug, rule }),
@@ -1659,7 +1671,7 @@ export function installShim(): void {
       downloadCancel: (downloadId: string) => invoke('models:download-cancel', { downloadId }),
       delete: (id: string) => invoke('models:delete', { id }),
       installed: () => invoke('models:installed'),
-      orphanedPartials: () => invoke('models:orphaned-partials'),
+      resume: (modelId: string) => invoke('models:resume', { modelId }),
       detectEndpoints: () => invoke('endpoints:detect'),
       setBackend: (backend: string) => invoke('engine:set-backend', { backend }),
       memoryCheck: (modelId: string) => invoke('models:memory-check', { modelId }),

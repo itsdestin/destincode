@@ -1,0 +1,2 @@
+{"type":"user","uuid":"u1","isSidechain":true,"promptId":"p1","timestamp":"2026-07-26T00:00:01Z","message":{"role":"user","content":"Fix the timeout"}}
+{"type":"assistant","uuid":"a3","isSidechain":true,"timestamp":"2026-07-26T00:00:06Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done — **fixed**."}]}}

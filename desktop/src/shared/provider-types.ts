@@ -35,7 +35,11 @@ export interface CatalogModel {
   supportsVision?: boolean;
   // USD per 1M tokens — terse to mirror per-1M-token convention; `in` is a JS
   // keyword — destructure as `{ in: input }`.
-  pricing?: { in: number; out: number };
+  /** USD per 1,000,000 tokens. `cacheRead`/`cacheWrite` are optional because
+   *  not every provider publishes them; absent means "not published", never
+   *  "free" (see the catalog's never-guess rule). Modelling them is what keeps
+   *  the session-cost chip from over-reporting a cached session (spec §5). */
+  pricing?: { in: number; out: number; cacheRead?: number; cacheWrite?: number };
   // Local-engine models only (Plan B/C). fit is Plan C's estimator; Plan B
   // fills sizeBytes/quant('unknown')/installed(true) from the cache scan.
   local?: { sizeBytes: number; quant: string; installed: boolean; fit?: 'fits' | 'tight' | 'too-large';

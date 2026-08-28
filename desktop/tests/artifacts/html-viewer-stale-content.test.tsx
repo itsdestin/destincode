@@ -101,7 +101,18 @@ describe('HTML artifact viewer — stale content across file switches', () => {
         checkExistence: vi.fn().mockResolvedValue({ ok: true, missingIds: [] }),
         onChanged: undefined,
       },
+      // SessionDrawer's preview header (spec 2026-08-26 A1/A2/A4) calls
+      // useTagRegistry() unconditionally on every render, file-viewing or not.
+      tags: { list: vi.fn().mockResolvedValue([]) },
     };
+    // jsdom has no matchMedia; the header's narrow-viewport collapse calls
+    // useNarrowViewport() unconditionally too (same stub as
+    // use-narrow-viewport.test.tsx).
+    (window as any).matchMedia = (window as any).matchMedia || ((q: string) => ({
+      matches: false, media: q, onchange: null,
+      addEventListener: () => {}, removeEventListener: () => {},
+      addListener: () => {}, removeListener: () => {}, dispatchEvent: () => true,
+    }));
   });
 
   it('never shows the previous file’s content after switching artifacts', async () => {

@@ -184,6 +184,26 @@ export function BubbleFeed({ sessionId }: Props) {
             agentId: event.data.agentId,
           });
           break;
+        case 'subagent-usage':
+          // Task 23 item 4 — parity with App.tsx's mirror of this case.
+          // Bookkeeping only: never touches the timeline, the turn state, or a
+          // subagent card's segments. It exists so the parent's totals include
+          // the work it delegated (spec §2), and it arrives on the PARENT's
+          // stream. Nothing in the buddy window reads `totals` today, so this
+          // changes nothing a user can see — it is here for the same reason
+          // turn-complete just above forwards its usage: this feed drives its
+          // OWN chatReducer instance, so if the buddy ever surfaces those
+          // numbers they must not silently be missing every delegated run.
+          batchDispatch({
+            type: 'TRANSCRIPT_SUBAGENT_USAGE',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            usage: event.data.usage ?? null,
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
+          });
+          break;
         case 'assistant-thinking':
           // Reasoning chunks carry a text payload (native harness / thinking
           // models); the CC transcript path is heartbeat-only. Truthiness

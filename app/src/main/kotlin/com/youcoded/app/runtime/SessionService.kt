@@ -3437,6 +3437,53 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
             }
 
+            "fs:read-head" -> {
+                // First bytes of a user-chosen file for the composer's attachment
+                // preview cards (rendered markdown / mono text). Mirrors desktop
+                // main/fs-read-head.ts: absolute paths only, the read-binary
+                // sensitive-path deny list, a hard 4096-byte cap whatever the
+                // caller asks for (READ_HEAD_MAX_BYTES in shared/read-head.ts),
+                // and a NUL sniff so a binary never comes back as U+FFFD soup.
+                // NOT roots-gated — the user attaches whatever the picker gives.
+                val headPath = msg.payload.optString("filePath", "")
+                if (headPath.isEmpty() || !java.io.File(headPath).isAbsolute) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "no path")) }
+                    return@handleBridgeMessage
+                }
+                val headFile = try { java.io.File(headPath).canonicalFile } catch (_: java.io.IOException) { java.io.File(headPath).absoluteFile }
+                if (EditablePathPolicy.isSensitivePath(canonicalize(headFile.path, null)) ||
+                    EditablePathPolicy.isSensitivePath(canonicalize(headPath, null))) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "not-allowed")) }
+                    return@handleBridgeMessage
+                }
+                val requested = msg.payload.optInt("maxBytes", 600)
+                val cap = requested.coerceIn(1, 4096)
+                val payload = if (!headFile.exists()) {
+                    org.json.JSONObject().put("ok", false).put("error", "orphan")
+                } else if (!headFile.isFile) {
+                    org.json.JSONObject().put("ok", false).put("error", "not-a-file")
+                } else try {
+                    val buf = ByteArray(cap)
+                    val len = EditablePathPolicy.readFully(headFile, buf)
+                    val head = buf.copyOf(len)
+                    if (EditablePathPolicy.looksBinary(head)) {
+                        org.json.JSONObject().put("ok", false).put("error", "binary")
+                    } else {
+                        val truncated = headFile.length() > len
+                        // A cut mid-character decodes to U+FFFD at the very end;
+                        // when truncated that is the cut, not the file — drop it.
+                        var text = String(head, Charsets.UTF_8)
+                        if (truncated && text.endsWith("\uFFFD")) text = text.dropLast(1)
+                        org.json.JSONObject().put("ok", true).put("text", text).put("truncated", truncated)
+                    }
+                } catch (e: java.io.IOException) {
+                    org.json.JSONObject().put("ok", false).put("error", e.message ?: "read failed")
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
+
             "artifacts:read-binary" -> {
                 // Read a file as base64 for the binary viewers (xlsx/docx/pdf/image).
                 // The WebView can't fetch a file:// URL from the asset origin, so
@@ -3654,6 +3701,15 @@ class SessionService : Service() {
             //    (list-project, include-external, exclude, delete-project) are
             //    desktop-only in v1. ──────────────────────────────────────────────
 
+            // Android has no chatsearch index; the shared UI falls back to plain
+            // shell output when resolve answers not-implemented, so a search
+            // result on a phone reads as the CLI's own table rather than a card.
+            "chatsearch:resolve",
+            "chatsearch:read" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
             "artifacts:list-project" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
@@ -3822,7 +3878,7 @@ class SessionService : Service() {
             "models:download-cancel",
             "models:delete",
             "models:installed",
-            "models:orphaned-partials",  // orphaned .partial scan (2026-07-15) — desktop-only
+            "models:resume",  // resume an interrupted download (2026-08-26) — desktop-only
             "endpoints:detect",
             // Model memory lifecycle (2026-07-14) — per-model residency, memory
             // guard, [Reload Model]. Desktop-only; no Android runtime. The push

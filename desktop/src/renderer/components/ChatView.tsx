@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../state/chat-context';
 import { HISTORY_EXPAND_PROMPT_ID, shouldRenderAssistantTurn } from '../state/chat-types';
 import UserMessage from './UserMessage';
@@ -26,6 +26,7 @@ import { assistantName } from '../utils/assistant-name';
 import { ContentFindBar } from './ContentFindBar';
 import { isTypingTarget } from '../utils/is-typing-target';
 import { useStickToBottom } from '../hooks/use-stick-to-bottom';
+import { useSessionPreviewListener } from '../hooks/useSessionPreviewListener';
 
 interface Props {
   sessionId: string;
@@ -111,6 +112,13 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
   // Artifact drawer state — read from ArtifactContext so ChatView reacts to
   // the drawer toggle without needing a prop threaded down from App.tsx.
   const { state: artifactState, dispatch: artifactDispatch } = useArtifact();
+  // Preview cards (SessionRefActions, deep in the chat tree) ask for a past
+  // conversation by event. Mounted here — not in SessionDrawer, which is
+  // unmounted until it opens — so it hears the very first Preview click.
+  // `sessionActive` gates which of the many mounted ChatViews actually
+  // responds — see the WHY comment inside the hook (deliberately not
+  // `visible`, which also depends on the chat/terminal toggle).
+  useSessionPreviewListener(sessionId, sessionActive, artifactDispatch);
   // Drawer open/closed is per-session — read this session's flag (absent → closed).
   const drawerOpen = artifactState.drawerOpenBySession[sessionId] ?? false;
   const drawerExpanded = artifactState.drawerExpanded;
@@ -203,6 +211,16 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
     return null;
   }, [state.timeline, state.assistantTurns]);
 
+  // Perf (cycle 1, N1): findArchiveBoundary walks the WHOLE timeline backwards
+  // looking for the last /compact or /clear marker — and in the common
+  // never-compacted case it walks all the way to index 0 and finds nothing. It
+  // used to run inline in the render body, i.e. once per render, and a
+  // streaming session renders once per delta. The timeline array's identity
+  // only changes when an entry is appended (a delta updates assistantTurns,
+  // not timeline), so memoising on it turns a once-per-token scan into a
+  // once-per-entry scan. Pinned by tests/chatview-archive-boundary-memo.test.tsx.
+  const archiveBoundary = useMemo(() => findArchiveBoundary(state.timeline), [state.timeline]);
+
   // PTY-buffer classifier drives the attention banner. Replaces the old
   // 30s thinking-timeout watchdog + TERMINAL_ACTIVITY heartbeat — the hook
   // reads the xterm buffer directly and decides 'ok' vs. 'stuck'/'shell-idle'/etc.
@@ -244,14 +262,25 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
   }, [visible, scrollToBottom, stickRef]);
 
   // Auto-scroll when new content arrives and the view is still stuck to the
-  // bottom. Uses lastActivityAt (a timestamp that updates on content-producing
-  // actions) instead of Map references which changed on every reducer dispatch.
+  // bottom. Keyed on the things that add content — an appended entry, the
+  // thinking indicator — not on Map references, which change on every dispatch.
   // Fix: reads stickRef, NOT the atBottom state — a native session dispatches
   // one delta per streamed token, and the state value is a render behind, so a
   // scroll the user just made would be undone before React caught up.
+  //
+  // Perf (cycle 1, N2): state.lastActivityAt used to be a dep here. The reducer
+  // re-stamps it on EVERY streamed delta (and on tool events, heartbeats, …),
+  // and scrollToBottom reads scrollHeight — which, right after a commit that
+  // dirtied the DOM, is a forced synchronous layout of the whole document (the
+  // hook's own PERF note: "a FULL forced reflow of a large transcript"). So a
+  // streaming session paid one forced reflow per token. The growth those deltas
+  // cause is ALREADY re-pinned by the ResizeObserver on contentRef below, which
+  // runs after layout, where the same read is free. Dropping the timestamp
+  // loses nothing and removes the per-token reflow. Pinned by
+  // tests/chatview-scroll-pin-deps.test.tsx.
   useEffect(() => {
     if (stickRef.current) scrollToBottom();
-  }, [state.timeline.length, state.lastActivityAt, state.isThinking, scrollToBottom, stickRef]);
+  }, [state.timeline.length, state.isThinking, scrollToBottom, stickRef]);
 
   // Sending a message re-arms auto-scroll. Without this, reading back through
   // history (which now correctly unsticks) and then sending would leave you
@@ -362,6 +391,17 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
   }, [visible]);
+
+  // The find row changes the scroll container's height (it takes its own row
+  // above the messages). Shrinking a container does not fire a scroll event
+  // and none of the ResizeObservers above watch the container itself, so a
+  // view pinned to the bottom would be left the row's height short of it.
+  // Re-pin synchronously after layout while still stuck; a user who scrolled
+  // up keeps their place (the browser preserves scrollTop) and just sees the
+  // messages shift down by the row, which is the intended behaviour.
+  useLayoutEffect(() => {
+    if (stickRef.current) scrollToBottom();
+  }, [findOpen, scrollToBottom, stickRef]);
 
   // Wheel scroll: burst acceleration + momentum ("flick") glide.
   //
@@ -720,20 +760,6 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
       <div className={`framed-shell${rightPaneOpen ? ' drawer-open' : ''}${drawerExpanded && !gameOpen ? ' drawer-expanded' : ''}`}>
         <div className="frame-edge" />
         <div className="chat-pane">
-          {/* Chat-history find bar — sibling of (not inside) the scroll/content
-              container so its own text isn't matched. Anchored below the
-              overlaid header chrome via the top offset. */}
-          {findOpen && (
-            <ContentFindBar
-              containerRef={contentRef}
-              scrollRef={scrollContainerRef}
-              highlightName="chat-find"
-              placeholder="Find in chat"
-              positionClassName="right-3 top-[calc(var(--top-chrome-height,3rem)+0.5rem)]"
-              resetKey={sessionId}
-              onClose={() => setFindOpen(false)}
-            />
-          )}
           {/* Empty-state hint — absolutely centered in the chat-pane between the
               top and bottom chrome. Uses --top-chrome-bottom (not the broken
               h-full centering it replaces) so it clears a FLOATING header pill,
@@ -748,7 +774,33 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
               Start a conversation with {assistantName(provider)}
             </div>
           )}
-          <div ref={scrollContainerRef} className="chat-scroll h-full overflow-y-auto">
+          {/* Chat-history find bar — sibling of (not inside) the scroll/content
+              container so its own text isn't matched. Its own ROW above the
+              messages, like a browser's (P-14, Destin 2026-08-27): the old
+              floating card (right-3, just under the header) sat on top of the
+              first right-aligned user message and hid the end of it. In flow
+              here, .chat-pane (a flex column, globals.css) lets the scroll
+              container below take the remaining height, so the messages shift
+              down while the bar is open and back when it closes. `.find-row`'s
+              top margin clears the overlaid header (globals.css). */}
+          {findOpen && (
+            <ContentFindBar
+              layout="row"
+              containerRef={contentRef}
+              scrollRef={scrollContainerRef}
+              highlightName="chat-find"
+              placeholder="Find in chat"
+              resetKey={sessionId}
+              onClose={() => setFindOpen(false)}
+            />
+          )}
+          {/* flex-1 min-h-0 (was h-full): with the find row in flow above it,
+              h-full would overflow the pane by the row's height and clip the
+              last message under the input bar. chat-scroll--below-find-row
+              drops the header-clearing padding-top while the row is open —
+              the content no longer starts under the header, it starts under
+              the row. */}
+          <div ref={scrollContainerRef} className={`chat-scroll flex-1 min-h-0 overflow-y-auto${findOpen ? ' chat-scroll--below-find-row' : ''}`}>
            <div ref={contentRef}>
         {state.timeline.length === 0 && !state.isThinking ? null : (
           <>
@@ -762,7 +814,7 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
               // context but still the user's to re-read. /clear used to WIPE the
               // timeline instead, which threw away readable history to express a
               // context reset (Destin, 2026-07-28).
-              const { index: lastArchiveIdx, kind: archiveKind } = findArchiveBoundary(state.timeline);
+              const { index: lastArchiveIdx, kind: archiveKind } = archiveBoundary;
               return state.timeline.map((entry, idx) => {
                 const isPreCompaction = lastArchiveIdx >= 0 && idx < lastArchiveIdx;
               let key: string;

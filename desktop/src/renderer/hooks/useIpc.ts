@@ -309,6 +309,11 @@ declare global {
       };
       // Remembered "Always allow" rules (M5 2a). Keyed by PROJECT SLUG, not
       // cwd — permissions.json never stored the cwd, and the slug is lossy.
+      // First bytes of a user-chosen file for a preview tile (composer
+      // attachment cards). Capped in main; see shared/read-head.ts.
+      fs: {
+        readHead: (filePath: string, maxBytes?: number) => Promise<import('../../shared/read-head').ReadHeadResult>;
+      };
       permissions: {
         list: () => Promise<import('../../shared/permission-types').StoredProject[]>;
         remove: (slug: string, rule: import('../../shared/permission-types').PermissionRule) => Promise<boolean>;
@@ -358,10 +363,10 @@ declare global {
         download: (repo: string, quant: any) => Promise<{ downloadId: string }>;
         downloadCancel: (downloadId: string) => Promise<boolean>;
         delete: (id: string) => Promise<boolean>;
-        installed: () => Promise<any[]>;
-        // Orphaned .partial files from a previous app run (2026-07-15) — clean
-        // via delete(modelId); resume by re-downloading the same repo+quant.
-        orphanedPartials: () => Promise<import('../../shared/model-manager-types').OrphanedPartial[]>;
+        installed: () => Promise<import('../../shared/model-manager-types').InstalledLocalModel[]>;
+        // Resume an interrupted download (2026-08-26). Main reads the manifest
+        // written beside the .partial — no Hugging Face round trip.
+        resume: (modelId: string) => Promise<{ downloadId: string }>;
         detectEndpoints: () => Promise<any[]>;
         setBackend: (backend: string) => Promise<any>;
         onDownloadProgress: (cb: (p: any) => void) => () => void;
