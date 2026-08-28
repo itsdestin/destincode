@@ -144,7 +144,20 @@ export type TranscriptEventType =
   // only `skillId`/`displayName`/`args` as a compact card, because a 26k-character
   // SKILL.md as a user bubble is unreadable (Destin, 2026-07-28). `skillPath`
   // makes the card open the real file in the artifact viewer.
-  | 'skill-invoked';
+  | 'skill-invoked'
+  // Native-runtime only: one finished specialist's TOTAL spend, reported to the
+  // PARENT session so the parent's status bar can count work it delegated
+  // (spec §2/§8). Carries the child's summed `usage` (with its own costUsd/free),
+  // its `model`, the `parentAgentToolUseId` of the Task call that started it, and
+  // its `agentId`. Persisted on the parent, so replay restores it exactly like a
+  // tool card — the totals are rebuilt from the record, so a resumed session must
+  // not forget the specialists it ran.
+  // NOT a forwarded child turn-complete: SUBAGENT_DISPLAY_TYPES deliberately
+  // withholds that copy, because a stamped one would end the PARENT's turn in the
+  // reducer and attribute the child's model to the parent. Bookkeeping only — it
+  // never enters the timeline and never enters model history (history-rebuild.ts's
+  // default branch drops it).
+  | 'subagent-usage';
 
 export interface TranscriptEvent {
   type: TranscriptEventType;
@@ -199,6 +212,34 @@ export interface TranscriptEvent {
        *  last step's prompt plus its output. Distinct from inputTokens, which
        *  sums every step and therefore re-counts the history once per step. */
       contextUsedTokens?: number;
+      /** Native runtime only: USD for THIS turn, priced at the model that ran
+       *  it. `null` means the model has no published price — distinct from
+       *  absent, which means no pricing information at all (a Claude Code turn).
+       *  The renderer sums these; it never multiplies tokens by a rate itself. */
+      costUsd?: number | null;
+      /** Native runtime only: this turn ran on a model that costs nothing to
+       *  run — a local engine, or a metered model published at a rate of zero.
+       *  Deliberately NOT the same as `costUsd: null`, which means "metered,
+       *  but no published rate": the status bar words the two differently
+       *  ("runs on your machine" vs "no published price"). Only main can tell
+       *  them apart — it is the only side that knows the provider type. */
+      free?: boolean;
+      /** Native runtime only, and only where the provider reports one: the USD
+       *  figure the PROVIDER ITSELF charged for this turn's requests. Today only
+       *  OpenRouter-shaped providers report a cost, so this is ABSENT on a local
+       *  model, an Anthropic or OpenAI key, and a plain OpenAI-compatible
+       *  endpoint.
+       *
+       *  Absent means "the provider told us nothing" — never $0, and never
+       *  "we checked and it matched". A reported 0 (a genuinely free model) is
+       *  a real reading and is kept as 0, which is why this is `number` and not
+       *  `number | null`: unlike costUsd there is no third state to spell.
+       *
+       *  Present ONLY when every step of the turn reported one, so it always
+       *  covers exactly the same steps as `costUsd` and the two can be compared
+       *  honestly. Diagnostic: main compares them and logs a gap; nothing in
+       *  the UI reads this. */
+      providerCostUsd?: number;
     };
     /**
      * Populated only on events emitted from a subagent JSONL — identifies
