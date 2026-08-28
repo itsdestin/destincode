@@ -73,6 +73,20 @@ import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-ex
 import { cleanupStaleDownloads } from './update-installer';
 import { runAnalyticsOnLaunch } from './analytics-service';
 import { loadConfigSync, setAppliedAtLaunch, setCachedGpu } from './performance-config';
+import { perfMark } from './perf-marks';
+
+// Perf lab instrumentation: perfMark() is a no-op unless YOUCODED_PERF_LOG is
+// set, so these calls cost nothing in a normal launch. The names below are a
+// wire contract with youcoded-dev/scripts/perf-lab, which parses them verbatim
+// and derives each boot chore's duration from the gap between consecutive
+// marks — so keep them in execution order and don't rename one in isolation.
+//
+// WHY "imports-done" and not "module-start": tsconfig sets "module": "commonjs",
+// so TypeScript emits all 46 import declarations above as require() calls at the
+// top of the file, in source order. Every transitive main-process dependency has
+// therefore already been loaded and evaluated by the time this line runs — this
+// mark is the END of the import phase, not the start of the module.
+perfMark('main:imports-done');
 
 // Last-resort safety net for async work nobody awaited. The main process runs
 // a lot of fire-and-forget I/O (watchers, poll timers, disk caches, loadURL);
@@ -785,6 +799,15 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
 
 function createWindow(firstRunManager?: FirstRunManager) {
   mainWindow = createAppWindow({ maximize: true });
+  // Perf lab: the renderer bundle has finished loading (not yet mounted).
+  // Registered HERE, not in createAppWindow: createAppWindow also builds the
+  // three detached/tear-off windows (and the buddy floaters), and the rig's log
+  // parse is last-occurrence-wins — so a window detached hours later would
+  // overwrite this mark and drag blankWindowMs with it. createWindow runs once, from
+  // the app.whenReady() block. createAppWindow is synchronous and returns before
+  // its loadURL/loadFile promise can settle, so this listener is still attached
+  // in the same tick as the load call and cannot miss the event.
+  mainWindow.webContents.once('did-finish-load', () => perfMark('main:main-window:did-finish-load'));
 
   // Plan 2b Task 8: construct the conversation-lease client. Lazy accessors —
   // the hub socket + managed roots don't exist yet at this point (they're wired
@@ -1279,7 +1302,9 @@ if (!app.isPackaged && process.env.YOUCODED_DEVTOOLS_PORT) {
 // and the unhandledRejection listener registered at the top of this file logs
 // it and keeps the app alive rather than exiting silently.
 void app.whenReady().then(async () => {
+  perfMark('main:when-ready');
   await rotateLog();
+  perfMark('main:chore:rotate-log:done');
 
   // Fire-and-forget: never await. Respects the opt-out in About → Privacy
   // internally and fails silently on any network issue.
@@ -1324,6 +1349,13 @@ void app.whenReady().then(async () => {
     log('ERROR', 'Main', 'First-run detection failed, skipping', { error: String(e) });
     isFirstRun = false;
   }
+  // Perf lab: everything between rotate-log and here — kicking off
+  // runAnalyticsOnLaunch() (whose readState + deviceIdHash run synchronously on
+  // this stack, before its first await), the app.getGPUInfo('complete') call, and
+  // first-run detection's up-to-two readFileSync + JSON.parse — used to be billed
+  // to the install-hooks chore, because the rig measures each chore as
+  // mark[n] − mark[n−1]. This mark makes that prelude work show up as itself.
+  perfMark('main:chore:prelude:done');
 
   // Install hook relay entries in Claude Code settings.
   //
@@ -1361,12 +1393,14 @@ void app.whenReady().then(async () => {
   } else {
     log('INFO', 'Main', `Dev profile '${process.env.YOUCODED_PROFILE}' — skipping install-hooks (using built app paths)`);
   }
+  perfMark('main:chore:install-hooks:done');
 
   try {
     await hookRelay.start();
   } catch (e) {
     log('ERROR', 'Main', 'Failed to start hook relay', { error: String(e) });
   }
+  perfMark('main:chore:hook-relay:done');
 
   // Legacy cleanup: youcoded-core was deprecated 2026-04. Users who
   // upgraded from a prior version still have the legacy clone at
@@ -1384,6 +1418,7 @@ void app.whenReady().then(async () => {
   } catch (e) {
     log('ERROR', 'Main', 'Failed to run legacy cleanup', { error: String(e) });
   }
+  perfMark('main:chore:legacy-cleanup:done');
 
   // Decomposition v3 §9.2: reconcile plugin hooks-manifest.json into
   // ~/.claude/settings.json. Adds missing required hooks, updates stale paths
@@ -1398,6 +1433,7 @@ void app.whenReady().then(async () => {
   } catch (e) {
     log('ERROR', 'Main', 'Failed to reconcile plugin hooks', { error: String(e) });
   }
+  perfMark('main:chore:hook-reconcile:done');
 
   // Force CC's prompt-suggestion feature off in ~/.claude/settings.json on
   // every launch. CC pre-fills the input bar with a generated next-prompt
@@ -1412,6 +1448,7 @@ void app.whenReady().then(async () => {
   } catch (e) {
     log('ERROR', 'Main', 'Failed to force-disable prompt suggestion', { error: String(e) });
   }
+  perfMark('main:chore:prompt-suggestion:done');
 
   // Seed a transcript-retention default so Claude Code's 30-day cleanup
   // doesn't silently delete Resume Browser history. Only writes when the
@@ -1423,6 +1460,7 @@ void app.whenReady().then(async () => {
   } catch (e) {
     log('ERROR', 'Main', 'Failed to seed cleanupPeriodDays', { error: String(e) });
   }
+  perfMark('main:chore:retention-default:done');
 
   // Clean up orphan symlinks left by pre-decomposition post-update.sh —
   // entries under ~/.claude/{hooks,commands,skills}/ that point into now-deleted
@@ -1438,6 +1476,7 @@ void app.whenReady().then(async () => {
   } catch (e) {
     log('ERROR', 'Main', 'Failed to clean up orphan symlinks', { error: String(e) });
   }
+  perfMark('main:chore:symlink-cleanup:done');
 
   // Sweep abandoned .partial files and downloads older than 24h from the
   // in-app update cache. Runs at every startup so stale downloads (e.g. from
@@ -1447,6 +1486,7 @@ void app.whenReady().then(async () => {
   } catch (e) {
     log('ERROR', 'Main', 'Failed to clean up stale update downloads', { error: String(e) });
   }
+  perfMark('main:chore:stale-downloads:done');
 
   // Decomposition v3 §9.3 + native MCP phase 1 Task 7: reconcile plugin
   // mcp-manifest.json AND the YouCoded MCP registry into ~/.claude.json
@@ -1460,6 +1500,7 @@ void app.whenReady().then(async () => {
   } catch (e) {
     log('ERROR', 'Main', 'Failed to reconcile MCP servers', { error: String(e) });
   }
+  perfMark('main:chore:reconcile-mcp:done');
 
   try {
     const { startAnnouncementService } = require('./announcement-service');
@@ -1467,12 +1508,14 @@ void app.whenReady().then(async () => {
   } catch (e) {
     log('ERROR', 'Main', 'Failed to start announcement service', { error: String(e) });
   }
+  perfMark('main:chore:announcements:done');
 
   try {
     await remoteServer.start();
   } catch (e) {
     log('ERROR', 'Main', 'Failed to start remote server', { error: String(e) });
   }
+  perfMark('main:chore:remote-server:done');
 
   const FAVORITES_PATH = path.join(os.homedir(), '.claude', 'youcoded-favorites.json');
 
@@ -1507,7 +1550,14 @@ void app.whenReady().then(async () => {
   // Remove the default menu bar (File, Edit, View, Window, Help)
   Menu.setApplicationMenu(null);
 
+  // Perf lab: the FAVORITES_PATH setup, the five game/favorites/home-path
+  // ipcMain.handle registrations above and Menu.setApplicationMenu(null) all sat
+  // inside the theme-protocol chore's measured window (each chore is measured as
+  // mark[n] − mark[n−1]). This mark separates them from registerThemeProtocol().
+  perfMark('main:chore:ipc-prefs:done');
+
   registerThemeProtocol();
+  perfMark('main:chore:theme-protocol:done');
 
   // Marketplace auth store — instantiated once at startup, passed to IPC handlers.
   // The auth store holds the bearer token in the main process only; the token
@@ -1524,8 +1574,14 @@ void app.whenReady().then(async () => {
   // remoteServer let the presence relay (Task 6) reach every local window and
   // any connected remote browser.
   registerSocialHandlers(marketplaceAuthStore, windowRegistry, remoteServer);
+  // Named "accounts", not "auth-store": this window covers four registrations —
+  // createAuthStore, registerMarketplaceApiHandlers, remoteServer.setAccountStore
+  // and registerSocialHandlers — not just the store.
+  perfMark('main:chore:accounts:done');
 
+  perfMark('main:create-window:start');
   createWindow(isFirstRun ? firstRunManager : undefined);
+  perfMark('main:create-window:done');
   registerDetachIpc();
 
   // Buddy window position persistence — JSON file in userData so restarts
@@ -1985,6 +2041,7 @@ void app.whenReady().then(async () => {
   // The legacy session-end backup push (SyncService.pushSession) was removed in
   // sync-legacy-demolition. Conversations now travel via the sync-spaces
   // conversation store, so there is no session-exit backup hook here anymore.
+  perfMark('main:post-window:done');
 });
 
 // Every teardown step the app owns, in one place, run at most once.
