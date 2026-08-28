@@ -1,7 +1,13 @@
 // GGUF cache scan — the engine-off view of "what local models exist".
 // Router-mode llama-server discovers the same directory (--models-dir, NOT
 // LLAMA_CACHE — that one is vestigial), so the ids derived here MUST match what
-// GET /models reports once the engine is running. It scans that dir at BOOT and
+// GET /models reports once the engine is running — with ONE known difference:
+// the router lists one row per FILE, so a split set appears there as N rows
+// while this scan collapses it to the first part. That is listing granularity,
+// not a naming mismatch; EngineSupervisor.listModels drops the follower rows
+// (shared/gguf-split.ts) and probe-models.mjs folds them before comparing.
+// Measured on b10665, 2026-08-27, after four rows for one model reached the
+// picker and three of them 500'd. It scans that dir at BOOT and
 // never again on its own, so this scan can legitimately be AHEAD of the router
 // for a file downloaded since — that gap is what EngineSupervisor.ensureServable
 // closes, and reading a row from here as "usable" is the 2026-08-16 bug.

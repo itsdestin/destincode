@@ -16,6 +16,7 @@
 //
 // The label is best-effort by design. Every caller MUST also surface the raw id
 // (the chip puts it in `title`), so an imperfect prettification is never lossy.
+import { stripSplitSuffix } from '../../shared/gguf-split';
 
 /**
  * Quantization / precision suffix on local GGUF builds — noise in a chip.
@@ -23,9 +24,11 @@
  * Matched against the WHOLE trailing suffix rather than a post-split token,
  * because quant tags carry their own `_` separators (`Q4_K_M`) and splitting
  * first shreds them into `Q4`/`K`/`M`, which no per-token pattern can recognize.
- * The leading `(?:^|[-_])` lets an id that is ONLY a quant tag match too.
+ * The leading `(?:^|[-_])` lets an id that is ONLY a quant tag match too, and
+ * the optional `UD-` covers unsloth dynamic quants (`UD-Q4_K_XL`) — without it
+ * the tag's own prefix survived as a bare "UD" token in the chip.
  */
-const QUANT_SUFFIX = /(?:^|[-_])(?:I?Q\d+(?:_[A-Z0-9]+)*|[BF]F?16|F32|FP\d+)$/i;
+const QUANT_SUFFIX = /(?:^|[-_])(?:UD[-_])?(?:I?Q\d+(?:_[A-Z0-9]+)*|[BF]F?16|F32|FP\d+)$/i;
 
 /** Format tags that DO survive as standalone tokens after splitting. */
 const FORMAT_TOKEN = /^(?:GGUF|MLX)$/i;
@@ -71,8 +74,9 @@ export function nativeModelLabel(modelId: string | undefined | null): string {
   const tail = modelId.split('/').filter(Boolean).pop() ?? '';
   if (!tail) return '';
 
-  // 2. Drop a weight-file extension.
-  const bare = tail.replace(EXT, '');
+  // 2. Drop a weight-file extension, then the -00001-of-00004 split marker: a
+  //    split GGUF is one model, and the part numbers are pure machine detail.
+  const bare = stripSplitSuffix(tail.replace(EXT, ''));
 
   // 3. Strip the quantization suffix BEFORE splitting — see QUANT_SUFFIX. Loop
   //    because stacked tags exist in the wild (`…-Q4_K_M-F16`).

@@ -17,6 +17,7 @@ import { readEngineConfig, updateEngineConfig } from './engine-config';
 import { readManifest, removeManifest } from '../models/download-manifest';
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
+import { stripSplitSuffix } from '../../shared/gguf-split';
 import type {
   EngineBackend, EngineInstallProgress, EngineStatus, EngineModel,
 } from '../../shared/engine-types';
@@ -172,18 +173,17 @@ export class EngineManager extends EventEmitter {
         throw new Error(`Local models are not available for this platform yet (${process.platform}/${process.arch}).`);
       }
       const { asset, backend } = sel;
-      const installed = await this.acquisition.install(asset, onProgress);
       let bootedBackend: EngineBackend = backend;
+      let installed: InstalledEngine;
       try {
-        await this.verifyBoot(installed);
+        installed = await this.installAndVerify(asset, onProgress);
       } catch (bootErr) {
         // Vulkan build won't start (no/old driver, headless box) → one CPU
         // retry. Only reached when we started on vulkan; the missing-asset
         // drop in selectInstallAsset already used cpu when there was no choice.
         const cpuAsset = backend === 'vulkan' ? pickAsset(process.platform, process.arch, 'cpu') : null;
         if (!cpuAsset) throw bootErr;
-        const cpuInstalled = await this.acquisition.install(cpuAsset, onProgress);
-        await this.verifyBoot(cpuInstalled);
+        installed = await this.installAndVerify(cpuAsset, onProgress);
         bootedBackend = 'cpu';
       }
       // Record the booted backend when it differs from the platform default
@@ -193,6 +193,10 @@ export class EngineManager extends EventEmitter {
       if (bootedBackend !== defaultBackend(process.platform)) {
         await updateEngineConfig(this.home, { backend: bootedBackend });
       }
+      // Only now, with a booted replacement in hand, is the old engine garbage.
+      // installed() prefers the pinned version anyway, so anything else on disk
+      // is unreachable weight rather than a fallback.
+      this.acquisition.pruneOthers(installed);
       this.emit('status-changed');
     } catch (e: any) {
       onProgress({ kind: 'error', message: e?.message ?? String(e) });
@@ -200,6 +204,82 @@ export class EngineManager extends EventEmitter {
       throw e;
     } finally {
       this.installing = false;
+    }
+  }
+
+  /** Install an asset and prove it RUNS, undoing the install if it does not.
+   *
+   *  The undo is the whole point: acquisition.install() marks a directory complete
+   *  and moves it into place before anything executes the binary, and installed()
+   *  prefers the pinned version over every other — so a downloaded-but-unrunnable
+   *  engine silently replaces a working one. Discarding it here restores the
+   *  previous engine as the newest USABLE install, which is what installed()
+   *  resolves to on the next call. The supervisor is dropped too: verifyBoot
+   *  pointed it at the binary we just deleted. */
+  private async installAndVerify(
+    asset: EngineAsset, onProgress: (p: EngineInstallProgress) => void,
+  ): Promise<InstalledEngine> {
+    // Only an install THIS call created may be discarded. acquisition.install()
+    // is idempotent — handed a version+backend already on disk it returns it
+    // untouched — so pressing Install on the engine you are already running
+    // reaches verifyBoot too, and a transient boot failure there (a busy port,
+    // a driver hiccup) must not delete a build that has been working for weeks.
+    const dir = this.acquisition.installDir(ENGINE_VERSION, asset.backend);
+    const preexisting = fs.existsSync(path.join(dir, '.complete'));
+    const installed = await this.acquisition.install(asset, onProgress);
+    try {
+      await this.verifyBoot(installed);
+      return installed;
+    } catch (bootErr) {
+      if (!preexisting) {
+        if (this.supervisor) { try { await this.supervisor.stop(); } catch { /* already dead */ } }
+        this.supervisor = null;
+        this.supervisorBinary = null;
+        this.acquisition.discard(installed);
+      }
+      throw bootErr;
+    }
+  }
+
+  /** Bring the engine up to the pinned version at app launch, in the background.
+   *
+   *  WHY automatic: a new model architecture only becomes runnable when llama.cpp
+   *  learns to read it, and a user has no way to know that a model that "won't
+   *  load" needs a newer engine. Holding everyone at the version they first
+   *  installed makes every future model release look like a broken app.
+   *
+   *  Deliberately NOT a first install. With no engine on disk this returns
+   *  immediately: pulling a few hundred MB on first launch, for a feature the user
+   *  may never touch, is not ours to decide — that stays the Install button.
+   *
+   *  Never throws and never blocks startup. Every failure path (offline, metered,
+   *  a build that will not boot here) leaves the working engine exactly as it was;
+   *  the manual Update button in Settings is still there to retry. */
+  async autoUpdateOnLaunch(): Promise<void> {
+    try {
+      const inst = this.currentInstall();
+      if (!inst) return;                          // no engine yet — first install stays a user action
+      if (inst.version === ENGINE_VERSION) return; // already current
+      if (this.installing) return;                 // a manual install is already running
+      // Swapping the binary stops the running engine, which unloads whatever model
+      // is resident — minutes of reload for a large one. At launch nothing should
+      // be running yet, but a session restored fast enough could have started it,
+      // and the next launch will pick the update up anyway.
+      if (this.supervisor && this.supervisor.status() !== 'stopped') return;
+      await this.install();
+      // Leave the engine exactly as this method found it: STOPPED. install()
+      // deliberately leaves it running (someone who just pressed Install wants to
+      // use it), but nobody asked for this one — and without the stop, the first
+      // launch after an engine bump would silently start a llama-server that
+      // previously only appeared on the first message. An unexplained new process
+      // at startup is the kind of change a user cannot trace back to anything.
+      if (this.supervisor) await this.supervisor.stop();
+      this.emit('status-changed');
+    } catch {
+      // Swallowed on purpose: this is unattended background work the user did not
+      // ask for, so it must never surface an error they cannot act on. install()
+      // has already emitted an install-progress 'error' for anyone watching the
+      // Settings card, and installAndVerify has restored the previous engine.
     }
   }
 
@@ -321,7 +401,10 @@ export class EngineManager extends EventEmitter {
     return models.map((m) => ({
       id: m.id,
       providerId: 'local',
-      label: m.id,
+      // The id stays the raw first-part filename (that IS the engine's address
+      // for the whole set); only the label drops the -00001-of-00004 marker, so
+      // one split model reads as one model in the picker.
+      label: stripSplitSuffix(m.id),
       contextLength: cfg.contextSize,
       local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true, state: m.state },
     }));
