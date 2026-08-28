@@ -674,6 +674,19 @@ async function gradeCell(cell, result, { apiKey, judgeModelId, runDir }) {
  *  nobody has to guess which one they got. */
 function resolveRunsDir() {
   const stamp = new Date().toISOString().slice(0, 10);
+  // Explicit override, checked first. WHY it exists: without it the ONLY way to
+  // exercise this CLI end-to-end is to let it write into the developer's real
+  // youcoded-dev workspace, which the test suite then has to snapshot and
+  // restore file-by-file. That guard cannot be made correct under concurrency —
+  // two suites running at once (the normal case here) snapshot the same
+  // directory, write the same filenames, and restore over each other, which
+  // showed up as `ENOENT: open .../run-summary-unit-test-plan.json` in an
+  // unrelated test. It also left an empty dated directory in the workspace on
+  // every run, so `git status` in youcoded-dev was permanently dirty (five such
+  // directories had accumulated by 2026-08-28). Tests set this to a temp dir;
+  // real runs never set it and keep the workspace behaviour below unchanged.
+  const override = process.env.YOUCODED_EVAL_RUNS_DIR;
+  if (override) return { dir: path.join(override, stamp), inWorkspace: false };
   const marker = 'docs/active/investigations';
   let candidate = DESKTOP;
   for (let i = 0; i < 6; i++) {

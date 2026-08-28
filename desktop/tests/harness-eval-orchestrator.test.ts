@@ -1377,8 +1377,16 @@ globalThis.fetch = async (url) => {
     return file;
   }
 
+  // Every CLI invocation in this file writes its results HERE, not into the
+  // developer's real workspace. Before the YOUCODED_EVAL_RUNS_DIR override
+  // existed, resolveRunsDir walked up to youcoded-dev and wrote into
+  // docs/active/investigations/harness-eval-runs/<date>/ for real — see that
+  // function's comment for what that cost. One directory for the whole file is
+  // enough: it is unique per process, so concurrent suites cannot meet in it.
+  const RUNS_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'harness-eval-runs-'));
+
   function runCliStubbed(stub: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
-    const env = { ...process.env };
+    const env = { ...process.env, YOUCODED_EVAL_RUNS_DIR: RUNS_ROOT };
     delete env.OPENROUTER_API_KEY;
     try {
       const stdout = execFileSync(

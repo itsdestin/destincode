@@ -20,7 +20,23 @@ describe('test-suite home isolation', () => {
   it('os.homedir() resolves to the sandbox, not the real home', () => {
     // The check that matters: every module resolving a path from os.homedir()
     // — directly or several imports deep — must land in the sandbox.
-    expect(os.homedir()).toBe(path.join(os.tmpdir(), 'youcoded-vitest-home'));
+    expect(os.homedir()).toBe(process.env.YOUCODED_TEST_HOME);
+    expect(path.dirname(os.homedir())).toBe(os.tmpdir());
+  });
+
+  it('the sandbox is unique to THIS run, so two concurrent runs cannot collide', () => {
+    // The bug this pins: a fixed `youcoded-vitest-home` was shared by every
+    // checkout on the machine, so a second session starting a suite ran
+    // globalSetup's rmSync over the FIRST session's live sandbox. It showed up
+    // as ENOTEMPTY / ENOENT temp-rename errors in whatever unrelated file was
+    // mid-write, and was mis-filed twice as a bug in the victim test.
+    //
+    // Asserting the shape rather than the exact pid keeps this honest without
+    // reaching for process internals: what must hold is that the directory name
+    // carries a per-process discriminator at all. If someone reverts to a fixed
+    // name to "simplify", this is the assertion that says why they shouldn't.
+    expect(path.basename(os.homedir())).toMatch(/^youcoded-vitest-home-\d+$/);
+    expect(os.homedir()).not.toBe(path.join(os.tmpdir(), 'youcoded-vitest-home'));
   });
 
   it('the sandbox is not the developer real home', () => {
@@ -52,5 +68,33 @@ describe('test-suite home isolation', () => {
     // the worst outcome, because it would look green where it was tested.
     expect(process.env.HOME).toBe(os.homedir());
     expect(process.env.USERPROFILE).toBe(os.homedir());
+  });
+
+  it('globalSetup RETURNS its teardown, so a run cleans up the sandbox it made', async () => {
+    // Pins the hook SHAPE, which is the part that fails silently. vitest reads a
+    // named `teardown` export only when `setup` is also exported by name;
+    // tests/global-setup.ts uses a default export, so the teardown must be the
+    // setup function's RETURN VALUE. Getting that wrong breaks no test — every
+    // suite still passes — it just leaks one sandbox directory per run into the
+    // developer's tmpdir forever (15 accumulated in one afternoon before this
+    // was caught by hand).
+    //
+    // Run against a THROWAWAY path, never the live sandbox: setup() begins by
+    // deleting whatever it is pointed at, and this test is itself running out of
+    // the real one.
+    const scratch = path.join(os.tmpdir(), `youcoded-vitest-home-teardown-probe-${process.pid}`);
+    const realSandbox = process.env.YOUCODED_TEST_HOME;
+    process.env.YOUCODED_TEST_HOME = scratch;
+    try {
+      const { default: setup } = await import('./global-setup');
+      const teardown = setup();
+      expect(fs.existsSync(scratch), 'setup() did not create the sandbox it was pointed at').toBe(true);
+      expect(typeof teardown, 'global-setup must RETURN its teardown, not export it').toBe('function');
+      teardown!();
+      expect(fs.existsSync(scratch), 'teardown() left the sandbox behind').toBe(false);
+    } finally {
+      process.env.YOUCODED_TEST_HOME = realSandbox;
+      fs.rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });

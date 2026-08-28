@@ -11,6 +11,25 @@ import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
 import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
 
+// Per-test budget for the full-budget runs in this file. It is a named constant
+// rather than a literal repeated at ten call sites because it has now been
+// raised twice for the same reason, and the next person needs one place to
+// change and a record of what the number is measured against.
+//
+// Measured 2026-08-28 on a 32-core box: this file takes 25s of test time in
+// isolation, by far the heaviest in the suite — each of these tests drives 200
+// tool calls through a real HarnessSession, and none of that time is sleeping
+// (run-case.ts has no artificial delay; it is genuine CPU work). Under three
+// concurrent full-suite runs the slowest of them took 30,289ms and failed
+// against its old 30,000ms budget — a false red on code that was fine. 120s is
+// ~4x the worst figure actually observed under contention.
+//
+// The cost of a generous budget is that a genuinely hung test here takes two
+// minutes to report. That is the right trade: this file's timeouts have never
+// once caught a real hang, and have three times been mistaken for logic bugs.
+const HEAVY_RUN_TIMEOUT_MS = 120_000;
+
+
 describe('makeOpenRouterFactory', () => {
   it('refuses to build without a key, naming the env var to set', () => {
     expect(() => makeOpenRouterFactory('', 'x/y')).toThrow(/OPENROUTER_API_KEY/);
@@ -647,17 +666,19 @@ describe('runCase', () => {
   });
 });
 
-// EVERY test below that drives a full-budget run needs an explicit `}, 30_000)`
-// timeout — vitest's default is 5,000ms and these do not fit in it (2026-08-11).
+// EVERY test below that drives a full-budget run needs an explicit
+// `}, HEAVY_RUN_TIMEOUT_MS)` (defined at the top of this file) — the suite-wide
+// budget in vitest.config.ts does not fit them.
 // A full run is (STEP_GATE_ALLOWANCE + 1) * BATTERY_STEP_BUDGET = 200 tool calls
 // through a real HarnessSession against a real seeded fixture. BATTERY_STEP_BUDGET
 // went from the app's 25/50 chat tiers to a uniform 100 in this same workstream,
-// which doubled that work and pushed these tests over the default — they went red
-// on Windows CI (the slowest runner) from that commit onward and intermittently on
-// Ubuntu, always at exactly 5,000ms, which is the tell. The failure looks like a
-// logic bug (wrong `wrapUpReason`, missing review) because the timeout cuts the run
-// mid-flight, so it cost a ROADMAP entry and two sessions to attribute. If you add
-// a test here that calls toolCallSteps(), give it the timeout too.
+// which doubled that work and pushed these tests over the old 5,000ms default —
+// they went red on Windows CI (the slowest runner) from that commit onward and
+// intermittently on Ubuntu, always at exactly 5,000ms, which is the tell. The
+// failure looks like a logic bug (wrong `wrapUpReason`, missing review) because
+// the timeout cuts the run mid-flight, so it cost a ROADMAP entry and two
+// sessions to attribute. If you add a test here that calls toolCallSteps(),
+// give it the timeout too.
 describe('wrap-up turn', () => {
   function toolCallSteps(count: number): ScriptStep[] {
     // Unique `offset` per call so consecutive calls are never byte-identical
@@ -696,7 +717,7 @@ describe('wrap-up turn', () => {
     expect(run.wrapUpReason).toBe('budget');
     expect(run.review).toBe('Review written after being asked to wrap up.');
     expect(run.metrics.stopReasons).toContain('max_steps');
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 
   it('denies tool calls during the wrap-up turn so the model cannot resume testing', async () => {
     const model = scriptModel([
@@ -723,7 +744,7 @@ describe('wrap-up turn', () => {
     // without this the test would also pass if the wrap-up turn never ran.
     expect(bashResults.length).toBeGreaterThan(0);
     expect(bashResults.every((e) => e.data.isError)).toBe(true);
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 
   it('denies a genuine AskUserQuestion during wrap-up, so WRAP_UP_PROMPT\'s "every tool call will be denied" claim is true (Fix pass 2, Finding 2)', async () => {
     // AskUserQuestion is declared `interactive: true` (ask-user-question.ts)
@@ -773,7 +794,7 @@ describe('wrap-up turn', () => {
     );
     expect(deniedAsk).toBeDefined();
     expect(run.review).toBe('Fine, here is the review.');
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 
   it('takes only the wrap-up turn text as the review, not narration from the interrupted turn', async () => {
     // The testing turn emits trailing narration after its last tool call. Under
@@ -793,7 +814,7 @@ describe('wrap-up turn', () => {
 
     expect(run.review).toBe('The actual review.');
     expect(run.review).not.toContain('one more thing');
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 
   it('keeps the wrap-up review even if the model answers and then tries one more tool call', async () => {
     // Fix pass 1, Finding 1 regression: inside the wrap-up window every tool
@@ -823,7 +844,7 @@ describe('wrap-up turn', () => {
 
     expect(run.outcome).toBe('wrapped-up');
     expect(run.review).toBe('My review is done.');
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 
   it('strips wrap-up narration that precedes a denied tool attempt, instead of concatenating it onto the review (Fix pass 2, Finding 1)', async () => {
     // The pass-1 fix (dropping the anchor entirely inside the wrap-up window)
@@ -854,7 +875,7 @@ describe('wrap-up turn', () => {
     expect(run.outcome).toBe('wrapped-up');
     expect(run.review).toBe('The actual review text.');
     expect(run.review).not.toContain('verify');
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 
   it('asks for the review when the wall clock elapses, instead of throwing the run away', async () => {
     // Fix pass 1, Finding 4: the old version of this test scripted a fixed
@@ -925,7 +946,7 @@ describe('wrap-up turn', () => {
     // carried WRAP_UP_PROMPT — the fake model above only branches on this, so
     // this assertion is exercising the real content, not just the import.
     expect(seenPrompts.some((p) => JSON.stringify(p).includes(WRAP_UP_PROMPT))).toBe(true);
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 });
 
 describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
@@ -1052,7 +1073,7 @@ describe('repeat reporting (diagnostic only)', () => {
     expect(run.wrapUpReason).toBeUndefined();
     expect(run.outcome).toBe('complete');
     expect(run.review).toBe('Finished on my own terms.');
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 
   it('still REPORTS the repeats, so a real loop stays visible in the transcript', async () => {
     // Deleting the trigger must not delete the evidence: reading metrics.repeats
@@ -1066,7 +1087,7 @@ describe('repeat reporting (diagnostic only)', () => {
 
     expect(run.metrics.repeats[0]).toMatchObject({ count: 8 });
     expect(run.metrics.repeats[0].key).toContain('Glob');
-  }, 30_000);
+  }, HEAVY_RUN_TIMEOUT_MS);
 
   it('reports nothing for a run whose repeats stay under the reporting floor', async () => {
     const model = scriptModel([...repeatingSteps(REPEAT_REPORT_FLOOR - 1), { text: 'Done.' }]);
