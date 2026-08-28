@@ -29,7 +29,7 @@ describe('transcript:page channel parity (desktop + remote; Android is a later c
     expect(read('src/main/ipc-handlers.ts')).toContain('IPC.TRANSCRIPT_PAGE');
   });
 
-  it.todo('sent by remote-shim.ts as a real call, not a no-op stub', () => {
+  it('sent by remote-shim.ts as a real call, not a no-op stub', () => {
     const shim = read('src/renderer/remote-shim.ts');
     expect(shim).toContain(CHANNEL);
     // requestTranscriptReplay shipped as `() => {}` and silently did nothing on
@@ -37,7 +37,7 @@ describe('transcript:page channel parity (desktop + remote; Android is a later c
     expect(shim).not.toMatch(/requestTranscriptPage:\s*\([^)]*\)\s*=>\s*\{\s*\}/);
   });
 
-  it.todo('answered by a remote-server.ts WS case', () => {
+  it('answered by a remote-server.ts WS case', () => {
     expect(read('src/main/remote-server.ts')).toContain(`'${CHANNEL}'`);
   });
 });
