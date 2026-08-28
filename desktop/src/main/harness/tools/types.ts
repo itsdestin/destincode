@@ -286,7 +286,8 @@ export interface ResultBounds {
   /** Units that exist. `null` = genuinely unknown, e.g. a walk that stopped early.
    *  Rendered as "at least N" — never as a number we did not measure. */
   total: number | null;
-  unit: 'lines' | 'chars' | 'bytes' | 'files' | 'matches' | 'results';
+  // 'pages' — Read on a PDF (ledger G-6) pages by document page, not by line.
+  unit: 'lines' | 'chars' | 'bytes' | 'files' | 'matches' | 'results' | 'pages';
   /** How to widen, in THIS tool's vocabulary: "| head -n 100", "offset=2390",
    *  "narrow the glob". The pipeline never supplies a default. */
   moreHint: string;

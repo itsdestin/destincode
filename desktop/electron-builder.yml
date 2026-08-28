@@ -40,6 +40,14 @@ pacman:
 npmRebuild: false
 asarUnpack:
   - dist/main/pty-worker.js
+  # Read's PDF text extraction (main process, src/main/harness/pdf-text.ts)
+  # loads pdf.js's legacy ESM build, whose fake-worker path does a dynamic
+  # `import('./pdf.worker.mjs')` relative to pdf.mjs and reads its bundled
+  # fonts/CMaps by plain path. Unpacked so those resolve to real files rather
+  # than entries inside app.asar.
+  - node_modules/pdfjs-dist/legacy/**
+  - node_modules/pdfjs-dist/standard_fonts/**
+  - node_modules/pdfjs-dist/cmaps/**
   - scripts/**/*
   - hook-scripts/**/*
 files:

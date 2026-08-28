@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { defineTool } from './registry';
 import { canonicalize, resolveP, shellCwdMissHint } from './guards';
 import { deliverableImageMediaType, UNDELIVERABLE_IMAGE_EXTENSIONS, MAX_ATTACHMENT_BYTES } from '../image-support';
+import { readPdfAsToolResult } from '../pdf-text';
 
 const BINARY_SNIFF_BYTES = 8000;
 
@@ -59,9 +60,12 @@ export const ReadTool = defineTool({
     'Read a TEXT file from the filesystem. Returns numbered lines. Use offset and limit for '
     + 'large files — output is capped at 2000 lines or ~50 KB, whichever comes first. '
     + 'When you already know which part you need, read only that part with offset/limit. '
-    + 'Images and other binary files are refused.',
+    + 'Images and other binary files are refused. '
+    + 'PDFs return their text layer page by page (pages="1-5", max 20 per call; offset/limit '
+    + 'do not apply); scanned pages have no text and are reported.',
   // Compact form for small local models (simplified presentation, spec §4.2).
-  shortDescription: "Read a file's contents by path, with optional line offset/limit.",
+  // Kept under the 120-char short-tier pin: the PDF clause is one short phrase.
+  shortDescription: "Read a file's contents by path, with optional line offset/limit. PDFs: text per page (pages=\"1-5\").",
   // Vision models are TOLD Read handles images; text-only models keep the
   // refusal-only wording. See NativeTool.descriptionFor.
   descriptionFor: (caps) => caps.supportsVision
@@ -70,7 +74,9 @@ export const ReadTool = defineTool({
       + 'first. When you already know which part you need, read only that part with '
       + 'offset/limit. Image files (png, jpg, gif, webp) are delivered to you as the actual '
       + 'picture alongside the result — Read is how you look at a screenshot or image the '
-      + 'user mentions by path.'
+      + 'user mentions by path. '
+      + 'PDFs return their text layer page by page (pages="1-5", max 20 per call; offset/limit '
+      + 'do not apply); scanned pages have no text and are reported — render those to PNG and Read them.'
     : undefined,
   // Same fix as descriptionFor, scoped to the SHORT text (simplified presentation
   // for small local models, spec §4.2). Without this a small local vision model
@@ -79,12 +85,13 @@ export const ReadTool = defineTool({
   // Kept to one short clause: shortDescription exists to be small.
   shortDescriptionFor: (caps) => caps.supportsVision
     ? "Read a file's contents by path, with optional line offset/limit."
-      + ' Images come back as the actual picture.'
+      + ' Images come back as the actual picture. PDFs: text per page (pages="1-5").'
     : undefined,
   inputSchema: z.object({
     file_path: z.string().describe('Absolute or workspace-relative path'),
     offset: z.number().int().min(1).optional().describe('1-based first line to read'),
     limit: z.number().int().min(1).optional().describe('Max lines to return'),
+    pages: z.string().optional().describe('PDF only: page or range to return, e.g. "3" or "1-5" (max 20 per call)'),
   }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   caps: { maxChars: 100_000 },
   // Static fallback for composeNotice's no-bounds branch (Task 19): `bounds`
@@ -95,7 +102,7 @@ export const ReadTool = defineTool({
   // NOT verbatim from `bounds.moreHint` below: that string interpolates the
   // NEXT offset (`use offset=${offset + limit}...`), a per-call number this
   // static property can't carry. Same vocabulary (offset/limit), generalized.
-  moreHint: 'use offset and limit to read a smaller slice of the file',
+  moreHint: 'use offset and limit to read a smaller slice of the file (for a PDF, a narrower pages range)',
   permissionSubject: (a) => a.file_path,
   async execute(args, ctx) {
     const abs = resolveP(args.file_path, ctx.cwd);
@@ -179,6 +186,17 @@ export const ReadTool = defineTool({
     }
     if (undeliverableExt) {
       return { text: `Read rejected: ${args.file_path} is a ${path.extname(args.file_path).slice(1)} image — a format that cannot be delivered to the model. Convert it to PNG (e.g. Bash: magick in.svg out.png) and Read the copy.`, isError: true };
+    }
+    // PDFs (ledger G-6, 2026-08-27): a PDF is full of NUL bytes, so without this
+    // branch the NUL sniff below would call every PDF "a binary file" — true but
+    // useless. Extraction lives in ../pdf-text.ts (lazy pdf.js, serialized,
+    // scanned pages named); this branch only records the read. Placed BEFORE
+    // readFileSync so a PDF is never slurped twice. `offset`/`limit` are ignored
+    // for PDFs — `pages` is the paging vocabulary — and the description says so.
+    if (path.extname(args.file_path).toLowerCase() === '.pdf') {
+      const r = await readPdfAsToolResult(abs, { displayPath: args.file_path, pages: args.pages, supportsVision: !!ctx.supportsVision });
+      if (!r.isError) ctx.readRegistry.set(canonicalize(args.file_path, ctx.cwd), st.mtimeMs);
+      return r;
     }
     const offset = args.offset ?? 1;
     const limit = Math.min(args.limit ?? 2000, 2000);
