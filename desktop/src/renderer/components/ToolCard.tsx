@@ -5,7 +5,7 @@ import { useSpecialistDefinition, useSpecialistRunByChild } from '../hooks/useSp
 import { TaskConsentBlock } from './SpecialistEnvelope';
 import { hasNestedAsk } from '../utils/specialist-cards';
 import { useArtifactOptional } from '../state/ArtifactContext';
-import { Button, Radio, RadioGroup } from './ui';
+import { Button, Radio, RadioGroup, Textarea } from './ui';
 // The card renders the widths this SHARED derivation produced and sends back only
 // which one was chosen — it never builds a rule pattern of its own.
 import { bashGrantOptions, bashNoGrantNote, type GrantScope } from '../../shared/bash-grant-shapes';
@@ -878,6 +878,25 @@ function isValidQuestions(input: Record<string, unknown>): boolean {
   return normalizeQuestions(input).length > 0;
 }
 
+// Ledger G-2 (2026-08-26 harness comparison): every other harness lets the user
+// type their own answer; ours only offered the listed choices, and Dismiss ended
+// the turn. The card now adds an "Other" row per question plus one text box
+// whose placeholder flips between "Explain…" (Other picked — the text IS the
+// answer, so it's required) and "Add a note…" (a listed option picked — the
+// text is optional steering that rides along with the choice).
+//
+// The sentinel is an internal selection key only; it never reaches the model.
+// A model-authored option literally labelled "__other__" would collide, which
+// is not a real risk worth a second code path.
+const OTHER = '__other__';
+const OTHER_LABEL = 'Other';
+const OTHER_DESCRIPTION = 'Type your own answer';
+
+/** What the text box is FOR depends on what is selected — say so in the placeholder. */
+function textPlaceholder(sel: Set<string> | undefined): string {
+  return sel?.has(OTHER) ? 'Explain…' : 'Add a note…';
+}
+
 function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
   tool: ToolCallState;
   requestId: string;
@@ -890,13 +909,22 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
   const questions = useMemo(() => normalizeQuestions(tool.input), [tool.input]);
   // answers: map from question text → selected label(s)
   const [answers, setAnswers] = useState<Record<string, Set<string>>>({});
+  // text: question text → what the user typed in that question's box. One
+  // state serves both roles (Other's answer, or a note on a listed choice);
+  // which role it plays is decided at submit from the selection.
+  const [text, setText] = useState<Record<string, string>>({});
+  const textRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
   const [responding, setResponding] = useState(false);
   // Track which question is "active" for keyboard nav, and which option is focused
   const [focusedOption, setFocusedOption] = useState(0);
 
   const allAnswered = questions.every(q => {
     const sel = answers[q.question];
-    return sel && sel.size > 0;
+    if (!sel || sel.size === 0) return false;
+    // "Other" with nothing typed is not an answer yet — Submit stays off until
+    // the user explains, so the model never receives an empty "own answer".
+    if (sel.has(OTHER) && !(text[q.question] ?? '').trim()) return false;
+    return true;
   });
 
   const handleSelect = useCallback((question: string, label: string, multiSelect: boolean) => {
@@ -914,17 +942,38 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
       }
       return { ...prev, [question]: next };
     });
+    // Picking Other is an invitation to type — put the cursor in the box so the
+    // user doesn't have to click twice. (Deselecting Other leaves focus alone.)
+    if (label === OTHER) {
+      requestAnimationFrame(() => textRefs.current[question]?.focus());
+    }
   }, []);
 
   const handleSubmit = useCallback(async () => {
     if (!allAnswered || responding) return;
     setResponding(true);
-    // Build answers object: question text → "Label" or "Label1, Label2"
+    // Build answers object: question text → "Label" or "Label1, Label2". When
+    // Other is selected the typed text takes its place in the list (so a
+    // multi-select can be "Charts, my own idea"); when it is NOT selected the
+    // typed text becomes a note that rides alongside the choice.
     const answersObj: Record<string, string> = {};
+    const notesObj: Record<string, string> = {};
+    // Claude Code's own AskUserQuestion input carries free-text notes as
+    // `annotations[question].notes` — send that shape too so a CC session
+    // receives the note through the same contract its CLI uses.
+    const annotationsObj: Record<string, { notes: string }> = {};
     for (const q of questions) {
-      const sel = answers[q.question];
-      answersObj[q.question] = sel ? Array.from(sel).join(', ') : '';
+      const sel = answers[q.question] ?? new Set<string>();
+      const typed = (text[q.question] ?? '').trim();
+      const labels = Array.from(sel).filter((l) => l !== OTHER);
+      if (sel.has(OTHER) && typed) labels.push(typed);
+      answersObj[q.question] = labels.join(', ');
+      if (!sel.has(OTHER) && typed) {
+        notesObj[q.question] = typed;
+        annotationsObj[q.question] = { notes: typed };
+      }
     }
+    const hasNotes = Object.keys(notesObj).length > 0;
     try {
       const delivered = await (window as any).claude.session.respondToPermission(requestId, {
         decision: {
@@ -932,6 +981,7 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
           updatedInput: {
             questions,       // Echo back the (normalized) questions array
             answers: answersObj,
+            ...(hasNotes ? { notes: notesObj, annotations: annotationsObj } : {}),
           },
         },
       });
@@ -946,7 +996,7 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
       setResponding(false);
       if (onFailed) onFailed();
     }
-  }, [allAnswered, responding, questions, answers, requestId, onResponded, onFailed]);
+  }, [allAnswered, responding, questions, answers, text, requestId, onResponded, onFailed]);
 
   const handleDeny = useCallback(async () => {
     setResponding(true);
@@ -966,8 +1016,13 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
     }
   }, [requestId, onResponded, onFailed]);
 
-  // Total flat list of all options across questions (for keyboard nav)
-  const allOptions = questions.flatMap(q => q.options.map(o => ({ q, o })));
+  // Total flat list of all options across questions (for keyboard nav). The
+  // synthetic Other row is a real stop in the list, after each question's own
+  // options, so arrow keys reach it like any other choice.
+  const allOptions = questions.flatMap(q => [
+    ...q.options.map(o => ({ q, o })),
+    { q, o: { label: OTHER, description: OTHER_DESCRIPTION } },
+  ]);
   const optionCount = allOptions.length;
 
   // Keyboard: Arrow Up/Down cycles options, Enter toggles selection, Ctrl+Enter submits
@@ -1010,13 +1065,15 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
             {q.question}
           </div>
           <div className="space-y-1">
-            {q.options.map((opt, oi) => {
+            {[...q.options, { label: OTHER, description: OTHER_DESCRIPTION }].map((opt, oi) => {
               const idx = flatIdx++;
               const selected = answers[q.question]?.has(opt.label) ?? false;
               const focused = idx === focusedOption;
+              const isOther = opt.label === OTHER;
               return (
                 <button
                   key={oi}
+                  aria-label={isOther ? `${OTHER_LABEL} — ${OTHER_DESCRIPTION}` : undefined}
                   disabled={responding}
                   onClick={() => handleSelect(q.question, opt.label, q.multiSelect)}
                   // P-18: one row shape for both states — a visible dim border
@@ -1036,7 +1093,7 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
                     <span className={`w-3 h-3 shrink-0 border ${q.multiSelect ? 'rounded-sm' : 'rounded-full'}
                       ${selected ? 'bg-accent border-accent' : 'border-edge'}`}
                     />
-                    <span className="font-medium">{opt.label}</span>
+                    <span className="font-medium">{isOther ? OTHER_LABEL : opt.label}</span>
                   </div>
                   {opt.description && (
                     <div className="text-fg-muted ml-5 mt-0.5">{opt.description}</div>
@@ -1044,6 +1101,32 @@ function AskUserQuestionCard({ tool, requestId, onResponded, onFailed }: {
                 </button>
               );
             })}
+            {/* One box per question. Its role follows the selection (see
+                textPlaceholder): the answer itself when Other is picked, an
+                optional steering note otherwise. Ctrl/Cmd+Enter submits from
+                inside the box, matching the card-wide shortcut — the window
+                handler skips typing targets, so the box handles it itself. */}
+            <Textarea
+              ref={(el) => { textRefs.current[q.question] = el; }}
+              size="sm"
+              rows={1}
+              disabled={responding}
+              value={text[q.question] ?? ''}
+              placeholder={textPlaceholder(answers[q.question])}
+              aria-label={textPlaceholder(answers[q.question])}
+              onChange={(e) => {
+                const value = e.target.value;
+                setText(prev => ({ ...prev, [q.question]: value }));
+                // Grow with the text instead of scrolling inside a one-line box.
+                e.target.style.height = 'auto';
+                e.target.style.height = `${e.target.scrollHeight}px`;
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleSubmit(); }
+              }}
+              // Full row width, like the choices above it — a short box reads as an afterthought.
+              className="mt-1 w-full text-xs"
+            />
           </div>
         </div>
       ))}
