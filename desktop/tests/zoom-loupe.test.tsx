@@ -80,6 +80,30 @@ describe('Loupe', () => {
     expect(renders).toBe(before);   // cursor tracking must not re-render React
   });
 
+  it('hides over a control that must stay usable', () => {
+    // The lens parked itself on top of the pill that turns it off, making the
+    // magnifier impossible to switch off (reported 2026-08-27). Anything marked
+    // data-loupe-block is off limits.
+    const block = document.createElement('div');
+    block.setAttribute('data-loupe-block', '');
+    block.getBoundingClientRect = () => ({
+      left: 200, top: 0, right: 340, bottom: 40, width: 140, height: 40, x: 200, y: 0, toJSON: () => ({}),
+    }) as DOMRect;
+    document.body.appendChild(block);
+
+    const { container } = render(
+      <Loupe resolveSource={() => ({ el: sourceEl() })} displayScale={1} />,
+    );
+    fireEvent.pointerMove(window, { clientX: 250, clientY: 20 });   // over the control
+    tick();
+    expect((container.firstElementChild as HTMLElement).style.visibility).toBe('hidden');
+
+    fireEvent.pointerMove(window, { clientX: 250, clientY: 300 });  // over the picture
+    tick();
+    expect((container.firstElementChild as HTMLElement).style.visibility).toBe('visible');
+    block.remove();
+  });
+
   it('never reads pixels back — canvas tainting must stay unreachable', () => {
     const src = fs.readFileSync(
       path.join(process.cwd(), 'src/renderer/components/artifact-views/zoom/Loupe.tsx'),

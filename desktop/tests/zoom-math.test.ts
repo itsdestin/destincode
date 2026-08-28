@@ -3,7 +3,7 @@
 // would be testing nothing. Everything that can be a plain function is one.
 import { describe, it, expect } from 'vitest';
 import {
-  ZOOM_RUNGS, fitScale, ladderFor, stepScale, clampOffset, zoomAtPoint,
+  ZOOM_RUNGS, fitScale, ladderFor, stepScale, clampOffset, zoomAtPoint, pointInRect,
 } from '../src/renderer/components/artifact-views/zoom/zoom-math';
 
 const big = { containerW: 400, containerH: 300, contentW: 2000, contentH: 1000 };
@@ -80,5 +80,20 @@ describe('zoomAtPoint', () => {
   it('clamps the resulting offset', () => {
     const next = zoomAtPoint({ scale: 1, offset: { x: 0, y: 0 } }, 0.2, { x: 0, y: 0 }, big);
     expect(next.offset).toEqual({ x: 0, y: 0 });
+  });
+});
+
+describe('pointInRect', () => {
+  const r = { left: 10, top: 20, right: 110, bottom: 220 };
+  it('accepts a point inside and on the edge', () => {
+    expect(pointInRect(50, 100, r)).toBe(true);
+    expect(pointInRect(10, 20, r)).toBe(true);
+    expect(pointInRect(110, 220, r)).toBe(true);
+  });
+  it('rejects a point outside on every side', () => {
+    expect(pointInRect(9, 100, r)).toBe(false);
+    expect(pointInRect(111, 100, r)).toBe(false);
+    expect(pointInRect(50, 19, r)).toBe(false);
+    expect(pointInRect(50, 221, r)).toBe(false);
   });
 });

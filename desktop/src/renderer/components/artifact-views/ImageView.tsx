@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ArtifactViewProps } from './types';
 import { BinaryContent, CenterNote } from './BinaryContent';
 import { ZoomPill } from '../ui';
-import { Loupe, useZoomPan } from './zoom';
+import { Loupe, pointInRect, useZoomPan } from './zoom';
 import { useEscClose } from '../../hooks/use-esc-close';
 
 const MIME: Record<string, string> = {
@@ -109,10 +109,14 @@ function ImageContent({ bytes, absolutePath, findBarOpen }:
   // Android's hardware back button routes through this same stack.
   useEscClose(loupeOn, () => setLoupeOn(false));
 
-  const resolveSource = useCallback(
-    () => (imgRef.current ? { el: imgRef.current } : null),
-    [],
-  );
+  // Hit-test, not "here is the picture": answering unconditionally kept the lens
+  // visible everywhere in the pane — including parked on top of the pill, which
+  // made the magnifier impossible to switch off (reported 2026-08-27).
+  const resolveSource = useCallback((cx: number, cy: number) => {
+    const el = imgRef.current;
+    if (!el) return null;
+    return pointInRect(cx, cy, el.getBoundingClientRect()) ? { el } : null;
+  }, []);
 
   if (!url) return <CenterNote>Loading image…</CenterNote>;
 

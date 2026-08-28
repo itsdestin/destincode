@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { OverlayPanel } from '../../overlays/Overlay';
+import { pointInRect } from './zoom-math';
 
 /** Lens diameter in CSS pixels. Also the floor for showing it at all: a source
  *  smaller than the lens has nothing to reveal. */
@@ -87,6 +88,17 @@ export function Loupe({
       if (!lens || !canvas) return;
 
       const p = pointer.current;
+      // Controls first: a lens sitting on top of the button that turns it off is
+      // a trap, and the same applies to the find bar. Any control that must stay
+      // usable under an open lens marks itself `data-loupe-block`.
+      if (p) {
+        for (const el of Array.from(document.querySelectorAll('[data-loupe-block]'))) {
+          if (pointInRect(p.x, p.y, el.getBoundingClientRect())) {
+            lens.style.visibility = 'hidden';
+            return;
+          }
+        }
+      }
       const hit = p ? resolveSource(p.x, p.y) : null;
       if (!p || !hit) { lens.style.visibility = 'hidden'; return; }
 

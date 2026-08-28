@@ -34,7 +34,7 @@ export function ZoomPill({
   onZoomIn, onZoomOut, onReset, loupe, className = '',
 }: ZoomPillProps) {
   return (
-    <OverlayPanel layer={1} className={`flex items-center px-0.5 py-0.5 ${className}`.trim()}>
+    <OverlayPanel layer={1} data-loupe-block className={`flex items-center px-0.5 py-0.5 ${className}`.trim()}>
       <Button
         size="icon"
         variant="ghost"

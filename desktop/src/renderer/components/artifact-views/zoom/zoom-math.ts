@@ -72,3 +72,11 @@ export function zoomAtPoint(
   };
   return { scale: nextScale, offset: clampOffset(offset, nextScale, s) };
 }
+
+/** Is this client point inside this rect? The lens lives or dies on this: an
+ *  ImageView that answered "here is the picture" regardless of where the cursor
+ *  was left the lens visible across the whole pane, including on top of its own
+ *  off switch (reported 2026-08-27). */
+export function pointInRect(x: number, y: number, r: { left: number; top: number; right: number; bottom: number }): boolean {
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
