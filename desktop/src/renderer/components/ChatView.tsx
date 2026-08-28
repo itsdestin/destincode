@@ -254,14 +254,25 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
   }, [visible, scrollToBottom, stickRef]);
 
   // Auto-scroll when new content arrives and the view is still stuck to the
-  // bottom. Uses lastActivityAt (a timestamp that updates on content-producing
-  // actions) instead of Map references which changed on every reducer dispatch.
+  // bottom. Keyed on the things that add content — an appended entry, the
+  // thinking indicator — not on Map references, which change on every dispatch.
   // Fix: reads stickRef, NOT the atBottom state — a native session dispatches
   // one delta per streamed token, and the state value is a render behind, so a
   // scroll the user just made would be undone before React caught up.
+  //
+  // Perf (cycle 1, N2): state.lastActivityAt used to be a dep here. The reducer
+  // re-stamps it on EVERY streamed delta (and on tool events, heartbeats, …),
+  // and scrollToBottom reads scrollHeight — which, right after a commit that
+  // dirtied the DOM, is a forced synchronous layout of the whole document (the
+  // hook's own PERF note: "a FULL forced reflow of a large transcript"). So a
+  // streaming session paid one forced reflow per token. The growth those deltas
+  // cause is ALREADY re-pinned by the ResizeObserver on contentRef below, which
+  // runs after layout, where the same read is free. Dropping the timestamp
+  // loses nothing and removes the per-token reflow. Pinned by
+  // tests/chatview-scroll-pin-deps.test.tsx.
   useEffect(() => {
     if (stickRef.current) scrollToBottom();
-  }, [state.timeline.length, state.lastActivityAt, state.isThinking, scrollToBottom, stickRef]);
+  }, [state.timeline.length, state.isThinking, scrollToBottom, stickRef]);
 
   // Sending a message re-arms auto-scroll. Without this, reading back through
   // history (which now correctly unsticks) and then sending would leave you
