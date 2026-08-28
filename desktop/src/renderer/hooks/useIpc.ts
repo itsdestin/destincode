@@ -363,10 +363,10 @@ declare global {
         download: (repo: string, quant: any) => Promise<{ downloadId: string }>;
         downloadCancel: (downloadId: string) => Promise<boolean>;
         delete: (id: string) => Promise<boolean>;
-        installed: () => Promise<any[]>;
-        // Orphaned .partial files from a previous app run (2026-07-15) — clean
-        // via delete(modelId); resume by re-downloading the same repo+quant.
-        orphanedPartials: () => Promise<import('../../shared/model-manager-types').OrphanedPartial[]>;
+        installed: () => Promise<import('../../shared/model-manager-types').InstalledLocalModel[]>;
+        // Resume an interrupted download (2026-08-26). Main reads the manifest
+        // written beside the .partial — no Hugging Face round trip.
+        resume: (modelId: string) => Promise<{ downloadId: string }>;
         detectEndpoints: () => Promise<any[]>;
         setBackend: (backend: string) => Promise<any>;
         onDownloadProgress: (cb: (p: any) => void) => () => void;

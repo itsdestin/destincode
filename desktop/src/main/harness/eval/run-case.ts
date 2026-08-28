@@ -490,6 +490,15 @@ export async function runCase(opts: RunCaseOpts): Promise<CaseRun> {
       // money if that relationship is ever broken again.
       contextLength,
       binding: { providerId: 'openrouter', modelId: opts.modelId },
+      // No `pricing`/`free` passed on purpose, so every eval turn goes out with
+      // costUsd: null, free: false. That is not an oversight: the evaluator
+      // prices its own runs from the live OpenRouter price catalog
+      // (eval/estimate.ts, driven by test-engine/harness-eval.mjs), which is
+      // where the spend cap and the per-cell dollar figures come from. Handing
+      // HarnessSession a second rate card here would produce a second answer
+      // that could disagree with the one the CLI reports. The per-turn price
+      // card is a live-session concern — it feeds the app's status bar, which
+      // no eval run has.
       tools: opts.tools ?? CORE_TOOLS,
       // Auto-approve everything decide() is consulted about — EXCEPT during the
       // wrap-up turn, where every tool call is refused so the model must answer.

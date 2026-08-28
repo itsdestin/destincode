@@ -1,0 +1,153 @@
+// src/renderer/state/usage-snapshot.ts
+//
+// Everything the /usage and /cost card is made of, in one pure function.
+//
+// WHY it lives here rather than in App.tsx: this derivation used to be a
+// `useCallback` inside AppInner, and nothing tested it — no test imports
+// App.tsx at all. A reviewer deleted the native-totals fallback (the entire
+// point of the commit that added it) and all 5,820 tests stayed green, because
+// only the card's PRESENTATION was guarded. The fallback is also load-bearing
+// in a way the card cannot express: returning null here makes the slash-command
+// dispatcher treat /usage as unhandled, so the literal text "/usage" is sent to
+// the model as a chat message. Same reasoning, same shape as
+// components/model-chip.ts — a derivation extracted out of AppInner precisely
+// so it can be pinned without rendering App.
+import { selectNativeStatusChips } from '../components/StatusBar';
+import type { SessionTotals } from './session-totals';
+import type { TurnUsage, UsageSnapshot } from './chat-types';
+
+/** The Claude Code statusline's figures for one session. Minimal structural
+ *  shape (like model-chip.ts's ModelChipSession) so this module needs neither
+ *  App's private interface nor the IPC types. */
+export interface StatuslineStats {
+  costUsd: number | null;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheCreationTokens: number | null;
+  contextTokens: number | null;
+  duration: number | null;
+  apiDuration: number | null;
+  linesAdded: number | null;
+  linesRemoved: number | null;
+}
+
+/** Account-wide Claude subscription utilization, as read from the usage cache. */
+export interface SubscriptionUsage {
+  five_hour?: { utilization: number; resets_at: string };
+  seven_day?: { utilization: number; resets_at: string };
+}
+
+/** The bit of a session's chat state this derivation reads. */
+export interface UsageSnapshotSession {
+  timeline: ReadonlyArray<{ kind: string; turnId?: string }>;
+  assistantTurns: ReadonlyMap<string, { usage?: TurnUsage | null }>;
+  totals?: SessionTotals;
+}
+
+export interface UsageSnapshotInput {
+  sessionId: string;
+  /** When the snapshot was taken. Passed in rather than read from the clock so
+   *  the result is a pure function of its inputs. */
+  now: number;
+  /** Claude Code's statusline figures, if it has written any. */
+  stats: StatuslineStats | null | undefined;
+  /** Claude Code's context reading (percent REMAINING), if any. */
+  contextPercent: number | null;
+  usage: SubscriptionUsage | null;
+  /** True for a YouCoded-runtime session. Gates every native fallback below. */
+  isNative: boolean;
+  session: UsageSnapshotSession | undefined;
+}
+
+/** The most recent completed assistant turn's usage, walking backward.
+ *  Mirrors hooks/useNativeSessionUsage — the status bar's source for the same
+ *  numbers — so the bar and the card cannot read different turns. */
+export function lastTurnUsage(session: UsageSnapshotSession | undefined): TurnUsage | null {
+  if (!session) return null;
+  for (let i = session.timeline.length - 1; i >= 0; i--) {
+    const entry = session.timeline[i];
+    if (entry.kind !== 'assistant-turn' || !entry.turnId) continue;
+    const usage = session.assistantTurns.get(entry.turnId)?.usage;
+    if (usage) return usage;
+  }
+  return null;
+}
+
+/**
+ * Freeze the session's live figures into the point-in-time snapshot /usage and
+ * /cost render. Returns null when there is genuinely nothing to describe —
+ * the statusline hook runs after each command, so a brand-new Claude Code
+ * session may have no data for a few seconds.
+ */
+export function buildUsageSnapshot(input: UsageSnapshotInput): UsageSnapshot | null {
+  const { sessionId, now, stats, contextPercent: ctx, usage, isNative, session } = input;
+
+  // Native fallback (spec §10). The statusline is written by Claude Code, which
+  // a native session never runs — so without this every session figure below
+  // was null and /usage was a page of "--" in exactly the sessions the status
+  // bar now sends people here for (it hides the 5h and 7d chips there, and the
+  // Customize menu points at this card).
+  //
+  // Same precedence as the bar: the statusline wins where it exists, session
+  // totals fill in where it doesn't, so the two surfaces cannot disagree about
+  // the same session.
+  //
+  // Scoped to NATIVE sessions for exactly the same reason the bar scopes its
+  // own totals that way (StatusBar.tsx: `useNativeSessionTotals(isNativeSession
+  // ? sessionId : null)`). A Claude Code session's numbers are Claude Code's
+  // own, and its line count in particular covers edits this app never sees
+  // (shell commands); the derived count is a DIFFERENT measurement, so
+  // substituting it under the same label would make the card contradict the bar.
+  const totals = (isNative ? session?.totals : null) ?? null;
+  // Context, from the same selector the status bar's native pill uses, fed the
+  // same last-completed-turn usage. Two surfaces, one formula: a native session
+  // at 61% used to show a pill on the bar and NO context row on the card.
+  const nativeUsage = isNative ? lastTurnUsage(session) : null;
+  const nativeChips = selectNativeStatusChips(nativeUsage, nativeUsage?.contextLength);
+
+  if (!stats && ctx == null && !usage && !totals) return null;
+
+  // A brand-new native session starts at emptyTotals() — every field ZERO
+  // before a single turn has run — so a zero here means "nothing measured yet",
+  // not "measured zero", and must read as absent so the card omits the row
+  // instead of printing a 0 it did not measure. A statusline zero is a REAL
+  // measurement and is never collapsed (it wins via ?? below).
+  // This mirrors StatusBar.tsx's inTokens/outTokens derivation exactly.
+  const fromTotals = (v: number | undefined) => (v != null && v > 0 ? v : null);
+
+  return {
+    entryId: `usage-${sessionId}-${now}`,
+    timestamp: now,
+    // anyPriced gate: work with no published price contributes nothing to
+    // totals.costUsd, so showing that 0 would be a false zero — the card drops
+    // the figure instead (docs/error-message-standards.md).
+    costUsd: stats?.costUsd ?? (totals?.anyPriced ? totals.costUsd : null),
+    // "Some counted work is METERED but has no published rate", which is NOT
+    // the same as "free to run" (totals.anyFree) and must never be worded as one.
+    costIsPartial: stats?.costUsd == null && !!totals?.anyUnpriced,
+    countsFromSessionTotals: !stats && !!totals,
+    specialistRuns: totals?.specialistRuns ?? 0,
+    inputTokens: stats?.inputTokens ?? fromTotals(totals?.inputTokens),
+    outputTokens: stats?.outputTokens ?? fromTotals(totals?.outputTokens),
+    cacheReadTokens: stats?.cacheReadTokens ?? fromTotals(totals?.cacheReadTokens),
+    cacheCreationTokens: stats?.cacheCreationTokens ?? fromTotals(totals?.cacheCreationTokens),
+    contextTokens: stats?.contextTokens ?? null,
+    // Byte-for-byte the bar's own precedence (StatusBar.tsx's ContextPopup:
+    // `contextPercent ?? nativeChips?.contextPct ?? null`). Written as one
+    // expression on purpose — the bar and the card resolving context two
+    // different ways is how they ended up disagreeing in the first place.
+    contextPercent: ctx ?? nativeChips?.contextPct ?? null,
+    // Deliberately NOT filled from totals: the harness does not report turn
+    // wall-time or thinking-time at all (spec §15), so there is no native
+    // number to fall back to. The card omits both rows rather than invent one.
+    duration: stats?.duration ?? null,
+    apiDuration: stats?.apiDuration ?? null,
+    linesAdded: stats?.linesAdded ?? fromTotals(totals?.linesAdded),
+    linesRemoved: stats?.linesRemoved ?? fromTotals(totals?.linesRemoved),
+    fiveHourUtilization: usage?.five_hour?.utilization ?? null,
+    fiveHourResetsAt: usage?.five_hour?.resets_at ?? null,
+    sevenDayUtilization: usage?.seven_day?.utilization ?? null,
+    sevenDayResetsAt: usage?.seven_day?.resets_at ?? null,
+  };
+}

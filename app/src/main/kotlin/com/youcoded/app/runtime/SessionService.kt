@@ -3878,7 +3878,7 @@ class SessionService : Service() {
             "models:download-cancel",
             "models:delete",
             "models:installed",
-            "models:orphaned-partials",  // orphaned .partial scan (2026-07-15) — desktop-only
+            "models:resume",  // resume an interrupted download (2026-08-26) — desktop-only
             "endpoints:detect",
             // Model memory lifecycle (2026-07-14) — per-model residency, memory
             // guard, [Reload Model]. Desktop-only; no Android runtime. The push

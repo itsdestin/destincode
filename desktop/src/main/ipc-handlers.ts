@@ -2374,6 +2374,23 @@ export function registerIpcHandlers(
       const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
       return hit?.supportsVision ?? null;
     },
+    // Price resolver (Task 11, spec §5): reads the SAME catalog the model
+    // picker shows, so the price the user sees when choosing a model is the
+    // price the session-cost chip charges. Short-circuits local-engine before
+    // touching the catalog — a model running on this machine costs nothing to
+    // run and its rows carry no price anyway; the host stamps those turns
+    // `free` instead. modelCatalog.get() never throws (its own contract: a
+    // dead network degrades to stale cache or an empty list), and a model
+    // that isn't in the catalog falls through to null, which means "no
+    // published price" — never a guessed zero.
+    async (binding) => {
+      const providers = await providerRegistry.list();
+      const p = providers.find((x) => x.id === binding.providerId);
+      if (p?.type === 'local-engine') return null;
+      const models = await modelCatalog.get(providers);
+      const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
+      return hit?.pricing ?? null;
+    },
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
     // (electron `app` isn't importable in the host's own test env — inject here).
@@ -2804,10 +2821,10 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.MODELS_DOWNLOAD_CANCEL, async (_e, downloadId: string) => { modelManager.cancel(downloadId); return true; });
   ipcMain.handle(IPC.MODELS_DELETE, async (_e, id: string) => { await engineManager.deleteModel(id); return true; });
   ipcMain.handle(IPC.MODELS_INSTALLED, async () => engineManager.installedModels());
-  // Orphaned .partial scan (2026-07-15): .partial files left by a PREVIOUS app
-  // run are invisible to the in-memory downloader — this lets the UI list them
-  // (clean via models:delete; resume by re-starting the same download).
-  ipcMain.handle(IPC.MODELS_ORPHANED_PARTIALS, async () => modelManager.orphanedPartials());
+  // Resume an interrupted download (2026-08-26). Reads the manifest written
+  // beside the .partial — no Hugging Face round trip, so it works when the
+  // network is the reason the download stopped.
+  ipcMain.handle(IPC.MODELS_RESUME, async (_e, modelId: string) => modelManager.resume(modelId));
   ipcMain.handle(IPC.ENDPOINTS_DETECT, async () =>
     detectEndpoints(fetch, ((await providerRegistry.list()) as any[])));
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens

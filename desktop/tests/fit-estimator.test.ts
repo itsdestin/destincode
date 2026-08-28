@@ -55,6 +55,16 @@ describe('checkDiskSpace', () => {
     expect(checkDiskSpace(10 * GB, 20 * GB)).toBeNull();
     expect(checkDiskSpace(10 * GB, 10.4 * GB)).toMatch(/free space/i);
   });
+  it('a resume is judged on the bytes REMAINING, not the whole download', () => {
+    // 100 GB download, 80 GB already on disk, 30 GB free: refusing this would
+    // push the user to delete the very partial that makes it fit (spec §3.7).
+    expect(checkDiskSpace(100 * GB, 30 * GB)).not.toBeNull();          // from scratch: refused
+    expect(checkDiskSpace(100 * GB, 30 * GB, 80 * GB)).toBeNull();     // resuming: allowed
+  });
+
+  it('still refuses when even the remaining bytes do not fit', () => {
+    expect(checkDiskSpace(100 * GB, 5 * GB, 80 * GB)).toMatch(/needs about 20\.0 GB/);
+  });
 });
 
 describe('checkMemoryForLoad (create-time guard)', () => {

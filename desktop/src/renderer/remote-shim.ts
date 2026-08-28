@@ -1671,7 +1671,7 @@ export function installShim(): void {
       downloadCancel: (downloadId: string) => invoke('models:download-cancel', { downloadId }),
       delete: (id: string) => invoke('models:delete', { id }),
       installed: () => invoke('models:installed'),
-      orphanedPartials: () => invoke('models:orphaned-partials'),
+      resume: (modelId: string) => invoke('models:resume', { modelId }),
       detectEndpoints: () => invoke('endpoints:detect'),
       setBackend: (backend: string) => invoke('engine:set-backend', { backend }),
       memoryCheck: (modelId: string) => invoke('models:memory-check', { modelId }),

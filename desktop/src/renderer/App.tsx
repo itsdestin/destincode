@@ -32,6 +32,7 @@ import { dispatchSlashCommand, type DispatcherResult } from './state/slash-comma
 import { runNativeSlashAction, routeSlashResult } from './state/native-slash-actions';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
+import { buildUsageSnapshot, type SubscriptionUsage } from './state/usage-snapshot';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
@@ -44,6 +45,7 @@ import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
 import { useNativeSessionUsage, useTurnsWithUsage } from './hooks/useNativeSessionUsage';
+import { useNativeSessionTotals } from './hooks/useNativeSessionTotals';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -1223,6 +1225,22 @@ function AppInner() {
           // reportUsage → native:usage-report → status:data cache path was dead
           // (nothing read its nativeUsageMap) and was removed in the whole-branch review.
           break;
+        case 'subagent-usage':
+          // Bookkeeping only — never touches the timeline, the turn state, or
+          // the subagent card's segments. It exists so the parent's totals can
+          // include the work it delegated (spec §2). Arrives on the PARENT's
+          // stream (native-session-host emits it there), and replays from the
+          // parent's record on resume like any other persisted event.
+          batchTranscriptDispatch({
+            type: 'TRANSCRIPT_SUBAGENT_USAGE',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            usage: event.data.usage ?? null,
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
+          });
+          break;
         case 'assistant-thinking': {
           // Text payload → real reasoning content (collapsible in chat).
           // No payload → lifecycle heartbeat only (existing behavior:
@@ -2119,35 +2137,27 @@ function AppInner() {
   }, [sessionId, activeSessionModel, sessionModels, pendingModel]);
 
   // Snapshot factory for /cost and /usage. Pulls live stats from statusData
-  // and freezes them as a point-in-time snapshot. Returns null if stats haven't
-  // arrived yet (status line hook runs after each command, so a brand-new session
-  // may have no data for a few seconds).
+  // and freezes them as a point-in-time snapshot. Returns null only when the
+  // session has nothing at all to describe — that is a Claude Code session
+  // whose statusline hook hasn't run yet (it runs after each command, so a
+  // brand-new one has no data for a few seconds). A NATIVE session always has
+  // its own session totals to fall back on (Task 14), so it gets a card
+  // immediately; "returns null if stats haven't arrived" stopped being true
+  // then.
   const getUsageSnapshot = useCallback(
-    (sid: string) => {
-      const stats = statusData.sessionStatsMap[sid];
-      const ctx = statusData.contextMap[sid] ?? null;
-      const usage = statusData.usage as { five_hour?: { utilization: number; resets_at: string }; seven_day?: { utilization: number; resets_at: string } } | null;
-      if (!stats && ctx == null && !usage) return null;
-      return {
-        entryId: `usage-${sid}-${Date.now()}`,
-        timestamp: Date.now(),
-        costUsd: stats?.costUsd ?? null,
-        inputTokens: stats?.inputTokens ?? null,
-        outputTokens: stats?.outputTokens ?? null,
-        cacheReadTokens: stats?.cacheReadTokens ?? null,
-        cacheCreationTokens: stats?.cacheCreationTokens ?? null,
-        contextTokens: stats?.contextTokens ?? null,
-        contextPercent: ctx,
-        duration: stats?.duration ?? null,
-        apiDuration: stats?.apiDuration ?? null,
-        linesAdded: stats?.linesAdded ?? null,
-        linesRemoved: stats?.linesRemoved ?? null,
-        fiveHourUtilization: usage?.five_hour?.utilization ?? null,
-        fiveHourResetsAt: usage?.five_hour?.resets_at ?? null,
-        sevenDayUtilization: usage?.seven_day?.utilization ?? null,
-        sevenDayResetsAt: usage?.seven_day?.resets_at ?? null,
-      };
-    },
+    // The derivation itself lives in state/usage-snapshot.ts — a pure function,
+    // so the thing /usage is entirely made of can be tested without rendering
+    // App (no test imports this file). This wrapper only gathers the inputs.
+    (sid: string) =>
+      buildUsageSnapshot({
+        sessionId: sid,
+        now: Date.now(),
+        stats: statusData.sessionStatsMap[sid],
+        contextPercent: statusData.contextMap[sid] ?? null,
+        usage: statusData.usage as SubscriptionUsage | null,
+        isNative: sessionsRef.current.find((x) => x.id === sid)?.provider === 'native',
+        session: chatStateMapRef.current.get(sid),
+      }),
     [statusData],
   );
 
@@ -2623,6 +2633,9 @@ function AppInner() {
   // NOT gated on isNativeSession — CC turns carry usage too (the transcript
   // watcher stamps it), and the reuse chip serves both runtimes.
   const turnsWithUsage = useTurnsWithUsage(sessionId);
+  // Session-so-far totals for the bar's token / cost / code-change chips.
+  // Null for CC sessions, which take those numbers from the statusline.
+  const nativeTotals = useNativeSessionTotals(isNativeSession ? sessionId : null);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -3041,6 +3054,7 @@ function AppInner() {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
                   model={modelChip}
+                  provider={isNativeSession ? 'native' : 'claude'}
                   permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
                   onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}
                   fast={fastMode}
@@ -3080,6 +3094,7 @@ function AppInner() {
                   nativeUsage={nativeStatusUsage}
                   nativeContextLength={nativeStatusUsage?.contextLength ?? null}
                   turnsWithUsage={turnsWithUsage}
+                  nativeTotals={nativeTotals}
                 />
               </div>
           </>

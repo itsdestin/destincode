@@ -184,14 +184,16 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // a shared-state race, so that pair nets out to zero; plan 1b Task 2 added
     // nativeHome as an 11th, trailing param for the DelegationLedger the host
     // constructs internally; plan 1b Task 8 added specialistAskHoldMs as a
-    // 12th, trailing param — left undefined at the real construction site to
-    // reach the 13th slot; Task 4 (plan 1c) added the real SpecialistCatalog
-    // as the 13th, trailing param), skillCatalog (index 8) explicitly
-    // undefined so mcpManager (index 9) lands in the right slot.
-    expect(capturedCtorArgs!.length).toBe(13);
-    expect(capturedCtorArgs![8]).toBeUndefined();
+    // trailing param and plan 1c Task 4 added the real SpecialistCatalog after
+    // it; the status-bar work then added pricingFor as the 6th positional
+    // parameter — the 4th injected closure, right after visionSupportFor,
+    // because all four are resolved together for every create/resume/swap —
+    // shifting everything after it down by one), skillCatalog (index 9)
+    // explicitly undefined so mcpManager (index 10) lands in the right slot.
+    expect(capturedCtorArgs!.length).toBe(14);
+    expect(capturedCtorArgs![9]).toBeUndefined();
 
-    const mcpManager = capturedCtorArgs![9] as {
+    const mcpManager = capturedCtorArgs![10] as {
       acquire(sessionId: string): Promise<{ servers: Array<{ id: string; label: string; tools: unknown[] }> }>;
     };
     expect(mcpManager).toBeDefined();
@@ -235,7 +237,7 @@ describe('McpManager startup wiring (Task 7b)', () => {
     // shared directory.)
     expect(fs.existsSync(path.join(testHome, '.youcoded', 'mcp.json'))).toBe(false);
 
-    const mcpManager = capturedCtorArgs![9] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
+    const mcpManager = capturedCtorArgs![10] as { acquire(sessionId: string): Promise<{ servers: unknown[] }> };
     const { servers: ready } = await mcpManager.acquire('test-session');
     expect(ready).toEqual([]);
     expect(createConnectionMock).not.toHaveBeenCalled();
@@ -306,6 +308,59 @@ describe('visionSupportFor short-circuits for non-OpenRouter bindings (Fix 2)', 
     const result = await visionSupportFor({ providerId: 'local', modelId: 'some-gguf' });
     expect(result).toBeNull();
     expect(modelCatalogGetSpy).not.toHaveBeenCalled();
+  });
+});
+
+// Task 11: pricingFor is the 6th positional constructor arg — the 4th injected
+// closure. Same short-circuit posture as visionSupportFor above: a model
+// running on this machine costs nothing to run, so a local-engine binding must
+// never pay for a catalog read to learn a price that doesn't exist. The host
+// stamps those turns `free` instead of pricing them.
+describe('pricingFor (Task 11)', () => {
+  beforeEach(() => {
+    testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-pricing-wiring-'));
+    capturedCtorArgs = undefined;
+    modelCatalogGetSpy.mockClear();
+  });
+
+  it('never calls modelCatalog.get() for a local-engine binding', async () => {
+    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testHome, '.youcoded', 'providers.json'),
+      JSON.stringify({ v: 1, providers: [{ id: 'local', type: 'local-engine', label: 'Local models (llama.cpp)', enabled: true }] }),
+    );
+
+    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
+    registerIpcHandlers(
+      makeMockIpcMain() as any,
+      makeMockSessionManager() as any,
+      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
+      makeMockSkillProvider() as any,
+    );
+
+    const pricingFor = capturedCtorArgs![5] as (binding: { providerId: string; modelId: string }) => Promise<unknown>;
+    expect(await pricingFor({ providerId: 'local', modelId: 'some-gguf' })).toBeNull();
+    expect(modelCatalogGetSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns null — not a guessed zero — for a metered model the catalog does not list', async () => {
+    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testHome, '.youcoded', 'providers.json'),
+      JSON.stringify({ v: 1, providers: [{ id: 'anthropic-test', type: 'anthropic', label: 'Anthropic', enabled: true }] }),
+    );
+
+    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
+    registerIpcHandlers(
+      makeMockIpcMain() as any,
+      makeMockSessionManager() as any,
+      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
+      makeMockSkillProvider() as any,
+    );
+
+    const pricingFor = capturedCtorArgs![5] as (binding: { providerId: string; modelId: string }) => Promise<unknown>;
+    expect(await pricingFor({ providerId: 'anthropic-test', modelId: 'not-in-any-catalog' })).toBeNull();
+    expect(modelCatalogGetSpy).toHaveBeenCalled();   // a metered binding DOES consult the catalog
   });
 });
 
