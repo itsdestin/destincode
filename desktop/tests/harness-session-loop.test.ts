@@ -30,7 +30,7 @@ import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 // makeSession/scriptModel/drainTurn (2026-08-11 review fixes) reused from the
 // compaction suite's own scaffolding rather than hand-rolling a second way to
 // force the summarize branch.
-import { HARNESS, makeOpts, fakeTool, makeSession, scriptModel, drainTurn } from './helpers/harness-fakes';
+import { HARNESS, makeOpts, fakeTool, makeSession, scriptModel, drainTurn, FAKE_SESSION_CWD } from './helpers/harness-fakes';
 import { CLOUD_DEFAULT } from '../src/main/harness/capability-profile';
 
 function collect(session: HarnessSession): TranscriptEvent[] {
@@ -549,7 +549,11 @@ describe('HarnessSession — multi-step turn driver', () => {
   // which is a POSIX-only claim stated as a universal one — on Windows
   // path.resolve('/etc/x') attaches the current drive and yields 'D:/etc/x', so
   // the hardcoded expectation below was red on that CI leg. It is now computed
-  // the same way the tool computes it.
+  // the same way the tool computes it — resolved against FAKE_SESSION_CWD
+  // ('C:/x'), which is the session's cwd and therefore the base resolveP uses.
+  // Resolving against process.cwd() instead was still wrong on Windows: it
+  // picked up the RUNNER's drive ('D:/etc/x') while the session produced
+  // 'C:/etc/x'.
   it('tool-layer guard: Task is exempt (NON_PATH_SUBJECT_TOOLS) — its subject is a consent key, not a path', async () => {
     const decide = vi.fn(async () => ALLOW);
     const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
@@ -563,7 +567,7 @@ describe('HarnessSession — multi-step turn driver', () => {
     // Consulted DIRECTLY (never short-circuited to a forced ask) — the guard
     // never ran checkPathGuard against "read-write:/etc/x" as though it were
     // an absolute path outside C:/x.
-    expect(decide).toHaveBeenCalledWith('Task', `read-write:${path.resolve('/etc/x').replace(/\\/g, '/')}`);
+    expect(decide).toHaveBeenCalledWith('Task', `read-write:${path.resolve(FAKE_SESSION_CWD, '/etc/x').replace(/\\/g, '/')}`);
     expect(askUser).not.toHaveBeenCalled();
   });
 

@@ -14,6 +14,14 @@ import { resolveProfile, type CapabilityProfile } from '../../src/main/harness/c
 import type { ReadyServer } from '../../src/main/harness/mcp/mcp-manager';
 import { textChunks, toolCallChunk, finishChunk, stream } from './scripted-model';
 
+/** The cwd every faked session runs in. Exported because tests must resolve
+ *  their expected paths against THIS base, not against process.cwd(): a test
+ *  that resolves `/etc/x` on its own gets the *runner's* drive on Windows
+ *  (`D:/etc/x`) while the session resolves it against `C:/x` and produces
+ *  `C:/etc/x`. Duplicating the literal is what made that mismatch invisible. */
+export const FAKE_SESSION_CWD = 'C:/x';
+
+
 // Default harness manifest for driver tests (matches the loop suite's).
 export const HARNESS: HarnessManifest = {
   schema: 1, id: 'agent', name: 'Agent', systemPrompt: 'sys', tools: [],
@@ -58,7 +66,7 @@ export const EMPTY_SKILL_CATALOG = {
 
 export function makeOpts(over: Partial<HarnessSessionOpts>): HarnessSessionOpts {
   return {
-    sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,
+    sessionId: 's-1', cwd: FAKE_SESSION_CWD, harness: HARNESS,
     binding: { providerId: 'openrouter', modelId: 'm' },
     retryDelays: [1, 1, 1],   // test hook: near-zero backoff so the suite stays fast
     skillCatalog: EMPTY_SKILL_CATALOG,
@@ -225,7 +233,7 @@ export function makeSession(over: MakeSessionOver = {}): HarnessSession {
     ...(over.supportsTools !== undefined ? { supportsTools: over.supportsTools } : {}),
   };
   const opts: HarnessSessionOpts = {
-    sessionId: 's-1', cwd: 'C:/x', harness: HARNESS,
+    sessionId: 's-1', cwd: FAKE_SESSION_CWD, harness: HARNESS,
     binding: { providerId: 'openrouter', modelId: 'm' },
     retryDelays: [1, 1, 1],
     tools,
