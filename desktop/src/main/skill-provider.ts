@@ -1180,7 +1180,20 @@ export class LocalSkillProvider implements SkillProvider {
           // to compare against — nothing to repair.
           const pluginComponent = pkg.components.find((c) => c.type === 'plugin');
           if (!pluginComponent) continue;
-          const diskVersion = readPluginVersion(pluginComponent.path);
+          let diskVersion = readPluginVersion(pluginComponent.path);
+          // WHY: the legacy v1->v2 migration writer (skill-config-store.ts's
+          // migrateV1toV2) defaults a record's component path to
+          // ~/.claude/plugins/<id> when the old config had no installPath —
+          // a path that does not exist for a marketplace-installed plugin.
+          // Without this fallback such a record's diskVersion reads null
+          // forever, so it hits the `continue` below and stays stale
+          // permanently — exactly the case this function exists to fix.
+          // resolvePluginDir also checks the marketplace subtree, so this
+          // recovers the real on-disk version for those legacy records.
+          if (!diskVersion) {
+            const fallbackDir = resolvePluginDir(id);
+            if (fallbackDir) diskVersion = readPluginVersion(fallbackDir);
+          }
           if (!diskVersion || diskVersion === pkg.version) continue;
           this.configStore.updatePackageVersion(id, diskVersion);
           repaired.push({ id, from: pkg.version, to: diskVersion });

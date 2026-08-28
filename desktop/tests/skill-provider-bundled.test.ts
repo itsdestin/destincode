@@ -273,6 +273,67 @@ describe('LocalSkillProvider.repairPackageVersions', () => {
     expect(updatePackageVersion).toHaveBeenCalledWith('civic-report', '0.1.0');
     expect(repaired).toEqual([{ id: 'civic-report', from: '1.0.2', to: '0.1.0' }]);
   });
+
+  // Fix (Track B minor hardening review): a record written by the legacy
+  // v1->v2 migration (skill-config-store.ts's migrateV1toV2) defaults its
+  // component path to ~/.claude/plugins/<id> when the old config had no
+  // installPath — a path that does not exist for a marketplace-installed
+  // plugin. Before this fix, readPluginVersion(pluginComponent.path) on that
+  // dead path returned null and the record was skipped forever. It must
+  // fall back to resolvePluginDir(id), which also checks the marketplace
+  // subtree (~/.claude/plugins/marketplaces/youcoded/plugins/<id>) where the
+  // plugin is actually installed.
+  //
+  // resolvePluginDir() calls the real fs.existsSync against a real HOME dir
+  // (it isn't routed through the mocked plugin-installer module), so this
+  // test uses a real tmp HOME + real files, matching the pattern in
+  // claude-code-registry-listing.test.ts, rather than mocking 'fs' (vitest
+  // can't spy on an ESM module's named export — "Module namespace is not
+  // configurable in ESM").
+  it('falls back to resolvePluginDir when the recorded component path is a dead legacy path', async () => {
+    const fs = await import('node:fs');
+    const os = await import('node:os');
+    const path = await import('node:path');
+    const origHome = process.env.HOME;
+    const origUserProfile = process.env.USERPROFILE;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-repair-legacy-path-'));
+    try {
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      // WHY: skill-provider.ts computes CLAUDE_PLUGINS_ROOT from os.homedir()
+      // at import time — resetModules() + a dynamic re-import is required to
+      // pick up the fake HOME, same as claude-code-registry-listing.test.ts.
+      vi.resetModules();
+      const { LocalSkillProvider: FreshProvider } = await import('../src/main/skill-provider');
+      const fresh = new FreshProvider();
+
+      // Real marketplace-subtree install — the only place the plugin
+      // actually exists on disk. Nothing is created at the legacy path
+      // (~/.claude/plugins/legacy-plugin), which is also resolvePluginDir's
+      // own first ("top-level toolkit") candidate, so both miss.
+      const marketplacePath = path.join(home, '.claude', 'plugins', 'marketplaces', 'youcoded', 'plugins', 'legacy-plugin');
+      fs.mkdirSync(marketplacePath, { recursive: true });
+      const legacyPath = path.join(home, '.claude', 'plugins', 'legacy-plugin');
+
+      vi.spyOn(fresh.configStore, 'getPackages').mockReturnValue({
+        'legacy-plugin': {
+          version: '1.0.0', source: 'marketplace', installedAt: '2026-01-01T00:00:00.000Z', removable: true,
+          components: [{ type: 'plugin', path: legacyPath }],
+        },
+      });
+      inst.readPluginVersion.mockImplementation((dir: string) => (dir === marketplacePath ? '2.0.0' : null));
+      const updatePackageVersion = vi.spyOn(fresh.configStore, 'updatePackageVersion').mockImplementation(() => {});
+
+      const repaired = await fresh.repairPackageVersions();
+      expect(updatePackageVersion).toHaveBeenCalledWith('legacy-plugin', '2.0.0');
+      expect(repaired).toEqual([{ id: 'legacy-plugin', from: '1.0.0', to: '2.0.0' }]);
+    } finally {
+      process.env.HOME = origHome;
+      if (origUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = origUserProfile;
+      fs.rmSync(home, { recursive: true, force: true });
+      vi.resetModules();
+    }
+  });
 });
 
 // Review fix (Finding 4): update() had zero test coverage — Finding 1 (a

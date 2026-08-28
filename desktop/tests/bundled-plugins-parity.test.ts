@@ -58,11 +58,21 @@ describe('bundled plugin parity', () => {
   // env var name), not the file's own explanatory comment documenting that
   // Android deliberately has no such guard — that comment legitimately
   // contains the string "YOUCODED_PROFILE" and must not trip this check.
+  //
+  // Fix (Track B minor hardening review): `/getenv\(\s*"YOUCODED_PROFILE"/`
+  // only matches the direct-call form `getenv("YOUCODED_PROFILE")`. Valid
+  // Kotlin can also read it via map access — `System.getenv()["YOUCODED_PROFILE"]`
+  // — which that regex never sees. Widened to allow up to 20 chars of
+  // anything (no newline) between `getenv` and the literal, so both call
+  // shapes are caught, while still not tripping on the explanatory comment
+  // (verified below: the comment's own text keeps "getenv" and
+  // "YOUCODED_PROFILE" far enough apart, and on the wrong side, to stay
+  // outside this window).
   it('LocalSkillProvider.kt never grows desktop\'s dev-instance guard', () => {
     const kt = (f: string) => fs.readFileSync(path.resolve(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'skills', f), 'utf8');
     // WHY: Android has no dev-instance concept — YOUCODED_PROFILE only exists
     // to protect desktop's real ~/.claude from a run-dev.sh copy. Porting it
     // to Android would silently skip real upgrades with no equivalent reason.
-    expect(kt('LocalSkillProvider.kt')).not.toMatch(/getenv\(\s*"YOUCODED_PROFILE"/);
+    expect(kt('LocalSkillProvider.kt')).not.toMatch(/getenv[^\n]{0,20}YOUCODED_PROFILE/);
   });
 });
