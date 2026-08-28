@@ -15,7 +15,7 @@ import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixt
 import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
 // Scripted replies (site scenario / phase-2 play-through): a typed message
 // gets a fixture-driven answer instead of being swallowed by the catch-all.
-import { playReply, resolvePermission, parseReplyScript } from './reply-script';
+import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns } from './reply-script';
 // Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
@@ -487,14 +487,14 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   const startReply = (sessionId: string, text: string) => {
     const raw = REPLY_SCRIPTS[`./fixtures/replies/${replyScriptName()}.jsonl`];
     if (!raw) { console.warn(`[workbench] no reply script "${replyScriptName()}"`); return; }
-    const lines = parseReplyScript(raw);
-    const turns: typeof lines[] = [[]];
-    for (const l of lines) { turns[turns.length - 1].push(l); if (l.type === 'turn_complete') turns.push([]); }
-    if (turns[turns.length - 1].length === 0) turns.pop();
+    const turns = splitTurns(parseReplyScript(raw));
     if (turns.length === 0) return;
     const n = replyCursor.get(sessionId) ?? 0;
-    // Control bytes (\r, ESC) must not advance the cursor — playReply ignores them.
-    if (text.trim().length > 0 && !text.startsWith('\x1b') && text !== '\r') replyCursor.set(sessionId, n + 1);
+    // Control bytes (\r, ESC) must not advance the cursor — playReply ignores them
+    // (same predicate, so the two can't drift). Note `?autoplay=` spends turn 1
+    // through this path too: the first message TYPED into an autoplayed window
+    // plays turn 2 — intended for the sync row's phone half.
+    if (!isControl(text)) replyCursor.set(sessionId, n + 1);
     void playReply(sessionId, text, turns[n % turns.length], {
       transcript: (e) => subs.transcript.forEach((f) => f(e)),
       hook: (e) => subs.hook.forEach((f) => f(e)),
@@ -679,7 +679,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   const engine: Ns<'engine'> = {
     status: async () => ({
       installed: true, installedVersion: 'b9986', pinnedVersion: 'b9986', backend: 'vulkan' as const,
-      state: 'stopped' as const, cacheDir: '/home/destin/.youcoded/models', contextSize: 32768, port: 8080,
+      state: 'stopped' as const, cacheDir: '/home/you/.youcoded/models', contextSize: 32768, port: 8080,
     }),
     models: async () => [],
     install: async () => undefined,

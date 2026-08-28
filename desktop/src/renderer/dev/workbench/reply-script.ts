@@ -54,8 +54,19 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 /** True for the control bytes App/useSubmitConfirmation send to a PTY session
  *  ('\r' submit, '\x1b' interrupt, '\x1b[Z' shift-tab). Those must never start
  *  a scripted reply. */
-function isControl(text: string): boolean {
+export function isControl(text: string): boolean {
   return text.trim().length === 0 || text.startsWith('\x1b') || text === '\r';
+}
+
+/** Split a fixture into turns — one per `turn_complete` (a trailing turn with
+ *  no lines is dropped). The Nth message sent in a session plays turn N,
+ *  wrapping at the end; a one-turn fixture therefore answers every message the
+ *  same way, which is what the workbench did before turns existed. */
+export function splitTurns(lines: ReplyLine[]): ReplyLine[][] {
+  const turns: ReplyLine[][] = [[]];
+  for (const l of lines) { turns[turns.length - 1].push(l); if (l.type === 'turn_complete') turns.push([]); }
+  if (turns[turns.length - 1].length === 0) turns.pop();
+  return turns;
 }
 
 export async function playReply(sessionId: string, text: string, script: ReplyLine[], sinks: ReplySinks): Promise<void> {

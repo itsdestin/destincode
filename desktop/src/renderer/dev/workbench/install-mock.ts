@@ -47,6 +47,10 @@ function declarePlatform(): void {
   const w = window as any;
   // `?platform=android` films the phone half of the landing page's sync row —
   // the header drops its window buttons and the shell lays out as the phone does.
+  // Caveat: this runs AFTER the module graph loaded, so CSS and render-time
+  // `isAndroid()` checks are right, but import-time consts (HeaderBar's
+  // toggleOnLeft) still see 'electron' — film the phone NARROW (390 wide), where
+  // the narrow layout hides that toggle anyway.
   // `typeof location` guard: workbench-install-mock.test.ts runs this in Node.
   if (!w.__PLATFORM__ && typeof location !== 'undefined' && new URLSearchParams(location.search).get('platform') === 'android') w.__PLATFORM__ = 'android';
   if (!w.__PLATFORM__) w.__PLATFORM__ = 'electron';

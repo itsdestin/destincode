@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { playReply, resolvePermission, parseReplyScript } from '../src/renderer/dev/workbench/reply-script';
+import { playReply, resolvePermission, parseReplyScript, splitTurns, isControl } from '../src/renderer/dev/workbench/reply-script';
 
 const SCRIPT = [
   '{"type":"assistant_text","text":"Reading them now.","delay":10}',
@@ -63,5 +63,26 @@ describe('reply-script', () => {
     expect(transcript.at(-1)).toMatchObject({ type: 'turn-complete' });
     warn.mockRestore();
     vi.useRealTimers();
+  });
+});
+
+describe('splitTurns (multi-turn fixtures)', () => {
+  const text = (t: string) => ({ type: 'assistant_text' as const, text: t });
+  const end = { type: 'turn_complete' as const };
+  it('splits on turn_complete and drops a trailing empty turn', () => {
+    const turns = splitTurns([text('a'), end, text('b'), end]);
+    expect(turns).toHaveLength(2);
+    expect(turns[1]).toEqual([text('b'), end]);
+  });
+  it('keeps a fixture with no turn_complete as one turn (pre-turn fixtures behave as before)', () => {
+    expect(splitTurns([text('a'), text('b')])).toEqual([[text('a'), text('b')]]);
+  });
+  it('the cursor wraps: message N plays turn N mod turns', () => {
+    const turns = splitTurns([text('a'), end, text('b'), end]);
+    expect(turns[2 % turns.length][0]).toEqual(text('a'));
+  });
+  it('isControl rejects the PTY control bytes and blanks that must not advance the cursor', () => {
+    for (const c of ['\r', '\x1b', '\x1b[Z', '', '   ']) expect(isControl(c)).toBe(true);
+    expect(isControl('hello')).toBe(false);
   });
 });
