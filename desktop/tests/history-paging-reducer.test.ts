@@ -77,6 +77,28 @@ describe('history paging reducer', () => {
     for (const id of turnIds) expect(sess.assistantTurns.has(id)).toBe(true);
   });
 
+  it('never re-renders an entry that is already on screen', () => {
+    // The transcript a page is read from contains what the live stream ALREADY
+    // delivered. Without the live session's seenUuids seeded into the replay,
+    // a just-sent prompt comes back as a second identical bubble — the perf
+    // rig's native-chat screenshot caught exactly that.
+    let st = withSession('s');
+    st = chatReducer(st, {
+      type: 'TRANSCRIPT_USER_MESSAGE', sessionId: 's', uuid: 'u1', text: 'Once upon a time', timestamp: 1,
+    } as any);
+    st = chatReducer(st, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: 's', uuid: 'a1', text: 'a reply', timestamp: 2,
+    } as any);
+    st = chatReducer(st, {
+      type: 'HISTORY_PAGE_LOADED', sessionId: 's',
+      events: [userEvent('s', 'u0', 'older'), userEvent('s', 'u1', 'Once upon a time'), asstEvent('s', 'a1', 'a reply')],
+      cursor: null, hasMore: false,
+    });
+    const users = st.get('s')!.timeline.filter((e) => e.kind === 'user') as any[];
+    expect(users.map((u) => u.message.content)).toEqual(['older', 'Once upon a time']);
+    expect(st.get('s')!.timeline.filter((e) => e.kind === 'assistant-turn')).toHaveLength(1);
+  });
+
   it('HISTORY_PAGE_FAILED clears loading and keeps the cursor', () => {
     let st = withSession('s');
     st = chatReducer(st, {

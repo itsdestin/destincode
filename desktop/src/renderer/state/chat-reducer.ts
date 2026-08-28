@@ -2081,7 +2081,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // counters that only ever increase), so a prepended page can never collide
       // with what is already on screen even though it is OLDER.
       let scratch: ChatState = new Map();
-      scratch.set(action.sessionId, createSessionChatState());
+      // Seed the scratch state's seenUuids from the LIVE session so the
+      // per-event handlers' existing uuid dedup fires during the replay.
+      // Without this a message that is already on screen — one the user sent a
+      // moment ago, now also present in the transcript the page was read from —
+      // is rebuilt on the empty scratch and PREPENDED as a second bubble.
+      // (Caught by the perf rig's native-chat screenshot: two identical prompts.)
+      scratch.set(action.sessionId, { ...createSessionChatState(), seenUuids: new Set(session.seenUuids) });
       for (const ev of action.events) {
         const pageAction = pageEventToAction(ev);
         if (pageAction) scratch = chatReducer(scratch, pageAction);
