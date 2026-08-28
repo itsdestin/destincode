@@ -37,6 +37,28 @@ already falls back to the configured `-c` for.
    with a small GGUF in `test-engine/cache/`. All three must PASS.
 4. Update this file with anything that changed.
 
+**How a bump REACHES users:** `EngineManager.autoUpdateOnLaunch()`, fired
+fire-and-forget from `registerIpcHandlers`. It updates an existing install to the
+pin in the background and is deliberately inert in three cases — no engine yet
+(a first install stays the Install button), already on the pin, and an engine
+that is currently running (swapping the binary unloads the resident model). It
+never throws and never blocks startup; the Settings → Providers **Update** button
+is the manual retry when it could not run. A pin bump alone reaches nobody:
+`EngineAcquisition.installed()` keeps serving whatever is on disk.
+<!-- verify: {"path": "desktop/src/main/engine/engine-manager.ts", "contains": "autoUpdateOnLaunch"} -->
+
+**A new install must PROVE it boots before it replaces the old one.**
+`acquisition.install()` writes `.complete` and renames the directory into place
+before anything executes the binary, and `installed()` prefers the pinned version
+over every other — so a build that unpacks cleanly but will not start SHADOWS a
+working older engine. `installAndVerify()` discards an install it created when
+`verifyBoot` fails (restoring the previous engine as the newest usable one), and
+only prunes the older installs after a replacement has booted. It never discards
+an install that already existed before the call — a re-install of the running
+version reaches `verifyBoot` too, and a transient failure there must not delete a
+build that has been working.
+Guard: `desktop/tests/engine-auto-update.test.ts`.
+
 ## Touchpoints
 
 ### `llama-server` CLI flags — spawn shape (engine-supervisor.ts)

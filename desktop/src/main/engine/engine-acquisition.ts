@@ -71,6 +71,46 @@ export class EngineAcquisition {
     return pinned[0] ?? found[0] ?? null;
   }
 
+  /** Remove one install from disk. Called when a freshly-installed engine turns
+   *  out not to BOOT on this machine.
+   *
+   *  WHY this has to exist: `install()` writes the `.complete` marker and renames
+   *  the directory into place BEFORE anything runs the binary, and `installed()`
+   *  prefers the pinned version over every other. So an engine that downloads and
+   *  unpacks perfectly but will not start (old GPU driver, unusual distro) SHADOWS
+   *  a working older install and takes local models down with it. That was survivable
+   *  while the only route in was a user pressing Install and reading the error; the
+   *  launch auto-update makes it unattended, so the failed install has to be undone.
+   *  Returns false if the directory could not be removed (a caller may still be
+   *  holding the binary open) — the caller decides whether that is fatal. */
+  discard(installed: InstalledEngine): boolean {
+    try {
+      fs.rmSync(installed.dir, { recursive: true, force: true });
+      return !fs.existsSync(installed.dir);
+    } catch {
+      return false;
+    }
+  }
+
+  /** Delete every install that is not `keep`. Called only AFTER a replacement has
+   *  proven it boots — `installed()` already prefers the pinned version, so an
+   *  older engine left behind is dead weight (100-500 MB unpacked) rather than a
+   *  usable fallback. Best-effort: a dir that will not delete is skipped, never
+   *  thrown, because failing to reclaim disk must not fail an engine update. */
+  pruneOthers(keep: InstalledEngine): void {
+    let entries: string[] = [];
+    try { entries = fs.readdirSync(this.engineRoot); } catch { return; }
+    for (const name of entries) {
+      const dir = path.join(this.engineRoot, name);
+      if (dir === keep.dir) continue;
+      // Only touch directories that ARE installs (they carry a .complete marker).
+      // Never blind-delete siblings — the engine root also holds `.download`
+      // archives and `.unpacking` scratch that install() manages itself.
+      if (!fs.existsSync(path.join(dir, '.complete'))) continue;
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }
+
   async install(asset: EngineAsset, onProgress: (p: EngineInstallProgress) => void): Promise<InstalledEngine> {
     const finalDir = this.installDir(ENGINE_VERSION, asset.backend);
     // Idempotent: an already-usable install of this exact version+backend is

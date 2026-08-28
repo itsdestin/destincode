@@ -2310,6 +2310,13 @@ export function registerIpcHandlers(
   // picker. ENGINE_PORT rides the shifted-port scheme so the dev instance and
   // the built app never fight over one llama-server.
   const engineManager = new EngineManager(nativeHome, app.getPath('userData'), ENGINE_PORT);
+  // Bring an already-installed engine up to the pinned version, in the background.
+  // Fire-and-forget by design — it never throws, never blocks startup, and skips
+  // itself entirely when nothing is installed yet (a first install stays the user's
+  // call). Without this a pin bump reaches nobody: EngineAcquisition.installed()
+  // keeps serving whatever version is on disk, so a model needing a newer llama.cpp
+  // just looks like a broken app.
+  void engineManager.autoUpdateOnLaunch();
   const providerRegistry = new ProviderRegistry(nativeHome, secretsStore, engineManager.registryHook());
   void providerRegistry.init();
   const modelCatalog = new ModelCatalog(app.getPath('userData'), undefined, {
