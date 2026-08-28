@@ -134,6 +134,11 @@ describe.skipIf(!posix)('Task 4: hand-off at the time limit', () => {
     expect(r.text).toMatch(/handed off to the background/);
     const run = reg.list()[0];
     await run.exited;
+    // `exited` means the PROCESS ended; onExit assigns run.logDone and resolves
+    // `exited` without waiting for it, so a RAW file read races the final
+    // flush. reg.read() awaits that internally — a direct readFileSync does
+    // not. Linux always won this race; macOS CI did not (2026-08-28).
+    await run.logDone;
     expect(run.exitCode).toBe(0);
     expect(tracked).toBeUndefined();
     expect(env).toBeUndefined();
