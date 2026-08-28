@@ -54,6 +54,12 @@ class PluginInstaller(
         // is NOT a trust boundary (comes from fetchable JSON, can be spoofed).
         private val TRUSTED_POSTINSTALL_ORGS = listOf("itsdestin/", "destinationunknown/")
 
+        // Task B5 (Android port of upgradeFromLocal): plugin ids ultimately come
+        // from BundledPlugins.IDS (fixed) or a marketplace index entry (external
+        // JSON) — reject anything that isn't a safe path segment before it's used
+        // to build a filesystem path.
+        private val SAFE_ID_RE = Regex("^[a-zA-Z0-9_-]+$")
+
         /**
          * Phase 3a: Map sourceMarketplace to its git repo URL.
          * YouCoded/YouCoded local entries live in itsdestin/wecoded-marketplace
@@ -106,9 +112,7 @@ class PluginInstaller(
             // missed the guard, re-ran installFromLocal, returned Success, fired
             // onPluginsChanged, and typed /reload-plugins into the active session.
             val targetDir = File(pluginsDir, id)
-            val hasManifest = File(targetDir, ".claude-plugin/plugin.json").exists() ||
-                File(targetDir, "plugin.json").exists()
-            if (targetDir.exists() && hasManifest) {
+            if (isInstalledOnDisk(id)) {
                 return@withContext InstallResult.AlreadyInstalled("YouCoded")
             }
 
@@ -200,6 +204,26 @@ class PluginInstaller(
         return installed.has(id)
     }
 
+    // Fix (review round 1, Finding 1): "is it installed?" must be answered from
+    // disk, not the config-store record, wherever the answer feeds a decision
+    // to install vs. upgrade. isInstalled() above trusts configStore, which can
+    // drift from disk in both directions — a reset/restored config with a real
+    // tree already present, or a crash mid-upgradeFromLocal leaving the record
+    // present but the tree gone (parked at .old-<id> instead). Either drift was
+    // previously PERMANENT: the install-missing branch re-hit this class's own
+    // on-disk AlreadyInstalled guard and reported "failed" forever, or the
+    // upgrade-compare branch read a null version and reported "unchanged"
+    // forever. Asking the disk directly lets a half-finished swap heal itself
+    // on the very next launch. Do not use this to replace isInstalled() — that
+    // has other callers that intentionally want the config-store's record.
+    fun isInstalledOnDisk(id: String): Boolean {
+        val dir = File(pluginsDir, id)
+        // Fix (review round 2): route through the same manifest predicate
+        // listInstalledPluginDirs() now uses, so "installed" can't mean two
+        // different things depending on which code path asks.
+        return dir.exists() && ClaudeCodeRegistry.hasPluginManifest(dir)
+    }
+
     /**
      * Check if a plugin already exists in Claude Code's installed_plugins.json
      * under a different `id@marketplace` key than ours. YouCoded-installed
@@ -262,6 +286,163 @@ class PluginInstaller(
         return InstallResult.Success
     }
 
+    // ── Task B5: bundled-plugin upgrade (port of desktop's readPluginVersion /
+    // refreshLocalMarketplaceCache / upgradePluginFromLocal in plugin-installer.ts) ──
+
+    /**
+     * Read the "version" field out of a plugin's manifest, checking both
+     * layouts Claude Code accepts (root plugin.json, then .claude-plugin/plugin.json).
+     * Used both to read the REAL on-disk version of an install (not the
+     * marketplace index's claimed version) and to read the cached copy's
+     * version to decide whether an upgrade is available.
+     */
+    fun readPluginVersion(dir: File): String? {
+        for (candidate in listOf(File(dir, "plugin.json"), File(dir, ".claude-plugin/plugin.json"))) {
+            if (!candidate.exists()) continue
+            val v = try { JSONObject(candidate.readText()).optString("version") } catch (_: Exception) { null }
+            if (!v.isNullOrEmpty()) return v
+        }
+        return null
+    }
+
+    /** Where a source ref resolves to inside the local marketplace cache clone. */
+    fun cacheSourceDir(sourceRef: String, sourceMarketplace: String?): File =
+        File(File(cacheDir, getCacheRepoName(sourceMarketplace)), sourceRef)
+
+    /**
+     * Refresh the marketplace cache clone on its own, independent of an
+     * install — the launch-time reconciler calls this before comparing
+     * versions, so an already-installed bundled plugin's upgrade can be
+     * detected without the user re-running the install flow. Clones if the
+     * cache is missing; otherwise only fetches/resets once the 1 h gate
+     * (CACHE_REFRESH_MS — same constant installFromLocal already uses) has
+     * elapsed, since reconcile runs on EVERY launch and without the gate
+     * that's a GitHub round-trip on every app start, on a phone.
+     */
+    suspend fun refreshLocalMarketplaceCache(sourceMarketplace: String?): Boolean = withContext(Dispatchers.IO) {
+        val cacheRepo = File(cacheDir, getCacheRepoName(sourceMarketplace))
+        val repoUrl = getMarketplaceRepo(sourceMarketplace)
+        if (!cacheRepo.exists()) {
+            cacheDir.mkdirs()
+            val ok = runGit("clone", "--depth", "1", repoUrl, cacheRepo.absolutePath)
+            if (ok) setCacheTimestamp(cacheRepo)
+            return@withContext ok
+        }
+        if (System.currentTimeMillis() - getCacheTimestamp(cacheRepo) < CACHE_REFRESH_MS) return@withContext true
+        if (!runGit("-C", cacheRepo.absolutePath, "fetch", "origin")) return@withContext false
+        val resetOk = runGit("-C", cacheRepo.absolutePath, "reset", "--hard", "origin/master")
+        if (resetOk) setCacheTimestamp(cacheRepo)
+        resetOk
+    }
+
+    /**
+     * Replace an already-installed plugin's tree with the cache clone's copy,
+     * in place. Never deletes the live install directory before the new copy
+     * is staged — a crash mid-copy must not leave the user with no plugin at
+     * all. The old tree is parked at `.old-<id>` until the swap fully
+     * succeeds, and is put BACK if anything throws in between (matches
+     * desktop's upgradePluginFromLocal in plugin-installer.ts).
+     *
+     * [renameFn] defaults to the real `File.renameTo` and exists ONLY as a
+     * test seam (review round 2, Finding 2). The plan's binding promise —
+     * "if the swap dies half-way the old tree must be put back" — covers the
+     * `!staging.renameTo(target)` branch below, which fires only once
+     * `target.renameTo(retired)` has ALREADY succeeded. By the time that
+     * second rename runs, target's path is guaranteed empty (freed by the
+     * first rename moments earlier, same thread, no suspension point in
+     * between), so nothing a test does with real files can plant an obstacle
+     * there deterministically — any filesystem-permission trick broad enough
+     * to block the second rename blocks the first one too, since both write
+     * into the same parent (pluginsDir). Injecting the rename operation is
+     * the only way to force that specific failure on demand and prove the
+     * rollback actually restores the old tree, not just skip the branch.
+     */
+    suspend fun upgradeFromLocal(
+        id: String,
+        sourceRef: String,
+        sourceMarketplace: String?,
+        renameFn: (File, File) -> Boolean = { from, to -> from.renameTo(to) },
+    ): InstallResult = withContext(Dispatchers.IO) {
+        if (!SAFE_ID_RE.matches(id)) return@withContext InstallResult.Failed("Invalid plugin id")
+        val cacheRepo = File(cacheDir, getCacheRepoName(sourceMarketplace))
+        val sourceDir = cacheSourceDir(sourceRef, sourceMarketplace)
+        // Security: prevent sourceRef from escaping the cache directory (e.g. "../../.ssh").
+        if (!isContainedIn(sourceDir, cacheRepo)) return@withContext InstallResult.Failed("Invalid source ref (path traversal blocked)")
+        if (!sourceDir.isDirectory) return@withContext InstallResult.Failed("Source not found in marketplace cache: $sourceRef")
+        pluginsDir.mkdirs()
+        val target = File(pluginsDir, id)
+        val staging = File(pluginsDir, ".upgrade-$id")
+        val retired = File(pluginsDir, ".old-$id")
+        // Stale leftovers from a killed prior attempt must not make copyRecursively
+        // merge into a half-written staging dir.
+        staging.deleteRecursively()
+        retired.deleteRecursively()
+        try {
+            sourceDir.copyRecursively(staging, overwrite = true)
+            if (target.exists() && !renameFn(target, retired)) {
+                // Fix (review round 1, Finding 2): the copy above already staged a
+                // full second copy of the plugin at `.upgrade-<id>` — returning
+                // without deleting it left that copy on disk forever. Not just
+                // clutter: ClaudeCodeRegistry.listInstalledPluginDirs() adds EVERY
+                // subdirectory of pluginsDir with no manifest check and no
+                // dot-prefix skip, so a stranded ".upgrade-<id>" gets scanned as a
+                // second installed copy of the plugin and can register duplicate
+                // hooks/MCP servers. Clean up on every exit, not just the
+                // exception path below.
+                // Fix (review round 2, Minor): deleteRecursively() swallows
+                // per-file failures instead of throwing — log when it can't
+                // fully clean up so a partial ".upgrade-<id>" leftover isn't
+                // silent (same failure class as the leak this branch fixes).
+                if (!staging.deleteRecursively()) Log.w(TAG, "could not fully remove staged copy for $id at $staging")
+                return@withContext InstallResult.Failed("could not move the old plugin aside")
+            }
+            if (!renameFn(staging, target)) {
+                // WHY: put the old tree back immediately — a user must never end
+                // up with the plugin directory entirely gone.
+                if (!renameFn(retired, target)) Log.e(TAG, "upgrade rollback failed for $id: could not restore $retired")
+                // Fix (review round 1, Finding 2): same staging leak as above —
+                // the rename failed but the staged copy is still sitting on disk.
+                // Fix (review round 2, Minor): log a failed cleanup instead of
+                // swallowing it silently — see the WHY on the branch above.
+                if (!staging.deleteRecursively()) Log.w(TAG, "could not fully remove staged copy for $id at $staging")
+                return@withContext InstallResult.Failed("could not move the new plugin into place")
+            }
+        } catch (e: Exception) {
+            // WHY: same rollback as above — the swap died mid-copy/rename.
+            if (!target.exists() && retired.exists()) {
+                try { renameFn(retired, target) } catch (_: Exception) { /* nothing better to do */ }
+            }
+            // Fix (Track B final review, "Also" minor finding): this was a bare
+            // `staging.deleteRecursively()` — the only one of the three staging
+            // cleanup sites in this function that still swallowed its boolean
+            // return silently. A partial leftover here (e.g. a file the OS is
+            // still holding open) would be just as silent as the two early-return
+            // sites this same fix already covers above.
+            if (!staging.deleteRecursively()) Log.w(TAG, "could not fully remove staged copy for $id at $staging")
+            return@withContext InstallResult.Failed("upgrade copy failed: ${e.message}")
+        }
+        // WHY: deleting the retired tree is cleanup AFTER the swap already
+        // succeeded — the new files are live at `target` at this point. A
+        // failure here must not be reported as an upgrade failure (matches
+        // desktop's WHY at upgradePluginFromLocal): the upgrade DID work, and
+        // reporting failure would skip the registerPluginInstall call below,
+        // leaving installed_plugins.json stuck on the old version forever.
+        try { retired.deleteRecursively() } catch (_: Exception) { /* best-effort cleanup only */ }
+        // Register with the REAL version read off the newly-swapped-in disk
+        // copy, not a hardcoded default — this is the whole point of the upgrade.
+        val version = readPluginVersion(target) ?: "1.0.0"
+        try {
+            ClaudeCodeRegistry.registerPluginInstall(homeDir, ClaudeCodeRegistry.RegisterInput(
+                id = id,
+                installPath = target.absolutePath,
+                version = version,
+            ))
+        } catch (e: Exception) {
+            return@withContext InstallResult.Failed("Registry write failed: ${e.message}")
+        }
+        InstallResult.Success
+    }
+
     private suspend fun installFromUrl(id: String, url: String): InstallResult {
         val targetDir = File(pluginsDir, id)
         if (targetDir.exists()) targetDir.deleteRecursively()
@@ -312,6 +493,13 @@ class PluginInstaller(
         try {
             File(cacheRepo, ".youcoded-last-pull").writeText(System.currentTimeMillis().toString())
         } catch (_: Exception) { /* non-fatal — retry next install */ }
+    }
+
+    /** Security: resolved `child` must stay inside `parent` (blocks a spoofed sourceRef like "../../.ssh"). */
+    private fun isContainedIn(child: File, parent: File): Boolean {
+        val c = child.canonicalFile
+        val p = parent.canonicalFile
+        return c == p || c.path.startsWith(p.path + File.separator)
     }
 
     private fun isPostInstallTrusted(entry: JSONObject): Boolean {
