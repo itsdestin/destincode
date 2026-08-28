@@ -104,6 +104,19 @@ describe('readTranscriptPage — CC transcript', () => {
     expect(page.cursor).toBeNull();
   });
 
+  it('a cursor whose offset is past the current file size yields an empty final page', async () => {
+    jsonlPath = writeTranscript(PAGE_TURNS + 20);
+    const first = await readTranscriptPage({ jsonlPath, sessionId: 's1', endOffset: null });
+    // Simulate a /compact: the file is REWRITTEN shorter, but still holds whole
+    // turns — so without the guard the reader happily serves content from a
+    // conversation state the cursor was never minted against.
+    fs.truncateSync(jsonlPath, first.cursor!.offset - 200);
+    const stale = await readTranscriptPage({ jsonlPath, sessionId: 's1', endOffset: first.cursor!.offset });
+    expect(stale.events).toEqual([]);
+    expect(stale.hasMore).toBe(false);
+    expect(stale.cursor).toBeNull();
+  });
+
   it('tool_result carrier lines are not mistaken for turn boundaries', async () => {
     // A tool_result is written as a `user` line WITH a promptId; snapping a page
     // there would split a turn away from its tool call.

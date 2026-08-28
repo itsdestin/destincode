@@ -87,6 +87,12 @@ export async function readTranscriptPage(args: PageArgs): Promise<TranscriptPage
 
   try {
     const size = fs.fstatSync(fd).size;
+    // A cursor minted before a /clear or /compact rewrite points past the new
+    // end. Treat it as "history is over" so the renderer drops the cursor
+    // rather than serving turns from a file state the cursor never described —
+    // the same way the live tailer resets on a shrink (transcript-watcher.ts).
+    if (args.endOffset != null && args.endOffset > size) return empty;
+
     const end = args.endOffset == null ? size : Math.min(args.endOffset, size);
     if (end <= 0) return empty;
 
