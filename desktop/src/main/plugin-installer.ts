@@ -408,6 +408,36 @@ export async function upgradePluginFromLocal(id: string, sourceRef: string, sour
   return { status: 'installed' };
 }
 
+/**
+ * Fix (Track B final review, Finding F1): remove stale `.old-<id>-<pid>` /
+ * `.upgrade-<id>-<pid>` directories left behind by an upgradePluginFromLocal()
+ * that was killed mid-swap. Name-PREFIX match only (`.old-` / `.upgrade-`,
+ * not the full name) — desktop's staging names carry a `-<pid>` suffix that
+ * a kill leaves permanently mismatched with the current process's pid, so an
+ * exact-name check would never find it. Deliberately narrow so a real
+ * plugin id — which SAFE_ID_RE forbids from starting with "." — can never be
+ * swept by mistake. Matches Android's LocalSkillProvider.sweepStaleUpgradeDirs()
+ * (Task B5 review round 2, Finding 1b).
+ */
+export function sweepStaleUpgradeDirs(): void {
+  let children: fs.Dirent[];
+  try {
+    children = fs.readdirSync(PLUGINS_DIR, { withFileTypes: true });
+  } catch {
+    return; // directory doesn't exist yet — nothing to sweep
+  }
+  for (const child of children) {
+    if (!child.isDirectory()) continue;
+    if (!child.name.startsWith('.old-') && !child.name.startsWith('.upgrade-')) continue;
+    const target = path.join(PLUGINS_DIR, child.name);
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+    } catch (err: any) {
+      console.warn(`[plugin-installer] could not fully sweep stale ${child.name}: ${err?.message || String(err)}`);
+    }
+  }
+}
+
 async function installFromUrl(id: string, url: string): Promise<InstallResult> {
   // Security: only allow HTTPS git URLs to prevent ext::, file://, ssh:// attacks
   if (!url.startsWith('https://')) {

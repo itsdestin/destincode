@@ -116,4 +116,27 @@ describe('plugin-installer upgrade primitives', () => {
       rmSpy.mockRestore();
     }
   });
+
+  // Fix (Track B final review, Finding F1): sweepStaleUpgradeDirs() clears
+  // litter a killed mid-swap upgradePluginFromLocal() leaves behind. Mirrors
+  // Android's LocalSkillProvider.sweepStaleUpgradeDirs() tests.
+  it('sweepStaleUpgradeDirs removes stale .old-/.upgrade- dirs, leaving the real plugin and a same-prefix decoy untouched', async () => {
+    const { sweepStaleUpgradeDirs } = await import('../src/main/plugin-installer');
+    w(path.join(pluginsDir(), 'youcoded-chatsearch', 'plugin.json'), '{"name":"youcoded-chatsearch","version":"0.2.0"}');
+    w(path.join(pluginsDir(), '.old-youcoded-chatsearch-4242', 'plugin.json'), '{"name":"youcoded-chatsearch","version":"0.1.0"}');
+    w(path.join(pluginsDir(), '.upgrade-youcoded-chatsearch-4242', 'plugin.json'), '{"name":"youcoded-chatsearch","version":"0.2.0"}');
+    // A real plugin legitimately named "old-fashioned-plugin" — no leading
+    // dot, so name-PREFIX matching on ".old-" must not touch it.
+    w(path.join(pluginsDir(), 'old-fashioned-plugin', 'plugin.json'), '{"name":"old-fashioned-plugin","version":"1.0.0"}');
+
+    sweepStaleUpgradeDirs();
+
+    const remaining = fs.readdirSync(pluginsDir()).sort();
+    expect(remaining).toEqual(['old-fashioned-plugin', 'youcoded-chatsearch']);
+  });
+
+  it('sweepStaleUpgradeDirs is a no-op when the plugins dir does not exist yet', async () => {
+    const { sweepStaleUpgradeDirs } = await import('../src/main/plugin-installer');
+    expect(() => sweepStaleUpgradeDirs()).not.toThrow();
+  });
 });

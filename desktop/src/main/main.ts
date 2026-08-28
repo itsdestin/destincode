@@ -204,6 +204,12 @@ skillProvider.ensureMigrated();
 // Fire-and-forget: install bundled plugins if missing. Silent retry on
 // every launch. See docs/superpowers/specs/2026-04-20-bundled-default-plugins-design.md.
 void skillProvider.ensureBundledPluginsInstalled();
+// Fix (Track B final review, Finding F2): repair every tracked package's
+// recorded version against its real on-disk plugin.json — not just the
+// three bundled ids above. See the WHY on repairPackageVersions() in
+// skill-provider.ts for what breaks without this (permanently stale
+// "Update available" state for every other in-repo plugin).
+void skillProvider.repairPackageVersions();
 
 // commandProvider is constructed after skillProvider so it can read skills
 // for dedup. getProjectCwd returns the most recently active session's cwd,

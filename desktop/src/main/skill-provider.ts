@@ -4,7 +4,7 @@ import os from 'os';
 import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
-import { installPlugin, uninstallPlugin, upgradePluginFromLocal, refreshLocalMarketplaceCache, readPluginVersion, isPluginInstalled, marketplaceCacheDir, type InstallResult } from './plugin-installer';
+import { installPlugin, uninstallPlugin, upgradePluginFromLocal, refreshLocalMarketplaceCache, readPluginVersion, isPluginInstalled, marketplaceCacheDir, sweepStaleUpgradeDirs, type InstallResult } from './plugin-installer';
 import { pluginInstallDir, YOUCODED_PLUGINS_DIR, listInstalledPluginDirs } from './claude-code-registry';
 import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
 import { reconcileHooks } from './hook-reconciler';
@@ -30,6 +30,33 @@ function resolvePluginDir(id: string): string | null {
   const marketplace = path.join(YOUCODED_PLUGINS_DIR, id);
   if (fs.existsSync(marketplace)) return marketplace;
   return null;
+}
+
+// Fix (Track B final review, Finding F3): readPluginVersion() returning null
+// is ambiguous — no plugin.json exists, one exists but fails to parse, or one
+// exists and parses but has no "version" key (exactly what
+// plugin-installer.ts's ensurePluginJson() writes). docs/error-message-standards.md
+// forbids guessing an unverified cause, so this inspects the same two
+// candidate paths readPluginVersion() checks and reports which specific
+// state was actually observed, never a blanket "unreadable".
+function describeManifestVersionState(dir: string): string {
+  const candidates = [
+    path.join(dir, 'plugin.json'),
+    path.join(dir, '.claude-plugin', 'plugin.json'),
+  ];
+  for (const p of candidates) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (typeof parsed.version !== 'string') return `${p} has no "version" field`;
+      // Has a string version — readPluginVersion() would have returned it,
+      // so this function is never called on this path in practice.
+      return `${p} has version "${parsed.version}"`;
+    } catch (err: any) {
+      return `${p} exists but failed to parse: ${err?.message || String(err)}`;
+    }
+  }
+  return `no plugin.json found at ${dir}/plugin.json or ${dir}/.claude-plugin/plugin.json`;
 }
 
 // Patterns that indicate sensitive content — stripped before upload
@@ -342,7 +369,15 @@ export class LocalSkillProvider implements SkillProvider {
     // SkillAmbiguous exists to complain about); the non-local branches instead
     // silently bumped the recorded version while never touching a file. Both
     // reported success for a plugin YouCoded does not manage.
-    if (result.status === 'already_installed' && (result as any).via !== 'YouCoded') {
+    // Fix (Track B final review, Finding F4): this cast used to be `(result
+    // as any).via`, which discards the discriminated-union narrowing that
+    // `result.status === 'already_installed'` establishes above — InstallResult
+    // already types `via` on that branch (plugin-installer.ts). With the
+    // cast, renaming `via` compiled clean and `!== 'YouCoded'` silently
+    // became true for EVERY already-installed plugin, refusing every
+    // Settings "Update" with a message about Claude Code. Deleting the cast
+    // makes tsc the guard again.
+    if (result.status === 'already_installed' && result.via !== 'YouCoded') {
       return {
         ok: false,
         error: `"${id}" was installed through Claude Code, not YouCoded. YouCoded does not manage that install and will not overwrite or version-track it.`,
@@ -868,7 +903,7 @@ export class LocalSkillProvider implements SkillProvider {
    * unlike the old installMany()-only path, an already-installed bundled
    * plugin that ships a fix now actually reaches users who already have it.
    */
-  async reconcileBundledPlugins(): Promise<Array<{ id: string; action: 'installed' | 'upgraded' | 'unchanged' | 'skipped-dev' | 'failed'; from?: string; to?: string; error?: string }>> {
+  async reconcileBundledPlugins(): Promise<Array<{ id: string; action: 'installed' | 'upgraded' | 'unchanged' | 'skipped-dev' | 'failed'; from?: string; to?: string; error?: string; via?: string }>> {
     type ReconcileAction = 'installed' | 'upgraded' | 'unchanged' | 'skipped-dev' | 'failed';
     const ids = [...BUNDLED_PLUGIN_IDS];
 
@@ -876,6 +911,18 @@ export class LocalSkillProvider implements SkillProvider {
     if (process.env.YOUCODED_PROFILE && process.env.YOUCODED_BUNDLED_UPGRADE !== '1') {
       return ids.map((id) => ({ id, action: 'skipped-dev' as const }));
     }
+
+    // Fix (Track B final review, Finding F1): a real process kill mid-swap in
+    // upgradePluginFromLocal() can leave `.upgrade-<id>-<pid>` (a staged copy)
+    // or `.old-<id>-<pid>` (the retired tree) behind in the marketplace
+    // plugins dir. listInstalledPluginDirs() no longer scans them, but
+    // nothing else clears them either — sweep on every launch so a crash's
+    // litter is cleared on the next launch, not left indefinitely. Placed
+    // AFTER the dev-instance guard above so a dev-mode launch never mutates
+    // the shared real ~/.claude install. Matches Android's
+    // LocalSkillProvider.sweepStaleUpgradeDirs() call site (Task B5 review
+    // round 2, Finding 1b).
+    sweepStaleUpgradeDirs();
 
     let index = await this.fetchIndex();
     // Review fix (Finding 3): refetch the index at most once per process,
@@ -910,7 +957,7 @@ export class LocalSkillProvider implements SkillProvider {
       }
     }
 
-    const out: Array<{ id: string; action: ReconcileAction; from?: string; to?: string; error?: string }> = [];
+    const out: Array<{ id: string; action: ReconcileAction; from?: string; to?: string; error?: string; via?: string }> = [];
     for (const id of ids) {
       const entry = index.find((e) => e.id === id);
       if (!entry) {
@@ -946,22 +993,60 @@ export class LocalSkillProvider implements SkillProvider {
         if (r.status !== 'installed') {
           // Review fix (Finding 8): r.status is a status token ('installing'),
           // not a message — fall back to a readable sentence, not the token.
-          out.push({ id, action: 'failed', error: (r as any).error ?? `install did not complete (status: ${r.status})` });
+          //
+          // Fix (Track B final review, Finding F9): guard order is identical
+          // to update()'s (hasConflict() before the disk-install guard), so a
+          // Claude-Code-owned bundled id lands here on EVERY launch with
+          // status: 'already_installed', via: 'Claude Code' — a permanent,
+          // expected, non-actionable state, not a bug in our reconcile. The
+          // old code reported the raw status token as a generic failure and
+          // logged it at ERROR forever. Carry `via` through so
+          // ensureBundledPluginsInstalled (below) can log this case at WARN
+          // with the same real-cause sentence update() already states.
+          const via = r.status === 'already_installed' ? r.via : undefined;
+          out.push({
+            id,
+            action: 'failed',
+            via,
+            error: via === 'Claude Code'
+              ? `"${id}" was installed through Claude Code, not YouCoded. YouCoded does not manage that install and will not overwrite or version-track it.`
+              : (r as any).error ?? `install did not complete (status: ${r.status})`,
+          });
           continue;
         }
 
         // WHY plugin.json's version, not the index's: B7 makes the index copy
         // plugin.json, so the renderer's "Update available" compare (package
         // record vs index) stays in one number space.
-        // Review fix (Finding 9): dropped the `?? entry.version ?? '1.0.0'`
-        // fallback that used to sit here — a synthetic or index-derived
-        // number would silently mislabel a plugin that just installed with
-        // an unreadable manifest as a known-good version. Read the version
-        // once and report a real failure if it's missing instead.
-        const version = readPluginVersion(installDir);
+        //
+        // Fix (Track B final review, Finding F3): readPluginVersion() returning
+        // null does NOT only mean an unreadable manifest — ensurePluginJson()
+        // (plugin-installer.ts, run inside installPlugin() just above) writes
+        // a synthetic manifest with {name, description, author} and NO
+        // version field whenever the plugin's own tree ships neither
+        // plugin.json nor .claude-plugin/plugin.json. That is a perfectly
+        // readable manifest that legitimately has no version. The old code
+        // reported 'failed' here regardless — which skipped
+        // recordPackageInstall, which in turn made reconcileBundledPlugins
+        // gate `results.some(installed || upgraded)` false, so
+        // reconcileHooks()/reconcileMcp() never ran for a plugin that WAS on
+        // disk and registered. On the next launch isPluginInstalled(id) is
+        // true and `installed` reads as undefined forever, so
+        // isNewerVersion() never fires — the plugin becomes silently
+        // unmanaged. Fall back to the marketplace entry's version (the same
+        // fallback installPlugin()'s own registerPluginInstall call already
+        // uses), record the install, and log which specific manifest state
+        // was observed instead of guessing.
+        const diskVersion = readPluginVersion(installDir);
+        const version = diskVersion ?? entry.version;
         if (!version) {
-          out.push({ id, action: 'failed', error: `installed, but plugin.json is unreadable at ${installDir}` });
+          // Neither the manifest nor the marketplace entry has a version —
+          // nothing to fall back to. This IS a real failure.
+          out.push({ id, action: 'failed', error: `installed, but no version is available: ${describeManifestVersionState(installDir)}, and the marketplace entry has none either` });
           continue;
+        }
+        if (!diskVersion) {
+          log('WARN', 'bundled-plugins', `falling back to the marketplace entry's version — ${describeManifestVersionState(installDir)}`, { id, installDir, fallbackVersion: version });
         }
 
         this.configStore.recordPackageInstall(id, {
@@ -1019,7 +1104,12 @@ export class LocalSkillProvider implements SkillProvider {
       const results = await this.reconcileBundledPlugins();
       for (const r of results) {
         if (r.action !== 'unchanged' && r.action !== 'skipped-dev') {
-          log(r.action === 'failed' ? 'ERROR' : 'INFO', 'bundled-plugins', r.action, r);
+          // Fix (Track B final review, Finding F9): a Claude-Code-owned
+          // bundled id (via: 'Claude Code') is an expected, permanent,
+          // non-actionable conflict — not a defect in our reconcile — so it
+          // logs at WARN, not ERROR every single launch.
+          const level = r.action === 'failed' ? (r.via === 'Claude Code' ? 'WARN' : 'ERROR') : 'INFO';
+          log(level, 'bundled-plugins', r.action, r);
         }
       }
       if (results.some((r) => r.action === 'installed' || r.action === 'upgraded')) {
@@ -1043,5 +1133,69 @@ export class LocalSkillProvider implements SkillProvider {
     } catch (err) {
       log('ERROR', 'bundled-plugins', 'reconcile failed', { error: String(err) });
     }
+  }
+
+  /**
+   * Fix (Track B final review, Finding F2): B7 made the marketplace index
+   * copy each entry's own plugin.json version instead of a separately
+   * maintained index-only number, so the renderer's "Update available"
+   * badge compares one number space. On the first rebuild after B7 every
+   * in-repo `local` plugin's index version moved DOWN to match its real
+   * plugin.json (e.g. civic-report 1.0.2 -> 0.1.0) — correct, and no false
+   * "Update available" badge appears.
+   *
+   * The cost is the mirror image: reconcileBundledPlugins() only walks the
+   * THREE bundled ids, so only their package records get rewritten to the
+   * disk version on launch. Every OTHER tracked package (nine in-repo
+   * plugins today) keeps its old, now-permanently-stale, HIGHER recorded
+   * version forever — the next real version bump can never look newer than
+   * that stale number, so isNewerVersion() never fires and the user is never
+   * told an update exists.
+   *
+   * Disk is the source of truth for this entire branch — this repairs every
+   * tracked package's record to match its on-disk plugin.json once per
+   * launch, not just the bundled three. Idempotent (a no-op once the record
+   * already matches disk), so running it every launch is cheap and safe.
+   * Guarded end-to-end and per-package so one bad record can't throw out of
+   * the launch path or block the rest.
+   */
+  async repairPackageVersions(): Promise<Array<{ id: string; from: string; to: string }>> {
+    // WHY: this.configStore writes to ~/.claude/youcoded-skills.json — the
+    // SAME real, shared file reconcileBundledPlugins()'s dev-instance guard
+    // above exists to protect. Without this guard, a run-dev.sh copy would
+    // silently rewrite package-version records in Destin's live app's config
+    // the moment this runs, for every tracked package (not just the three
+    // bundled ones the other guard limits itself to) — reusing the same
+    // escape hatch (YOUCODED_BUNDLED_UPGRADE=1) rather than inventing a
+    // second one for what is the same class of shared-state write.
+    if (process.env.YOUCODED_PROFILE && process.env.YOUCODED_BUNDLED_UPGRADE !== '1') {
+      return [];
+    }
+    const repaired: Array<{ id: string; from: string; to: string }> = [];
+    try {
+      const packages = this.configStore.getPackages();
+      for (const [id, pkg] of Object.entries(packages)) {
+        try {
+          // Non-plugin packages (prompt skills, themes) have no plugin.json
+          // to compare against — nothing to repair.
+          const pluginComponent = pkg.components.find((c) => c.type === 'plugin');
+          if (!pluginComponent) continue;
+          const diskVersion = readPluginVersion(pluginComponent.path);
+          if (!diskVersion || diskVersion === pkg.version) continue;
+          this.configStore.updatePackageVersion(id, diskVersion);
+          repaired.push({ id, from: pkg.version, to: diskVersion });
+        } catch (err) {
+          log('WARN', 'bundled-plugins', 'package version repair failed for one package', { id, error: String(err) });
+        }
+      }
+      if (repaired.length > 0) {
+        log('INFO', 'bundled-plugins', 'repaired stale package-record versions from disk', { repaired });
+      }
+    } catch (err) {
+      // WHY: called fire-and-forget at boot alongside ensureBundledPluginsInstalled()
+      // — must never throw out of the launch path.
+      log('ERROR', 'bundled-plugins', 'package version repair failed', { error: String(err) });
+    }
+    return repaired;
   }
 }

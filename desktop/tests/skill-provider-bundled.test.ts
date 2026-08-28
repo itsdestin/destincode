@@ -4,6 +4,10 @@ import { BUNDLED_PLUGIN_IDS } from '../src/shared/bundled-plugins';
 const inst = vi.hoisted(() => ({
   installPlugin: vi.fn(), upgradePluginFromLocal: vi.fn(), refreshLocalMarketplaceCache: vi.fn(),
   readPluginVersion: vi.fn(), isPluginInstalled: vi.fn(),
+  // Fix (Track B final review, Finding F1): reconcileBundledPlugins() now
+  // sweeps stale .old-/.upgrade- litter at the top of every run — the mock
+  // module needs the export or the real call throws "not a function".
+  sweepStaleUpgradeDirs: vi.fn(),
   // Review fix (Finding 2): skill-provider.ts now imports marketplaceCacheDir
   // from plugin-installer instead of hand-building the cache path. Mirror the
   // real helper's shape (contains 'youcoded-marketplace-cache' + the source
@@ -12,6 +16,11 @@ const inst = vi.hoisted(() => ({
   marketplaceCacheDir: vi.fn((mp: string, sourceRef: string) => `/home/test/.claude/youcoded-marketplace-cache/${mp}/${sourceRef}`),
 }));
 vi.mock('../src/main/plugin-installer', () => inst);
+// Mocked so F3/F9 tests can assert on log LEVEL (WARN vs ERROR) without the
+// real logger's fire-and-forget fs.promises.appendFile touching the actual
+// user's ~/.claude/desktop.log from the test process.
+const loggerMock = vi.hoisted(() => ({ log: vi.fn() }));
+vi.mock('../src/main/logger', () => loggerMock);
 import { LocalSkillProvider } from '../src/main/skill-provider';
 
 const entry = (id: string, version: string) => ({ id, type: 'plugin', version, sourceType: 'local', sourceRef: id, sourceMarketplace: 'youcoded' });
@@ -90,6 +99,179 @@ describe('LocalSkillProvider.reconcileBundledPlugins', () => {
   it('ensureBundledPluginsInstalled resolves even when reconcile throws', async () => {
     vi.spyOn(p, 'reconcileBundledPlugins').mockRejectedValue(new Error('network'));
     await expect(p.ensureBundledPluginsInstalled()).resolves.toBeUndefined();
+  });
+
+  // Fix (Track B final review, Finding F1): sweep runs for a real reconcile,
+  // but never on the dev-instance skip path — a dev-mode launch must not
+  // mutate the shared real ~/.claude install at all.
+  it('sweeps stale upgrade dirs on a real reconcile, but not on the dev-instance skip path', async () => {
+    await p.reconcileBundledPlugins();
+    expect(inst.sweepStaleUpgradeDirs).toHaveBeenCalledTimes(1);
+
+    inst.sweepStaleUpgradeDirs.mockClear();
+    process.env.YOUCODED_PROFILE = 'dev';
+    await p.reconcileBundledPlugins();
+    expect(inst.sweepStaleUpgradeDirs).not.toHaveBeenCalled();
+  });
+
+  // Fix (Track B final review, Finding F3): readPluginVersion() returning
+  // null after a successful install does not only mean an unreadable
+  // manifest — ensurePluginJson() legitimately writes a manifest with no
+  // version field. Falls back to the marketplace entry's version, records
+  // the install, and reports 'installed' rather than a false 'failed'.
+  it('falls back to the marketplace entry version and still records the install when plugin.json has no version field', async () => {
+    inst.isPluginInstalled.mockReturnValue(false);
+    inst.installPlugin.mockResolvedValue({ status: 'installed' });
+    // Simulates ensurePluginJson()'s synthetic manifest — readable, no version key.
+    inst.readPluginVersion.mockReturnValue(null);
+    const recordPackageInstall = vi.spyOn(p.configStore, 'recordPackageInstall').mockImplementation(() => {});
+
+    const r = await p.reconcileBundledPlugins();
+    const row = r.find((x) => x.id === 'youcoded-chatsearch');
+    expect(row).toMatchObject({ action: 'installed', to: '1.0.0' }); // entry(id, '1.0.0') from beforeEach
+    expect(recordPackageInstall).toHaveBeenCalledWith('youcoded-chatsearch', expect.objectContaining({ version: '1.0.0' }));
+    // Falling back is a warning, not a silent success and not an error.
+    expect(loggerMock.log).toHaveBeenCalledWith('WARN', 'bundled-plugins', expect.stringContaining('falling back'), expect.anything());
+  });
+
+  it('reports a real failure when neither plugin.json nor the marketplace entry has a version', async () => {
+    inst.isPluginInstalled.mockReturnValue(false);
+    inst.installPlugin.mockResolvedValue({ status: 'installed' });
+    inst.readPluginVersion.mockReturnValue(null);
+    vi.spyOn(p as any, 'fetchIndex').mockResolvedValue(
+      BUNDLED_PLUGIN_IDS.map((id) => ({ id, type: 'plugin', sourceType: 'local', sourceRef: id, sourceMarketplace: 'youcoded' })), // no version field at all
+    );
+    const recordPackageInstall = vi.spyOn(p.configStore, 'recordPackageInstall').mockImplementation(() => {});
+
+    const r = await p.reconcileBundledPlugins();
+    expect(r.find((x) => x.id === 'youcoded-chatsearch')).toMatchObject({ action: 'failed' });
+    expect(recordPackageInstall).not.toHaveBeenCalled();
+  });
+
+  // Fix (Track B final review, Finding F9): guard order matches update()'s —
+  // a Claude-Code-owned bundled id gets already_installed/via: 'Claude Code'
+  // in the install branch too. This is a permanent, expected, non-actionable
+  // conflict, not a bug in our own reconcile, so it must log at WARN, never
+  // the ERROR every other 'failed' action gets.
+  it('reports a Claude-Code-owned bundled id as failed with via carried through, and logs it at WARN not ERROR', async () => {
+    inst.isPluginInstalled.mockReturnValue(false);
+    inst.installPlugin.mockResolvedValue({ status: 'already_installed', via: 'Claude Code' });
+
+    const results = await p.reconcileBundledPlugins();
+    const row = results.find((x) => x.id === 'youcoded-chatsearch');
+    expect(row).toMatchObject({ action: 'failed', via: 'Claude Code' });
+    expect(row?.error).toMatch(/Claude Code/);
+
+    vi.spyOn(p, 'reconcileBundledPlugins').mockResolvedValue(results);
+    await p.ensureBundledPluginsInstalled();
+    expect(loggerMock.log).toHaveBeenCalledWith('WARN', 'bundled-plugins', 'failed', expect.objectContaining({ via: 'Claude Code' }));
+    expect(loggerMock.log).not.toHaveBeenCalledWith('ERROR', 'bundled-plugins', 'failed', expect.anything());
+  });
+
+  it('still logs a genuine install failure at ERROR, not WARN', async () => {
+    inst.isPluginInstalled.mockReturnValue(false);
+    inst.installPlugin.mockResolvedValue({ status: 'failed', error: 'clone failed: boom' });
+    const results = await p.reconcileBundledPlugins();
+    vi.spyOn(p, 'reconcileBundledPlugins').mockResolvedValue(results);
+    await p.ensureBundledPluginsInstalled();
+    expect(loggerMock.log).toHaveBeenCalledWith('ERROR', 'bundled-plugins', 'failed', expect.objectContaining({ error: 'clone failed: boom' }));
+  });
+});
+
+// Fix (Track B final review, Finding F2): the launch reconcile only rewrites
+// the three bundled ids' package records to the disk version — every other
+// tracked package keeps a stale, permanently-wrong recorded version forever.
+// repairPackageVersions() is the one-time-per-launch fix: disk is the source
+// of truth for every tracked package, not just the bundled three.
+describe('LocalSkillProvider.repairPackageVersions', () => {
+  let p: LocalSkillProvider;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // A prior test in this file (or a prior run of this describe) may leave
+    // YOUCODED_PROFILE set — reset it so these tests don't depend on run order.
+    delete process.env.YOUCODED_PROFILE; delete process.env.YOUCODED_BUNDLED_UPGRADE;
+    p = new LocalSkillProvider();
+  });
+
+  it('is a no-op on a dev instance unless overridden — shares configStore\'s real ~/.claude with the live app', async () => {
+    process.env.YOUCODED_PROFILE = 'dev';
+    const getPackages = vi.spyOn(p.configStore, 'getPackages');
+    const updatePackageVersion = vi.spyOn(p.configStore, 'updatePackageVersion').mockImplementation(() => {});
+    expect(await p.repairPackageVersions()).toEqual([]);
+    expect(getPackages).not.toHaveBeenCalled();
+    expect(updatePackageVersion).not.toHaveBeenCalled();
+  });
+
+  it('rewrites a package record whose recorded version disagrees with disk', async () => {
+    vi.spyOn(p.configStore, 'getPackages').mockReturnValue({
+      'civic-report': {
+        version: '1.0.2', source: 'marketplace', installedAt: '2026-01-01T00:00:00.000Z', removable: true,
+        components: [{ type: 'plugin', path: '/home/test/.claude/plugins/marketplaces/youcoded/plugins/civic-report' }],
+      },
+    });
+    inst.readPluginVersion.mockReturnValue('0.1.0'); // real plugin.json version, per the reviewer's example
+    const updatePackageVersion = vi.spyOn(p.configStore, 'updatePackageVersion').mockImplementation(() => {});
+
+    const repaired = await p.repairPackageVersions();
+    expect(updatePackageVersion).toHaveBeenCalledWith('civic-report', '0.1.0');
+    expect(repaired).toEqual([{ id: 'civic-report', from: '1.0.2', to: '0.1.0' }]);
+  });
+
+  it('leaves a package alone when the recorded version already matches disk', async () => {
+    vi.spyOn(p.configStore, 'getPackages').mockReturnValue({
+      'youcoded-encyclopedia': {
+        version: '1.0.1', source: 'marketplace', installedAt: '2026-01-01T00:00:00.000Z', removable: true,
+        components: [{ type: 'plugin', path: '/home/test/.claude/plugins/marketplaces/youcoded/plugins/youcoded-encyclopedia' }],
+      },
+    });
+    inst.readPluginVersion.mockReturnValue('1.0.1');
+    const updatePackageVersion = vi.spyOn(p.configStore, 'updatePackageVersion').mockImplementation(() => {});
+
+    const repaired = await p.repairPackageVersions();
+    expect(updatePackageVersion).not.toHaveBeenCalled();
+    expect(repaired).toEqual([]);
+  });
+
+  it('skips a non-plugin package (no plugin component) without touching it', async () => {
+    vi.spyOn(p.configStore, 'getPackages').mockReturnValue({
+      'theme:midnight': {
+        version: '1.0.0', source: 'marketplace', installedAt: '2026-01-01T00:00:00.000Z', removable: true,
+        components: [{ type: 'theme', path: '/home/test/.claude/themes/midnight' }],
+      },
+    });
+    const updatePackageVersion = vi.spyOn(p.configStore, 'updatePackageVersion').mockImplementation(() => {});
+
+    const repaired = await p.repairPackageVersions();
+    expect(updatePackageVersion).not.toHaveBeenCalled();
+    expect(repaired).toEqual([]);
+  });
+
+  it('never throws out of the launch path, even when configStore explodes', async () => {
+    vi.spyOn(p.configStore, 'getPackages').mockImplementation(() => { throw new Error('disk error'); });
+    await expect(p.repairPackageVersions()).resolves.toEqual([]);
+  });
+
+  it('repairs one package and keeps going even when another package throws mid-loop', async () => {
+    vi.spyOn(p.configStore, 'getPackages').mockReturnValue({
+      broken: {
+        version: '1.0.0', source: 'marketplace', installedAt: '2026-01-01T00:00:00.000Z', removable: true,
+        components: [{ type: 'plugin', path: '/broken' }],
+      },
+      'civic-report': {
+        version: '1.0.2', source: 'marketplace', installedAt: '2026-01-01T00:00:00.000Z', removable: true,
+        components: [{ type: 'plugin', path: '/civic-report' }],
+      },
+    });
+    inst.readPluginVersion.mockImplementation((dir: string) => {
+      if (dir === '/broken') throw new Error('EACCES');
+      return '0.1.0';
+    });
+    const updatePackageVersion = vi.spyOn(p.configStore, 'updatePackageVersion').mockImplementation(() => {});
+
+    const repaired = await p.repairPackageVersions();
+    expect(updatePackageVersion).toHaveBeenCalledTimes(1);
+    expect(updatePackageVersion).toHaveBeenCalledWith('civic-report', '0.1.0');
+    expect(repaired).toEqual([{ id: 'civic-report', from: '1.0.2', to: '0.1.0' }]);
   });
 });
 
