@@ -150,7 +150,19 @@ export function workspaceMatchFor(
   const root = canonicalize(cwd, cwd);
   // Longest suffix first: `/elsewhere/src/index.ts` should recover
   // `src/index.ts`, not a coincidentally-named top-level `index.ts`.
-  const segments = toPosix(canonical).split('/').filter(Boolean);
+  //
+  // Segments come from the ORIGINAL-CASE resolution, never from `canonical`.
+  // canonicalize() lowercases the whole path on win32 — which is right for the
+  // comparisons above, and wrong for the value this function RETURNS, because
+  // that value is handed to the model and shown to the user. Reading the
+  // segments off `canonical` meant a file named `ROADMAP.md` was recovered as
+  // `roadmap.md` on Windows: it still opens (the filesystem is case-insensitive)
+  // but every downstream use of that string carries the wrong name, including
+  // git, whose index is case-SENSITIVE on every platform. toPosix's own doc
+  // comment names this exact hazard — "destructive for anything a user or model
+  // reads back" — and this call site was doing it. Fixed 2026-08-28; it was
+  // visible only as one red test on the Windows CI leg.
+  const segments = toPosix(resolveP(rawPath, cwd)).split('/').filter(Boolean);
   for (let i = 0; i < segments.length; i++) {
     const suffix = segments.slice(i).join('/');
     const candidate = path.resolve(cwd, suffix);

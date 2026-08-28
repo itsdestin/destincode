@@ -29,14 +29,30 @@ function loadPdfJs(): Promise<PdfJs> {
 /** Where pdf.js finds its bundled standard fonts + CMaps. Without these it
  *  still extracts text but logs a warning per missing font. Resolved at call
  *  time from the package location so it works from a dev checkout AND from a
- *  packaged app (the dirs are `asarUnpack`ed in electron-builder.yml). */
-function pdfjsAssetDirs(): { standardFontDataUrl?: string; cMapUrl?: string } {
+ *  packaged app (the dirs are `asarUnpack`ed in electron-builder.yml).
+ *
+ *  THE TRAILING SLASH MUST BE A FORWARD SLASH, on every platform. pdf.js calls
+ *  these "factory urls" and validates them inside getDocument():
+ *  `if (val.endsWith("/")) return val;` — otherwise it throws
+ *  `Invalid factory url: "…" must include trailing slash.` This used to append
+ *  `path.sep`, which is `\` on Windows, so the check failed and EVERY PDF read
+ *  on Windows threw before a single byte was parsed. It was visible the whole
+ *  time as ten red tests in read-pdf.test.ts on the Windows CI leg, filed as
+ *  part of a "pre-existing Windows redness" note and never traced (fixed
+ *  2026-08-28).
+ *
+ *  A forward slash is correct on Windows too: in Node, pdf.js resolves the
+ *  concatenated string with `fs.readFile` (node_utils_fetchData), not with a
+ *  URL parser, and Windows accepts mixed separators — so
+ *  `C:\...\standard_fonts/FoxitSans.pfb` opens exactly like the backslash
+ *  form. Only the trailing character is contractual. */
+export function pdfjsAssetDirs(): { standardFontDataUrl?: string; cMapUrl?: string } {
   try {
     const root = path.dirname(require.resolve('pdfjs-dist/package.json'));
-    // pdf.js concatenates these with a file name, so the trailing separator matters.
+    // pdf.js concatenates these with a file name, so the trailing slash matters.
     return {
-      standardFontDataUrl: path.join(root, 'standard_fonts') + path.sep,
-      cMapUrl: path.join(root, 'cmaps') + path.sep,
+      standardFontDataUrl: path.join(root, 'standard_fonts') + '/',
+      cMapUrl: path.join(root, 'cmaps') + '/',
     };
   } catch {
     return {};

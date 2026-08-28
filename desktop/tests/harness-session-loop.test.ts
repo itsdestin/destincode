@@ -544,8 +544,12 @@ describe('HarnessSession — multi-step turn driver', () => {
   // same as production. This test now drives THAT real tool (profile.canDelegate
   // defaults to true — CLOUD_DEFAULT) with an absolute work_dir chosen to
   // reproduce the exact subject the old fake hardcoded ('read-write:/etc/x' —
-  // 'worker' is read-write, and '/etc/x' is already absolute, so resolveP
-  // returns it unchanged regardless of cwd).
+  // 'worker' is read-write). NOTE: this comment used to continue "and '/etc/x'
+  // is already absolute, so resolveP returns it unchanged regardless of cwd",
+  // which is a POSIX-only claim stated as a universal one — on Windows
+  // path.resolve('/etc/x') attaches the current drive and yields 'D:/etc/x', so
+  // the hardcoded expectation below was red on that CI leg. It is now computed
+  // the same way the tool computes it.
   it('tool-layer guard: Task is exempt (NON_PATH_SUBJECT_TOOLS) — its subject is a consent key, not a path', async () => {
     const decide = vi.fn(async () => ALLOW);
     const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
@@ -559,7 +563,7 @@ describe('HarnessSession — multi-step turn driver', () => {
     // Consulted DIRECTLY (never short-circuited to a forced ask) — the guard
     // never ran checkPathGuard against "read-write:/etc/x" as though it were
     // an absolute path outside C:/x.
-    expect(decide).toHaveBeenCalledWith('Task', 'read-write:/etc/x');
+    expect(decide).toHaveBeenCalledWith('Task', `read-write:${path.resolve('/etc/x').replace(/\\/g, '/')}`);
     expect(askUser).not.toHaveBeenCalled();
   });
 
