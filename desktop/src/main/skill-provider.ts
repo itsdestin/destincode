@@ -4,7 +4,7 @@ import os from 'os';
 import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
-import { installPlugin, uninstallPlugin, upgradePluginFromLocal, refreshLocalMarketplaceCache, readPluginVersion, isPluginInstalled, type InstallResult } from './plugin-installer';
+import { installPlugin, uninstallPlugin, upgradePluginFromLocal, refreshLocalMarketplaceCache, readPluginVersion, isPluginInstalled, marketplaceCacheDir, type InstallResult } from './plugin-installer';
 import { pluginInstallDir, YOUCODED_PLUGINS_DIR, listInstalledPluginDirs } from './claude-code-registry';
 import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
 import { reconcileHooks } from './hook-reconciler';
@@ -62,6 +62,14 @@ export class LocalSkillProvider implements SkillProvider {
   public configStore = new SkillConfigStore();
   private installedCache: SkillEntry[] | null = null;
   private onCacheInvalidated?: () => void;
+  // Review fix (Finding 3): guards the "a bundled id is missing from the
+  // index" refetch in reconcileBundledPlugins() so it can fire at most once
+  // per process. Without it, a bundled id that's PERMANENTLY missing (its
+  // marketplace entry hasn't merged yet) would retrigger the refetch on every
+  // call in this process — there is only ever one call in production
+  // (main.ts, at boot), but the guard is here so a future second call can't
+  // silently reintroduce the repeated-invalidate behavior this finding flagged.
+  private bundledIndexRefetchDone = false;
 
   setCacheInvalidationListener(cb: () => void): void {
     this.onCacheInvalidated = cb;
@@ -323,6 +331,24 @@ export class LocalSkillProvider implements SkillProvider {
       recommends: marketplaceEntry.recommends,
     });
 
+    // Review fix (Finding 1): installPlugin's 'already_installed' status covers
+    // TWO different situations that must not be treated the same. `via:
+    // 'YouCoded'` means our own registry already has this plugin — safe to
+    // upgrade in place. `via: 'Claude Code'` means the id exists in Claude
+    // Code's installed_plugins.json under a marketplace YouCoded doesn't own —
+    // we must not touch it. Before this check, the local-source branch below
+    // unconditionally wrote a SECOND copy into YOUCODED_PLUGINS_DIR and
+    // recorded a second registry entry for the same id (the exact ambiguity
+    // SkillAmbiguous exists to complain about); the non-local branches instead
+    // silently bumped the recorded version while never touching a file. Both
+    // reported success for a plugin YouCoded does not manage.
+    if (result.status === 'already_installed' && (result as any).via !== 'YouCoded') {
+      return {
+        ok: false,
+        error: `"${id}" was installed through Claude Code, not YouCoded. YouCoded does not manage that install and will not overwrite or version-track it.`,
+      };
+    }
+
     if (result.status === 'installed' || result.status === 'already_installed') {
       const installDir = pluginInstallDir(id);
       // WHY: installPlugin's local-source path refuses to overwrite an existing
@@ -331,6 +357,7 @@ export class LocalSkillProvider implements SkillProvider {
       // Without this, the Settings "Update" button recorded a bumped version
       // number while the on-disk plugin was untouched — a silent no-op that
       // reported success. upgradePluginFromLocal actually replaces the tree.
+      // `via` is guaranteed 'YouCoded' here — the 'Claude Code' case returned above.
       if (result.status === 'already_installed' && marketplaceEntry.sourceType === 'local') {
         const upgradeResult = await upgradePluginFromLocal(id, marketplaceEntry.sourceRef || id, marketplaceEntry.sourceMarketplace);
         if (upgradeResult.status !== 'installed') {
@@ -634,6 +661,18 @@ export class LocalSkillProvider implements SkillProvider {
     }
   }
 
+  // Review fix (Finding 3): reconcileBundledPlugins() previously called the
+  // broad invalidateCache() above to refetch a stale index, which also wipes
+  // the marketplace's featured-rail and curated-defaults caches — unrelated
+  // subsystems with their own 24h TTL. If a bundled id is ever permanently
+  // absent from the index (e.g. its marketplace entry hasn't merged yet),
+  // that ran on every launch, forcing a cold network fetch for the featured
+  // rail and defaults on every launch too. This narrower version clears only
+  // the index cache.
+  async invalidateIndexCache(): Promise<void> {
+    try { if (fs.existsSync(INDEX_CACHE)) fs.unlinkSync(INDEX_CACHE); } catch { /* best-effort */ }
+  }
+
   // Marketplace redesign Phase 1: new `hero` + `rails` fields drive the
   // redesigned discovery UI. Old `skills`/`themes` fields are passed through
   // unchanged so older clients keep working. 24h cache mirrors fetchIndex.
@@ -832,38 +871,139 @@ export class LocalSkillProvider implements SkillProvider {
   async reconcileBundledPlugins(): Promise<Array<{ id: string; action: 'installed' | 'upgraded' | 'unchanged' | 'skipped-dev' | 'failed'; from?: string; to?: string; error?: string }>> {
     type ReconcileAction = 'installed' | 'upgraded' | 'unchanged' | 'skipped-dev' | 'failed';
     const ids = [...BUNDLED_PLUGIN_IDS];
+
     // WHY: ~/.claude is shared with the live app; a run-dev.sh copy must never rewrite the real install.
     if (process.env.YOUCODED_PROFILE && process.env.YOUCODED_BUNDLED_UPGRADE !== '1') {
       return ids.map((id) => ({ id, action: 'skipped-dev' as const }));
     }
+
     let index = await this.fetchIndex();
-    if (ids.some((id) => !index.find((e) => e.id === id))) {
+    // Review fix (Finding 3): refetch the index at most once per process,
+    // and invalidate only the index cache — not the broad invalidateCache().
+    // A bundled id can be PERMANENTLY missing (its marketplace entry hasn't
+    // merged yet), and this method runs once per launch: the old code would
+    // re-invalidate every launch and wipe the marketplace's featured-rail and
+    // curated-defaults caches too (unrelated subsystems, own 24h TTL),
+    // forcing a cold network refetch of both on every single launch.
+    if (!this.bundledIndexRefetchDone && ids.some((id) => !index.find((e) => e.id === id))) {
+      this.bundledIndexRefetchDone = true;
       // WHY: a newly bundled plugin isn't in a day-old cached index; refetch once, only for this case.
-      await this.invalidateCache(); index = await this.fetchIndex();
+      await this.invalidateIndexCache();
+      index = await this.fetchIndex();
     }
-    const refreshed = await refreshLocalMarketplaceCache('youcoded');
-    if (!refreshed.ok) log('WARN', 'bundled-plugins', 'marketplace cache refresh failed; comparing against the last copy', { error: refreshed.error });
+
+    // Review fix (Finding 2): refresh once per DISTINCT marketplace among the
+    // bundled entries actually found in the index, reading sourceMarketplace
+    // off each entry instead of hardcoding 'youcoded'. Today every bundled id
+    // happens to share one marketplace, so this is one call — but the compare
+    // below (marketplaceCacheDir) now also reads the entry's own marketplace,
+    // so a future entry from a different marketplace needs ITS cache
+    // refreshed too, not just 'youcoded'. Per-distinct-marketplace (not
+    // per-id) avoids refreshing the same repo N times in one pass; the 1h
+    // gate inside refreshLocalMarketplaceCache would make a per-id call cheap
+    // too, but grouping is one fewer thing to reason about.
+    const marketplaces = new Set(ids.map((id) => index.find((e) => e.id === id)?.sourceMarketplace ?? 'youcoded'));
+    for (const mp of marketplaces) {
+      const refreshed = await refreshLocalMarketplaceCache(mp);
+      if (!refreshed.ok) {
+        log('WARN', 'bundled-plugins', 'marketplace cache refresh failed; comparing against the last copy', { marketplace: mp, error: refreshed.error });
+      }
+    }
+
     const out: Array<{ id: string; action: ReconcileAction; from?: string; to?: string; error?: string }> = [];
     for (const id of ids) {
       const entry = index.find((e) => e.id === id);
-      if (!entry) { out.push({ id, action: 'failed', error: `not in the marketplace index (${index.length} entries)` }); continue; }
-      const sourceRef = entry.sourceRef || id; const mp = entry.sourceMarketplace ?? 'youcoded';
-      const installDir = pluginInstallDir(id);
-      if (!isPluginInstalled(id)) {
-        const r = await installPlugin({ id, sourceType: entry.sourceType || 'local', sourceRef, sourceMarketplace: mp, description: entry.description, author: (entry as any).author, version: entry.version });
-        if (r.status !== 'installed') { out.push({ id, action: 'failed', error: (r as any).error ?? r.status }); continue; }
-        // WHY plugin.json's version, not the index's: B7 makes the index copy plugin.json,
-        // so the renderer's "Update available" compare (package record vs index) stays in one number space.
-        this.configStore.recordPackageInstall(id, { version: readPluginVersion(installDir) ?? entry.version ?? '1.0.0', source: 'marketplace', installedAt: new Date().toISOString(), removable: true, components: [{ type: 'plugin', path: installDir }] });
-        this.installedCache = null; this.onCacheInvalidated?.();
-        out.push({ id, action: 'installed', to: readPluginVersion(installDir) ?? undefined }); continue;
+      if (!entry) {
+        out.push({ id, action: 'failed', error: `not in the marketplace index (${index.length} entries)` });
+        continue;
       }
-      const installed = readPluginVersion(installDir); const available = readPluginVersion(path.join(os.homedir(), '.claude', 'youcoded-marketplace-cache', 'wecoded-marketplace', sourceRef));
-      if (!isNewerVersion(installed ?? undefined, available ?? undefined)) { out.push({ id, action: 'unchanged', from: installed ?? undefined }); continue; }
+
+      const sourceRef = entry.sourceRef || id;
+      const mp = entry.sourceMarketplace ?? 'youcoded';
+      const installDir = pluginInstallDir(id);
+
+      if (!isPluginInstalled(id)) {
+        // Review fix (Finding 6): install() (above) also passes sourceSubdir,
+        // postInstall, and recommends through to installPlugin. This call was
+        // missing all three — a fresh bundled install silently skipped the
+        // trusted-org postInstall script, and would have broken outright for
+        // a git-subdir-sourced bundled entry (sourceSubdir dropped).
+        const r = await installPlugin({
+          id,
+          sourceType: entry.sourceType || 'local',
+          sourceRef,
+          sourceSubdir: entry.sourceSubdir,
+          sourceMarketplace: mp,
+          description: entry.description,
+          author: entry.author,
+          version: entry.version,
+          // Not on the SkillEntry type (they're PluginManifest/index-runtime
+          // fields, not declared on the marketplace-entry shape) — install()
+          // above reaches them the same way, via an `any` cast.
+          postInstall: (entry as any).postInstall,
+          recommends: (entry as any).recommends,
+        });
+        if (r.status !== 'installed') {
+          // Review fix (Finding 8): r.status is a status token ('installing'),
+          // not a message — fall back to a readable sentence, not the token.
+          out.push({ id, action: 'failed', error: (r as any).error ?? `install did not complete (status: ${r.status})` });
+          continue;
+        }
+
+        // WHY plugin.json's version, not the index's: B7 makes the index copy
+        // plugin.json, so the renderer's "Update available" compare (package
+        // record vs index) stays in one number space.
+        // Review fix (Finding 9): dropped the `?? entry.version ?? '1.0.0'`
+        // fallback that used to sit here — a synthetic or index-derived
+        // number would silently mislabel a plugin that just installed with
+        // an unreadable manifest as a known-good version. Read the version
+        // once and report a real failure if it's missing instead.
+        const version = readPluginVersion(installDir);
+        if (!version) {
+          out.push({ id, action: 'failed', error: `installed, but plugin.json is unreadable at ${installDir}` });
+          continue;
+        }
+
+        this.configStore.recordPackageInstall(id, {
+          version,
+          source: 'marketplace',
+          installedAt: new Date().toISOString(),
+          removable: true,
+          components: [{ type: 'plugin', path: installDir }],
+        });
+        this.installedCache = null;
+        this.onCacheInvalidated?.();
+        out.push({ id, action: 'installed', to: version });
+        continue;
+      }
+
+      // Review fix (Finding 2): read the cache copy through the same helper
+      // plugin-installer.ts itself uses (marketplaceCacheDir), instead of
+      // hand-building the path. The hand-built path hardcoded
+      // 'wecoded-marketplace' — for any entry whose sourceMarketplace ever
+      // differed, this would have silently pointed at a directory that
+      // doesn't exist, `available` would come back null, and this id would
+      // report 'unchanged' forever with no error at all.
+      const installed = readPluginVersion(installDir);
+      const available = readPluginVersion(marketplaceCacheDir(mp, sourceRef));
+      if (!isNewerVersion(installed ?? undefined, available ?? undefined)) {
+        out.push({ id, action: 'unchanged', from: installed ?? undefined });
+        continue;
+      }
+
       const r = await upgradePluginFromLocal(id, sourceRef, mp);
-      if (r.status !== 'installed') { out.push({ id, action: 'failed', from: installed ?? undefined, to: available ?? undefined, error: (r as any).error ?? r.status }); continue; }
-      this.configStore.updatePackageVersion(id, available ?? '1.0.0');
-      this.installedCache = null; this.onCacheInvalidated?.();
+      if (r.status !== 'installed') {
+        out.push({ id, action: 'failed', from: installed ?? undefined, to: available ?? undefined, error: (r as any).error ?? `upgrade did not complete (status: ${r.status})` });
+        continue;
+      }
+
+      // `available` is guaranteed a real version string by this point:
+      // isNewerVersion() above only returns true when both `installed` and
+      // `available` are non-empty strings — so recording it here can't fall
+      // through to a synthetic '1.0.0' (Finding 9's same anti-pattern).
+      this.configStore.updatePackageVersion(id, available as string);
+      this.installedCache = null;
+      this.onCacheInvalidated?.();
       out.push({ id, action: 'upgraded', from: installed ?? undefined, to: available ?? undefined });
     }
     return out;
@@ -877,8 +1017,29 @@ export class LocalSkillProvider implements SkillProvider {
   async ensureBundledPluginsInstalled(): Promise<void> {
     try {
       const results = await this.reconcileBundledPlugins();
-      for (const r of results) if (r.action !== 'unchanged' && r.action !== 'skipped-dev') log(r.action === 'failed' ? 'ERROR' : 'INFO', 'bundled-plugins', r.action, r);
-      if (results.some((r) => r.action === 'installed' || r.action === 'upgraded')) { try { reconcileHooks(); } catch {} try { await reconcileMcp(); } catch {} }
+      for (const r of results) {
+        if (r.action !== 'unchanged' && r.action !== 'skipped-dev') {
+          log(r.action === 'failed' ? 'ERROR' : 'INFO', 'bundled-plugins', r.action, r);
+        }
+      }
+      if (results.some((r) => r.action === 'installed' || r.action === 'upgraded')) {
+        // Review fix (Finding 5): these were `catch {}`. The identical
+        // failures ARE logged at ERROR everywhere else install() reconciles
+        // hooks/MCP (see install(), above). As written, a bundled plugin
+        // could be upgraded on disk while its hooks/MCP config never lands in
+        // settings.json, with nothing in the log to say so — reusing those
+        // catch bodies verbatim here.
+        try {
+          reconcileHooks();
+        } catch (e) {
+          log('ERROR', 'SkillProvider', 'hook reconcile after install failed', { error: String(e) });
+        }
+        try {
+          await reconcileMcp();
+        } catch (e) {
+          log('ERROR', 'SkillProvider', 'MCP reconcile after install failed', { error: String(e) });
+        }
+      }
     } catch (err) {
       log('ERROR', 'bundled-plugins', 'reconcile failed', { error: String(err) });
     }

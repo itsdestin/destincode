@@ -71,6 +71,15 @@ function getCacheRepoName(sourceMarketplace?: string): string {
   return 'claude-plugins-official';
 }
 
+// Task B3 review fix (Finding 2): the launch-time reconciler in skill-provider.ts
+// was hand-building this same path with 'wecoded-marketplace' hardcoded, which
+// silently disagreed with getCacheRepoName() the moment a bundled entry ever
+// carried a different sourceMarketplace. Exporting the single source of truth
+// both installFromLocal/upgradePluginFromLocal and the reconciler now share.
+export function marketplaceCacheDir(sourceMarketplace: string | undefined, sourceRef: string): string {
+  return path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace), sourceRef);
+}
+
 export interface InstallMeta {
   installedAt: string;
   installedFrom: string;
