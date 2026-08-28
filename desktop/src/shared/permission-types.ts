@@ -183,6 +183,11 @@ export function rulesForMode(mode: NativePermissionMode): PermissionRule[] {
     // user should look at, and the viewer's own read guards apply when they
     // open. Nothing to ask about, in any mode.
     { tool: 'SendUserFile', action: 'allow' },
+    // G-1 (2026-08-28): the Bash companions read a log the session already
+    // owns, or stop a command the session itself started — nothing to ask
+    // about; asking would train click-through (spec §4.2/4.3 "never asks").
+    { tool: 'BashOutput', action: 'allow' },
+    { tool: 'KillShell', action: 'allow' },
   ];
   switch (mode) {
     case 'ask':

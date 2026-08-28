@@ -1101,6 +1101,7 @@ describe('native:* channel parity', () => {
     'native:set-permission-mode',
     'native:get-permission-mode',
     'native:sessions-list',
+    'native:kill-shell',
   ];
 
   it('every native:* channel is declared in preload.ts', () => {

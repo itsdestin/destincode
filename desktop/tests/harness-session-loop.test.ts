@@ -1969,6 +1969,51 @@ describe('HarnessSession — empty final step recovery', () => {
     expect(cleared.map((e) => e.data.toolPreparing.toolCallId)).toEqual(['c1']);
   });
 
+  it('G-1: BashOutput is exempt from the doom-loop window — nine identical polls raise no ask, the 9th hits the per-turn cap', async () => {
+    const poll = fakeTool('BashOutput', { schema: z.object({ shell_id: z.string().optional() }).strict(), onExecute: () => ({ text: 'sh-1 · running · 1s\nline' }) });
+    const calls = Array.from({ length: 9 }, (_, i) => stream(toolCallChunk(`c${i}`, 'BashOutput', { shell_id: 'sh-1' }), finishChunk('tool-calls')));
+    const model = scriptedModel([...calls, stream(...textChunks('b', 'done'), finishChunk('stop'))]);
+    const askUser = vi.fn(async () => ({ behavior: 'allow' as const }));
+    const session = new HarnessSession(makeOpts({ tools: [poll], decide: async () => ALLOW, askUser }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    expect(askUser.mock.calls.some((c) => (c[0] as any).toolName === 'doom_loop')).toBe(false);
+    const results = events.filter((e) => e.type === 'tool-result');
+    expect(results).toHaveLength(9);
+    expect((poll as any).calls).toHaveLength(8);
+    expect(results[8].data!.isError).toBe(true);
+    expect(results[8].data!.toolResult).toBe('You have read background output 8 times this turn. Do other work; the finished notice will arrive.');
+  });
+
+  it('G-1: the BashOutput cap resets on the next turn', async () => {
+    const poll = fakeTool('BashOutput', { schema: z.object({ shell_id: z.string().optional() }).strict(), onExecute: () => ({ text: 'x' }) });
+    const nine = Array.from({ length: 9 }, (_, i) => stream(toolCallChunk(`c${i}`, 'BashOutput', {}), finishChunk('tool-calls')));
+    const model = scriptedModel([
+      ...nine, stream(...textChunks('a', 'done'), finishChunk('stop')),
+      stream(toolCallChunk('d1', 'BashOutput', {}), finishChunk('tool-calls')), stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [poll], decide: async () => ALLOW, askUser: async () => ({ behavior: 'allow' as const }) }), async () => model as any);
+    const events = collect(session);
+    await session.send('one');
+    await session.send('two');
+    const results = events.filter((e) => e.type === 'tool-result');
+    expect(results[9].data!.isError).toBe(false);
+  });
+
+  it('G-1: opts.shells reaches the tool as ctx.shells (absent when not wired)', async () => {
+    let seen: unknown = 'unset';
+    const probe = fakeTool('Read', { onExecute: (_a, c) => { seen = c.shells; return { text: 'ok' }; } });
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ]);
+    const shells = { marker: 'registry' } as any;
+    const session = new HarnessSession(makeOpts({ tools: [probe], decide: async () => ALLOW, shells }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    expect(seen).toBe(shells);
+  });
+
   it("empty 'tool-calls' twice → empty_response (the honest end, not the raw passthrough)", async () => {
     const seen: any[] = [];
     const model = scriptedModel([stream(finishChunk('tool-calls'))], seen);

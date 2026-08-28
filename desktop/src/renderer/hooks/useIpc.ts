@@ -70,6 +70,7 @@ declare global {
         // fed by the delegation ledger's own mutate() chokepoint (never a direct
         // emit per host method). Returns an unsubscribe fn.
         specialistEvent: (cb: (e: import('../../shared/types').SpecialistsEvent) => void) => () => void;
+        shellEvent: (cb: (e: import('../../shared/types').ShellEvent) => void) => () => void;   // G-1
       };
       dialog: {
         openFile: () => Promise<string[]>;
@@ -297,6 +298,7 @@ declare global {
         // the APPLIED mode — authoritative; the chip renders the return value.
         setPermissionMode: (sessionId: string, mode: 'ask' | 'auto-edit' | 'full-auto') => Promise<'ask' | 'auto-edit' | 'full-auto'>;
         sessionsList: () => Promise<any[]>;
+        killShell: (sessionId: string, shellId: string) => Promise<{ ok: true } | { ok: false; reason: string }>;   // G-1
         // Per-session bound-model residency push (2026-07-14): { sessionId,
         // modelId, state: 'unloaded'|'loading'|'loaded'|'sleeping', sizeBytes }.
         onModelState: (cb: (s: any) => void) => () => void;

@@ -886,6 +886,34 @@ describe('RemoteServer specialist run + native hook replay (Task 9)', () => {
     expect(byChild).toEqual({ c1: 'completed', c2: 'running' });
   });
 
+  it('G-1: a new client receives the latest native:shell-event per shell id, and a destroyed session drops its buffer', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const { frames, ws } = fakeWs();
+    server.bufferShellRun({ sessionId: 's1', run: { toolUseId: 't1', shellId: 'sh-1', status: 'running', startedAt: 1, tail: 'a', logPath: '/l' } });
+    server.bufferShellRun({ sessionId: 's1', run: { toolUseId: 't1', shellId: 'sh-1', status: 'exited', exitCode: 0, startedAt: 1, endedAt: 2, tail: 'ab', logPath: '/l' } });
+    server.bufferShellRun({ sessionId: 's1', run: { toolUseId: 't2', shellId: 'sh-2', status: 'running', startedAt: 1, tail: '', logPath: '/m' } });
+    await replayAndWait(server, ws);
+    const events = frames.filter((m) => m.type === 'native:shell-event');
+    expect(events).toHaveLength(2);
+    expect(Object.fromEntries(events.map((e) => [e.payload.run.shellId, e.payload.run.status]))).toEqual({ 'sh-1': 'exited', 'sh-2': 'running' });
+    server.onSessionExit('s1');
+    const { frames: again, ws: ws2 } = fakeWs();
+    await replayAndWait(server, ws2);
+    expect(again.filter((m) => m.type === 'native:shell-event')).toHaveLength(0);
+  });
+
+  it('G-1: native:kill-shell over WS answers with the host result, and not-live without a runtime', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);
+    const { frames, ws } = fakeWs();
+    await server.handleMessage({ ws, authenticated: true }, JSON.stringify({ type: 'native:kill-shell', id: 'r1', payload: { sessionId: 's1', shellId: 'sh-1' } }));
+    expect(frames.find((m) => m.id === 'r1')?.payload).toEqual({ ok: false, reason: 'not-live' });
+    server.setNativeRuntime({ nativeHost: { killShell: vi.fn(async () => ({ ok: true })) } });
+    await server.handleMessage({ ws, authenticated: true }, JSON.stringify({ type: 'native:kill-shell', id: 'r2', payload: { sessionId: 's1', shellId: 'sh-1' } }));
+    expect(frames.find((m) => m.id === 'r2')?.payload).toEqual({ ok: true });
+  });
+
   it('a reconnecting client receives a held ask\'s PermissionRequest and its PermissionHeld, in that order', async () => {
     const { RemoteServer } = await import('../src/main/remote-server');
     const server: any = new RemoteServer(mockSessionManager, mockHookRelay, mockConfig);

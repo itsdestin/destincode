@@ -16,7 +16,7 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
-import type { TranscriptEvent } from '../../shared/types';
+import type { TranscriptEvent, InjectedMeta } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
 import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
@@ -46,6 +46,13 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // exactly like Bash's command string or Skill's id above — workDir containment
 // itself is already enforced inside NativeSessionHost.createChild.
 const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
+/** G-1: a poll is SUPPOSED to repeat, so BashOutput is exempt from the
+ *  doom-loop signature window (spec §4.2); BASH_OUTPUT_READS_PER_TURN is the
+ *  guard instead. */
+const DOOM_LOOP_EXEMPT_TOOLS = new Set(['BashOutput']);
+/** D7: flat cap on BashOutput calls per turn, regardless of result — a chatty
+ *  build returns new output on every poll, which no empty-result counter catches. */
+export const BASH_OUTPUT_READS_PER_TURN = 8;
 
 // Tools whose target MUST already exist for the call to mean anything. Only
 // these can have an external_directory ask short-circuited by
@@ -136,6 +143,7 @@ import { createSkillTool } from './tools/skill';
 import { createTaskTool } from './tools/task';
 import { ModelSearchTool } from './tools/model-search';
 import { BUILTIN_ROSTER, type SpecialistRoster } from './specialists/registry';
+import type { ShellRegistry } from './shell-registry';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -247,6 +255,11 @@ export interface HarnessSessionOpts {
    *  no-op — isSpecialistChild withholds Task entirely), so its own roster
    *  identity never matters. */
   specialistRoster?: SpecialistRoster;
+  /** G-1 background Bash: the HOST-owned registry for this session's
+   *  background/handed-off commands (NativeSessionHost.shellsFor). Reaches the
+   *  tools as ctx.shells; absent in tests, where Bash refuses a background
+   *  start and a time limit still kills. */
+  shells?: ShellRegistry;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -636,6 +649,7 @@ export class HarnessSession extends EventEmitter {
   private servedReads = new Map<string, ServedRead>();
   /** 1-based running count of tool calls dispatched — lets Read say "N calls ago". */
   private toolCallCount = 0;
+  private bashOutputReadsThisTurn = 0;   // G-1 per-turn cap, reset in beginTurn
   private todos: ToolContext['todos'] = [];
   /** Scoped-persistence shell cwd (ROADMAP 2026-07-17): where the next Bash call
    *  starts. null → the session root. Session runtime like readRegistry/todos —
@@ -1618,9 +1632,12 @@ export class HarnessSession extends EventEmitter {
    *  this at an idle boundary — beginTurn's own re-entrancy guard would throw
    *  if it were called mid-turn, by design (never splice into a running turn:
    *  role alternation + the local prompt cache both depend on it). */
-  async runNotice(text: string, meta?: NonNullable<TranscriptEvent['data']>['injectedMeta']): Promise<void> {
+  async runNotice(text: string, meta?: InjectedMeta): Promise<void> {
+    // G-1: the discriminant tells the renderer which card folds this turn —
+    // a Task card (specialist report) or a Bash card (shell-complete).
+    const injected = meta?.kind === 'shell' ? 'shell-complete' : 'specialist-report';
     return this.beginTurn(text, () => this.emitEvent('user-message', {
-      text, injected: 'specialist-report',
+      text, injected,
       // Structured header data for the renderer's SpecialistReportCard —
       // optional so every existing caller/test that passes text alone is
       // unchanged; the card falls back to the prose when it's absent.
@@ -1724,6 +1741,7 @@ export class HarnessSession extends EventEmitter {
       throw new Error('HarnessSession: a turn is already in flight — callers must serialize send()/runSkill() per session.');
     }
     this.interrupted = false;
+    this.bashOutputReadsThisTurn = 0;   // G-1 (D7): the cap is per TURN, notice turns included
     emit();
     // WHY (spec §3, MOIM pattern): the model never polls and never forgets a child
     // exists — a compact status block rides every turn while specialists are live.
@@ -2738,6 +2756,16 @@ export class HarnessSession extends EventEmitter {
     }
     const args = parsed.data;
 
+    // G-1: per-turn BashOutput cap (D7) — checked AFTER validation so a
+    // malformed call never spends a read, and BEFORE the doom loop, which it
+    // replaces for this tool.
+    if (call.toolName === 'BashOutput') {
+      this.bashOutputReadsThisTurn += 1;
+      if (this.bashOutputReadsThisTurn > BASH_OUTPUT_READS_PER_TURN) {
+        return { text: `You have read background output ${BASH_OUTPUT_READS_PER_TURN} times this turn. Do other work; the finished notice will arrive.`, isError: true };
+      }
+    }
+
     // 2. Doom loop (BEFORE permissions — a stuck model shouldn't spam asks).
     //    `args` is parsed.data (zod-NORMALIZED), so the signature is canonical:
     //    two calls that differ only in JSON key order still count as identical.
@@ -2745,17 +2773,20 @@ export class HarnessSession extends EventEmitter {
     // Window length = the profile's doom-loop threshold (Task 5): small local
     // models (threshold 2) trip sooner than cloud models (default 3). Trip when
     // the last `threshold` calls are all identical; an allow resets the window.
+    // G-1: BashOutput never enters the window — see DOOM_LOOP_EXEMPT_TOOLS.
     const threshold = this.profile.doomLoopThreshold;
-    recentCalls.push(sig);
-    if (recentCalls.length > threshold) recentCalls.shift();
-    if (recentCalls.length === threshold && recentCalls.every((s) => s === sig)) {
-      const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: 'doom_loop', toolInput: { repeated: call.toolName }, denyListed: false });
-      if (d?.behavior === 'canceled') return 'interrupted';
-      // Threshold-accurate: the doom-loop window length varies by profile (2 for
-      // small local models, 3 for cloud), so quote the ACTUAL threshold, not a
-      // hardcoded "three". Model-facing corrective text, not a user-facing error.
-      if (d?.behavior !== 'allow') return { text: `Stopped: this exact call has been repeated ${threshold} times. Try a different approach.`, isError: true };
-      recentCalls.length = 0;   // allow resets the window
+    if (!DOOM_LOOP_EXEMPT_TOOLS.has(call.toolName)) {
+      recentCalls.push(sig);
+      if (recentCalls.length > threshold) recentCalls.shift();
+      if (recentCalls.length === threshold && recentCalls.every((s) => s === sig)) {
+        const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: 'doom_loop', toolInput: { repeated: call.toolName }, denyListed: false });
+        if (d?.behavior === 'canceled') return 'interrupted';
+        // Threshold-accurate: the doom-loop window length varies by profile (2 for
+        // small local models, 3 for cloud), so quote the ACTUAL threshold, not a
+        // hardcoded "three". Model-facing corrective text, not a user-facing error.
+        if (d?.behavior !== 'allow') return { text: `Stopped: this exact call has been repeated ${threshold} times. Try a different approach.`, isError: true };
+        recentCalls.length = 0;   // allow resets the window
+      }
     }
 
     // 2.5 Interactive tools (AskUserQuestion): the ask IS the execution. Skip
@@ -2888,6 +2919,10 @@ export class HarnessSession extends EventEmitter {
       setShellEnv: (next: Record<string, string>) => {
         this.shellEnv = next;
       },
+      // G-1: the session's shell registry (host-owned — see
+      // NativeSessionHost.shellsFor). Spread so an unwired session leaves
+      // ctx.shells genuinely absent rather than explicitly undefined.
+      ...(this.opts.shells ? { shells: this.opts.shells } : {}),
       todos: this.todos,
       supportsVision: this.profile.supportsVision,
       ...(this.opts.toolServices ? { services: this.opts.toolServices } : {}),

@@ -45,6 +45,13 @@ describe('tool registry ↔ manifest parity', () => {
   it('the two sets are exactly equal', () => {
     expect(registered).toEqual(advertised);
   });
+
+  it('G-1: BashOutput and KillShell are registered AND advertised', () => {
+    expect(registered).toContain('BashOutput');
+    expect(registered).toContain('KillShell');
+    expect(advertised).toContain('BashOutput');
+    expect(advertised).toContain('KillShell');
+  });
 });
 
 // Conditional tools are the exception this guard's rule implies. `Skill` is
