@@ -17,6 +17,7 @@ import { wrap, makeClearSessionOn401 } from "./handler-utils";
 // keeps social-handlers → this module a pure type edge; the value edge here is
 // one-way (this → social-handlers) so there's no runtime import cycle.
 import { notifySignedOut } from "./social-handlers";
+import { reconcileInstalls } from "./install-reconcile";
 
 /** Shape returned by `marketplace:thumb` — the caller's new vote AND the plugin's
  *  new totals, so the button can move the number without re-fetching /stats. */
@@ -104,6 +105,13 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
         } else {
           store.setToken(res.token); // older Worker without `user` in the payload
         }
+        // Tell the Worker what this machine already has. Until this ran, the
+        // server only knew about installs made while signed in — so bundled
+        // plugins (auto-installed at launch, never through the marketplace
+        // client) and anything installed while signed out were invisible to it,
+        // and the install gate refused votes on plugins the user demonstrably
+        // has. Deliberately NOT awaited: sign-in must not wait on bookkeeping.
+        void reconcileInstalls(store);
       }
       return res;
     })

@@ -62,6 +62,7 @@ import { sweepProjectSymlinks } from './conversations/symlink-sweep';
 import { startTagRegistry } from './conversations/tag-registry-service';
 import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
+import { reconcileInstalls } from './install-reconcile';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
@@ -1582,6 +1583,10 @@ void app.whenReady().then(async () => {
   // never crosses the contextBridge into the renderer.
   const marketplaceAuthStore = createAuthStore(app.getPath('userData'));
   registerMarketplaceApiHandlers(marketplaceAuthStore);
+  // Catch-up for sessions that signed in before reconcile existed, and for
+  // plugins installed on another device since last launch. No-ops when signed
+  // out; never awaited (bookkeeping must not delay startup).
+  void reconcileInstalls(marketplaceAuthStore);
   // Remote clients read the signed-in state through the WS server, which has no
   // ipcMain access — without this the game lobby showed "signed out" in a remote
   // browser while the host app was signed in.

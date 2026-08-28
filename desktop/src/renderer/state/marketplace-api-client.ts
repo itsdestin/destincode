@@ -131,6 +131,9 @@ export interface MarketplaceApiClient {
   //    strangers can't game the number). ──
   listComments(pluginId: string, signal?: AbortSignal): Promise<{ comments: CommentEntry[] }>;
   postComment(input: { plugin_id: string; text: string }): Promise<{ ok: true; id: string; hidden: boolean }>;
+  /** Reconcile: report EVERY plugin the client currently has, in one call.
+   *  Idempotent server-side and never moves `installed_at`. */
+  postInstalls(pluginIds: string[]): Promise<{ ok: true; recorded: number }>;
   /** `null` clears the user's vote. Returns the plugin's NEW totals so the caller
    *  can move the number on the spot — /stats is served max-age=300 and cannot
    *  answer that question for up to five minutes after the write. */
@@ -275,6 +278,8 @@ export function createMarketplaceApiClient(opts: {
       request<ListRatingsResponse>(`/ratings/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
     listComments: (plugin_id, signal?) =>
       request<{ comments: CommentEntry[] }>(`/comments/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
+    postInstalls: (plugin_ids) =>
+      request<{ ok: true; recorded: number }>("/installs", { method: "POST", body: JSON.stringify({ plugin_ids }), auth: true }),
     postComment: (input) =>
       request<{ ok: true; id: string; hidden: boolean }>("/comments", { method: "POST", body: JSON.stringify(input), auth: true }),
     setThumb: (input) =>
