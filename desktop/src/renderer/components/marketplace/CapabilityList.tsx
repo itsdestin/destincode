@@ -17,17 +17,13 @@ export const CAPABILITY_TITLE: Record<Capability['kind'], string> = {
   adds: 'Adds things',
 };
 
-/** Compact glyph row for cards — risky kinds only, deduplicated. */
-export function CapabilityGlyphs({ capabilities }: { capabilities: Capability[] }) {
+/** One line of words for cards — risky kinds only, deduplicated, e.g.
+ *  "Runs commands · Uses the internet · Needs a key". Round 2 replaced the
+ *  glyph row: the globe / key icons were not self-explanatory. */
+export function capabilityLine(capabilities: Capability[]): string | null {
   const kinds = Array.from(new Set(capabilities.map((c) => c.kind))).filter((k) => RISKY_CAPABILITY_KINDS.includes(k));
   if (kinds.length === 0) return null;
-  return (
-    <span className="inline-flex items-center gap-1 text-fg-dim shrink-0" aria-label={kinds.map((k) => CAPABILITY_TITLE[k]).join(', ')}>
-      {kinds.map((k) => (
-        <span key={k} title={CAPABILITY_TITLE[k]} className="inline-flex"><CapabilityIcon kind={k} size={13} /></span>
-      ))}
-    </span>
-  );
+  return kinds.map((k) => CAPABILITY_TITLE[k]).join(' · ');
 }
 
 /** Full list for the detail page. Renders the "nothing risky" line when the

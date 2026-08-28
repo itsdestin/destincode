@@ -14,7 +14,7 @@ import InstallFavoriteCorner from "./InstallFavoriteCorner";
 // Marketplace overhaul (2026-08-27): origin + scan badges, risky-capability
 // glyphs and the thumbs summary replace the star rating on every card.
 import { OriginBadge, ScanBadge } from "./TrustBadges";
-import { CapabilityGlyphs } from "./CapabilityList";
+import { capabilityLine } from "./CapabilityList";
 import { ThumbsSummary } from "./FeedbackSection";
 import { CATALOG_TYPE_LABEL } from "../../../shared/catalog-types";
 
@@ -120,12 +120,14 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   // split view says what each card IS; bundles stay unlabeled like today.
   const typeLabel = catalog && catalog.itemType !== "plugin" ? CATALOG_TYPE_LABEL[catalog.itemType].one : null;
   const thumbs = pluginStats ? <ThumbsSummary up={pluginStats.thumbs_up} down={pluginStats.thumbs_down} /> : null;
+  // Round 2: safety first, then who made it; the risky abilities as words.
   const trust = catalog ? (
     <div className="flex items-center gap-1 flex-nowrap min-w-0" data-trust>
-      <OriginBadge tier={catalog.origin.tier} />
       <ScanBadge scan={catalog.scan} responsiveLabel />
+      <OriginBadge tier={catalog.origin.tier} />
     </div>
   ) : null;
+  const capLine = catalog ? capabilityLine(catalog.capabilities) : null;
 
   const title = item.kind === "skill" ? item.entry.displayName : item.entry.name;
   const author = item.kind === "skill" ? (item.entry.author || "") : (item.entry.author || "");
@@ -201,12 +203,11 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           )}
           {blurb && <p className="text-xs text-fg-2 line-clamp-2">{blurb}</p>}
           {trust && <div className="mt-1">{trust}</div>}
-          {thumbs || installs > 0 || likes > 0 || (catalog && catalog.capabilities.length > 0) ? (
+          {thumbs || installs > 0 || likes > 0 ? (
             <div className="mt-1 flex items-center gap-3 text-xs text-fg-dim">
               {thumbs}
               {installs > 0 && <span>{plural(installs, "install")}</span>}
               {likes > 0 && <span>{plural(likes, "like")}</span>}
-              {catalog && <CapabilityGlyphs capabilities={catalog.capabilities} />}
             </div>
           ) : null}
         </div>
@@ -382,7 +383,9 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           </span>
         )}
       </div>
-      {blurb && <p className="text-xs text-fg-2 line-clamp-2">{blurb}</p>}
+      {/* Round 2: the blurb reserves two lines even when it is one, so every
+          card in a row keeps the same shape (Destin: "not symmetrical"). */}
+      <p className="text-xs text-fg-2 line-clamp-2 min-h-[2rem]">{blurb}</p>
       {/* Plugin-name badge — jumps to the parent plugin's detail page.
           Only rendered for skills that belong to a marketplace plugin;
           stopPropagation prevents the card's own onClick from firing. */}
@@ -396,21 +399,23 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           {pluginBadge.name}
         </button>
       )}
-      <div className="mt-auto flex items-center gap-2 sm:gap-3 text-xs text-fg-dim pt-1 min-w-0">
-        {/* Author appears here at narrow only — keeps the byline visible without
-            spending a whole row on it. Hidden at sm+ since it has its own line
-            under the title up top. */}
-        {author && <span className="sm:hidden text-fg-dim truncate">{author}</span>}
-        {thumbs}
-        {installs > 0 && <span className="shrink-0">{plural(installs, "install")}</span>}
-        {likes > 0 && <span className="shrink-0">{plural(likes, "like")}</span>}
-        {/* Component peek (e.g. "2 skills · 3 commands") is wide-only —
-            saves a row at narrow where space is tight. */}
-        {peek && <span className="hidden sm:inline text-fg-muted truncate">{peek}</span>}
-        {/* Overhaul: the risky-capability glyphs (runs commands · internet ·
-            needs a key · runs on its own) sit at the far right so they can be
-            spotted while scrolling; the sentences are on the detail page. */}
-        {catalog && <span className="ml-auto hidden sm:inline-flex"><CapabilityGlyphs capabilities={catalog.capabilities} /></span>}
+      <div className="mt-auto flex flex-col gap-1 pt-1 min-w-0">
+        {/* Round 2: what it can do, as WORDS on their own line — "Runs
+            commands · Uses the internet · Needs a key". Only the risky kinds,
+            only when there are any; the sentences are on the detail page. */}
+        {capLine && <p className="hidden sm:block text-2xs text-fg-dim truncate" title={capLine}>{capLine}</p>}
+        <div className="flex items-center gap-2 sm:gap-3 text-xs text-fg-dim min-w-0">
+          {/* Author appears here at narrow only — keeps the byline visible without
+              spending a whole row on it. Hidden at sm+ since it has its own line
+              under the title up top. */}
+          {author && <span className="sm:hidden text-fg-dim truncate">{author}</span>}
+          {thumbs}
+          {installs > 0 && <span className="shrink-0">{plural(installs, "install")}</span>}
+          {likes > 0 && <span className="shrink-0">{plural(likes, "like")}</span>}
+          {/* Component peek (e.g. "2 skills · 3 commands") is wide-only and
+              right-aligned so the row reads: feedback left, contents right. */}
+          {peek && <span className="hidden sm:inline text-fg-muted truncate ml-auto text-right">{peek}</span>}
+        </div>
       </div>
       </div>
     </div>

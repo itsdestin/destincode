@@ -225,7 +225,7 @@ export default function MarketplaceScreen({
   const filtered = useMemo(() => {
     if (mode !== "search") return [];
     const q = filter.query.trim().toLowerCase();
-    const picksOnly = filter.meta.has("picks");
+    const picksOnly = filter.view === "picks";
 
     const skillPass = (s: SkillEntry): boolean => {
       // Overhaul (decision #1): grouped when browsing, split when looking for
@@ -242,10 +242,7 @@ export default function MarketplaceScreen({
       // "Featured picks" chip: hard filter against the curated slug set so the
       // chip actually narrows results instead of just reordering them.
       if (picksOnly && !pickSlugs.has(s.id)) return false;
-      if (filter.vibes.size > 0) {
-        const areas = s.lifeArea || [];
-        if (!areas.some((a) => filter.vibes.has(a as any))) return false;
-      }
+      if (filter.vibe && !(s.lifeArea || []).includes(filter.vibe)) return false;
       if (q) {
         const hay = `${s.displayName} ${s.description} ${s.tagline || ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -255,7 +252,7 @@ export default function MarketplaceScreen({
     const themePass = (t: ThemeRegistryEntryWithStatus): boolean => {
       if (filter.type !== null && filter.type !== "theme") return false;
       if (picksOnly && !pickSlugs.has(t.slug)) return false;
-      if (filter.vibes.size > 0) return false; // themes have no lifeArea (yet)
+      if (filter.vibe) return false; // themes have no lifeArea (yet)
       if (q) {
         const hay = `${t.name} ${t.description || ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -277,12 +274,12 @@ export default function MarketplaceScreen({
     const recency = (item: typeof combined[number]): string =>
       item.kind === "skill" ? (item.entry.updatedAt || "") : (item.entry.updated || "");
 
-    if (filter.meta.has("popular")) {
+    if (filter.view === "popular") {
       combined.sort((a, b) => (
         (b.kind === "skill" ? (b.entry.installs || 0) : 0) -
         (a.kind === "skill" ? (a.entry.installs || 0) : 0)
       ));
-    } else if (filter.meta.has("new")) {
+    } else if (filter.view === "new") {
       combined.sort((a, b) => recency(b).localeCompare(recency(a)));
     }
     return combined;

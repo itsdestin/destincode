@@ -254,8 +254,8 @@ function SkillBody({
               where it came from. Two badges, then plain text; never a score. */}
           {catalog && (
             <div className="mt-2 flex items-center gap-1.5 flex-wrap text-xs text-fg-dim" data-trust-line>
-              <OriginBadge tier={catalog.origin.tier} size="md" />
               <ScanBadge scan={catalog.scan} size="md" />
+              <OriginBadge tier={catalog.origin.tier} size="md" />
               {catalog.origin.mirroredFrom && <span>from {catalog.origin.mirroredFrom}</span>}
               {catalog.partOf && (
                 <button

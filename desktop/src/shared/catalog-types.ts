@@ -17,14 +17,15 @@ export type CatalogItemType = 'plugin' | 'skill' | 'specialist' | 'tool' | 'prom
 
 export const CATALOG_ITEM_TYPES: readonly CatalogItemType[] = ['plugin', 'skill', 'specialist', 'tool', 'prompt'];
 
-/** User-facing words. "Tool" is the user-facing word for an MCP server
- *  (accessibility rule: no jargon in menus); "Specialist" is the app's
- *  existing word for an agent definition (see Permissions). */
+/** User-facing words (accessibility rule: no jargon in menus). "Connection"
+ *  is the word for an MCP server — Destin, 2026-08-28: "Connections for now";
+ *  non-MCP tools may join later. "Specialist" is the app's existing word for
+ *  an agent definition (see Permissions). */
 export const CATALOG_TYPE_LABEL: Record<CatalogItemType, { one: string; many: string }> = {
   plugin: { one: 'Plugin', many: 'Plugins' },
   skill: { one: 'Skill', many: 'Skills' },
   specialist: { one: 'Specialist', many: 'Specialists' },
-  tool: { one: 'Tool', many: 'Tools' },
+  tool: { one: 'Connection', many: 'Connections' },
   prompt: { one: 'Prompt', many: 'Prompts' },
 };
 
