@@ -11,6 +11,15 @@ describe('native StatusBar chips', () => {
     // Native no longer renders its own Tokens/Speed chips — it feeds the chips
     // that already exist, which sat at "--" forever in native sessions because
     // only the CC statusline ever wrote them (Destin, 2026-07-28).
+    //
+    // Update (task 7, spec §6): this still pins the pure selector's output —
+    // in/out/speed for the LAST completed turn — but the In/Out chips in
+    // StatusBar.tsx no longer read `chips.inputTokens`/`chips.outputTokens`.
+    // They now read `nativeTotals` (session-so-far totals) so the same label
+    // doesn't mean "one turn" in a native session and "the whole session" in a
+    // Claude Code one. Speed is the one label that's still deliberately a
+    // per-turn measurement in both runtimes, so it still reads this selector's
+    // `tokensPerSecond` — see the speedTokPerSec comment in StatusBar.tsx.
     const chips = selectNativeStatusChips(
       { inputTokens: 6000, outputTokens: 400, tokensPerSecond: 42, contextUsedTokens: 6400 },
       8192,

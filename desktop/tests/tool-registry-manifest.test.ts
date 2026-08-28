@@ -297,3 +297,50 @@ describe('MCP-derived tools declare a static moreHint too (structural gap the CO
     }
   });
 });
+
+// -----------------------------------------------------------------------
+// Ledger D-2 (2026-08-26 native-tools investigation): every NATIVE tool's
+// input schema must REJECT unknown parameters. Before this, all of them were
+// plain z.object() — a model trained on Claude Code that sent `Grep {pattern,
+// "-i": true}` got a case-SENSITIVE search and no error, because zod dropped
+// the key it did not recognize. This sweep covers the static CORE_TOOLS and
+// the three runtime-attached tools (Skill, Task, ModelSearch), which
+// CORE_TOOLS can structurally never see. MCP tools are the deliberate
+// exception: their schema is `z.object({}).passthrough()` because the SERVER
+// is the authority on its own arguments (mcp-tools.ts), so they are pinned
+// as NOT strict here — a future "make everything strict" sweep must not
+// break every MCP server.
+describe('native tool schemas reject unknown parameters (D-2)', () => {
+  const runtimeTools = [
+    createSkillTool({ list: () => [{ id: 'x', description: 'd' }], load: () => { throw new Error('unused'); } }),
+    createTaskTool({ list: () => [], get: () => undefined } as any),
+    ModelSearchTool,
+  ];
+
+  it('every CORE_TOOL and runtime-attached native tool rejects an unrecognized key', () => {
+    for (const tool of [...CORE_TOOLS, ...runtimeTools]) {
+      const r = tool.inputSchema.safeParse({ __not_a_real_parameter__: true });
+      expect(r.success, `${tool.name} silently accepted an unknown parameter`).toBe(false);
+      const codes = r.success ? [] : r.error.issues.map((i) => i.code);
+      expect(codes, `${tool.name} did not report the unknown key as unrecognized_keys`).toContain('unrecognized_keys');
+    }
+  });
+
+  it('MCP-derived tools stay permissive — the server validates its own arguments', () => {
+    const tools = mcpToolsFor({
+      id: 'srv', label: 'Srv',
+      tools: [{ name: 'do_thing', description: 'd', inputSchema: { type: 'object' } }],
+      call: async () => ({ text: '', isError: false }),
+    } as any);
+    for (const tool of tools) {
+      expect(tool.inputSchema.safeParse({ anything: 1 }).success, `${tool.name} must pass unknown keys through to the server`).toBe(true);
+    }
+  });
+
+  it('Grep advertises the four ripgrep flags added for ledger G-7', () => {
+    const params = Object.keys((GrepTool.inputSchema as any).shape);
+    for (const p of ['ignore_case', 'literal', 'type', 'multiline']) {
+      expect(params, `Grep schema is missing "${p}"`).toContain(p);
+    }
+  });
+});

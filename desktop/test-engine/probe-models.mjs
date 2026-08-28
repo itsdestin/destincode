@@ -45,9 +45,21 @@ console.log('RAW /models:', JSON.stringify(raw, null, 2));
 // (as this probe used to) would make that check test nothing. Torn down at exit.
 
 const rows = Array.isArray(raw?.data) ? raw.data : Array.isArray(raw?.models) ? raw.models : Array.isArray(raw) ? raw : [];
-const routerIds = rows.map((m) => m.id ?? m.name).sort();
+const rawRouterIds = rows.map((m) => m.id ?? m.name).sort();
+// The router lists one row per FILE, so a split set shows up as N rows while the
+// cache scan collapses it to the first part. That is NOT a naming mismatch — it
+// is the router's LISTING granularity, and the app drops the follower rows in
+// EngineSupervisor.listModels (shared/gguf-split.ts). Fold them here too, or this
+// probe fails the moment probe-download.mjs leaves a split set in cache/
+// (measured on b10665, 2026-08-27 — the same rows that put four picker entries in
+// front of a user for one model).
+const routerIds = rawRouterIds.filter((id) => {
+  const part = /-(\d{5})-of-(\d{5})$/.exec(id);
+  return part === null || part[1] === '00001';
+});
 const scan = scanIds(cacheDir);
-console.log('router ids:', routerIds);
+console.log('router ids (raw):     ', rawRouterIds);
+console.log('router ids (followers dropped):', routerIds);
 console.log('scan   ids:', scan);
 if (JSON.stringify(routerIds) !== JSON.stringify(scan)) {
   console.error('FAIL: cache-scan id derivation does not match router discovery — fix ggufIdFromFileName + engine-dependencies.md');

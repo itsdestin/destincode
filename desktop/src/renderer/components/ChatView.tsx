@@ -26,6 +26,13 @@ import { assistantName } from '../utils/assistant-name';
 import { ContentFindBar } from './ContentFindBar';
 import { isTypingTarget } from '../utils/is-typing-target';
 import { useStickToBottom } from '../hooks/use-stick-to-bottom';
+import { useSessionPreviewListener } from '../hooks/useSessionPreviewListener';
+
+/** How long the prepend anchor keeps correcting for late-laying-out content
+ *  (code blocks, images) before it lets go. Long enough for markdown to settle,
+ *  short enough that it can never feel like the view is fighting you. Any user
+ *  input releases it immediately. */
+const ANCHOR_SETTLE_MS = 700;
 
 interface Props {
   sessionId: string;
@@ -36,7 +43,6 @@ interface Props {
    *  the root element's style block for why the two axes are hidden
    *  differently. */
   sessionActive: boolean;
-  resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
   /** Working directory of the session — used to resolve the active project for the artifact drawer. */
   cwd?: string;
   /** Game pane content, when the multiplayer panel is open. Rendered in the
@@ -62,55 +68,20 @@ interface Props {
   onEditQueued?: (sessionId: string, queueId: string, text: string) => void;
 }
 
-function HistoryExpandButton({ sessionId, resumeInfo }: {
-  sessionId: string;
-  resumeInfo?: Map<string, { claudeSessionId: string; projectSlug: string }>;
-}) {
-  const dispatch = useChatDispatch();
-  const [loading, setLoading] = useState(false);
-
-  const handleExpand = async () => {
-    const info = resumeInfo?.get(sessionId);
-    if (!info) return;
-    setLoading(true);
-    try {
-      const allMessages = await (window as any).claude.session.loadHistory(
-        info.claudeSessionId, info.projectSlug, 0, true
-      );
-      if (allMessages.length > 0) {
-        dispatch({
-          type: 'HISTORY_LOADED',
-          sessionId,
-          messages: allMessages,
-          hasMore: false,
-        });
-      }
-    } catch {
-      // Ignore
-    }
-    setLoading(false);
-  };
-
-  return (
-    <div className="flex justify-center py-3">
-      <button
-        onClick={handleExpand}
-        disabled={loading}
-        className="text-xs text-fg-muted hover:text-fg-2 transition-colors disabled:opacity-50"
-      >
-        {loading ? 'Loading...' : '\u2191 See previous messages'}
-      </button>
-    </div>
-  );
-}
-
-export default function ChatView({ sessionId, visible, sessionActive, resumeInfo, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
+export default function ChatView({ sessionId, visible, sessionActive, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps } = useTheme();
   // Artifact drawer state — read from ArtifactContext so ChatView reacts to
   // the drawer toggle without needing a prop threaded down from App.tsx.
   const { state: artifactState, dispatch: artifactDispatch } = useArtifact();
+  // Preview cards (SessionRefActions, deep in the chat tree) ask for a past
+  // conversation by event. Mounted here — not in SessionDrawer, which is
+  // unmounted until it opens — so it hears the very first Preview click.
+  // `sessionActive` gates which of the many mounted ChatViews actually
+  // responds — see the WHY comment inside the hook (deliberately not
+  // `visible`, which also depends on the chat/terminal toggle).
+  useSessionPreviewListener(sessionId, sessionActive, artifactDispatch);
   // Drawer open/closed is per-session — read this session's flag (absent → closed).
   const drawerOpen = artifactState.drawerOpenBySession[sessionId] ?? false;
   const drawerExpanded = artifactState.drawerExpanded;
@@ -203,6 +174,16 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
     return null;
   }, [state.timeline, state.assistantTurns]);
 
+  // Perf (cycle 1, N1): findArchiveBoundary walks the WHOLE timeline backwards
+  // looking for the last /compact or /clear marker — and in the common
+  // never-compacted case it walks all the way to index 0 and finds nothing. It
+  // used to run inline in the render body, i.e. once per render, and a
+  // streaming session renders once per delta. The timeline array's identity
+  // only changes when an entry is appended (a delta updates assistantTurns,
+  // not timeline), so memoising on it turns a once-per-token scan into a
+  // once-per-entry scan. Pinned by tests/chatview-archive-boundary-memo.test.tsx.
+  const archiveBoundary = useMemo(() => findArchiveBoundary(state.timeline), [state.timeline]);
+
   // PTY-buffer classifier drives the attention banner. Replaces the old
   // 30s thinking-timeout watchdog + TERMINAL_ACTIVITY heartbeat — the hook
   // reads the xterm buffer directly and decides 'ok' vs. 'stuck'/'shell-idle'/etc.
@@ -244,22 +225,41 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
   }, [visible, scrollToBottom, stickRef]);
 
   // Auto-scroll when new content arrives and the view is still stuck to the
-  // bottom. Uses lastActivityAt (a timestamp that updates on content-producing
-  // actions) instead of Map references which changed on every reducer dispatch.
+  // bottom. Keyed on the things that add content — an appended entry, the
+  // thinking indicator — not on Map references, which change on every dispatch.
   // Fix: reads stickRef, NOT the atBottom state — a native session dispatches
   // one delta per streamed token, and the state value is a render behind, so a
   // scroll the user just made would be undone before React caught up.
+  //
+  // Perf (cycle 1, N2): state.lastActivityAt used to be a dep here. The reducer
+  // re-stamps it on EVERY streamed delta (and on tool events, heartbeats, …),
+  // and scrollToBottom reads scrollHeight — which, right after a commit that
+  // dirtied the DOM, is a forced synchronous layout of the whole document (the
+  // hook's own PERF note: "a FULL forced reflow of a large transcript"). So a
+  // streaming session paid one forced reflow per token. The growth those deltas
+  // cause is ALREADY re-pinned by the ResizeObserver on contentRef below, which
+  // runs after layout, where the same read is free. Dropping the timestamp
+  // loses nothing and removes the per-token reflow. Pinned by
+  // tests/chatview-scroll-pin-deps.test.tsx.
   useEffect(() => {
     if (stickRef.current) scrollToBottom();
-  }, [state.timeline.length, state.lastActivityAt, state.isThinking, scrollToBottom, stickRef]);
+  }, [state.timeline.length, state.isThinking, scrollToBottom, stickRef]);
 
   // Sending a message re-arms auto-scroll. Without this, reading back through
   // history (which now correctly unsticks) and then sending would leave you
   // parked mid-transcript watching nothing happen. Keyed on timeline length so
   // it fires once per appended entry, and only when that entry is the user's.
   const timelineLength = state.timeline.length;
+  const lastEntryRef = useRef<unknown>(undefined);
   useEffect(() => {
-    if (state.timeline[timelineLength - 1]?.kind === 'user') stickToBottom();
+    const last = state.timeline[timelineLength - 1];
+    // Paged history PREPENDS, which changes the length while the last entry stays
+    // the very same object (the reducer spreads the existing tail). Without this
+    // identity check, loading older history yanked the view to the bottom whenever
+    // the newest entry happened to be the user's — a jump, not a re-arm.
+    const isNewBottomEntry = last !== lastEntryRef.current;
+    lastEntryRef.current = last;
+    if (isNewBottomEntry && (last as { kind?: string } | undefined)?.kind === 'user') stickToBottom();
     // state.timeline is intentionally not a dep — only its length matters here,
     // and the array identity changes on every reducer dispatch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -271,6 +271,122 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
   // state, invisible to ChatView. Watch the content wrapper's size instead and
   // re-stick to bottom on any growth while still stuck.
   const contentRef = useRef<HTMLDivElement>(null);
+
+  // --- Paged history (perf cycle 2) ------------------------------------------
+  // Opening a huge conversation renders only its most recent ~30 turns. Older
+  // turns arrive when a 1px sentinel above the first entry scrolls into view —
+  // the same "don't do the work until it's needed" shape ResumeBrowser uses for
+  // its row list.
+  const history = state.history ?? { cursor: null, hasMore: false, loading: false };
+  const historySentinelRef = useRef<HTMLDivElement | null>(null);
+  // Scroll anchoring. Anchored to an ELEMENT, not to a height delta.
+  //
+  // The first version measured scrollHeight before the fetch and added the growth
+  // to scrollTop afterwards. Destin's verdict was "a little jumpy" (2026-08-28),
+  // and height arithmetic is why: the number is captured a network round-trip
+  // early, so anything that changes height meanwhile corrupts it; it is applied
+  // exactly once, so markdown and code blocks that lay out a frame later shift the
+  // view again; and it fights Chromium's own scroll anchoring, which is already
+  // compensating for the same insertion.
+  //
+  // Anchoring to the topmost visible entry has none of those failure modes: it
+  // measures the drift that ACTUALLY happened and can be re-applied as late
+  // content settles, because "put this element back where it was" stays true no
+  // matter what else moved.
+  const prependAnchorRef = useRef<{ el: Element; topOffset: number } | null>(null);
+
+  /** The topmost entry still on screen, and how far below the viewport's top edge
+   *  it sits. Null when nothing is rendered yet. */
+  const captureScrollAnchor = useCallback(() => {
+    const scroller = scrollContainerRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return null;
+    const scrollerTop = scroller.getBoundingClientRect().top;
+    for (const el of Array.from(content.querySelectorAll('.timeline-entry'))) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > scrollerTop) return { el, topOffset: r.top - scrollerTop };
+    }
+    return null;
+  }, []);
+
+  const loadOlderPage = useCallback(async () => {
+    const cursor = history.cursor;
+    if (!cursor || history.loading) return;
+    // Announce FIRST: `loading` is the one-in-flight guard, so a second sentinel
+    // hit in the same frame must already see it set.
+    dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId });
+    try {
+      const page = await (window as any).claude?.detach?.requestTranscriptPage?.({ sessionId, beforeCursor: cursor });
+      if (page) {
+        // Captured HERE, one statement before the prepend — not before the await,
+        // where a round-trip's worth of streaming could have moved everything.
+        prependAnchorRef.current = captureScrollAnchor();
+        dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
+      } else {
+        dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+      }
+    } catch {
+      // Clear the flag so the next scroll retries — a stuck `loading` would make
+      // the rest of the conversation permanently unreachable.
+      dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+    }
+  }, [dispatch, sessionId, history.cursor, history.loading, captureScrollAnchor]);
+
+  useEffect(() => {
+    if (!history.hasMore || history.loading || !history.cursor) return;
+    // No IntersectionObserver (an exotic WebView): fall back to nothing rather
+    // than eagerly loading the whole conversation, which is the cost this
+    // feature exists to avoid. The keyboard/scrollbar still reach the top; the
+    // scroll handler below covers that case.
+    if (typeof IntersectionObserver === 'undefined') return;
+    const el = historySentinelRef.current;
+    const root = scrollContainerRef.current;
+    if (!el || !root) return;
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some((e) => e.isIntersecting)) void loadOlderPage(); },
+      { root, rootMargin: '400px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [history.hasMore, history.loading, history.cursor, loadOlderPage]);
+
+  // Put the anchored entry back where it was. Runs BEFORE paint
+  // (useLayoutEffect), so the prepended turns are never SEEN to push the view
+  // down, and keeps correcting for a short window afterwards because a code block
+  // or an image inside the new page finishes laying out a frame or two later.
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current;
+    if (!anchor) return;
+    prependAnchorRef.current = null;
+    const scroller = scrollContainerRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content || !anchor.el.isConnected) return;
+
+    let live = true;
+    const restore = () => {
+      if (!live || !anchor.el.isConnected) return;
+      const drift = (anchor.el.getBoundingClientRect().top - scroller.getBoundingClientRect().top) - anchor.topOffset;
+      // Sub-pixel drift is not worth a write — and writing would restart the
+      // ResizeObserver for nothing.
+      if (Math.abs(drift) > 0.5) scroller.scrollTop += drift;
+    };
+    restore();
+
+    // Stop the moment the user takes over. Deliberately NOT the 'scroll' event:
+    // restore() scrolls, so that would cancel the correction with its own effect.
+    const release = () => { live = false; cleanup(); };
+    const ro = new ResizeObserver(restore);
+    ro.observe(content);
+    for (const ev of ['wheel', 'touchstart', 'keydown'] as const) scroller.addEventListener(ev, release, { passive: true });
+    const stop = setTimeout(() => { live = false; cleanup(); }, ANCHOR_SETTLE_MS);
+    function cleanup() {
+      clearTimeout(stop);
+      ro.disconnect();
+      for (const ev of ['wheel', 'touchstart', 'keydown'] as const) scroller!.removeEventListener(ev, release);
+    }
+    return cleanup;
+  }, [state.timeline]);
+
   useEffect(() => {
     const node = contentRef.current;
     if (!node) return;
@@ -773,6 +889,12 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
               the row. */}
           <div ref={scrollContainerRef} className={`chat-scroll flex-1 min-h-0 overflow-y-auto${findOpen ? ' chat-scroll--below-find-row' : ''}`}>
            <div ref={contentRef}>
+        {/* Paged history: crossing this loads the previous ~30 turns. Rendered
+            only while there IS older history, so reaching the beginning of the
+            conversation stops the fetching for good. */}
+        {history.hasMore && (
+          <div ref={historySentinelRef} data-history-sentinel className="h-px" aria-hidden="true" />
+        )}
         {state.timeline.length === 0 && !state.isThinking ? null : (
           <>
             {(() => {
@@ -785,7 +907,7 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
               // context but still the user's to re-read. /clear used to WIPE the
               // timeline instead, which threw away readable history to express a
               // context reset (Destin, 2026-07-28).
-              const { index: lastArchiveIdx, kind: archiveKind } = findArchiveBoundary(state.timeline);
+              const { index: lastArchiveIdx, kind: archiveKind } = archiveBoundary;
               return state.timeline.map((entry, idx) => {
                 const isPreCompaction = lastArchiveIdx >= 0 && idx < lastArchiveIdx;
               let key: string;
@@ -833,13 +955,11 @@ export default function ChatView({ sessionId, visible, sessionActive, resumeInfo
                   break;
                 }
                 case 'prompt':
-                  if (entry.prompt.promptId === HISTORY_EXPAND_PROMPT_ID && !entry.prompt.completed) {
-                    return (
-                      <div key={entry.prompt.promptId} ref={observeEntry} className="timeline-entry">
-                        <HistoryExpandButton sessionId={sessionId} resumeInfo={resumeInfo} />
-                      </div>
-                    );
-                  }
+                  // Perf cycle 2: the "See previous messages" marker is retired —
+                  // older turns now stream in as the top of the list scrolls into
+                  // view. A timeline persisted by an OLDER build can still carry
+                  // one, so it is skipped rather than rendered as a dead prompt.
+                  if (entry.prompt.promptId === HISTORY_EXPAND_PROMPT_ID) return null;
                   key = entry.prompt.promptId;
                   content = (
                     <PromptCard

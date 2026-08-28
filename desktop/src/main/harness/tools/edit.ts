@@ -16,8 +16,10 @@ export function toHunks(oldText: string, newText: string, filePath: string): Str
   }));
 }
 
-/** Detect and preserve line endings + BOM (Windows repos — spec §2.3). */
-function preserveFormat(original: string, edited: string): string {
+/** Detect and preserve line endings + BOM (Windows repos — spec §2.3).
+ *  Exported (D-5, 2026-08-26) so Write's overwrite path applies the SAME rule —
+ *  before that a Write over a CRLF file silently converted it to LF. */
+export function preserveFormat(original: string, edited: string): string {
   const hasBom = original.charCodeAt(0) === 0xfeff;
   const crlf = original.includes('\r\n');
   let out = edited;
@@ -51,12 +53,21 @@ export const EditTool = defineTool({
     + 'Viewing the file another way (cat, grep) does not count: it records no timestamp.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Replace an exact string in a file with new text.',
+  // G-4 (2026-08-26 tools investigation): these were bare. Every peer harness
+  // describes them, and the two rules that matter most live on old_string —
+  // Read prints a `%6d\t` line-number prefix that a small model copies verbatim
+  // into old_string and then gets "not found" with no hint why; and a huge
+  // old_string wastes output tokens for no extra precision.
   inputSchema: z.object({
-    file_path: z.string(),
-    old_string: z.string(),
-    new_string: z.string(),
-    replace_all: z.boolean().optional(),
-  }),
+    file_path: z.string().describe('Absolute or workspace-relative path of the file to edit'),
+    old_string: z.string().describe(
+      'The exact text to replace. Must match exactly once in the file (or pass replace_all). '
+      + 'Do NOT include the line-number prefix that Read prints (the number and the tab after it) — '
+      + 'copy only the text after the tab. Keep it minimal: usually 1-3 lines, just enough to be unique.',
+    ),
+    new_string: z.string().describe('The replacement text (inserted literally, whitespace preserved)'),
+    replace_all: z.boolean().optional().describe('Replace every occurrence instead of requiring a unique match'),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   permissionSubject: (a) => a.file_path,
   async execute(args, ctx) {
     const abs = resolveP(args.file_path, ctx.cwd);
@@ -67,8 +78,12 @@ export const EditTool = defineTool({
       // Says WHICH tools satisfy the gate and why a shell view doesn't — the
       // old message named only Read, and a model that had `cat`'d the file read
       // the refusal as arbitrary. See the WHY above the description.
+      // D-4: the registry RESETS on resume (types.ts readRegistry), so this is
+      // also the first thing a model sees after resuming a session where it
+      // genuinely did Read the file — say so, or it argues instead of re-reading.
       return {
-        text: `Edit rejected: ${args.file_path} has not been Read or Written by you in this session. `
+        text: `Edit rejected: ${args.file_path} has not been Read or Written by you in this session `
+          + '(this also happens after a session resume — earlier reads are forgotten). '
           + 'Read it first (a cat/grep does not count — the Read tool records the file\'s modification '
           + 'time, which is what detects a later change), then retry.',
         isError: true,

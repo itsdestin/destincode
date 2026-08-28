@@ -16,7 +16,10 @@ import type { SkillCatalog } from '../skills/skill-catalog';
 
 const schema = z.object({
   skill: z.string().describe("The id of the skill to load, exactly as listed in this tool's description."),
-});
+  // G-12 (2026-08-26 tools investigation): same shape as Claude Code's Skill
+  // tool, so a model can hand a skill what the user asked for.
+  args: z.string().optional().describe('Optional arguments to pass through to the skill.'),
+}).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 
 type SkillArgs = z.infer<typeof schema>;
 
@@ -52,7 +55,18 @@ export function createSkillTool(catalog: SkillCatalog): NativeTool<SkillArgs> {
     async execute(args: SkillArgs, _ctx: ToolContext): Promise<ToolResultPayload> {
       try {
         const skill = catalog.load(args.skill);
-        return { text: `<skill-instructions name="${skill.id}">\n${skill.body}\n</skill-instructions>` };
+        // G-12 delivery mirrors Claude Code: a SKILL.md that names `$ARGUMENTS`
+        // gets them substituted in place; otherwise they ride a final
+        // "Arguments:" line. With no args the body is delivered verbatim — a
+        // literal `$ARGUMENTS` left standing tells the model the skill expected
+        // something, which blanking it out would hide.
+        let body = skill.body;
+        if (args.args !== undefined) {
+          body = body.includes('$ARGUMENTS')
+            ? body.split('$ARGUMENTS').join(args.args)
+            : `${body}\nArguments: ${args.args}`;
+        }
+        return { text: `<skill-instructions name="${skill.id}">\n${body}\n</skill-instructions>` };
       } catch (err: any) {
         // RETURNED, not thrown: defineTool's catch would prefix "Skill failed:" and
         // bury the recovery information these errors carry — the list of skills that

@@ -34,9 +34,13 @@ export function hasPendingInteraction(session: SessionChatState): boolean {
     // The "See previous messages" marker rides the `prompt` kind but is a
     // display affordance, not a live Ink menu — it has no answerable buttons
     // and no keystroke is waiting on it. Counting it here silently locked ALL
-    // sends on every resumed session (HISTORY_LOADED pushes it with hasMore),
-    // until the user happened to click "See previous messages". Skip it — the
-    // renderer already special-cases the same id when rendering. (fix 2026-07-17)
+    // sends on every resumed session, until the user happened to click it.
+    // (fix 2026-07-17)
+    //
+    // Perf cycle 2 retired the marker: nothing pushes it any more, and ChatView
+    // skips it when rendering. The exclusion STAYS because a session timeline
+    // persisted by an older build can still contain one, and inheriting that
+    // would re-lock sends with no way to clear it.
     if (entry.kind === 'prompt'
         && entry.prompt.promptId !== HISTORY_EXPAND_PROMPT_ID
         && !entry.prompt.completed) {

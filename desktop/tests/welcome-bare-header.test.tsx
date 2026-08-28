@@ -138,7 +138,10 @@ describe('welcome screen wiring (source)', () => {
 
   it('App renders BareHeaderBar once, in the welcome branch (after the session HeaderBar, before "No Active Session")', () => {
     expect(app.match(/<BareHeaderBar\b/g)?.length).toBe(1);
-    const session = app.indexOf('<HeaderBar\n');
+    // `<HeaderBar` followed by any whitespace — NOT indexOf('<HeaderBar\n'), which
+    // found nothing on a Windows checkout (CRLF), failed this case on every CI run
+    // since P-6 shipped, and would have gone on reading as a real regression.
+    const session = app.search(/<HeaderBar[\s>]/);
     const bare = app.indexOf('<BareHeaderBar');
     const welcome = app.indexOf('No Active Session');
     expect(session).toBeGreaterThan(-1);

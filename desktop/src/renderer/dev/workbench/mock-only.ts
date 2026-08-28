@@ -13,4 +13,9 @@
 // button calls the existing generic `shell.openPath`, so there is no bespoke
 // channel left to build. (The mock namespace in mock-shim.ts STAYS — the
 // workbench still needs fixture data — only the "no real backend" claim goes.)
+//
+// chatsearch.resolve / chatsearch.read were listed here too while the session
+// reference cards were designed ahead of their backend, and came off when the
+// real IPC landed. Same rule, same reason: their fake namespace stays so the
+// tool gallery can show every row state without a real index.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];

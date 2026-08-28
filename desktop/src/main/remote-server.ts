@@ -34,6 +34,7 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory, SAFE_ID_RE } from './session-browser';
+import { readTranscriptPage } from './transcript-page';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
@@ -46,6 +47,7 @@ import { checkSyncPrereqs, installRclone, checkGdriveRemote, authGdrive, authGit
 import { installGh } from './github-auth';
 import { combinedGithubStatus } from './github-client';
 import { getGithubConnect, disconnectGithub } from './github-connect';
+import { resolveConversations, readConversation } from './chatsearch-index/refs-service';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
 const HOOK_BUFFER_SIZE = 10_000; // ~10MB max, covers full conversations without excessive memory
@@ -1350,10 +1352,14 @@ export class RemoteServer {
         }
         break;
       }
-      // Orphaned .partial scan (2026-07-15) — mirrors the Electron IPC handler.
-      case 'models:orphaned-partials': {
+      // Resume an interrupted download (2026-08-26) — mirrors the Electron IPC
+      // handler. Replaces the orphaned-.partial scan, whose listing folded into
+      // models:installed.
+      case 'models:resume': {
         try {
-          const res = this.nativeRuntime ? this.nativeRuntime.modelManager.orphanedPartials() : [];
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.modelManager.resume(payload.modelId ?? payload)
+            : { downloadId: '' };
           this.respond(client.ws, type, id, res);
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
@@ -1438,6 +1444,56 @@ export class RemoteServer {
         }
         const history = await loadHistory(histSessionId, foundSlug, count, all);
         this.respond(client.ws, type, id, history);
+        break;
+      }
+      // Perf cycle 2: paged history over the bridge. The phone hydrates via
+      // chat:hydrate on connect; scrolling up asks for older pages here.
+      // Resolves the JSONL the same way session:history does (validate the id
+      // FIRST, then probe the caller's slug before scanning) — a traversal-
+      // shaped id must never shape a path.
+      case 'transcript:page': {
+        const { sessionId: pageSessionId, beforeCursor } = payload;
+        const emptyPage = { events: [], cursor: null, hasMore: false };
+        if (typeof pageSessionId !== 'string' || !SAFE_ID_RE.test(pageSessionId)) {
+          this.respond(client.ws, type, id, emptyPage);
+          break;
+        }
+        const beforeOffset = (beforeCursor && typeof beforeCursor.offset === 'number') ? beforeCursor.offset : null;
+
+        // Native sessions page over the merged event array; null means "not a
+        // native id", so CC's transcript file is the source.
+        const nativePage = this.nativeRuntime?.nativeHost.getHistoryPage(pageSessionId, beforeOffset) ?? null;
+        if (nativePage) {
+          this.respond(client.ws, type, id, {
+            events: nativePage.events,
+            cursor: nativePage.hasMore ? { path: `native:${pageSessionId}`, offset: nativePage.nextIndex, sizeAtRead: 0 } : null,
+            hasMore: nativePage.hasMore,
+          });
+          break;
+        }
+
+        const pageProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+        const pageSlugs = await fs.promises.readdir(pageProjectsDir).catch(() => [] as string[]);
+        const pageSlugHint = payload.projectSlug;
+        const pageCandidates = (typeof pageSlugHint === 'string' && SAFE_ID_RE.test(pageSlugHint))
+          ? [pageSlugHint, ...pageSlugs.filter((sl) => sl !== pageSlugHint)]
+          : pageSlugs;
+        let pagePath = '';
+        for (const slug of pageCandidates) {
+          const candidate = path.join(pageProjectsDir, slug, pageSessionId + '.jsonl');
+          try { await fs.promises.access(candidate); pagePath = candidate; break; } catch { /* try the next slug */ }
+        }
+        if (!pagePath) {
+          this.respond(client.ws, type, id, emptyPage);
+          break;
+        }
+        const page = await readTranscriptPage({
+          jsonlPath: pagePath,
+          sessionId: pageSessionId,
+          endOffset: beforeOffset,
+          subagentsDir: path.join(path.dirname(pagePath), pageSessionId, 'subagents'),
+        });
+        this.respond(client.ws, type, id, page);
         break;
       }
       case 'permission:respond': {
@@ -2067,6 +2123,19 @@ export class RemoteServer {
       // lease client (query) and requester flow (takeover/force), matching the
       // desktop ipc handlers. When wiring is absent (sync disabled) they degrade
       // to a free/error answer so the remote resume gate proceeds (spec §3 never-block).
+      // Session references (spec 2026-08-10). Both go through refs-service, the
+      // same functions ipc-handlers calls, so a phone and the desktop cannot
+      // disagree about which folders may be read.
+      case 'chatsearch:resolve': {
+        this.respond(client.ws, type, id, resolveConversations(payload?.shortIds));
+        break;
+      }
+      case 'chatsearch:read': {
+        // async — await before respond (unlike ipcMain.handle, respond does not
+        // unwrap promises).
+        this.respond(client.ws, type, id, await readConversation(payload as never));
+        break;
+      }
       case 'syncspaces:lease-query': {
         // query() is async — await before respond (unlike ipcMain.handle, respond
         // doesn't unwrap promises).

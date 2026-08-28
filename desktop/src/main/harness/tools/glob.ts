@@ -112,9 +112,40 @@ export function hasNestedBrace(pattern: string): boolean {
   return false;
 }
 
+// Ledger G-8 (docs/active/investigations/2026-08-26-native-tools-vs-other-harnesses.md
+// §6/§8): the matcher anchors the pattern to the ROOT-relative path, so a bare
+// "*.ts" only ever matched files sitting directly in the search root — while
+// every model expects Claude Code's answer ("*.ts" finds nested files too;
+// Cursor auto-prepends "**/"). A pattern with no "/" now means "**/<pattern>";
+// a pattern that contains "/" is used exactly as written, so "src/*.ts" still
+// stays shallow on purpose.
+function widenBarePattern(pattern: string): string {
+  return pattern.includes('/') ? pattern : `**/${pattern}`;
+}
+
+// Ledger G-8, second half: hidden entries (".git/", ".cache/", dotfiles) were
+// the bulk of the walks that hit WALK_CEILING, and almost never what the model
+// was looking for. They are skipped by default; the way to opt back in is to
+// NAME them — a pattern segment that starts with "." (".github/**/*.yml",
+// "**/.env*", or a brace list with a dot-leading alternative) admits exactly
+// the hidden entries that segment matches, and no others. So ".github/**/*.yml"
+// walks into ".github" but still skips ".git" and ".cache" beside it.
+// "Hidden" means a dot-leading name on every platform — the same rule ripgrep
+// and fd use — not the Windows hidden attribute.
+function hiddenAdmitters(pattern: string): RegExp[] {
+  const admitters: RegExp[] = [];
+  for (const segment of pattern.split('/')) {
+    const namesHidden =
+      segment.startsWith('.') ||
+      (segment.startsWith('{') && segment.slice(1).split(',').some((alt) => alt.startsWith('.')));
+    if (namesHidden) admitters.push(fileGlobToRegex(segment));
+  }
+  return admitters;
+}
+
 export const GlobTool = defineTool({
   name: 'Glob',
-  description: 'Find files by glob pattern (e.g. "src/**/*.ts"). Returns paths sorted by modification time, newest first.',
+  description: 'Find files by glob pattern (e.g. "src/**/*.ts"). A pattern with no "/" searches every folder ("*.ts" means "**/*.ts"); a pattern containing "/" is matched as written. Hidden files and folders are skipped unless the pattern names them (e.g. ".github/**/*.yml", "**/.env*"). Returns paths sorted by modification time, newest first.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: 'Find files matching a glob pattern, newest first.',
   // Fix (2026-08-10 review, item 5): neither parameter had a `.describe()` at
@@ -127,9 +158,9 @@ export const GlobTool = defineTool({
   inputSchema: z.object({
     pattern: z
       .string()
-      .describe('Glob pattern to match file paths against, e.g. "src/**/*.ts" or "**/*.{ts,tsx}". Supports *, **, ?, and non-nested {a,b,c} alternation.'),
+      .describe('Glob pattern to match file paths against, e.g. "src/**/*.ts" or "**/*.{ts,tsx}". A pattern with no "/" searches every folder ("*.ts" means "**/*.ts"); one containing "/" is matched as written. Supports *, **, ?, and non-nested {a,b,c} alternation.'),
     path: z.string().optional().describe('The directory to search in (relative to the working directory). Defaults to the current directory.'),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   // Bounds are now explicit here rather than borrowed from DEFAULT_CAPS, since
   // Glob's own cap (RESULT_LIMIT, above) is what actually decides how much text
   // comes back — the pipeline's char cap should not silently apply a different
@@ -183,7 +214,11 @@ export const GlobTool = defineTool({
         };
       }
     }
-    const rx = fileGlobToRegex(args.pattern);
+    // G-8: widen a bare pattern first, then derive both the matcher and the
+    // list of hidden names it explicitly asks for from the SAME string.
+    const pattern = widenBarePattern(args.pattern);
+    const rx = fileGlobToRegex(pattern);
+    const admitHidden = hiddenAdmitters(pattern);
     const hits: Array<{ rel: string; mtime: number }> = [];
     let ceilingHit = false;
     // Fix (Important 4, 2026-08-06 review): the walk used to return silently on
@@ -213,6 +248,11 @@ export const GlobTool = defineTool({
         // code match the comment.
         if (hits.length >= WALK_CEILING) { ceilingHit = true; break; }
         if (ctx.signal.aborted) { interrupted = true; break; }
+        // G-8: a dot-leading name is hidden — skip it (file or folder) unless a
+        // dot-leading segment of the pattern matches this exact name. Checked
+        // BEFORE the SKIP_DIRS list so the two stay independent: SKIP_DIRS is
+        // the unconditional never-walk set, this is the opt-in-by-naming rule.
+        if (e.name.startsWith('.') && !admitHidden.some((a) => a.test(e.name))) continue;
         if (e.isDirectory()) {
           if (!SKIP_DIRS.has(e.name)) walk(path.join(dir, e.name), rel ? `${rel}/${e.name}` : e.name);
           continue;

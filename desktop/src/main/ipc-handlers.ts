@@ -3,11 +3,14 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { randomUUID } from 'crypto';
+import { CHATSEARCH_IPC } from './chatsearch-index/ipc-channels';
+import { resolveConversations, readConversation } from './chatsearch-index/refs-service';
+import type { ChatsearchReadRequest } from '../shared/chatsearch-refs';
 import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent, type SpecialistsEvent } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type TranscriptPageRequest, type TranscriptPageResult, type HookEvent, type SpecialistsEvent } from '../shared/types';
 import { isPlaceholderModelId } from '../shared/model-ids';
 import { hasRealTitle } from '../shared/session-title';
 import { setPermissionOverrides } from './main';
@@ -17,6 +20,7 @@ import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
 import { TranscriptWatcher } from './transcript-watcher';
+import { readTranscriptPage } from './transcript-page';
 import { nativeStoreSlug, ccProjectSlug } from './slug-encoding';
 // Native runtime (platform roadmap Phase 1 Plan A) — the first-party harness
 // stack: provider CRUD + key management, model catalog, and the live-session
@@ -60,7 +64,7 @@ import { ddgBackend } from './harness/search/backends/ddg';
 import { tavilyBackend } from './harness/search/backends/tavily';
 import type { NativePermissionMode } from '../shared/permission-types';
 import { resolveMappingAction } from './session-id-mapping';
-import { listPastSessions, loadHistory } from './session-browser';
+import { listPastSessions, loadHistory, SAFE_ID_RE } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
 import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THEMES_DIR } from './theme-watcher';
 import { isBundledPlugin } from '../shared/bundled-plugins';
@@ -150,6 +154,29 @@ import { getTagRegistry } from './conversations/tag-registry-service';
 import { tagFlagKey, isTagColor, TagColor } from '../shared/tags';
 import { getRepoInfo } from './project-repo';
 import { listContext, readContextFile, writeContextFile } from './project-context';
+
+// WHY: the chatsearch outbox drainer lives outside registerIpcHandlers but must
+// fire the SAME renderer + remote broadcast the IPC tag/flag/note handlers fire,
+// or the conversation list won't repaint when the CLI changes something.
+// sendForSession and remoteServer are function-local, so the handler registers
+// this bridge at startup — same hand-out pattern as setSessionMetaWiring.
+type MetaBroadcaster = (sessionId: string, payload: Record<string, unknown>) => void;
+let metaBroadcaster: MetaBroadcaster | null = null;
+export function broadcastSessionMeta(sessionId: string, payload: { flag: string; value: boolean } | { note: string }): void {
+  metaBroadcaster?.(sessionId, payload);
+}
+
+// WHY: same rationale as broadcastSessionMeta above — the outbox drainer
+// creates tags directly via getTagRegistry().create(), bypassing the
+// TAGS_CREATE handler below (the only other place a new tag reaches a
+// renderer/remote broadcast), so without this hand-out a tag the drainer
+// creates is invisible to an open window's tag registry and filter list
+// until a restart, even though the conversation it tagged already shows it.
+type TagsBroadcaster = () => void;
+let tagsBroadcaster: TagsBroadcaster | null = null;
+export function broadcastTagsChanged(): void {
+  tagsBroadcaster?.();
+}
 
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
@@ -249,6 +276,11 @@ export function registerIpcHandlers(
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
   };
 
+  metaBroadcaster = (sessionId, payload) => {
+    sendForSession(sessionId, IPC.SESSION_META_CHANGED, sessionId, payload);
+    remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId, ...payload } });
+  };
+
   // Broadcast a session-scoped channel to EVERY registered main window. Use this
   // (not sendForSession) when the payload is self-scoping — i.e. the renderer only
   // acts on it if it's actually displaying that session — AND the session may have
@@ -279,6 +311,15 @@ export function registerIpcHandlers(
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     }
+  };
+
+  // WHY defined here (not next to metaBroadcaster above): it needs
+  // broadcastToAllWindows, which doesn't exist yet at that point in the
+  // function — same hand-out pattern, just wired where its dependency is
+  // available. Fires the identical pair the TAGS_CREATE handler below fires.
+  tagsBroadcaster = () => {
+    remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
+    broadcastToAllWindows(IPC.TAGS_CHANGED, {});
   };
 
   // --- Theme file watcher ---
@@ -2270,6 +2311,13 @@ export function registerIpcHandlers(
   // picker. ENGINE_PORT rides the shifted-port scheme so the dev instance and
   // the built app never fight over one llama-server.
   const engineManager = new EngineManager(nativeHome, app.getPath('userData'), ENGINE_PORT);
+  // Bring an already-installed engine up to the pinned version, in the background.
+  // Fire-and-forget by design — it never throws, never blocks startup, and skips
+  // itself entirely when nothing is installed yet (a first install stays the user's
+  // call). Without this a pin bump reaches nobody: EngineAcquisition.installed()
+  // keeps serving whatever version is on disk, so a model needing a newer llama.cpp
+  // just looks like a broken app.
+  void engineManager.autoUpdateOnLaunch();
   const providerRegistry = new ProviderRegistry(nativeHome, secretsStore, engineManager.registryHook());
   void providerRegistry.init();
   const modelCatalog = new ModelCatalog(app.getPath('userData'), undefined, {
@@ -2370,6 +2418,23 @@ export function registerIpcHandlers(
       const models = await modelCatalog.get(providers);
       const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
       return hit?.supportsVision ?? null;
+    },
+    // Price resolver (Task 11, spec §5): reads the SAME catalog the model
+    // picker shows, so the price the user sees when choosing a model is the
+    // price the session-cost chip charges. Short-circuits local-engine before
+    // touching the catalog — a model running on this machine costs nothing to
+    // run and its rows carry no price anyway; the host stamps those turns
+    // `free` instead. modelCatalog.get() never throws (its own contract: a
+    // dead network degrades to stale cache or an empty list), and a model
+    // that isn't in the catalog falls through to null, which means "no
+    // published price" — never a guessed zero.
+    async (binding) => {
+      const providers = await providerRegistry.list();
+      const p = providers.find((x) => x.id === binding.providerId);
+      if (p?.type === 'local-engine') return null;
+      const models = await modelCatalog.get(providers);
+      const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
+      return hit?.pricing ?? null;
     },
     // Remembered "Always allow" rules (per-project, ~/.youcoded/permissions.json)
     // + the injected app version for the once-per-session assembled system prompt
@@ -2555,6 +2620,59 @@ export function registerIpcHandlers(
   if (leaseWiring && remoteServer) {
     remoteServer.setLeaseWiring({ client: leaseWiring.client, requester: leaseWiring.requester, deviceId: leaseWiring.deviceId, machineId: leaseWiring.machineId });
   }
+
+  // Perf cycle 2: paged history. A window opening/resuming a session asks for
+  // the NEWEST page (beforeCursor null) and, as the user scrolls up, for each
+  // older page. Request/response — unlike TRANSCRIPT_REPLAY, which streams
+  // every historical event back over TRANSCRIPT_EVENT and cost ~22s of main +
+  // renderer work on a huge conversation.
+  ipcMain.handle(IPC.TRANSCRIPT_PAGE, async (_evt, req: TranscriptPageRequest): Promise<TranscriptPageResult> => {
+    const empty: TranscriptPageResult = { events: [], cursor: null, hasMore: false };
+    if (!req || typeof req.sessionId !== 'string') return empty;
+    const { sessionId, beforeCursor } = req;
+
+    // Native sessions page over the merged event array; getHistoryPage returns
+    // null for non-native ids, so CC's watcher stays the source for claude
+    // sessions — the same discrimination the replay handler uses.
+    const nativePage = nativeHost.getHistoryPage(sessionId, beforeCursor ? beforeCursor.offset : null);
+    if (nativePage !== null) {
+      return {
+        events: nativePage.events,
+        // `offset` carries an ARRAY INDEX for native sources; opaque to the renderer.
+        cursor: nativePage.hasMore ? { path: `native:${sessionId}`, offset: nativePage.nextIndex!, sizeAtRead: 0 } : null,
+        hasMore: nativePage.hasMore,
+      };
+    }
+
+    let source = transcriptWatcher.pageSourceFor(sessionId);
+    if (!source) {
+      // Not watched yet (a just-resumed CC session — the watcher starts when
+      // CC's hook reports the transcript path, which is after the renderer
+      // wants to paint). Resolve from the ids the caller already has. Both are
+      // validated: they shape a filesystem path.
+      const { claudeSessionId, projectSlug } = req;
+      if (typeof claudeSessionId !== 'string' || typeof projectSlug !== 'string'
+        || !SAFE_ID_RE.test(claudeSessionId) || !SAFE_ID_RE.test(projectSlug)) return empty;
+      const fallbackPath = path.join(os.homedir(), '.claude', 'projects', projectSlug, `${claudeSessionId}.jsonl`);
+      if (!fs.existsSync(fallbackPath)) return empty;
+      source = {
+        jsonlPath: fallbackPath,
+        subagentsDir: path.join(path.dirname(fallbackPath), claudeSessionId, 'subagents'),
+        // Nothing is tailing it yet, so read to EOF.
+        startOffset: 0,
+      };
+    }
+    // The FIRST page ends where the live tailer started, so the page and the
+    // live stream cannot overlap (transcript-watcher startOffset, Task 4). A
+    // startOffset of 0 means the file didn't exist at watch time — read to EOF.
+    const endOffset = beforeCursor ? beforeCursor.offset : (source.startOffset || null);
+    return readTranscriptPage({
+      jsonlPath: source.jsonlPath,
+      sessionId,
+      endOffset,
+      subagentsDir: source.subagentsDir,
+    });
+  });
 
   // Transcript replay: a window that just acquired a session asks for every
   // historical event so its reducer can hydrate. Events stream back on the
@@ -2801,10 +2919,10 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.MODELS_DOWNLOAD_CANCEL, async (_e, downloadId: string) => { modelManager.cancel(downloadId); return true; });
   ipcMain.handle(IPC.MODELS_DELETE, async (_e, id: string) => { await engineManager.deleteModel(id); return true; });
   ipcMain.handle(IPC.MODELS_INSTALLED, async () => engineManager.installedModels());
-  // Orphaned .partial scan (2026-07-15): .partial files left by a PREVIOUS app
-  // run are invisible to the in-memory downloader — this lets the UI list them
-  // (clean via models:delete; resume by re-starting the same download).
-  ipcMain.handle(IPC.MODELS_ORPHANED_PARTIALS, async () => modelManager.orphanedPartials());
+  // Resume an interrupted download (2026-08-26). Reads the manifest written
+  // beside the .partial — no Hugging Face round trip, so it works when the
+  // network is the reason the download stopped.
+  ipcMain.handle(IPC.MODELS_RESUME, async (_e, modelId: string) => modelManager.resume(modelId));
   ipcMain.handle(IPC.ENDPOINTS_DETECT, async () =>
     detectEndpoints(fetch, ((await providerRegistry.list()) as any[])));
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens
@@ -3711,6 +3829,13 @@ export function registerIpcHandlers(
   ipcMain.handle(PROJECT_IPC.WRITE_CONTEXT_FILE, async (_e, projectPath: string, absolutePath: string, content: string) => {
     return writeContextFile(projectPath, absolutePath, content);
   });
+
+  // Session references (spec 2026-08-10): resolve the chatsearch short ids a
+  // search printed against the index the app writes, and read bounded
+  // transcript slices by id. Both go through refs-service so this handler and
+  // the remote WebSocket case cannot assemble paths differently.
+  ipcMain.handle(CHATSEARCH_IPC.RESOLVE, async (_e, shortIds: string[]) => resolveConversations(shortIds));
+  ipcMain.handle(CHATSEARCH_IPC.READ, async (_e, req: ChatsearchReadRequest) => readConversation(req));
 
   // Project counting/discovery helpers moved to ./artifacts/projects-index so
   // the remote WebSocket server can compute the IDENTICAL result. They used to

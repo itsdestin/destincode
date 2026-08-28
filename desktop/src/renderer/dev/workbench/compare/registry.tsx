@@ -34,11 +34,24 @@ import { TagChip } from '../../../components/tags/TagChip';
 import { TagPicker } from '../../../components/tags/TagPicker';
 import { NoteEditor } from '../../../components/tags/NoteEditor';
 import { useTagRegistry } from '../../../hooks/useTagRegistry';
+// chatsearch-present Round 4: the same responsive/collapse-state hooks
+// DeliverablesCard.tsx (branch feat/send-user-file-card, unmerged — see that
+// round's header comment) drives its filmstrip and header with. Real hooks
+// from THIS branch, not redrawn.
+import { useNarrowViewport } from '../../../hooks/use-narrow-viewport';
+import { useExpandAllToggle, getInitialExpanded } from '../../../hooks/useExpandAllToggle';
 import { PRIORITY_TAG, PRIORITY_HINT } from '../../../components/tags/built-in-tags';
 // Shared with the shipping surfaces — a candidate must draw the SAME mark the
 // app does, or the comparison is against something that doesn't exist.
 import { TagGlyph, NotePageGlyph, PencilGlyph } from '../../../components/tags/glyphs';
 import type { TagRecord } from '../../../../shared/tags';
+// chatsearch-present Round 6: the real label→color resolver ChatsearchFindCard
+// uses — reused (not re-derived) so a tag rendered here can never disagree
+// with a tag rendered on the search-result row about what color it gets, and
+// an unmatched label always falls back to the same neutral color rather than
+// a candidate-invented one.
+import { DEFAULT_TAG_COLOR } from '../../../../shared/tags';
+import { useTagLabelIndex, resolveChatsearchTags, type ChipTag } from '../../../components/tool-views/chatsearch-tags';
 import type { NativePermissionMode } from '../../../../shared/permission-types';
 // The mode copy, reproduced verbatim from the shipping screen — the candidate
 // these rounds called VariantC, which is now components/PermissionsSection.tsx.
@@ -57,7 +70,41 @@ import type { CompareSurface } from './types';
 // its options would be comparing wording against something that cannot happen.
 import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
 // The ask card's status glyph — same mark ToolCard's awaiting-approval header draws.
-import { QuestionIcon } from '../../../components/Icons';
+// ChatIcon is the app's real "this is a conversation" mark (SessionStrip tabs,
+// ChatView header) — reused below so a search-result row can say "past
+// conversation" with the same glyph the rest of the app uses for that idea.
+// ChevronIcon (Round 2): the SAME disclosure mark ToolCard's own header,
+// SpecialistReportCard, and ToolBody's AgentSection all use — an open/close
+// control here must draw the mark the owner already reads as "expand/collapse"
+// everywhere else, not a new one.
+// AttachIcon (chatsearch-present Round 2): the app's real paperclip glyph —
+// reused by the present-attachments candidate as its leading mark, so "this
+// reads like an attached item" is drawn with the same paperclip the app
+// already uses for attachments, not a new invented mark.
+import { QuestionIcon, ChatIcon, ChevronIcon, AttachIcon } from '../../../components/Icons';
+// present-inline-mentions (Round 7): the shared L4 .layer-surface shell — the
+// same panel class every anchored popup in the app already draws from
+// (AnchorTip, FileFilterPopover) — reused for the mention chip's popover so
+// it isn't a fourth hand-rolled "floating box" style.
+import { OverlayPanel } from '../../../components/overlays/Overlay';
+// Chat search results round: the real copy contract, the resolved-conversation
+// shape, and the seven-state fake index — same sources ChatsearchFindCard,
+// ChatsearchShowCard, and the fixtures module itself use, so a candidate here
+// can never say something the shipped card wouldn't.
+import { COPY, providerLabel, type ResolvedConversation } from '../../../../shared/chatsearch-refs';
+import { formatRelativeTime } from '../../../utils/format-time';
+// Presented-conversation round (chatsearch-present): the real metadata-line
+// component search rows already share, reused rather than re-laid-out so the
+// "tags · project · date" composition can never drift between the two surfaces.
+import { ChatsearchMetaLine } from '../../../components/tool-views/ChatsearchMetaLine';
+import {
+  CHATSEARCH_FIXTURE,
+  CS_RESUMABLE,
+  CS_MISSING_PROJECT,
+  CS_NOT_SYNCED,
+  CS_TOMBSTONE,
+  CS_NATIVE,
+} from '../fixtures/chatsearch';
 
 const WORK_TAG = { label: 'work', color: 'tag-blue' } as const;
 const NOTE = 'blocked on the gh dead-end';
@@ -2339,6 +2386,1962 @@ function GrantWidthPane({ variant, copy }: {
   );
 }
 
+// ── Chat search results: three treatments for the rejected find card ────────
+// ChatsearchFindCard.tsx shipped and the owner rejected it on sight: it hand-
+// rolled its two buttons instead of using Button, printed tags as plain
+// "#tag" text instead of TagChip, and nothing on the card said these rows are
+// PAST conversations rather than fresh search hits. All three candidates
+// below fix all three defects identically — they differ only in how much the
+// surrounding chrome does to say "this is a conversation from your history".
+// Only the ARRANGEMENT changes; see the file header rule at the top of this
+// file for why that's the only thing allowed to.
+
+// Fixture tags are plain strings (e.g. 'perm', 'ui'); the real card will
+// resolve each to a full TagRecord (id, color chosen in the Tag Picker) via
+// useTagRegistry. This candidate-only helper cycles two of the app's real
+// tag-color slots so TagChip has something to render — never invents a color
+// system of its own.
+const CHATSEARCH_TAG_COLORS = ['tag-blue', 'tag-teal'] as const;
+function chatsearchTagChip(label: string, i: number): Pick<TagRecord, 'label' | 'color'> {
+  return { label, color: CHATSEARCH_TAG_COLORS[i % CHATSEARCH_TAG_COLORS.length] };
+}
+
+// One shared array so all three candidates render the exact same six rows —
+// the resumable case, the two disabled-Resume cases, the disabled-Preview
+// case, the assistant-lane case, and a row chatsearch never resolved at all —
+// and only the visual treatment differs. Explicit lookups (rather than a
+// filter over CHATSEARCH_FIXTURE) so this list's order is the spec, not an
+// accident of the fixture's authoring order.
+const CHATSEARCH_RESULTS: ResolvedConversation[] = [
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_RESUMABLE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_MISSING_PROJECT)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NOT_SYNCED)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_TOMBSTONE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NATIVE)!,
+  { status: 'unknown', query: 'dead' },
+];
+
+/** Preview/Resume, built from the real Button — used by all three candidates
+ *  below. This is the fix for defect 1 (SessionRefActions hand-rolls its
+ *  buttons from raw classes): one shared place, real primitive, real variants.
+ *  Inert on purpose — the workbench's fixture ids have no real session or
+ *  transcript behind them, so wiring the real
+ *  requestPreview/requestResume dispatchers (SessionRefActions.tsx) would
+ *  fire events nothing here can honor. Only the visual result is under
+ *  comparison. */
+function ChatsearchActions({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const native = r.provider === 'native';
+  return (
+    <div className="flex items-center gap-1.5 shrink-0">
+      <Button
+        variant="secondary" size="sm"
+        disabled={r.tombstone}
+        title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      >
+        {COPY.preview}
+      </Button>
+      <Button
+        variant="primary" size="sm"
+        disabled={!!blocked}
+        title={blocked ?? (native ? COPY.resumeNativeHint : COPY.resumeHint)}
+      >
+        {native ? COPY.resumeNative : COPY.resume}
+      </Button>
+    </div>
+  );
+}
+
+// ── A · resume-rows — "Resume Browser rows, in the chat" ────────────────────
+// Maximum consistency: reproduces ResumeBrowser's own row anatomy (renderSessionRow,
+// ResumeBrowser.tsx:867) verbatim, so a search result looks like the resume
+// list the owner already uses daily rather than a new invention.
+function ChatsearchRowA({ r }: { r: ResolvedConversation }) {
+  if (r.status !== 'ok') {
+    // Nothing chatsearch could resolve — no session to act on, so this row
+    // just states the raw query and why, the same wording ChatsearchFindCard
+    // falls back to, carried into a row shape so it still reads as a member
+    // of the list rather than an error breaking out of it.
+    return (
+      <div className="rounded-lg border border-edge-dim bg-inset p-3">
+        <div className="text-sm font-mono text-fg-muted truncate">{r.query}</div>
+        <div className="text-3xs text-fg-muted mt-1">
+          {r.status === 'ambiguous' ? COPY.ambiguousId(r.candidates.length) : COPY.unknownId}
+        </div>
+      </div>
+    );
+  }
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-lg border border-edge-dim bg-inset hover:border-edge transition-colors p-3 flex items-center gap-3">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm truncate">
+          {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+        </div>
+        {r.tags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 mt-1">
+            {r.tags.map((t, i) => <TagChip key={t} tag={chatsearchTagChip(t, i)} />)}
+          </div>
+        )}
+        <div className="flex items-center gap-1.5 text-3xs text-fg-muted mt-1">
+          {blocked ? (
+            // ResumeBrowser's house rule for the two blocked states: plain
+            // words replace the whole metadata trail, no glyph.
+            <span className="truncate">{blocked}</span>
+          ) : (
+            <>
+              <span className="truncate">{r.projectName || COPY.noProject}</span>
+              <span className="shrink-0 ml-auto">{formatRelativeTime(r.lastActive)}</span>
+            </>
+          )}
+        </div>
+      </div>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+
+function ChatsearchResultsA() {
+  return (
+    <div className="flex flex-col gap-1.5">
+      {/* The quiet header line is defect 3's fix for this candidate: it says
+          in words that every row below is a PAST conversation, which nothing
+          else on the row does. */}
+      <div className="text-3xs text-fg-muted px-0.5">{COPY.headerFind(CHATSEARCH_RESULTS.length)}</div>
+      <div className="space-y-1.5">
+        {CHATSEARCH_RESULTS.map((r, i) => <ChatsearchRowA key={i} r={r} />)}
+      </div>
+    </div>
+  );
+}
+
+// ── B · titled-panel — "One titled panel, compact rows inside" ──────────────
+// The container does the explaining: a real header names the group, compact
+// rows inside carry a leading ChatIcon so each one reads as a conversation at
+// a glance even before the header registers.
+function ChatsearchRowB({ r }: { r: ResolvedConversation }) {
+  if (r.status !== 'ok') {
+    return (
+      <div className="rounded-md bg-inset/50 px-2.5 py-2 flex items-center gap-2">
+        <ChatIcon className="w-3.5 h-3.5 text-fg-muted shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-mono text-fg-muted truncate">{r.query}</div>
+          <div className="text-3xs text-fg-muted">
+            {r.status === 'ambiguous' ? COPY.ambiguousId(r.candidates.length) : COPY.unknownId}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2 flex items-center gap-2">
+      <ChatIcon className="w-3.5 h-3.5 text-fg-muted shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span className="text-xs truncate">
+            {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+          </span>
+          {r.tags.map((t, i) => <TagChip key={t} tag={chatsearchTagChip(t, i)} />)}
+        </div>
+        <div className="text-3xs text-fg-muted truncate mt-0.5">
+          {blocked ?? `${r.projectName || COPY.noProject} · ${formatRelativeTime(r.lastActive)}`}
+        </div>
+      </div>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+
+function ChatsearchResultsB() {
+  return (
+    <div className="rounded-lg border border-edge bg-well overflow-hidden">
+      <div className="text-2xs uppercase tracking-wider text-fg-muted px-3 py-2 border-b border-edge">
+        {COPY.headerFind(CHATSEARCH_RESULTS.length)}
+      </div>
+      <div className="p-2 space-y-1">
+        {CHATSEARCH_RESULTS.map((r, i) => <ChatsearchRowB key={i} r={r} />)}
+      </div>
+    </div>
+  );
+}
+
+// ── C · stacked-cards — "Every result is its own conversation card" ─────────
+// Drops the list metaphor entirely: each result gets the exact card
+// ChatsearchShowCard already uses for a single opened conversation (same
+// classes, same "Past conversation · <provider>" identity header), so a
+// search hit and a deliberately-opened conversation are visually the same
+// kind of object. That header line is this candidate's fix for defect 3 —
+// reused rather than invented, because it's the one identity marker the
+// owner has already seen and not rejected.
+function ChatsearchCardC({ r }: { r: ResolvedConversation }) {
+  if (r.status !== 'ok') {
+    // No resolved conversation behind this row, so it does NOT get the "Past
+    // conversation" header — claiming that here would be the unverified
+    // guess the app's error-message rule forbids. Same fallback wording as
+    // ChatsearchShowCard's own unknown-id case.
+    return (
+      <div className="rounded-lg border border-edge-dim bg-inset px-4 py-3">
+        <div className="text-sm font-mono text-fg-muted truncate">{r.query}</div>
+        <div className="text-xs text-fg-muted mt-1">
+          {r.status === 'ambiguous' ? COPY.ambiguousId(r.candidates.length) : COPY.unknownId}
+        </div>
+      </div>
+    );
+  }
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-lg border border-edge bg-well px-4 py-3">
+      <div className="text-2xs uppercase tracking-wider text-fg-muted mb-1">
+        {COPY.headerShow} · {providerLabel(r.provider)}
+      </div>
+      <h4 className="text-sm font-medium text-fg">
+        {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+      </h4>
+      <div className="text-xs text-fg-muted mt-0.5">
+        {blocked ?? `${r.projectName || COPY.noProject} · ${formatRelativeTime(r.lastActive)}`}
+        {r.tombstone && ` · ${COPY.previewTombstone}`}
+      </div>
+      {r.tags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 mt-1.5">
+          {r.tags.map((t, i) => <TagChip key={t} tag={chatsearchTagChip(t, i)} />)}
+        </div>
+      )}
+      <div className="flex items-center justify-end gap-1.5 mt-2.5">
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+
+function ChatsearchResultsC() {
+  // No group header by design — this candidate's whole bet is that the
+  // per-card identity line carries defect 3 on its own, at the cost of the
+  // most vertical space of the three (see the candidate's note below).
+  return (
+    <div className="space-y-2">
+      {CHATSEARCH_RESULTS.map((r, i) => <ChatsearchCardC key={i} r={r} />)}
+    </div>
+  );
+}
+
+// ── Round 2: B (titled-panel) with the owner's three changes ────────────────
+// He picked B and asked for three things: (1) a real open/close control, (2)
+// drop the leading ChatIcon mark now that the panel header alone says "these
+// are past conversations", (3) move tags off their own line and onto the
+// project/date line. Row anatomy below is B's row with only those three
+// changes — no other layout decision reopened.
+function ChatsearchRowB2({ r }: { r: ResolvedConversation }) {
+  if (r.status !== 'ok') {
+    // Change 2: no leading ChatIcon — the panel header now carries that signal.
+    return (
+      <div className="rounded-md bg-inset/50 px-2.5 py-2">
+        <div className="text-xs font-mono text-fg-muted truncate">{r.query}</div>
+        <div className="text-3xs text-fg-muted">
+          {r.status === 'ambiguous' ? COPY.ambiguousId(r.candidates.length) : COPY.unknownId}
+        </div>
+      </div>
+    );
+  }
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2 flex items-center gap-2">
+      <div className="min-w-0 flex-1">
+        <div className="text-xs truncate">
+          {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+        </div>
+        {/* Change 3: tags join project/date here instead of sitting under the
+            title. Order chosen as tags → project/blocked-reason → date: tags
+            are the chips that used to sit immediately right of the title, so
+            keeping them FIRST on this line is the smallest visual jump from
+            R1; date stays pinned right (ml-auto) exactly as it was. When the
+            row is blocked, the blocked sentence still replaces project+date
+            (ResumeBrowser's house rule — plain words explain why nothing can
+            be resumed), but tags stay visible since they're independent of
+            resume eligibility. */}
+        <div className="flex flex-wrap items-center gap-1 text-3xs text-fg-muted mt-0.5 min-w-0">
+          {r.tags.map((t, i) => <TagChip key={t} tag={chatsearchTagChip(t, i)} />)}
+          {blocked ? (
+            <span className="truncate">{blocked}</span>
+          ) : (
+            <>
+              <span className="truncate">{r.projectName || COPY.noProject}</span>
+              <span className="shrink-0 ml-auto">{formatRelativeTime(r.lastActive)}</span>
+            </>
+          )}
+        </div>
+      </div>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+
+/** Change 1: the panel header IS the open/close control. Shape copied from
+ *  ToolBody's AgentSection / ToolCard's own header (border+rounded shell,
+ *  `px-3 py-1.5` button, ChevronIcon pinned right with `expanded`) rather than
+ *  invented, so this reads as the SAME disclosure the rest of the app already
+ *  uses. `defaultOpen` is the only difference between the two candidates below
+ *  — see their `note`s for the open-vs-closed trade-off. */
+function ChatsearchPanelB2({ defaultOpen }: { defaultOpen: boolean }) {
+  const [expanded, setExpanded] = React.useState(defaultOpen);
+  return (
+    <div className="rounded-lg border border-edge bg-well overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="w-full flex items-center gap-1.5 text-2xs uppercase tracking-wider text-fg-muted px-3 py-2 text-left hover:bg-inset/50 transition-colors"
+      >
+        <span className="flex-1 truncate">{COPY.headerFind(CHATSEARCH_RESULTS.length)}</span>
+        <ChevronIcon className="w-3.5 h-3.5 text-fg-muted shrink-0" expanded={expanded} />
+      </button>
+      {expanded && (
+        <div className="p-2 space-y-1 border-t border-edge">
+          {CHATSEARCH_RESULTS.map((r, i) => <ChatsearchRowB2 key={i} r={r} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── chatsearch-present — "the assistant puts a conversation in front of you" ──
+// Distinct question from chatsearch-results above: that surface is a TOOL CARD
+// (a search result the assistant found). This one is the assistant PRESENTING
+// one it already has, mid-reply — the same relationship a `plan` segment has to
+// its assistant bubble (AssistantTurnBubble.tsx: splitIntoBubbles ~204-282,
+// PlanBubbleContent ~487-524). Every candidate below reproduces that bubble's
+// own chrome (`assistant-bubble … rounded-2xl rounded-bl-sm bg-inset`,
+// AssistantTurnBubble.tsx:421) around a nested box styled like
+// PlanBubbleContent's own (`border-accent/40 … bg-accent/5`), so the owner
+// judges these as they'd really sit in his chat — a presented conversation is a
+// sibling of the plan bubble, not a card floating on the canvas. Reuses
+// ChatsearchActions and chatsearchTagChip (declared above, for the search-card
+// surface) and the real ChatsearchMetaLine component, so a presented
+// conversation and a search-result row read as the same family of object,
+// differing only in how much of the conversation shows.
+
+// Always a SERIES of two: the owner asked for "a single conversation or a
+// series," and a design that only works for one is not an answer. The
+// resumable Claude-lane fixture plus the assistant-lane (native) one, so a
+// candidate that only reads right for one lane can't sneak through.
+const PRESENT_CONVERSATIONS: Extract<ResolvedConversation, { status: 'ok' }>[] = [
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_RESUMABLE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NATIVE)!,
+];
+
+// Placeholder copy for the two content-bearing candidates below (present-excerpt,
+// present-minitranscript). WHERE a real excerpt/transcript slice would come
+// from — the user's last message, an assistant-written summary, a highlighted
+// exchange — is NOT decided; this is invented, realistic-looking fixture text
+// only, so the owner is judging the LAYOUT, not reading real conversation
+// content. Called out again in the round's candidate notes and in the report.
+const PRESENT_EXCERPT: Record<string, string> = {
+  [CS_RESUMABLE]: '"…turned out to be the permission-ask timeout, not the disk read — bumping it from 3s to 8s should cover the slow-disk case too."',
+  [CS_NATIVE]: '"The newsletter draft reads a little formal for this list — can you loosen the second paragraph and drop the opening line?"',
+};
+const PRESENT_TRANSCRIPT: Record<string, { role: 'user' | 'assistant'; text: string }[]> = {
+  [CS_RESUMABLE]: [
+    { role: 'user', text: 'Permission ask keeps timing out on the big repo scan — expected?' },
+    { role: 'assistant', text: 'Shouldn’t be — that’s the ask timeout, not disk I/O. Checking the default now.' },
+    { role: 'user', text: 'Bumping it from 3s to 8s fixed it. Want a PR?' },
+    { role: 'assistant', text: 'Yes — note the slow-disk case in the commit message.' },
+  ],
+  [CS_NATIVE]: [
+    { role: 'user', text: 'Draft the August newsletter intro?' },
+    { role: 'assistant', text: 'First pass attached — three short paragraphs, casual tone.' },
+    { role: 'user', text: 'Good start — loosen the second paragraph a bit.' },
+  ],
+};
+
+/** The nested box every candidate below puts inside the assistant-bubble
+ *  chrome — same shape as PlanBubbleContent's own box (border-accent/40,
+ *  bg-accent/5), so a presented conversation reads as a sibling of the plan
+ *  bubble rather than a new kind of thing. `children` is the per-candidate
+ *  body (compact / excerpt / mini-transcript). */
+function PresentedConversationsBox({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="border border-accent/40 rounded-md bg-accent/5 px-3 py-2 my-0.5">
+      <div className="flex items-center gap-2 mb-1.5 text-xs font-medium text-fg-2">
+        <ChatIcon className="w-3.5 h-3.5" />
+        <span>{COPY.referencedHeading}</span>
+      </div>
+      <div className="space-y-2.5">{children}</div>
+    </div>
+  );
+}
+
+/** Title + lane eyebrow, shared by all three candidates. `COPY.paneSubtitle`
+ *  already interpolates `providerLabel()` internally, which is how the lane
+ *  gets named without any candidate touching the raw `provider` string. */
+function PresentedTitle({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <>
+      <div className="text-4xs uppercase tracking-wider text-fg-muted">{COPY.paneSubtitle(r.provider)}</div>
+      <div className="text-sm text-fg truncate mt-0.5">
+        {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+      </div>
+    </>
+  );
+}
+
+/** Real Preview/Resume, right-aligned under each entry — same component the
+ *  search-card surface above uses, so the button row can never say something
+ *  different between the two. */
+function PresentedActions({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div className="flex justify-end mt-1.5">
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+
+/** The metadata line every candidate shares — real ChatsearchMetaLine
+ *  component, same tag rendering (chatsearchTagChip → TagChip) the search-card
+ *  surface above uses. */
+function PresentedMeta({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <ChatsearchMetaLine
+      tags={r.tags.map((t, i) => chatsearchTagChip(t, i))}
+      blocked={r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null}
+      project={r.projectName || COPY.noProject}
+      date={formatRelativeTime(r.lastActive)}
+      className="mt-1"
+    />
+  );
+}
+
+// A · present-compact — "Just the essentials": title, metadata, actions. No
+// message content at all — the baseline the other two candidates have to
+// justify their extra height against.
+function PresentCompactEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div>
+      <PresentedTitle r={r} />
+      <PresentedMeta r={r} />
+      <PresentedActions r={r} />
+    </div>
+  );
+}
+function PresentCompact() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedConversationsBox>
+          {PRESENT_CONVERSATIONS.map((r) => <PresentCompactEntry key={r.id} r={r} />)}
+        </PresentedConversationsBox>
+      </div>
+    </div>
+  );
+}
+
+// B · present-excerpt — "With a line or two from it": compact, plus one quoted
+// line beneath the metadata, quieter and smaller than the title on purpose —
+// it's a taste of the conversation, not a second headline. Clamped to ~2 lines
+// so one long placeholder can't push this candidate past the mini-transcript one.
+function PresentExcerptEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div>
+      <PresentedTitle r={r} />
+      <p className="text-3xs text-fg-muted/80 italic leading-snug mt-1 line-clamp-2">
+        {PRESENT_EXCERPT[r.id]}
+      </p>
+      <PresentedMeta r={r} />
+      <PresentedActions r={r} />
+    </div>
+  );
+}
+function PresentExcerpt() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedConversationsBox>
+          {PRESENT_CONVERSATIONS.map((r) => <PresentExcerptEntry key={r.id} r={r} />)}
+        </PresentedConversationsBox>
+      </div>
+    </div>
+  );
+}
+
+// C · present-minitranscript — "A glimpse of the actual conversation": compact,
+// plus a few real-looking chat bubbles — user right (bg-accent), assistant left
+// (bg-canvas, so it reads against the box's own bg-accent/5 tint) — matching
+// how the app draws chat bubbles elsewhere (project-view/ConversationPreview.tsx
+// uses the same accent/inset split at full size). Fixed max-height +
+// overflow-hidden means a long real conversation gets clipped, never grows the
+// block; the fade at the bottom signals "there's more" instead of cutting a
+// bubble off mid-sentence with a hard edge.
+function PresentMiniTranscriptEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div>
+      <PresentedTitle r={r} />
+      <div className="relative max-h-28 overflow-hidden mt-1.5">
+        <div className="space-y-1">
+          {PRESENT_TRANSCRIPT[r.id].map((m, i) => (
+            <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div
+                className={`max-w-[80%] break-words rounded-lg px-2 py-1 text-3xs ${
+                  m.role === 'user'
+                    ? 'rounded-br-sm bg-accent text-on-accent'
+                    : 'rounded-bl-sm bg-canvas text-fg'
+                }`}
+              >
+                {m.text}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-accent/5 to-transparent" />
+      </div>
+      <PresentedMeta r={r} />
+      <PresentedActions r={r} />
+    </div>
+  );
+}
+function PresentMiniTranscript() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedConversationsBox>
+          {PRESENT_CONVERSATIONS.map((r) => <PresentMiniTranscriptEntry key={r.id} r={r} />)}
+        </PresentedConversationsBox>
+      </div>
+    </div>
+  );
+}
+
+// ── Round 2: reset ────────────────────────────────────────────────────────
+// The owner rejected all three Round 1 candidates outright: "all way too busy
+// with unclear visual hierarchy and structure." That fault wasn't in any one
+// candidate's styling — it was the SHAPE every candidate copied:
+// PresentedConversationsBox (an accent-tinted border + fill) nested inside the
+// assistant bubble, with a second box per conversation inside that. Three
+// containers deep before a single word of real content rendered. R2 throws
+// that shape away rather than tweaking it.
+//
+// Every candidate below draws AT MOST one container of its own (a rule, a
+// hover fill, or nothing) inside the assistant bubble — never a bordered
+// accent box, never a per-row box — and cuts content to a title plus one
+// quiet line. What differs between the three is genuinely the structure
+// around that content, not how much got stuffed into a box, per the brief.
+//
+// Two more R1 faults, fixed identically here: (1) title, tags, project, date,
+// and the lane label all rendered at near-identical weight, so nothing was
+// the eye's first stop — every candidate below sets the title to
+// text-sm font-medium and drops everything else to text-3xs text-fg-muted,
+// including dropping R1's PresentedTitle eyebrow line entirely (that eyebrow
+// doubled as the lane/provider label the R2 brief says to cut, and at
+// text-4xs directly above the title it also crowded it). (2) two buttons per
+// conversation — R2 has none. The whole row is the click target that opens
+// the conversation: a real <button>, a visible hover state, and a focus
+// ring, the same contract ResumeBrowser.tsx's own rows use
+// (renderSessionRow, ResumeBrowser.tsx:917-927). Resume is not on this block
+// at all — it moves to the preview panel's header per the brief. Tag chips
+// are gone too; the brief named them explicitly as filling the box without
+// helping recognition.
+//
+// Every row stays INERT like R1's ChatsearchActions buttons were: no real
+// session backs a workbench fixture, so the buttons below are real,
+// focusable, and keyboard-operable, but fire nothing on click.
+
+/** Title only, no eyebrow line. R1's PresentedTitle rendered a "Past
+ *  conversation · read-only · Claude Code" line above the title — the lane
+ *  label the R2 brief says to cut, and it also visually competed with the
+ *  title it sat above. The title alone, at font-medium, is the only text in
+ *  this block at that weight — that's the entire hierarchy fix. */
+function PresentedTitleOnly({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <span className="block text-sm font-medium text-fg truncate">
+      {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+    </span>
+  );
+}
+
+/** The one quiet supporting line every candidate is allowed. Real
+ *  ChatsearchMetaLine with an empty tag list — project/date/blocked read
+ *  exactly as they do on the search-card surface above, just without the
+ *  chips the R2 brief says to drop, and without redrawing the layout by
+ *  hand. */
+function PresentedMetaQuiet({ r, className }: {
+  r: Extract<ResolvedConversation, { status: 'ok' }>; className?: string;
+}) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <ChatsearchMetaLine
+      tags={[]}
+      blocked={blocked}
+      project={r.projectName || COPY.noProject}
+      date={formatRelativeTime(r.lastActive)}
+      className={className}
+    />
+  );
+}
+
+/** Plain-text section label, shared by all three — NOT a box, so it does not
+ *  count against the one-container budget each candidate is held to. Kept so
+ *  the block still says "these are past conversations" without spending a
+ *  container to say it. */
+function PresentedHeading() {
+  return (
+    <div className="text-4xs uppercase tracking-wider text-fg-muted mb-2">
+      {COPY.referencedHeading}
+    </div>
+  );
+}
+
+// A · present-plain-list — "No container at all". Whitespace alone groups the
+// two entries — no border, no fill, no rule ever drawn at rest. The only
+// visual feedback is a soft hover fill that appears and disappears; nothing
+// is drawn when the pointer is elsewhere. The most restrained possible
+// answer, and the baseline the other two have to beat.
+function PresentPlainListEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group block w-full text-left rounded-md -mx-2 px-2 py-1.5 transition-colors hover:bg-well disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <PresentedTitleOnly r={r} />
+      <PresentedMetaQuiet r={r} className="mt-0.5" />
+    </button>
+  );
+}
+function PresentPlainList() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedHeading />
+        <div className="flex flex-col gap-3">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentPlainListEntry key={r.id} r={r} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// B · present-quoted — "Quoted, like a reference". One left accent rule spans
+// the WHOLE group; both entries stack against it. The rule is the entire
+// container — nothing else is drawn around either row — which is what makes
+// this a line rather than a box that happens to wear a border. Says "these
+// are things I'm referring to" the way a blockquote does.
+function PresentQuotedEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group block w-full rounded-sm px-1.5 py-1 text-left transition-colors hover:bg-well/60 disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <PresentedTitleOnly r={r} />
+      <PresentedMetaQuiet r={r} className="mt-0.5" />
+    </button>
+  );
+}
+function PresentQuoted() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedHeading />
+        <div className="flex flex-col gap-2 border-l-2 border-accent/40 pl-3">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentQuotedEntry key={r.id} r={r} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// C · present-attachments — "Attached items". Each conversation collapses to
+// ONE row: a small leading mark (AttachIcon, the app's real paperclip glyph),
+// the title, and the time right-aligned on the SAME line — no second
+// metadata line at all. That is the structural difference from the other
+// two, not just a density choice: time alone is the whole supporting line, so
+// project name is dropped from this candidate specifically as the trade-off
+// for reading like a list of attached items rather than a list of summaries.
+function PresentAttachmentEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group flex w-full items-center gap-2 rounded-md -mx-2 px-2 py-2 transition-colors hover:bg-well disabled:cursor-default disabled:opacity-60 disabled:hover:bg-transparent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <AttachIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" />
+      <span className="min-w-0 flex-1 truncate text-left text-sm font-medium text-fg">
+        {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+      </span>
+      <span className="shrink-0 text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+    </button>
+  );
+}
+function PresentAttachments() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedHeading />
+        <div className="divide-y divide-edge-dim/60">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentAttachmentEntry key={r.id} r={r} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Round 3: reset, again — stop inventing treatments ────────────────────────
+// R2 was rejected harder than R1: "that's worse. it def still needs the
+// preview/resume buttons and it needs to be consistent with other ui
+// elements." Two separate faults, fixed by two separate rules this round:
+//
+// 1. Preview/Resume come back as REAL Button primitives (ChatsearchActions,
+//    declared above — same variant="secondary"/"primary" size="sm" pair
+//    SessionRefActions.tsx uses on the shipped search card). R2's click-the-
+//    row design had no buttons at all.
+// 2. Every candidate below is a literal, verbatim reuse of ONE already-shipped
+//    app element — not a new arrangement inspired by one. That is the fix for
+//    "needs to be consistent with other ui elements": consistency isn't a
+//    style note anymore, it's the entire content of each candidate. If a
+//    className below isn't copied from the file it credits, that's a bug in
+//    the candidate.
+//
+// The three elements borrowed, one each: the search-results row
+// (ChatsearchFindCard.tsx's ChatsearchRow, the surface the owner already
+// approved one comparison up), the plan bubble (AssistantTurnBubble.tsx's
+// PlanBubbleContent, the app's only other mid-message element — reuses
+// PresentedConversationsBox from R1 verbatim, since that box was already
+// built to match PlanBubbleContent's own classes), and the Resume Browser
+// card (ResumeBrowser.tsx's renderSessionRow card shell). All three render
+// the title → tagged metadata line (project, date pinned right) exactly as
+// ChatsearchMetaLine already renders it on the approved search row — no
+// candidate re-types that composition by hand.
+
+/** Title line, verbatim from ChatsearchFindCard.tsx's ChatsearchRow (`text-xs
+ *  truncate text-fg`) — NOT R1/R2's text-sm title, which was never the
+ *  approved row's actual class. Shared by all three R3 candidates so the
+ *  title reads identically regardless of which container it sits in. */
+function PresentRowTitle({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div className="text-xs truncate text-fg">
+      {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+    </div>
+  );
+}
+
+/** The real ChatsearchMetaLine, fed the same three things every other surface
+ *  in this file feeds it — never rebuilt by hand, so tag/project/date order
+ *  can't drift between "found" and "presented". */
+function PresentRowMeta({ r, className }: {
+  r: Extract<ResolvedConversation, { status: 'ok' }>; className?: string;
+}) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <ChatsearchMetaLine
+      tags={r.tags.map((t, i) => chatsearchTagChip(t, i))}
+      blocked={blocked}
+      project={r.projectName || COPY.noProject}
+      date={formatRelativeTime(r.lastActive)}
+      className={className}
+    />
+  );
+}
+
+// A · present-as-search-row — borrows ChatsearchFindCard.tsx's ChatsearchRow
+// (lines 17-46) unchanged: the same `<li className="rounded-md bg-inset/50
+// px-2.5 py-2 flex items-center gap-2">`, the same title/meta stack on the
+// left, the same actions on the right — inside a bare `<ul className=
+// "space-y-1">`, no extra box around the group. This is the row the owner
+// already signed off on for search results; here it sits in the assistant's
+// own bubble instead of a tool card, which is the ONLY thing distinguishing
+// "presented" from "found" — everything else is identical on purpose.
+function PresentSearchRowEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <li className="rounded-md bg-inset/50 px-2.5 py-2 flex items-center gap-2">
+      <div className="min-w-0 flex-1">
+        <PresentRowTitle r={r} />
+        <PresentRowMeta r={r} className="mt-0.5" />
+      </div>
+      <ChatsearchActions r={r} />
+    </li>
+  );
+}
+function PresentSearchRow() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <ul className="space-y-1">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentSearchRowEntry key={r.id} r={r} />)}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+// B · present-as-plan-box — borrows PresentedConversationsBox from R1 above
+// UNCHANGED (that box was already built, before R1 shipped, to reproduce
+// PlanBubbleContent's own `border-accent/40 rounded-md bg-accent/5 px-3 py-2`
+// shell and its `text-xs font-medium text-fg-2` header line — see the box's
+// own comment). Reusing the function rather than re-authoring it is the
+// point: candidate B is not "styled like the plan bubble", it is drawn by
+// the exact box that already mimics it. Each entry inside is the row content
+// (title, meta line, actions right-aligned below) — no per-entry box, since
+// the plan bubble itself never nests a second box per line of its body.
+function PresentPlanBoxEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div>
+      <PresentRowTitle r={r} />
+      <PresentRowMeta r={r} className="mt-0.5" />
+      <div className="flex justify-end mt-1.5">
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentPlanBox() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <PresentedConversationsBox>
+          {PRESENT_CONVERSATIONS.map((r) => <PresentPlanBoxEntry key={r.id} r={r} />)}
+        </PresentedConversationsBox>
+      </div>
+    </div>
+  );
+}
+
+// C · present-as-resume-card — borrows the Resume Browser's own card shell
+// (ResumeBrowser.tsx renderSessionRow, ~line 908): `rounded-lg border bg-inset
+// overflow-hidden transition-colors`, with the row's own at-rest/hover pair
+// (`border-edge-dim hover:border-edge`) rather than the expanded/inert
+// variants, since a presented conversation is never expanded or unresumable
+// by construction. One card per conversation, stacked — not the single
+// multi-row card ResumeBrowser groups by project, since this block only ever
+// shows the two conversations being presented, not a whole list.
+function PresentResumeCardEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div className="rounded-lg border border-edge-dim hover:border-edge bg-inset overflow-hidden transition-colors p-3">
+      <PresentRowTitle r={r} />
+      <PresentRowMeta r={r} className="mt-0.5" />
+      <div className="flex justify-end mt-2">
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentResumeCard() {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <div className="flex flex-col gap-2">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentResumeCardEntry key={r.id} r={r} />)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Round 4: mimic the Deliverables card ─────────────────────────────────
+// R3's three literal-reuse candidates were never rejected on their own
+// merits — the owner instead named the target himself: "you should try to
+// mimic the design of the new 'deliverables' card somewhat." The reference is
+// DeliverablesCard.tsx (src/renderer/components/DeliverablesCard.tsx on
+// branch feat/send-user-file-card) — an ALREADY-APPROVED card (workbench
+// compare rounds, pick "D + scroll-aware fades + collapsible") that renders
+// mid-message inside the assistant's own bubble, exactly like this surface:
+// a collapsible bg-well card, open by default, holding a horizontal filmstrip
+// of preview tiles under a header row that is itself the collapse button.
+//
+// WHY every piece below is redrawn rather than imported: feat/send-user-file-
+// card has not merged into this branch, so DeliverablesCard and its private
+// helpers (SentFileTile, its edge-overflow hook) are not reachable from here.
+// Classes, hook usage, and structure are copied verbatim from that file so
+// the comparison is against the real approved design, not a guess at it. WHEN
+// feat/send-user-file-card merges, the shared shell — card chrome, the
+// header-button anatomy, the filmstrip + edge-fade mechanism, the tile frame
+// — should be extracted into ONE component both features import, rather than
+// kept as two hand-synced copies. Flagged again in the round-4 report.
+//
+// A deliverable tile previews a FILE (ArtifactThumbnail: image / first lines
+// of text / scaled HTML / letter glyph). A conversation has no file to
+// preview, so its stand-in is the conversation's OPENING MESSAGE, shown small
+// and clipped the same way ArtifactThumbnail clips text — see
+// OpeningMessagePreview below. Where that opening-message text would really
+// come from (the session's first user message, verbatim? summarized?) is not
+// decided — invented fixture text only, flagged again in the report, same
+// caveat as Round 1's PRESENT_EXCERPT above.
+//
+// Tag chips are omitted here on purpose: "too busy" was the very first
+// rejection (R1), and the deliverables tile this round mimics shows only a
+// name and a path — no chips at all. Reuses PresentedMetaQuiet (declared for
+// R2 above), which already renders project + date with an empty tag list.
+// This is a deliberate, reversible call — flagged again in the report.
+const PRESENT_OPENING_MESSAGE: Record<string, string> = {
+  [CS_RESUMABLE]: 'Permission ask keeps timing out on the big repo scan — is that expected, or did something regress?',
+  [CS_NATIVE]: 'Can you draft the August newsletter intro? Keep it short — three short paragraphs, casual tone.',
+};
+
+/** Stand-in for ArtifactThumbnail's "first lines of a text file" preview —
+ *  see the round header comment for why a conversation needs one at all.
+ *  Sans-serif and quoted rather than ArtifactThumbnail's font-mono: that
+ *  choice is for source CODE, and this is conversational speech, so it
+ *  borrows Round 1's present-excerpt treatment (italic, quoted) instead. */
+function OpeningMessagePreview({ text }: { text: string }) {
+  return (
+    <div className="absolute inset-0 p-2 overflow-hidden">
+      <p className="text-3xs leading-snug text-fg-2 italic line-clamp-5">“{text}”</p>
+    </div>
+  );
+}
+
+/** Same edge-overflow tracker DeliverablesCard.tsx's filmstrip uses for its
+ *  fades (useEdgeOverflow there — private to that file, so redrawn here per
+ *  the round header WHY comment). Fades appear only while something is
+ *  actually hidden past that edge. */
+function usePresentEdgeOverflow(ref: React.RefObject<HTMLDivElement | null>, deps: unknown[]) {
+  const [edges, setEdges] = React.useState({ left: false, right: false });
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const left = el.scrollLeft > 2;
+      const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+      setEdges((prev) => (prev.left === left && prev.right === right ? prev : { left, right }));
+    };
+    measure();
+    el.addEventListener('scroll', measure, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', measure); ro.disconnect(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return edges;
+}
+const presentFade = (side: 'left' | 'right') => ({
+  background: `linear-gradient(to ${side === 'left' ? 'right' : 'left'}, var(--well), transparent)`,
+});
+
+/** The header row IS the collapse button, same anatomy as DeliverablesCard's
+ *  own header: leading glyph, label, count, a right-aligned truncating
+ *  caption, trailing chevron. ChatIcon substitutes for DeliverablesCard's
+ *  FilesGlyph — the app's own "this is a conversation" mark (see this file's
+ *  ChatIcon import comment). The caption slot is reproduced for structural
+ *  fidelity but always empty: a presented conversation has no equivalent yet
+ *  of the SendUserFile tool's optional caption argument. */
+function PresentCardHeader({ open, onToggle, count }: { open: boolean; onToggle: () => void; count: number }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors"
+    >
+      <ChatIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+      <span className="text-xs font-semibold text-fg-2">{COPY.referencedHeading}</span>
+      <span className="text-2xs font-mono text-fg-muted">{count}</span>
+      <span className="flex-1 min-w-0 text-2xs text-fg-muted truncate text-right" />
+      <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={open} />
+    </button>
+  );
+}
+
+/** The deliverables-style card shell: `mt-2 rounded-lg border border-edge
+ *  bg-well overflow-hidden`, open by default (`getInitialExpanded(true)`),
+ *  Ctrl+O expand/collapse-all aware. `children` is the round-4-candidate-
+ *  specific body — a filmstrip or a stacked-rows list. */
+function PresentCard({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(() => getInitialExpanded(true));
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="present-card">
+      <PresentCardHeader open={open} onToggle={() => setOpen(!open)} count={PRESENT_CONVERSATIONS.length} />
+      {open && children}
+    </div>
+  );
+}
+
+function PresentInBubble({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** Name line shared by all three Round 4 tile layouts — verbatim
+ *  DeliverablesCard SentFileTile classes (`text-sm-tight font-semibold
+ *  text-fg truncate`), not R2/R3's `text-sm`. */
+function PresentTileName({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <span className="block text-sm-tight font-semibold text-fg truncate">
+      {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+    </span>
+  );
+}
+
+/** DeliverablesCard's own compact "Open" arrow badge (SentFileTile,
+ *  `compact` prop), redrawn here per the round header WHY comment. Present-
+ *  filmstrip-arrow's Preview affordance. */
+function CompactArrowBadge({ onClick, disabled, title }: {
+  onClick: (e: React.MouseEvent) => void; disabled?: boolean; title: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={COPY.preview}
+      className="shrink-0 inline-flex items-center p-1 text-fg-2 border border-edge hover:border-fg-muted rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M7 7h10v10" />
+        <path d="M7 17 17 7" />
+      </svg>
+    </button>
+  );
+}
+
+/** A second compact affordance beside the arrow — present-filmstrip-arrow's
+ *  Resume action. No shared "resume" glyph exists on this branch (the Resume
+ *  Browser spells the word out on a full-size button), so this is a small
+ *  play-triangle, drawn inline the same way SentFileTile draws its own arrow
+ *  inline rather than as a shared Icons.tsx export. */
+function CompactResumeBadge({ onClick, disabled, title, label }: {
+  onClick: (e: React.MouseEvent) => void; disabled?: boolean; title: string; label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-label={label}
+      className="shrink-0 inline-flex items-center p-1 text-fg-2 border border-edge hover:border-fg-muted rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M8 5v14l11-7z" />
+      </svg>
+    </button>
+  );
+}
+
+// A · present-filmstrip-arrow — closest to the reference. The WHOLE tile is
+// one <button> that opens the preview, exactly the way SentFileTile's whole
+// tile opens its file — the footer just carries the same compact bordered
+// arrow (restating that action) plus a second, equally small affordance for
+// Resume beside it. Two real <button>s nested inside the tile's own <button>,
+// each stopping propagation — the same nested-button-plus-stopPropagation
+// shape SkillCard.tsx already ships (PluginBadge inside the card's own
+// button), not a new pattern invented for this candidate.
+function FilmstripArrowTile({ r, narrow }: { r: Extract<ResolvedConversation, { status: 'ok' }>; narrow: boolean }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const native = r.provider === 'native';
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group flex flex-col w-full min-w-0 text-left rounded-lg bg-inset border border-edge hover:border-fg-muted overflow-hidden transition-colors disabled:opacity-70"
+    >
+      <div className={`relative w-full ${narrow ? 'h-16' : 'h-28'} border-b border-edge`}>
+        <OpeningMessagePreview text={PRESENT_OPENING_MESSAGE[r.id]} />
+      </div>
+      <div className="flex items-start gap-2 px-2.5 py-2 min-w-0">
+        <span className="flex-1 min-w-0">
+          <PresentTileName r={r} />
+          <PresentedMetaQuiet r={r} className="mt-0.5" />
+        </span>
+        <div className="flex items-center gap-1 shrink-0 pt-0.5">
+          <CompactArrowBadge
+            onClick={(e) => e.stopPropagation()}
+            disabled={r.tombstone}
+            title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+          />
+          <CompactResumeBadge
+            onClick={(e) => e.stopPropagation()}
+            disabled={!!blocked}
+            title={blocked ?? (native ? COPY.resumeNativeHint : COPY.resumeHint)}
+            label={native ? COPY.resumeNative : COPY.resume}
+          />
+        </div>
+      </div>
+    </button>
+  );
+}
+function PresentFilmstripArrow() {
+  const narrow = useNarrowViewport();
+  const stripRef = React.useRef<HTMLDivElement>(null);
+  const edges = usePresentEdgeOverflow(stripRef, [narrow]);
+  return (
+    <PresentInBubble>
+      <PresentCard>
+        <div className="relative">
+          <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="present-strip-arrow">
+            {PRESENT_CONVERSATIONS.map((r) => (
+              <div key={r.id} className={`${narrow ? 'w-44' : 'w-56'} shrink-0`}>
+                <FilmstripArrowTile r={r} narrow={narrow} />
+              </div>
+            ))}
+          </div>
+          {edges.left && <div className="pointer-events-none absolute top-0 bottom-2 left-0 w-10" style={presentFade('left')} />}
+          {edges.right && <div className="pointer-events-none absolute top-0 bottom-2 right-0 w-10" style={presentFade('right')} />}
+        </div>
+      </PresentCard>
+    </PresentInBubble>
+  );
+}
+
+// B · present-filmstrip-buttons — same filmstrip, same tiles, but the footer
+// swaps the two glyph affordances for the real ChatsearchActions pair (the
+// same variant="secondary"/"primary" size="sm" Preview/Resume Buttons every
+// other round already uses) — explicit at the cost of crowding a `w-44`
+// narrow tile, which is the trade-off this candidate exists to show.
+function FilmstripButtonsTile({ r, narrow }: { r: Extract<ResolvedConversation, { status: 'ok' }>; narrow: boolean }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group flex flex-col w-full min-w-0 text-left rounded-lg bg-inset border border-edge hover:border-fg-muted overflow-hidden transition-colors disabled:opacity-70"
+    >
+      <div className={`relative w-full ${narrow ? 'h-16' : 'h-28'} border-b border-edge`}>
+        <OpeningMessagePreview text={PRESENT_OPENING_MESSAGE[r.id]} />
+      </div>
+      <div className="px-2.5 pt-2 pb-2 min-w-0">
+        <PresentTileName r={r} />
+        <PresentedMetaQuiet r={r} className="mt-0.5" />
+        <div className="mt-2" onClick={(e) => e.stopPropagation()}>
+          <ChatsearchActions r={r} />
+        </div>
+      </div>
+    </button>
+  );
+}
+function PresentFilmstripButtons() {
+  const narrow = useNarrowViewport();
+  const stripRef = React.useRef<HTMLDivElement>(null);
+  const edges = usePresentEdgeOverflow(stripRef, [narrow]);
+  return (
+    <PresentInBubble>
+      <PresentCard>
+        <div className="relative">
+          <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="present-strip-buttons">
+            {PRESENT_CONVERSATIONS.map((r) => (
+              <div key={r.id} className={`${narrow ? 'w-44' : 'w-56'} shrink-0`}>
+                <FilmstripButtonsTile r={r} narrow={narrow} />
+              </div>
+            ))}
+          </div>
+          {edges.left && <div className="pointer-events-none absolute top-0 bottom-2 left-0 w-10" style={presentFade('left')} />}
+          {edges.right && <div className="pointer-events-none absolute top-0 bottom-2 right-0 w-10" style={presentFade('right')} />}
+        </div>
+      </PresentCard>
+    </PresentInBubble>
+  );
+}
+
+// C · present-stacked-rows — same card shell and header, but the body is a
+// VERTICAL stack of full-width rows instead of a sideways filmstrip: a small
+// square preview thumbnail on the left, title + the quiet metadata line in
+// the middle, the two explicit Buttons on the right. No sideways scrolling,
+// nothing hidden off an edge — reads better for the one-or-two-conversation
+// case this surface's own fixture always shows.
+function StackedRow({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <button
+      type="button"
+      disabled={r.tombstone}
+      title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+      className="group flex items-center gap-3 w-full min-w-0 text-left rounded-lg bg-inset border border-edge hover:border-fg-muted overflow-hidden transition-colors p-2 disabled:opacity-70"
+    >
+      <div className="relative w-16 h-16 shrink-0 rounded-md overflow-hidden border border-edge">
+        <OpeningMessagePreview text={PRESENT_OPENING_MESSAGE[r.id]} />
+      </div>
+      <span className="flex-1 min-w-0">
+        <PresentTileName r={r} />
+        <PresentedMetaQuiet r={r} className="mt-0.5" />
+      </span>
+      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+        <ChatsearchActions r={r} />
+      </div>
+    </button>
+  );
+}
+function PresentStackedRows() {
+  return (
+    <PresentInBubble>
+      <PresentCard>
+        <div className="flex flex-col gap-2 px-2 pb-2">
+          {PRESENT_CONVERSATIONS.map((r) => <StackedRow key={r.id} r={r} />)}
+        </div>
+      </PresentCard>
+    </PresentInBubble>
+  );
+}
+
+// ── Round 5: drop the quote, tighten the row ─────────────────────────────
+// The owner picked R4's C (present-stacked-rows): "i like c (stacked) but we
+// should drop the full quote and try to improve space efficiency/layout a
+// bit." Two instructions, two changes: the OpeningMessagePreview quote/
+// thumbnail is gone from every candidate below — there is no file to preview
+// a stand-in for any more, so nothing replaces the square it sat in, the
+// whole row just gets narrower — and padding drops from R4's `p-2` (sized
+// around a 64px-tall thumbnail) to what a one- or two-line text row actually
+// needs.
+//
+// Card shell and header are UNCHANGED from R4's PresentCard/PresentCardHeader
+// (deliverables-card chrome), except for open state: this round starts
+// CLOSED (getInitialExpanded(), the plain tool-card default) rather than R4's
+// getInitialExpanded(true). Two independent decisions already point the same
+// way — the owner chose closed-by-default for this feature's own search card
+// (chatsearch-results R2, `b-closed`), and DeliverablesCard.tsx, the very
+// card this shell copies, flipped from open to closed on its own branch
+// after Destin saw it open on a real screen (see that file's header comment,
+// 2026-08-25). PresentCard itself is left untouched (never edit an earlier
+// round) — PresentCardClosed below is a new sibling, not an edit.
+//
+// With the thumbnail gone, a presented-conversation row is now built from
+// exactly the same three things a search-result row is (ChatsearchFindCard.tsx):
+// title, a project/date line, and the Preview/Resume buttons. So every
+// candidate below is built from PresentRowTitle and PresentedMetaQuiet — both
+// already declared above, for R3 and R2 respectively — never re-typed, so the
+// two surfaces can't drift on what a "title" or a "date" looks like even
+// though this round rearranges them three different ways. Tags stay dropped,
+// same reversible call R4 made (flagged again here): none of the three
+// layouts the owner asked for name a tag chip.
+//
+// Rows are plain, non-interactive containers (`rounded-md bg-inset/50`, the
+// search row's own fill) rather than R4's whole-row `<button>` — R4's button
+// existed so the thumbnail was clickable; with no thumbnail, Preview/Resume
+// are the only affordance (per the brief), so a second, redundant click
+// target on the row itself would just be a lie about what clicking it does.
+
+function PresentCardClosed({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="present-card-r5">
+      <PresentCardHeader open={open} onToggle={() => setOpen(!open)} count={PRESENT_CONVERSATIONS.length} />
+      {open && children}
+    </div>
+  );
+}
+
+// A · present-row-single — one line per conversation: title, then project ·
+// date as one quiet clause, then the buttons. NOT ChatsearchMetaLine here —
+// that component's own `ml-auto` date assumes it owns the full row width; in
+// a single line shared with a title and two buttons it has none, so project
+// and date are joined into one clause and given a max-width instead. The
+// blocked sentence (missingProject/notSyncedYet) still replaces that clause
+// wholesale, same house rule ChatsearchMetaLine documents for the two-line
+// candidates below.
+function PresentRowSingleEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const meta = blocked ?? `${r.projectName || COPY.noProject} · ${formatRelativeTime(r.lastActive)}`;
+  return (
+    <div className="flex items-center gap-2 rounded-md bg-inset/50 px-2.5 py-1.5">
+      <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+      <span className="shrink-0 max-w-[9rem] truncate text-3xs text-fg-muted" title={meta}>{meta}</span>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+function PresentRowSingle() {
+  return (
+    <PresentInBubble>
+      <PresentCardClosed>
+        <div className="flex flex-col gap-1 px-2 pb-2">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentRowSingleEntry key={r.id} r={r} />)}
+        </div>
+      </PresentCardClosed>
+    </PresentInBubble>
+  );
+}
+
+// B · present-row-two-line — title on its own line, PresentedMetaQuiet
+// (project/date or blocked, verbatim from R2) on a second line beneath it,
+// buttons at the right and vertically centred across both by the row's own
+// `items-center`. The most conventional list row of the three.
+function PresentRowTwoLineEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  return (
+    <div className="flex items-center gap-3 rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="min-w-0 flex-1">
+        <PresentRowTitle r={r} />
+        <PresentedMetaQuiet r={r} className="mt-0.5" />
+      </div>
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+function PresentRowTwoLine() {
+  return (
+    <PresentInBubble>
+      <PresentCardClosed>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentRowTwoLineEntry key={r.id} r={r} />)}
+        </div>
+      </PresentCardClosed>
+    </PresentInBubble>
+  );
+}
+
+// C · present-row-split — two lines that each use the full row width: title
+// left / date pinned right (`shrink-0 ml-auto`, the same date-pinning class
+// ChatsearchMetaLine itself uses) on line one, project left / buttons right
+// on line two. When blocked, the date on line one is withheld and the
+// blocked sentence takes project's place on line two — the same "blocked
+// replaces project+date as a pair" house rule ChatsearchMetaLine documents,
+// just spread across two lines instead of composited into one span.
+function PresentRowSplitEntry({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        {!blocked && (
+          <span className="shrink-0 ml-auto text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        <span className="min-w-0 flex-1 truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentRowSplit() {
+  return (
+    <PresentInBubble>
+      <PresentCardClosed>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {PRESENT_CONVERSATIONS.map((r) => <PresentRowSplitEntry key={r.id} r={r} />)}
+        </div>
+      </PresentCardClosed>
+    </PresentInBubble>
+  );
+}
+
+// ── Round 6: the owner's pick, plus tags ──────────────────────────────────────
+// "more like c, try to keep tags." The skeleton is UNCHANGED from R5's C
+// (present-row-split): line 1 is title left / date pinned right, line 2 is
+// project left / Preview+Resume right. All three candidates below share that
+// exact skeleton — PresentRowTitle, ChatsearchActions, and the same two-line
+// division — and answer only one question: where do the tags go.
+//
+// Round 5's pair of fixture conversations (CS_RESUMABLE, CS_NATIVE) carry at
+// most two tags between them, which would let every placement look tidy no
+// matter how bad it actually is under load. This round's own fixture set
+// exists so the comparison can't flatter itself: a normal two-tag case, a
+// heavy four-tag case with a long multi-word label (real tags in this app
+// read like "Follow-Up Needed", never "perf"), and a bare no-tags case, so
+// the empty state is visible too. Built as fresh literals rather than
+// mutating CHATSEARCH_FIXTURE, so Rounds 1-5 (which read CS_RESUMABLE/
+// CS_NATIVE straight from that shared table via PRESENT_CONVERSATIONS) keep
+// rendering exactly what they always have.
+type PresentOk = Extract<ResolvedConversation, { status: 'ok' }>;
+const R6_TWO_TAGS: PresentOk = {
+  status: 'ok', id: 'r6-two-tags', provider: 'claude', title: 'Permission ask timeout',
+  projectName: 'youcoded', originalPath: '/home/destin/youcoded-dev/youcoded',
+  lastActive: '2026-07-26T03:14:09.000Z', createdAt: '2026-07-25T18:02:11.000Z',
+  tags: ['work', 'bug'], complete: true, tombstone: false,
+  projectSlug: '-home-destin-youcoded-dev-youcoded', projectPath: '/home/destin/youcoded-dev/youcoded',
+  missingProject: false, notSyncedYet: false,
+};
+// Four tags, two of which ('Follow-Up Needed', 'Launch Blocker') are the long
+// multi-word labels the brief calls for; 'idea' is a label the fixture tag
+// registry (dev/workbench/fixtures/tags.ts) actually resolves, and 'UI Copy'
+// is not — so this one row exercises a resolved chip, an unresolved
+// (neutral-color) chip, AND the two-then-overflow cap in a single case.
+const R6_FOUR_TAGS: PresentOk = {
+  status: 'ok', id: 'r6-four-tags', provider: 'native', title: 'Draft the newsletter',
+  projectName: 'writing', originalPath: '/home/destin/writing',
+  lastActive: '2026-08-01T10:00:00.000Z', createdAt: '2026-07-30T09:00:00.000Z',
+  tags: ['Follow-Up Needed', 'idea', 'UI Copy', 'Launch Blocker'], complete: false, tombstone: false,
+  projectSlug: '-home-destin-writing', projectPath: '/home/destin/writing',
+  missingProject: false, notSyncedYet: false,
+};
+const R6_NO_TAGS: PresentOk = {
+  status: 'ok', id: 'r6-no-tags', provider: 'claude', title: 'Quarterly budget notes',
+  projectName: 'finance', originalPath: '/home/destin/youcoded-dev/finance',
+  lastActive: '2026-07-14T15:40:00.000Z', createdAt: '2026-07-14T15:00:00.000Z',
+  tags: [], complete: false, tombstone: false,
+  projectSlug: '-home-destin-youcoded-dev-finance', projectPath: '/home/destin/youcoded-dev/finance',
+  missingProject: false, notSyncedYet: false,
+};
+const R6_CONVERSATIONS: PresentOk[] = [R6_TWO_TAGS, R6_FOUR_TAGS, R6_NO_TAGS];
+
+// Caps a resolved tag-chip list at two, folding the rest into a single "+N"
+// chip in the neutral fallback color (never a fabricated tag) — the row's own
+// bound on how much width tags can claim, so a heavily-tagged conversation
+// can never push the project name or the buttons off the row. Used by the two
+// candidates below that share a line with something else; present-tags-row
+// gives tags their own line and never calls this.
+function capTagChips(tags: ChipTag[]): ChipTag[] {
+  if (tags.length <= 2) return tags;
+  const rest = tags.length - 2;
+  return [...tags.slice(0, 2), { label: COPY.presentTagsMore(rest), color: DEFAULT_TAG_COLOR }];
+}
+
+// The R5 card shell (PresentCardHeader + closed-by-default + Ctrl+O aware),
+// reproduced as a new sibling rather than editing PresentCardClosed in place
+// — same rule R5 itself followed against R4's PresentCard. The only reason a
+// new component is needed at all: PresentCardClosed's header count is wired
+// to PRESENT_CONVERSATIONS.length (R4/R5's two-conversation array), and this
+// round's own fixture set has three rows — reusing it unedited would print
+// the wrong count in the card header.
+function PresentCardR6({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = React.useState(() => getInitialExpanded());
+  useExpandAllToggle(() => setOpen(true), () => setOpen(false));
+  return (
+    <div className="mt-2 rounded-lg border border-edge bg-well overflow-hidden" data-testid="present-card-r6">
+      <PresentCardHeader open={open} onToggle={() => setOpen(!open)} count={R6_CONVERSATIONS.length} />
+      {open && children}
+    </div>
+  );
+}
+
+// A · present-tags-meta — tags join line 2, in front of the project, the same
+// left-to-right order ChatsearchMetaLine already uses on the approved search
+// row (tags → project → date). Composed by hand rather than through
+// ChatsearchMetaLine itself: that component always ends with a date, and this
+// row's date already lives on line 1, so reusing it here would print the date
+// twice. Buttons stay pinned to the right, same as R5.
+function PresentTagsMetaEntry({ r, tagIndex }: { r: PresentOk; tagIndex: Map<string, TagRecord> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = capTagChips(resolveChatsearchTags(r.tags, tagIndex));
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        {!blocked && (
+          <span className="shrink-0 ml-auto text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        {chips.length > 0 && (
+          <span className="flex items-center gap-1 shrink-0">
+            {chips.map((t, i) => <TagChip key={`${t.label}-${i}`} tag={t} />)}
+          </span>
+        )}
+        <span className="min-w-0 flex-1 truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentTagsMeta() {
+  const tagIndex = useTagLabelIndex();
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => <PresentTagsMetaEntry key={r.id} r={r} tagIndex={tagIndex} />)}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// B · present-tags-title — tags join line 1, sitting between the title and
+// the right-pinned date; line 2 stays project + buttons, untouched from R5.
+// Same two-then-overflow cap as A. Puts tags at the eye's first stop, but now
+// THREE things (title, tags, date) compete for line 1's width instead of two.
+function PresentTagsTitleEntry({ r, tagIndex }: { r: PresentOk; tagIndex: Map<string, TagRecord> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = capTagChips(resolveChatsearchTags(r.tags, tagIndex));
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        {chips.length > 0 && (
+          <span className="flex items-center gap-1 shrink-0">
+            {chips.map((t, i) => <TagChip key={`${t.label}-${i}`} tag={t} />)}
+          </span>
+        )}
+        {!blocked && (
+          <span className="shrink-0 ml-auto text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        <span className="min-w-0 flex-1 truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+        <ChatsearchActions r={r} />
+      </div>
+    </div>
+  );
+}
+function PresentTagsTitle() {
+  const tagIndex = useTagLabelIndex();
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => <PresentTagsTitleEntry key={r.id} r={r} tagIndex={tagIndex} />)}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// C · present-tags-row — tags get a third line of their own, beneath the
+// unmodified R5 skeleton (line 1 title+date, line 2 project+buttons). No cap
+// here: `flex-wrap` lets every tag show, wrapping to more lines instead of
+// being cut, at the cost of a line of height per conversation. Omitted
+// entirely when there are no tags, so the no-tags row stays two lines.
+function PresentTagsRowEntry({ r, tagIndex }: { r: PresentOk; tagIndex: Map<string, TagRecord> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  return (
+    <div className="rounded-md bg-inset/50 px-2.5 py-2">
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        {!blocked && (
+          <span className="shrink-0 ml-auto text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+        )}
+      </div>
+      <div className="flex items-center gap-2 mt-1">
+        <span className="min-w-0 flex-1 truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+        <ChatsearchActions r={r} />
+      </div>
+      {chips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1 mt-1.5">
+          {chips.map((t, i) => <TagChip key={`${t.label}-${i}`} tag={t} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+function PresentTagsRow() {
+  const tagIndex = useTagLabelIndex();
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => <PresentTagsRowEntry key={r.id} r={r} tagIndex={tagIndex} />)}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// ── Round 7: stop arranging the same five facts — four different ideas ──────
+// Six rounds in, the last three were all the same shape: a stacked list of
+// rows carrying title/date/project/tags/two-buttons, differing only in
+// density and where the tags sat. Rejected outright: "not a fan of any of
+// these. a few more creative options please." This round does not produce a
+// seventh row arrangement. Every conversation needs the same five facts and
+// two actions — the thing that has read as "busy" every time is showing all
+// of it, for every conversation, at once. Each candidate below escapes that
+// by deferring something and giving a specific way to get it back — stated
+// in the candidate's `note` below, and restated as the WHY comment on its
+// component.
+//
+// Fixture: R6_CONVERSATIONS (R6_TWO_TAGS / R6_FOUR_TAGS / R6_NO_TAGS, declared
+// above for Round 6) reused unmodified — a resumable two-tag case, a
+// four-tag case carrying a long multi-word label, and a no-tags case is
+// exactly the spread this round's brief asks for, so Round 6's set already
+// matches it rather than needing a new one. The first three candidates below
+// also reuse PresentCardR6 verbatim for their outer shell (deliverables-style
+// card, closed by default, Ctrl+O aware, "Referenced conversations" header) —
+// the brief keeps that part unchanged; only what sits inside is new. The
+// fourth candidate has no card, per the brief.
+
+// A · present-expand-in-place — DEFERS date, project, tags, and both buttons
+// for every conversation but one. GETS THEM BACK by making the title itself
+// the control: a real <button aria-expanded>, not a hover trick, that
+// expands that ONE row in place. Opening a second row collapses the first
+// (single `openId`, not a per-row boolean) — only ever one row is "busy" at
+// once, so N conversations cost N one-line rows at rest.
+function PresentExpandRowEntry({ r, tagIndex, open, onToggle }: {
+  r: PresentOk; tagIndex: Map<string, TagRecord>; open: boolean; onToggle: () => void;
+}) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  return (
+    <div className="rounded-md bg-inset/50 overflow-hidden">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={onToggle}
+        title={open ? COPY.presentHideDetails : COPY.presentShowDetails}
+        className="group flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left hover:bg-inset transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        <ChevronIcon className="w-3 h-3 shrink-0 text-fg-muted" expanded={open} />
+        <span className="min-w-0 flex-1"><PresentRowTitle r={r} /></span>
+      </button>
+      {open && (
+        <div className="px-2.5 pb-2 pl-7">
+          <ChatsearchMetaLine
+            tags={chips}
+            blocked={blocked}
+            project={r.projectName || COPY.noProject}
+            date={formatRelativeTime(r.lastActive)}
+          />
+          <div className="flex justify-end mt-1.5">
+            <ChatsearchActions r={r} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function PresentExpandInPlace() {
+  const tagIndex = useTagLabelIndex();
+  const [openId, setOpenId] = React.useState<string | null>(null);
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => (
+            <PresentExpandRowEntry
+              key={r.id} r={r} tagIndex={tagIndex}
+              open={openId === r.id}
+              onToggle={() => setOpenId(openId === r.id ? null : r.id)}
+            />
+          ))}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// B · present-hover-actions — DEFERS the two buttons entirely: they claim no
+// layout width at rest, so the row is just a color stripe, a title, and a
+// date. GETS THEM BACK on hover or keyboard focus (group-hover /
+// group-focus-within, the same reveal MarketplaceCard.tsx's own info bubble
+// already uses), as an overlay over the row's right end rather than a
+// reserved slot. Tags are deferred too, down to a stripe of their own colors
+// with the real names in the row's `title` attribute. Hover doesn't exist on
+// a phone, so on narrow viewports (useNarrowViewport(), not asserted) the
+// buttons move back into the normal layout as a second line instead of
+// hiding — the one place this candidate does NOT defer them.
+function TagStripe({ chips }: { chips: ChipTag[] }) {
+  if (chips.length === 0) {
+    return <span className="w-1 h-8 rounded-full shrink-0 bg-edge-dim" aria-hidden="true" />;
+  }
+  return (
+    <span className="w-1 h-8 rounded-full shrink-0 overflow-hidden flex flex-col" aria-hidden="true">
+      {chips.map((t, i) => (
+        <span key={`${t.label}-${i}`} className="flex-1" style={{ background: `var(--${t.color})` }} />
+      ))}
+    </span>
+  );
+}
+// Fades the overlay's leading edge into the row's own fill instead of cutting
+// a hard edge across the date it covers — same technique as Round 4's
+// filmstrip scroll fades (presentFade above), pointed at one fixed edge.
+const HOVER_ACTIONS_FADE: React.CSSProperties = {
+  background: 'linear-gradient(to left, var(--inset) 65%, transparent)',
+};
+function PresentHoverActionsEntry({ r, tagIndex, narrow }: {
+  r: PresentOk; tagIndex: Map<string, TagRecord>; narrow: boolean;
+}) {
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  const tagNames = chips.map((t) => t.label).join(', ');
+  return (
+    <div
+      className={`group relative rounded-md bg-inset/50 hover:bg-inset transition-colors ${narrow ? 'px-2.5 py-2' : 'px-2.5 py-1.5'}`}
+      title={tagNames || undefined}
+    >
+      <div className="flex items-center gap-2">
+        <TagStripe chips={chips} />
+        <div className="min-w-0 flex-1"><PresentRowTitle r={r} /></div>
+        <span className="shrink-0 text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>
+      </div>
+      {narrow ? (
+        <div className="flex justify-end mt-1.5">
+          <ChatsearchActions r={r} />
+        </div>
+      ) : (
+        <div
+          className="absolute inset-y-0 right-0 flex items-center gap-1.5 pl-8 pr-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity"
+          style={HOVER_ACTIONS_FADE}
+        >
+          <ChatsearchActions r={r} />
+        </div>
+      )}
+    </div>
+  );
+}
+function PresentHoverActions() {
+  const tagIndex = useTagLabelIndex();
+  const narrow = useNarrowViewport();
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {R6_CONVERSATIONS.map((r) => (
+            <PresentHoverActionsEntry key={r.id} r={r} tagIndex={tagIndex} narrow={narrow} />
+          ))}
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// C · present-one-at-a-time — DEFERS every conversation except the one on
+// screen: no title, tags, or actions render for the other two at all. GETS
+// THEM BACK with a pager (dots + prev/next + "n / total") that steps
+// through them one at a time; the conversation showing gets a full-size
+// title, the complete tag/project/date line with no two-tag cap (there's
+// finally room), and full-size Preview/Resume buttons. The cost is exactly
+// what the brief asked to see: the other conversations are invisible until
+// you page to them.
+function PresentOneAtATime() {
+  const tagIndex = useTagLabelIndex();
+  const [index, setIndex] = React.useState(0);
+  const count = R6_CONVERSATIONS.length;
+  const r = R6_CONVERSATIONS[index];
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  const native = r.provider === 'native';
+  const go = (delta: number) => setIndex((i) => (i + delta + count) % count);
+  return (
+    <PresentInBubble>
+      <PresentCardR6>
+        <div className="px-3 pb-3 pt-1">
+          <div className="text-sm font-semibold text-fg truncate">
+            {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+          </div>
+          <ChatsearchMetaLine
+            tags={chips}
+            blocked={blocked}
+            project={r.projectName || COPY.noProject}
+            date={formatRelativeTime(r.lastActive)}
+            className="mt-1.5"
+          />
+          <div className="flex items-center gap-2 mt-3">
+            <Button
+              variant="secondary"
+              disabled={r.tombstone}
+              title={r.tombstone ? COPY.previewTombstone : COPY.previewHint}
+            >
+              {COPY.preview}
+            </Button>
+            <Button
+              variant="primary"
+              disabled={!!blocked}
+              title={blocked ?? (native ? COPY.resumeNativeHint : COPY.resumeHint)}
+            >
+              {native ? COPY.resumeNative : COPY.resume}
+            </Button>
+          </div>
+          <div className="flex items-center justify-center gap-3 mt-3 pt-2 border-t border-edge-dim/60">
+            <button
+              type="button" onClick={() => go(-1)} aria-label={COPY.presentPagerPrev}
+              className="p-1 text-fg-muted hover:text-fg rounded-md hover:bg-inset transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              {/* ChevronIcon points down at rest; rotate-90 (clockwise) turns it to
+                  point left, the "previous" direction — no separate arrow glyph
+                  exists on this branch, so this reuses the one disclosure mark the
+                  app already has rather than adding a new SVG. */}
+              <ChevronIcon className="w-4 h-4 rotate-90" />
+            </button>
+            <div className="flex items-center gap-1.5" role="group" aria-label={COPY.presentPagerLabel}>
+              {R6_CONVERSATIONS.map((c, i) => (
+                <button
+                  key={c.id} type="button" onClick={() => setIndex(i)}
+                  aria-label={COPY.presentPagerGoTo(i + 1, count)} aria-current={i === index}
+                  className={`w-1.5 h-1.5 rounded-full transition-colors ${i === index ? 'bg-accent' : 'bg-edge-dim hover:bg-fg-muted'}`}
+                />
+              ))}
+            </div>
+            <span className="text-3xs font-mono text-fg-muted min-w-[2.5rem] text-center">
+              {COPY.presentPagerPosition(index + 1, count)}
+            </span>
+            <button
+              type="button" onClick={() => go(1)} aria-label={COPY.presentPagerNext}
+              className="p-1 text-fg-muted hover:text-fg rounded-md hover:bg-inset transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              {/* -rotate-90 (counter-clockwise) turns the same down chevron to
+                  point right, the "next" direction — see the prev button above. */}
+              <ChevronIcon className="w-4 h-4 -rotate-90" />
+            </button>
+          </div>
+        </div>
+      </PresentCardR6>
+    </PresentInBubble>
+  );
+}
+
+// D · present-inline-mentions — DEFERS the entire block: there is no card and
+// no list. A past conversation becomes a small chip the assistant's own
+// sentence refers to mid-thought, styled like the app's inline filepath pill
+// (FilepathToken.tsx's `pill` variant classes, reused verbatim) with ChatIcon
+// standing in for the file glyph — the file pill's own glyph swap between
+// image/document types has no equivalent here, so one glyph covers every
+// chip. GETS EVERYTHING BACK behind a click: a popover anchored beneath the
+// chip, built from OverlayPanel (the same .layer-surface shell AnchorTip and
+// FileFilterPopover already float their own content from), holds the date,
+// project, tags, and both buttons — everything the other three candidates
+// keep in the row, deferred here down to a single word in a sentence. Two
+// chips only, on purpose — the brief's own example sentence names two; a
+// sentence mentioning three past conversations stops reading like a sentence.
+const PRESENT_INLINE_LEAD = 'We settled this in';
+const PRESENT_INLINE_MID = 'and again in';
+const PRESENT_INLINE_TAIL = '.';
+
+function InlineMentionChip({ r, open, onToggle }: { r: PresentOk; open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      title={r.title || COPY.untitled}
+      className="group inline-flex max-w-[11rem] items-center gap-1.5 align-middle px-2 py-0.5 rounded-md bg-well border border-edge hover:border-fg-muted transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+    >
+      <ChatIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+      <span className="truncate text-[0.85em] text-fg group-hover:underline underline-offset-2 decoration-fg-muted">
+        {r.title || <span className="italic text-fg-muted">{COPY.untitled}</span>}
+      </span>
+    </button>
+  );
+}
+
+function InlineMentionPopover({ r, tagIndex }: { r: PresentOk; tagIndex: Map<string, TagRecord> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  const chips = resolveChatsearchTags(r.tags, tagIndex);
+  return (
+    <OverlayPanel layer={4} className="mt-2 w-64 max-w-full p-3">
+      <div className="text-4xs uppercase tracking-wider text-fg-muted">{COPY.paneSubtitle(r.provider)}</div>
+      <div className="text-sm font-medium text-fg truncate mt-0.5">
+        {r.title || <span className="italic font-normal text-fg-muted">{COPY.untitled}</span>}
+      </div>
+      <ChatsearchMetaLine
+        tags={chips} blocked={blocked} project={r.projectName || COPY.noProject}
+        date={formatRelativeTime(r.lastActive)} className="mt-1.5"
+      />
+      <div className="flex justify-end mt-2.5">
+        <ChatsearchActions r={r} />
+      </div>
+    </OverlayPanel>
+  );
+}
+
+function PresentInlineMentions() {
+  const tagIndex = useTagLabelIndex();
+  const mentioned = [R6_TWO_TAGS, R6_FOUR_TAGS];
+  // Opened by default on the first mention — the round's own report asks for
+  // the popover rendered in its open state so its contents can be judged
+  // without hovering or clicking first. Still real toggle state underneath:
+  // clicking either chip moves which one (if any) is open.
+  const [openId, setOpenId] = React.useState<string | null>(mentioned[0].id);
+  const open = mentioned.find((m) => m.id === openId) ?? null;
+  return (
+    <div className="flex justify-start px-4 py-0.5">
+      <div className="assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 py-3.5">
+        <p className="leading-relaxed">
+          {PRESENT_INLINE_LEAD}{' '}
+          <InlineMentionChip
+            r={mentioned[0]} open={openId === mentioned[0].id}
+            onToggle={() => setOpenId(openId === mentioned[0].id ? null : mentioned[0].id)}
+          />
+          {' '}{PRESENT_INLINE_MID}{' '}
+          <InlineMentionChip
+            r={mentioned[1]} open={openId === mentioned[1].id}
+            onToggle={() => setOpenId(openId === mentioned[1].id ? null : mentioned[1].id)}
+          />
+          {PRESENT_INLINE_TAIL}
+        </p>
+        {open && <InlineMentionPopover r={open} tagIndex={tagIndex} />}
+      </div>
+    </div>
+  );
+}
+
+
+// ── Round 8: a reference block inside the assistant's own message ─────────────
+// Destin, 2026-08-27 gate (M-show / D4): "display" stops being a tool and
+// becomes a renderer trick. The assistant writes the references into its own
+// sentence in a set format; the renderer parses the bubble and draws them.
+// His sketch: "This project is blah blah, working on blah blah, see: [convo 1]
+// [convo 2] [convo 3]. This other project is blah, working on blah: convo 4."
+//
+// So the question this round asks is NOT density — R4–R6 were rejected as a
+// family for re-asking that ("not a fan of any of these"). Every candidate here
+// uses the SAME settled row (R5's present-row-split: title/date on line one,
+// project/buttons on line two) and answers only: how does a group of references
+// attach to the prose around it? Each candidate therefore shows TWO groups
+// separated by a sentence, because one group in isolation cannot show it.
+const REF_GROUP_A: Extract<ResolvedConversation, { status: 'ok' }>[] = [
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_RESUMABLE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NOT_SYNCED)!,
+];
+const REF_GROUP_B: Extract<ResolvedConversation, { status: 'ok' }>[] = [
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_NATIVE)!,
+  CHATSEARCH_FIXTURE.find((c) => c.id === CS_MISSING_PROJECT)!,
+];
+const REF_LEAD_A = 'The permission work is mostly settled — the ask timeout and the sync gap both trace back to these:';
+const REF_LEAD_B = 'The newsletter is a separate thread, and the older one\u2019s project folder isn\u2019t on this machine:';
+
+/** The message shell every candidate below shares: real assistant bubble, two
+ *  leads, two groups. Only `group` differs between candidates. */
+function PresentRefMessage({ group }: { group: (rows: Extract<ResolvedConversation, { status: 'ok' }>[]) => React.ReactNode }) {
+  return (
+    <PresentInBubble>
+      <p className="m-0">{REF_LEAD_A}</p>
+      {group(REF_GROUP_A)}
+      <p className="m-0">{REF_LEAD_B}</p>
+      {group(REF_GROUP_B)}
+    </PresentInBubble>
+  );
+}
+
+/** A — the group is a bordered card between the paragraphs. Closest to what the
+ *  app already draws; the block is unmistakably a separate object. */
+function PresentRefBoxed() {
+  return (
+    <PresentRefMessage
+      group={(rows) => (
+        <div className="my-2 rounded-lg border border-edge bg-well overflow-hidden">
+          <div className="flex flex-col gap-1.5 p-2">
+            {rows.map((r) => <PresentRowSplitEntry key={r.id} r={r} />)}
+          </div>
+        </div>
+      )}
+    />
+  );
+}
+
+/** B — no box. A rule down the left and an indent, the way a quotation hangs off
+ *  the sentence that introduced it; the rows read as part of the message. */
+function PresentRefHanging() {
+  return (
+    <PresentRefMessage
+      group={(rows) => (
+        <div className="my-2 border-l-2 border-edge pl-3 flex flex-col gap-1.5">
+          {rows.map((r) => <PresentRowSplitEntry key={r.id} r={r} />)}
+        </div>
+      )}
+    />
+  );
+}
+
+/** C — a real table: one line per conversation, columns that line up ACROSS both
+ *  groups. Nothing wraps the block at all; only spacing separates it from the
+ *  prose. The trade-off is width — at a narrow bubble the title column is the
+ *  first thing squeezed, which is exactly what this candidate is here to show. */
+function PresentRefTableRow({ r }: { r: Extract<ResolvedConversation, { status: 'ok' }> }) {
+  const blocked = r.missingProject ? COPY.resumeMissingProject : r.notSyncedYet ? COPY.resumeNotSynced : null;
+  return (
+    <div className="flex items-center gap-2 py-1.5">
+      <span className="min-w-0 flex-[3] truncate text-xs text-fg">{r.title || COPY.untitled}</span>
+      <span className="min-w-0 flex-[2] truncate text-3xs text-fg-muted">{blocked ?? (r.projectName || COPY.noProject)}</span>
+      {!blocked && <span className="shrink-0 text-3xs text-fg-muted">{formatRelativeTime(r.lastActive)}</span>}
+      <ChatsearchActions r={r} />
+    </div>
+  );
+}
+function PresentRefTable() {
+  return (
+    <PresentRefMessage
+      group={(rows) => (
+        <div className="my-2 divide-y divide-edge-dim border-y border-edge-dim">
+          {rows.map((r) => <PresentRefTableRow key={r.id} r={r} />)}
+        </div>
+      )}
+    />
+  );
+}
+
 const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'close-prompt-body',
@@ -2848,13 +4851,286 @@ const ALL_SURFACES: CompareSurface[] = [
       },
     ],
   },
+  {
+    id: 'chatsearch-results',
+    label: 'Chat search results',
+    question: 'How should past-conversation search results look in the chat?',
+    frame: 'canvas',
+    // Chat-column width — these cards render inline in the timeline, same as
+    // every other tool-result card, not a dialog or panel.
+    paneWidth: 420,
+    rounds: [
+      {
+        n: 1,
+        candidates: [
+          {
+            id: 'resume-rows',
+            label: 'Resume Browser rows, in the chat',
+            note: 'Maximum consistency: copies the row the owner already knows from the resume list, so nothing here has to be learned twice. Cost: that row was built for a full-width panel, so the metadata trail (project · date) feels tight at chat-column width, and six rows plus a header run tall.',
+            render: () => <ChatsearchResultsA />,
+          },
+          {
+            id: 'titled-panel',
+            label: 'One titled panel, compact rows inside',
+            note: 'A single labeled panel explains the whole group at a glance and the rows inside are dense enough to show all six without scrolling — the most compact of the three. Cost: two nested surfaces (the panel and the row tint) is more visual machinery than the chat column usually carries for one tool result.',
+            render: () => <ChatsearchResultsB />,
+          },
+          {
+            id: 'stacked-cards',
+            label: 'Every result is its own conversation card',
+            note: 'Reuses the exact card the single-conversation card already shows, so a search hit and a conversation you opened on purpose look like the same kind of thing — including its "Past conversation" label, which is the most explicit of the three about what these rows are. Cost: the most vertical space by far; six results pushes everything else in the chat well down the page.',
+            render: () => <ChatsearchResultsC />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'R1 · B (titled-panel), with the owner\'s three changes applied: the panel header is now the open/close control, each row drops its leading ChatIcon (the header already says "past conversations"), and tags moved off their own line onto the project/date line. Open: only whether the panel should start open or closed — everything else about B is settled.',
+        candidates: [
+          {
+            id: 'b-open',
+            label: 'Open by default',
+            note: 'Starts expanded, showing all six rows. The card\'s whole purpose is the Preview/Resume buttons, and a closed card hides them until clicked.',
+            render: () => <ChatsearchPanelB2 defaultOpen />,
+          },
+          {
+            id: 'b-closed',
+            label: 'Closed by default',
+            note: 'Starts collapsed to a single header line. Search results are often skimmed once and scrolled past, and a closed card keeps the conversation compact until you ask to see them.',
+            render: () => <ChatsearchPanelB2 defaultOpen={false} />,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'chatsearch-present',
+    label: 'Presented conversation',
+    question: 'When the assistant puts a past conversation in front of you, how much of it should you see?',
+    frame: 'canvas',
+    // Was 420 (the chat-column width) through Round 6, three panes at a time.
+    // Round 7 compares FOUR candidates — at 420 they don't fit side by side on
+    // a normal window, so this narrowed to ~380 for the whole surface (there is
+    // no per-round override in CompareSurface) so four panes have a better
+    // chance of sitting in one row. Every candidate above still renders at its
+    // real chat-bubble width regardless of this value — panes never stretch
+    // wider than it, but nothing stops a candidate from being narrower.
+    //
+    // Raised to 500 for Round 8 (back to three panes). At 380 the bubble came
+    // out ~320 wide, which is NARROWER than any real chat column — and the
+    // table candidate, the only one whose columns compete for width, was the
+    // one that suffered: it truncated titles to two characters. Judging a
+    // layout at a width it never actually gets is how a candidate loses on a
+    // problem it does not have. The earlier rounds re-render wider; their
+    // recorded picks stand, since none of them turned on width.
+    paneWidth: 500,
+    rounds: [
+      {
+        n: 1,
+        candidates: [
+          {
+            id: 'present-compact',
+            label: 'Just the essentials',
+            note: 'Title, tags, project, date, and the two buttons — nothing about what was actually said. The tightest of the three; the other two have to earn their extra height against this one.',
+            render: () => <PresentCompact />,
+          },
+          {
+            id: 'present-excerpt',
+            label: 'With a line or two from it',
+            note: 'Adds one quoted, quieter line under the title so you can recognise the conversation without opening it. Costs one more line per conversation than the compact version — and where that quoted line would really come from is not decided yet, see the report.',
+            render: () => <PresentExcerpt />,
+          },
+          {
+            id: 'present-minitranscript',
+            label: 'A glimpse of the actual conversation',
+            note: 'Shows a few real chat bubbles from the conversation, clipped to a fixed height so it can never grow past that no matter how long the real exchange was. The most recognisable of the three, and by far the tallest — with two conversations shown, this candidate is roughly triple the compact version\'s height.',
+            render: () => <PresentMiniTranscript />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'R1 — all three rejected outright: "all way too busy with unclear visual hierarchy and structure." A reset, not a tweak — every candidate below drops the nested accent box, the tag chips, the lane label, and the second button, leaving one container at most (the bubble itself), a title that is clearly the heaviest thing in the block, and a single click target that opens the conversation. Resume is not on this block; it moves to the preview panel\'s header.',
+        candidates: [
+          {
+            id: 'present-plain-list',
+            label: 'No container at all',
+            note: 'Whitespace alone groups the conversations — no border, no fill, no rule, ever, at rest. The plainest possible answer; if a heavier candidate doesn\'t clearly earn its extra ink over this one, this is the one to ship.',
+            render: () => <PresentPlainList />,
+          },
+          {
+            id: 'present-quoted',
+            label: 'Quoted, like a reference',
+            note: 'One left accent line runs down the side of the whole group, the way a quoted reference does elsewhere — a line, not a box, so it says "these are things I\'m referring to" without adding a fourth kind of container to the app.',
+            render: () => <PresentQuoted />,
+          },
+          {
+            id: 'present-attachments',
+            label: 'Attached items',
+            note: 'Each conversation is one tight row — a small paperclip mark, the title, the time — closer to a list of attached files than to a card. Densest of the three, and it drops the project name entirely to keep each row to one line.',
+            render: () => <PresentAttachments />,
+          },
+        ],
+      },
+      {
+        n: 3,
+        basis: 'R2 rejected, harder than R1: "that\'s worse. it def still needs the preview/resume buttons and it needs to be consistent with other ui elements." Two fixes, not one tweak: Preview/Resume are real buttons again on every entry, and every candidate below stops being a NEW arrangement — each one is a literal, verbatim copy of ONE thing that already ships elsewhere in the app, so "consistent with other ui elements" is the candidate, not a note about it.',
+        candidates: [
+          {
+            id: 'present-as-search-row',
+            label: 'Looks like search results',
+            note: 'The exact same row you already approved for search results (ChatsearchFindCard.tsx) — same title, same tag/project/date line, same Preview/Resume buttons — just sitting directly in the message instead of inside a results card. The only thing different is where it sits.',
+            render: () => <PresentSearchRow />,
+          },
+          {
+            id: 'present-as-plan-box',
+            label: 'Looks like the assistant\'s plan box',
+            note: 'The same tinted, bordered box the assistant already uses when it shows you a step-by-step plan mid-message, with a small heading on top the same way that box has one. A presented conversation reads as the same kind of thing as a plan.',
+            render: () => <PresentPlanBox />,
+          },
+          {
+            id: 'present-as-resume-card',
+            label: 'Looks like the Resume screen\'s cards',
+            note: 'Each conversation gets its own bordered card, the same shape as the cards on the "reopen a past conversation" screen you already use, stacked one after another. Consistent with the screen built for exactly this job.',
+            render: () => <PresentResumeCard />,
+          },
+        ],
+      },
+      {
+        n: 4,
+        basis: 'R3 not rejected on its own merits — the owner named the target himself: "you should try to mimic the design of the new \'deliverables\' card somewhat." All three candidates below share ONE card shell and header, copied from that already-approved card (DeliverablesCard.tsx, branch feat/send-user-file-card — unmerged, so redrawn rather than imported, see the code comment above this round). What differs between them is only the body: how the tiles lay out, and how explicitly Preview/Resume are offered.',
+        candidates: [
+          {
+            id: 'present-filmstrip-arrow',
+            label: 'Filmstrip, glyph actions',
+            note: 'Closest to the deliverables card: a sideways-scrolling row of tiles, and clicking a tile opens it, the same way a deliverable file opens. Preview and Resume are both there, just as two small icon buttons in the corner — the least spelled-out of the three.',
+            render: () => <PresentFilmstripArrow />,
+          },
+          {
+            id: 'present-filmstrip-buttons',
+            label: 'Filmstrip, text buttons',
+            note: 'Same sideways tiles, but Preview and Resume are full "Preview" / "Resume" buttons instead of icons — unmistakable, but two buttons is a tight fit on a tile this narrow, especially on a phone.',
+            render: () => <PresentFilmstripButtons />,
+          },
+          {
+            id: 'present-stacked-rows',
+            label: 'Stacked rows, text buttons',
+            note: 'Drops the sideways scrolling entirely — each conversation is a full-width row with a small square preview, the title and details in the middle, and the two buttons on the right. Nothing is ever hidden off the edge of the screen, but it takes more vertical space than a filmstrip once there are more than two or three.',
+            render: () => <PresentStackedRows />,
+          },
+        ],
+      },
+      {
+        n: 5,
+        basis: 'R4 · C (Stacked rows, text buttons) — the owner\'s pick: "i like c (stacked) but we should drop the full quote and try to improve space efficiency/layout a bit." Same card shell and header; the preview square is gone from every row below (there is no file to stand in for any more) and each candidate reclaims that width a different way. Also switched to closed-by-default, matching both this feature\'s own search card and the Deliverables card this shell is copied from.',
+        candidates: [
+          {
+            id: 'present-row-single',
+            label: 'One line',
+            note: 'Title, project · date, and the two buttons all share one line per conversation — the tightest of the three. The trade-off: once the buttons and the date claim their share, the title has the least room left to stay readable.',
+            render: () => <PresentRowSingle />,
+          },
+          {
+            id: 'present-row-two-line',
+            label: 'Two lines, stacked',
+            note: 'Title on its own line, project and date quietly beneath it, buttons centred at the right. The most ordinary list row — a little taller than the single-line version, but nothing has to fight for space.',
+            render: () => <PresentRowTwoLine />,
+          },
+          {
+            id: 'present-row-split',
+            label: 'Two lines, full width',
+            note: 'Title and date share the top line, project and the buttons share the bottom one — nothing is squeezed into a leftover sliver, but your eye has to travel corner to corner to read one conversation.',
+            render: () => <PresentRowSplit />,
+          },
+        ],
+      },
+      {
+        n: 6,
+        basis: 'R5 · C (present-row-split) — the owner\'s pick: "more like c, try to keep tags." Skeleton unchanged (title/date on line 1, project/buttons on line 2); every candidate below adds tags back to it and answers only where they go. Fixture set replaced for this round alone — a two-tag row, a four-tag row carrying a long multi-word label, and a no-tag row — so the comparison can\'t look tidy just because R5\'s own two fixtures were lightly tagged.',
+        candidates: [
+          {
+            id: 'present-tags-meta',
+            label: 'Tags on the project line',
+            note: 'Tags sit on line 2, right before the project name — the same tags-then-project order the search-result row already uses. Caps at two tags plus a "+N" chip so a heavily-tagged conversation can never push the project name or the buttons off the row, but that same cap means the project name and buttons are the ones fighting tags for space.',
+            render: () => <PresentTagsMeta />,
+          },
+          {
+            id: 'present-tags-title',
+            label: 'Tags on the title line',
+            note: 'Tags sit on line 1, between the title and the date — the first thing your eye reaches. Same two-then-"+N" cap as the other option, but now three things (title, tags, date) share the top line instead of two, so a long title has the least room of any candidate here.',
+            render: () => <PresentTagsTitle />,
+          },
+          {
+            id: 'present-tags-row',
+            label: 'Tags on their own line',
+            note: 'Tags drop to a full third line beneath project and buttons, wrapping instead of being capped — every tag is always visible, however many there are. Costs real height: a heavily-tagged conversation in a list of several makes the whole block taller, and a conversation with no tags stays two lines so this cost is only paid when there is something to show.',
+            render: () => <PresentTagsRow />,
+          },
+        ],
+      },
+      {
+        n: 7,
+        basis: 'R4–R6 rejected as a family: "not a fan of any of these. a few more creative options please." The last three rounds were all one shape — a stacked list of rows carrying title/date/project/tags/two-buttons, differing only in density and where the tags sat. This round does not add a fourth density; each candidate below shows LESS at once and gives a specific way to get the rest back, stated in its note.',
+        candidates: [
+          {
+            id: 'present-expand-in-place',
+            label: 'Click a title to expand it',
+            note: 'Defers everything but the title — date, project, tags, both buttons — for every conversation. Gets it back by making the title a real button: click it and that one row expands in place; click another and the first collapses, so only ever one row is "busy". At rest, N conversations cost N one-line rows.',
+            render: () => <PresentExpandInPlace />,
+          },
+          {
+            id: 'present-hover-actions',
+            label: 'Buttons appear on hover',
+            note: 'Defers the two buttons out of the layout entirely — they claim no row width at rest — and tags down to a color stripe on the left, with their names only in the row\'s tooltip. Gets the buttons back on hover or keyboard focus, floating over the row\'s right edge. Since a phone has no hover, narrow viewports put them back in the layout permanently instead — the one thing this candidate does not defer there.',
+            render: () => <PresentHoverActions />,
+          },
+          {
+            id: 'present-one-at-a-time',
+            label: 'One conversation, full size',
+            note: 'Defers every conversation except one — the other two render nothing at all. Gets them back via a pager (dots, prev/next, "n / total") that steps through the set; the one showing gets a full-size title, the full tag/project/date line with no cap, and full-size buttons. The trade-off the brief asked to see: the others are invisible until you page to them.',
+            render: () => <PresentOneAtATime />,
+          },
+          {
+            id: 'present-inline-mentions',
+            label: 'Chips inside the sentence',
+            note: 'Defers the entire block — no card, no list. A conversation becomes a small chip inside the assistant\'s own sentence, styled like the app\'s inline filepath pill. Gets everything back — date, project, tags, both buttons — in a popover that opens beneath the chip on click. The most radical option: it removes the block and makes a past conversation something the assistant can refer to mid-sentence, at the cost of being far less scannable than any list.',
+            render: () => <PresentInlineMentions />,
+          },
+        ],
+      },
+      {
+        n: 8,
+        basis: 'Destin, 2026-08-27 gate (M-show / D4): "display" is no longer a tool — the assistant writes references into its own message in a set format and the renderer draws them. Every candidate reuses R5/R6\'s settled row unchanged and answers ONE new question: how does a group of references attach to the prose around it? Each shows TWO groups split by a sentence, because a single group in isolation cannot show it.',
+        candidates: [
+          {
+            id: 'present-ref-boxed',
+            label: 'Boxed group',
+            note: 'Each group sits in its own bordered card between the paragraphs — the same border and background the app\'s other blocks use. Unmistakably a separate object you can act on, at the cost of two hard-edged boxes inside one message.',
+            render: () => <PresentRefBoxed />,
+          },
+          {
+            id: 'present-ref-hanging',
+            label: 'Hanging off the sentence',
+            note: 'No box. A rule down the left and an indent, the way a quotation hangs off the line that introduced it. The references read as part of what the assistant is saying rather than an attachment to it — but they are also less obviously a thing you can click.',
+            render: () => <PresentRefHanging />,
+          },
+          {
+            id: 'present-ref-table',
+            label: 'Table, columns lined up',
+            note: 'One line per conversation with columns that line up across BOTH groups, hairlines above and below, nothing wrapping the block. The most scannable when several conversations are named at once. The trade-off it is here to show: the title column is the first thing squeezed as the bubble narrows.',
+            render: () => <PresentRefTable />,
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 // CompareView opens on COMPARE_SURFACES[0] and has no URL param for the surface,
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'bash-grant-width';
+const ACTIVE_FIRST = 'chatsearch-present';
 
 export const COMPARE_SURFACES: CompareSurface[] = [
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),

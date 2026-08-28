@@ -312,6 +312,9 @@ interface WatchedSession {
   cwd: string;
   jsonlPath: string;
   offset: number;
+  // The byte the tailer STARTED at (perf cycle 2). The first history page reads
+  // up to exactly this byte, so page and live stream can never overlap.
+  startOffset: number;
   // Carry-over of an incomplete trailing line between reads, kept as BYTES.
   // A decoded-string carry corrupts multi-byte UTF-8 chars split across a
   // read boundary (each half decodes to U+FFFD independently) — bytes stitch
@@ -385,9 +388,18 @@ export class TranscriptWatcher extends EventEmitter {
       emit: (event) => this.emit('transcript-event', event),
     });
 
+    // Perf (cycle 2): start at the END of an already-existing file. History is
+    // delivered by the page reader (transcript-page.ts); the tailer carries only
+    // genuinely new lines. This removes the whole-file re-read + re-emit that ran
+    // on every resume and re-dock. A brand-new session's file does not exist yet
+    // -> 0, exactly as before.
+    let startOffset = 0;
+    try { startOffset = fs.statSync(jsonlPath).size; } catch { startOffset = 0; }
+
     const session: WatchedSession = {
       desktopSessionId, claudeSessionId, cwd, jsonlPath,
-      offset: 0,
+      offset: startOffset,
+      startOffset,
       partialBytes: Buffer.alloc(0),
       reading: false,
       rerunQueued: false,
@@ -411,6 +423,32 @@ export class TranscriptWatcher extends EventEmitter {
       this.attachFsWatch(session);
     }
     this.ensureGlobalPoll();
+  }
+
+  /**
+   * The byte offset the live tailer started at for this session — the END
+   * boundary the first history page reads up to, so the page and the live
+   * stream never overlap. 0 for a session whose file did not exist yet.
+   */
+  getStartOffset(desktopSessionId: string): number {
+    return this.sessions.get(desktopSessionId)?.startOffset ?? 0;
+  }
+
+  /**
+   * Everything the paged-history reader (transcript-page.ts) needs for a
+   * session, or null when the session isn't watched. Returned as data rather
+   * than exposing the sessions map — and read from HERE rather than importing
+   * the reader, which would make transcript-watcher <-> transcript-page a
+   * circular import (the reader needs parseTranscriptLine).
+   */
+  pageSourceFor(desktopSessionId: string): { jsonlPath: string; subagentsDir: string; startOffset: number } | null {
+    const session = this.sessions.get(desktopSessionId);
+    if (!session) return null;
+    return {
+      jsonlPath: session.jsonlPath,
+      subagentsDir: path.join(path.dirname(session.jsonlPath), session.claudeSessionId, 'subagents'),
+      startOffset: session.startOffset,
+    };
   }
 
   /**

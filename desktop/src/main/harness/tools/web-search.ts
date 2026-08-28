@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { defineTool } from './registry';
 import { SearchUnavailableError } from '../search/search-service';
 
-const inputSchema = z.object({ query: z.string().min(1).describe('The search query') });
+const inputSchema = z.object({ query: z.string().min(1).describe('The search query') }).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 
 export const WebSearchTool = defineTool<z.infer<typeof inputSchema>>({
   name: 'WebSearch',

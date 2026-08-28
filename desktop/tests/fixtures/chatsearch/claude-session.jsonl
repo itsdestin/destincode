@@ -1,0 +1,8 @@
+{"type":"user","uuid":"u1","promptId":"p1","timestamp":"2026-07-26T00:00:01Z","message":{"role":"user","content":"Fix the timeout"}}
+{"type":"assistant","uuid":"a1","timestamp":"2026-07-26T00:00:02Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"text","text":"Looking at it."},{"type":"tool_use","id":"t1","name":"Read","input":{"file_path":"/x"}}]}}
+{"type":"user","uuid":"u2","timestamp":"2026-07-26T00:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"..."}]}}
+{"type":"assistant","uuid":"a2","timestamp":"2026-07-26T00:00:04Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"t2","name":"Edit","input":{}}]}}
+{"type":"user","uuid":"u3","timestamp":"2026-07-26T00:00:05Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"ok"}]}}
+{"type":"assistant","uuid":"a3","timestamp":"2026-07-26T00:00:06Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done — **fixed**."}]}}
+{"type":"user","uuid":"u4","isMeta":true,"timestamp":"2026-07-26T00:00:07Z","message":{"role":"user","content":"<meta>"}}
+{"type":"user","uuid":"u5","promptId":"p2","timestamp":"2026-07-26T00:00:08Z","message":{"role":"user","content":"thanks"}}

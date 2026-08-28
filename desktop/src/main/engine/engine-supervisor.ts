@@ -18,6 +18,7 @@ import * as fs from 'fs';
 import { EventEmitter } from 'events';
 import type { EngineModel, EngineModelState, EngineRunState } from '../../shared/engine-types';
 import { scanGgufCache } from './cache-scan';
+import { isFollowerPart } from '../../shared/gguf-split';
 
 export interface EngineSupervisorOpts {
   binaryPath: string;
@@ -561,6 +562,11 @@ export class EngineSupervisor extends EventEmitter {
       for (const row of rows) {
         const id = typeof row?.id === 'string' ? row.id : typeof row?.name === 'string' ? row.name : null;
         if (!id) continue; // skip malformed
+        // A split GGUF is ONE model, but --models-dir lists one row per FILE.
+        // Parts 2..N carry weights with no architecture header, so selecting one
+        // can only ever 500 — drop them here, the single place router rows enter
+        // the app (scanGgufCache already groups them on the engine-off path).
+        if (isFollowerPart(id)) continue;
         // b9992's /models reports status as an OBJECT ({value:'loaded'|'unloaded'
         // |'loading'|'sleeping'}), NOT a bare string. Handle both so a schema
         // shift either way still reads.

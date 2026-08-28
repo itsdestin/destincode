@@ -4,6 +4,7 @@ import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/typ
 import { assistantName } from '../utils/assistant-name';
 import { hasNestedAsk } from '../utils/specialist-cards';
 import MarkdownContent from './MarkdownContent';
+import { SessionRefsEnabled } from './session-refs-context';
 import ToolCard from './ToolCard';
 import { DeliverablesCard, isSentFilesTool } from './DeliverablesCard';
 import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon } from './Icons';
@@ -238,7 +239,11 @@ export interface VisualBubble {
 }
 
 // Exported for test (see VisualBubble comment above).
-export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
+// Perf (cycle 1, N3): typed as Pick<…, 'segments'> on purpose — this function
+// reads NOTHING but the segments, and the component's useMemo below depends on
+// exactly that (it keys on turn.segments, not turn). If this ever needs another
+// field, the type will force the memo key to widen with it.
+export function splitIntoBubbles(turn: Pick<AssistantTurn, 'segments'>): VisualBubble[] {
   const bubbles: VisualBubble[] = [];
   let current: VisualBubble | null = null;
   // Buffer of reasoning content seen since the last bubble boundary.
@@ -282,7 +287,7 @@ export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
         toolGroupIds: [],
       };
       pendingReasoning = null;
-    } else {
+    } else if (seg.type === 'tool-group') {
       // Tool-group segment. Fix (M1 BUG A): the native harness streams
       // reasoning live but batches tool-use events after each step's stream,
       // so a multi-step turn interleaves as [text₁, toolGroupA, reasoning₂,
@@ -302,6 +307,13 @@ export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
         pendingReasoning = null;
       }
       current.toolGroupIds.push(seg.groupId);
+    } else {
+      // A segment type this bundle does not know about. The remote browser and
+      // the Android WebView load a bundle that can be OLDER than the host that
+      // sends them turns, so this is reachable in normal use, not a corruption.
+      // Render nothing: the previous `else` treated anything unrecognised as a
+      // tool group, which pushed `undefined` as a group id and drew an empty
+      // card for a segment it could not read.
     }
   }
   if (current) bubbles.push(current);
@@ -323,7 +335,7 @@ export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
 // groups (where ToolGroupInline now filters them) and render them as a
 // trailing row of standalone cards on the last bubble of the turn.
 function collectTurnSkills(
-  turn: AssistantTurn,
+  turn: Pick<AssistantTurn, 'segments'>,
   toolGroups: Map<string, ToolGroupState>,
   toolCalls: Map<string, ToolCallState>,
 ): ToolCallState[] {
@@ -403,17 +415,25 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
   // Read opt-in metadata preference here so the strip below only renders when
   // the user has explicitly turned it on in PreferencesPopup (default false).
   const { showTurnMetadata } = useTheme();
-  // splitIntoBubbles is pure over `turn`, so cache it and only recompute when
-  // the turn object itself changes — not on every parent re-render. Combined
-  // with the memo comparator below, completed turns no longer re-split (and
-  // re-parse their markdown) on every streaming frame.
-  const bubbles = React.useMemo(() => splitIntoBubbles(turn), [turn]);
+  // splitIntoBubbles is pure over the turn's SEGMENTS, so cache it on those.
+  // Perf (cycle 1, N3): this used to key on `turn`, but the reducer mints a new
+  // turn object for every change to the turn — a streamed delta, but also a
+  // model capture, a usage/stopReason stamp at turn-complete, a tool status
+  // change routed through this turn — so while a turn was live the memo never
+  // hit and every one of those re-split the turn from scratch. `segments` is
+  // only replaced when a segment actually changes, so keying on it makes the
+  // split happen exactly when its input does. Combined with the memo
+  // comparator below, completed turns still never re-split (and never
+  // re-parse their markdown) on a sibling's streaming frame. Pinned by
+  // tests/assistant-turn-split-depends-on-segments.test.tsx.
+  const segments = turn.segments;
+  const bubbles = React.useMemo(() => splitIntoBubbles({ segments }), [segments]);
   // Skills are reordered to the end of the turn's last bubble (view-layer only).
   // ToolGroupInline filters Skills out of their groups; this list backs the
-  // trailing standalone-card row below.
+  // trailing standalone-card row below. Same segments-only key as above.
   const turnSkills = React.useMemo(
-    () => collectTurnSkills(turn, toolGroups, toolCalls),
-    [turn, toolGroups, toolCalls],
+    () => collectTurnSkills({ segments }, toolGroups, toolCalls),
+    [segments, toolGroups, toolCalls],
   );
 
   // Empty-step recovery (spec 2026-08-21, decision 4): a fully-contentless
@@ -465,7 +485,14 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
               {bubble.text && (
                 // Pass sessionId so MarkdownContent can render inline FilepathToken chips
                 // for detected file paths in this session's artifact set.
-                <MarkdownContent content={bubble.text.content} sessionId={sessionId} />
+                // SessionRefsEnabled: this is the ONE place a `conversations`
+                // fence becomes a reference block with live Preview/Resume rows.
+                // Everywhere else MarkdownContent renders (a previewed past
+                // conversation, an artifact) it stays plain text — ids from
+                // another device would resolve to a block of dead rows.
+                <SessionRefsEnabled.Provider value={true}>
+                  <MarkdownContent content={bubble.text.content} sessionId={sessionId} />
+                </SessionRefsEnabled.Provider>
               )}
               {bubble.plan && (
                 <PlanBubbleContent

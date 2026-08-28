@@ -47,6 +47,7 @@ export interface RefreshInput {
   homeRoot: string;
   lanes: LaneInput[];
   tagLabels: Map<string, string>;
+  storeRoot: string;
 }
 
 // lstatSync, never existsSync/statSync: matches the rest of this subsystem's
@@ -152,6 +153,7 @@ export async function refreshChatsearchIndex(input: RefreshInput): Promise<boole
         stats,
         resolveTranscriptPath: lane.resolveTranscriptPath,
         transcriptExists: fileExistsOnDisk,
+        storeRoot: input.storeRoot,
       });
 
       // WHY guard a zero-conversation result: store.list() is fail-soft all the
@@ -222,6 +224,7 @@ async function refreshFromLiveState(): Promise<void> {
     await refreshChatsearchIndex({
       homeRoot,
       tagLabels,
+      storeRoot,
       lanes: [
         {
           provider: 'claude',

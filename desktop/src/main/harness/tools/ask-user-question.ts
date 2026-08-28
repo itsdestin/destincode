@@ -15,7 +15,7 @@ const questionSchema = z.object({
   options: z.array(optionSchema).min(2).max(4),
   multiSelect: z.boolean(),
 });
-const inputSchema = z.object({ questions: z.array(questionSchema).min(1).max(4) });
+const inputSchema = z.object({ questions: z.array(questionSchema).min(1).max(4) }).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 export type AskUserQuestionInput = z.infer<typeof inputSchema>;
 
 const NO_SELECTION = '(no selection — the user did not answer this one)';
@@ -43,7 +43,24 @@ export function formatAnswers(args: AskUserQuestionInput, updatedInput: Record<s
   const raw = updatedInput?.answers;
   // Guard `answers` itself: a client could send an array, null, or a scalar.
   const answers = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
-  const lines = args.questions.map((qq) => `Q: ${qq.question}\nA: ${renderAnswer(answers[qq.question])}`);
+  // Ledger G-2: the card can now send a free-text note per question
+  // (`notes[question]`) when a listed option was chosen. Same untrusted-shape
+  // rules as `answers` — anything that isn't a non-empty string is no note.
+  const rawNotes = updatedInput?.notes;
+  const notes = (rawNotes && typeof rawNotes === 'object' && !Array.isArray(rawNotes) ? rawNotes : {}) as Record<string, unknown>;
+  const lines = args.questions.map((qq) => {
+    const answer = renderAnswer(answers[qq.question]);
+    // A typed "Other" answer arrives as plain text in the answer slot. Tell the
+    // model when what came back was NOT one of its options, so it reads the
+    // text as the user's own answer instead of hunting for a matching label.
+    const labels = new Set(qq.options.map((o) => o.label));
+    const parts = answer === NO_SELECTION ? [] : answer.split(', ');
+    const ownAnswer = parts.length > 0 && parts.some((p) => !labels.has(p));
+    const note = typeof notes[qq.question] === 'string' ? (notes[qq.question] as string).trim() : '';
+    let out = `Q: ${qq.question}\nA${ownAnswer ? ' (the user typed their own answer)' : ''}: ${answer}`;
+    if (note) out += `\nNote from the user: ${note}`;
+    return out;
+  });
   return `The user answered:\n\n${lines.join('\n\n')}`;
 }
 

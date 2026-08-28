@@ -33,11 +33,11 @@ describe('WebFetch', () => {
     __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(
       '<html><head><title>Docs</title></head><body><nav>junk nav</nav><article><h1>API Guide</h1><p>' + 'Real content. '.repeat(40) + '</p></article></body></html>',
     ) });
-    const r = await WebFetchTool.execute({ url: 'https://example.com/docs', prompt: 'find the API guide' } as any, ctx());
+    const r = await WebFetchTool.execute({ url: 'https://example.com/docs' } as any, ctx());
     expect(r.isError).toBeUndefined();
     expect(r.text).toContain('API Guide');
     expect(r.text).not.toContain('junk nav');       // Readability stripped chrome
-    expect(r.text).toContain('find the API guide'); // prompt echoed as context header
+    expect(r.text).toContain('Source: https://example.com/docs'); // D-6: the header is the source URL only
   });
   it('passes plain text / json through', async () => {
     __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } }) });

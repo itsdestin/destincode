@@ -14,7 +14,7 @@ export const TodoWriteTool = defineTool({
         activeForm: z.string(),
       }),
     ),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   permissionSubject: () => undefined,
   async execute(args, ctx) {
     ctx.todos.length = 0;

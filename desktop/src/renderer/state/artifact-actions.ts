@@ -37,4 +37,12 @@ export type ArtifactAction =
   | { type: 'PROJECT_VIEW_CLOSED' }
   // Git review sub-view within the drawer, per session (see DRAWER_* above).
   | { type: 'GIT_REVIEW_OPENED'; sessionId: string }
-  | { type: 'GIT_REVIEW_CLOSED'; sessionId: string };
+  | { type: 'GIT_REVIEW_CLOSED'; sessionId: string }
+  // Session references (spec 2026-08-10 §D): previewing a past conversation
+  // in the drawer's pane. Mutually exclusive with an active artifact — see
+  // artifact-tracker.ts's SESSION_PREVIEW_SET/ACTIVE_ARTIFACT_SET/DRAWER_CLOSED cases.
+  | { type: 'SESSION_PREVIEW_SET'; sessionId: string; provider: 'claude' | 'native'; id: string; title: string }
+  | { type: 'SESSION_PREVIEW_CLEARED'; sessionId: string }
+  // Records that a conversation was previewed this session, for the drawer's
+  // "Referenced conversations" list (cut candidate — see Task 6 brief 6b).
+  | { type: 'SESSION_REFERENCED'; sessionId: string; ref: { provider: 'claude' | 'native'; id: string; title: string; lastActive: string } };

@@ -32,6 +32,7 @@ import { dispatchSlashCommand, type DispatcherResult } from './state/slash-comma
 import { runNativeSlashAction, routeSlashResult } from './state/native-slash-actions';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
+import { buildUsageSnapshot, type SubscriptionUsage } from './state/usage-snapshot';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
@@ -44,6 +45,7 @@ import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
 import { useNativeSessionUsage, useTurnsWithUsage } from './hooks/useNativeSessionUsage';
+import { useNativeSessionTotals } from './hooks/useNativeSessionTotals';
 import { useZoomControls } from './hooks/useZoomControls';
 import { useChromeMeasurements } from './hooks/useChromeMeasurements';
 import { broadcastExpandAll, broadcastCollapseAll, isInExpandAllMode } from './hooks/useExpandAllToggle';
@@ -73,6 +75,12 @@ import { ProjectView } from './components/project-view/ProjectView';
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
 import type { NativePermissionMode } from '../shared/permission-types';
 import { RESUMING_NATIVE, RESUMING_CLAUDE } from '../shared/session-title';
+
+/** First-page fetch retries — see loadFirstPage. Three attempts 400ms apart
+ *  covers the gap between a session starting and Claude Code's hook reporting
+ *  its transcript path, without making a genuinely empty session feel slow. */
+const FIRST_PAGE_ATTEMPTS = 3;
+const FIRST_PAGE_RETRY_MS = 400;
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -239,7 +247,6 @@ function AppInner() {
   }, []);
   // Track which sessions the user has "seen" (switched to after activity completed)
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
-  const [resumeInfo, setResumeInfo] = useState<Map<string, { claudeSessionId: string; projectSlug: string }>>(new Map());
   const [resumeRequested, setResumeRequested] = useState(false);
   // Plan 2b "Moved Gate" (2026-07-14). Sessions another device took over: we keep
   // the pill and render <MovedGate> (instead of chat/terminal) when it's clicked.
@@ -1223,6 +1230,22 @@ function AppInner() {
           // reportUsage → native:usage-report → status:data cache path was dead
           // (nothing read its nativeUsageMap) and was removed in the whole-branch review.
           break;
+        case 'subagent-usage':
+          // Bookkeeping only — never touches the timeline, the turn state, or
+          // the subagent card's segments. It exists so the parent's totals can
+          // include the work it delegated (spec §2). Arrives on the PARENT's
+          // stream (native-session-host emits it there), and replays from the
+          // parent's record on resume like any other persisted event.
+          batchTranscriptDispatch({
+            type: 'TRANSCRIPT_SUBAGENT_USAGE',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            usage: event.data.usage ?? null,
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
+          });
+          break;
         case 'assistant-thinking': {
           // Text payload → real reasoning content (collapsible in chat).
           // No payload → lifecycle heartbeat only (existing behavior:
@@ -1656,8 +1679,72 @@ function AppInner() {
   // Fetch session list on mount — catches sessions that existed before event handlers were registered
   // (e.g., remote browser reconnecting after the replay buffer events already fired, or a renderer
   // crash/reload, where main kept every session alive but this is a brand-new React tree).
+  // Perf cycle 2: load a session's most recent PAGE of history instead of
+  // replaying its whole transcript. Opening a huge conversation used to stream
+  // thousands of events through the reducer (~22s); a page is ~30 turns.
+  //
+  // claudeSessionId/projectSlug are the fallback locator for a session the
+  // transcript watcher does not know yet (a just-resumed CC session) — see
+  // TranscriptPageRequest.
+  // Sessions whose first page has already been asked for. Ids are never removed:
+  // asking twice would prepend the newest page a second time.
+  const firstPageAsked = useRef<Set<string>>(new Set());
+
+  const loadFirstPage = useCallback(async (sid: string, locator?: { claudeSessionId: string; projectSlug: string }) => {
+    if (firstPageAsked.current.has(sid)) return;
+    firstPageAsked.current.add(sid);
+    dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId: sid });
+    for (let attempt = 0; attempt < FIRST_PAGE_ATTEMPTS; attempt++) {
+      try {
+        const page = await (window as any).claude?.detach?.requestTranscriptPage?.({
+          sessionId: sid,
+          beforeCursor: null,
+          claudeSessionId: locator?.claudeSessionId,
+          projectSlug: locator?.projectSlug,
+        });
+        if (!page) { dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid }); return; }
+        // An empty page is ambiguous: either the session genuinely has no
+        // history, or main cannot resolve its transcript YET (a just-started
+        // session is not watched until Claude Code's hook reports its path).
+        // Retry a few times before accepting it — guessing wrong one way shows
+        // an empty conversation with no way to recover, guessing wrong the
+        // other way costs a few hundred ms on a genuinely new session.
+        const empty = page.events.length === 0 && !page.hasMore;
+        if (!empty || attempt === FIRST_PAGE_ATTEMPTS - 1) {
+          dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId: sid, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
+          return;
+        }
+      } catch {
+        // The scroll sentinel can retry; a failed first page leaves an empty
+        // view rather than a wrong one.
+        dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid });
+        return;
+      }
+      await new Promise((r) => setTimeout(r, FIRST_PAGE_RETRY_MS));
+    }
+  }, [dispatch]);
+
+  // Every session this window knows about gets its most recent page — not just
+  // the paths that happen to create one. History used to arrive as a side effect
+  // of the live tailer replaying from byte 0, which covered every entry point by
+  // accident; now that the tailer starts at EOF, a session that appears by any
+  // OTHER route (adopted from the directory, created through the session API
+  // directly) would render EMPTY. Guarded by firstPageAsked, so the explicit
+  // resume calls below — which carry a locator — win the race and this skips them.
+  useEffect(() => {
+    // Forget closed sessions first. A native session is keyed by the id it
+    // resumes, so the same id can legitimately come back — and a stale entry
+    // here would silently deny it any history at all.
+    const live = new Set(sessions.map((s) => s.id));
+    for (const id of firstPageAsked.current) if (!live.has(id)) firstPageAsked.current.delete(id);
+    for (const s of sessions) void loadFirstPage(s.id);
+  }, [sessions, loadFirstPage]);
+
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
+      // Perf lab: boot-time session fetch has resolved (catches pre-existing
+      // sessions on mount — see comment above this effect).
+      performance.mark('yc:sessions-listed');
       if (!list || list.length === 0) return;
 
       // Fix: this per-session seeding used to run INSIDE the setSessions updater
@@ -1706,11 +1793,9 @@ function AppInner() {
       // Ordering: the transcript:event listener is registered by an effect
       // declared ABOVE this one, so it is already attached when these replayed
       // events stream back; uuid dedup absorbs any overlap with live events.
-      // No-op on remote/Android (remote-shim stubs requestTranscriptReplay) —
-      // those hydrate via chat:hydrate on connect instead.
-      for (const s of list) {
-        (window as any).claude?.detach?.requestTranscriptReplay?.(s.id);
-      }
+      // History is requested by the session-list effect above, which covers every
+      // entry point rather than only this one. Remote/Android hydrate via
+      // chat:hydrate on connect instead.
     }).catch(() => {});
   }, [dispatch]);
 
@@ -1781,6 +1866,14 @@ function AppInner() {
       if (freshWindow) setSessionId(sid);
       // Hydrate reducer from disk. Main streams every transcript event back on
       // the normal channel; uuid dedup absorbs any overlap with live events.
+      //
+      // The LAST remaining requestTranscriptReplay caller, deliberately (perf
+      // cycle 2): the replay handler ALSO re-sends broker-held permission asks
+      // and specialist run records, which live only in main's memory and have no
+      // record in the JSONL — a page cannot carry them, so a re-docked native
+      // session would come back with a button-less ask and a status-less
+      // helper card. Folding those into the page response is a follow-up; until
+      // then a re-dock pays the full-replay cost that first open no longer does.
       det.requestTranscriptReplay?.(sid);
     });
 
@@ -2116,35 +2209,27 @@ function AppInner() {
   }, [sessionId, activeSessionModel, sessionModels, pendingModel]);
 
   // Snapshot factory for /cost and /usage. Pulls live stats from statusData
-  // and freezes them as a point-in-time snapshot. Returns null if stats haven't
-  // arrived yet (status line hook runs after each command, so a brand-new session
-  // may have no data for a few seconds).
+  // and freezes them as a point-in-time snapshot. Returns null only when the
+  // session has nothing at all to describe — that is a Claude Code session
+  // whose statusline hook hasn't run yet (it runs after each command, so a
+  // brand-new one has no data for a few seconds). A NATIVE session always has
+  // its own session totals to fall back on (Task 14), so it gets a card
+  // immediately; "returns null if stats haven't arrived" stopped being true
+  // then.
   const getUsageSnapshot = useCallback(
-    (sid: string) => {
-      const stats = statusData.sessionStatsMap[sid];
-      const ctx = statusData.contextMap[sid] ?? null;
-      const usage = statusData.usage as { five_hour?: { utilization: number; resets_at: string }; seven_day?: { utilization: number; resets_at: string } } | null;
-      if (!stats && ctx == null && !usage) return null;
-      return {
-        entryId: `usage-${sid}-${Date.now()}`,
-        timestamp: Date.now(),
-        costUsd: stats?.costUsd ?? null,
-        inputTokens: stats?.inputTokens ?? null,
-        outputTokens: stats?.outputTokens ?? null,
-        cacheReadTokens: stats?.cacheReadTokens ?? null,
-        cacheCreationTokens: stats?.cacheCreationTokens ?? null,
-        contextTokens: stats?.contextTokens ?? null,
-        contextPercent: ctx,
-        duration: stats?.duration ?? null,
-        apiDuration: stats?.apiDuration ?? null,
-        linesAdded: stats?.linesAdded ?? null,
-        linesRemoved: stats?.linesRemoved ?? null,
-        fiveHourUtilization: usage?.five_hour?.utilization ?? null,
-        fiveHourResetsAt: usage?.five_hour?.resets_at ?? null,
-        sevenDayUtilization: usage?.seven_day?.utilization ?? null,
-        sevenDayResetsAt: usage?.seven_day?.resets_at ?? null,
-      };
-    },
+    // The derivation itself lives in state/usage-snapshot.ts — a pure function,
+    // so the thing /usage is entirely made of can be tested without rendering
+    // App (no test imports this file). This wrapper only gathers the inputs.
+    (sid: string) =>
+      buildUsageSnapshot({
+        sessionId: sid,
+        now: Date.now(),
+        stats: statusData.sessionStatsMap[sid],
+        contextPercent: statusData.contextMap[sid] ?? null,
+        usage: statusData.usage as SubscriptionUsage | null,
+        isNative: sessionsRef.current.find((x) => x.id === sid)?.provider === 'native',
+        session: chatStateMapRef.current.get(sid),
+      }),
     [statusData],
   );
 
@@ -2417,9 +2502,8 @@ function AppInner() {
       if (launchInNewWindow) {
         (window as any).claude?.detach?.openDetached?.({ sessionId: nativeSession.id });
       }
-      // Hydrate the chat view from disk. Main streams every historical
-      // TRANSCRIPT_EVENT back on the normal channel; uuid dedup absorbs overlap.
-      (window as any).claude?.detach?.requestTranscriptReplay?.(nativeSession.id);
+      // Hydrate the chat view from disk — the most recent page only.
+      void loadFirstPage(nativeSession.id);
       return true;
     }
 
@@ -2446,24 +2530,43 @@ function AppInner() {
       (window as any).claude?.detach?.openDetached?.({ sessionId: newSession.id });
     }
 
-    setResumeInfo((prev) => new Map(prev).set(newSession.id, { claudeSessionId, projectSlug }));
-
-    // Load recent history into chat view
-    try {
-      const messages = await (window as any).claude.session.loadHistory(claudeSessionId, projectSlug, 10, false);
-      if (messages.length > 0) {
-        dispatch({
-          type: 'HISTORY_LOADED',
-          sessionId: newSession.id,
-          messages,
-          hasMore: true,
-        });
-      }
-    } catch (err) {
-      console.error('Failed to load history:', err);
-    }
+    // Load the most recent page into the chat view. The transcript watcher does
+    // not know this session yet (CC's hook reports the path moments later), so
+    // pass the locator the page handler can resolve the file from.
+    void loadFirstPage(newSession.id, { claudeSessionId, projectSlug });
     return true;
-  }, [dispatch, currentModel, askTakeover]);
+  }, [dispatch, currentModel, askTakeover, loadFirstPage]);
+
+  // Cards deep in the chat tree ask for a resume by event — the same
+  // deep-component→destination pattern as youcoded:open-library (~:397).
+  // It has to live HERE rather than next to that listener: it closes over
+  // handleResumeSession, a `const` declared just above, and referencing a
+  // later const from an earlier point in the same function body throws
+  // (temporal dead zone) — this is the earliest point after its declaration.
+  // launchInNewWindow is passed undefined on purpose (spec
+  // 2026-08-26-conversation-preview-header-design.md A2, Destin: "not new
+  // 'window' just new tab in session") — chat-search Resume always opens a
+  // tab, never the detached-window path SessionStrip/ResumeBrowser offer.
+  useEffect(() => {
+    const onResume = (e: Event) => {
+      const d = (e as CustomEvent).detail as {
+        claudeSessionId?: string; projectSlug?: string; projectPath?: string; provider?: string;
+        model?: string; dangerous?: boolean; binding?: ModelBinding;
+      };
+      // The three fields SessionRefActions.requestResume always sends
+      // (SessionDrawer's preview header sends the same shape). A detail
+      // missing any of them can't be resumed — silently drop it rather than
+      // calling handleResumeSession with a hole in its arguments.
+      if (!d?.claudeSessionId || !d.projectSlug || !d.projectPath) return;
+      // model / dangerous / binding arrive only from the preview header's
+      // Resume popover (M-header). A search row's own Resume sends none of
+      // them, and undefined here is what handleResumeSession already treated
+      // as "use the session defaults" — so that path is unchanged.
+      void handleResumeSession(d.claudeSessionId, d.projectSlug, d.projectPath, d.model, d.dangerous, undefined, d.provider, d.binding);
+    };
+    window.addEventListener('youcoded:resume-session', onResume);
+    return () => window.removeEventListener('youcoded:resume-session', onResume);
+  }, [handleResumeSession]);
 
   const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
 
@@ -2589,6 +2692,9 @@ function AppInner() {
   // NOT gated on isNativeSession — CC turns carry usage too (the transcript
   // watcher stamps it), and the reuse chip serves both runtimes.
   const turnsWithUsage = useTurnsWithUsage(sessionId);
+  // Session-so-far totals for the bar's token / cost / code-change chips.
+  // Null for CC sessions, which take those numbers from the statusline.
+  const nativeTotals = useNativeSessionTotals(isNativeSession ? sessionId : null);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -2871,7 +2977,6 @@ function AppInner() {
                       // Deliberately not folded into `visible`: the two hide
                       // different things for different reasons.
                       sessionActive={s.id === sessionId}
-                      resumeInfo={resumeInfo}
                       provider={s.provider}
                       cwd={s.cwd}
                       // Game pane lives in the active session's framed-shell
@@ -3007,6 +3112,7 @@ function AppInner() {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
                   model={modelChip}
+                  provider={isNativeSession ? 'native' : 'claude'}
                   permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
                   onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}
                   fast={fastMode}
@@ -3046,6 +3152,7 @@ function AppInner() {
                   nativeUsage={nativeStatusUsage}
                   nativeContextLength={nativeStatusUsage?.contextLength ?? null}
                   turnsWithUsage={turnsWithUsage}
+                  nativeTotals={nativeTotals}
                 />
               </div>
           </>
@@ -3060,7 +3167,8 @@ function AppInner() {
                 on the same headerRef) publishes --top-chrome-height for the
                 glass cutout. `chrome-glass--bare` gives the donut a thin
                 --frame-edge bottom strip, like terminal view, instead of the
-                5rem fallback reserved for an input bar that isn't here. */}
+                5rem fallback reserved for an input bar that isn't here — as
+                wide as the header, so the frame closes evenly top and bottom. */}
             <div className="chrome-glass chrome-glass--bare" />
             <div ref={headerRef} className="chrome-wrapper bg-canvas">
               <BareHeaderBar
@@ -3077,7 +3185,10 @@ function AppInner() {
             // bare frame's bottom strip) rather than behind it. --top-chrome-
             // bottom, not -height, so a floating header pill's own margin is
             // cleared too — same reason ChatView's empty-state hint uses it.
-            style={{ paddingTop: 'var(--top-chrome-bottom, 2.5rem)', paddingBottom: 'var(--frame-edge, 10px)' }}
+            // paddingBottom matches the bottom strip, which is now the header's
+            // own height (globals.css .chrome-glass--bare), so the content
+            // still centres in the open middle instead of drifting downward.
+            style={{ paddingTop: 'var(--top-chrome-bottom, 2.5rem)', paddingBottom: 'var(--top-chrome-height, 2.5rem)' }}
           >
             <p className="text-xl text-fg-muted">No Active Session</p>
             {/* scene: the hero surface renders the theme's companions (sun,
@@ -3654,6 +3765,9 @@ function AppInnerProfiler({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // Perf lab: React has mounted the app shell (first commit).
+  useEffect(() => { performance.mark('yc:app-mounted'); }, []);
+
   // Auto-show buddy on launch if the user previously enabled it. The effect
   // is called unconditionally (React rules-of-hooks) but no-ops inside
   // buddy windows themselves — only the main window should re-open the

@@ -97,10 +97,15 @@ export function checkMemoryForLoad(args: {
 }
 
 /** Pre-download disk guard (spec §4.3). Returns null when OK, else a
- *  plain-language refusal. 5% margin covers the in-flight .partial file. */
-export function checkDiskSpace(downloadBytes: number, freeBytes: number): string | null {
-  if (freeBytes >= downloadBytes * 1.05) return null;
-  const needGb = (downloadBytes / GB).toFixed(1);
+ *  plain-language refusal. 5% margin covers the in-flight .partial file.
+ *  `alreadyOnDiskBytes` is what a resume has already fetched — charging the
+ *  FULL size against a resume tells the user "not enough space" for something
+ *  that fits, and the obvious reaction is to delete the partial, destroying
+ *  the very thing that made it fit (2026-08-26). */
+export function checkDiskSpace(downloadBytes: number, freeBytes: number, alreadyOnDiskBytes = 0): string | null {
+  const needBytes = Math.max(0, downloadBytes - alreadyOnDiskBytes);
+  if (freeBytes >= needBytes * 1.05) return null;
+  const needGb = (needBytes / GB).toFixed(1);
   const freeGb = (freeBytes / GB).toFixed(1);
   return `Not enough free space: this download needs about ${needGb} GB but only ${freeGb} GB is free.`;
 }

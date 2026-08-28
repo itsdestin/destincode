@@ -305,6 +305,29 @@ describe('AssistantTurnBubble — memo comparator (streaming perf)', () => {
   });
 });
 
+describe('splitIntoBubbles — a segment type this bundle does not know', () => {
+  // Reachable in NORMAL use, not corruption: the remote browser and the Android
+  // WebView load a bundle that can be older than the host sending them turns.
+  // The branch used to be a bare `else` that treated anything unrecognised as a
+  // tool group, pushing `undefined` as a group id and drawing an empty card.
+  it('renders nothing for it, and does not throw', () => {
+    const turn = makeSegmentTurn([
+      seg.text('t1', 'before'),
+      { type: 'from-the-future', messageId: 'x' } as unknown as AssistantTurnSegment,
+      seg.text('t2', 'after'),
+    ]);
+    const bubbles = splitIntoBubbles(turn);
+    expect(bubbles.map((b) => b.text?.content)).toEqual(['before', 'after']);
+    expect(bubbles.some((b) => b.toolGroupIds.includes(undefined as unknown as string))).toBe(false);
+  });
+
+  it('an unknown segment alone yields no bubbles at all', () => {
+    expect(splitIntoBubbles(makeSegmentTurn([
+      { type: 'from-the-future', messageId: 'x' } as unknown as AssistantTurnSegment,
+    ]))).toEqual([]);
+  });
+});
+
 describe('splitIntoBubbles — BUG A (tool group mis-attribution after interleaved reasoning)', () => {
   it('a tool group after interleaved reasoning starts a NEW bubble carrying that reasoning (BUG A pin)', () => {
     // Native harness shape: reasoning streams live but tool-use events are

@@ -393,10 +393,26 @@ function bashDescription(): string {
     // only about chars read a truncated 900-char result as complete.
     'Output over ~4,000 chars OR ~100 lines shows only the first and last ~50 lines — ' +
     'whichever cap trips first, so a 120-line result is truncated even when it is short. ' +
-    'The FULL output is then always saved to a file, with its path in the result — read ' +
-    'that file (e.g. with the Read tool) or re-run the ORIGINAL command piped through ' +
-    'head/tail/grep rather than guessing from the truncated preview; do not just re-run ' +
-    'the same command hoping for more. ' +
+    'The FULL output is then always saved to a file, with its path in the result — Read ' +
+    'that file rather than guessing from the truncated preview; do not just re-run the ' +
+    'same command hoping for more. ' +
+    // D-1 (2026-08-26 tools investigation): this used to say "re-run the ORIGINAL
+    // command piped through head/tail/grep" — which contradicts the `set -e`
+    // sentence above. There is no `pipefail` either, so `npm test | tail -50`
+    // reports tail's exit 0 and HIDES a failing test run. If a re-run is really
+    // needed, redirect to a file and print the exit code instead.
+    'If you must re-run it, redirect to a file and print the exit code ' +
+    `(\`cmd > out.txt 2>&1; echo exit=${tracksCwdFor(s) ? '$?' : '$LASTEXITCODE'}\`) — ` +
+    'there is no `pipefail`, so `cmd | tail` reports tail\'s exit 0 and hides a failure. ' +
+    // G-13 (same investigation): every peer harness says this up front; here the
+    // model only found out indirectly when Edit refused a file it had `cat`-ed.
+    // The rationale is reviewability and the permission UI, not capability —
+    // Claude Code drops this sentence in bypass-permissions mode for that reason.
+    // descriptionFor() only knows `supportsVision`, not the permission mode, so
+    // this is unconditional for now (plumbing the mode through is a separate item).
+    'Prefer the dedicated tools for files — Read (not cat/head/tail), Grep (not grep/rg), ' +
+    'Glob (not find/ls), Edit (not sed/awk) — they are reviewable and permission-aware, ' +
+    'and Edit only accepts files seen via Read. ' +
     // Fix (2026-08-10 review): 3 of 5 models found the old `exit ?` timeout marker
     // opaque. A timeout now reports exit 124 (matching `timeout(1)` and Codex CLI) —
     // stated here so the model recognizes it without guessing.
@@ -481,7 +497,7 @@ export const BashTool = defineTool({
       .boolean()
       .optional()
       .describe('Carry this call\'s exported env vars (not aliases/functions) to your next Bash call. Default off.'),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   caps: { maxChars: 30_000 },
   // Static fallback for composeNotice's no-bounds branch (Task 19): Bash's own
   // visible budget (HEAD_CHARS_TARGET + TAIL_CHARS_TARGET = 4,000 chars, see
@@ -492,7 +508,11 @@ export const BashTool = defineTool({
   // This is generic advice for that now-rarer edge case, not a copy of the
   // per-call `bounds.moreHint` built in execute() (which names the real spill
   // path and can't be known statically).
-  moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
+  // D-1 (2026-08-26 tools investigation, closed out 2026-08-28): this static
+  // fallback used to say "pipe through head/tail" — the same pipe advice the
+  // description and the per-call notice dropped, because with no `pipefail`
+  // `cmd | tail` reports tail's exit 0 and hides a failing build.
+  moreHint: 'Read the saved full-output file; if you must re-run, redirect to a file and print the exit code (cmd > out.txt 2>&1; echo exit=$?)',
   permissionSubject: (a) => a.command,
   async execute(args, ctx) {
     const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
@@ -807,9 +827,11 @@ export const BashTool = defineTool({
           // standards). Honest either way: name the real path, or say plainly
           // that the save failed and why.
           const linesPart = `${elidedLines} line${elidedLines === 1 ? '' : 's'} elided`;
+          // D-1: same fix as the description — no "pipe through head/tail/grep"
+          // advice, because without `pipefail` the pipe hides the real exit code.
           moreHintText = outputPath
-            ? `${linesPart} — full output saved to ${outputPath}. Read that file (e.g. with the Read tool), or pipe the ORIGINAL command through head/tail/grep to narrow it.`
-            : `${linesPart} — full output could NOT be saved to disk (${spillError ?? 'unknown error'}); pipe the ORIGINAL command through head/tail/grep to narrow it instead.`;
+            ? `${linesPart} — full output saved to ${outputPath}. Read that file (e.g. with the Read tool); if you must re-run, redirect to a file and print the exit code (cmd > out.txt 2>&1; echo exit=$?) rather than piping through tail.`
+            : `${linesPart} — full output could NOT be saved to disk (${spillError ?? 'unknown error'}); re-run redirected to a file (cmd > out.txt 2>&1; echo exit=$?) and Read that file instead.`;
         } else {
           preAnsiShown = headBuf.length;
           shownLines = totalLines;

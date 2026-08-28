@@ -55,3 +55,35 @@ describe('formatAnswers', () => {
     expect(() => formatAnswers({ questions: [q()] } as any, undefined)).not.toThrow();
   });
 });
+
+// Ledger G-2 (2026-08-26 harness comparison): the card can send a typed "Other"
+// answer and a per-question note. The model must be able to tell an own answer
+// from a listed label, and must see the note.
+describe('formatAnswers — Other and notes (G-2)', () => {
+  it('flags an answer that is not one of the listed labels as the user\'s own', () => {
+    const text = formatAnswers({ questions: [q()] } as any,
+      { questions: [], answers: { 'Which color?': 'teal, but only on the sidebar' } });
+    expect(text).toContain('typed their own answer');
+    expect(text).toContain('teal, but only on the sidebar');
+  });
+  it('does NOT flag a listed label (or a multi-select of listed labels) as an own answer', () => {
+    const text = formatAnswers({ questions: [q()] } as any,
+      { questions: [], answers: { 'Which color?': 'Blue, Red' } });
+    expect(text).not.toContain('typed their own answer');
+  });
+  it('appends the note when a listed option was chosen with a note', () => {
+    const text = formatAnswers({ questions: [q()] } as any,
+      { questions: [], answers: { 'Which color?': 'Blue' }, notes: { 'Which color?': 'but a lighter shade' } });
+    expect(text).toContain('A: Blue');
+    expect(text).toContain('Note from the user: but a lighter shade');
+  });
+  it('ignores notes that are not non-empty strings, and a non-object notes map', () => {
+    const t1 = formatAnswers({ questions: [q()] } as any,
+      { questions: [], answers: { 'Which color?': 'Blue' }, notes: { 'Which color?': 42 } });
+    expect(t1).not.toContain('Note from the user');
+    const t2 = formatAnswers({ questions: [q()] } as any,
+      { questions: [], answers: { 'Which color?': 'Blue' }, notes: ['junk'] });
+    expect(t2).not.toContain('Note from the user');
+    expect(() => formatAnswers({ questions: [q()] } as any, { questions: [], answers: {}, notes: null })).not.toThrow();
+  });
+});

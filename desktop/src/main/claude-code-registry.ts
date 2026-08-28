@@ -43,6 +43,14 @@ const YOUCODED_MARKETPLACE_ID = 'youcoded';
 const YOUCODED_MARKETPLACE_ROOT = path.join(PLUGIN_CACHE_DIR, 'marketplaces', YOUCODED_MARKETPLACE_ID);
 export const YOUCODED_PLUGINS_DIR = path.join(YOUCODED_MARKETPLACE_ROOT, 'plugins');
 
+/** Does this directory carry a plugin.json manifest, in either standard layout? */
+export function hasPluginManifest(dir: string): boolean {
+  return (
+    fs.existsSync(path.join(dir, 'plugin.json')) ||
+    fs.existsSync(path.join(dir, '.claude-plugin', 'plugin.json'))
+  );
+}
+
 /**
  * Enumerate every directory that should be treated as an "installed plugin"
  * by reconcilers and skill-provider introspection.
@@ -59,6 +67,21 @@ export const YOUCODED_PLUGINS_DIR = path.join(YOUCODED_MARKETPLACE_ROOT, 'plugin
  * check filters those out — they have no manifest. Scanning both sources
  * handles the pre-decomposition toolkit clone AND the marketplace packages
  * it split into without duplicating anything (the two roots don't overlap).
+ *
+ * Fix (Track B final review, Finding F1): the marketplace-subtree loop used
+ * to add EVERY child directory unconditionally — no dot-prefix skip, no
+ * manifest check. plugin-installer.ts's upgradePluginFromLocal() stages an
+ * upgrade at `.upgrade-<id>-<pid>` and parks the retired tree at
+ * `.old-<id>-<pid>`, both inside this same marketplace subtree — if the
+ * process dies mid-swap (or Windows holds a file open, the documented
+ * expected case for the retired-tree cleanup), that leftover directory (a
+ * full copy of the plugin, complete with its own plugin.json) got scanned
+ * here as a SECOND installed plugin and fed into hook-reconciler.ts /
+ * mcp-reconciler.ts, registering duplicate hooks/MCP servers and making
+ * every skill it provides ambiguous. A plugin id can never start with "."
+ * (plugin-installer.ts's SAFE_ID_RE forbids it), so the dot-skip can never
+ * hide a real plugin. Matches Android's ClaudeCodeRegistry.kt
+ * hasPluginManifest + dot-skip fix (Task B5 review round 2).
  */
 export function listInstalledPluginDirs(): string[] {
   const dirs: string[] = [];
@@ -68,10 +91,7 @@ export function listInstalledPluginDirs(): string[] {
       if (!entry.isDirectory()) continue;
       if (entry.name === 'marketplaces') continue;
       const candidate = path.join(PLUGIN_CACHE_DIR, entry.name);
-      if (
-        fs.existsSync(path.join(candidate, 'plugin.json')) ||
-        fs.existsSync(path.join(candidate, '.claude-plugin', 'plugin.json'))
-      ) {
+      if (hasPluginManifest(candidate)) {
         dirs.push(candidate);
       }
     }
@@ -80,7 +100,11 @@ export function listInstalledPluginDirs(): string[] {
   if (fs.existsSync(YOUCODED_PLUGINS_DIR)) {
     for (const entry of fs.readdirSync(YOUCODED_PLUGINS_DIR, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      dirs.push(path.join(YOUCODED_PLUGINS_DIR, entry.name));
+      if (entry.name.startsWith('.')) continue;
+      const candidate = path.join(YOUCODED_PLUGINS_DIR, entry.name);
+      if (hasPluginManifest(candidate)) {
+        dirs.push(candidate);
+      }
     }
   }
 

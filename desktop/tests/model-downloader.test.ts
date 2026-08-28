@@ -122,18 +122,85 @@ describe('ModelDownloader', () => {
     await dl.wait(id);
   });
 
-  it('activePartialNames: reports in-flight .partial basenames, empty once the download settles (orphan-scan exclusion)', async () => {
-    const dl = new ModelDownloader(dir, fetchServing(bodies));
-    expect(dl.activePartialNames().size).toBe(0);
+  // A fetch that drips bytes until the abort signal fires. Copied from the
+  // cancel test above for the same reason it exists there: a fake that never
+  // resolves cannot be cancelled, and the test hangs to timeout instead of
+  // asserting anything.
+  const dripUntilAbort = (async (_url: any, init?: any) => {
+    const signal: AbortSignal = init.signal;
+    return new Response(new ReadableStream({
+      pull(c) {
+        if (signal.aborted) { c.error(new DOMException('Aborted', 'AbortError')); return; }
+        c.enqueue(new Uint8Array(4));
+        return new Promise<void>((resolve, reject) => {
+          const t = setTimeout(resolve, 20);
+          signal.addEventListener('abort',
+            () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); },
+            { once: true });
+        });
+      },
+    }), { status: 200, headers: { 'content-length': '99999' } });
+  }) as typeof fetch;
+  const MANIFEST = 'M-UD-Q4_K_XL-00001-of-00002.gguf.download.json';
+
+  it('writes the manifest BEFORE the first byte, and removes it on clean completion', async () => {
+    const seen: string[] = [];
+    const watching: typeof fetch = (async (url: any, init?: any) => {
+      // Record whether the manifest already exists at the moment of each fetch.
+      seen.push(fs.existsSync(path.join(dir, MANIFEST)) ? 'yes' : 'no');
+      return fetchServing(bodies)(url, init);
+    }) as typeof fetch;
+    const dl = new ModelDownloader(dir, watching);
     const id = dl.start('unsloth/M-GGUF', quantOpt(), () => {});
-    // While live, every file of the quant is claimed (basenames + .partial) —
-    // ModelManager.orphanedPartials subtracts these so an in-flight download
-    // is never mislabeled an orphan.
-    expect([...dl.activePartialNames()].sort()).toEqual([
-      'M-UD-Q4_K_XL-00001-of-00002.gguf.partial',
-      'M-UD-Q4_K_XL-00002-of-00002.gguf.partial',
-    ]);
     await dl.wait(id);
-    expect(dl.activePartialNames().size).toBe(0);
+    expect(seen).toEqual(['yes', 'yes']);   // present for every part's fetch
+    expect(fs.existsSync(path.join(dir, MANIFEST))).toBe(false);
+  });
+
+  it('keeps the manifest when the download is cancelled — that is what makes resume possible', async () => {
+    const dl = new ModelDownloader(dir, dripUntilAbort);
+    const id = dl.start('unsloth/M-GGUF', quantOpt(false), () => {});
+    await new Promise((r) => setTimeout(r, 60));
+    dl.cancel(id);
+    await dl.wait(id).catch(() => {});
+    expect(fs.existsSync(path.join(dir, MANIFEST))).toBe(true);
+  });
+
+  it('keeps the manifest when the download errors', async () => {
+    const dead: typeof fetch = (async () => new Response(null, { status: 500 })) as typeof fetch;
+    const dl = new ModelDownloader(dir, dead);
+    const id = dl.start('unsloth/M-GGUF', quantOpt(), () => {});
+    await dl.wait(id).catch(() => {});
+    expect(fs.existsSync(path.join(dir, MANIFEST))).toBe(true);
+  });
+
+  it('records the repo and the whole file set, so resume needs no network', async () => {
+    const dead: typeof fetch = (async () => new Response(null, { status: 500 })) as typeof fetch;
+    const dl = new ModelDownloader(dir, dead);
+    const id = dl.start('unsloth/M-GGUF', quantOpt(), () => {});
+    await dl.wait(id).catch(() => {});
+    const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8'));
+    expect(m.repo).toBe('unsloth/M-GGUF');
+    expect(m.quant).toBe('UD-Q4_K_XL');
+    expect(m.files).toEqual(quantOpt().files);
+    expect(m.totalSizeBytes).toBe(quantOpt().totalSizeBytes);
+  });
+
+  it('refuses to continue a file that a DIFFERENT repo left behind', async () => {
+    // Six+ Hugging Face accounts publish byte-identical filenames with different
+    // builds (spec §1b). Range-continuing repo A's bytes with repo B's would
+    // only be discovered when the integrity check fails at the very end.
+    const dead: typeof fetch = (async () => new Response(null, { status: 500 })) as typeof fetch;
+    const dl = new ModelDownloader(dir, dead);
+    const id = dl.start('unsloth/M-GGUF', quantOpt(), () => {});
+    await dl.wait(id).catch(() => {});
+    expect(() => dl.start('bartowski/M-GGUF', quantOpt(), () => {}))
+      .toThrow(/already partly downloaded from unsloth\/M-GGUF/);
+    // The same repo may continue. Awaited (not fire-and-forget) because the
+    // dead fetch rejects, and an unawaited rejection here surfaces as an
+    // unhandled error that fails the whole run.
+    let second = '';
+    expect(() => { second = dl.start('unsloth/M-GGUF', quantOpt(), () => {}); }).not.toThrow();
+    await dl.wait(second).catch(() => {});
   });
 });

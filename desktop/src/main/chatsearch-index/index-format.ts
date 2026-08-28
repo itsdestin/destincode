@@ -46,6 +46,19 @@ export interface ChatsearchMetaFile {
   v: number;
   provider: string;
   refreshedAt: string;
+  /** Absolute path of the conversation store this index mirrors. WHY: the CLI
+   *  stamps it into outbox requests so an app instance whose store root is
+   *  genuinely different (the user's home directory moved, or a second
+   *  machine's synced folder) leaves the request alone instead of applying it
+   *  to the wrong conversations. Fix (comment only): this is NOT what stops a
+   *  run-dev.sh instance from draining — verified that a dev instance and the
+   *  built app resolve the IDENTICAL store root (YOUCODED_PROFILE only shifts
+   *  userData, main.ts:251-253; ManagedRoots derives ~/YouCoded/Personal from
+   *  os.homedir() regardless, managed-roots.ts:17-20; conversations/service.ts:
+   *  166-167). The dev-instance gate in outbox-drain.ts (isDevInstance) is the
+   *  only thing that stops that case. Additive — format version stays 1; the
+   *  CLI ignores fields it doesn't know. */
+  storeRoot: string;
   conversations: Record<string, ChatsearchMetaEntry>;
 }
 

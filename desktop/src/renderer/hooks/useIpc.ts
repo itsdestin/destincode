@@ -219,6 +219,10 @@ declare global {
         getDirectory: () => Promise<import('../../shared/types').WindowDirectory>;
         onDirectoryUpdated: (cb: (dir: import('../../shared/types').WindowDirectory) => void) => () => void;
         requestTranscriptReplay: (sessionId: string) => void;
+        /** Perf cycle 2: one page of history. `beforeCursor` null = the newest
+         *  page; pass a previous page's `cursor` for the page before it. */
+        requestTranscriptPage: (req: { sessionId: string; beforeCursor: import('../../shared/types').PageCursor | null; claudeSessionId?: string; projectSlug?: string })
+          => Promise<import('../../shared/types').TranscriptPageResult>;
       };
       // App-level defaults (skipPermissions, model, projectFolder).
       defaults: {
@@ -363,10 +367,10 @@ declare global {
         download: (repo: string, quant: any) => Promise<{ downloadId: string }>;
         downloadCancel: (downloadId: string) => Promise<boolean>;
         delete: (id: string) => Promise<boolean>;
-        installed: () => Promise<any[]>;
-        // Orphaned .partial files from a previous app run (2026-07-15) — clean
-        // via delete(modelId); resume by re-downloading the same repo+quant.
-        orphanedPartials: () => Promise<import('../../shared/model-manager-types').OrphanedPartial[]>;
+        installed: () => Promise<import('../../shared/model-manager-types').InstalledLocalModel[]>;
+        // Resume an interrupted download (2026-08-26). Main reads the manifest
+        // written beside the .partial — no Hugging Face round trip.
+        resume: (modelId: string) => Promise<{ downloadId: string }>;
         detectEndpoints: () => Promise<any[]>;
         setBackend: (backend: string) => Promise<any>;
         onDownloadProgress: (cb: (p: any) => void) => () => void;

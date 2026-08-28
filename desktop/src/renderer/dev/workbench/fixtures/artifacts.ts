@@ -58,6 +58,18 @@ const BY_PROJECT: Record<string, ArtifactRecord[]> = {
       tags: [],
     },
     {
+      // Vector image: the one source the magnifier keeps sharp at any zoom.
+      id: 'a-sent-diagram',
+      path: 'pipeline-diagram.svg',
+      kind: 'external',
+      absolutePath: '/tmp/youcoded-scratch/pipeline-diagram.svg',
+      lastModified: T,
+      status: 'active',
+      versions: [version('wb-1', 'read', T)],
+      comments: [],
+      tags: [],
+    },
+    {
       // No preview for this type — exercises the letter-glyph fallback tile.
       id: 'a-sent-pdf',
       path: 'scroll-perf-report.pdf',
@@ -318,7 +330,30 @@ export function allFiles(projectId: string): ArtifactRecord[] {
 /** Content served by artifacts.get(). Keyed by artifact id. Long enough to
  *  scroll and to exercise markdown rendering, since a two-line file makes every
  *  reader look fine. */
+/** A deliberately viewBox-ONLY SVG (no width/height attributes) served for any
+ *  .svg path. That shape is the interesting one for the artifact zoom: such an
+ *  SVG reports naturalWidth 300×150 in Chromium whatever its viewBox says, so it
+ *  is the case the magnifier's sizing has to survive. The 1px hairlines and 6px
+ *  text are there to be magnified — a vector source should stay razor-sharp at
+ *  any zoom, unlike the PNG below. */
+export const SAMPLE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">' +
+  '<rect width="800" height="500" fill="#101820"/>' +
+  '<g stroke="#4ade80" stroke-width="0.5">' +
+  Array.from({ length: 40 }, (_, i) => `<line x1="${i * 20}" y1="0" x2="${i * 20}" y2="500"/>`).join('') +
+  '</g>' +
+  '<circle cx="400" cy="250" r="120" fill="none" stroke="#f472b6" stroke-width="1"/>' +
+  '<text x="400" y="250" fill="#e2e8f0" font-size="6" text-anchor="middle">' +
+  'vector detail stays sharp at 800%</text>' +
+  '<text x="400" y="470" fill="#94a3b8" font-size="18" text-anchor="middle">sample.svg</text>' +
+  '</svg>';
+
 export const CONTENT: Record<string, string> = {
+  // SVG is the one image format that ALSO takes the text path — it renders
+  // through ImageView but stays editable, so rendersFromBytesOnly() exempts it
+  // and ActiveArtifactView still fetches its text. Without an entry here the
+  // viewer reports "This file is no longer on disk" and never reaches the image.
+  'a-sent-diagram': SAMPLE_SVG,
   // Over-cap fixtures: mock-shim slices these and reports a much larger
   // sizeBytes, so the partial-view states are reachable without an 8 MB file.
   'a-big-log': `2026-08-25T14:00:00Z  INFO  request 1000 handled in 0ms\n2026-08-25T14:01:01Z  INFO  request 1001 handled in 3ms\n2026-08-25T14:02:02Z  INFO  request 1002 handled in 6ms\n2026-08-25T14:03:03Z  INFO  request 1003 handled in 9ms\n2026-08-25T14:04:04Z  INFO  request 1004 handled in 12ms\n2026-08-25T14:05:05Z  INFO  request 1005 handled in 15ms\n2026-08-25T14:06:06Z  INFO  request 1006 handled in 18ms\n2026-08-25T14:07:07Z  INFO  request 1007 handled in 21ms\n2026-08-25T14:08:08Z  INFO  request 1008 handled in 24ms\n2026-08-25T14:09:09Z  INFO  request 1009 handled in 27ms\n2026-08-25T14:10:00Z  INFO  request 1010 handled in 30ms\n2026-08-25T14:11:01Z  INFO  request 1011 handled in 33ms\n2026-08-25T14:12:02Z  INFO  request 1012 handled in 36ms\n2026-08-25T14:13:03Z  INFO  request 1013 handled in 39ms\n2026-08-25T14:14:04Z  INFO  request 1014 handled in 42ms\n2026-08-25T14:15:05Z  INFO  request 1015 handled in 45ms\n2026-08-25T14:16:06Z  INFO  request 1016 handled in 48ms\n2026-08-25T14:17:07Z  INFO  request 1017 handled in 51ms\n2026-08-25T14:18:08Z  INFO  request 1018 handled in 54ms\n2026-08-25T14:19:09Z  INFO  request 1019 handled in 57ms\n2026-08-25T14:20:00Z  INFO  request 1020 handled in 60ms\n2026-08-25T14:21:01Z  INFO  request 1021 handled in 63ms\n2026-08-25T14:22:02Z  INFO  request 1022 handled in 66ms\n2026-08-25T14:23:03Z  INFO  request 1023 handled in 69ms\n2026-08-25T14:24:04Z  INFO  request 1024 handled in 72ms\n2026-08-25T14:25:05Z  INFO  request 1025 handled in 75ms\n2026-08-25T14:26:06Z  INFO  request 1026 handled in 78ms\n2026-08-25T14:27:07Z  INFO  request 1027 handled in 81ms\n2026-08-25T14:28:08Z  INFO  request 1028 handled in 84ms\n2026-08-25T14:29:09Z  INFO  request 1029 handled in 87ms\n2026-08-25T14:30:00Z  INFO  request 1030 handled in 90ms\n2026-08-25T14:31:01Z  INFO  request 1031 handled in 93ms\n2026-08-25T14:32:02Z  INFO  request 1032 handled in 96ms\n2026-08-25T14:33:03Z  INFO  request 1033 handled in 99ms\n2026-08-25T14:34:04Z  INFO  request 1034 handled in 102ms\n2026-08-25T14:35:05Z  INFO  request 1035 handled in 105ms\n2026-08-25T14:36:06Z  INFO  request 1036 handled in 108ms\n2026-08-25T14:37:07Z  INFO  request 1037 handled in 111ms\n2026-08-25T14:38:08Z  INFO  request 1038 handled in 114ms\n2026-08-25T14:39:09Z  INFO  request 1039 handled in 117ms`,
@@ -547,6 +582,117 @@ export function contextGroups(projectPath: string) {
       ],
     },
   ];
+}
+
+
+/** Draw a 1600×1000 test pattern and return it as base64 PNG.
+ *
+ *  WHY generate rather than paste a literal: the magnifier is suppressed on any
+ *  source smaller than the 180px lens, so the 96×64 SAMPLE_PNG below cannot
+ *  review it at all — and a real 1600×1000 photo pasted as base64 would add tens
+ *  of kilobytes of unreadable noise to this file. The pattern carries 7px text
+ *  and 1px rules on purpose: those are the details a loupe exists to reveal, and
+ *  they are also what visibly degrades at 400%, which is the honest thing to
+ *  show. Browser-only (the workbench is a browser tab); returns null elsewhere. */
+export function makeDetailPngBase64(): string | null {
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = 1600;
+  canvas.height = 1000;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  const bg = ctx.createLinearGradient(0, 0, 1600, 1000);
+  bg.addColorStop(0, '#0f172a');
+  bg.addColorStop(1, '#1e293b');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, 1600, 1000);
+
+  ctx.strokeStyle = 'rgba(148,163,184,0.35)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= 1600; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, 1000); ctx.stroke();
+  }
+  for (let y = 0; y <= 1000; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y + 0.5); ctx.lineTo(1600, y + 0.5); ctx.stroke();
+  }
+
+  // Fine text across the WHOLE frame, not one corner: the magnifier is reviewed
+  // by hovering wherever the rig happens to point, and a lens landing on empty
+  // background proves nothing about whether it reveals detail.
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = '7px monospace';
+  for (let row = 0; row < 62; row++) {
+    const line = `${String(row).padStart(2, '0')}  p99 latency ${(12 + row * 0.37).toFixed(2)}ms`
+      + ' — the quick brown fox jumps over the lazy dog 0123456789 — legible only under the lens';
+    // Three columns: one line of 7px monospace is ~520px wide and the frame is
+    // 1600px, so a single column would leave two thirds of it empty.
+    for (const x of [24, 560, 1096]) ctx.fillText(line, x, 116 + row * 14);
+  }
+
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 48px sans-serif';
+  ctx.fillText('latency-chart.png', 24, 70);
+
+  return canvas.toDataURL('image/png').split(',')[1] ?? null;
+}
+
+/** Build a small, valid two-page PDF and return it as base64.
+ *
+ *  WHY generated rather than a real file: the workbench needs a PDF to review
+ *  the viewer's zoom at all, and the only PDFs on this machine are Destin's
+ *  personal documents — which must not become a repo fixture. This one is
+ *  ASCII-only and about 1 KB.
+ *
+ *  The pages carry 6pt text on purpose. That is the whole point of zooming a
+ *  PDF: at the default scale it is a grey smear, and a PDF must get SHARPER
+ *  when enlarged (re-rendered by pdf.js) rather than merely bigger. */
+export function makeSamplePdfBase64(): string | null {
+  if (typeof btoa === 'undefined') return null;
+
+  const page = (n: number) => {
+    const lines: string[] = ['BT /F1 22 Tf 54 720 Td (Scroll performance report) Tj ET'];
+    lines.push(`BT /F1 11 Tf 54 694 Td (page ${n} of 2 - the small print below is the zoom target) Tj ET`);
+    for (let i = 0; i < 38; i++) {
+      // 6pt lines: illegible at 100%, readable once pdf.js re-renders bigger.
+      lines.push(
+        `BT /F1 6 Tf 54 ${664 - i * 15} Td `
+        + `(${String(i).padStart(2, '0')}  p99 ${(12 + i * 0.37).toFixed(2)}ms  `
+        + 'the quick brown fox jumps over the lazy dog 0123456789 - legible only when enlarged) Tj ET',
+      );
+    }
+    return lines.join('\n');
+  };
+
+  // Object bodies in order; object N is at index N-1.
+  const bodies: string[] = [];
+  bodies.push('<< /Type /Catalog /Pages 2 0 R >>');
+  bodies.push('<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>');
+  const pageObj = (contents: number) =>
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contents} 0 R `
+    + '/Resources << /Font << /F1 7 0 R >> >> >>';
+  const stream = (body: string) => `<< /Length ${body.length} >>\nstream\n${body}\nendstream`;
+  bodies.push(pageObj(4));
+  bodies.push(stream(page(1)));
+  bodies.push(pageObj(6));
+  bodies.push(stream(page(2)));
+  bodies.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+
+  // Assemble, recording each object's byte offset for the xref table. The
+  // content is ASCII, so string length IS byte length here.
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  bodies.forEach((body, i) => {
+    offsets.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+
+  const xrefAt = pdf.length;
+  pdf += `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += `${String(off).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+
+  return btoa(pdf);
 }
 
 /** A 96×64 PNG (gradient + a dot) served by the mock artifacts.readBinary for

@@ -8,6 +8,17 @@ import './styles/globals.css';
 import App from './App';
 import { Button, TextInput } from './components/ui';
 
+// Perf lab startup mark (read over CDP by youcoded-dev/scripts/perf-lab). Free.
+// WHY the name says "modules-evaluated" and not "start": ESM hoists EVERY import
+// declaration in this file above every statement in the module body, so by the
+// time this line runs, React, react-dom, globals.css, App.tsx and the whole
+// component graph above have already finished evaluating. This mark is the END
+// of bundle evaluation, not the start of it — it is written below the imports so
+// the source reads the way it actually executes. The window it used to hide
+// (page navigation -> here) is recovered by the rig for free as
+// `modulesEvaluated - documentStart`, using performance.timeOrigin.
+performance.mark('yc:modules-evaluated');
+
 // Apply theme before React mounts to prevent FOUC (flash of unstyled content)
 const storedTheme = localStorage.getItem('youcoded-theme') || 'midnight';
 document.documentElement.setAttribute('data-theme', storedTheme);
@@ -268,6 +279,17 @@ if ((import.meta.env.DEV || import.meta.env.VITE_WORKBENCH === '1') && __buddyMo
         __mount.render(<ThemeProvider><AttachmentChipsMockup /></ThemeProvider>);
         return;
       }
+      // Session status-pill page (dev/workbench/mockups/SessionStatusPills.tsx)
+      // — the five states of the All Sessions menu's pill and what each means,
+      // rendering the shipping pill so the words cannot drift from the menu.
+      if (__view === 'session-pills') {
+        const [{ SessionStatusPillsMockup }, { ThemeProvider }] = await Promise.all([
+          import('./dev/workbench/mockups/SessionStatusPills'),
+          import('./state/theme-context'),
+        ]);
+        __mount.render(<ThemeProvider><SessionStatusPillsMockup /></ThemeProvider>);
+        return;
+      }
       // App is already statically imported above (Root renders it).
       __mount.render(<App />);
       return;
@@ -276,5 +298,7 @@ if ((import.meta.env.DEV || import.meta.env.VITE_WORKBENCH === '1') && __buddyMo
     __mount.render(<WorkbenchFrame />);
   });
 } else {
+  // Perf lab: last renderer-side mark before the root component tree renders.
+  performance.mark('yc:root-render');
   __mount.render(<Root />);
 }

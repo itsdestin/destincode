@@ -4,6 +4,7 @@
 // a quote for rendered markdown (whose DOM doesn't map back to source lines).
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { buildContextMenu } from './build-menu';
+import { COPY } from '../../../shared/chatsearch-refs';
 
 // Builds the DOM shape MarkdownView emits for raw text (txt) and rendered md.
 // CODE files no longer use this shape — CodeMirror replaced CodeView, and its
@@ -96,5 +97,76 @@ describe('artifact viewer context menu', () => {
     document.body.appendChild(ta);
     const ids = buildContextMenu(ta)?.filter((e) => e.type === 'item').map((e: any) => e.id);
     expect(ids).toEqual(['cut', 'copy', 'paste', 'select-all']);
+  });
+});
+
+// A3 (2026-08-26 preview-header spec): a previewed past conversation
+// (SessionPreviewPane, via ConversationTranscript) marks its scroll container
+// with data-conversation-id/-title instead of .chat-scroll — see the WHY
+// comment on the guard in build-menu.ts. This mirrors that DOM shape by hand
+// (the way mountViewer() above mirrors the artifact viewer's), rather than
+// mounting the real component tree, to keep the guard's contract pinned
+// independent of ConversationTranscript's own markup.
+function mountBubble(opts: {
+  // 'chat-scroll' = live chat's real marker. 'preview' = the transcript's
+  // data-attribute marker. 'none' = neither — the positive control.
+  scroll: 'chat-scroll' | 'preview' | 'none';
+  role: 'assistant' | 'user';
+  text: string;
+  conversationId?: string;
+  conversationTitle?: string;
+}) {
+  const scroller = document.createElement('div');
+  if (opts.scroll === 'chat-scroll') scroller.className = 'chat-scroll';
+  if (opts.scroll === 'preview') {
+    scroller.setAttribute('data-conversation-id', opts.conversationId ?? 'conv-1');
+    scroller.setAttribute('data-conversation-title', opts.conversationTitle ?? '');
+  }
+  const bubble = document.createElement('div');
+  bubble.className = opts.role === 'assistant' ? 'assistant-bubble' : 'user-bubble';
+  bubble.textContent = opts.text;
+  scroller.appendChild(bubble);
+  document.body.appendChild(scroller);
+  return bubble;
+}
+
+describe('previewed-conversation right-click (spec §A3)', () => {
+  it('right-clicking a bubble inside the preview yields the chat menu ("Ask about this" present)', () => {
+    const bubble = mountBubble({ scroll: 'preview', role: 'assistant', text: 'hello world', conversationId: 'conv-1', conversationTitle: 'Debugging sync' });
+    const entries = buildContextMenu(bubble);
+    expect(entries?.some((e) => e.type === 'item' && e.id === 'ask')).toBe(true);
+  });
+
+  it('positive control: the SAME bubble markup with no preview marker (and no .chat-scroll) yields no menu at all', () => {
+    const bubble = mountBubble({ scroll: 'none', role: 'assistant', text: 'hello world' });
+    expect(buildContextMenu(bubble)).toBeNull();
+  });
+
+  it('the live chat (.chat-scroll, no conversation marker) still gets the menu, same as before', () => {
+    const bubble = mountBubble({ scroll: 'chat-scroll', role: 'assistant', text: 'hello world' });
+    const entries = buildContextMenu(bubble);
+    expect(entries?.some((e) => e.type === 'item' && e.id === 'ask')).toBe(true);
+  });
+
+  it('the preview scaffold names the conversation: contains both its id and its title', () => {
+    const bubble = mountBubble({ scroll: 'preview', role: 'assistant', text: 'hello world', conversationId: 'conv-1', conversationTitle: 'Debugging sync' });
+    const composed = composedTextFor(bubble);
+    expect(composed).toContain('conv-1');
+    expect(composed).toContain('Debugging sync');
+    expect(composed).toBe(`${COPY.askPreviewContext('Debugging sync', 'conv-1')} In an earlier message, you said:\n"hello world"\n\nThe user has a follow-up: `);
+  });
+
+  it('PIN: the live chat scaffold is byte-for-byte unchanged — no conversation reference appears', () => {
+    const bubble = mountBubble({ scroll: 'chat-scroll', role: 'assistant', text: 'hello world' });
+    const composed = composedTextFor(bubble);
+    expect(composed).toBe('In an earlier message, you said:\n"hello world"\n\nThe user has a follow-up: ');
+    expect(composed).not.toContain('conv-1');
+    expect(composed).not.toContain('past conversation');
+  });
+
+  it('the user bubble variant is also named in a preview (role-specific lead preserved)', () => {
+    const bubble = mountBubble({ scroll: 'preview', role: 'user', text: 'my question', conversationId: 'conv-2', conversationTitle: 'Untitled thread' });
+    const composed = composedTextFor(bubble);
+    expect(composed).toBe(`${COPY.askPreviewContext('Untitled thread', 'conv-2')} Earlier I wrote:\n"my question"\n\nThe user has a follow-up: `);
   });
 });

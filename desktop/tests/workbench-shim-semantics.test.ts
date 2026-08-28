@@ -15,19 +15,22 @@ describe('mock shim Proxy semantics', () => {
     // `const rows = await claude.x.list(); rows.map(...)` is the dominant
     // consumer shape — null turns a missing stub into a crash in the surface
     // under design.
-    // `skills.list` was the example here until 2026-08-25, when it gained a
-    // hand-written fixture (Marketplace/Library needed real cards to review);
-    // `getChips` is still catch-all.
-    const rows = await shim().skills.getChips();
+    // The example channel here keeps getting promoted out from under the test:
+    // `skills.list` held the role until 2026-08-25 (Marketplace/Library needed
+    // real cards to review) and `getChips` until 2026-08-28 (the composer chip
+    // row lost its hardcoded fallback, so the mock had to answer for real).
+    // `getCuratedDefaults` is the current catch-all — if it ever gains a
+    // fixture, repoint these two at whatever is still unimplemented.
+    const rows = await shim().skills.getCuratedDefaults();
     expect(Array.isArray(rows)).toBe(true);
     expect(rows).toEqual([]);
   });
 
   it('gives each caller its own array', async () => {
     const c = shim();
-    const a = await c.skills.getChips();
+    const a = await c.skills.getCuratedDefaults();
     a.push('poison');
-    expect(await c.skills.getChips()).toEqual([]);
+    expect(await c.skills.getCuratedDefaults()).toEqual([]);
   });
 
   it('warns once per channel, not once per call', async () => {

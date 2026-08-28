@@ -144,7 +144,56 @@ export type TranscriptEventType =
   // only `skillId`/`displayName`/`args` as a compact card, because a 26k-character
   // SKILL.md as a user bubble is unreadable (Destin, 2026-07-28). `skillPath`
   // makes the card open the real file in the artifact viewer.
-  | 'skill-invoked';
+  | 'skill-invoked'
+  // Native-runtime only: one finished specialist's TOTAL spend, reported to the
+  // PARENT session so the parent's status bar can count work it delegated
+  // (spec §2/§8). Carries the child's summed `usage` (with its own costUsd/free),
+  // its `model`, the `parentAgentToolUseId` of the Task call that started it, and
+  // its `agentId`. Persisted on the parent, so replay restores it exactly like a
+  // tool card — the totals are rebuilt from the record, so a resumed session must
+  // not forget the specialists it ran.
+  // NOT a forwarded child turn-complete: SUBAGENT_DISPLAY_TYPES deliberately
+  // withholds that copy, because a stamped one would end the PARENT's turn in the
+  // reducer and attribute the child's model to the parent. Bookkeeping only — it
+  // never enters the timeline and never enters model history (history-rebuild.ts's
+  // default branch drops it).
+  | 'subagent-usage';
+
+/**
+ * Opaque-to-the-renderer handle for "the page before this one". `offset` is the
+ * byte at which the page it came from STARTS, so the next (older) page is read
+ * with `endOffset = offset`. For NATIVE sessions the same field carries an array
+ * index instead of a byte offset — the renderer never inspects it either way.
+ * `sizeAtRead` lets the reader notice a /clear or /compact rewrite.
+ */
+/** Payload for the TRANSCRIPT_PAGE request. `beforeCursor: null` = newest page. */
+export interface TranscriptPageRequest {
+  sessionId: string;
+  beforeCursor: PageCursor | null;
+  /**
+   * Fallback locator, used ONLY when the transcript watcher does not know this
+   * session yet. A just-resumed Claude Code session has no watched entry until
+   * CC's hook reports its transcript path, which is after the renderer wants to
+   * paint history — so the resume path passes the ids it already has and the
+   * handler resolves ~/.claude/projects/<slug>/<claudeSessionId>.jsonl itself.
+   */
+  claudeSessionId?: string;
+  projectSlug?: string;
+}
+
+export interface PageCursor {
+  path: string;
+  offset: number;
+  sizeAtRead: number;
+}
+
+/** One page of conversation history, oldest -> newest within the page. */
+export interface TranscriptPageResult {
+  events: TranscriptEvent[];
+  /** The handle for the NEXT (older) page; null when hasMore is false. */
+  cursor: PageCursor | null;
+  hasMore: boolean;
+}
 
 export interface TranscriptEvent {
   type: TranscriptEventType;
@@ -175,6 +224,11 @@ export interface TranscriptEvent {
      *  Deliverables auto-open rule (deliverable-auto-open.ts) reads this; native
      *  events keep their original `timestamp` through replay and need no field. */
     recordedAt?: number;
+    /** Byte offset of this JSONL line's start in the transcript file, stamped by
+     *  the paged-history reader (transcript-page.ts) on user-message events.
+     *  The seed for a future eviction cursor (cycle 3); unused today. Absent on
+     *  live-tailer events, which never know their own offset. */
+    offset?: number;
     // Task 1.1: widened turn-complete payload so the reducer can attach the
     // per-turn model, token/cache usage, and the Anthropic requestId to the
     // completing AssistantTurn for UI surfacing. All optional — the field is
@@ -199,6 +253,34 @@ export interface TranscriptEvent {
        *  last step's prompt plus its output. Distinct from inputTokens, which
        *  sums every step and therefore re-counts the history once per step. */
       contextUsedTokens?: number;
+      /** Native runtime only: USD for THIS turn, priced at the model that ran
+       *  it. `null` means the model has no published price — distinct from
+       *  absent, which means no pricing information at all (a Claude Code turn).
+       *  The renderer sums these; it never multiplies tokens by a rate itself. */
+      costUsd?: number | null;
+      /** Native runtime only: this turn ran on a model that costs nothing to
+       *  run — a local engine, or a metered model published at a rate of zero.
+       *  Deliberately NOT the same as `costUsd: null`, which means "metered,
+       *  but no published rate": the status bar words the two differently
+       *  ("runs on your machine" vs "no published price"). Only main can tell
+       *  them apart — it is the only side that knows the provider type. */
+      free?: boolean;
+      /** Native runtime only, and only where the provider reports one: the USD
+       *  figure the PROVIDER ITSELF charged for this turn's requests. Today only
+       *  OpenRouter-shaped providers report a cost, so this is ABSENT on a local
+       *  model, an Anthropic or OpenAI key, and a plain OpenAI-compatible
+       *  endpoint.
+       *
+       *  Absent means "the provider told us nothing" — never $0, and never
+       *  "we checked and it matched". A reported 0 (a genuinely free model) is
+       *  a real reading and is kept as 0, which is why this is `number` and not
+       *  `number | null`: unlike costUsd there is no third state to spell.
+       *
+       *  Present ONLY when every step of the turn reported one, so it always
+       *  covers exactly the same steps as `costUsd` and the two can be compared
+       *  honestly. Diagnostic: main compares them and logs a gap; nothing in
+       *  the UI reads this. */
+      providerCostUsd?: number;
     };
     /**
      * Populated only on events emitted from a subagent JSONL — identifies
@@ -704,6 +786,10 @@ export interface SkillEntry {
   sourceType?: string;
   sourceRef?: string;
   sourceSubdir?: string;
+  // WHY: reconcileBundledPlugins (Task B3) needs the entry's marketplace to
+  // pick the right cache clone / repo when refreshing and upgrading a
+  // bundled plugin — 'youcoded' vs 'youcoded-core' vs upstream Anthropic.
+  sourceMarketplace?: string;
 
   // Absolute path to the skill's own directory (the one holding SKILL.md).
   // Populated by scanSkills for filesystem-discovered skills. The native harness
@@ -1420,6 +1506,11 @@ export const IPC = {
   // Request the full transcript history for a session — used when a window
   // acquires ownership and needs to hydrate its reducer from disk.
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
+  // Perf cycle 2: request/response. Returns the last page of history (the most
+  // recent PAGE_TURNS turns), or the page before a cursor. Replaces
+  // TRANSCRIPT_REPLAY for first load — replay stays only for the ownership
+  // handoff, which also re-sends broker-held asks and specialist runs.
+  TRANSCRIPT_PAGE: 'transcript:page',
   // Appearance sync across peer windows — Renderer → Main broadcasts, Main
   // → other Renderers applies without re-broadcasting. Lets a theme change
   // in window 2 propagate to window 1 without a reload.
@@ -1588,9 +1679,9 @@ export const IPC = {
   MODELS_DOWNLOAD_PROGRESS: 'models:download-progress',  // push
   MODELS_DELETE: 'models:delete',
   MODELS_INSTALLED: 'models:installed',
-  // Orphaned .partial scan (2026-07-15) — invoke → OrphanedPartial[]; lists
-  // .partial files left by a PREVIOUS app run so the UI can clean/resume them.
-  MODELS_ORPHANED_PARTIALS: 'models:orphaned-partials',
+  // Resume an interrupted download from its manifest (2026-08-26) — invoke(modelId)
+  // → { downloadId }. Replaces MODELS_ORPHANED_PARTIALS, removed the same day.
+  MODELS_RESUME: 'models:resume',
   ENDPOINTS_DETECT: 'endpoints:detect',
   // ---- Model memory lifecycle (2026-07-14): per-model residency + guards ----
   ENGINE_MODELS: 'engine:models',                 // invoke → EngineModel[] with live state

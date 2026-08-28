@@ -240,3 +240,72 @@ The `subagent-watcher.ts` poll-cadence bullet and the `shared-fixtures/` contrac
 deliberately KEPT in the rule despite also living here, because both of their globs are in
 the rule's own `paths:` list — dropping them would have left an editor of those exact
 files with no always-loaded invariant.
+
+## Paged history (perf cycle 2, shipped 2026-08-28 — PR #349, `a09b58c6`)
+
+Opening, resuming, re-docking or reloading a conversation renders only its most recent
+`PAGE_TURNS` (30) turns. Older turns arrive when a 1px sentinel above the first entry
+scrolls into view. Before this, every one of those paths replayed the WHOLE transcript:
+21.6 s and a 14.5 s app-wide freeze on a 7,000-entry conversation.
+
+**The reader.** `main/transcript-page.ts` → `readTranscriptPage({ jsonlPath, sessionId,
+endOffset, subagentsDir })` returns the last ≤30 turns (≤2 MB) ending before a byte
+offset, plus an opaque `{ path, offset, sizeAtRead }` cursor. It snaps page boundaries to
+real user prompts — decided by asking `parseTranscriptLine` whether the line yields a
+`user-message`, NOT by sniffing `promptId`, because a `tool_result` is also a
+`type:"user"` line carrying one and snapping there would tear a tool call from its
+result. The scan window is bounded by `PAGE_MAX_BYTES`, so it is one `pread` rather than
+a backward chunk walk. A cursor pointing past the current file size (a `/clear` or
+`/compact` rewrite) returns an empty final page rather than serving turns from a file
+state the cursor never described. Subagent events are included only for `Agent`
+tool_uses INSIDE the page: a throwaway `SubagentIndex` is primed from the page and
+`SubagentWatcher.getHistory` skips whatever it cannot bind.
+
+**No overlap, by construction.** `startWatching` starts the live tailer at end-of-file
+for an existing file (it used to start at byte 0, re-emitting the whole transcript on
+every resume) and `getStartOffset()` is the byte the first page reads UP TO. Page =
+`[boundary, startOffset)`, live = `[startOffset, ∞)`.
+
+**Native sessions** page over the already-MERGED event array (`NativeSessionHost
+.getHistoryPage`), because `mergeChildEvents` interleaves delegated children and slicing
+before the merge would drop a child whose parent card is in the page. Their cursor's
+`offset` carries an array index; the renderer never inspects it.
+
+**Idempotency is cursor discipline, not id identity.** Reducer ids are module counters
+that only grow, so a prepended page cannot collide with what is on screen. One in-flight
+page per session (`history.loading`, set BEFORE the await). The scratch replay is seeded
+with the live session's `seenUuids` so the per-event handlers' existing dedup fires —
+without it, a prompt the user had just sent came back from the transcript as a second
+identical bubble.
+
+**Scroll anchoring** is to an ELEMENT, not a height delta. `ChatView` records the topmost
+visible `.timeline-entry` and its offset from the scroller's top edge one statement
+before the prepend, then restores that element's position in a `useLayoutEffect` and
+keeps re-applying for `ANCHOR_SETTLE_MS` (700 ms) as markdown and code blocks lay out,
+releasing on the first `wheel`/`touchstart`/`keydown`. Height arithmetic was the first
+attempt and Destin's verdict was "a little jumpy": the number was captured a network
+round-trip early, applied once, and fought Chromium's own scroll anchoring. Prepending
+also had to stop re-arming the "user sent a message" auto-scroll — the reducer spreads
+the existing tail, so comparing last-entry IDENTITY tells a prepend from an append.
+
+**What paging broke, and the rule it produced.** Four features depended on whole-file
+replay as a SIDE EFFECT, and none of ~7,000 passing tests noticed: first-load history was
+requested from three specific call sites (any other entry path rendered an empty
+conversation — now a session-list effect covers every route); the Files drawer's list was
+only refreshed because the artifact tool-use tracker sees replayed tool events (it now
+lists on open, against the resolved `projectRoot`); the duplicate-bubble bug above; and
+`session-totals`, whose own comment said it was "rebuilt for free when a resumed session
+replays its record" (each page now folds its totals in via `mergeTotals`). Before
+removing a broadcast, enumerate its listeners by CHANNEL and ask what each does when it
+stops. Every fix was to make the consumer ASK rather than wait to be told.
+
+**Still open:** eviction of off-screen turns (cycle 3 — it will amend
+`toolcalls-never-cleared`, since paging itself never clears `toolCalls`), Android
+on-device paging, and a re-docked session still paying a full replay because
+`TRANSCRIPT_REPLAY` also re-sends broker-held asks and specialist runs that live only in
+main's memory.
+
+**Measured** (three consecutive rig runs): huge resume 21550 → 614 ms, medium 14049 →
+644 ms, switch p95 10052 → 233 ms, PSS after six sessions 7004 → 1721 MB, medium replay
+stall 14491 → 0 ms. Small conversations cost ~240 ms more (405 → 643) — the IPC
+round-trip they now pay where the tailer used to stream them.

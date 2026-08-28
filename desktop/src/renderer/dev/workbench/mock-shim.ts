@@ -1,5 +1,6 @@
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
+import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
@@ -8,8 +9,9 @@ import { READ_HEAD_DEFAULT_BYTES, READ_HEAD_MAX_BYTES } from '../../../shared/re
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
-  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, contextGroups,
+  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, SAMPLE_SVG, makeDetailPngBase64, makeSamplePdfBase64, contextGroups,
 } from './fixtures/artifacts';
+import { resolveFixture, CS_ERR_READ } from './fixtures/chatsearch';
 import type { MockState, MockSessionMeta } from './scenarios';
 import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
 import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
@@ -66,10 +68,15 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'session.sendInput', 'session.respondToPermission', 'on.transcriptEvent', 'on.hookEvent',
   'native.send', 'native.setBinding',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
-  // Local Models panel + engine card (site row8 loop) — real backend
-  // (engine-handlers / model-manager); hand-written so the card has a version
-  // and backend to print instead of "undefined".
-  'models.installed', 'models.curated', 'models.detectEndpoints', 'models.onDownloadProgress',
+  // Local Models rows + Resume (2026-08-26). WHY these must be listed: the
+  // contract test only checks members named here, so a hand-written mock left
+  // off this list escapes the real-or-registered check entirely.
+  'models.installed', 'models.curated', 'models.delete', 'models.resume',
+  'models.onDownloadProgress', 'models.downloadCancel',
+  // Engine card (site row8 loop) — real backend (engine-handlers); hand-written so the
+  // card has a version and backend to print instead of "undefined". detectEndpoints: the
+  // panel calls it at mount.
+  'models.detectEndpoints',
   'engine.status', 'engine.models', 'engine.install', 'engine.restart', 'engine.setContext',
   'engine.onInstallProgress', 'engine.onStatusChanged', 'engine.onModelsChanged',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
@@ -83,6 +90,9 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
   'specialists.steer', 'specialists.interrupt', 'on.specialistEvent',
   'shell.openPath',
+  // Chatsearch session references — real backend too, same reason for the fake:
+  // the tool gallery needs an index that shows every row state on demand.
+  'chatsearch.resolve', 'chatsearch.read',
   'defaults.get', 'defaults.set', 'detach.openDetached',
   'tags.list', 'tags.create', 'tags.update', 'tags.delete',
   'on.sessionCreated', 'on.sessionDestroyed', 'on.sessionRenamed',
@@ -121,6 +131,14 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // clients get their timelines from the transcript watcher instead. The
   // contract test checks both files for exactly this reason.
   'on.chatHydrate',
+  // Task 9 (status-bar relevance review): the CC scenario needs the 5h/7d
+  // usage chips and the statusline-sourced cost/token/line-change numbers,
+  // both of which ride status:data — previously unwired here, so they sat at
+  // their empty defaults forever regardless of scenario. Fast mode's chip
+  // needs `modes.get` for the same reason. Both are real preload channels
+  // (main/preload.ts), not unbuilt features, so they belong here and not in
+  // mock-only.ts.
+  'on.statusData', 'modes.get', 'modes.set',
 ];
 
 const warned = new Set<string>();
@@ -446,8 +464,51 @@ function mergeMeta(
   return { ...s.meta, [sessionId]: patch(current) };
 }
 
+// Task 9 (status-bar relevance review): 'statusbar-cc' is the ONLY scenario
+// that needs a status:data fixture — it is the CC session, and CC's chips
+// (5h/7d usage, cost/tokens/lines) read the statusline mock below instead of
+// SessionTotals. Every other scenario (the 4 native ones, and everything that
+// existed before this task) gets `null`, so `on.statusData`'s cb is simply
+// never called for them — the exact same "nothing ever arrives" behavior the
+// workbench had before this channel was wired at all. That keeps this change
+// from touching any sheet outside the status-bar plan.
+//
+// Numbers here are the brief's linesAdded/linesRemoved/costUsd verbatim; the
+// rest (tokens, cache, duration, usage %) are plausible fixture data made up
+// for this dev-only mock, internally consistent (cacheReadTokens < inputTokens).
+function statusBarFixtureFor(scenario: string): { usage: unknown; sessionStatsMap: Record<string, unknown> } | null {
+  if (scenario !== 'statusbar-cc') return null;
+  return {
+    usage: {
+      five_hour: { utilization: 42, resets_at: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+      seven_day: { utilization: 61, resets_at: new Date(Date.now() + 4 * 86_400_000).toISOString() },
+    },
+    sessionStatsMap: {
+      'wb-1': {
+        costUsd: 0.42,
+        inputTokens: 48_000,
+        outputTokens: 6_200,
+        cacheReadTokens: 39_000,
+        cacheCreationTokens: 1_200,
+        contextTokens: 61_000,
+        duration: 2_280,
+        apiDuration: 340,
+        linesAdded: 120,
+        linesRemoved: 34,
+      },
+    },
+  };
+}
+
 /** Hand-written channel implementations, backed by the store. */
 function handWritten(store: MockStore): Record<string, Record<string, unknown>> {
+  // `location` is guarded the same way latencyFromQuery() above guards it —
+  // this module has no node-test importer today, but the pattern is load-
+  // bearing everywhere else in the workbench and cheap to keep consistent.
+  const activeScenario = typeof location === 'undefined'
+    ? 'default'
+    : new URLSearchParams(location.search).get('scenario') ?? 'default';
+
   // Subscriber sets, one per real event the renderer listens for. These are the
   // channels the UI actually re-fetches on — see the WHY on the emits below.
   const subs = {
@@ -648,6 +709,42 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
   };
 
+  // One fixture per row state, so a design review sees all three at once.
+  // Byte counts are Destin's real 2026-08-26 interruption — a four-file split
+  // GGUF stranded at part 3 — so the sheets show realistic numbers rather than
+  // round ones that hide formatting bugs. NOTE the app's gb() divides by 1024^3:
+  // 79_674_559_677 renders as 74.2 GB, 121_334_654_784 as 113.0 GB.
+  const LOCAL_MODELS: InstalledLocalModel[] = [
+    {
+      id: 'Qwen3.5-9B-Q8_0',
+      sizeBytes: 9_527_502_048,
+      quant: 'Q8_0', quantDescription: 'Highest quality quantization — near-original output',
+      parts: 1, status: 'complete', partsPresent: 1,
+      totalSizeBytes: null, repo: null,
+    },
+    {
+      id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004',
+      sizeBytes: 79_674_559_677,
+      quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
+      parts: 4, status: 'unfinished', partsPresent: 2,
+      totalSizeBytes: 121_334_654_784, repo: 'unsloth/Qwen3.8-Flash-Next-GGUF',
+    },
+    {
+      id: 'Older-Model-UD-Q4_K_XL-00001-of-00002',
+      sizeBytes: 4_100_000_000,
+      quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
+      parts: 2, status: 'untraceable', partsPresent: 1,
+      totalSizeBytes: null, repo: null,
+    },
+  ];
+
+  // A fake progress stream so the MID-RESUME state (spec §4) can be photographed:
+  // Resume emits a 'downloading' event at ~70% and then creeps, never finishing.
+  const progressListeners = new Set<(p: DownloadProgress) => void>();
+  const emitProgress = (p: DownloadProgress) => { for (const cb of progressListeners) cb(p); };
+  let fakeTimer: ReturnType<typeof setInterval> | null = null;
+  let lastReceived = 0;
+
   const models: Ns<'models'> = {
     // RuntimeBinding.tsx only calls this for the local-engine provider. The
     // verdict union is checked by the compiler — useIpc.ts:329.
@@ -658,17 +755,47 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         detail: 'Loading it may evict another resident model.',
       }
       : { verdict: 'ok' as const, headline: '', detail: '' }),
-    // Settings → Model Providers → Local Models. The catch-all answered `[]`
-    // here, so the panel read "No models match" under an engine that claimed
-    // to be installed — the two ids match the local rows in fixtures/providers.ts
-    // so the picker chip and this list tell the same story.
-    installed: async () => [
-      { id: 'qwen2.5-coder:14b', sizeBytes: 8_990_000_000, quant: 'Q4_K_M', quantDescription: 'Recommended balance of quality and size', parts: 1 },
-      { id: 'llama3.1:8b', sizeBytes: 4_920_000_000, quant: 'Q4_K_M', quantDescription: 'Recommended balance of quality and size', parts: 1 },
-    ],
+
+    installed: async () => LOCAL_MODELS,
     curated: async () => [],
+    delete: async () => true,
+    onDownloadProgress: (cb: (p: DownloadProgress) => void) => {
+      progressListeners.add(cb);
+      return () => { progressListeners.delete(cb); };
+    },
+    resume: async (modelId: string) => {
+      const m = LOCAL_MODELS.find((x) => x.id === modelId);
+      if (!m || m.status !== 'unfinished' || !m.repo) throw new Error('Nothing to resume.');
+      let received = 85_000_000_000;
+      const base = {
+        downloadId: 'wb-resume-1', repo: m.repo, quant: m.quant ?? '',
+        totalBytes: m.totalSizeBytes ?? 0, parts: m.parts, currentPart: 3,
+      };
+      if (fakeTimer) clearInterval(fakeTimer);
+      lastReceived = received;
+      setTimeout(() => emitProgress({ ...base, state: 'downloading', receivedBytes: received }), 300);
+      fakeTimer = setInterval(() => {
+        received += 1_000_000_000;
+        lastReceived = received;
+        emitProgress({ ...base, state: 'downloading', receivedBytes: received });
+      }, 400);
+      return { downloadId: base.downloadId };
+    },
+    downloadCancel: async (downloadId: string) => {
+      if (fakeTimer) { clearInterval(fakeTimer); fakeTimer = null; }
+      const m = LOCAL_MODELS[1];
+      // Pausing banks the bytes fetched so far — the real models:installed
+      // re-reads the directory, so the row must come back at where it STOPPED,
+      // not at where it started. Without this the demo pauses at 73% and the
+      // row snaps back to 66%, which is the opposite of what resume promises.
+      m.sizeBytes = Math.max(m.sizeBytes, lastReceived);
+      emitProgress({
+        downloadId, repo: m.repo ?? '', quant: m.quant ?? '', state: 'cancelled',
+        receivedBytes: m.sizeBytes, totalBytes: m.totalSizeBytes ?? 0, parts: m.parts, currentPart: 3,
+      });
+      return true;
+    },
     detectEndpoints: async () => [],
-    onDownloadProgress: () => () => {},
   };
 
   // The local llama.cpp engine card (EngineCard.tsx). Without a hand-written
@@ -914,6 +1041,39 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     repoInfo: async () => ({ ok: true, branch: 'master', dirty: false }),
   };
 
+  // Session references (spec 2026-08-10): the fake IPC pair backing the
+  // Preview/Resume cards, both MOCK_ONLY (mock-only.ts) since no real backend
+  // exists yet. resolve() reuses the SAME fixture table the tool-gallery and
+  // scenario fixtures reference by uuid, so a card built here shows exactly
+  // the state its short id was chosen to demonstrate. read() fabricates a
+  // fake transcript tail rather than reading anything real; CS_ERR_READ is
+  // the one id wired to fail, so the "transcript unreadable" card state has
+  // something to point at.
+  const chatsearch = {
+    resolve: async (shortIds: string[]) => ({ ok: true as const, results: shortIds.map(resolveFixture) }),
+    read: async (req: { provider: string; id: string; tail: number; before?: number }) => {
+      if (req.id === CS_ERR_READ) return { ok: false as const, error: "EACCES: permission denied, open '/home/destin/YouCoded/Personal/Conversations/claude/transcripts/youcoded/ee0011aa.jsonl'" };
+      // 60 fake messages; every 4th assistant message follows a "tool gap".
+      const total = 60;
+      const end = Math.min(req.before ?? total, total);
+      const start = Math.max(0, end - Math.min(req.tail, 200));
+      const messages = [];
+      for (let seq = start; seq < end; seq++) {
+        const assistant = seq % 2 === 1;
+        messages.push({
+          role: assistant ? 'assistant' : 'user',
+          content: assistant
+            ? `Here is what I found for step ${seq}:\n\n\`\`\`ts\nconst x = ${seq};\n\`\`\`\n\n- one\n- two`
+            : `User question number ${seq}`,
+          timestamp: Date.now() - (total - seq) * 60_000,
+          seq,
+          droppedToolCalls: assistant && seq % 4 === 3 ? 3 : 0,
+        });
+      }
+      return { ok: true as const, messages, hasMore: start > 0 };
+    },
+  };
+
   // Signed OUT is the honest default, and the `[]` catch-all gets it backwards:
   // account.signedIn() returning `[]` is TRUTHY, and account.user() returning
   // `[]` is a truthy object with no `handle` — so HandlePrompt concluded the
@@ -1110,8 +1270,28 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // fallback stays reviewable.
     readBinary: async (absolutePath: string) => {
       const ext = absolutePath.split('.').pop()?.toLowerCase() ?? '';
+      // SVG is a vector source with no native resolution — the one format whose
+      // magnified detail should stay perfectly sharp. Served as its own fixture
+      // so that path is reviewable at all (it used to fall through to a refusal).
+      if (ext === 'svg') {
+        return { ok: true, base64: btoa(SAMPLE_SVG), mime: 'image/svg+xml' };
+      }
       if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].includes(ext)) {
+        // The 96x64 sample is smaller than the 180px magnifier lens, which
+        // suppresses itself on tiny sources — so it cannot review the zoom at
+        // all. Chart/screenshot paths get a generated 1600x1000 pattern with 7px
+        // text instead; everything else keeps the small sample, so the existing
+        // thumbnail surfaces look exactly as they did.
+        const name = absolutePath.split('/').pop()?.toLowerCase() ?? '';
+        if (/chart|screenshot/.test(name)) {
+          const detailed = makeDetailPngBase64();
+          if (detailed) return { ok: true, base64: detailed, mime: 'image/png' };
+        }
         return { ok: true, base64: SAMPLE_PNG_BASE64, mime: 'image/png' };
+      }
+      if (ext === 'pdf') {
+        const pdf = makeSamplePdfBase64();
+        if (pdf) return { ok: true, base64: pdf, mime: 'application/pdf' };
       }
       return { ok: false, reason: 'not-an-image' };
     },
@@ -1234,6 +1414,39 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       cb(buildHydratePayload());
       return () => {};
     },
+
+    // Fires once, synchronously, same reasoning as chatHydrate above — App's
+    // subscribe happens in an effect, so this lands in the same commit instead
+    // of a flash of "no usage data yet". Only ever has something to say for
+    // 'statusbar-cc' (see statusBarFixtureFor); every other scenario's cb is
+    // simply never invoked, matching this channel's unwired-before-Task-9
+    // behavior exactly.
+    statusData: (cb) => {
+      const fixture = statusBarFixtureFor(activeScenario);
+      if (fixture) {
+        cb({
+          usage: fixture.usage,
+          announcement: null,
+          updateStatus: null,
+          syncWarnings: [],
+          contextMap: {},
+          gitBranchMap: {},
+          sessionStatsMap: fixture.sessionStatsMap,
+        });
+      }
+      return () => {};
+    },
+  };
+
+  // Fast mode + effort — /fast and /effort UI, and (Task 9) the StatusBar Fast
+  // chip, which only renders when `fast` is true AND the session is Claude
+  // Code. True only for 'statusbar-cc'; every other scenario gets `fast: false,
+  // effort: 'auto'`, which is exactly what App.tsx read before this namespace
+  // existed (the untyped `(window.claude as any).modes` access resolved to the
+  // catch-all's `[]`, so `m?.fast` was always undefined -> false).
+  const modes = {
+    get: async () => ({ fast: activeScenario === 'statusbar-cc', effort: 'auto' }),
+    set: async () => ({ ok: true }),
   };
   // Scripted replies: the transcript/hook events a played reply fixture emits
   // (playReply in sendInput above). Same attachment pattern as specialistEvent
@@ -1285,7 +1498,25 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // 2026-08-25 all of these answered `[]`, so Marketplace/Library/skills drawer
   // rendered empty in the workbench and were unreviewable in any theme.
   let skillFavourites: string[] = ['civic-report', 'superpowers'];
+  // Quick chips are a STATEFUL mock, not a canned read: the editor writes
+  // through setChips on every add/remove/reorder/edit, so a read-only fixture
+  // would make every mutation appear to do nothing. Mirrors the real store's
+  // defaults so the composer row and the editor agree — QuickChips no longer
+  // carries a hardcoded fallback list to paper over an empty answer here.
+  let chipList: { skillId?: string; label: string; prompt: string }[] = [
+    { skillId: 'journaling-assistant', label: 'Journal', prompt: "let's journal" },
+    { skillId: 'claudes-inbox', label: 'Inbox', prompt: 'check my inbox' },
+    { label: 'Git Status', prompt: "run git status and summarize what's changed" },
+    { label: 'Review PR', prompt: 'review the latest PR on this repo' },
+    { label: 'Fix Tests', prompt: 'run the tests and fix any failures' },
+    { skillId: 'encyclopedia-librarian', label: 'Briefing', prompt: 'brief me on ' },
+    { label: 'Draft Text', prompt: 'help me draft a text to ' },
+  ];
   const skills = {
+    getChips: async () => chipList.map((c) => ({ ...c })),
+    setChips: async (next: { skillId?: string; label: string; prompt: string }[]) => {
+      chipList = next.map((c) => ({ ...c }));
+    },
     listMarketplace: async () => (marketplaceEmpty ? [] : MARKETPLACE_PLUGINS.map((p) => ({ ...p }))),
     list: async () => (marketplaceEmpty ? [] : INSTALLED_SKILLS.map((s) => ({ ...s }))),
     getFavorites: async () => [...skillFavourites],
@@ -1321,6 +1552,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   return {
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, window: windowNs,
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs,
   } as unknown as Record<string, Record<string, unknown>>;
 }

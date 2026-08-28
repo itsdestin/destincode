@@ -226,6 +226,7 @@ const IPC = {
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
+  TRANSCRIPT_PAGE: 'transcript:page',
   APPEARANCE_BROADCAST: 'appearance:broadcast',
   APPEARANCE_SYNC: 'appearance:sync',
   APPEARANCE_GET_FAVORITE_THEMES: 'appearance:get-favorite-themes',
@@ -363,7 +364,7 @@ const IPC = {
   MODELS_DOWNLOAD_PROGRESS: 'models:download-progress',  // push
   MODELS_DELETE: 'models:delete',
   MODELS_INSTALLED: 'models:installed',
-  MODELS_ORPHANED_PARTIALS: 'models:orphaned-partials',
+  MODELS_RESUME: 'models:resume',
   ENDPOINTS_DETECT: 'endpoints:detect',
   // Model memory lifecycle (2026-07-14) — keep in sync with shared/types.ts.
   ENGINE_MODELS: 'engine:models',
@@ -1013,6 +1014,12 @@ contextBridge.exposeInMainWorld('claude', {
     // uuid-based dedup handles any overlap with live events.
     requestTranscriptReplay: (sessionId: string) =>
       ipcRenderer.send(IPC.TRANSCRIPT_REPLAY, { sessionId }),
+    // Perf cycle 2: request/response, unlike the fire-and-forget replay above.
+    // Returns ONE page of history (newest when beforeCursor is null, else the
+    // page immediately older than the cursor) so opening a huge conversation
+    // renders ~30 turns instead of thousands.
+    requestTranscriptPage: (req: { sessionId: string; beforeCursor: unknown; claudeSessionId?: string; projectSlug?: string }) =>
+      ipcRenderer.invoke(IPC.TRANSCRIPT_PAGE, req),
   },
   theme: {
     list: () => ipcRenderer.invoke(IPC.THEME_LIST),
@@ -1312,9 +1319,10 @@ contextBridge.exposeInMainWorld('claude', {
     downloadCancel: (downloadId: string) => ipcRenderer.invoke(IPC.MODELS_DOWNLOAD_CANCEL, downloadId),
     delete: (id: string) => ipcRenderer.invoke(IPC.MODELS_DELETE, id),
     installed: () => ipcRenderer.invoke(IPC.MODELS_INSTALLED),
-    // Orphaned .partial files from a previous app run (clean via delete(modelId),
-    // resume by re-downloading the same repo+quant — Range continues the bytes).
-    orphanedPartials: () => ipcRenderer.invoke(IPC.MODELS_ORPHANED_PARTIALS),
+    // Resume an interrupted download from the manifest beside its .partial
+    // (2026-08-26) — no Hugging Face round trip, so it works when the network
+    // is the reason the download stopped.
+    resume: (modelId: string) => ipcRenderer.invoke(IPC.MODELS_RESUME, modelId),
     detectEndpoints: () => ipcRenderer.invoke(IPC.ENDPOINTS_DETECT),
     setBackend: (backend: string) => ipcRenderer.invoke(IPC.ENGINE_SET_BACKEND, backend),
     // Create-time / swap memory guard + [Reload Model] (2026-07-14).
@@ -1452,5 +1460,12 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke('project:read-context-file', projectPath, absolutePath),
     writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
       ipcRenderer.invoke('project:write-context-file', projectPath, absolutePath, content),
+  },
+  // Session references: turn the short ids a chatsearch result printed back
+  // into conversations, and read a bounded slice of one for the preview pane.
+  chatsearch: {
+    resolve: (shortIds: string[]) => ipcRenderer.invoke('chatsearch:resolve', shortIds),
+    read: (req: { provider: string; id: string; tail: number; before?: number }) =>
+      ipcRenderer.invoke('chatsearch:read', req),
   },
 });

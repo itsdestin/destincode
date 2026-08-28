@@ -582,6 +582,43 @@ describe('project:* channel parity', () => {
   });
 });
 
+// Session references (spec 2026-08-10). FIVE surfaces, like project:* — the two
+// channels are NOT gated on native.supported, because a phone must still be
+// able to ask and get the clean not-implemented answer that makes the shared UI
+// fall back to plain shell output.
+describe('chatsearch:* channel parity', () => {
+  const CHANNEL_TO_CONST: Record<string, string> = {
+    'chatsearch:resolve': 'CHATSEARCH_IPC.RESOLVE',
+    'chatsearch:read': 'CHATSEARCH_IPC.READ',
+  };
+  const NEW_TYPES = Object.keys(CHANNEL_TO_CONST);
+
+  it('declared in preload.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'preload.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('referenced in remote-shim.ts', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'remote-shim.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`'${t}'`);
+  });
+  it('registered in ipc-handlers.ts (literal or CHATSEARCH_IPC constant)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'ipc-handlers.ts'), 'utf8');
+    for (const t of NEW_TYPES) {
+      const literal = src.includes(`'${t}'`);
+      const constRef = src.includes(CHANNEL_TO_CONST[t]);
+      expect(literal || constRef, `${t} missing from ipc-handlers.ts`).toBe(true);
+    }
+  });
+  it('handled in remote-server.ts (the remote browser and the phone both ride this)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'remote-server.ts'), 'utf8');
+    for (const t of NEW_TYPES) expect(src).toContain(`case '${t}'`);
+  });
+  it('stubbed in SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt).toContain(`"${t}"`);
+  });
+});
+
 // Cross-device sync spaces (spec 2026-07-03). Desktop-only in Phase 1a — no
 // Android surface yet — so parity is asserted across the four DESKTOP surfaces:
 // preload.ts, remote-shim.ts, ipc-handlers.ts, and remote-server.ts. preload
@@ -939,9 +976,10 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     ['models:download-cancel', 'MODELS_DOWNLOAD_CANCEL'],
     ['models:delete', 'MODELS_DELETE'],
     ['models:installed', 'MODELS_INSTALLED'],
-    // Orphaned .partial scan (2026-07-15) — Android stubs it like the rest of
-    // the desktop-only model-manager surface.
-    ['models:orphaned-partials', 'MODELS_ORPHANED_PARTIALS'],
+    // Resume an interrupted download from its manifest (2026-08-26). Replaced
+    // models:orphaned-partials, whose listing folded into models:installed —
+    // two lists over one directory could disagree, which was the bug.
+    ['models:resume', 'MODELS_RESUME'],
     ['endpoints:detect', 'ENDPOINTS_DETECT'],
   ];
   const pushChannels = ['models:download-progress'];

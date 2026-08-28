@@ -15,6 +15,12 @@ import { useProjectWatch } from '../hooks/useProjectWatch';
 import { useGitFileStatus } from '../hooks/useGitFileStatus';
 import { gitFooterState } from '../utils/git-footer';
 import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
+import SessionPreviewPane from './SessionPreviewPane';
+// 6b: COPY was originally added ONLY for the "Referenced
+// conversations" list block below (a cut candidate — see Task 6 brief 6b).
+// The A1/A2/A4 preview header (Resume + tag/note sheet) now uses COPY too, so
+// this import no longer goes away if that block is cut.
+import { COPY } from '../../shared/chatsearch-refs';
 import { useArtifactContent } from './artifact-views/useArtifactContent';
 import { useUnsavedGuard } from './artifact-views/UnsavedChangesDialog';
 import { ContentFindBar } from './ContentFindBar';
@@ -26,8 +32,17 @@ import { fileTypeGroup } from '../../shared/artifacts/categorization';
 import type { FileTypeGroup } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
-import { CloseButton, EmptyState, SearchFilterPill } from './ui';
+import { Button, CloseButton, EmptyState, SearchFilterPill } from './ui';
 import { FileFilterPopover } from './project-view/FileFilterPopover';
+import { useResolvedConversations } from '../hooks/useResolvedConversations';
+import { useTagRegistry } from '../hooks/useTagRegistry';
+import { usePreviewMeta } from '../hooks/usePreviewMeta';
+import { useNarrowViewport } from '../hooks/use-narrow-viewport';
+import { resumeBlockedReason } from './tool-views/SessionRefActions';
+import ResumeOptionsPopover from './tool-views/ResumeOptionsPopover';
+import { ChatResumeIcon } from './Icons';
+import { TagGlyph } from './tags/glyphs';
+import { TagNoteEditor } from './tags/TagNoteEditor';
 
 // 'type' removed 2026-07-23 — the Type FILTER supersedes sorting by type.
 type SortKey = 'recent' | 'name';
@@ -125,11 +140,111 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // across switches). This drawer instance belongs to `sessionId`.
   const drawerOpen = state.drawerOpenBySession[sessionId] ?? false;
   const activeArtifactId = state.activeArtifactBySession[sessionId] ?? null;
+  // A previewed past conversation occupies the content pane INSTEAD of an
+  // artifact — mutually exclusive with activeArtifactId (see artifact-tracker.ts).
+  const activePreview = state.activeSessionPreviewBySession[sessionId] ?? null;
+  // "Referenced conversations" list (6b, cut candidate — see Task 6 brief).
+  const referenced = state.referencedSessionsBySession[sessionId] ?? [];
+
+  // ── Preview header: Resume + tag/note sheet (spec A1/A2/A4, 2026-08-26) ──
+  // Called HERE, unconditionally, rather than inside the `activePreview ?`
+  // branch below — this component has an early return further down (`if
+  // (!active && !activePreview) return <aside>…`), and rules of hooks means
+  // every hook this component calls must run on every render regardless of
+  // which branch is about to be taken. useResolvedConversations is a no-op
+  // (no chatsearch:resolve call) when passed `[]`, so an idle drawer viewing
+  // a real file — or with nothing open at all — costs nothing extra.
+  const previewResolved = useResolvedConversations(activePreview ? [activePreview.id] : []);
+  const previewRow = activePreview
+    ? previewResolved.results.find((r) => (r.status === 'ok' ? r.id === activePreview.id : r.query === activePreview.id)) ?? null
+    : null;
+  // The Resume Browser's own registry — same tags, same colors, one source.
+  const previewTagRegistry = useTagRegistry();
+  // Tags/note come from the meta store, NOT the search index (A1): the index
+  // only refreshes at launch/session-end, so it would show a tag as applied
+  // (or missing) that the store already disagrees with. `usePreviewMeta`
+  // returns a no-op api when `activePreview` is null.
+  const previewMeta = usePreviewMeta(activePreview ? activePreview.id : null);
+  const narrowViewport = useNarrowViewport();
+  const [previewSheetOpen, setPreviewSheetOpen] = useState(false);
+  const previewSheetWrapRef = useRef<HTMLDivElement>(null);
+  // The Resume options popover (M-header). Its own click-away/Escape live in
+  // ResumeOptionsPopover; this side only owns open/closed and the anchor.
+  const [resumeSheetOpen, setResumeSheetOpen] = useState(false);
+  const resumeSheetWrapRef = useRef<HTMLDivElement>(null);
+  // The same two session defaults the Resume Browser is handed by App. Read
+  // here rather than threaded through the drawer's props: the drawer is
+  // rendered from three places (chat, terminal, expanded) and none of them
+  // carries them today.
+  const [sessionDefaults, setSessionDefaults] = useState({ model: 'sonnet', skipPermissions: false });
+  useEffect(() => {
+    (window as unknown as { claude?: { defaults?: { get?: () => Promise<{ model?: string; skipPermissions?: boolean }> } } })
+      .claude?.defaults?.get?.()
+      .then((d) => { if (d) setSessionDefaults({ model: d.model ?? 'sonnet', skipPermissions: !!d.skipPermissions }); })
+      .catch(() => {});
+  }, []);
+  useEscClose(previewSheetOpen, () => setPreviewSheetOpen(false));
+  useEffect(() => {
+    if (!previewSheetOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (previewSheetWrapRef.current && !previewSheetWrapRef.current.contains(e.target as Node)) {
+        setPreviewSheetOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [previewSheetOpen]);
+  useEffect(() => { setResumeSheetOpen(false); }, [activePreview?.id]);
+  // Sheet must not survive a preview swap/close — reopening on a DIFFERENT
+  // conversation's Preview click must not silently show the outgoing one's
+  // still-open tag sheet.
+  useEffect(() => { setPreviewSheetOpen(false); }, [activePreview?.id]);
+
+  // Resume's enabled/disabled state and tooltip (spec A2). `previewRow` is
+  // only a resumable `Ok` conversation once `chatsearch:resolve` answers
+  // 'ok' — every other status (still loading, unknown, ambiguous) disables
+  // Resume with a copy-book reason rather than a raw id or a blank button.
+  const previewNative = activePreview?.provider === 'native';
+  const previewOk = previewRow && previewRow.status === 'ok' ? previewRow : null;
+  const previewBlockedReason = previewOk ? resumeBlockedReason(previewOk) : null;
+  const previewResumeDisabled = !previewOk || !!previewBlockedReason;
+  const previewResumeTitle = previewOk
+    ? (previewBlockedReason ?? (previewNative ? COPY.resumeNativeHint : COPY.resumeHint))
+    : previewRow?.status === 'ambiguous'
+      ? COPY.ambiguousId(previewRow.candidates.length)
+      : previewRow?.status === 'unknown'
+        ? COPY.unknownId
+        : previewResolved.loading ? COPY.lookingUp(1) : COPY.unknownId;
+  const previewResumeLabel = previewNative ? COPY.resumeNative : COPY.resume;
   // Live external-change events while the drawer is actually visible — the
   // watcher in main is refcounted, so open drawers on the same project share one.
   useProjectWatch(drawerOpen && projectRoot ? projectRoot : null);
   // Set when a pill click couldn't resolve; cleared on next click/selection/close.
   const pillError = state.pillError?.[sessionId] ?? null;
+
+  // Re-list this session's files whenever the drawer opens against a resolved
+  // project root.
+  //
+  // WHY this exists (perf cycle 2): the list used to be loaded once by ChatView
+  // at session mount, keyed on the session's `cwd`, and then refreshed as a SIDE
+  // EFFECT of transcript replay — the artifact tool-use tracker listens to
+  // transcript events, so re-streaming a whole conversation's history happened to
+  // re-list its files. Paged history no longer streams history through that
+  // channel, which left the drawer showing whatever ChatView saw at mount.
+  // Opening the Files drawer should show what is on disk NOW, and it should key
+  // off the RESOLVED projectRoot (useActiveProject), which is not always the raw
+  // cwd ChatView used.
+  useEffect(() => {
+    if (!drawerOpen || !projectRoot || !sessionId) return;
+    let cancelled = false;
+    (window.claude as any).artifacts?.listSession?.(sessionId, projectRoot)
+      .then((r: any) => {
+        if (cancelled || !r?.ok || !Array.isArray(r.artifacts)) return;
+        dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: r.artifacts });
+      })
+      .catch(() => { /* the drawer keeps whatever it already had */ });
+    return () => { cancelled = true; };
+  }, [drawerOpen, projectRoot, sessionId, dispatch]);
 
   // Existence check (unchanged): mark artifacts whose file is gone as orphans,
   // folded into the "deleted" UI state alongside explicit delete versions.
@@ -248,8 +363,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     dispatch({ type: 'GIT_REVIEW_CLOSED', sessionId });
   }, [dispatch, sessionId]);
 
-  // No selection → force the list visible so the user can pick something.
-  const showList = !active ? true : listOpen;
+  // No selection AND no preview → force the list visible so the user can
+  // pick something. A live preview counts as a selection, same as an artifact.
+  const showList = !active && !activePreview ? true : listOpen;
 
   // ── Rename: the filename itself is the trigger ──
   const startRename = useCallback(() => {
@@ -406,9 +522,12 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     if (expanded) { dispatch({ type: 'DRAWER_EXPAND_TOGGLED' }); return; }
     if (gitReviewOpen) { closeGitReview(); return; }
     if (listOpen) { setListOpen(false); return; }
+    // A live preview backs out to the list before the drawer closes, same
+    // step as an open artifact — Esc/back must not jump straight past it.
+    if (activePreview) { dispatch({ type: 'SESSION_PREVIEW_CLEARED', sessionId }); return; }
     if (activeArtifactId) { dispatch({ type: 'ACTIVE_ARTIFACT_CLEARED', sessionId }); return; }
     dispatch({ type: 'DRAWER_CLOSED', sessionId });
-  }, [findOpen, editState.editing, expanded, gitReviewOpen, listOpen, activeArtifactId, dispatch, cancelRename, sessionId, guardUnsaved, closeGitReview]);
+  }, [findOpen, editState.editing, expanded, gitReviewOpen, listOpen, activePreview, activeArtifactId, dispatch, cancelRename, sessionId, guardUnsaved, closeGitReview]);
 
   useEscClose(drawerOpen, handleBack);
 
@@ -437,7 +556,10 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             drawer is one session's activity log (created/edited/viewed all
             appear), vs the project-wide set in Project View. */}
         <span className="font-semibold text-sm">Session Files ({listedArtifacts.length})</span>
-        {!active && (
+        {/* Only in the list-only shape (no artifact, no preview) — once
+            either is showing, the top bar's own Close icon covers this, and
+            showing both would be a redundant second close button. */}
+        {!active && !activePreview && (
           <CloseButton
             onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))}
             title="Close drawer"
@@ -545,6 +667,28 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           ))
         )}
       </div>
+      {/* "Referenced conversations" — KEPT. Destin, 2026-08-27 gate (D1):
+          picked "keep it", with "just show title in this list, not assistant
+          or whateva", so the lane label that used to trail each row is gone.
+          The row is deliberately title-only: at the list's width anything
+          after the title truncates the title itself. */}
+      {referenced.length > 0 && (
+        <div className="mt-3 border-t border-edge pt-2">
+          <div className="px-3 pb-1 text-2xs uppercase tracking-wider text-fg-muted">{COPY.referencedHeading}</div>
+          {referenced.map((r) => (
+            <button
+              key={`${r.provider}:${r.id}`}
+              type="button"
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-well ${
+                activePreview?.id === r.id ? 'bg-well text-fg' : 'text-fg-dim'
+              }`}
+              onClick={() => guardUnsaved(() => dispatch({ type: 'SESSION_PREVIEW_SET', sessionId, provider: r.provider, id: r.id, title: r.title }))}
+            >
+              <span className="truncate flex-1">{r.title || COPY.untitled}</span>
+            </button>
+          ))}
+        </div>
+      )}
     </>
   );
 
@@ -604,15 +748,21 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     // overflow:hidden and simply unreachable.
     : 'drawer-aside relative w-[var(--right-pane-width,480px)] h-full flex flex-col bg-inset shrink-0';
 
-  // No selection → the whole drawer is the list (nothing to view yet).
-  if (!active) {
+  // No selection AND no preview → the whole drawer is the list (nothing to
+  // view yet). A preview clears `active` (exclusivity rule), so this guard
+  // must let a live preview through too, or the pane branch below is
+  // unreachable — the very first Preview click would open the drawer and
+  // then immediately show nothing.
+  if (!active && !activePreview) {
     return <aside ref={asideRef} className={asideClass}>{resizeHandle}{listInner}</aside>;
   }
 
   // Same session-scoped fix as ArtifactListItem: the footer describes what
   // THIS session did with the open file, not its whole history.
-  const statusWord = statusInfo(active, active.status === 'deleted' || orphanIds.has(active.id), sessionId);
-  const fileName = active.path.split('/').pop() ?? active.path;
+  // Both are `active &&` guarded (rather than assuming active is set) because
+  // this line also runs while `activePreview` is showing and `active` is null.
+  const statusWord = active ? statusInfo(active, active.status === 'deleted' || orphanIds.has(active.id), sessionId) : '';
+  const fileName = active ? (active.path.split('/').pop() ?? active.path) : '';
 
   return (
     <aside ref={asideRef} className={asideClass}>
@@ -636,10 +786,17 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
           onCancel={() => setDiscardAsk(null)}
         />
       )}
-      {/* top bar */}
+      {/* top bar. The filename/rename cluster and the file-scoped actions
+          (open-external, copy-path, reveal) only make sense for a real
+          artifact — while a preview is showing, `active` is null (exclusivity
+          rule), so those collapse away. The conversation title takes the same
+          slot the filename does (below), and this is now the ONLY close
+          button for either case — SessionPreviewPane used to draw its own
+          second title/close row in its body; that was the "two X's" bug
+          Destin flagged, so it no longer renders one. Don't add one back. */}
       <div className="flex items-center gap-1 px-2 py-1.5 border-b border-edge shrink-0">
         <IconBtn name="list" title={listOpen ? 'Hide list' : 'Show list'} active={listOpen} onClick={() => setListOpen((v) => !v)} />
-        {renaming ? (
+        {active ? (renaming ? (
           <div className="flex items-center gap-2 min-w-0 px-1 relative">
             <span className={`inline-flex items-center border rounded-md overflow-hidden ${renameError ? 'border-red-500' : 'border-accent'}`}>
               <input
@@ -672,14 +829,103 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             </span>
             <span className="text-fg-muted opacity-0 group-hover:opacity-100 shrink-0"><Ic name="pencil" size={12} /></span>
           </button>
-        )}
+        )) : activePreview ? (
+          // Same slot the filename occupies above, plain (not a button) — a
+          // past conversation can't be renamed, so this carries none of the
+          // click-to-rename affordance.
+          <div className="min-w-0 px-2 py-1">
+            <span className="block text-sm-tight font-semibold text-fg truncate">
+              {activePreview.title || COPY.untitled}
+            </span>
+          </div>
+        ) : null}
         <div className="flex-1" />
+        {/* Resume + tag/note sheet (spec A4): `☰ list · title · (spacer) ·
+            Resume · 🏷 tag · ⛶ expand · ✕ close`. Both are `activePreview`-
+            only — a real artifact never shows them, and the file-only icons
+            below stay `active &&`-gated exactly as before. */}
+        {activePreview && (
+          <>
+            <div ref={previewSheetWrapRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setPreviewSheetOpen((v) => !v)}
+                aria-label={`Organize ${activePreview.title || COPY.untitled}`}
+                aria-haspopup="dialog"
+                aria-expanded={previewSheetOpen}
+                className={`w-7 h-7 rounded-md inline-flex items-center justify-center shrink-0 border transition-colors ${
+                  previewSheetOpen ? 'text-fg bg-well border-edge' : 'text-fg-dim border-transparent hover:text-fg hover:bg-well hover:border-edge'
+                }`}
+              >
+                {/* Same mark as the Resume Browser's tag button (glyphs.tsx) —
+                    shared so it can't drift between the two surfaces. */}
+                <TagGlyph className="w-4 h-4" />
+              </button>
+              {previewSheetOpen && (
+                // layer-surface (panel) hosting TagNoteEditor's own bg-inset
+                // card — the same nesting CloseSessionPrompt's OverlayPanel
+                // uses, and TagNoteEditor already lifts its OWN fields to
+                // bg-well against that bg-inset card, so no fieldClassName
+                // override is needed here (unlike the Resume Browser, whose
+                // sheet drops the TagPicker/NoteEditor straight onto its
+                // bg-inset card with no layer-surface between it and the
+                // panel below).
+                <div
+                  className="layer-surface absolute right-0 top-full mt-2 w-[280px] p-2 z-30"
+                  role="dialog"
+                  aria-label={COPY.tagsAndNoteLabel}
+                >
+                  <TagNoteEditor
+                    appliedIds={new Set(previewMeta.tags)}
+                    onToggleTag={previewMeta.toggleTag}
+                    registry={previewTagRegistry}
+                    note={previewMeta.note}
+                    onNote={previewMeta.saveNote}
+                  />
+                </div>
+              )}
+            </div>
+          </>
+        )}
         {/* Edit/Save moved to the floating button at the bottom-right of the
             doc pane (Destin, 2026-07-22) — see the cluster below the content div. */}
-        {isElectron && <IconBtn name="external" title="Open with the default app" onClick={handleOpenExternal} />}
-        <IconBtn name="copypath" title="Copy path" onClick={handleCopyPath} />
-        {isElectron && <IconBtn title="Reveal in folder" glyph={<RevealFolderIc />} onClick={handleReveal} />}
+        {active && isElectron && <IconBtn name="external" title="Open with the default app" onClick={handleOpenExternal} />}
+        {active && <IconBtn name="copypath" title="Copy path" onClick={handleCopyPath} />}
+        {active && isElectron && <IconBtn title="Reveal in folder" glyph={<RevealFolderIc />} onClick={handleReveal} />}
         <IconBtn name={expanded ? 'shrink' : 'expand'} title={expanded ? 'Shrink panel' : 'Expand panel'} active={expanded} onClick={() => dispatch({ type: 'DRAWER_EXPAND_TOGGLED' })} />
+        {/* Resume sits between expand and close — Destin, 2026-08-27 gate
+            (M-header): "i want resume to be between expand and X button."
+            It no longer resumes on click; it opens the options popover below,
+            which is where the model / skip-permissions choice and the final
+            confirm live. */}
+        {activePreview && (
+          <div ref={resumeSheetWrapRef} className="relative">
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={previewResumeDisabled}
+              title={previewResumeTitle}
+              // Narrow (<640px, checked at 390px): the label collapses to a
+              // chat bubble with a play triangle — Destin (M-narrow) on the
+              // plain forward arrow that used to sit here. Icon-only means the
+              // accessible name moves to aria-label.
+              aria-label={narrowViewport ? previewResumeLabel : undefined}
+              aria-haspopup="dialog"
+              aria-expanded={resumeSheetOpen}
+              onClick={previewOk && !previewBlockedReason ? () => setResumeSheetOpen((v) => !v) : undefined}
+            >
+              {narrowViewport ? <ChatResumeIcon className="w-3.5 h-3.5" /> : previewResumeLabel}
+            </Button>
+            {resumeSheetOpen && previewOk && (
+              <ResumeOptionsPopover
+                conversation={previewOk}
+                defaultModel={sessionDefaults.model}
+                defaultSkipPermissions={sessionDefaults.skipPermissions}
+                onClose={() => setResumeSheetOpen(false)}
+              />
+            )}
+          </div>
+        )}
         <IconBtn name="close" title="Close" onClick={() => guardUnsaved(() => dispatch({ type: 'DRAWER_CLOSED', sessionId }))} />
       </div>
 
@@ -702,7 +948,22 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
         {/* Positioning parent for the find bar. contentRef is the INNER div so
             the find bar (a sibling) isn't itself walked by the search. */}
         <div className="drawer-content flex-1 min-w-0 overflow-hidden relative flex flex-col">
-          {gitReviewOpen && active ? (
+          {activePreview ? (
+            // Preview replaces the whole content column — find bar, metadata
+            // strip, and git review don't apply to a read-only transcript.
+            // Title + close now live in the top bar above (same slot a file
+            // uses), so the pane itself no longer takes title/onClose props.
+            <SessionPreviewPane
+              provider={activePreview.provider}
+              id={activePreview.id}
+              // Fix: this drawer already has the title (activePreview.title,
+              // set when the preview was opened — same value the top bar and
+              // the Organize aria-label above use) — thread it down instead
+              // of making the pane re-resolve the same id a second time just
+              // to get the same string back.
+              title={activePreview.title}
+            />
+          ) : gitReviewOpen && active ? (
             // Standard top bar (above) stays; find bar, content, edit cluster, and
             // the metadata strip below are all swapped out while review is open
             // (locked decision, ledger 10).
@@ -715,7 +976,13 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               externalError={discardError}
               onExternalErrorClear={() => setDiscardError(null)}
             />
-          ) : (
+          ) : active ? (
+            // `active` is guaranteed non-null here: past the early return,
+            // exactly one of activePreview/gitReviewOpen&&active/active is
+            // true (the reducer's exclusivity rule), and the two branches
+            // above already claimed the other cases. Narrowed explicitly
+            // (rather than relying on that invariant) so TS doesn't need to
+            // trust it either.
             <>
               {findOpen && (
                 <ContentFindBar
@@ -727,6 +994,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               <div ref={contentRef} className="flex-1 min-h-0 overflow-hidden artifact-content-pane">
                 <ActiveArtifactView
                   ref={editRef}
+                  findBarOpen={findOpen}
                   artifact={active}
                   content={content}
                   contentInfo={contentInfo}
@@ -804,7 +1072,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
                 />
               </div>
             </>
-          )}
+          ) : null}
         </div>
       </div>
     </aside>

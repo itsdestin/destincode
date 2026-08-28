@@ -40,6 +40,22 @@ export function ChatIcon({ className = 'w-4 h-4' }: IconProps) {
   );
 }
 
+/** A chat bubble with a play triangle inside — "continue this conversation".
+ *  Destin (2026-08-27 gate, M-narrow): at phone width the Resume button drops
+ *  its word, and a bare arrow said "go somewhere", not "carry on talking".
+ *  Same bubble outline as ChatIcon so the two read as one family. */
+export function ChatResumeIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor">
+      <path
+        d="M4 5 L20 5 A2 2 0 0 1 22 7 L22 15 A2 2 0 0 1 20 17 L10 17 L6 20 L7 17 L4 17 A2 2 0 0 1 2 15 L2 7 A2 2 0 0 1 4 5 Z"
+        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
+      />
+      <path d="M10 8.2 L15.4 11 L10 13.8 Z" strokeWidth="1.6" strokeLinejoin="round" fill="currentColor" />
+    </svg>
+  );
+}
+
 /** Paperclip attachment icon */
 export function AttachIcon({ className = 'w-4 h-4' }: IconProps) {
   return (

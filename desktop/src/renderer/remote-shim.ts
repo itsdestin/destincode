@@ -1337,6 +1337,13 @@ export function installShim(): void {
       writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
         invoke('project:write-context-file', { projectPath, absolutePath, content }),
     },
+    // Session references. Object payloads, like project.* above — the remote
+    // server reads named fields off `payload`, never positional arguments.
+    chatsearch: {
+      resolve: (shortIds: string[]) => invoke('chatsearch:resolve', { shortIds }),
+      read: (req: { provider: string; id: string; tail: number; before?: number }) =>
+        invoke('chatsearch:read', req),
+    },
     // System namespace — hardware back button bridge for Android.
     // notifyStackState: React tells Android whether the dismissal stack is
     //   non-empty. Android sets OnBackPressedCallback.isEnabled accordingly
@@ -1471,6 +1478,17 @@ export function installShim(): void {
       focusAndSwitch: (_p: any) => {},
       openDetached: (_p: any) => {},
       requestTranscriptReplay: (_sid: string) => {},
+      // A REAL call, not a stub. requestTranscriptReplay above shipped as a
+      // no-op and silently gave the phone no history for months; paging is the
+      // phone's only way back through a long conversation, so it must reach the
+      // desktop.
+      requestTranscriptPage: (req: { sessionId: string; beforeCursor?: unknown; claudeSessionId?: string; projectSlug?: string }) =>
+        invoke('transcript:page', {
+          sessionId: req.sessionId,
+          beforeCursor: req.beforeCursor ?? null,
+          claudeSessionId: req.claudeSessionId,
+          projectSlug: req.projectSlug,
+        }),
       dropResolve: () => Promise.resolve({ targetWindowId: null as number | null }),
     },
     // Buddy floater is desktop-Electron only (MVP). Browser/Android get
@@ -1664,7 +1682,7 @@ export function installShim(): void {
       downloadCancel: (downloadId: string) => invoke('models:download-cancel', { downloadId }),
       delete: (id: string) => invoke('models:delete', { id }),
       installed: () => invoke('models:installed'),
-      orphanedPartials: () => invoke('models:orphaned-partials'),
+      resume: (modelId: string) => invoke('models:resume', { modelId }),
       detectEndpoints: () => invoke('endpoints:detect'),
       setBackend: (backend: string) => invoke('engine:set-backend', { backend }),
       memoryCheck: (modelId: string) => invoke('models:memory-check', { modelId }),

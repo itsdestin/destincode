@@ -29,4 +29,8 @@ export interface ArtifactViewProps {
   // the onStartEdit/onSaveEdit/onCancelEdit callbacks). ProjectView leaves this
   // unset and keeps the in-viewer buttons.
   hideControls?: boolean;
+  /** The host's find bar (Ctrl+F) is open and occupying the pane's TOP-RIGHT
+   *  corner (ContentFindBar's default `top-2 right-2`). A viewer with its own
+   *  floating control up there moves it down out of the way. */
+  findBarOpen?: boolean;
 }

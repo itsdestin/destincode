@@ -19,7 +19,12 @@ export function useTagRegistry(): TagRegistryApi {
   const [loading, setLoading] = useState(true);
 
   const reload = useCallback(() => {
-    Promise.resolve((window as any).claude.tags.list())
+    // Optional-chained: the .catch below already says this hook intends to
+    // survive a failed registry read, and a namespace that is not there is the
+    // same class of failure as a rejected promise — but it threw synchronously
+    // during render instead, taking the whole component down. Surfaced when
+    // SessionDrawer became the first component to call this hook.
+    Promise.resolve((window as any).claude?.tags?.list?.() ?? [])
       .then((list: TagRecord[]) => setTags(Array.isArray(list) ? list : []))
       .catch(() => setTags([]))
       .finally(() => setLoading(false));

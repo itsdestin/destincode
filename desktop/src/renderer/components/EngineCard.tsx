@@ -76,6 +76,16 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
 
   if (!status) return null;
 
+  // A pin bump does NOT upgrade anyone on its own: EngineAcquisition.installed()
+  // falls back to whatever complete install it finds, so an existing b-number
+  // keeps serving forever and the Install button below is hidden once ANY engine
+  // is present. Without this row a newer engine — the only way to run a model
+  // built on a newer architecture — is unreachable from the UI (found 2026-08-27,
+  // when b9992 could not read qwen4exp and b10665 could).
+  const updateAvailable = status.installed
+    && status.installedVersion !== null
+    && status.installedVersion !== status.pinnedVersion;
+
   // Plain-words state line (no glyphs). Running/installed spell out version +
   // backend so the user knows exactly what's on disk.
   const stateLabel =
@@ -117,6 +127,19 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
             Restart engine
           </Button>
         )}
+        {/* engine.install() always fetches the PINNED build and verify-boots it
+            before it takes over, so the same call is both first install and
+            upgrade — nothing new is needed in main. */}
+        {updateAvailable && status.state !== 'error' && (
+          <Button
+            size="sm"
+            className="shrink-0"
+            disabled={busy}
+            onClick={() => run(() => window.claude.engine.install())}
+          >
+            {busy ? 'Updating…' : 'Update'}
+          </Button>
+        )}
       </div>
       {busy && progress?.kind === 'download' && (
         <p className="mt-2 text-3xs text-fg-dim">
@@ -127,6 +150,14 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
         <p className="mt-2 text-3xs text-fg-dim">{progress.kind === 'verify' ? 'Verifying download…' : 'Unpacking…'}</p>
       )}
       {error && <p className="mt-2 text-3xs text-destructive-fg">{error}</p>}
+      {/* Say WHY the button is there. "A newer engine is available" alone tells a
+          non-developer nothing about whether they need it. */}
+      {updateAvailable && !busy && (
+        <p className="mt-2 text-3xs text-fg-dim">
+          A newer engine ({status.pinnedVersion}) is available. Newer engines can run
+          newer models — update if a model you downloaded won't load.
+        </p>
+      )}
 
       {/* Extra controls for the Local Models panel (Plan C). Only shown once the
           engine is installed — nothing to configure before that. */}

@@ -11,6 +11,8 @@ import {
   abnormalStopReason,
 } from './chat-types';
 import { SubagentSegment, SpecialistNote, ToolCallState, ToolGroupState } from '../../shared/types';
+import { pageEventToAction } from './transcript-page-actions';
+import { addTurnUsage, addSubagentUsage, addPatchLines, mergeTotals } from './session-totals';
 
 // Fix: message ids are used as React keys. A hydrated remote client restarts
 // this counter at 0 while its snapshot already holds msg-1..msg-N, so new live
@@ -388,6 +390,10 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   }
 
   const segments: SubagentSegment[] = parent.subagentSegments ? [...parent.subagentSegments] : [];
+  // Captured only on the TOOL_RESULT branch below — the pre-update segment,
+  // read before it's overwritten, so the once-only patch guard after the
+  // if-chain can see whether THIS call already had a structuredPatch.
+  let existingToolSegment: Extract<SubagentSegment, { type: 'tool' }> | undefined;
 
   if (action.type === 'TRANSCRIPT_ASSISTANT_TEXT') {
     // Fix: the native harness (harness-session.ts:1769) emits one
@@ -480,6 +486,7 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
     );
     if (idx >= 0 && segments[idx].type === 'tool') {
       const existing = segments[idx] as Extract<SubagentSegment, { type: 'tool' }>;
+      existingToolSegment = existing;
       segments[idx] = action.isError
         ? { ...existing, status: 'failed', error: action.result }
         : {
@@ -499,8 +506,30 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
   const seenUuids = action.type === 'TRANSCRIPT_ASSISTANT_TEXT'
     ? new Set(session.seenUuids).add(action.uuid)
     : session.seenUuids;
+  // A specialist's edits are the parent session's edits (spec §7). They live in
+  // subagentSegments, NOT session.toolCalls, so a count over toolCalls alone
+  // would miss every edit made by delegation — i.e. undercount hardest on the
+  // biggest sessions. Same once-only guard as the main path: existingToolSegment
+  // is the pre-update segment (only set inside the TOOL_RESULT branch above),
+  // so a duplicate delivery with a patch already recorded is a no-op.
+  //
+  // Fix (Finding 1, 2026-08-26): also require `existingToolSegment` itself, not
+  // just `!existingToolSegment?.structuredPatch`. If this toolUseId's tool-use
+  // was never observed under this parent (a dropped/malformed transcript line —
+  // treated as real elsewhere in this function's own comments), no segment
+  // exists to have been captured, so the old guard was vacuously true on EVERY
+  // delivery and a duplicate orphan result counted twice. A rare missed orphan
+  // now contributes an incomplete number; a duplicate would have invented one —
+  // and this whole feature exists to stop the status bar showing numbers that
+  // aren't true.
+  const totals = action.type === 'TRANSCRIPT_TOOL_RESULT'
+      && existingToolSegment
+      && action.structuredPatch
+      && !existingToolSegment.structuredPatch
+    ? addPatchLines(session.totals, action.structuredPatch)
+    : session.totals;
   const next = new Map(state);
-  next.set(action.sessionId, { ...session, toolCalls, seenUuids });
+  next.set(action.sessionId, { ...session, toolCalls, seenUuids, totals });
   return next;
 }
 
@@ -1508,8 +1537,26 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
       }
 
+      // Count edited lines ONCE. A tool-result can be delivered twice (a
+      // renderer reload replays the transcript while the live stream is still
+      // arriving — see seenUuids' comment), and Map.set absorbs the duplicate
+      // silently, so the guard is "this call had no patch yet", not a uuid.
+      //
+      // Fix (Finding 1, 2026-08-26): also require `existing` itself, not just
+      // `!existing?.structuredPatch`. If the tool-use for this id was never
+      // observed (a dropped/malformed transcript line, which this codebase
+      // treats as real — see the watcher re-emit comments above), `existing`
+      // is undefined and the old guard was vacuously true on EVERY delivery,
+      // so a duplicate of an orphan result counted its lines twice. A rare
+      // missed orphan now contributes an incomplete number; a duplicate would
+      // have invented one — and this whole feature exists to stop the status
+      // bar showing numbers that aren't true.
+      const totals = existing && action.structuredPatch && !existing.structuredPatch
+        ? addPatchLines(session.totals, action.structuredPatch)
+        : session.totals;
+
       next.set(action.sessionId, {
-        ...session, toolCalls, lastActivityAt: Date.now(),
+        ...session, toolCalls, totals, lastActivityAt: Date.now(),
         attentionState: 'ok',
       });
       return next;
@@ -1637,7 +1684,74 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         }
       }
 
-      next.set(action.sessionId, { ...session, timeline, seenUuids, ...endTurn(session, undefined, assistantTurns) });
+      // Session totals (spec §2). A SUBAGENT's turn-complete is skipped on
+      // purpose: a specialist's spend arrives once, as a subagent-usage event
+      // carrying the whole run (native-session-host.ts), and counting both
+      // would double it. Everything else — including a Claude Code turn,
+      // which carries no costUsd and so contributes tokens only — accumulates.
+      //
+      // Fix (Finding 3, 2026-08-26): this used to be a ternary keyed on
+      // `action.parentAgentToolUseId`, but that branch can never be true here —
+      // the identical `if (action.parentAgentToolUseId) return state;` guard at
+      // the top of this case already exits before this line is ever reached. A
+      // specialist's own turn-complete never reaches here. This matters because
+      // a later change will deliver a specialist's whole run as its own event;
+      // counting both that event AND a (currently impossible) subagent
+      // turn-complete here would double a user's tokens and cost.
+      const totals = addTurnUsage(session.totals, action.usage ?? {});
+
+      next.set(action.sessionId, { ...session, timeline, seenUuids, totals, ...endTurn(session, undefined, assistantTurns) });
+      return next;
+    }
+
+    // One finished specialist's TOTAL spend, folded into the PARENT's totals
+    // (spec §2). This is the other half of the WHY block just above: the
+    // child's own turn-complete is never counted, so this event is where a
+    // delegated run's tokens and dollars enter the numbers — exactly once.
+    //
+    // Deliberately does NOT delegate to applySubagentEvent even though it
+    // carries parentAgentToolUseId. That helper builds the nested CARD's
+    // segments; this event has nothing to draw. It is bookkeeping, not
+    // conversation: no timeline entry, no turn state touched, so a background
+    // specialist that finishes between the parent's turns cannot end a turn
+    // that isn't running.
+    case 'TRANSCRIPT_SUBAGENT_USAGE': {
+      const session = state.get(action.sessionId);
+      // ORPHAN guard: a report for a session this window doesn't hold changes
+      // nothing, and must never MINT one — a ghost conversation whose only
+      // content is a dollar figure would be worse than a missing number.
+      // Returning `state` itself (not the `next` copy) keeps the
+      // useSyncExternalStore snapshot referentially stable on a no-op.
+      if (!session) {
+        // Task 23 item 3. Dropping this silently loses a real dollar figure:
+        // the specialist's tokens and cost are then counted NOWHERE, and the
+        // parent's total is quietly short with nothing to trace it back to.
+        // It should be impossible (SESSION_INIT runs before any transcript
+        // event reaches the reducer), so if it ever happens this line is the
+        // only trace anyone will have.
+        //
+        // WHY here and NOT on the dedup branch below: a second delivery of the
+        // same report is EXPECTED — a resume replays the parent's record while
+        // the live stream may still be delivering. Warning there would print
+        // during ordinary healthy use, which is how a warning stops being read.
+        console.warn(`[chat] subagent-usage arrived for session ${action.sessionId}, which this window does not hold — that specialist's tokens and cost are counted nowhere`);
+        return state;
+      }
+      // Task 25 item 3 — deliberately silent, unlike the missing-session branch
+      // above. emitSubagentUsage types `usage` as required, so a missing one is
+      // not a lost dollar figure: it is a malformed or legacy persisted event
+      // that never carried tokens or cost to begin with. Nothing to count means
+      // nothing to warn about — this is not a fourth silent hole.
+      if (!action.usage) return state;
+      // DEDUP on uuid: resume replays the parent's whole record while the live
+      // stream may still be delivering, and counting one specialist twice
+      // would double the session's reported cost.
+      if (session.seenUuids.has(action.uuid)) return state;
+      next.set(action.sessionId, {
+        ...session,
+        totals: addSubagentUsage(session.totals, action.usage),
+        seenUuids: new Set(session.seenUuids).add(action.uuid),
+      });
       return next;
     }
 
@@ -2044,73 +2158,70 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
-    case 'HISTORY_LOADED': {
+    // --- Paged history (perf cycle 2) ------------------------------------
+    // Replaces HISTORY_LOADED, which fetched the WHOLE transcript behind a "See
+    // previous messages" button and rebuilt it as flat `hist-` bubbles with no
+    // tool cards. Pages carry real TranscriptEvents, so a card from history is
+    // byte-for-byte a card from the live stream.
+
+    case 'HISTORY_PAGE_REQUESTED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      next.set(action.sessionId, { ...session, history: { ...session.history, loading: true } });
+      return next;
+    }
+
+    case 'HISTORY_PAGE_FAILED': {
+      // Keep the cursor: the page is still there, the fetch just failed, and the
+      // sentinel will retry when the user scrolls.
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      next.set(action.sessionId, { ...session, history: { ...session.history, loading: false } });
+      return next;
+    }
+
+    case 'HISTORY_PAGE_LOADED': {
       const session = next.get(action.sessionId);
       if (!session) return state;
 
-      // Build timeline entries from historical messages
-      const historyTimeline: TimelineEntry[] = [];
-      const historyTurns = new Map(session.assistantTurns);
-      let historyMsgCounter = 0;
-
-      // Add "see previous messages" marker if there's more history
-      if (action.hasMore) {
-        historyTimeline.push({
-          kind: 'prompt',
-          prompt: {
-            promptId: HISTORY_EXPAND_PROMPT_ID,
-            title: 'See previous messages',
-            buttons: [],
-          },
-        });
+      // Build this page's own timeline on a SCRATCH state by replaying its
+      // events through the very same per-event cases the live path uses, then
+      // prepend. Nothing here knows how to render a tool card or a turn — it
+      // reuses what already does, which is why a paged card cannot drift from a
+      // live one.
+      //
+      // Ids stay counter-based (nextMessageId/nextTurnId/nextGroupId are module
+      // counters that only ever increase), so a prepended page can never collide
+      // with what is already on screen even though it is OLDER.
+      let scratch: ChatState = new Map();
+      // Seed the scratch state's seenUuids from the LIVE session so the
+      // per-event handlers' existing uuid dedup fires during the replay.
+      // Without this a message that is already on screen — one the user sent a
+      // moment ago, now also present in the transcript the page was read from —
+      // is rebuilt on the empty scratch and PREPENDED as a second bubble.
+      // (Caught by the perf rig's native-chat screenshot: two identical prompts.)
+      scratch.set(action.sessionId, { ...createSessionChatState(), seenUuids: new Set(session.seenUuids) });
+      for (const ev of action.events) {
+        const pageAction = pageEventToAction(ev);
+        if (pageAction) scratch = chatReducer(scratch, pageAction);
       }
+      const pageSess = scratch.get(action.sessionId)!;
 
-      // When replacing history (hasMore=false), remove old history entries and expand button
-      const existingTimeline = action.hasMore
-        ? session.timeline
-        : session.timeline.filter((e) => {
-            if (e.kind === 'prompt' && e.prompt.promptId === HISTORY_EXPAND_PROMPT_ID) return false;
-            if (e.kind === 'user' && e.message.id.startsWith('hist-')) return false;
-            if (e.kind === 'assistant-turn' && e.turnId.startsWith('hist-')) return false;
-            return true;
-          });
-
-      for (const msg of action.messages) {
-        // Same `/compact` echo the live path drops — loadHistory has no filter
-        // for it (it only gates on isMeta/promptId/non-empty), so without this
-        // a reloaded or resumed session grows back every bubble the live fix
-        // removed. Skipping before the counter is safe: it only ever advances
-        // on a push, so ids stay unique, and the same message list always
-        // regenerates the same ids for the hasMore=false `hist-` replacement.
-        if (msg.role === 'user' && isCompactCommandEcho(msg.content)) continue;
-        const id = `hist-${++historyMsgCounter}`;
-        if (msg.role === 'user') {
-          historyTimeline.push({
-            kind: 'user',
-            message: { id, role: 'user', content: msg.content, timestamp: msg.timestamp },
-          });
-        } else {
-          const turnId = `hist-turn-${historyMsgCounter}`;
-          const msgId = `hist-msg-${historyMsgCounter}`;
-          // History-loaded turns never saw a turn-complete, so metadata fields stay null.
-          historyTurns.set(turnId, {
-            id: turnId,
-            segments: [{ type: 'text', content: msg.content, messageId: msgId }],
-            timestamp: msg.timestamp,
-            stopReason: null,
-            model: null,
-            usage: null,
-            anthropicRequestId: null,
-          });
-          historyTimeline.push({ kind: 'assistant-turn', turnId });
-        }
-      }
-
-      // Prepend history before existing timeline
       next.set(action.sessionId, {
         ...session,
-        timeline: [...historyTimeline, ...existingTimeline],
-        assistantTurns: historyTurns,
+        timeline: [...pageSess.timeline, ...session.timeline],
+        // Union the maps page-first so a live entry always wins over a replayed
+        // one for the same key (it is the fresher of the two).
+        toolCalls: new Map([...pageSess.toolCalls, ...session.toolCalls]),
+        toolGroups: new Map([...pageSess.toolGroups, ...session.toolGroups]),
+        assistantTurns: new Map([...pageSess.assistantTurns, ...session.assistantTurns]),
+        seenUuids: new Set([...session.seenUuids, ...pageSess.seenUuids]),
+        // Fold in what this page counted. session-totals' contract was "rebuilt
+        // for free when a resumed session replays its record", which paging
+        // broke — the scratch replay accumulates the page's usage and it would
+        // otherwise be thrown away, so a resumed session showed no totals at all.
+        totals: mergeTotals(session.totals, pageSess.totals),
+        history: { cursor: action.cursor, hasMore: action.hasMore, loading: false },
       });
       return next;
     }

@@ -20,6 +20,7 @@ import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent, De
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
+import { PAGE_TURNS } from '../transcript-page';
 import { readImageFromDisk } from './image-support';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision, type LateResponseEntry } from './permission-broker';
@@ -48,6 +49,7 @@ import { APPROX_CHARS_PER_TOKEN } from './message-size';
 import { fitInjection } from './injection/injection-budget';
 import { frameSkillInvocation } from './skills/skill-invocation';
 import { buildTriggerIndex } from './injection/path-triggers';
+import { costForUsage, isFreePricing, type ModelPricing } from './pricing';
 import { log } from '../logger';
 // Same import PermissionStore uses, for the same reason: the project slug MUST
 // come from ONE function everywhere, or the host and the store would disagree
@@ -844,11 +846,11 @@ export class NativeSessionHost extends EventEmitter {
 
     const preset = resolvePreset(this.presetIdFor.get(parentId));
     const binding = header.binding;
-    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(binding);
     const title = header.title ?? record.title;
 
     const session = this.buildSpecialistSession(
-      parentId, opts.childId, workDir, title, specialist, binding, contextLength, profile, opts.parentToolCallId, preset, parent,
+      parentId, opts.childId, workDir, title, specialist, binding, contextLength, profile, pricing, free, opts.parentToolCallId, preset, parent,
     );
     // Cold state rebuilt from the child's OWN transcript — seedHistory resets
     // readRegistry + todos too (the same reset-on-resume contract root
@@ -1076,6 +1078,62 @@ export class NativeSessionHost extends EventEmitter {
       // has finished, `run` is a value this method owns, so a bookkeeping
       // failure below can no longer discard work the child genuinely produced.
       const run = await this.runSpecialist(childId, opts.prompt);
+      // The child's spend is the parent's spend (spec §2). runSpecialist has
+      // summed `usage` across the child's turns since plan 1b — until now it
+      // was returned and thrown away, which is why a session that delegated all
+      // its work reported almost nothing.
+      //
+      // Priced with the CHILD's own price card, which can name a different
+      // model from the parent's (specialists/delegated-models.ts): a free local
+      // parent that delegates to a metered specialist really is spending money
+      // and has to say so, and the reverse — a metered parent delegating to a
+      // local specialist — is why `free` rides along too.
+      //
+      // Emitted HERE, before the ledger write and before the `finally`
+      // teardown, because the child must still be in `this.live` for its price
+      // card to be readable. Log-only try/catch, the same contract every other
+      // bookkeeping call in this method follows: a failed usage report must
+      // never discard the report the child actually produced.
+      try {
+        const parentSession = this.live.get(parentId)?.session;
+        const childSession = this.live.get(childId)?.session;
+        if (parentSession && childSession) {
+          const { pricing, free } = childSession.priceCard;
+          parentSession.emitSubagentUsage({
+            // `free` WINS over any rate card (Task 23 item 1 — the specialist
+            // twin of the same fix Task 22 made for turn-complete in
+            // harness-session.ts). The two facts come from independent
+            // sources: `free` from the provider TYPE, the number from the
+            // catalog, which keys on the model id and has no idea where the
+            // model runs. A specialist delegated to a local model whose id
+            // happens to carry a published rate would otherwise report
+            // {"costUsd": 0.027, "free": true} — a run billed AND free. Free
+            // means free, and free is reported as null, never as a $0.00 bill.
+            usage: { ...run.usage, costUsd: free ? null : costForUsage(run.usage, pricing), free },
+            model: childSession.binding.modelId,
+            parentAgentToolUseId: opts.parentToolCallId,
+            agentId: childId,
+          });
+        } else {
+          // Task 23 item 2. This `if` used to have no `else`, so a teardown
+          // race that removed either session between the run finishing and its
+          // spend being priced dropped a whole delegated run's tokens and cost
+          // with ZERO log output — the parent's totals silently went short and
+          // nothing anywhere said so. A cost figure that is quietly short is
+          // worse than one that is visibly missing: the user has no way to know
+          // not to trust it.
+          //
+          // The message states ONLY what was just looked up and found absent —
+          // never a guessed cause (docs/error-message-standards.md). We know
+          // which half was missing; we do NOT know why, so we don't say.
+          const missing = !parentSession && !childSession ? 'neither session was still live'
+            : !parentSession ? 'the parent session was no longer live'
+            : 'the specialist session was no longer live';
+          log('ERROR', 'NativeSessionHost', `could not report a finished specialist's spend to its parent (${missing}) — the parent's session totals will be short by this run`, { childId, parentId });
+        }
+      } catch (usageErr) {
+        log('ERROR', 'NativeSessionHost', 'failed to report a finished specialist\'s spend to its parent — the parent\'s session totals will be short by this run', { childId, parentId, error: String(usageErr) });
+      }
       // WHY drain HERE, not at turn start (folded Task 3 concern): pendingSteers
       // is not reset per-turn by design (harness-session.ts), so anything left
       // in the CHILD's queue at this point is a steer that arrived too late to
@@ -1978,6 +2036,16 @@ export class NativeSessionHost extends EventEmitter {
     // reason that one sits after contextAndSlotsFor: all three are resolved
     // together for every create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
+    // Fourth per-binding catalog fact (Task 11), resolved at the same three
+    // moments as its siblings above (create / resume / swap): what the bound
+    // model costs. Returns null when the catalog has no published price for it
+    // — never a zero, which would tell the user a metered turn was free.
+    // Defaults to "no published price" so the ~70 existing five-argument test
+    // constructions keep compiling, same rationale as permissionStore below;
+    // the real wiring (ipc-handlers) injects the catalog lookup. A default of
+    // null is not a guess — it is the honest "we don't know a rate", and the
+    // cost chip stays absent rather than showing a made-up number.
+    private pricingFor: (binding: ModelBinding) => Promise<ModelPricing | null> = async () => null,
     // Remembered "Always allow" rules, scoped per project (Task 12). Defaults to
     // a no-op so the many existing 5-arg test constructions (store, modelFactory,
     // contextAndSlotsFor, providerTypeFor, visionSupportFor — these five have no
@@ -2254,7 +2322,7 @@ export class NativeSessionHost extends EventEmitter {
    *  ceiling (Task 5's registry clamp); the profile is resolved from the binding's
    *  provider type + model id + that clamped context. An unknown provider type
    *  falls back to 'openrouter' — the cloud-safe default (full posture). */
-  private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile }> {
+  private async resolveContextAndProfile(binding: ModelBinding): Promise<{ contextLength: number | null; profile: CapabilityProfile; pricing: ModelPricing | null; free: boolean }> {
     // Fix pass 2 (Task 13): ONE call gets both the context window and the
     // engine's real slot count — see the contextAndSlotsFor constructor
     // param's comment for why this replaces two separately-injected closures
@@ -2286,7 +2354,18 @@ export class NativeSessionHost extends EventEmitter {
       // queries the engine for those.
       totalSlots: discoveredSlots,
     });
-    return { contextLength, profile };
+    // Task 11 (spec §5): the price this binding runs at, and whether it costs
+    // anything at all. Resolved here so create/resume/swap all get it from the
+    // one place that already resolves the binding's other catalog facts.
+    const pricing = await this.pricingFor(binding);
+    // Two ways to be free, and they must not be confused with "no published
+    // price": the model runs on this machine (local-engine), or its published
+    // rate card is all zeroes (an OpenRouter ':free' variant — see
+    // pricing.ts's isFreePricing for why a zero rate is not a $0.00 bill).
+    // `type` is post-fallback, so a provider we could not identify counts as
+    // metered — we never claim free without knowing it.
+    const free = type === 'local-engine' || isFreePricing(pricing);
+    return { contextLength, profile, pricing, free };
   }
 
   /** Tool + permission + prompt wiring shared by create() and resume(). Both v1
@@ -2591,7 +2670,7 @@ export class NativeSessionHost extends EventEmitter {
       await this.destroy(opts.sessionId);
     }
     const preset = resolvePreset(opts.presetId);
-    const { contextLength, profile } = await this.resolveContextAndProfile(opts.binding);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(opts.binding);
     await this.store.create({
       v: 1,
       sessionId: opts.sessionId,
@@ -2625,7 +2704,7 @@ export class NativeSessionHost extends EventEmitter {
       // app's lifetime. Release the hold and rethrow the ORIGINAL error
       // unchanged (never guess/replace a cause — error-message-standards.md).
       session = new HarnessSession(
-        { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile,
+        { sessionId: opts.sessionId, cwd: opts.cwd, harness: preset.manifest, binding: opts.binding, contextLength, profile, pricing, free,
           ...(mcpServers ? { mcpServers } : {}),
           ...this.toolWiring(opts.sessionId, opts.cwd, preset, profile) },
         this.modelFactory,
@@ -2690,7 +2769,7 @@ export class NativeSessionHost extends EventEmitter {
     // to the parent's own binding exactly as every pre-Task-14 child did.
     const preset = resolvePreset(this.presetIdFor.get(parentId));
     const binding = opts.binding ?? parent.session.binding;
-    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(binding);
 
     // Task 8 (1a naming easter egg): drawn HERE, before the session is built,
     // rather than after as plan 1a originally had it — plan 1b's Task 8
@@ -2709,7 +2788,7 @@ export class NativeSessionHost extends EventEmitter {
     // the header write would leave a session file on disk for a child that
     // never existed.
     const session = this.buildSpecialistSession(
-      parentId, childId, workDir, title, opts.specialist, binding, contextLength, profile, opts.parentToolCallId, preset, parent,
+      parentId, childId, workDir, title, opts.specialist, binding, contextLength, profile, pricing, free, opts.parentToolCallId, preset, parent,
     );
 
     // `title` was drawn earlier (before this session was built — see that
@@ -2753,12 +2832,16 @@ export class NativeSessionHost extends EventEmitter {
   private buildSpecialistSession(
     parentId: string, childId: string, workDir: string, title: string, specialist: SpecialistDefinition,
     binding: ModelBinding, contextLength: number | null, profile: CapabilityProfile,
+    // A specialist can run on a DIFFERENT model from its parent, so it carries
+    // its own price — that is the whole reason a free local parent can still
+    // ring up real money through a metered specialist (spec §5).
+    pricing: ModelPricing | null, free: boolean,
     parentToolCallId: string, preset: ResolvedPreset, parent: LiveEntry,
   ): HarnessSession {
     const allowed = new Set(specialist.allowedTools);
     return new HarnessSession(
       {
-        sessionId: childId, cwd: workDir, binding, contextLength, profile,
+        sessionId: childId, cwd: workDir, binding, contextLength, profile, pricing, free,
         // STEP CAP: the definition's own budget, not the model-tier default.
         // harness-session reads opts.harness.limits?.maxSteps and falls back to
         // stepBudgetFor(modelId) — without this line stepCap would be decorative.
@@ -3037,7 +3120,7 @@ export class NativeSessionHost extends EventEmitter {
     // the header. Profiling header.binding here would size the context window and
     // tool posture for the wrong model on every overridden resume.
     const binding = bindingOverride ?? header.binding;
-    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(binding);
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
@@ -3066,7 +3149,7 @@ export class NativeSessionHost extends EventEmitter {
       // error unchanged (error-message-standards.md).
       session = new HarnessSession(
         // `binding` (not header.binding) — same override reason as above.
-        { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile,
+        { sessionId, cwd, harness: preset.manifest, binding, contextLength, profile, pricing, free,
           ...(mcpServers ? { mcpServers } : {}),
           ...this.toolWiring(sessionId, cwd, preset, profile) },
         this.modelFactory,
@@ -3730,8 +3813,8 @@ export class NativeSessionHost extends EventEmitter {
     // Re-resolve BOTH context + profile on a swap: a cloud → small-local swap
     // (or vice versa) crosses capability tiers, so the driver must pick up the
     // new doom-loop window / tool posture on the next turn.
-    const { contextLength, profile } = await this.resolveContextAndProfile(binding);
-    entry.session.setBinding(binding, contextLength, profile);
+    const { contextLength, profile, pricing, free } = await this.resolveContextAndProfile(binding);
+    entry.session.setBinding(binding, contextLength, profile, pricing, free);
     if (oldModelId !== binding.modelId) {
       // Swap the ref-count: releasing the old model may unload it if this was
       // its last session (#1); retain the new one so it isn't unloaded.
@@ -3757,6 +3840,37 @@ export class NativeSessionHost extends EventEmitter {
    *  e.g. drainDeliveries) — guarded the same way: log and fall back to the
    *  parent's own events alone, because a broken ledger read must degrade
    *  replay, never break it outright. */
+  /**
+   * Perf cycle 2: one page of a native session's history — the last PAGE_TURNS
+   * user turns before `beforeIndex` (null = the end). Returns null for a
+   * non-native id, exactly like getHistory.
+   *
+   * Windows the ALREADY-MERGED event array rather than paging the store's raw
+   * lines: mergeChildEvents interleaves each delegated child's events into the
+   * parent's, so slicing before the merge would drop a child whose parent card
+   * is in the page. Native transcripts are small (<=3 MB), so a full read +
+   * slice is cheap; a true byte-tail reader is a later optimisation.
+   *
+   * The "cursor" is an ARRAY INDEX, not a byte offset. The renderer treats the
+   * cursor as opaque, so the two source kinds can disagree about what it means.
+   */
+  getHistoryPage(sessionId: string, beforeIndex: number | null): { events: TranscriptEvent[]; nextIndex: number | null; hasMore: boolean } | null {
+    const all = this.getHistory(sessionId);
+    if (all === null) return null;
+    const end = beforeIndex == null ? all.length : Math.min(beforeIndex, all.length);
+    if (end <= 0) return { events: [], nextIndex: null, hasMore: false };
+    let boundaries = 0;
+    let start = 0;
+    for (let i = end - 1; i >= 0; i--) {
+      if (all[i].type === 'user-message') {
+        boundaries++;
+        if (boundaries === PAGE_TURNS) { start = i; break; }
+      }
+    }
+    const hasMore = start > 0;
+    return { events: all.slice(start, end), nextIndex: hasMore ? start : null, hasMore };
+  }
+
   getHistory(sessionId: string): TranscriptEvent[] | null {
     const entry = this.live.get(sessionId);
     if (!entry) return null;

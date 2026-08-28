@@ -531,7 +531,10 @@ describe('Bash', () => {
     // this produced on multi-byte and coloured output.
     expect(r.bounds?.unit).toBe('chars');
     expect(r.bounds?.total).toBe(400_000);
-    expect(r.bounds?.moreHint).toContain('head');
+    // D-1 (2026-08-26): the hint used to say "pipe through head/tail/grep",
+    // which hides the exit code (no pipefail). It now points at the saved file.
+    expect(r.bounds?.moreHint).toMatch(/Read that file/);
+    expect(r.bounds?.moreHint).not.toMatch(/head\/tail\/grep/);
     expect(r.text).not.toContain('204800');
   }, 30_000);
 
@@ -1315,6 +1318,82 @@ describe('Glob', () => {
     expect(r.text).toBe('No files matched.');
   });
 
+  // Ledger G-8 (2026-08-26 native-tools investigation, §6/§8): a bare "*.ts"
+  // used to match ONLY files sitting directly in the search root, because the
+  // hand-rolled matcher anchors the pattern to the root-relative path. Every
+  // model expects Claude Code's behaviour ("*.ts" finds nested files too —
+  // Cursor auto-prepends "**/"), and nothing in the description said
+  // otherwise, so a model got "No files matched." for files that existed.
+  describe('a pattern with no "/" searches every folder (G-8)', () => {
+    it('bare *.ts finds nested files, like **/*.ts', async () => {
+      fs.mkdirSync(path.join(dir, 'a/b'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'top.ts'), '');
+      fs.writeFileSync(path.join(dir, 'a/b/deep.ts'), '');
+      const r = await GlobTool.execute({ pattern: '*.ts' }, ctx);
+      expect(r.text).toContain('top.ts');
+      expect(r.text).toContain('a/b/deep.ts');
+    });
+
+    it('a pattern containing "/" is matched as written: src/*.ts does NOT recurse', async () => {
+      fs.mkdirSync(path.join(dir, 'src/deep'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/f.ts'), '');
+      fs.writeFileSync(path.join(dir, 'src/deep/g.ts'), '');
+      const r = await GlobTool.execute({ pattern: 'src/*.ts' }, ctx);
+      expect(r.text).toContain('src/f.ts');
+      expect(r.text).not.toContain('src/deep/g.ts');
+    });
+  });
+
+  // Ledger G-8, second half: hidden entries (".git/", ".cache/", dotfiles)
+  // were the bulk of the walks that hit WALK_CEILING. They are now skipped
+  // unless the pattern itself names a dot-leading segment.
+  describe('hidden files and folders are skipped unless the pattern names them (G-8)', () => {
+    it('**/*.ts skips a hidden folder and a hidden file by default', async () => {
+      fs.mkdirSync(path.join(dir, '.cache/sub'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.cache/sub/cached.ts'), '');
+      fs.writeFileSync(path.join(dir, '.hidden.ts'), '');
+      fs.writeFileSync(path.join(dir, 'shown.ts'), '');
+      const r = await GlobTool.execute({ pattern: '**/*.ts' }, ctx);
+      expect(r.text).toContain('shown.ts');
+      expect(r.text).not.toContain('cached.ts');
+      expect(r.text).not.toContain('.hidden.ts');
+    });
+
+    it('.github/**/*.yml opts the named hidden folder back in (and no other)', async () => {
+      fs.mkdirSync(path.join(dir, '.github/workflows'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.github/workflows/ci.yml'), '');
+      fs.mkdirSync(path.join(dir, '.other'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.other/x.yml'), '');
+      const r = await GlobTool.execute({ pattern: '.github/**/*.yml' }, ctx);
+      expect(r.text).toContain('.github/workflows/ci.yml');
+      expect(r.text).not.toContain('.other/x.yml');
+    });
+
+    it('**/.env* finds dotfiles at any depth inside visible folders', async () => {
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.env'), '');
+      fs.writeFileSync(path.join(dir, 'app/.env.local'), '');
+      fs.writeFileSync(path.join(dir, 'app/config.ts'), ''); // must NOT match
+      // A hidden FOLDER the pattern does not name stays skipped even when it
+      // holds a file the last segment would match.
+      fs.mkdirSync(path.join(dir, '.cache'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.cache/.env'), '');
+      const r = await GlobTool.execute({ pattern: '**/.env*' }, ctx);
+      expect(r.text).toContain('.env');
+      expect(r.text).toContain('app/.env.local');
+      expect(r.text).not.toContain('config.ts');
+      expect(r.text).not.toContain('.cache/.env');
+    });
+
+    it('the tool and the pattern parameter both say so', () => {
+      // The no-slash rule is the surprising one — it belongs on the parameter
+      // the model fills in, not only in the tool blurb.
+      expect(GlobTool.inputSchema.shape.pattern.description).toMatch(/no "\/"/);
+      expect(GlobTool.description).toMatch(/no "\/"/);
+      expect(GlobTool.description).toMatch(/hidden files and folders are skipped unless the pattern names them/i);
+    });
+  });
+
   // Regression pin (2026-08-10 review, Claim 3): our hand-rolled glob->regex
   // converter used to ESCAPE '{'/'}' as literal characters, so
   // '**/*.{ts,kt,toml}' compiled to a regex requiring the literal substring
@@ -1620,6 +1699,84 @@ describe('Grep', () => {
 // code. The confusion came from neither schema having a description at all,
 // letting the model infer a difference that isn't there. Fix the cause
 // (describe both, with the SAME string) rather than the symptom.
+// Ledger G-7 (2026-08-26 native-tools investigation): the four ripgrep flags
+// every other harness exposes. Each test checks BOTH the flag reached rg
+// (spawnSpy) and the observable search result, so a typo in the flag name
+// can't pass on the spy alone.
+describe('Grep flags (G-7): ignore_case, literal, type, multiline', () => {
+  function rgArgsFor(pattern: string): string[] {
+    const call = spawnSpy.mock.calls.find((c) => Array.isArray(c[1]) && c[1].includes(pattern));
+    expect(call, 'expected a spawn call running ripgrep for the search').toBeTruthy();
+    return call![1] as string[];
+  }
+
+  it('without ignore_case the search is case-sensitive; with it, -i is passed and case is ignored', async () => {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'FindMe here\n');
+    const strict = await GrepTool.execute({ pattern: 'findme', output_mode: 'content' }, ctx);
+    expect(strict.text).toBe('No matches found.');
+    spawnSpy.mockClear();
+    const loose = await GrepTool.execute({ pattern: 'findme', output_mode: 'content', ignore_case: true }, ctx);
+    expect(loose.text).toMatch(/1:FindMe here/);
+    expect(rgArgsFor('findme')).toContain('-i');
+  });
+
+  it('literal: true passes -F so regex metacharacters match themselves', async () => {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'call foo.bar(x)\ncall fooXbar(x)\n');
+    spawnSpy.mockClear();
+    const r = await GrepTool.execute({ pattern: 'foo.bar(', output_mode: 'content', literal: true }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toMatch(/1:call foo\.bar\(x\)/);
+    expect(r.text).not.toMatch(/fooXbar/);           // the "." was literal, not "any char"
+    expect(rgArgsFor('foo.bar(')).toContain('-F');
+  });
+
+  it('type: "ts" passes --type and searches only that file type', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'needle\n');
+    fs.writeFileSync(path.join(dir, 'b.txt'), 'needle\n');
+    spawnSpy.mockClear();
+    const r = await GrepTool.execute({ pattern: 'needle', type: 'ts' }, ctx);
+    expect(r.isError).toBeFalsy();
+    expect(r.text).toContain('a.ts');
+    expect(r.text).not.toContain('b.txt');
+    expect(rgArgsFor('needle')).toContain('--type=ts');   // one token, so a value can never read as a flag
+  });
+
+  it('an unknown type surfaces ripgrep\'s own error verbatim plus how to fix it', async () => {
+    fs.writeFileSync(path.join(dir, 'a.ts'), 'needle\n');
+    const r = await GrepTool.execute({ pattern: 'needle', type: 'notatype' }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('unrecognized file type: notatype');   // rg's words, not a guess
+    expect(r.text).toMatch(/glob/);                                  // and the way out
+  });
+
+  it('multiline: true passes -U --multiline-dotall so a pattern can span lines', async () => {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'start\nmiddle\nend\n');
+    const single = await GrepTool.execute({ pattern: 'start.*end', output_mode: 'content' }, ctx);
+    expect(single.text).toBe('No matches found.');
+    spawnSpy.mockClear();
+    const multi = await GrepTool.execute({ pattern: 'start.*end', output_mode: 'content', multiline: true }, ctx);
+    expect(multi.isError).toBeFalsy();
+    expect(multi.text).toMatch(/start/);
+    const args = rgArgsFor('start.*end');
+    expect(args).toContain('-U');
+    expect(args).toContain('--multiline-dotall');
+  });
+
+  it('none of the flags is passed when the parameters are omitted (default behaviour unchanged)', async () => {
+    fs.writeFileSync(path.join(dir, 'a.txt'), 'plain\n');
+    spawnSpy.mockClear();
+    await GrepTool.execute({ pattern: 'plain' }, ctx);
+    const args = rgArgsFor('plain');
+    for (const flag of ['-i', '-F', '-U', '--multiline-dotall']) expect(args).not.toContain(flag);
+    expect(args.some((a) => a.startsWith('--type='))).toBe(false);
+  });
+
+  it('the permission subject is still the search path, untouched by the new flags', () => {
+    expect(GrepTool.permissionSubject({ pattern: 'x', ignore_case: true, literal: true, type: 'ts', multiline: true } as any)).toBe('.');
+    expect(GrepTool.permissionSubject({ pattern: 'x', path: 'src', ignore_case: true } as any)).toBe('src');
+  });
+});
+
 describe('Grep/Glob schema descriptions', () => {
   it('path means the same thing on both tools and both schemas say so, in the same words', () => {
     const grepPath = GrepTool.inputSchema.shape.path;

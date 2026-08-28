@@ -62,8 +62,10 @@ in the youcoded-dev workspace).
   model row: `name` (string label), `limit.context` (number → contextLength),
   `tool_call` (boolean → supportsTools), `reasoning` (boolean →
   supportsReasoning), `cost.input` / `cost.output` (numbers, ALREADY USD per
-  1M tokens — no scaling). Provider keys used: `anthropic`, `openai`,
-  `google`. Parsed DEFENSIVELY in `src/main/providers/model-catalog.ts` —
+  1M tokens — no scaling), `cost.cache_read` / `cost.cache_write` (numbers,
+  same per-1M convention — the prompt-cache rates; omitted unless the row
+  publishes them as numbers, never coerced to 0). Provider keys used:
+  `anthropic`, `openai`, `google`. Parsed DEFENSIVELY in `src/main/providers/model-catalog.ts` —
   malformed rows are skipped, absent fields omitted (never guessed), and a
   failed fetch falls back to the 24h disk cache
   (`provider-catalog-cache.json` in Electron userData — per-profile, so the
@@ -77,7 +79,10 @@ in the youcoded-dev workspace).
   rows without it are skipped), `name` (string label), `context_length`
   (number), `supported_parameters` (string array — `includes('tools')` →
   supportsTools), `pricing.prompt` / `pricing.completion` (STRINGS, USD per
-  single token — multiplied by 1e6 into CatalogModel's per-1M convention).
+  single token — multiplied by 1e6 into CatalogModel's per-1M convention),
+  `pricing.input_cache_read` / `pricing.input_cache_write` (STRINGS, same
+  per-token → per-1M scaling — the prompt-cache rates; a field that is absent,
+  null, empty or whitespace-only is omitted rather than read as $0).
   Same defensive-parse + stale-cache-fallback posture as models.dev; consumer
   is `src/main/providers/model-catalog.ts`. (model-catalog)
 - **AI SDK local-model serial-only constraint** — `@ai-sdk/openai-compatible`

@@ -237,6 +237,36 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(events.some((e) => e.type === 'turn-complete')).toBe(true);
   });
 
+  it('unknown parameter → corrective result naming the valid parameters; the corrected call runs; no doom-loop misfire', async () => {
+    // Ledger D-2: a strict schema turns a Claude-Code-shaped `Grep {"-i": true}`
+    // into an error the model can act on. The corrected call has DIFFERENT
+    // arguments, so it must not count toward the doom-loop window — and an
+    // invalid call never enters that window at all (it returns before the
+    // signature is recorded), so even two identical wrong tries + one right
+    // one must never trip the ask.
+    const grep = fakeTool('Grep', { schema: z.object({ pattern: z.string(), ignore_case: z.boolean().optional() }).strict() });
+    const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const wrong = () => stream(toolCallChunk('c', 'Grep', { pattern: 'x', '-i': true }), finishChunk('tool-calls'));
+    const model = scriptedModel([
+      wrong(), wrong(),
+      stream(toolCallChunk('c3', 'Grep', { pattern: 'x', ignore_case: true }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'found it'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [grep], decide: async () => ALLOW, askUser }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    const results = events.filter((e) => e.type === 'tool-result');
+    expect(results).toHaveLength(3);
+    expect(results[0].data.isError).toBe(true);
+    expect(results[0].data.toolResult).toBe(
+      'Invalid arguments for Grep: unknown parameter(s) "-i". Valid parameters: pattern, ignore_case. Fix the arguments and call again.',
+    );
+    expect(results[2].data.isError).toBeFalsy();
+    expect((grep as any).calls).toEqual([{ pattern: 'x', ignore_case: true }]);   // only the corrected call executed
+    expect(askUser.mock.calls.some((c) => c[0].toolName === 'doom_loop')).toBe(false);
+    expect(events.some((e) => e.type === 'turn-complete')).toBe(true);           // the turn continued, no crash
+  });
+
   it('doom loop: 3 identical calls → askUser(doom_loop); allow resets window, deny → corrective error', async () => {
     // deny path: three identical Read calls, then the doom ask denies.
     {

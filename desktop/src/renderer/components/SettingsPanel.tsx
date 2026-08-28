@@ -146,7 +146,7 @@ function timeAgo(timestamp: number): string {
 // ─── Keyboard Shortcuts reference popup ──────────────────────────────────────
 
 const SHORTCUTS: { keys: string; description: string }[] = [
-  { keys: 'Ctrl + `', description: 'Toggle between chat and terminal view' },
+  { keys: 'Ctrl + `', description: 'Toggle between chat and terminal' },   // P-7: 'view' trimmed so the label holds one line at 420px
   { keys: 'Ctrl + O', description: 'Expand / collapse all tool cards' },
   { keys: 'Shift (hold)', description: 'Open session switcher' },
   { keys: 'Shift + Arrow Up/Down', description: 'Navigate between sessions' },
@@ -166,21 +166,20 @@ function ShortcutsPopup({ open, onClose }: { open: boolean; onClose: () => void 
   if (!open) return null;
   return createPortal(
     <>
-      <Dialog open onClose={onClose} size="prompt" aria-label="Keyboard Shortcuts" scrollBody={false} className="p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-sm font-semibold text-fg">Keyboard Shortcuts</h3>
-          <button onClick={onClose} className="text-fg-muted hover:text-fg transition-colors">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div className="space-y-1.5">
+      {/* P-8/P-7 (2026-08-28): was size="prompt" (340px) with its own header and
+          scrollBody={false} — at that width four labels wrapped to two lines AND
+          the last three of the thirteen rows fell outside the dialog's 476px cap
+          with no scroll region anywhere, so they could never be read. The shared
+          header + scrolling body (scrollBody defaults true) fixes the reachability;
+          "panel" (420px) stops the wrapping. The grid keeps the key chips in their
+          own column so a long label can never push one out of line. */}
+      <Dialog open onClose={onClose} size="panel" title="Keyboard Shortcuts">
+        <div className="grid grid-cols-[1fr_auto] gap-x-4 items-center">
           {SHORTCUTS.map(({ keys, description }) => (
-            <div key={keys} className="flex items-center justify-between gap-3 py-1.5">
-              <span className="text-2xs text-fg-dim">{description}</span>
-              <kbd className="shrink-0 text-3xs font-mono text-fg-2 bg-inset border border-edge-dim rounded px-1.5 py-0.5">{keys}</kbd>
-            </div>
+            <React.Fragment key={keys}>
+              <span className="text-2xs text-fg-dim py-1.5">{description}</span>
+              <kbd className="justify-self-end text-3xs font-mono text-fg-2 bg-inset border border-edge-dim rounded px-1.5 py-0.5">{keys}</kbd>
+            </React.Fragment>
           ))}
         </div>
       </Dialog>

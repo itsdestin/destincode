@@ -205,6 +205,15 @@ export interface ToolServices {
   };
 }
 
+/** What an earlier Read served (G-11): the file's mtime at that moment, which
+ *  tool call did it, and the line range it showed. */
+export interface ServedRead {
+  mtimeMs: number;
+  callIndex: number;
+  from: number;
+  to: number;
+}
+
 export interface ToolContext {
   sessionId: string;
   cwd: string;
@@ -224,6 +233,17 @@ export interface ToolContext {
   toolCallId?: string;
   /** read-before-edit registry: canonical path → mtimeMs at last Read. RESETS on resume (spec §2.5). */
   readRegistry: Map<string, number>;
+  /** G-11 (2026-08-26 tools investigation) — re-read dedupe. Key is
+   *  `${canonical}|${offset}|${limit}`; a second Read of the SAME slice with an
+   *  unchanged mtime gets a short "unchanged since your earlier Read" notice
+   *  instead of the content again. Absent → no dedupe (test/one-off contexts).
+   *  The session owns it and FORGETS it wherever history is discarded or
+   *  shrunk (resume, /clear, compaction) — see harness-session.ts — because the
+   *  notice claims the model still HAS the earlier content. */
+  servedReads?: Map<string, ServedRead>;
+  /** 1-based count of tool calls this session has dispatched, including this
+   *  one — what lets Read say "N calls ago". Absent in test contexts. */
+  toolCallIndex?: number;
   /** Scoped-persistence shell cwd: the directory the NEXT Bash call starts in.
    *  Absent → Bash falls back to `cwd` (stateless, the pre-2026-07-18 behavior),
    *  which is what test/one-off contexts get for free. */
@@ -266,7 +286,8 @@ export interface ResultBounds {
   /** Units that exist. `null` = genuinely unknown, e.g. a walk that stopped early.
    *  Rendered as "at least N" — never as a number we did not measure. */
   total: number | null;
-  unit: 'lines' | 'chars' | 'bytes' | 'files' | 'matches' | 'results';
+  // 'pages' — Read on a PDF (ledger G-6) pages by document page, not by line.
+  unit: 'lines' | 'chars' | 'bytes' | 'files' | 'matches' | 'results' | 'pages';
   /** How to widen, in THIS tool's vocabulary: "| head -n 100", "offset=2390",
    *  "narrow the glob". The pipeline never supplies a default. */
   moreHint: string;

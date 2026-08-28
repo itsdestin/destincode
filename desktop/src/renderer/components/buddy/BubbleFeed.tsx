@@ -184,6 +184,26 @@ export function BubbleFeed({ sessionId }: Props) {
             agentId: event.data.agentId,
           });
           break;
+        case 'subagent-usage':
+          // Task 23 item 4 — parity with App.tsx's mirror of this case.
+          // Bookkeeping only: never touches the timeline, the turn state, or a
+          // subagent card's segments. It exists so the parent's totals include
+          // the work it delegated (spec §2), and it arrives on the PARENT's
+          // stream. Nothing in the buddy window reads `totals` today, so this
+          // changes nothing a user can see — it is here for the same reason
+          // turn-complete just above forwards its usage: this feed drives its
+          // OWN chatReducer instance, so if the buddy ever surfaces those
+          // numbers they must not silently be missing every delegated run.
+          batchDispatch({
+            type: 'TRANSCRIPT_SUBAGENT_USAGE',
+            sessionId: event.sessionId,
+            uuid: event.uuid,
+            timestamp: event.timestamp,
+            usage: event.data.usage ?? null,
+            parentAgentToolUseId: event.data.parentAgentToolUseId,
+            agentId: event.data.agentId,
+          });
+          break;
         case 'assistant-thinking':
           // Reasoning chunks carry a text payload (native harness / thinking
           // models); the CC transcript path is heartbeat-only. Truthiness
@@ -278,11 +298,28 @@ export function BubbleFeed({ sessionId }: Props) {
       }
     });
 
-    // Request replay AFTER the listener is wired so no historical events can
-    // race past us. The callers in SessionPill/BuddyChat used to call this —
-    // they no longer do (removed in the same commit) so this is the sole
-    // request-replay site for the buddy window.
-    window.claude.detach.requestTranscriptReplay(sessionId);
+    // Request the most recent PAGE of history AFTER the listener is wired so no
+    // live event can race past us. Perf cycle 2: this used to be
+    // requestTranscriptReplay, which streamed the WHOLE transcript into the
+    // buddy's own reducer — the same cost the main window just stopped paying,
+    // duplicated in a second BrowserWindow.
+    //
+    // The buddy has no scroll-up sentinel this cycle: it is a glanceable recent
+    // view, not a place to read back through a conversation.
+    void (async () => {
+      dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId });
+      try {
+        const page = await (window as any).claude?.detach?.requestTranscriptPage?.({ sessionId, beforeCursor: null });
+        if (cancelled) return;
+        if (page) {
+          dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
+        } else {
+          dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+        }
+      } catch {
+        if (!cancelled) dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+      }
+    })();
 
     return () => {
       cancelled = true;

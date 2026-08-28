@@ -346,6 +346,49 @@ describe('TranscriptWatcher', () => {
     expect(events[0].data.text).toBe('Hello from watcher');
   });
 
+  it('startWatching on an existing file starts at EOF and emits nothing for old content', async () => {
+    // Perf cycle 2: history is the page reader's job (transcript-page.ts). The
+    // tailer used to start at byte 0, re-reading and re-emitting the WHOLE file
+    // on every resume/re-dock — the double-delivery this pins shut.
+    const desktopSessionId = 'desktop-eof';
+    const claudeSessionId = 'claude-session-eof';
+    const cwd = 'C:\\Users\\alice';
+    const projectDir = path.join(tmpDir, 'proj-eof');
+    fs.mkdirSync(projectDir, { recursive: true });
+    const jsonlPath = path.join(projectDir, `${claudeSessionId}.jsonl`);
+
+    const makeLine = (uuid: string, text: string) => JSON.stringify({
+      type: 'assistant', uuid,
+      message: { role: 'assistant', content: [{ type: 'text', text }], stop_reason: null },
+    });
+    fs.writeFileSync(jsonlPath, makeLine('old-1', 'old one') + '\n' + makeLine('old-2', 'old two') + '\n');
+    const startSize = fs.statSync(jsonlPath).size;
+
+    const events: TranscriptEvent[] = [];
+    watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
+    watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
+
+    // Negative assertion: give the read every chance to fire, then require silence.
+    for (let i = 0; i < 5; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      watcher.readNewLinesForSession(desktopSessionId);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    expect(events).toHaveLength(0);
+    expect(watcher.getStartOffset(desktopSessionId)).toBe(startSize);
+
+    // A genuinely NEW append still streams live.
+    fs.appendFileSync(jsonlPath, makeLine('new-1', 'brand new') + '\n');
+    for (let i = 0; i < 20; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      watcher.readNewLinesForSession(desktopSessionId);
+      await new Promise((r) => setTimeout(r, 50));
+      if (events.length > 0) break;
+    }
+    expect(events.map((e) => e.data.text)).toContain('brand new');
+    expect(events.map((e) => e.data.text)).not.toContain('old one');
+  });
+
   it('deduplicates events by uuid', async () => {
     const desktopSessionId = 'desktop-2';
     const claudeSessionId = 'claude-session-dedup';
@@ -367,12 +410,16 @@ describe('TranscriptWatcher', () => {
         },
       });
 
-    fs.writeFileSync(jsonlPath, makeLine('first') + '\n' + makeLine('second') + '\n');
+    fs.writeFileSync(jsonlPath, '');
 
     const events: TranscriptEvent[] = [];
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
+    // Perf cycle 2: the tailer starts at EOF, so content must be appended AFTER
+    // startWatching to stream. Pre-existing content is the page reader's job.
+    fs.appendFileSync(jsonlPath, makeLine('first') + '\n' + makeLine('second') + '\n');
+    watcher.readNewLinesForSession(desktopSessionId);
     // readNewLines is async — poll for the initial read rather than betting on a
     // fixed 100ms, which lost under vitest's parallel pool.
     await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1), { timeout: SETTLE_MS });
@@ -423,13 +470,17 @@ describe('TranscriptWatcher', () => {
       },
     });
 
-    // Write partial line (no newline) — should not emit events
-    fs.writeFileSync(jsonlPath, fullLine.substring(0, 50));
+    fs.writeFileSync(jsonlPath, '');
 
     const events: TranscriptEvent[] = [];
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
+    // Perf cycle 2: the tailer starts at EOF, so content must be appended AFTER
+    // startWatching to stream. Pre-existing content is the page reader's job.
+    // Append a partial line (no newline) — should not emit events
+    fs.appendFileSync(jsonlPath, fullLine.substring(0, 50));
+    watcher.readNewLinesForSession(desktopSessionId);
     await wait(200); // negative assertion below — a fixed settle is correct here
     expect(events).toHaveLength(0); // Incomplete line, no events
 
@@ -459,12 +510,16 @@ describe('TranscriptWatcher', () => {
         stop_reason: 'end_turn',
       },
     });
-    fs.writeFileSync(jsonlPath, line + '\n');
+    fs.writeFileSync(jsonlPath, '');
 
     const events: TranscriptEvent[] = [];
     watcher.on('transcript-event', (ev: TranscriptEvent) => events.push(ev));
 
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
+    // Perf cycle 2: the tailer starts at EOF, so content must be appended AFTER
+    // startWatching to stream. Pre-existing content is the page reader's job.
+    fs.appendFileSync(jsonlPath, line + '\n');
+    watcher.readNewLinesForSession(desktopSessionId);
     // readNewLines is async — poll for the initial read, don't bet on 100ms.
     await vi.waitFor(() => expect(events).toHaveLength(2), { timeout: SETTLE_MS });
 
@@ -532,14 +587,7 @@ describe('TranscriptWatcher', () => {
         },
       });
 
-    fs.writeFileSync(
-      jsonlPath,
-      [
-        makeLine('uuid-a', 'msg A'),
-        makeLine('uuid-b', 'msg B'),
-        makeLine('uuid-c', 'msg C'),
-      ].join('\n') + '\n',
-    );
+    fs.writeFileSync(jsonlPath, '');
 
     const received: string[] = [];
     // Listener throws on B; with the fix, A and C still reach this listener.
@@ -550,6 +598,17 @@ describe('TranscriptWatcher', () => {
     });
 
     watcher.startWatching(desktopSessionId, claudeSessionId, cwd, jsonlPath);
+    // Perf cycle 2: the tailer starts at EOF, so content must be appended AFTER
+    // startWatching to stream. Pre-existing content is the page reader's job.
+    fs.appendFileSync(
+      jsonlPath,
+      [
+        makeLine('uuid-a', 'msg A'),
+        makeLine('uuid-b', 'msg B'),
+        makeLine('uuid-c', 'msg C'),
+      ].join('\n') + '\n',
+    );
+    watcher.readNewLinesForSession(desktopSessionId);
     await vi.waitFor(() => {
       expect(received).toContain('msg A');
       expect(received).toContain('msg C');

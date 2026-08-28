@@ -187,7 +187,7 @@ export function ContentFindBar({ containerRef, onClose, resetKey, highlightName 
     );
   }
   return (
-    <div className={`absolute ${positionClassName} z-20 ${pill}`}>
+    <div data-loupe-block className={`absolute ${positionClassName} z-20 ${pill}`}>
       {controls}
     </div>
   );
