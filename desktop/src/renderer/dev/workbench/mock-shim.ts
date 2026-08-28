@@ -1584,7 +1584,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       },
       myThumb: async (pluginId: string) => {
         const r = await fetch(`${MARKETPLACE_API_HOST}/thumbs/${encodeURIComponent(pluginId)}`);
-        return { ok: true as const, value: (await r.json()) as { vote: 'up' | 'down' | null } };
+        return { ok: true as const, value: (await r.json()) as { vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number } };
       },
       comment: async (input: { plugin_id: string; text: string }) => {
         const r = await fetch(`${MARKETPLACE_API_HOST}/comments`, { method: 'POST', body: JSON.stringify(input) });

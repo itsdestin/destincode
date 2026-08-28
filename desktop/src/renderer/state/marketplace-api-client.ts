@@ -138,8 +138,9 @@ export interface MarketplaceApiClient {
    *  can move the number on the spot — /stats is served max-age=300 and cannot
    *  answer that question for up to five minutes after the write. */
   setThumb(input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<{ ok: true; vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>;
-  /** The caller's own vote, so the buttons don't forget it between visits. */
-  getThumb(pluginId: string): Promise<{ vote: 'up' | 'down' | null }>;
+  /** The caller's own vote AND the plugin's current totals. Both, because the
+   *  page would otherwise show a lit thumb beside a stale "No votes yet". */
+  getThumb(pluginId: string): Promise<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>;
 
   // ── Social graph (accounts Phase 2). All auth'd. The Worker 404s an unknown or
   //    blocked handle (indistinguishable — no enumeration oracle), 429s on caps,
@@ -285,7 +286,7 @@ export function createMarketplaceApiClient(opts: {
     setThumb: (input) =>
       request<{ ok: true; vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>("/thumbs", { method: "POST", body: JSON.stringify(input), auth: true }),
     getThumb: (plugin_id) =>
-      request<{ vote: 'up' | 'down' | null }>(`/thumbs/${encodeURIComponent(plugin_id)}`, { method: "GET", auth: true }),
+      request<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>(`/thumbs/${encodeURIComponent(plugin_id)}`, { method: "GET", auth: true }),
 
     // ── Social graph (accounts Phase 2). All auth'd; path params URL-encoded. The
     //    action endpoints (accept/decline/cancel/unfriend/block/unblock) return

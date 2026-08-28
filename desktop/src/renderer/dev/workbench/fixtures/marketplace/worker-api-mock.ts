@@ -77,7 +77,10 @@ export function installWorkerApiMock(): void {
     // the thumb is still lit.
     if (path.startsWith('/thumbs/') && method === 'GET') {
       const id = decodeURIComponent(path.slice('/thumbs/'.length));
-      return json({ vote: myVotes[id] ?? null });
+      // Totals ride the read like the real route, so the workbench shows the
+      // count surviving a navigate-away-and-back rather than resetting.
+      const s = stats[id];
+      return json({ vote: myVotes[id] ?? null, thumbs_up: s?.thumbs_up ?? 0, thumbs_down: s?.thumbs_down ?? 0 });
     }
     if (path === '/installs' && method === 'POST') return json({ ok: true });
     if (path === '/health') return json({ ok: true });

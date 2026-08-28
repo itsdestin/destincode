@@ -712,7 +712,7 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.MARKETPLACE_THEME_LIKE, themeId),
     thumb: (input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<ApiResult<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>> =>
       ipcRenderer.invoke(IPC.MARKETPLACE_THUMB, input),
-    myThumb: (pluginId: string): Promise<ApiResult<{ vote: 'up' | 'down' | null }>> =>
+    myThumb: (pluginId: string): Promise<ApiResult<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>> =>
       ipcRenderer.invoke(IPC.MARKETPLACE_THUMB_GET, pluginId),
     comment: (input: { plugin_id: string; text: string }): Promise<ApiResult<{ id: string; hidden: boolean }>> =>
       ipcRenderer.invoke(IPC.MARKETPLACE_COMMENT, input),

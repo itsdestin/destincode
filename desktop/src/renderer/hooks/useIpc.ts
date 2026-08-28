@@ -210,7 +210,7 @@ declare global {
          *  /stats (which is max-age=300 and would lag five minutes). */
         thumb(input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<ApiResult<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>>;
         /** The caller's own vote, so the buttons don't forget it between visits. */
-        myThumb(pluginId: string): Promise<ApiResult<{ vote: 'up' | 'down' | null }>>;
+        myThumb(pluginId: string): Promise<ApiResult<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>>;
         comment(input: { plugin_id: string; text: string }): Promise<ApiResult<{ id: string; hidden: boolean }>>;
         report(input: {
           rating_user_id: string;

@@ -91,7 +91,16 @@ export default function FeedbackSection({ pluginId, installed }: { pluginId: str
     let live = true;
     void window.claude.marketplaceApi
       .myThumb(pluginId)
-      .then((r) => { if (live && r.ok) setVote(r.value.vote); })
+      .then((r) => {
+        if (!live || !r.ok) return;
+        setVote(r.value.vote);
+        // Take the TOTALS from this read too. Seeding only the vote is what
+        // produced a lit thumb beside "No votes yet" on reopen: the vote was
+        // fresh from the server while the count still came from the /stats
+        // snapshot taken at app start, which predates the vote. /stats is
+        // max-age=300, so it cannot be refreshed into agreeing.
+        setLocalTotals({ up: r.value.thumbs_up, down: r.value.thumbs_down });
+      })
       .catch(() => undefined);   // a failed read just leaves the buttons unlit
     return () => { live = false; };
   }, [pluginId, auth.signedIn, installed]);

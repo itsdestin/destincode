@@ -29,7 +29,7 @@ import FeedbackSection, { thumbsLabel } from '../src/renderer/components/marketp
 
 beforeEach(() => {
   commentListProps.length = 0;
-  myThumb.mockReset().mockResolvedValue({ ok: true, value: { vote: null } });
+  myThumb.mockReset().mockResolvedValue({ ok: true, value: { vote: null, thumbs_up: 9, thumbs_down: 1 } });
   thumb.mockReset().mockResolvedValue({ ok: true, value: { vote: 'up', thumbs_up: 10, thumbs_down: 1 } });
   comment.mockReset().mockResolvedValue({ ok: true, value: { id: 'c1', hidden: false } });
   refresh.mockReset();
@@ -58,7 +58,7 @@ describe('FeedbackSection', () => {
   });
 
   it('shows the vote you already cast, instead of forgetting it', async () => {
-    myThumb.mockResolvedValueOnce({ ok: true, value: { vote: 'down' } });
+    myThumb.mockResolvedValueOnce({ ok: true, value: { vote: 'down', thumbs_up: 9, thumbs_down: 1 } });
     render(<FeedbackSection pluginId="p1" installed />);
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /not for me/i }).getAttribute('aria-pressed')).toBe('true'),
@@ -142,6 +142,20 @@ describe('FeedbackSection', () => {
     await waitFor(() => expect(screen.getByText(/couldn.t post your comment/i)).toBeTruthy());
     // Keeping the text is the difference between "try again" and "retype it".
     expect(box.value).toBe('hello');
+  });
+
+  it('never shows a lit thumb beside "No votes yet"', async () => {
+    // The reopen bug: the vote was loaded fresh from the server while the count
+    // came from the /stats snapshot taken at app start, which predates the vote.
+    // Stats here reports a plugin with NO votes; the server read says otherwise
+    // and must win.
+    myThumb.mockResolvedValueOnce({ ok: true, value: { vote: 'up', thumbs_up: 1, thumbs_down: 0 } });
+    render(<FeedbackSection pluginId="unknown-plugin" installed />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /helpful/i }).getAttribute('aria-pressed')).toBe('true'),
+    );
+    expect(screen.queryByText(/no votes yet/i)).toBeNull();
+    expect(screen.getByText(/1 person found this helpful/i)).toBeTruthy();
   });
 
   it('renders no Report control on a comment (no backend for it in v1)', () => {
