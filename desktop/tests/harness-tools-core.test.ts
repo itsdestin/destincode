@@ -531,7 +531,10 @@ describe('Bash', () => {
     // this produced on multi-byte and coloured output.
     expect(r.bounds?.unit).toBe('chars');
     expect(r.bounds?.total).toBe(400_000);
-    expect(r.bounds?.moreHint).toContain('head');
+    // D-1 (2026-08-26): the hint used to say "pipe through head/tail/grep",
+    // which hides the exit code (no pipefail). It now points at the saved file.
+    expect(r.bounds?.moreHint).toMatch(/Read that file/);
+    expect(r.bounds?.moreHint).not.toMatch(/head\/tail\/grep/);
     expect(r.text).not.toContain('204800');
   }, 30_000);
 

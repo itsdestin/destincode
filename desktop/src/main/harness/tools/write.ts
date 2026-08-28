@@ -24,8 +24,11 @@ export const WriteTool = defineTool({
     const exists = fs.existsSync(abs);
     const readMtime = ctx.readRegistry.get(canonical);
     if (exists && readMtime === undefined) {
+      // D-4: mirrors Edit — the registry resets on resume, so name resume as a
+      // cause or the model argues with a refusal its memory says is wrong.
       return {
-        text: `Write rejected: ${args.file_path} already exists and you have not Read it in this session, `
+        text: `Write rejected: ${args.file_path} already exists and you have not Read it in this session `
+          + '(this also happens after a session resume — earlier reads are forgotten), '
           + 'so you would be replacing content you have not seen. Read it first (a cat/grep does not count '
           + '— the Read tool records the file\'s modification time, which is what detects a later change), '
           + 'then retry.',

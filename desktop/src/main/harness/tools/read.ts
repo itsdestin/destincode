@@ -46,18 +46,26 @@ function looksBinary(buf: Buffer): boolean {
 
 export const ReadTool = defineTool({
   name: 'Read',
+  // T-3 / G-5 (2026-08-26 tools investigation): the frugality sentence is the
+  // one every peer harness carries and frontier models measurably honour; the
+  // "~50 KB" clause states the per-call char cap (execute() below) so a model
+  // can plan a paged read instead of discovering the cap in a notice.
   description:
     'Read a TEXT file from the filesystem. Returns numbered lines. Use offset and limit for '
-    + 'large files — output is capped at 2000 lines. Images and other binary files are refused.',
+    + 'large files — output is capped at 2000 lines or ~50 KB, whichever comes first. '
+    + 'When you already know which part you need, read only that part with offset/limit. '
+    + 'Images and other binary files are refused.',
   // Compact form for small local models (simplified presentation, spec §4.2).
   shortDescription: "Read a file's contents by path, with optional line offset/limit.",
   // Vision models are TOLD Read handles images; text-only models keep the
   // refusal-only wording. See NativeTool.descriptionFor.
   descriptionFor: (caps) => caps.supportsVision
     ? 'Read a file from the filesystem. Text files return numbered lines; use offset and '
-      + 'limit for large files — output is capped at 2000 lines. Image files (png, jpg, '
-      + 'gif, webp) are delivered to you as the actual picture alongside the result — '
-      + 'Read is how you look at a screenshot or image the user mentions by path.'
+      + 'limit for large files — output is capped at 2000 lines or ~50 KB, whichever comes '
+      + 'first. When you already know which part you need, read only that part with '
+      + 'offset/limit. Image files (png, jpg, gif, webp) are delivered to you as the actual '
+      + 'picture alongside the result — Read is how you look at a screenshot or image the '
+      + 'user mentions by path.'
     : undefined,
   // Same fix as descriptionFor, scoped to the SHORT text (simplified presentation
   // for small local models, spec §4.2). Without this a small local vision model
