@@ -18,6 +18,10 @@ import { useSkills } from './skill-context';
 // window.claude is typed for skills but not for theme.marketplace — cast via any
 const claude = () => (window as any).claude;
 
+// WHY: isNewerVersion moved to src/shared so the Electron main process can use the
+// SAME comparison when deciding whether a bundled plugin needs upgrading at launch.
+// One copy, one answer — a second implementation would drift and show a badge the
+// upgrade path disagrees with.
 import { isNewerVersion } from '../../shared/version-compare';
 
 // ── Types ────────────────────────────────────────────────────────────────────
