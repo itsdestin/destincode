@@ -1,0 +1,38 @@
+import { describe, it, expect } from 'vitest';
+import { pageEventToAction } from '../src/renderer/state/transcript-page-actions';
+import type { TranscriptEvent } from '../src/shared/types';
+
+const ev = (type: string, data: Record<string, unknown> = {}): TranscriptEvent =>
+  ({ type, sessionId: 's', uuid: 'u', timestamp: 7, data }) as TranscriptEvent;
+
+describe('pageEventToAction', () => {
+  it('maps each renderable event type to its reducer action', () => {
+    expect(pageEventToAction(ev('user-message', { text: 'hi' }))!.type).toBe('TRANSCRIPT_USER_MESSAGE');
+    expect(pageEventToAction(ev('user-interrupt', { kind: 'plain' }))!.type).toBe('TRANSCRIPT_INTERRUPT');
+    expect(pageEventToAction(ev('assistant-text', { text: 'yo' }))!.type).toBe('TRANSCRIPT_ASSISTANT_TEXT');
+    expect(pageEventToAction(ev('assistant-thinking', { text: 'hmm' }))!.type).toBe('TRANSCRIPT_ASSISTANT_REASONING');
+    expect(pageEventToAction(ev('tool-use', { toolUseId: 't', toolName: 'Read' }))!.type).toBe('TRANSCRIPT_TOOL_USE');
+    expect(pageEventToAction(ev('tool-result', { toolUseId: 't' }))!.type).toBe('TRANSCRIPT_TOOL_RESULT');
+    expect(pageEventToAction(ev('turn-complete', {}))!.type).toBe('TRANSCRIPT_TURN_COMPLETE');
+    expect(pageEventToAction(ev('skill-invoked', { skillId: 'x' }))!.type).toBe('TRANSCRIPT_SKILL_INVOKED');
+    expect(pageEventToAction(ev('context-clear'))!.type).toBe('CLEAR_TIMELINE');
+  });
+
+  it('drops live-only conditions — a page is history, not a running turn', () => {
+    // A heartbeat replayed from disk would park or spin a turn that ended hours ago.
+    expect(pageEventToAction(ev('assistant-thinking', {}))).toBeNull();
+    expect(pageEventToAction(ev('assistant-thinking', { stallWarning: { retryInMs: 1, willRetry: true } }))).toBeNull();
+    expect(pageEventToAction(ev('session-error', { text: 'boom' }))).toBeNull();
+    expect(pageEventToAction(ev('replay-complete', {}))).toBeNull();
+    // compact-summary matches what the old whole-file replay did: App only
+    // dispatches COMPACTION_COMPLETE when THIS window has a /compact pending.
+    expect(pageEventToAction(ev('compact-summary', { summary: 's' }))).toBeNull();
+  });
+
+  it('forwards the subagent stamp so a child\'s work routes into its Agent card', () => {
+    for (const t of ['user-message', 'assistant-text', 'tool-use', 'tool-result', 'turn-complete']) {
+      const a = pageEventToAction(ev(t, { text: 'x', toolUseId: 't', parentAgentToolUseId: 'parent-1' })) as any;
+      expect(a.parentAgentToolUseId).toBe('parent-1');
+    }
+  });
+});

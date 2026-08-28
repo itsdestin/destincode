@@ -1,4 +1,4 @@
-import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState, type SpecialistRunView } from '../../shared/types';
+import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState, type SpecialistRunView, type PageCursor, type TranscriptEvent } from '../../shared/types';
 import { emptyTotals, type SessionTotals } from './session-totals';
 // Re-export so test files and future consumers can import these types from
 // chat-types directly, without reaching into the shared/types boundary.
@@ -330,6 +330,13 @@ export interface SessionChatState {
    * fresh randomUUID, so this never collapses distinct native streaming deltas
    * — only a genuine replay/live overlap of the identical event.
    */
+  /**
+   * Perf cycle 2 — paged history. `cursor` is the opaque handle for the NEXT
+   * (older) page; `hasMore` false means the beginning of the conversation is on
+   * screen; `loading` is the one-in-flight-page guard that makes paging
+   * idempotent (a second request for the same page can never start).
+   */
+  history: { cursor: PageCursor | null; hasMore: boolean; loading: boolean };
   seenUuids: Set<string>;
   /**
    * Task 12: messages the native host FIFO'd behind an in-flight turn
@@ -379,6 +386,7 @@ export function createSessionChatState(): SessionChatState {
     modelEverResident: false,
     seenUuids: new Set(),
     queuedMessages: [],
+    history: { cursor: null, hasMore: false, loading: false },
     totals: emptyTotals(),
   };
 }
@@ -720,10 +728,18 @@ export type ChatAction =
       timestamp: number;
       kind: 'plain' | 'tool-use';
     }
+  // Perf cycle 2 — paged history. HISTORY_LOADED (whole-file replay behind a
+  // "See previous messages" button) is retired; a page is fetched automatically
+  // when the top of the list scrolls into view.
+  | { type: 'HISTORY_PAGE_REQUESTED'; sessionId: string }
+  | { type: 'HISTORY_PAGE_FAILED'; sessionId: string }
   | {
-      type: 'HISTORY_LOADED';
+      type: 'HISTORY_PAGE_LOADED';
       sessionId: string;
-      messages: { role: 'user' | 'assistant'; content: string; timestamp: number }[];
+      /** Parsed events for this page, oldest -> newest. */
+      events: TranscriptEvent[];
+      /** Handle for the page OLDER than this one; null when hasMore is false. */
+      cursor: PageCursor | null;
       hasMore: boolean;
     }
   // Snapshot card shown when user runs /cost or /usage. Point-in-time —
@@ -822,6 +838,8 @@ export interface SerializedSessionChatState {
   // mid-session. Optional so a pre-field snapshot from an older host still
   // deserializes.
   queuedMessages?: Array<{ queueId: string; content: string; timestamp: number }>;
+  // Optional so a pre-field snapshot from an older host still deserializes.
+  history?: { cursor: PageCursor | null; hasMore: boolean; loading: boolean };
   // Optional so a pre-field snapshot from an older host still deserializes —
   // it comes back as empty totals, which read as "nothing counted yet" rather
   // than as a crash or a wrong number.
@@ -866,6 +884,10 @@ export function serializeChatState(state: ChatState): SerializedChatState {
         modelEverResident: s.modelEverResident,
         seenUuids: Array.from(s.seenUuids),
         queuedMessages: s.queuedMessages,
+        // `loading` is normalised to false on the way out: an in-flight fetch
+        // belongs to the client that started it, and a hydrating client that
+        // inherited loading:true would never fetch again.
+        history: { ...s.history, loading: false },
         totals: s.totals,
       },
     ]);
@@ -914,6 +936,11 @@ export function deserializeChatState(s: SerializedChatState): ChatState {
       seenUuids: new Set(ser.seenUuids ?? []),
       // Older hosts predate queuedMessages — default to an empty list.
       queuedMessages: ser.queuedMessages ?? [],
+      // Older hosts predate paged history — default to "nothing older known",
+      // which is what a hydrated snapshot already represents.
+      history: ser.history
+        ? { cursor: ser.history.cursor ?? null, hasMore: !!ser.history.hasMore, loading: false }
+        : { cursor: null, hasMore: false, loading: false },
       // Older hosts (and a pre-field snapshot) predate totals — default to
       // empty totals rather than undefined.
       totals: ser.totals ?? emptyTotals(),

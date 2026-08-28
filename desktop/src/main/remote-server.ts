@@ -34,6 +34,7 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
 import { readTranscriptMeta } from './transcript-utils';
 import { listPastSessions, loadHistory, SAFE_ID_RE } from './session-browser';
+import { readTranscriptPage } from './transcript-page';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — same service functions the
 // Electron IPC handlers call, so remote browsers get identical behavior.
@@ -1443,6 +1444,56 @@ export class RemoteServer {
         }
         const history = await loadHistory(histSessionId, foundSlug, count, all);
         this.respond(client.ws, type, id, history);
+        break;
+      }
+      // Perf cycle 2: paged history over the bridge. The phone hydrates via
+      // chat:hydrate on connect; scrolling up asks for older pages here.
+      // Resolves the JSONL the same way session:history does (validate the id
+      // FIRST, then probe the caller's slug before scanning) — a traversal-
+      // shaped id must never shape a path.
+      case 'transcript:page': {
+        const { sessionId: pageSessionId, beforeCursor } = payload;
+        const emptyPage = { events: [], cursor: null, hasMore: false };
+        if (typeof pageSessionId !== 'string' || !SAFE_ID_RE.test(pageSessionId)) {
+          this.respond(client.ws, type, id, emptyPage);
+          break;
+        }
+        const beforeOffset = (beforeCursor && typeof beforeCursor.offset === 'number') ? beforeCursor.offset : null;
+
+        // Native sessions page over the merged event array; null means "not a
+        // native id", so CC's transcript file is the source.
+        const nativePage = this.nativeRuntime?.nativeHost.getHistoryPage(pageSessionId, beforeOffset) ?? null;
+        if (nativePage) {
+          this.respond(client.ws, type, id, {
+            events: nativePage.events,
+            cursor: nativePage.hasMore ? { path: `native:${pageSessionId}`, offset: nativePage.nextIndex, sizeAtRead: 0 } : null,
+            hasMore: nativePage.hasMore,
+          });
+          break;
+        }
+
+        const pageProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+        const pageSlugs = await fs.promises.readdir(pageProjectsDir).catch(() => [] as string[]);
+        const pageSlugHint = payload.projectSlug;
+        const pageCandidates = (typeof pageSlugHint === 'string' && SAFE_ID_RE.test(pageSlugHint))
+          ? [pageSlugHint, ...pageSlugs.filter((sl) => sl !== pageSlugHint)]
+          : pageSlugs;
+        let pagePath = '';
+        for (const slug of pageCandidates) {
+          const candidate = path.join(pageProjectsDir, slug, pageSessionId + '.jsonl');
+          try { await fs.promises.access(candidate); pagePath = candidate; break; } catch { /* try the next slug */ }
+        }
+        if (!pagePath) {
+          this.respond(client.ws, type, id, emptyPage);
+          break;
+        }
+        const page = await readTranscriptPage({
+          jsonlPath: pagePath,
+          sessionId: pageSessionId,
+          endOffset: beforeOffset,
+          subagentsDir: path.join(path.dirname(pagePath), pageSessionId, 'subagents'),
+        });
+        this.respond(client.ws, type, id, page);
         break;
       }
       case 'permission:respond': {

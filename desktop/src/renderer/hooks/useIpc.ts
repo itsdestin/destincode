@@ -219,6 +219,10 @@ declare global {
         getDirectory: () => Promise<import('../../shared/types').WindowDirectory>;
         onDirectoryUpdated: (cb: (dir: import('../../shared/types').WindowDirectory) => void) => () => void;
         requestTranscriptReplay: (sessionId: string) => void;
+        /** Perf cycle 2: one page of history. `beforeCursor` null = the newest
+         *  page; pass a previous page's `cursor` for the page before it. */
+        requestTranscriptPage: (req: { sessionId: string; beforeCursor: import('../../shared/types').PageCursor | null; claudeSessionId?: string; projectSlug?: string })
+          => Promise<import('../../shared/types').TranscriptPageResult>;
       };
       // App-level defaults (skipPermissions, model, projectFolder).
       defaults: {
