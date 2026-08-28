@@ -73,6 +73,12 @@ import { ProjectView } from './components/project-view/ProjectView';
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
 import type { NativePermissionMode } from '../shared/permission-types';
 import { RESUMING_NATIVE, RESUMING_CLAUDE } from '../shared/session-title';
+
+/** First-page fetch retries — see loadFirstPage. Three attempts 400ms apart
+ *  covers the gap between a session starting and Claude Code's hook reporting
+ *  its transcript path, without making a genuinely empty session feel slow. */
+const FIRST_PAGE_ATTEMPTS = 3;
+const FIRST_PAGE_RETRY_MS = 400;
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -1662,26 +1668,59 @@ function AppInner() {
   // claudeSessionId/projectSlug are the fallback locator for a session the
   // transcript watcher does not know yet (a just-resumed CC session) — see
   // TranscriptPageRequest.
+  // Sessions whose first page has already been asked for. Ids are never removed:
+  // asking twice would prepend the newest page a second time.
+  const firstPageAsked = useRef<Set<string>>(new Set());
+
   const loadFirstPage = useCallback(async (sid: string, locator?: { claudeSessionId: string; projectSlug: string }) => {
+    if (firstPageAsked.current.has(sid)) return;
+    firstPageAsked.current.add(sid);
     dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId: sid });
-    try {
-      const page = await (window as any).claude?.detach?.requestTranscriptPage?.({
-        sessionId: sid,
-        beforeCursor: null,
-        claudeSessionId: locator?.claudeSessionId,
-        projectSlug: locator?.projectSlug,
-      });
-      if (page) {
-        dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId: sid, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
-      } else {
+    for (let attempt = 0; attempt < FIRST_PAGE_ATTEMPTS; attempt++) {
+      try {
+        const page = await (window as any).claude?.detach?.requestTranscriptPage?.({
+          sessionId: sid,
+          beforeCursor: null,
+          claudeSessionId: locator?.claudeSessionId,
+          projectSlug: locator?.projectSlug,
+        });
+        if (!page) { dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid }); return; }
+        // An empty page is ambiguous: either the session genuinely has no
+        // history, or main cannot resolve its transcript YET (a just-started
+        // session is not watched until Claude Code's hook reports its path).
+        // Retry a few times before accepting it — guessing wrong one way shows
+        // an empty conversation with no way to recover, guessing wrong the
+        // other way costs a few hundred ms on a genuinely new session.
+        const empty = page.events.length === 0 && !page.hasMore;
+        if (!empty || attempt === FIRST_PAGE_ATTEMPTS - 1) {
+          dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId: sid, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
+          return;
+        }
+      } catch {
+        // The scroll sentinel can retry; a failed first page leaves an empty
+        // view rather than a wrong one.
         dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid });
+        return;
       }
-    } catch {
-      // The sentinel retries on the next scroll; a failed first page leaves an
-      // empty view rather than a wrong one.
-      dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid });
+      await new Promise((r) => setTimeout(r, FIRST_PAGE_RETRY_MS));
     }
   }, [dispatch]);
+
+  // Every session this window knows about gets its most recent page — not just
+  // the paths that happen to create one. History used to arrive as a side effect
+  // of the live tailer replaying from byte 0, which covered every entry point by
+  // accident; now that the tailer starts at EOF, a session that appears by any
+  // OTHER route (adopted from the directory, created through the session API
+  // directly) would render EMPTY. Guarded by firstPageAsked, so the explicit
+  // resume calls below — which carry a locator — win the race and this skips them.
+  useEffect(() => {
+    // Forget closed sessions first. A native session is keyed by the id it
+    // resumes, so the same id can legitimately come back — and a stale entry
+    // here would silently deny it any history at all.
+    const live = new Set(sessions.map((s) => s.id));
+    for (const id of firstPageAsked.current) if (!live.has(id)) firstPageAsked.current.delete(id);
+    for (const s of sessions) void loadFirstPage(s.id);
+  }, [sessions, loadFirstPage]);
 
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
@@ -1736,13 +1775,11 @@ function AppInner() {
       // Ordering: the transcript:event listener is registered by an effect
       // declared ABOVE this one, so it is already attached when these replayed
       // events stream back; uuid dedup absorbs any overlap with live events.
-      // Remote/Android hydrate via chat:hydrate on connect instead; their shim
-      // answers transcript:page for real once a page is asked for.
-      for (const s of list) {
-        void loadFirstPage(s.id);
-      }
+      // History is requested by the session-list effect above, which covers every
+      // entry point rather than only this one. Remote/Android hydrate via
+      // chat:hydrate on connect instead.
     }).catch(() => {});
-  }, [dispatch, loadFirstPage]);
+  }, [dispatch]);
 
   // Multi-window ownership wiring (Phase 2 of detach feature).
   // Subscribes to directory/leader/ownership pushes from main and mutates
