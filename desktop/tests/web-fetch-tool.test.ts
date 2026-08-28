@@ -6,6 +6,27 @@ import { parseHTML } from 'linkedom';
 import { WebFetchTool, __setWebFetchTestHooks, looksJsRendered, resolveFragment, stripToText } from '../src/main/harness/tools/web-fetch';
 import { truncateOutput, composeNotice } from '../src/main/harness/tools/truncate';
 
+// Every budget assertion in this file measures CPU TIME, not wall-clock time.
+//
+// WHAT THESE TESTS GUARD: each one pins that a quadratic path (a backtracking
+// regex, or Readability parsing a hostile DOM) did NOT run. The pre-fix figures
+// quoted beside each budget — 2,812ms up to 108,338ms — are pure CPU burn on a
+// single thread, so CPU time measures exactly the thing under test.
+//
+// WHY IT CHANGED (2026-08-28): with `Date.now()` these read the wall clock, and
+// wall time includes every millisecond this process spent DESCHEDULED while
+// other test workers had the CPU. Under a parallel suite run that regularly
+// pushed a ~200ms piece of work past the 1,000ms budget — observed at 1,339ms
+// and 1,373ms — failing a test that had found nothing wrong. CPU time is
+// unaffected by how many other workers are running, so the budget now means
+// what its comments always claimed it meant, and the numbers below did not have
+// to be inflated to buy headroom that would have blunted them.
+const cpuMs = (): number => {
+  const { user, system } = process.cpuUsage();
+  return (user + system) / 1000;
+};
+
+
 const ctx = () => ({ sessionId: 's', cwd: 'C:\\proj', signal: new AbortController().signal, readRegistry: new Map(), todos: [] as any[] });
 const publicLookup = async () => [{ address: '93.184.216.34', family: 4 }];
 const html = (body: string) => new Response(body, { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } });
@@ -90,9 +111,9 @@ describe('WebFetch', () => {
     const parseSpy = vi.spyOn(Readability.prototype, 'parse');
     const deep = '<html><body>' + '<div>'.repeat(5000) + 'x' + '</div>'.repeat(5000) + '</body></html>';
     __setWebFetchTestHooks({ lookup: publicLookup, fetchImpl: async () => html(deep) });
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await WebFetchTool.execute({ url: 'https://example.com/deep' } as any, ctx());
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(r.isError).toBeFalsy();
     expect(r.text).toMatch(/too large or deeply nested/);
     expect(r.text).toContain('simplified extraction');
@@ -196,9 +217,9 @@ describe('WebFetch', () => {
     // small fraction of that.
     const adversarial = '<html><body>' + '<'.repeat(200_000);
     const parseSpy = vi.spyOn(Readability.prototype, 'parse');
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await fetchWith(adversarial, 'https://example.com/adversarial');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(r.isError).toBeFalsy();
     expect(r.text).toContain('simplified extraction');
     expect(parseSpy).not.toHaveBeenCalled(); // guard still stopped Readability, not just stripToText
@@ -221,9 +242,9 @@ describe('WebFetch', () => {
     // WebFetchTool.execute, before Readability is ever reached.
     const filler = 'x'.repeat(340); // pads to ~5MB while keeping the '<' count (14,999) under MAX_TAGS
     const adversarial = ('<a ' + filler).repeat(14_999);
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await fetchWith(adversarial, 'https://example.com/adversarial-guard');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(typeof r.text).toBe('string'); // never an uncaught throw
     expect(elapsed).toBeLessThan(1000); // was 9,965ms before the fix
   });
@@ -248,9 +269,9 @@ describe('WebFetch', () => {
     // WHY comment) so there is only ever one index space.
     const payload = '<!--' + 'İ'.repeat(200_000) + '-->' + '<div>'.repeat(1000) + 'x' + '</div>'.repeat(1000);
     const parseSpy = vi.spyOn(Readability.prototype, 'parse');
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await fetchWith(`<html><body>${payload}</body></html>`, 'https://example.com/aliasing');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(r.isError).toBeFalsy();
     expect(r.text).toMatch(/too large or deeply nested/);
     expect(r.text).toContain('simplified extraction');
@@ -287,9 +308,9 @@ describe('WebFetch', () => {
     // 2ms, rejected.
     const parseSpy = vi.spyOn(Readability.prototype, 'parse');
     const payload = '<script>x</script >' + '<div>'.repeat(14_900);
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await fetchWith(payload, 'https://example.com/script-space-bypass');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(r.isError).toBeFalsy();
     expect(r.text).toMatch(/too large or deeply nested/);
     expect(parseSpy).not.toHaveBeenCalled();
@@ -307,9 +328,9 @@ describe('WebFetch', () => {
     // machine BEFORE this fix: 13,656ms (control: 2ms, rejected).
     const parseSpy = vi.spyOn(Readability.prototype, 'parse');
     const payload = '<!-->' + '<div>'.repeat(14_900);
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await fetchWith(payload, 'https://example.com/comment-abrupt-bypass');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(r.isError).toBeFalsy();
     expect(r.text).toMatch(/too large or deeply nested/);
     expect(parseSpy).not.toHaveBeenCalled();
@@ -325,15 +346,15 @@ describe('WebFetch', () => {
     // comment.
     const parseSpy = vi.spyOn(Readability.prototype, 'parse');
     const scriptVariant = '<script>x</script>' + '<div>'.repeat(6_000);
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r1 = await fetchWith(scriptVariant, 'https://example.com/script-matched-6000');
-    const e1 = Date.now() - t0;
+    const e1 = cpuMs() - t0;
     expect(r1.text).toMatch(/too large or deeply nested/);
 
     const commentVariant = '<!-- a real comment -->' + '<div>'.repeat(6_000);
-    const t1 = Date.now();
+    const t1 = cpuMs();
     const r2 = await fetchWith(commentVariant, 'https://example.com/comment-matched-6000');
-    const e2 = Date.now() - t1;
+    const e2 = cpuMs() - t1;
     expect(r2.text).toMatch(/too large or deeply nested/);
 
     expect(parseSpy).not.toHaveBeenCalled();
@@ -374,9 +395,9 @@ describe('WebFetch', () => {
     const parseSpy = vi.spyOn(Readability.prototype, 'parse');
     const N = 14_895;
     const payload = '<html><head></head><script/><body>' + '<div>'.repeat(N) + '</body></html>';
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await fetchWith(payload, 'https://example.com/script-selfclose-body-escape');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(r.isError).toBeFalsy();
     expect(r.text).toMatch(/too large or deeply nested/);
     expect(parseSpy).not.toHaveBeenCalled();
@@ -391,9 +412,9 @@ describe('WebFetch', () => {
     // too, not just script).
     const parseSpy2 = vi.spyOn(Readability.prototype, 'parse');
     const stylePayload = '<html><head></head><style/><body>' + '<div>'.repeat(N) + '</body></html>';
-    const t1 = Date.now();
+    const t1 = cpuMs();
     const r2 = await fetchWith(stylePayload, 'https://example.com/style-selfclose-body-escape');
-    const elapsed2 = Date.now() - t1;
+    const elapsed2 = cpuMs() - t1;
     expect(r2.isError).toBeFalsy();
     expect(r2.text).toMatch(/too large or deeply nested/);
     expect(parseSpy2).not.toHaveBeenCalled();
@@ -418,9 +439,9 @@ describe('WebFetch', () => {
     const parseSpy = vi.spyOn(Readability.prototype, 'parse');
     const N = 700;
     const payload = '<html><body>' + '<div/>'.repeat(N) + 'x</body></html>';
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await fetchWith(payload, 'https://example.com/div-selfclose-nonvoid');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(r.isError).toBeFalsy();
     expect(r.text).toMatch(/too large or deeply nested/);
     expect(parseSpy).not.toHaveBeenCalled();
@@ -494,9 +515,9 @@ describe('WebFetch', () => {
     for (const closer of ['</span>', '</p>', '</br>']) {
       const parseSpy = vi.spyOn(Readability.prototype, 'parse');
       const payload = ('<div>' + closer).repeat(N);
-      const t0 = Date.now();
+      const t0 = cpuMs();
       const r = await fetchWith(payload, `https://example.com/stray-close-${closer.replace(/\W/g, '')}`);
-      const elapsed = Date.now() - t0;
+      const elapsed = cpuMs() - t0;
       expect(r.isError).toBeFalsy();
       expect(r.text).toMatch(/too large or deeply nested/);
       expect(parseSpy).not.toHaveBeenCalled();
@@ -528,9 +549,9 @@ describe('WebFetch', () => {
     ] as const) {
       const parseSpy = vi.spyOn(Readability.prototype, 'parse');
       const payload = prefix + '<div/>'.repeat(800);
-      const t0 = Date.now();
+      const t0 = cpuMs();
       const r = await fetchWith(payload, `https://example.com/foreign-integration-${label}`);
-      const elapsed = Date.now() - t0;
+      const elapsed = cpuMs() - t0;
       expect(r.isError).toBeFalsy();
       expect(r.text).toMatch(/too large or deeply nested/);
       expect(parseSpy).not.toHaveBeenCalled();
@@ -606,9 +627,9 @@ describe('WebFetch', () => {
     // pins that the O(n) /</g pre-check (never the quadratic part, but worth
     // a floor test) keeps this instant even at the full 5MB cap.
     const adversarial = '<'.repeat(5 * 1024 * 1024);
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = await fetchWith(adversarial, 'https://example.com/bare-lt');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(typeof r.text).toBe('string');
     expect(elapsed).toBeLessThan(1000);
   });
@@ -1116,9 +1137,9 @@ describe('resolveFragment', () => {
     // future change could reintroduce a slow path here.
     const unit = '<a href="#">' + 'x'.repeat(660) + '</a>';
     const body = '<html><body>' + unit.repeat(7000) + '</body></html>';
-    const t0 = Date.now();
+    const t0 = cpuMs();
     const r = resolveFragment(body, '# nothing relevant', 'section');
-    const elapsed = Date.now() - t0;
+    const elapsed = cpuMs() - t0;
     expect(r.kind).toBe('absent');
     expect(elapsed).toBeLessThan(1000); // was ~9,810ms with the old regex before the original fix
   });

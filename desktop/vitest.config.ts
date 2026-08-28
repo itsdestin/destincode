@@ -1,6 +1,5 @@
 import { defineConfig } from 'vitest/config';
 import path from 'path';
-import fs from 'fs';
 import os from 'os';
 import react from '@vitejs/plugin-react';
 
@@ -20,15 +19,36 @@ import react from '@vitejs/plugin-react';
 // POSIX and USERPROFILE on Windows, so every module resolving a path from it —
 // directly or three imports deep — lands in the sandbox.
 //
-// Reset once per run by tests/global-setup.ts — NOT here. This module is
-// evaluated in more than one process, so wiping at config load races workers
-// that are already writing into the sandbox. The mkdir below is idempotent and
-// safe to repeat; it exists so the directory is present even if globalSetup is
-// bypassed (e.g. an editor running a single file).
+// CREATED AND RESET by tests/global-setup.ts, not here. This module deliberately
+// has NO import-time filesystem side effect: it is loaded by tools that are not
+// running tests at all — measured 2026-08-28, `npm run knip` imports it to
+// resolve the vite plugin config — and a mkdirSync at module scope fired for
+// every one of them, leaving a stray sandbox directory behind on each
+// `verify.sh` run (knip and vitest run concurrently there). Under the old fixed
+// directory name that was invisible, because every tool aimed at the same path;
+// with a per-run name it showed up as one empty leftover per verify run.
 // Pinned by tests/home-isolation.test.ts; delete that test and this becomes
 // silently load-bearing for nothing.
-const TEST_HOME = path.join(os.tmpdir(), 'youcoded-vitest-home');
-fs.mkdirSync(path.join(TEST_HOME, '.claude'), { recursive: true });
+//
+// PER-RUN, not shared. This used to be a fixed `youcoded-vitest-home`, which
+// meant every checkout on the machine aimed at ONE directory: two sessions
+// running suites at once (the normal case here — worktrees are the working
+// convention) had globalSetup's `rmSync` in run B delete the sandbox out from
+// under run A mid-flight. It surfaced as ENOTEMPTY / ENOENT temp-rename errors
+// in whatever unrelated file happened to be writing at that instant, which is
+// why it was mis-filed twice as a bug in the victim test (ROADMAP 2026-08-06,
+// 2026-08-27). The pid suffix makes concurrent runs structurally incapable of
+// sharing state — no coordination, no lockfile, no ordering assumption.
+//
+// The pid is the VITEST MAIN PROCESS's. Verified 2026-08-28: this config module
+// is evaluated exactly ONCE per `vitest run` (in that main process), and the
+// `env` block below is what propagates HOME into each worker — so every worker
+// and globalSetup agree on the path without recomputing it. YOUCODED_TEST_HOME
+// is exported into the real process env so tests/global-setup.ts (which runs in
+// this same process, before any worker starts) wipes the SAME directory this
+// config named, rather than re-deriving it and racing.
+const TEST_HOME = path.join(os.tmpdir(), `youcoded-vitest-home-${process.pid}`);
+process.env.YOUCODED_TEST_HOME = TEST_HOME;
 
 export default defineConfig({
   // Fix: include the React plugin so TSX test files (JSX transform) compile correctly
@@ -53,6 +73,21 @@ export default defineConfig({
     // Don't reinstate it; use `test.projects` if per-glob environments are ever
     // wanted again.
     environment: 'node',
+    // WHY 30s and not vitest's 5s default: this suite is not all unit tests.
+    // A dozen files import 4,000-line main-process modules, spawn child
+    // processes, or drive a real HarnessSession through hundreds of scripted
+    // steps. Measured in isolation on a 32-core box (2026-08-28):
+    // remote-server 4.9s, engine-supervisor 4.5s, mcp-startup-wiring 2.7s for
+    // the whole FILE — so a single heavy test in one of them sits within a
+    // rounding error of the 5s per-test budget before any contention. Under a
+    // parallel run they crossed it constantly, always at exactly 5000ms, and
+    // always in a DIFFERENT file, which is the tell. The cost of this being
+    // generous is that a genuinely hung test takes 30s to report instead of
+    // 5s; the cost of it being tight was four agents in one afternoon
+    // re-running suites to tell a real regression from noise, and one nearly
+    // dismissing another agent's genuine breakage as flake.
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
     // test-engine/*.mjs are plain-Node CLIs (harness-eval, its worker, the
     // review runner) that tests import in-process. WHY they must load NATIVELY
     // instead of through vite's module runner: they `import()` compiled dist/
@@ -82,6 +117,9 @@ export default defineConfig({
       HOME: TEST_HOME,
       USERPROFILE: TEST_HOME,
       YOUCODED_REAL_HOME: os.homedir(),
+      // Lets tests and globalSetup name the sandbox without re-deriving it
+      // (the pid suffix means re-deriving in a worker would get it wrong).
+      YOUCODED_TEST_HOME: TEST_HOME,
     },
   },
 });
