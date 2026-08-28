@@ -301,8 +301,10 @@ export interface TranscriptEvent {
      * instead of a user bubble — the text is what the PARENT MODEL reads, and
      * showing it as the user's own words, or even as a big notice, put text in
      * the chat nobody actually said (Destin, 1b hands-on).
-     * Only value today is 'specialist-report'; a plain `string` (not a union)
-     * so a future injected kind never needs a TranscriptEvent schema change.
+     * Values today: 'specialist-report' (a background helper's report) and
+     * 'shell-complete' (G-1: a background command finished or was stopped by
+     * the user); a plain `string` (not a union) so a future injected kind never
+     * needs a TranscriptEvent schema change.
      */
     injected?: string;
     /**
@@ -311,15 +313,7 @@ export interface TranscriptEvent {
      * is exact rather than parsed back out of the prose the model reads.
      * `parentToolCallId` names the Task card that started this child.
      */
-    injectedMeta?: {
-      childId: string;
-      title: string;
-      agentType: string;
-      description?: string;
-      status: 'completed' | 'failed';
-      steps?: number;
-      parentToolCallId?: string;
-    };
+    injectedMeta?: InjectedMeta;
     /** Stable subagent ID — matches the filename agent-<agentId>.jsonl on disk. */
     agentId?: string;
     /** Streaming-part id used to merge reasoning chunks; emitted by the native harness, not CC's watcher. */
@@ -739,6 +733,47 @@ export interface ShellRunView {
   tail: string;
   logPath: string;
 }
+
+/** Structured companion to `injected: 'specialist-report'` (2026-08-16): who
+ *  finished, what they were asked, how it ended — so the card header is exact
+ *  rather than parsed back out of the prose the model reads.
+ *  `parentToolCallId` names the Task card that started this child. */
+export interface SpecialistInjectedMeta {
+  /** G-1: the union's discriminant, declared here as always-absent so every
+   *  reader can write `meta.kind === 'shell'`. Without it TypeScript refuses to
+   *  read `.kind` off the union at all, and the code has to alternate between
+   *  `'kind' in meta` and `.kind`. Optional and undefined, so no persisted
+   *  specialist record changes shape. */
+  kind?: undefined;
+  childId: string;
+  title: string;
+  agentType: string;
+  description?: string;
+  status: 'completed' | 'failed';
+  steps?: number;
+  parentToolCallId?: string;
+}
+
+/** Companion to `injected: 'shell-complete'` (G-1): the background commands
+ *  this ONE injected turn reports. A list, not a single run, because every
+ *  notice ready at the same idle boundary goes out as one turn (D8) and the
+ *  renderer folds each entry into its own Bash card. */
+export interface ShellInjectedMeta {
+  kind: 'shell';
+  runs: Array<{
+    shellId: string;
+    toolUseId: string;
+    exitCode?: number;
+    stopReason?: ShellStopReason;
+    elapsedMs: number;
+    logPath: string;
+  }>;
+}
+
+export type InjectedMeta = SpecialistInjectedMeta | ShellInjectedMeta;
+
+/** The push event `native:shell-event` carries (G-1): one run record changed. */
+export type ShellEvent = { sessionId: string; run: ShellRunView };
 
 export interface ToolGroupState {
   id: string;
@@ -1655,6 +1690,7 @@ export const IPC = {
   // on create/resume so a fresh Coder session shows AUTO EDIT (not the default ASK).
   NATIVE_GET_PERMISSION_MODE: 'native:get-permission-mode',
   NATIVE_SESSIONS_LIST: 'native:sessions-list',
+  NATIVE_KILL_SHELL: 'native:kill-shell',   // G-1: the Bash card's Stop button
   PROVIDER_LIST: 'provider:list',
   PROVIDER_UPSERT: 'provider:upsert',
   PROVIDER_REMOVE: 'provider:remove',
@@ -1719,6 +1755,7 @@ export const IPC = {
   ENGINE_MODELS: 'engine:models',                 // invoke → EngineModel[] with live state
   ENGINE_MODELS_CHANGED: 'engine:models-changed', // push → EngineModel[] on any state change
   NATIVE_MODEL_STATE: 'native:model-state',       // push → per-session bound-model state
+  NATIVE_SHELL_EVENT: 'native:shell-event',       // push → one background command's run record changed (G-1)
   MODELS_MEMORY_CHECK: 'models:memory-check',     // invoke(modelId) → MemoryVerdict
   MODELS_LOAD: 'models:load',                     // invoke(modelId) → true ([Reload Model])
 } as const;

@@ -16,7 +16,8 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent, DelegatedModelsView, SpecialistRunView } from '../../shared/types';
+import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent, DelegatedModelsView, SpecialistRunView, ShellEvent, ShellRunView, InjectedMeta } from '../../shared/types';
+import { ShellRegistry, formatFinishedNotice, NOTICE_TAIL_LINES, type ShellRun } from './shell-registry';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
@@ -410,7 +411,21 @@ export class NativeSessionHost extends EventEmitter {
   // Purely in-memory, like inMemoryFallback above: an app restart losing an
   // unread late-answer notice is an accepted loss, not a durability promise
   // this lane makes.
-  private pendingHostNotices = new Map<string, string[]>();
+  // G-1: notices now carry the structured meta the renderer folds into a
+  // card; shell notices ready in one drain are concatenated into ONE turn (D8).
+  private pendingHostNotices = new Map<string, Array<{ text: string; meta?: InjectedMeta }>>();
+  /** G-1: one ShellRegistry per session id, HOST-owned. Why not on the
+   *  HarnessSession: a remote takeover and the session-exit backstop destroy
+   *  the session but must leave its commands running (D2) — those runs still
+   *  need an owner that can kill them at app quit and re-attach them if the
+   *  same conversation is resumed in this process. */
+  private shellRegistries = new Map<string, ShellRegistry>();
+  /** G-1: registries whose conversation was closed and whose kill is still in
+   *  flight. Why a second collection: a close sends SIGTERM and escalates to
+   *  SIGKILL two seconds later, but the registry leaves shellRegistries at
+   *  once — so quitting the app inside that window left a process that ignores
+   *  SIGTERM alive with nothing left to reach it. destroyAll sweeps this too. */
+  private drainingShellRegistries = new Set<ShellRegistry>();
 
   // Plan 1b Task 8 — a routed ask's late APPROVE, recorded once the child that
   // raised it has already ended, keyed by childId.
@@ -1477,15 +1492,74 @@ export class NativeSessionHost extends EventEmitter {
    *  a torn-down parent can never come back to read this, so there is
    *  nothing to gain by holding it in memory forever — log it as
    *  undeliverable instead of silently leaking. */
-  private queueHostNotice(parentId: string, text: string): void {
+  private queueHostNotice(
+    parentId: string,
+    text: string,
+    meta?: InjectedMeta,
+    // Why a caller-supplied message: this lane now carries shell completions
+    // too, and "a late permission answer arrived" printed about a finished
+    // build would be a false log line (review I5).
+    whyDropped = 'a late permission answer arrived after its parent session was already destroyed — the notice has nowhere left to be delivered',
+  ): void {
     if (!this.live.has(parentId)) {
-      log('WARN', 'NativeSessionHost', 'a late permission answer arrived after its parent session was already destroyed — the notice has nowhere left to be delivered', { parentId });
+      log('WARN', 'NativeSessionHost', whyDropped, { parentId });
       return;
     }
     const arr = this.pendingHostNotices.get(parentId) ?? [];
-    arr.push(text);
+    arr.push({ text, meta });
     this.pendingHostNotices.set(parentId, arr);
     this.kickIdleDeliveryPass(parentId);
+  }
+
+  /** G-1: the registry for a session id — created on first use, kept across
+   *  destroy({keepShells}) so a taken-over conversation's runs stay owned. */
+  private shellsFor(sessionId: string): ShellRegistry {
+    const existing = this.shellRegistries.get(sessionId);
+    if (existing) return existing;
+    const registry = new ShellRegistry(sessionId);
+    // One event per change, straight to ipc-handlers' listener (same shape as
+    // 'specialists-event'): sendForSession + remote buffer/broadcast live there.
+    registry.on('change', (run: ShellRunView) => this.emit('shell-event', { sessionId, run } satisfies ShellEvent));
+    registry.on('exit', (run: ShellRun) => this.onShellExit(sessionId, registry, run));
+    this.shellRegistries.set(sessionId, registry);
+    return registry;
+  }
+
+  /** G-1 (spec §4.4): a finished run becomes a notice at the next idle
+   *  boundary. KillShell's own result is its notice (no second one);
+   *  'conversation-closed' and 'app-quit' have no session left to tell. A
+   *  user Stop IS reported — the model must learn its server is gone. */
+  private onShellExit(sessionId: string, registry: ShellRegistry, run: ShellRun): void {
+    if (run.reported) return;
+    if (run.stopReason && run.stopReason !== 'user') return;
+    run.reported = true;
+    this.queueHostNotice(
+      sessionId,
+      formatFinishedNotice(run, registry.tailText(run, NOTICE_TAIL_LINES)),
+      { kind: 'shell', runs: [{ shellId: run.shellId, toolUseId: run.toolUseId, exitCode: run.exitCode, stopReason: run.stopReason, elapsedMs: (run.endedAt ?? Date.now()) - run.startedAt, logPath: run.logPath }] },
+      'a background command finished after its conversation was closed — the notice has nowhere left to be delivered',
+    );
+  }
+
+  /** G-1: the card's Stop button (native:kill-shell). Not gated on a live
+   *  session's turn state — a run outlives turns by design. */
+  async killShell(sessionId: string, shellId: string): Promise<{ ok: true } | { ok: false; reason: 'not-live' | 'unknown-shell' | 'not-running' }> {
+    const reg = this.shellRegistries.get(sessionId);
+    if (!reg || !this.live.has(sessionId)) return { ok: false, reason: 'not-live' };
+    const run = reg.get(shellId);
+    if (!run) return { ok: false, reason: 'unknown-shell' };
+    if (run.status !== 'running') return { ok: false, reason: 'not-running' };
+    await reg.kill(shellId, 'user');
+    return { ok: true };
+  }
+
+  /** G-1: every run record for a live session, for TRANSCRIPT_REPLAY — the
+   *  transcript itself says nothing about a run's current state (same reason
+   *  specialistRunsFor exists). */
+  shellRunsFor(sessionId: string): ShellRunView[] {
+    const reg = this.shellRegistries.get(sessionId);
+    if (!reg || !this.live.has(sessionId)) return [];
+    return reg.list().map((r) => reg.toView(r));
   }
 
   /** Plan 1b Task 8 — the ONE handler for a real response that arrives after
@@ -2376,8 +2450,10 @@ export class NativeSessionHost extends EventEmitter {
    *  `profile` is accepted here so Task 6 can add a prompt variant without another
    *  signature change; this task doesn't use it yet (the session itself carries it
    *  via opts.profile). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers' | 'internalReadRoots' | 'specialistRoster'> {
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers' | 'internalReadRoots' | 'specialistRoster' | 'shells'> {
     return {
+      // G-1: this session's background-command registry, host-owned.
+      shells: this.shellsFor(sessionId),
       tools: CORE_TOOLS,
       // Task 4 (plan 1c) — this project folder's roster, read live off the
       // catalog's in-memory state at every roster()/list()/resolve() call
@@ -2852,6 +2928,9 @@ export class NativeSessionHost extends EventEmitter {
         // G-1: a helper allowed Bash gets the companions too — its own
         // background command would otherwise be unreadable and unstoppable.
         tools: CORE_TOOLS.filter((t) => allowed.has(t.name) || (allowed.has('Bash') && (t.name === 'BashOutput' || t.name === 'KillShell'))),
+        // G-1: children get their OWN registry; their runs die with the child
+        // under 'conversation-closed' when destroyChildrenOf tears them down.
+        shells: this.shellsFor(childId),
         // COLD START (spec §1): the specialist body replaces the preset body, and
         // the <env> block describes the CHILD's work directory. Nothing from the
         // parent's conversation crosses over — the brief in the first user turn
@@ -3345,14 +3424,25 @@ export class NativeSessionHost extends EventEmitter {
     if (notices) {
       while (notices.length > 0) {
         if (this.live.get(sessionId) !== entry) break;
+        // D8: every shell notice already queued goes out as ONE turn — each
+        // runNotice is a full model turn over the whole conversation, so three
+        // builds finishing during one busy turn must not cost three turns.
+        // Specialist follow-ups keep their one-per-turn shape.
+        const head = notices[0];
+        const headIsShell = head.meta?.kind === 'shell';
+        const batch = headIsShell ? notices.filter((n) => n.meta?.kind === 'shell') : [head];
+        const text = batch.map((n) => n.text).join('\n\n');
+        const meta: InjectedMeta | undefined = headIsShell
+          ? { kind: 'shell', runs: batch.flatMap((n) => (n.meta?.kind === 'shell' ? n.meta.runs : [])) }
+          : head.meta;
         try {
-          await entry.session.runNotice(notices[0]);
+          await entry.session.runNotice(text, meta);
         } catch (err) {
           log('WARN', 'NativeSessionHost', 'host notice delivery failed — will retry at the next idle boundary', { sessionId, error: String((err as any)?.message ?? err) });
           break;
         }
         if (this.live.get(sessionId) !== entry) break; // destroy raced the notice itself
-        notices.shift();
+        for (const n of batch) { const i = notices.indexOf(n); if (i >= 0) notices.splice(i, 1); }
       }
       if (notices.length === 0) this.pendingHostNotices.delete(sessionId);
     }
@@ -4002,7 +4092,7 @@ export class NativeSessionHost extends EventEmitter {
    *   2. await the appendChain — drain appends already enqueued before step 1.
    *   3. store.dispose() — flush the buffered open streaming part.
    *   4. drop the map entry. */
-  async destroy(sessionId: string): Promise<void> {
+  async destroy(sessionId: string, opts: { keepShells?: boolean } = {}): Promise<void> {
     // Capture the entry SYNCHRONOUSLY, before the child cascade below awaits —
     // the MCP release at the bottom of this method depends on tearing down the
     // generation this call captured (see the comment there), and that property
@@ -4013,6 +4103,26 @@ export class NativeSessionHost extends EventEmitter {
     // parent's own entry is already gone (a double destroy, or a teardown
     // racing one).
     await this.destroyChildrenOf(sessionId);
+    // G-1 (D2): closing the conversation kills its background commands and
+    // says so on the card. The holder-takeover and session-exit paths pass
+    // keepShells — the conversation is still open, just somewhere else — and
+    // the registry stays in the map so destroyAll can still reach it. Placed
+    // before the not-live early return so an orphaned registry is killed when
+    // its conversation is finally closed on this device.
+    if (!opts.keepShells) {
+      const reg = this.shellRegistries.get(sessionId);
+      if (reg) {
+        this.shellRegistries.delete(sessionId);
+        // Held until the kill settles so app-quit can still reach a process
+        // that is ignoring SIGTERM inside the 2 s escalation window.
+        this.drainingShellRegistries.add(reg);
+        // Signals are sent synchronously; only the exit wait is deferred —
+        // closing a tab must not stall on a stubborn process.
+        void reg.killAll('conversation-closed')
+          .catch((err) => log('WARN', 'NativeSessionHost', 'killAll on destroy failed', { sessionId, error: String(err) }))
+          .finally(() => this.drainingShellRegistries.delete(reg));
+      }
+    }
     if (!entry) return;
     // De-register from the parent's child set (this session IS a child when
     // parentSessionId is set) so a destroyed child isn't chased again later.
@@ -4070,8 +4180,24 @@ export class NativeSessionHost extends EventEmitter {
     // live, which the per-session destroy loop below would miss).
     this.broker.cancelAll();
     for (const id of [...this.live.keys()]) {
-      await this.destroy(id);
+      // keepShells: the app-quit sweep below kills EVERY registry with the
+      // honest reason, including orphans from earlier takeovers that no live
+      // session still points at.
+      await this.destroy(id, { keepShells: true });
     }
+    // G-1 (D2): app quit stops every background command with the honest
+    // reason. SIGKILL at once: the process is exiting and a deferred
+    // escalation timer would never fire.
+    for (const [id, reg] of this.shellRegistries) {
+      void reg.killAll('app-quit', { graceMs: 0 }).catch((err) => log('WARN', 'NativeSessionHost', 'killAll on quit failed', { sessionId: id, error: String(err) }));
+    }
+    this.shellRegistries.clear();
+    // A conversation closed seconds ago is still escalating SIGTERM->SIGKILL;
+    // finish the job now rather than let the escalation timer die with us.
+    for (const reg of this.drainingShellRegistries) {
+      void reg.killAll('app-quit', { graceMs: 0 }).catch(() => { /* already gone */ });
+    }
+    this.drainingShellRegistries.clear();
     // Fix (Task 4 fix pass 3): belt-and-suspenders sweep on top of the
     // per-session cleanup destroy() now does above. Covers the one case that
     // loop can't: a fallback entry whose parent's destroy() already ran

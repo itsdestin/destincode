@@ -4839,3 +4839,203 @@ describe('NativeSessionHost per-turn pricing', () => {
     expect(turns[1].data.usage.costUsd).toBeCloseTo(7, 10);
   });
 });
+
+describe('G-1 background Bash — registry lifetime and finished notices', () => {
+  const posix = process.platform !== 'win32';
+  let root: string;
+  let store: SessionStore;
+  let host: NativeSessionHost;
+  const BASH = { shellCmd: '/bin/bash', shellArgs: ['-c'] };
+  // A parent whose every turn is one plain text step — the notice turn included.
+  const chatty = async () => scriptedModel([stream(...textChunks('t', 'ok'), finishChunk('stop'))]) as any;
+  const binding = { providerId: 'openrouter', modelId: 'm' };
+  function reg(id: string) { return (host as any).shellRegistries.get(id); }
+  function startIn(id: string, command: string, toolUseId = 'tu') {
+    const r = reg(id).start({ toolUseId, command, cwd: root, ...BASH, env: { ...process.env } });
+    if (!r.ok) throw new Error('start failed');
+    return r.run;
+  }
+
+  beforeEach(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-shell-host-'));
+    store = new SessionStore(new NativeHome(root));
+    host = new NativeSessionHost(store, chatty, NO_CONTEXT, async () => null, async () => null);
+    await host.create({ sessionId: 'p1', cwd: root, binding });
+  });
+  afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  it('every live session has a registry, reachable by the tool as ctx.shells', () => {
+    expect(reg('p1')).toBeTruthy();
+    expect((host as any).live.get('p1').session.opts.shells).toBe(reg('p1'));
+  });
+
+  it.skipIf(!posix)('a finished run is injected ONCE as a user turn with injected: shell-complete and shell meta', async () => {
+    const notice = waitForEvent(host, (e) => e.type === 'user-message' && e.data.injected === 'shell-complete');
+    const run = startIn('p1', 'echo done; exit 2', 'toolu_x');
+    const e = await notice;
+    expect(e.data.text).toMatch(new RegExp(`^\\[Background command ${run.shellId} finished · exit 2 · \\d+s\\]\\n\\$ echo done; exit 2\\ndone\\nFull log: `));
+    expect(e.data.injectedMeta).toEqual({ kind: 'shell', runs: [{ shellId: run.shellId, toolUseId: 'toolu_x', exitCode: 2, stopReason: undefined, elapsedMs: expect.any(Number), logPath: run.logPath }] });
+    expect(run.reported).toBe(true);
+    await host.drain('p1');
+    const all = store.readEvents('p1', root).filter((ev: any) => ev.type === 'user-message' && ev.data.injected === 'shell-complete');
+    expect(all).toHaveLength(1);
+  });
+
+  it.skipIf(!posix)('several runs finishing while the parent is busy go out as ONE turn (D8)', async () => {
+    // Hold the parent mid-turn so both exits queue before any delivery pass.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    let first = true;
+    const factory2 = async () => new MockLanguageModelV4({
+      doStream: async () => {
+        if (first) { first = false; await gate; }
+        return { stream: simulateReadableStream({ chunks: stream(...textChunks('t', 'ok'), finishChunk('stop')) }) };
+      },
+    }) as any;
+    await host.destroyAll();
+    host = new NativeSessionHost(store, factory2, NO_CONTEXT, async () => null, async () => null);
+    await host.create({ sessionId: 'p2', cwd: root, binding });
+    host.send('p2', 'busy');
+    const a = startIn('p2', 'echo a', 'ta');
+    const b = startIn('p2', 'echo b', 'tb');
+    await a.exited; await b.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    const notices: any[] = [];
+    host.on('transcript-event', (e: any) => { if (e.type === 'user-message' && e.data.injected === 'shell-complete') notices.push(e); });
+    release();
+    await host.drain('p2');
+    await new Promise((r) => setTimeout(r, 50));
+    await host.drain('p2');
+    expect(notices).toHaveLength(1);
+    expect(notices[0].data.injectedMeta.runs.map((r: any) => r.toolUseId).sort()).toEqual(['ta', 'tb']);
+    expect(notices[0].data.text).toContain(`[Background command ${a.shellId} finished`);
+    expect(notices[0].data.text).toContain(`[Background command ${b.shellId} finished`);
+  });
+
+  it.skipIf(!posix)('a run the model stopped (KillShell) sends no notice; a run the USER stopped does', async () => {
+    const seen: any[] = [];
+    host.on('transcript-event', (e: any) => { if (e.data?.injected === 'shell-complete') seen.push(e); });
+    const a = startIn('p1', 'sleep 5', 'ta');
+    await reg('p1').kill(a.shellId, 'assistant');
+    const b = startIn('p1', 'sleep 5', 'tb');
+    const r = await host.killShell('p1', b.shellId);
+    expect(r).toEqual({ ok: true });
+    await host.drain('p1');
+    await new Promise((res) => setTimeout(res, 50));
+    await host.drain('p1');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].data.text).toMatch(new RegExp(`^\\[Background command ${b.shellId} stopped by you · after`));
+    expect(await host.killShell('p1', b.shellId)).toEqual({ ok: false, reason: 'not-running' });
+    expect(await host.killShell('p1', 'sh-nope')).toEqual({ ok: false, reason: 'unknown-shell' });
+    expect(await host.killShell('nope', 'sh-1')).toEqual({ ok: false, reason: 'not-live' });
+  });
+
+  it.skipIf(!posix)("destroy() kills with 'conversation-closed'; destroy({keepShells}) leaves the run; destroyAll kills orphans with 'app-quit'", async () => {
+    const a = startIn('p1', 'sleep 5', 'ta');
+    await host.create({ sessionId: 'p3', cwd: root, binding });
+    const b = startIn('p3', 'sleep 5', 'tb');
+    await host.destroy('p1');
+    // destroy() records the reason synchronously but does NOT await the exit —
+    // closing a tab must never stall on a stubborn process.
+    expect(a.stopReason).toBe('conversation-closed');
+    await a.exited;
+    expect(a.status).toBe('stopped');
+    expect(reg('p1')).toBeUndefined();
+    await host.destroy('p3', { keepShells: true });
+    expect(b.status).toBe('running');
+    expect(reg('p3')).toBeTruthy();             // orphaned but still owned
+    await host.destroyAll();
+    await b.exited;
+    expect(b.stopReason).toBe('app-quit');
+  });
+
+  it.skipIf(!posix)('a conversation closed seconds before app quit still has its command killed', async () => {
+    // destroy() escalates SIGTERM->SIGKILL after 2 s and drops the registry from
+    // the live map at once; without the draining set, quitting inside that
+    // window left a SIGTERM-ignoring process with nothing able to reach it.
+    // The group gets SIGTERM, which kills each transient `sleep` — but bash
+    // ignores it and loops, so the run is still alive when the app quits.
+    const a = startIn('p1', "trap '' TERM; while true; do sleep 0.2; done", 'ta');
+    await host.destroy('p1');
+    expect(a.stopReason).toBe('conversation-closed');   // reason recorded at once
+    expect(a.status).toBe('running');                   // but the process is still up
+    expect((host as any).shellRegistries.has('p1')).toBe(false);
+    expect((host as any).drainingShellRegistries.size).toBe(1);   // still reachable
+    await host.destroyAll();
+    await a.exited;                                     // SIGKILL from the quit sweep
+    expect(a.status).toBe('stopped');
+  }, 15_000);
+
+  it.skipIf(!posix)('interrupt() leaves background runs alone', async () => {
+    const a = startIn('p1', 'sleep 5', 'ta');
+    host.interrupt('p1');
+    await new Promise((r) => setTimeout(r, 100));
+    expect(a.status).toBe('running');
+  });
+
+  it.skipIf(!posix)('a run finishing after its session was destroyed is dropped with the shell log line, not the permission one', async () => {
+    // logger.ts writes one JSON line per log() via fs.promises.appendFile —
+    // spying there sees the message without touching ~/.claude/desktop.log.
+    const spy = vi.spyOn(fs.promises, 'appendFile').mockResolvedValue(undefined);
+    const a = startIn('p1', 'sleep 0.3', 'ta');
+    await host.destroy('p1', { keepShells: true });
+    await a.exited;
+    await new Promise((r) => setTimeout(r, 50));
+    const written = spy.mock.calls.map((c) => String(c[1]));
+    expect(written.some((l) => l.includes('a background command finished after its conversation was closed'))).toBe(true);
+    expect(written.some((l) => l.includes('late permission answer'))).toBe(false);
+    spy.mockRestore();
+  });
+
+  it.skipIf(!posix)('shell-event fires with the ShellRunView and shellRunsFor replays it', async () => {
+    const views: any[] = [];
+    host.on('shell-event', (e: any) => views.push(e));
+    const a = startIn('p1', 'echo hi', 'ta');
+    await a.exited;
+    await new Promise((r) => setTimeout(r, 300));
+    expect(views[views.length - 1]).toEqual({ sessionId: 'p1', run: expect.objectContaining({ shellId: a.shellId, status: 'exited', exitCode: 0, tail: 'hi' }) });
+    expect(host.shellRunsFor('p1').map((v: any) => v.shellId)).toEqual([a.shellId]);
+    expect(host.shellRunsFor('nope')).toEqual([]);
+  });
+
+  it.skipIf(!posix)('END TO END: the model starts a background command and gets its finished notice on the right card', async () => {
+    // The one test that crosses every seam at once. Every other test here
+    // builds one layer's input by hand — this one lets the real Bash tool mint
+    // the run, so the chain nothing else covers is exercised: ctx.toolCallId ->
+    // run.toolUseId -> the toolUseId the card is keyed by, and the
+    // ShellRunView the renderer receives. A break anywhere in it means the card
+    // silently never updates, which no unit test would notice.
+    await host.destroyAll();
+    const bashThenStop = async () => scriptedModel([
+      stream(toolCallChunk('c1', 'Bash', { command: 'echo hello-e2e; exit 5', run_in_background: true }), finishChunk('tool-calls')),
+      stream(...textChunks('t', 'started'), finishChunk('stop')),
+      stream(...textChunks('t2', 'noted'), finishChunk('stop')),   // the notice turn
+    ]) as any;
+    host = new NativeSessionHost(store, bashThenStop, NO_CONTEXT, async () => null, async () => null);
+    await host.create({ sessionId: 'e2e', cwd: root, binding });
+    host.setPermissionMode('e2e', 'full-auto');   // Bash is not deny-listed, so no ask
+
+    const views: any[] = [];
+    host.on('shell-event', (e: any) => views.push(e));
+    const notice = waitForEvent(host, (e) => e.type === 'user-message' && e.data.injected === 'shell-complete');
+    const startResult = waitForEvent(host, (e) => e.type === 'tool-result' && e.data.toolName === 'Bash');
+
+    host.send('e2e', 'start it');
+    const res = await startResult;
+    expect(res.data.toolResult).toMatch(/^Started in the background \(shell id sh-[0-9a-f]{4}\)\./);
+    const shellId = /shell id (sh-[0-9a-f]{4})/.exec(res.data.toolResult)![1];
+
+    const e = await notice;
+    expect(e.data.text).toContain(`[Background command ${shellId} finished · exit 5`);
+    expect(e.data.text).toContain('hello-e2e');
+    // The whole point: the meta's toolUseId is the id of the Bash tool-use
+    // event, so the reducer can find the card this notice belongs to.
+    const meta = e.data.injectedMeta;
+    expect(meta.kind).toBe('shell');
+    expect(meta.runs).toHaveLength(1);
+    expect(meta.runs[0]).toMatchObject({ shellId, exitCode: 5 });
+    expect(meta.runs[0].toolUseId).toBe(res.data.toolUseId);
+    // And the live push carries the same id, on the same card.
+    expect(views.some((v) => v.sessionId === 'e2e' && v.run.shellId === shellId && v.run.toolUseId === res.data.toolUseId)).toBe(true);
+  }, 20_000);
+});

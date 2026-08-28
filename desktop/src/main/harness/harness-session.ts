@@ -16,7 +16,7 @@ import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { streamText, tool, zodSchema, jsonSchema, type LanguageModel, type ModelMessage } from 'ai';
-import type { TranscriptEvent } from '../../shared/types';
+import type { TranscriptEvent, InjectedMeta } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
 import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
@@ -1632,9 +1632,12 @@ export class HarnessSession extends EventEmitter {
    *  this at an idle boundary — beginTurn's own re-entrancy guard would throw
    *  if it were called mid-turn, by design (never splice into a running turn:
    *  role alternation + the local prompt cache both depend on it). */
-  async runNotice(text: string, meta?: NonNullable<TranscriptEvent['data']>['injectedMeta']): Promise<void> {
+  async runNotice(text: string, meta?: InjectedMeta): Promise<void> {
+    // G-1: the discriminant tells the renderer which card folds this turn —
+    // a Task card (specialist report) or a Bash card (shell-complete).
+    const injected = meta?.kind === 'shell' ? 'shell-complete' : 'specialist-report';
     return this.beginTurn(text, () => this.emitEvent('user-message', {
-      text, injected: 'specialist-report',
+      text, injected,
       // Structured header data for the renderer's SpecialistReportCard —
       // optional so every existing caller/test that passes text alone is
       // unchanged; the card falls back to the prose when it's absent.
