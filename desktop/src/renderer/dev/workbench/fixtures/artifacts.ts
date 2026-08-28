@@ -637,6 +637,64 @@ export function makeDetailPngBase64(): string | null {
   return canvas.toDataURL('image/png').split(',')[1] ?? null;
 }
 
+/** Build a small, valid two-page PDF and return it as base64.
+ *
+ *  WHY generated rather than a real file: the workbench needs a PDF to review
+ *  the viewer's zoom at all, and the only PDFs on this machine are Destin's
+ *  personal documents — which must not become a repo fixture. This one is
+ *  ASCII-only and about 1 KB.
+ *
+ *  The pages carry 6pt text on purpose. That is the whole point of zooming a
+ *  PDF: at the default scale it is a grey smear, and a PDF must get SHARPER
+ *  when enlarged (re-rendered by pdf.js) rather than merely bigger. */
+export function makeSamplePdfBase64(): string | null {
+  if (typeof btoa === 'undefined') return null;
+
+  const page = (n: number) => {
+    const lines: string[] = ['BT /F1 22 Tf 54 720 Td (Scroll performance report) Tj ET'];
+    lines.push(`BT /F1 11 Tf 54 694 Td (page ${n} of 2 - the small print below is the zoom target) Tj ET`);
+    for (let i = 0; i < 38; i++) {
+      // 6pt lines: illegible at 100%, readable once pdf.js re-renders bigger.
+      lines.push(
+        `BT /F1 6 Tf 54 ${664 - i * 15} Td `
+        + `(${String(i).padStart(2, '0')}  p99 ${(12 + i * 0.37).toFixed(2)}ms  `
+        + 'the quick brown fox jumps over the lazy dog 0123456789 - legible only when enlarged) Tj ET',
+      );
+    }
+    return lines.join('\n');
+  };
+
+  // Object bodies in order; object N is at index N-1.
+  const bodies: string[] = [];
+  bodies.push('<< /Type /Catalog /Pages 2 0 R >>');
+  bodies.push('<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>');
+  const pageObj = (contents: number) =>
+    `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${contents} 0 R `
+    + '/Resources << /Font << /F1 7 0 R >> >> >>';
+  const stream = (body: string) => `<< /Length ${body.length} >>\nstream\n${body}\nendstream`;
+  bodies.push(pageObj(4));
+  bodies.push(stream(page(1)));
+  bodies.push(pageObj(6));
+  bodies.push(stream(page(2)));
+  bodies.push('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
+
+  // Assemble, recording each object's byte offset for the xref table. The
+  // content is ASCII, so string length IS byte length here.
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  bodies.forEach((body, i) => {
+    offsets.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+
+  const xrefAt = pdf.length;
+  pdf += `xref\n0 ${bodies.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += `${String(off).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${bodies.length + 1} /Root 1 0 R >>\nstartxref\n${xrefAt}\n%%EOF\n`;
+
+  return btoa(pdf);
+}
+
 /** A 96×64 PNG (gradient + a dot) served by the mock artifacts.readBinary for
  *  ANY image path, so image thumbnails in the workbench show a picture instead
  *  of the letter glyph. Generated 2026-08-25; content is irrelevant. */

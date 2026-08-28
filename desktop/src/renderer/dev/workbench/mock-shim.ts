@@ -5,7 +5,7 @@ import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-pol
 import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
-  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, SAMPLE_SVG, makeDetailPngBase64, contextGroups,
+  CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, SAMPLE_SVG, makeDetailPngBase64, makeSamplePdfBase64, contextGroups,
 } from './fixtures/artifacts';
 import type { MockState, MockSessionMeta } from './scenarios';
 import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
@@ -865,6 +865,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
           if (detailed) return { ok: true, base64: detailed, mime: 'image/png' };
         }
         return { ok: true, base64: SAMPLE_PNG_BASE64, mime: 'image/png' };
+      }
+      if (ext === 'pdf') {
+        const pdf = makeSamplePdfBase64();
+        if (pdf) return { ok: true, base64: pdf, mime: 'application/pdf' };
       }
       return { ok: false, reason: 'not-an-image' };
     },
