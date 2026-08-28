@@ -35,9 +35,21 @@ import type { ToolContext } from '../src/main/harness/tools/types';
 let dir: string;
 let ctx: ToolContext;
 
+// PER-PROCESS, not the bare literal 'test'. Bash's spill files land in
+// `os.tmpdir()/youcoded-harness-bash-output/<sessionId>` — a fixed path OUTSIDE
+// the vitest HOME sandbox (spill-paths.ts resolves it from os.tmpdir() directly,
+// which is correct for production). With a shared id, every concurrent vitest
+// run wrote spills into ONE directory and the afterEach below deleted it out
+// from under the others: six concurrent full suites failed
+// `expect(fs.existsSync(r.outputPath)).toBe(true)` on 2026-08-28 — the file had
+// been written, then removed by a different run between the write and the read.
+// Same shape as the shared TEST_HOME fixed in #362, in a path that redirect
+// cannot reach.
+const TEST_SESSION_ID = `test-${process.pid}`;
+
 function makeCtx(cwd: string, signal?: AbortSignal): ToolContext {
   return {
-    sessionId: 'test',
+    sessionId: TEST_SESSION_ID,
     cwd,
     signal: signal ?? new AbortController().signal,
     readRegistry: new Map(),
@@ -1004,7 +1016,9 @@ describe('Bash', () => {
     afterEach(() => {
       // Best-effort: don't leave spill files behind between test runs.
       try {
-        fs.rmSync(path.join(os.tmpdir(), 'youcoded-harness-bash-output', 'test'), { recursive: true, force: true });
+        // THIS run's spill dir only — never the shared parent, and never
+        // another process's sibling (see TEST_SESSION_ID above).
+        fs.rmSync(path.join(os.tmpdir(), 'youcoded-harness-bash-output', TEST_SESSION_ID), { recursive: true, force: true });
       } catch {
         /* best-effort */
       }

@@ -8,6 +8,15 @@ import { BashTool } from '../src/main/harness/tools/bash';
 import { ShellRegistry, MAX_EXPLICIT_RUNNING } from '../src/main/harness/shell-registry';
 import type { ToolContext } from '../src/main/harness/tools/types';
 
+// Per-process. Background shell logs land in
+// `os.tmpdir()/youcoded-harness-bash-output/<sessionId>/bash-<ms>-<shellId>.txt`
+// — a fixed path outside the vitest HOME sandbox, and `shellId` restarts at 1 in
+// every process, so two concurrent runs could mint the SAME filename within one
+// millisecond and write over each other. Same class as the shared spill dir
+// fixed in harness-tools-core.test.ts (2026-08-28).
+const TEST_SESSION_ID = `bg-test-${process.pid}`;
+
+
 const posix = process.platform !== 'win32';
 function alive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch { return false; } }
 function waitFor(cond: () => boolean, ms = 5_000): Promise<void> {
@@ -21,9 +30,9 @@ function waitFor(cond: () => boolean, ms = 5_000): Promise<void> {
 let dir: string;
 let reg: ShellRegistry;
 function ctx(over: Partial<ToolContext> = {}): ToolContext {
-  return { sessionId: 'bg-test', cwd: dir, signal: new AbortController().signal, readRegistry: new Map(), todos: [], toolCallId: 'toolu_bg', shells: reg, ...over } as ToolContext;
+  return { sessionId: TEST_SESSION_ID, cwd: dir, signal: new AbortController().signal, readRegistry: new Map(), todos: [], toolCallId: 'toolu_bg', shells: reg, ...over } as ToolContext;
 }
-beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bash-bg-')); reg = new ShellRegistry('bg-test'); });
+beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bash-bg-')); reg = new ShellRegistry(TEST_SESSION_ID); });
 afterEach(async () => { await reg.killAll('app-quit', { graceMs: 0 }); fs.rmSync(dir, { recursive: true, force: true }); });
 
 describe.skipIf(!posix)('Task 2: foreground interrupt kills the grandchild and still resolves immediately', () => {

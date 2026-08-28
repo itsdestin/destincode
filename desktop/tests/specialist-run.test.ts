@@ -1069,6 +1069,17 @@ describe('heartbeat staleness (Task 7)', () => {
     const { report } = await runPromise;
     expect(report).toContain('REPORT: done');
 
+    // spawnSpecialist resolves on the REPORT; the ledger's completion write is
+    // fire-and-forget behind it (same reason destroyAll does not drain — a
+    // bookkeeping write must never cost the user their session). Reading the
+    // status one-shot therefore races that write: macOS CI failed here with
+    // `expected 'running' to be 'completed'` on 2026-08-28 while the report
+    // assertion above passed. Wait for the record the same way the Task 4
+    // completion tests in this file do.
+    await vi.waitFor(() => {
+      const pending = ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      expect(pending?.status).toBe('completed');
+    });
     const rec = ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
     expect(rec?.status).toBe('completed');
     // Torn down normally, same as every other successful run in this file.

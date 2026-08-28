@@ -215,7 +215,7 @@ describe('prefill progress re-arms the stall watchdog', () => {
         stream: new ReadableStream({
           async start(c) {
             // First token far past the stall budget — only steady progress saves it.
-            await new Promise((r) => setTimeout(r, 1_200));
+            await new Promise((r) => setTimeout(r, 1_800));
             c.enqueue({ type: 'stream-start', warnings: [] });
             c.enqueue({ type: 'text-start', id: 'p1' });
             c.enqueue({ type: 'text-delta', id: 'p1', delta: 'ok' });
@@ -231,8 +231,16 @@ describe('prefill progress re-arms the stall watchdog', () => {
       { skillCatalog: EMPTY_SKILL_CATALOG,
         sessionId: 's-1', cwd: '/tmp/x', harness: ASSISTANT_PRESET,
         binding: { providerId: 'local', modelId: 'Qwen3.5-122B' },
-        // Deliberately shorter than the total first-token wait above.
-        prefillWarningMs: 120, stallCountdownMs: 120, retryDelays: [],
+        // Deliberately shorter than the total first-token wait above (1,800ms),
+        // so the watchdog WOULD fire without progress — that is what the test
+        // asserts. But the ratio that decides whether this test is stable is the
+        // OTHER one: budget vs. the progress cadence below. It was 120ms against
+        // a 60ms tick — a 2x margin, so one scheduler hiccup past 120ms tripped
+        // the watchdog and the test failed as though progress did not re-arm it
+        // (six concurrent full suites, 2026-08-28). 600ms against a 40ms tick is
+        // a 15x margin, while 1,800ms vs 600ms keeps "would have expired without
+        // progress" true three times over.
+        prefillWarningMs: 600, stallCountdownMs: 600, retryDelays: [],
       } as any,
       async (_b, opts: any) => {
         // Drive progress on the same cadence the stream is waiting.
@@ -240,8 +248,8 @@ describe('prefill progress re-arms the stall watchdog', () => {
         const timer = setInterval(() => {
           processed += 200;
           opts?.onPrefillProgress?.({ total: 6000, cache: 0, processed, timeMs: processed });
-        }, 60);
-        setTimeout(() => clearInterval(timer), 1_400);
+        }, 40);
+        setTimeout(() => clearInterval(timer), 2_000);
         return model as any;
       },
     );

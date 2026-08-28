@@ -11,6 +11,21 @@ import { scriptModel, type ScriptStep } from './helpers/harness-fakes';
 import { textChunks, toolCallChunk, finishChunk, stream } from './helpers/scripted-model';
 import { FRONTIER_STEP_BUDGET } from '../src/main/harness/model-step-budget';
 
+// runCase's OWN wall-clock deadline, for the tests where the deadline is not the
+// subject — which is all of them but one (the `timeoutMs: 200` case below, whose
+// whole point is `wrapUpReason === 'timeout'`).
+//
+// Set far ABOVE vitest's per-test budget on purpose. These tests had their own
+// 5s/30s/60s deadlines, which meant two independent clocks racing to end the same
+// run — and under load the wrong one won: six concurrent full suites produced
+// `expected 'timeout' to be 'budget'`, i.e. runCase's 60s deadline beat the STEP
+// budget the test was actually asserting about. That reports as a wrong VALUE,
+// which reads like a logic bug in the wrap-up reasoning, rather than as "this was
+// slow". With a single authority, a genuine hang is always reported by vitest as
+// a timeout and never disguised as a wrong-value assertion.
+const NOT_THE_DEADLINE_MS = 10 * 60_000;
+
+
 // Per-test budget for the full-budget runs in this file. It is a named constant
 // rather than a literal repeated at ten call sites because it has now been
 // raised twice for the same reason, and the next person needs one place to
@@ -62,7 +77,7 @@ describe('runCase output ceiling (2026-08-10 incident)', () => {
       modelFactory: async () => model as any,
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 5_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.review).toBe('Final review.');
@@ -371,7 +386,7 @@ describe('runCase', () => {
         ]) as any,
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 5_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.toolCalls).toBe(1);
@@ -414,7 +429,7 @@ describe('runCase', () => {
         ]) as any,
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 5_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.asks).toBe(1);
@@ -449,7 +464,7 @@ describe('runCase', () => {
           ]) as any,
         modelId: 'fake/model',
         label: 'Fake',
-        timeoutMs: 5_000,
+        timeoutMs: NOT_THE_DEADLINE_MS,
       });
 
       // (a) The write never actually happened on disk.
@@ -488,7 +503,7 @@ describe('runCase', () => {
       },
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 5_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(seenDuringRun.some((d) => run.fixtureRoot.endsWith(d))).toBe(true);
@@ -501,7 +516,7 @@ describe('runCase', () => {
       modelFactory: async () => scriptModel([{ text: 'kept' }]) as any,
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 5_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
       keepFixture: true,
     });
     try {
@@ -518,7 +533,7 @@ describe('runCase', () => {
       modelFactory: async () => scriptModel([{ text: '  Final review text.  ' }]) as any,
       modelId: 'fake/model-x',
       label: 'Fake X',
-      timeoutMs: 5_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
     expect(run.label).toBe('Fake X');
     expect(run.modelId).toBe('fake/model-x');
@@ -546,7 +561,7 @@ describe('runCase', () => {
         ]) as any,
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 5_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.review).toBe('This is the actual final review.');
@@ -561,7 +576,7 @@ describe('runCase', () => {
       modelFactory: async () => scriptModel([{ text: 'No tools needed, here is my review.' }]) as any,
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 5_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.review).toBe('No tools needed, here is my review.');
@@ -586,7 +601,7 @@ describe('runCase', () => {
           ]) as any,
         modelId: 'fake/model',
         label: 'Fake',
-        timeoutMs: 5_000,
+        timeoutMs: NOT_THE_DEADLINE_MS,
       });
 
       const searchResult = run.events.find((e) => e.type === 'tool-result' && e.data.toolName === 'WebSearch');
@@ -643,7 +658,7 @@ describe('runCase', () => {
       modelFactory: async () => scriptModel(steps) as any,
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 30_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.review).toBe('Final review after surviving every step gate.');
@@ -710,7 +725,7 @@ describe('wrap-up turn', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.outcome).toBe('wrapped-up');
@@ -729,7 +744,7 @@ describe('wrap-up turn', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.review).toBe('Fine, here is the review.');
@@ -778,7 +793,7 @@ describe('wrap-up turn', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     const askResults = run.events.filter(
@@ -809,7 +824,7 @@ describe('wrap-up turn', () => {
     const model = scriptModel([...steps, { text: 'The actual review.' }]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.review).toBe('The actual review.');
@@ -839,7 +854,7 @@ describe('wrap-up turn', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.outcome).toBe('wrapped-up');
@@ -869,7 +884,7 @@ describe('wrap-up turn', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.outcome).toBe('wrapped-up');
@@ -988,7 +1003,7 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
     const prompts: any[] = [];
     const run = await runCase({
       modelFactory: async () => recordingModel(prompts) as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.wrapUpReason).toBe('stopped-early');
@@ -1003,7 +1018,7 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
     const prompts: any[] = [];
     await runCase({
       modelFactory: async () => recordingModel(prompts) as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     // Second step of turn 1: system + user + assistant(tool-call) + tool(result).
@@ -1028,7 +1043,7 @@ describe('what the model actually receives (2026-08-11 amnesia bug)', () => {
     const model = scriptModel([{ text: 'Review.' }]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
       contextLength: 1_000_000,   // Qwen 3.8 Max's real window
     });
 
@@ -1067,7 +1082,7 @@ describe('repeat reporting (diagnostic only)', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.wrapUpReason).toBeUndefined();
@@ -1082,7 +1097,7 @@ describe('repeat reporting (diagnostic only)', () => {
     const model = scriptModel([...repeatingSteps(8), { text: 'Done.' }]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.metrics.repeats[0]).toMatchObject({ count: 8 });
@@ -1093,7 +1108,7 @@ describe('repeat reporting (diagnostic only)', () => {
     const model = scriptModel([...repeatingSteps(REPEAT_REPORT_FLOOR - 1), { text: 'Done.' }]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 60_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.metrics.repeats).toEqual([]);
@@ -1113,7 +1128,7 @@ describe('runCase salvage', () => {
       modelFactory: async () => model as any,
       modelId: 'fake/model',
       label: 'Fake',
-      timeoutMs: 30_000,
+      timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.outcome).toBe('error');
@@ -1144,7 +1159,7 @@ describe('runCase salvage', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.wrapUpReason).toBe('stopped-early');
@@ -1161,7 +1176,7 @@ describe('runCase salvage', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.wrapUpReason).toBeUndefined();
@@ -1184,7 +1199,7 @@ describe('runCase salvage', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.wrapUpReason).toBe('stopped-early');
@@ -1200,7 +1215,7 @@ describe('runCase salvage', () => {
     ]);
     const run = await runCase({
       modelFactory: async () => model as any,
-      modelId: 'fake/model', label: 'Fake', timeoutMs: 30_000,
+      modelId: 'fake/model', label: 'Fake', timeoutMs: NOT_THE_DEADLINE_MS,
     });
 
     expect(run.outcome).toBe('complete');
