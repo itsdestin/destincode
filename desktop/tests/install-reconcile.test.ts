@@ -9,9 +9,10 @@ vi.mock('../src/renderer/state/marketplace-api-client', () => ({
   createMarketplaceApiClient: () => ({ postInstalls }),
 }));
 
-import { installedPluginIds, reconcileInstalls } from '../src/main/install-reconcile';
+import { installedPluginIds, installedMarketplaceIds, reconcileInstalls } from '../src/main/install-reconcile';
 
 const store = (token: string | null) => ({ getToken: () => token }) as never;
+const skillSource = (ids: string[]) => ({ getInstalled: async () => ids.map((id) => ({ id })) });
 
 beforeEach(() => {
   listInstalledPluginDirs.mockReset().mockReturnValue([]);
@@ -53,6 +54,29 @@ describe('reconcileInstalls', () => {
     expect(postInstalls).toHaveBeenCalledWith(['a', 'b', 'wecoded-themes-plugin']);
   });
 
+  it('reports SKILL-level ids too — each has its own page and its own vote', async () => {
+    // The bug this pins: reporting only plugin directories left every
+    // `superpowers:brainstorming` page voting on an id with no install row, so
+    // the gate refused a vote on a skill the user plainly has.
+    listInstalledPluginDirs.mockReturnValue(['/p/superpowers']);
+    await reconcileInstalls(store('tok'), skillSource(['superpowers:brainstorming', 'superpowers:writing-plans']));
+    expect(postInstalls).toHaveBeenCalledWith([
+      'superpowers', 'superpowers:brainstorming', 'superpowers:writing-plans',
+    ]);
+  });
+
+  it('keeps the directory ids when the skill provider throws', async () => {
+    listInstalledPluginDirs.mockReturnValue(['/p/a']);
+    await reconcileInstalls(store('tok'), { getInstalled: async () => { throw new Error('scan failed'); } });
+    expect(postInstalls).toHaveBeenCalledWith(['a']);
+  });
+
+  it('deduplicates when a skill id equals its plugin id', async () => {
+    listInstalledPluginDirs.mockReturnValue(['/p/solo']);
+    await reconcileInstalls(store('tok'), skillSource(['solo']));
+    expect(postInstalls).toHaveBeenCalledWith(['solo']);
+  });
+
   it('does nothing when signed out', async () => {
     listInstalledPluginDirs.mockReturnValue(['/p/a']);
     await reconcileInstalls(store(null));
@@ -80,5 +104,24 @@ describe('reconcileInstalls', () => {
     listInstalledPluginDirs.mockReturnValue(Array.from({ length: 250 }, (_, i) => `/p/p${i}`));
     await reconcileInstalls(store('tok'));
     expect(postInstalls.mock.calls[0]![0]).toHaveLength(200);
+  });
+});
+
+describe('installedMarketplaceIds', () => {
+  it('is plugin ids first, then skills, with no duplicates', async () => {
+    listInstalledPluginDirs.mockReturnValue(['/p/superpowers', '/p/wecoded-themes-plugin']);
+    expect(await installedMarketplaceIds(skillSource(['superpowers:brainstorming', 'superpowers']))).toEqual([
+      'superpowers', 'wecoded-themes-plugin', 'superpowers:brainstorming',
+    ]);
+  });
+
+  it('tolerates no skill source at all', async () => {
+    listInstalledPluginDirs.mockReturnValue(['/p/a']);
+    expect(await installedMarketplaceIds(null)).toEqual(['a']);
+  });
+
+  it('drops oversized skill ids rather than failing the batch', async () => {
+    listInstalledPluginDirs.mockReturnValue([]);
+    expect(await installedMarketplaceIds(skillSource(['ok', 'y'.repeat(129)]))).toEqual(['ok']);
   });
 });

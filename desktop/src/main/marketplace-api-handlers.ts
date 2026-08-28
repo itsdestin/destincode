@@ -17,7 +17,7 @@ import { wrap, makeClearSessionOn401 } from "./handler-utils";
 // keeps social-handlers → this module a pure type edge; the value edge here is
 // one-way (this → social-handlers) so there's no runtime import cycle.
 import { notifySignedOut } from "./social-handlers";
-import { reconcileInstalls } from "./install-reconcile";
+import { reconcileInstalls, type InstalledSkillSource } from "./install-reconcile";
 
 /** Shape returned by `marketplace:thumb` — the caller's new vote AND the plugin's
  *  new totals, so the button can move the number without re-fetching /stats. */
@@ -60,7 +60,12 @@ const CHANNELS = [
   "marketplace:report",
 ] as const;
 
-export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): void {
+export function registerMarketplaceApiHandlers(
+  store: MarketplaceAuthStore,
+  // Optional so existing callers/tests keep working; without it the sign-in
+  // reconcile reports plugin directories only and skill-level pages stay gated.
+  installedSkillSource: InstalledSkillSource | null = null,
+): void {
   // WHY: ipcMain.handle throws on re-registration. Clear prior handlers so
   // hot-reload dev sessions (scripts/run-dev.sh) don't crash on reload.
   for (const ch of CHANNELS) ipcMain.removeHandler(ch);
@@ -111,7 +116,7 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
         // client) and anything installed while signed out were invisible to it,
         // and the install gate refused votes on plugins the user demonstrably
         // has. Deliberately NOT awaited: sign-in must not wait on bookkeeping.
-        void reconcileInstalls(store);
+        void reconcileInstalls(store, installedSkillSource);
       }
       return res;
     })

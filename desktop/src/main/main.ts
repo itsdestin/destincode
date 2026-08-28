@@ -1582,11 +1582,11 @@ void app.whenReady().then(async () => {
   // The auth store holds the bearer token in the main process only; the token
   // never crosses the contextBridge into the renderer.
   const marketplaceAuthStore = createAuthStore(app.getPath('userData'));
-  registerMarketplaceApiHandlers(marketplaceAuthStore);
+  registerMarketplaceApiHandlers(marketplaceAuthStore, skillProvider);
   // Catch-up for sessions that signed in before reconcile existed, and for
   // plugins installed on another device since last launch. No-ops when signed
   // out; never awaited (bookkeeping must not delay startup).
-  void reconcileInstalls(marketplaceAuthStore);
+  void reconcileInstalls(marketplaceAuthStore, skillProvider);
   // Remote clients read the signed-in state through the WS server, which has no
   // ipcMain access — without this the game lobby showed "signed out" in a remote
   // browser while the host app was signed in.
