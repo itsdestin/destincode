@@ -74,12 +74,21 @@ export function parseOutboxRequest(raw: string): { ok: true; req: OutboxRequest 
 /** append formatting: blank note → just the line; else two newlines then the line. */
 export function appendNoteText(existing: string, day: string, text: string): string {
   const line = `${day}: ${text}`;
-  return existing.trim() ? `${existing}\n\n${line}` : line;
+  // Fix: trimEnd (not the untrimmed `existing`) in the template — deciding on
+  // trimmed text but appending to the untrimmed string let a note ending in
+  // "\n\n" accumulate to four newlines on every append.
+  return existing.trim() ? `${existing.trimEnd()}\n\n${line}` : line;
 }
 
-/** WHY: a retried `close` (the CLI timed out, the assistant re-sent it) must not
- *  append the same line twice. Matched on the text alone — a retry after
- *  midnight carries a different date. */
+// WHY a block match, not a single-line match: `text` may itself contain a
+// newline (an ordinary multi-line close note). appendNoteText writes it as one
+// block ("<date>: line one\nline two"), so the old per-line comparison could
+// never match a single split line against the whole `text` and every retried
+// append re-appended. Matching the whole block (date wildcarded, anchored on
+// both ends so "superseded" doesn't false-match "superseded by X") fixes that
+// while keeping the retried-`close`-is-a-no-op guarantee for single-line notes.
 export function hasDatedLine(existing: string, text: string): boolean {
-  return existing.split('\n').some((l) => /^\d{4}-\d{2}-\d{2}: /.test(l) && l.slice(12) === text);
+  const escaped = text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|\\n\\n)\\d{4}-\\d{2}-\\d{2}: ${escaped}($|\\n)`);
+  return re.test(existing);
 }

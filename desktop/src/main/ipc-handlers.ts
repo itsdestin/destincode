@@ -162,6 +162,18 @@ export function broadcastSessionMeta(sessionId: string, payload: { flag: string;
   metaBroadcaster?.(sessionId, payload);
 }
 
+// WHY: same rationale as broadcastSessionMeta above — the outbox drainer
+// creates tags directly via getTagRegistry().create(), bypassing the
+// TAGS_CREATE handler below (the only other place a new tag reaches a
+// renderer/remote broadcast), so without this hand-out a tag the drainer
+// creates is invisible to an open window's tag registry and filter list
+// until a restart, even though the conversation it tagged already shows it.
+type TagsBroadcaster = () => void;
+let tagsBroadcaster: TagsBroadcaster | null = null;
+export function broadcastTagsChanged(): void {
+  tagsBroadcaster?.();
+}
+
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
 
@@ -295,6 +307,15 @@ export function registerIpcHandlers(
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     }
+  };
+
+  // WHY defined here (not next to metaBroadcaster above): it needs
+  // broadcastToAllWindows, which doesn't exist yet at that point in the
+  // function — same hand-out pattern, just wired where its dependency is
+  // available. Fires the identical pair the TAGS_CREATE handler below fires.
+  tagsBroadcaster = () => {
+    remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
+    broadcastToAllWindows(IPC.TAGS_CHANGED, {});
   };
 
   // --- Theme file watcher ---

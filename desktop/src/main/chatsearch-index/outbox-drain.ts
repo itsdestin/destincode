@@ -9,7 +9,7 @@ import {
 } from './outbox-format';
 import { getConversationStore, noteFlagChanged, noteSessionNote, emitConversationMetaChanged } from '../conversations/service';
 import { getTagRegistry } from '../conversations/tag-registry-service';
-import { broadcastSessionMeta } from '../ipc-handlers';
+import { broadcastSessionMeta, broadcastTagsChanged } from '../ipc-handlers';
 import { tagFlagKey, DEFAULT_TAG_COLOR } from '../../shared/tags';
 import { log } from '../logger';
 
@@ -38,8 +38,11 @@ async function applyFlag(store: Store, t: OutboxTarget, flagKey: string, value: 
   if (!rec) return { ...t, op: 'flag', status: 'not-found' };
   const current = rec.flags?.[flagKey]?.value === true;
   if (current === value) return { ...t, op: 'flag', status: 'already' };
-  // WHY knownNative=false: the drainer never sees live desktop ids, so the
-  // store probe inside noteFlagChanged is the right provider decision.
+  // Fix (comment only — the argument itself was already correct): this passes
+  // whether the OUTBOX REQUEST'S target names the 'native' provider (the CLI
+  // read it from a native-runtime session), not whether the drainer can see a
+  // live desktop id. noteFlagChanged uses it to pick which on-disk store to
+  // write the flag into.
   const res = await noteFlagChanged(t.id, flagKey, value, t.provider === 'native');
   if (!res.ok) return { ...t, op: 'flag', status: 'error', error: 'Could not save — conversation storage is not available on this device.' };
   broadcastSessionMeta(t.id, { flag: flagKey, value });
@@ -109,8 +112,23 @@ export async function applyOutboxRequest(req: OutboxRequest, deps: ApplyDeps): P
     }
   }
   if (results.some((r) => r.status === 'applied')) emitConversationMetaChanged();
+  // WHY: reg.create() above bypasses the TAGS_CREATE IPC handler — the only
+  // other place a new tag reaches a renderer/remote broadcast — so without
+  // this a tag the drainer creates is invisible to the open window's tag
+  // registry and filter list until a restart, even though the conversation
+  // already shows the tag flag. Fired once per REQUEST (not per op, not per
+  // tag), matching emitConversationMetaChanged's discipline above.
+  if (createdTags.length > 0) broadcastTagsChanged();
   return receipt();
 }
+
+// WHY a Set + log-once-per-file: a request stuck for another store never
+// clears (see the storeRoot check below), and the poll runs every 5s — without
+// this, one orphaned request logs at INFO forever, and since logger.ts trims
+// to the last 500 lines, that single orphan evicts every other log line within
+// minutes. Cleared in stopOutboxDrain so a fresh drain cycle (new store root,
+// e.g. switching profiles) logs the mismatch again instead of staying silent.
+const foreignStoreLogged = new Set<string>();
 
 function recoverStaleProcessing(dir: string): void {
   const proc = path.join(dir, 'processing');
@@ -151,12 +169,24 @@ export async function drainOutboxOnce(opts: DrainOpts): Promise<number> {
     // WHY check storeRoot BEFORE claiming: a request for another store must stay
     // visible to the instance it belongs to.
     if (parsed.ok && parsed.req.storeRoot !== opts.storeRoot) {
-      log('INFO', 'chatsearch-outbox', 'request for another store left in place', { id: parsed.req.id, storeRoot: parsed.req.storeRoot });
+      if (!foreignStoreLogged.has(name)) {
+        foreignStoreLogged.add(name);
+        log('INFO', 'chatsearch-outbox', 'request for another store left in place', { id: parsed.req.id, storeRoot: parsed.req.storeRoot });
+      }
       continue;
     }
     const claimed = path.join(dir, 'processing', name);
     fs.mkdirSync(path.dirname(claimed), { recursive: true });
     try { fs.renameSync(src, claimed); } catch { continue; } // lost the race
+    // WHY re-stamp mtime right after the claim: rename() PRESERVES the source
+    // file's mtime (verified empirically), so without this the 10-minute
+    // stale-processing window measures time since the CLI WROTE the request,
+    // not time since THIS instance claimed it. A request queued while the app
+    // was closed — an explicitly supported case — could sit for well over 10
+    // minutes before being claimed, making it stale-eligible the instant it's
+    // claimed: a second instance's recoverStaleProcessing would rename it
+    // straight back out and apply it again while this instance is mid-apply.
+    try { const now = new Date(); fs.utimesSync(claimed, now, now); } catch { /* best effort */ }
     const id = name.replace(/\.json$/, '');
     let receipt: OutboxReceipt;
     if (!parsed.ok) {
@@ -180,7 +210,14 @@ let pollTimer: NodeJS.Timeout | null = null;
 let running = false;
 let rerun = false;
 
-function liveOpts(): DrainOpts | null {
+// WHY exported: startOutboxDrain/liveOpts/drainSerialized were entirely
+// unexercised by tests — nothing proved YOUCODED_PROFILE and
+// YOUCODED_CHATSEARCH_OUTBOX are actually read correctly, and a dev instance
+// wrongly draining (and rewriting) the user's REAL conversation metadata is
+// the exact failure the dev-instance gate exists to prevent. Exporting this
+// seam lets tests call it directly instead of only through drainOutboxOnce's
+// hand-built opts.
+export function liveOpts(): DrainOpts | null {
   const store = getConversationStore();
   if (!store) return null;
   return {
@@ -190,7 +227,7 @@ function liveOpts(): DrainOpts | null {
   };
 }
 
-async function drainSerialized(): Promise<void> {
+export async function drainSerialized(): Promise<void> {
   if (running) { rerun = true; return; }
   running = true;
   try {
@@ -217,4 +254,5 @@ export function startOutboxDrain(): void {
 export function stopOutboxDrain(): void {
   watcher?.close(); watcher = null;
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  foreignStoreLogged.clear();
 }
