@@ -335,7 +335,7 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--accent);
-    margin-bottom: 12px;
+    margin-bottom: 8px;
   }
 
   .section-title {
@@ -343,7 +343,7 @@
     font-weight: 700;
     letter-spacing: -0.02em;
     line-height: 1.2;
-    margin-bottom: 32px;
+    margin-bottom: 22px;
     text-shadow: var(--heading-shadow);
     transition: text-shadow 0.5s;
   }
@@ -692,8 +692,8 @@
   .showcase-grid {
     display: flex;
     flex-direction: column;
-    gap: 48px;
-    margin-top: 48px;
+    gap: 36px;   /* was 48 — tightened 2026-08-28 */
+    margin-top: 28px;
   }
 
 
@@ -704,14 +704,14 @@
   .showcase-item {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 14px;   /* text block → picture */
   }
 
   /* Prevents long mono-font tool-detail strings from forcing a flex item
      above its max-width allocation. */
   .showcase-item > * { min-width: 0; }
 
-  .showcase-text { display: flex; flex-direction: column; gap: 12px; }
+  .showcase-text { display: flex; flex-direction: column; gap: 6px; }  /* label → headline → body */
 
   .showcase-label {
     font-family: var(--font-mono);
