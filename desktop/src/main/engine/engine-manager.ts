@@ -17,6 +17,7 @@ import { readEngineConfig, updateEngineConfig } from './engine-config';
 import { readManifest, removeManifest } from '../models/download-manifest';
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
+import { stripSplitSuffix } from '../../shared/gguf-split';
 import type {
   EngineBackend, EngineInstallProgress, EngineStatus, EngineModel,
 } from '../../shared/engine-types';
@@ -321,7 +322,10 @@ export class EngineManager extends EventEmitter {
     return models.map((m) => ({
       id: m.id,
       providerId: 'local',
-      label: m.id,
+      // The id stays the raw first-part filename (that IS the engine's address
+      // for the whole set); only the label drops the -00001-of-00004 marker, so
+      // one split model reads as one model in the picker.
+      label: stripSplitSuffix(m.id),
       contextLength: cfg.contextSize,
       local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true, state: m.state },
     }));

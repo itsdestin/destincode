@@ -16,6 +16,7 @@ import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
 } from '../../shared/model-manager-types';
+import { stripSplitSuffix } from '../../shared/gguf-split';
 
 // quants() decorates every option with a GPU-aware fit label.
 type QuantWithFit = QuantOption & { fit: FitEstimate };
@@ -458,7 +459,7 @@ function percentOf(onDisk: number, total: number | null): number | null {
  *  the progress line while it downloads). "Qwen3.5-9B-Q8_0" → "Qwen3.5-9B".
  *  Destin, 2026-08-27: quality belongs on the detail line, not in the title. */
 function displayName(model: InstalledLocalModel): string {
-  let name = model.id.replace(/-\d{5}-of-\d{5}$/i, '');
+  let name = stripSplitSuffix(model.id);
   if (model.quant) {
     const at = name.toLowerCase().lastIndexOf(`-${model.quant.toLowerCase()}`);
     if (at > 0) name = name.slice(0, at);

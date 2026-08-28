@@ -7,8 +7,25 @@ starting Phase 1 of the platform roadmap (see youcoded-dev
 
 ## Pinned version
 
-**`b9992`** — pinned 2026-07-13 (Phase 1 Plan B). Empirically verified on Windows
-x64 (CPU build) against the real binary via `desktop/test-engine/`.
+**`b10665`** — pinned 2026-08-27. Empirically verified on Linux x64 (Vulkan build)
+against the real binary via `desktop/test-engine/`: probe-health, probe-models,
+probe-chat, probe-download and probe-tools all PASS (see Verification below).
+Previously `b9992`, pinned 2026-07-13 (Phase 1 Plan B), verified on Windows x64 (CPU).
+
+**Why this bump:** b9992 could not read the `qwen4exp` architecture — a fresh
+Qwen3.8-Flash-Next download failed with `unknown model architecture: 'qwen4exp'`
+(reproduced against the shipped b9992 binary, 2026-08-27). Upstream support landed
+in ggml-org/llama.cpp#27742, merged 2026-08-27T19:32Z; **b10660 IS that merge commit**
+(`6c84c7d`, verified identical via the compare API), so b10660 is the earliest
+release that can load the model. b10665 is the newest release at bump time.
+
+**Response shapes re-verified unchanged on b10665** (the ones the app parses):
+`GET /models` rows still report `status` as an OBJECT (`{value:'unloaded'|…}`), not a
+bare string; streamed `/v1/chat/completions` still carries the `timings` block
+(`prompt_n`/`prompt_ms`/`predicted_n`/`predicted_ms`/`cache_n`) `prefill-progress.ts`
+reads; router-mode `/props` with nothing resident still answers `{model_path:"none",
+default_generation_settings.n_ctx: 0}` — the documented case `effectiveContextWindow`
+already falls back to the configured `-c` for.
 
 **Bump procedure** (same discipline as a Claude Code bump):
 1. `node desktop/scripts/generate-engine-pin.mjs <new-tag>` → paste rows into
@@ -236,6 +253,24 @@ PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine b
 `probe-tools.mjs` (Plan C: `--jinja` constrained tool-call round-trip + never-force +
 real `/props` `n_ctx`) runs against an already-running engine — re-run on every engine
 bump; verified live during acceptance on the Linux dev box.
+
+**b10665 bump, 2026-08-27 (Linux x64 Vulkan, `Qwen3.5-2B-Q8_0` + `Qwen3-0.6B-Q4_K_M`):**
+all five PASS — health, models (id parity + `?reload=1`), chat (streamed, 47 t/s),
+download (single-file AND `-00001-of-00002` split served), tools (schema-valid
+constrained call + never-force held). Archive layout unchanged: Linux/macOS `.tar.gz`
+still nest under `llama-<tag>/`, and the pinned sha256 for
+`llama-b10665-bin-ubuntu-vulkan-x64.tar.gz` was verified against the downloaded file.
+
+**`GET /models` lists one row per FILE, so a split set is N rows, not one.** Measured
+on b10665: a cache holding `Qwen3-0.6B-SPLIT-00001-of-00002` + `-00002-of-00002`
+returns BOTH ids. `cache-scan.ts` collapses split sets to the first part, so the two
+lists differ by design — that is listing granularity, not an id-derivation mismatch.
+`EngineSupervisor.listModels()` drops the follower rows via `isFollowerPart`
+(`shared/gguf-split.ts`) and `probe-models.mjs` folds them before its parity
+assertion. Parts 2..N carry no architecture header, so a follower row offered to a
+user can only ever fail — that reached the model picker as four selectable rows for
+one Qwen3.8-Flash-Next download, three of which 500'd (2026-08-27).
+<!-- verify: {"path": "desktop/src/shared/gguf-split.ts", "contains": "isFollowerPart"} -->
 
 ## Parallel slots (specialists, plan 1a probe)
 

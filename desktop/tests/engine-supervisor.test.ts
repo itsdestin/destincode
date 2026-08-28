@@ -218,6 +218,32 @@ describe('EngineSupervisor', () => {
     expect(models).toEqual([{ id: 'foo-Q4_K_M', sizeBytes: null, loaded: true, state: 'loaded' }]);
   });
 
+  it('listModels drops split-GGUF follower parts — one four-part set is ONE row', async () => {
+    // --models-dir lists one row per FILE, so a four-part download arrives as
+    // four rows. Parts 2..4 have no architecture header; selecting one 500'd
+    // (2026-08-27, Qwen3.8-Flash-Next). Only part 00001 is a real model.
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (String(url).endsWith('/models')) {
+        return { ok: true, status: 200, json: async () => ({ data: [
+          { id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004', status: { value: 'unloaded' } },
+          { id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL-00002-of-00004', status: { value: 'unloaded' } },
+          { id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL-00003-of-00004', status: { value: 'unloaded' } },
+          { id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL-00004-of-00004', status: { value: 'unloaded' } },
+          { id: 'single-file-Q8_0', status: { value: 'unloaded' } },
+        ] }) } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    });
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    expect((await sup.listModels()).map((m) => m.id)).toEqual([
+      'Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004',
+      'single-file-Q8_0',
+    ]);
+  });
+
   it('listModels UNIONS the disk scan into GET /models — a GGUF downloaded after boot is listed without a restart (Amendment K2)', async () => {
     // Real temp cache dir: fs.readdirSync/statSync are NOT mocked (only
     // mkdirSync is), so scanGgufCache reads real files dropped here.
