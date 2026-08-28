@@ -46,6 +46,13 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // exactly like Bash's command string or Skill's id above — workDir containment
 // itself is already enforced inside NativeSessionHost.createChild.
 const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
+/** G-1: a poll is SUPPOSED to repeat, so BashOutput is exempt from the
+ *  doom-loop signature window (spec §4.2); BASH_OUTPUT_READS_PER_TURN is the
+ *  guard instead. */
+const DOOM_LOOP_EXEMPT_TOOLS = new Set(['BashOutput']);
+/** D7: flat cap on BashOutput calls per turn, regardless of result — a chatty
+ *  build returns new output on every poll, which no empty-result counter catches. */
+export const BASH_OUTPUT_READS_PER_TURN = 8;
 
 // Tools whose target MUST already exist for the call to mean anything. Only
 // these can have an external_directory ask short-circuited by
@@ -642,6 +649,7 @@ export class HarnessSession extends EventEmitter {
   private servedReads = new Map<string, ServedRead>();
   /** 1-based running count of tool calls dispatched — lets Read say "N calls ago". */
   private toolCallCount = 0;
+  private bashOutputReadsThisTurn = 0;   // G-1 per-turn cap, reset in beginTurn
   private todos: ToolContext['todos'] = [];
   /** Scoped-persistence shell cwd (ROADMAP 2026-07-17): where the next Bash call
    *  starts. null → the session root. Session runtime like readRegistry/todos —
@@ -1730,6 +1738,7 @@ export class HarnessSession extends EventEmitter {
       throw new Error('HarnessSession: a turn is already in flight — callers must serialize send()/runSkill() per session.');
     }
     this.interrupted = false;
+    this.bashOutputReadsThisTurn = 0;   // G-1 (D7): the cap is per TURN, notice turns included
     emit();
     // WHY (spec §3, MOIM pattern): the model never polls and never forgets a child
     // exists — a compact status block rides every turn while specialists are live.
@@ -2744,6 +2753,16 @@ export class HarnessSession extends EventEmitter {
     }
     const args = parsed.data;
 
+    // G-1: per-turn BashOutput cap (D7) — checked AFTER validation so a
+    // malformed call never spends a read, and BEFORE the doom loop, which it
+    // replaces for this tool.
+    if (call.toolName === 'BashOutput') {
+      this.bashOutputReadsThisTurn += 1;
+      if (this.bashOutputReadsThisTurn > BASH_OUTPUT_READS_PER_TURN) {
+        return { text: `You have read background output ${BASH_OUTPUT_READS_PER_TURN} times this turn. Do other work; the finished notice will arrive.`, isError: true };
+      }
+    }
+
     // 2. Doom loop (BEFORE permissions — a stuck model shouldn't spam asks).
     //    `args` is parsed.data (zod-NORMALIZED), so the signature is canonical:
     //    two calls that differ only in JSON key order still count as identical.
@@ -2751,17 +2770,20 @@ export class HarnessSession extends EventEmitter {
     // Window length = the profile's doom-loop threshold (Task 5): small local
     // models (threshold 2) trip sooner than cloud models (default 3). Trip when
     // the last `threshold` calls are all identical; an allow resets the window.
+    // G-1: BashOutput never enters the window — see DOOM_LOOP_EXEMPT_TOOLS.
     const threshold = this.profile.doomLoopThreshold;
-    recentCalls.push(sig);
-    if (recentCalls.length > threshold) recentCalls.shift();
-    if (recentCalls.length === threshold && recentCalls.every((s) => s === sig)) {
-      const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: 'doom_loop', toolInput: { repeated: call.toolName }, denyListed: false });
-      if (d?.behavior === 'canceled') return 'interrupted';
-      // Threshold-accurate: the doom-loop window length varies by profile (2 for
-      // small local models, 3 for cloud), so quote the ACTUAL threshold, not a
-      // hardcoded "three". Model-facing corrective text, not a user-facing error.
-      if (d?.behavior !== 'allow') return { text: `Stopped: this exact call has been repeated ${threshold} times. Try a different approach.`, isError: true };
-      recentCalls.length = 0;   // allow resets the window
+    if (!DOOM_LOOP_EXEMPT_TOOLS.has(call.toolName)) {
+      recentCalls.push(sig);
+      if (recentCalls.length > threshold) recentCalls.shift();
+      if (recentCalls.length === threshold && recentCalls.every((s) => s === sig)) {
+        const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: 'doom_loop', toolInput: { repeated: call.toolName }, denyListed: false });
+        if (d?.behavior === 'canceled') return 'interrupted';
+        // Threshold-accurate: the doom-loop window length varies by profile (2 for
+        // small local models, 3 for cloud), so quote the ACTUAL threshold, not a
+        // hardcoded "three". Model-facing corrective text, not a user-facing error.
+        if (d?.behavior !== 'allow') return { text: `Stopped: this exact call has been repeated ${threshold} times. Try a different approach.`, isError: true };
+        recentCalls.length = 0;   // allow resets the window
+      }
     }
 
     // 2.5 Interactive tools (AskUserQuestion): the ask IS the execution. Skip

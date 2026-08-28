@@ -33,7 +33,7 @@ export interface HarnessManifest {
 }
 
 export const NATIVE_TOOL_NAMES = [
-  'Read', 'Write', 'Edit', 'Bash', 'Glob', 'Grep',
+  'Read', 'Write', 'Edit', 'Bash', 'BashOutput', 'KillShell', 'Glob', 'Grep',
   'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'SendUserFile',
 ] as const;
 

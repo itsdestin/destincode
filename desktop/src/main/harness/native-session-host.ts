@@ -2849,7 +2849,9 @@ export class NativeSessionHost extends EventEmitter {
         // TOOLS: the definition's allowlist, filtered out of the same CORE_TOOLS
         // set every session is built from. The Task tool is structurally absent
         // because no definition lists it — that omission IS the depth-1 rule.
-        tools: CORE_TOOLS.filter((t) => allowed.has(t.name)),
+        // G-1: a helper allowed Bash gets the companions too — its own
+        // background command would otherwise be unreadable and unstoppable.
+        tools: CORE_TOOLS.filter((t) => allowed.has(t.name) || (allowed.has('Bash') && (t.name === 'BashOutput' || t.name === 'KillShell'))),
         // COLD START (spec §1): the specialist body replaces the preset body, and
         // the <env> block describes the CHILD's work directory. Nothing from the
         // parent's conversation crosses over — the brief in the first user turn
