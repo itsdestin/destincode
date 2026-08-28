@@ -27,6 +27,12 @@ import { ContentFindBar } from './ContentFindBar';
 import { isTypingTarget } from '../utils/is-typing-target';
 import { useStickToBottom } from '../hooks/use-stick-to-bottom';
 
+/** How long the prepend anchor keeps correcting for late-laying-out content
+ *  (code blocks, images) before it lets go. Long enough for markdown to settle,
+ *  short enough that it can never feel like the view is fighting you. Any user
+ *  input releases it immediately. */
+const ANCHOR_SETTLE_MS = 700;
+
 interface Props {
   sessionId: string;
   visible: boolean;
@@ -236,8 +242,16 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
   // parked mid-transcript watching nothing happen. Keyed on timeline length so
   // it fires once per appended entry, and only when that entry is the user's.
   const timelineLength = state.timeline.length;
+  const lastEntryRef = useRef<unknown>(undefined);
   useEffect(() => {
-    if (state.timeline[timelineLength - 1]?.kind === 'user') stickToBottom();
+    const last = state.timeline[timelineLength - 1];
+    // Paged history PREPENDS, which changes the length while the last entry stays
+    // the very same object (the reducer spreads the existing tail). Without this
+    // identity check, loading older history yanked the view to the bottom whenever
+    // the newest entry happened to be the user's — a jump, not a re-arm.
+    const isNewBottomEntry = last !== lastEntryRef.current;
+    lastEntryRef.current = last;
+    if (isNewBottomEntry && (last as { kind?: string } | undefined)?.kind === 'user') stickToBottom();
     // state.timeline is intentionally not a dep — only its length matters here,
     // and the array identity changes on every reducer dispatch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -257,22 +271,48 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
   // its row list.
   const history = state.history ?? { cursor: null, hasMore: false, loading: false };
   const historySentinelRef = useRef<HTMLDivElement | null>(null);
-  // Scroll anchoring: remember how tall the content was BEFORE a page is
-  // prepended, so the layout effect below can put the reader back where they
-  // were instead of letting the older turns shove the view down.
-  const preservedHeightRef = useRef<number | null>(null);
+  // Scroll anchoring. Anchored to an ELEMENT, not to a height delta.
+  //
+  // The first version measured scrollHeight before the fetch and added the growth
+  // to scrollTop afterwards. Destin's verdict was "a little jumpy" (2026-08-28),
+  // and height arithmetic is why: the number is captured a network round-trip
+  // early, so anything that changes height meanwhile corrupts it; it is applied
+  // exactly once, so markdown and code blocks that lay out a frame later shift the
+  // view again; and it fights Chromium's own scroll anchoring, which is already
+  // compensating for the same insertion.
+  //
+  // Anchoring to the topmost visible entry has none of those failure modes: it
+  // measures the drift that ACTUALLY happened and can be re-applied as late
+  // content settles, because "put this element back where it was" stays true no
+  // matter what else moved.
+  const prependAnchorRef = useRef<{ el: Element; topOffset: number } | null>(null);
+
+  /** The topmost entry still on screen, and how far below the viewport's top edge
+   *  it sits. Null when nothing is rendered yet. */
+  const captureScrollAnchor = useCallback(() => {
+    const scroller = scrollContainerRef.current;
+    const content = contentRef.current;
+    if (!scroller || !content) return null;
+    const scrollerTop = scroller.getBoundingClientRect().top;
+    for (const el of Array.from(content.querySelectorAll('.timeline-entry'))) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > scrollerTop) return { el, topOffset: r.top - scrollerTop };
+    }
+    return null;
+  }, []);
 
   const loadOlderPage = useCallback(async () => {
     const cursor = history.cursor;
     if (!cursor || history.loading) return;
-    const scroller = scrollContainerRef.current;
-    preservedHeightRef.current = scroller ? scroller.scrollHeight : null;
     // Announce FIRST: `loading` is the one-in-flight guard, so a second sentinel
     // hit in the same frame must already see it set.
     dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId });
     try {
       const page = await (window as any).claude?.detach?.requestTranscriptPage?.({ sessionId, beforeCursor: cursor });
       if (page) {
+        // Captured HERE, one statement before the prepend — not before the await,
+        // where a round-trip's worth of streaming could have moved everything.
+        prependAnchorRef.current = captureScrollAnchor();
         dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
       } else {
         dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
@@ -282,7 +322,7 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
       // the rest of the conversation permanently unreachable.
       dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
     }
-  }, [dispatch, sessionId, history.cursor, history.loading]);
+  }, [dispatch, sessionId, history.cursor, history.loading, captureScrollAnchor]);
 
   useEffect(() => {
     if (!history.hasMore || history.loading || !history.cursor) return;
@@ -302,16 +342,41 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
     return () => io.disconnect();
   }, [history.hasMore, history.loading, history.cursor, loadOlderPage]);
 
-  // Restore the reading position after a page is prepended. Runs BEFORE paint
-  // (useLayoutEffect), so the older turns are never seen to push the view down.
+  // Put the anchored entry back where it was. Runs BEFORE paint
+  // (useLayoutEffect), so the prepended turns are never SEEN to push the view
+  // down, and keeps correcting for a short window afterwards because a code block
+  // or an image inside the new page finishes laying out a frame or two later.
   useLayoutEffect(() => {
-    const before = preservedHeightRef.current;
-    if (before == null) return;
+    const anchor = prependAnchorRef.current;
+    if (!anchor) return;
+    prependAnchorRef.current = null;
     const scroller = scrollContainerRef.current;
-    if (!scroller) { preservedHeightRef.current = null; return; }
-    const grew = scroller.scrollHeight - before;
-    if (grew > 0) scroller.scrollTop += grew;
-    preservedHeightRef.current = null;
+    const content = contentRef.current;
+    if (!scroller || !content || !anchor.el.isConnected) return;
+
+    let live = true;
+    const restore = () => {
+      if (!live || !anchor.el.isConnected) return;
+      const drift = (anchor.el.getBoundingClientRect().top - scroller.getBoundingClientRect().top) - anchor.topOffset;
+      // Sub-pixel drift is not worth a write — and writing would restart the
+      // ResizeObserver for nothing.
+      if (Math.abs(drift) > 0.5) scroller.scrollTop += drift;
+    };
+    restore();
+
+    // Stop the moment the user takes over. Deliberately NOT the 'scroll' event:
+    // restore() scrolls, so that would cancel the correction with its own effect.
+    const release = () => { live = false; cleanup(); };
+    const ro = new ResizeObserver(restore);
+    ro.observe(content);
+    for (const ev of ['wheel', 'touchstart', 'keydown'] as const) scroller.addEventListener(ev, release, { passive: true });
+    const stop = setTimeout(() => { live = false; cleanup(); }, ANCHOR_SETTLE_MS);
+    function cleanup() {
+      clearTimeout(stop);
+      ro.disconnect();
+      for (const ev of ['wheel', 'touchstart', 'keydown'] as const) scroller!.removeEventListener(ev, release);
+    }
+    return cleanup;
   }, [state.timeline]);
 
   useEffect(() => {
