@@ -3386,11 +3386,16 @@ describe('NativeSessionHost', () => {
       const liveResult = h.steerSpecialist('root-1', liveChildId, 'focus on auth.ts instead', 'user');
       expect(liveResult.status).toBe('ok');
 
-      // The ledger write is fire-and-forget — poll for it to land.
+      // The ledger write is fire-and-forget — poll for it to land. Wait for
+      // the EVENT as well as the record: they come from the same mutateJson
+      // call but reach us by different routes (a direct read vs. an emitter),
+      // so polling only the record could exit while the event was still in
+      // flight, and the "exactly one event" assertion below then read an empty
+      // array. Green on Linux for months; ubuntu CI lost the race 2026-08-28.
       let liveRec: any;
       for (let i = 0; i < 50; i++) {
         liveRec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === liveChildId);
-        if (liveRec?.notes?.length > 0) break;
+        if (liveRec?.notes?.length > 0 && events.some((e) => e.run.childId === liveChildId)) break;
         await new Promise((r) => setTimeout(r, 10));
       }
       expect(liveRec.notes).toEqual([{ text: 'focus on auth.ts instead', from: 'user', at: expect.any(Number) }]);
@@ -3418,10 +3423,11 @@ describe('NativeSessionHost', () => {
       const parkedResult = h.steerSpecialist('root-1', parkedChildId, 'check config.ts instead', 'assistant');
       expect(parkedResult.status).toBe('ok');
 
+      // Same two-signal wait as the live case above — record AND event.
       let parkedRec: any;
       for (let i = 0; i < 50; i++) {
         parkedRec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === parkedChildId);
-        if (parkedRec?.missedSteers?.length > 0) break;
+        if (parkedRec?.missedSteers?.length > 0 && events.some((e) => e.run.childId === parkedChildId)) break;
         await new Promise((r) => setTimeout(r, 10));
       }
       expect(parkedRec.missedSteers).toEqual(['check config.ts instead']);
