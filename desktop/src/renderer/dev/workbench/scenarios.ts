@@ -163,7 +163,13 @@ export function seed(scenario: ScenarioId): MockState {
     // The live CC session starts with a tag and Priority set, so the StatusBar
     // chip and the close prompt both have something to render without the
     // reviewer having to click first.
-    meta: { 'wb-1': { tags: ['tag_work'], note: '', flags: { priority: true } } },
+    // Enough variety for the All Sessions menu's tag marks to be reviewable:
+    // a priority + tag row, a two-tag row, and a row whose only mark is a note.
+    meta: {
+      'wb-1': { tags: ['tag_work'], note: '', flags: { priority: true } },
+      'wb-3': { tags: ['tag_bug', 'tag_idea'], note: '', flags: {} },
+      'wb-5': { tags: [], note: 'check the openrouter key before resuming', flags: {} },
+    },
     providers: seedProviders(),
     catalog: seedCatalog(),
     tags: seedTags(),

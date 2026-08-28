@@ -275,6 +275,17 @@ if (import.meta.env.DEV && __buddyMode === 'workbench') {
         __mount.render(<ThemeProvider><AttachmentChipsMockup /></ThemeProvider>);
         return;
       }
+      // Session status-pill page (dev/workbench/mockups/SessionStatusPills.tsx)
+      // — the five states of the All Sessions menu's pill and what each means,
+      // rendering the shipping pill so the words cannot drift from the menu.
+      if (__view === 'session-pills') {
+        const [{ SessionStatusPillsMockup }, { ThemeProvider }] = await Promise.all([
+          import('./dev/workbench/mockups/SessionStatusPills'),
+          import('./state/theme-context'),
+        ]);
+        __mount.render(<ThemeProvider><SessionStatusPillsMockup /></ThemeProvider>);
+        return;
+      }
       // App is already statically imported above (Root renders it).
       __mount.render(<App />);
       return;
