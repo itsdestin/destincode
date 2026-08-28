@@ -2478,6 +2478,37 @@ function AppInner() {
     return true;
   }, [dispatch, currentModel, askTakeover]);
 
+  // Cards deep in the chat tree ask for a resume by event — the same
+  // deep-component→destination pattern as youcoded:open-library (~:397).
+  // It has to live HERE rather than next to that listener: it closes over
+  // handleResumeSession, a `const` declared just above, and referencing a
+  // later const from an earlier point in the same function body throws
+  // (temporal dead zone) — this is the earliest point after its declaration.
+  // launchInNewWindow is passed undefined on purpose (spec
+  // 2026-08-26-conversation-preview-header-design.md A2, Destin: "not new
+  // 'window' just new tab in session") — chat-search Resume always opens a
+  // tab, never the detached-window path SessionStrip/ResumeBrowser offer.
+  useEffect(() => {
+    const onResume = (e: Event) => {
+      const d = (e as CustomEvent).detail as {
+        claudeSessionId?: string; projectSlug?: string; projectPath?: string; provider?: string;
+        model?: string; dangerous?: boolean; binding?: ModelBinding;
+      };
+      // The three fields SessionRefActions.requestResume always sends
+      // (SessionDrawer's preview header sends the same shape). A detail
+      // missing any of them can't be resumed — silently drop it rather than
+      // calling handleResumeSession with a hole in its arguments.
+      if (!d?.claudeSessionId || !d.projectSlug || !d.projectPath) return;
+      // model / dangerous / binding arrive only from the preview header's
+      // Resume popover (M-header). A search row's own Resume sends none of
+      // them, and undefined here is what handleResumeSession already treated
+      // as "use the session defaults" — so that path is unchanged.
+      void handleResumeSession(d.claudeSessionId, d.projectSlug, d.projectPath, d.model, d.dangerous, undefined, d.provider, d.binding);
+    };
+    window.addEventListener('youcoded:resume-session', onResume);
+    return () => window.removeEventListener('youcoded:resume-session', onResume);
+  }, [handleResumeSession]);
+
   const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
 
   // Mirror the active view mode onto <html data-view-mode="..."> so CSS can

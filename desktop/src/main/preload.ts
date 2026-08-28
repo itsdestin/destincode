@@ -1454,4 +1454,11 @@ contextBridge.exposeInMainWorld('claude', {
     writeContextFile: (projectPath: string, absolutePath: string, content: string) =>
       ipcRenderer.invoke('project:write-context-file', projectPath, absolutePath, content),
   },
+  // Session references: turn the short ids a chatsearch result printed back
+  // into conversations, and read a bounded slice of one for the preview pane.
+  chatsearch: {
+    resolve: (shortIds: string[]) => ipcRenderer.invoke('chatsearch:resolve', shortIds),
+    read: (req: { provider: string; id: string; tail: number; before?: number }) =>
+      ipcRenderer.invoke('chatsearch:read', req),
+  },
 });

@@ -9,7 +9,7 @@ import { Button, Radio, RadioGroup } from './ui';
 // The card renders the widths this SHARED derivation produced and sends back only
 // which one was chosen — it never builds a rule pattern of its own.
 import { bashGrantOptions, bashNoGrantNote, type GrantScope } from '../../shared/bash-grant-shapes';
-import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon, StoppedIcon } from './Icons';
+import { CheckIcon, FailIcon, QuestionIcon, ChevronIcon, NoteIcon, StoppedIcon, ChatIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { isAndroid } from '../platform';
 import ToolBody from './tool-views/ToolBody';
@@ -20,6 +20,8 @@ import { asString } from '../utils/tool-input';
 // status-bar chip colors, so the footer band can never drift from the chip.
 import { fullAutoStopCopy } from './permissions/deny-list-copy';
 import { PERMISSION_DISPLAY } from './StatusBar';
+// Same parser ToolBody uses to pick the card body, so header and body agree.
+import { describeChatsearchCall, COPY } from '../../shared/chatsearch-refs';
 
 // --- Helpers for friendly display ---
 
@@ -98,6 +100,9 @@ export function friendlyToolDisplay(
 
   switch (toolName) {
     case 'Bash': {
+      // Same helper ToolBody uses to pick the card, so header and body agree.
+      const cs = describeChatsearchCall(tool);
+      if (cs) return { label: cs.cmd === 'find' ? COPY.headerFind(cs.shortIds.length) : COPY.headerShow, detail: '' };
       // Fix: an object survives `(x as string) || ''` (objects are truthy), then
       // .trimStart() throws — crashing the whole Chat pane via its ErrorBoundary.
       const cmd = asString(input.command);
@@ -1082,10 +1087,16 @@ interface Props {
 export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }: Props) {
   // Seed from the module-level mode so a card that mounts AFTER Ctrl+O fired
   // (e.g. when its parent tool group just opened) starts in the right state.
+  // Chatsearch cards used to force-open here (their whole point was the
+  // Preview/Resume buttons, hidden by a collapsed header) — reversed by the
+  // owner (Task 4, compare surface 'chatsearch-results' R2 'b-closed'):
+  // search results are skimmed once and scrolled past, so they now behave
+  // like every other tool card and start collapsed same as anything else.
+  // A helper's ask is the ONE thing that still force-opens a card, and it
+  // applies to a chatsearch card too: its buttons are useless behind a
+  // collapsed header (Specialists 1c).
   const [expanded, setExpanded] = useState(() => getInitialExpanded() || hasNestedAsk(tool));
-  // Specialists 1c: a helper's ask arriving inside this card opens the card —
-  // the buttons are useless behind a collapsed header. Opens once per ask;
-  // the user can still collapse it afterwards.
+  // Opens once per ask; the user can still collapse it afterwards.
   const nestedAsk = hasNestedAsk(tool);
   useEffect(() => { if (nestedAsk) setExpanded(true); }, [nestedAsk]);
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
@@ -1134,6 +1145,8 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   // is pure ceremony. Render header only, no chevron, non-interactive, with a
   // lighter dashed border so it reads as an annotation, not an expandable card.
   const isCompactSkill = tool.toolName === 'Skill';
+  // Same helper the header label and the body use, so all three agree.
+  const isChatsearch = !!describeChatsearchCall(tool);
 
   const cardBorder = isCompactSkill
     ? 'border border-dashed border-edge-dim/60'
@@ -1160,8 +1173,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
         // the generic check used by every other tool, since "skill ran"
         // carries different meaning ("Claude consulted instructions/notes")
         // than "command finished." Failed skills still use the FailIcon.
+        // A chatsearch card gets the chat bubble for the same reason (Destin,
+        // 2026-08-27 gate, M-row): a tick says "the command exited 0", which
+        // is the least interesting thing about a list of past conversations.
         isCompactSkill ? (
           <NoteIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        ) : isChatsearch ? (
+          <ChatIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         ) : (
           <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         )
