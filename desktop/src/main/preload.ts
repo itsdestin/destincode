@@ -340,6 +340,7 @@ const IPC = {
   NATIVE_SET_PERMISSION_MODE: 'native:set-permission-mode',
   NATIVE_GET_PERMISSION_MODE: 'native:get-permission-mode',
   NATIVE_SESSIONS_LIST: 'native:sessions-list',
+  NATIVE_KILL_SHELL: 'native:kill-shell',
   PROVIDER_LIST: 'provider:list',
   PROVIDER_UPSERT: 'provider:upsert',
   PROVIDER_REMOVE: 'provider:remove',
@@ -370,6 +371,7 @@ const IPC = {
   ENGINE_MODELS: 'engine:models',
   ENGINE_MODELS_CHANGED: 'engine:models-changed',
   NATIVE_MODEL_STATE: 'native:model-state',
+  NATIVE_SHELL_EVENT: 'native:shell-event',
   MODELS_MEMORY_CHECK: 'models:memory-check',
   MODELS_LOAD: 'models:load',
 } as const;
@@ -504,6 +506,14 @@ contextBridge.exposeInMainWorld('claude', {
       const handler = (_e: IpcRendererEvent, event: any) => cb(event);
       ipcRenderer.on('specialists:event', handler);
       return () => ipcRenderer.removeListener('specialists:event', handler);
+    },
+    // G-1: one background command's run record changed (status, tail, exit).
+    // Fired by nativeHost's 'shell-event' listener in ipc-handlers.ts. Returns
+    // the unsubscribe fn, same as specialistEvent.
+    shellEvent: (cb: (e: any) => void) => {
+      const handler = (_e: IpcRendererEvent, event: any) => cb(event);
+      ipcRenderer.on('native:shell-event', handler);
+      return () => ipcRenderer.removeListener('native:shell-event', handler);
     },
     // Shape parity with remote-shim — desktop never fires this push event
     // (mode detection runs in App.tsx via pty:output text matching), so this
@@ -1226,6 +1236,9 @@ contextBridge.exposeInMainWorld('claude', {
     // Read the session's current permission mode — seeds the chip on create/resume.
     getPermissionMode: (sessionId: string) => ipcRenderer.invoke(IPC.NATIVE_GET_PERMISSION_MODE, sessionId),
     sessionsList: () => ipcRenderer.invoke(IPC.NATIVE_SESSIONS_LIST),
+    // G-1: the Bash card's Stop button. Request-response — the card needs
+    // {ok, reason} to stop showing "Stopping…" when nothing was stopped.
+    killShell: (sessionId: string, shellId: string) => ipcRenderer.invoke(IPC.NATIVE_KILL_SHELL, { sessionId, shellId }),
     // Per-session bound-model residency push (unloaded/loading/loaded/sleeping)
     // → ChatView's model-unloaded banner + loading indicator (2026-07-14).
     onModelState: (cb: (s: unknown) => void) => {

@@ -10,7 +10,7 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type TranscriptPageRequest, type TranscriptPageResult, type HookEvent, type SpecialistsEvent } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type TranscriptPageRequest, type TranscriptPageResult, type HookEvent, type SpecialistsEvent, type ShellEvent } from '../shared/types';
 import { isPlaceholderModelId } from '../shared/model-ids';
 import { hasRealTitle } from '../shared/session-title';
 import { setPermissionOverrides } from './main';
@@ -2597,6 +2597,17 @@ export function registerIpcHandlers(
     }
   });
 
+  // G-1: one background command's run record changed. Same four-surface push
+  // shape as specialists:event — window + remote broadcast, buffered for a
+  // reconnecting phone. Push-only; there is no request handler.
+  nativeHost.on('shell-event', (event: ShellEvent) => {
+    sendForSession(event.sessionId, IPC.NATIVE_SHELL_EVENT, event);
+    if (remoteServer) {
+      remoteServer.bufferShellRun(event);
+      remoteServer.broadcast({ type: 'native:shell-event', payload: event });
+    }
+  });
+
   // Plan C: model manager (curated catalog, HF search, downloads, detectors).
   // Constructed here — BEFORE setNativeRuntime — so remote WS clients reach the
   // SAME instance via the native-runtime injection below (the models:* handlers
@@ -2711,6 +2722,11 @@ export function registerIpcHandlers(
       for (const run of nativeHost.specialistRunsFor(sessionId)) {
         evt.sender.send(IPC.SPECIALISTS_EVENT, { kind: 'run', sessionId, run } satisfies SpecialistsEvent);
       }
+      // G-1: a Bash card's background state IS its run record, which the
+      // transcript never carries — replay it the way specialist runs are.
+      for (const run of nativeHost.shellRunsFor(sessionId)) {
+        evt.sender.send(IPC.NATIVE_SHELL_EVENT, { sessionId, run } satisfies ShellEvent);
+      }
     }
     // Terminal marker so the reducer can reap tool cards this history left
     // 'running'. A transcript ends wherever the process died, so its last
@@ -2809,6 +2825,8 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.NATIVE_GET_PERMISSION_MODE, async (_e, sessionId: string) =>
     nativeHost.getPermissionMode(sessionId));
   ipcMain.handle(IPC.NATIVE_SESSIONS_LIST, async () => nativeHost.list());
+  // G-1: the Bash card's Stop button, on every surface.
+  ipcMain.handle(IPC.NATIVE_KILL_SHELL, (_e, { sessionId, shellId }: { sessionId: string; shellId: string }) => nativeHost.killShell(sessionId, shellId));
   // Provider management (Settings → Providers).
   ipcMain.handle(IPC.PROVIDER_LIST, async () => providerRegistry.list());
   ipcMain.handle(IPC.PROVIDER_UPSERT, async (_e, config: any) => providerRegistry.upsert(config));

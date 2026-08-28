@@ -45,18 +45,22 @@ function splitPreamble(text: string): { first: string; rest: string } {
  */
 export default React.memo(function SpecialistReportCard({ message, injected, meta, sessionId, showTimestamps }: Props) {
   const [expanded, setExpanded] = useState(false);
+  // G-1: `meta` is now a union; this card renders the SPECIALIST shape. A
+  // shell-complete turn only reaches it when its Bash card is not on the
+  // timeline (the reducer folds it otherwise) — then it degrades to prose.
+  const spec = meta?.kind === 'shell' ? undefined : meta;
   const { first, rest } = splitPreamble(message.content);
-  const failed = meta ? meta.status === 'failed' : /^\[Background specialist failed\]/.test(first);
-  const label = meta
-    ? `${meta.title} ${failed ? 'failed' : 'finished'}`
+  const failed = spec ? spec.status === 'failed' : /^\[Background specialist failed\]/.test(first);
+  const label = spec
+    ? `${spec.title} ${failed ? 'failed' : 'finished'}`
     : (injected === 'specialist-report' ? 'Note for the assistant' : 'System message');
   // Detail: what they were asked + how long it took, when known.
   const detailParts: string[] = [];
-  if (meta?.description) detailParts.push(meta.description);
-  if (meta && meta.steps !== undefined) detailParts.push(`${meta.steps} step${meta.steps === 1 ? '' : 's'}`);
-  if (!meta) detailParts.push(first.replace(/^\[[^\]]*\]\s*/, ''));
+  if (spec?.description) detailParts.push(spec.description);
+  if (spec && spec.steps !== undefined) detailParts.push(`${spec.steps} step${spec.steps === 1 ? '' : 's'}`);
+  if (!spec) detailParts.push(first.replace(/^\[[^\]]*\]\s*/, ''));
   const detail = detailParts.join(' · ');
-  const body = meta ? (rest || first) : message.content;
+  const body = spec ? (rest || first) : message.content;
 
   return (
     <div className="px-4 py-1" data-testid="specialist-report-card" data-injected={injected} data-status={failed ? 'failed' : 'completed'}>

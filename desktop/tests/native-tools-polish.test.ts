@@ -315,3 +315,21 @@ describe('G-11: a repeat Read of an unchanged slice returns a short notice', () 
     expect(r.text).toContain('alpha');
   });
 });
+
+describe('G-1: Bash description — background execution', () => {
+  it('names run_in_background, BashOutput, KillShell, the hand-off, and the cwd asymmetry; drops SIGKILL and exit 124', () => {
+    const d = BashTool.description;
+    expect(d).toMatch(/run_in_background/);
+    expect(d).toMatch(/BashOutput/);
+    expect(d).toMatch(/KillShell/);
+    expect(d).toMatch(/handed off to the background/);
+    expect(d).toMatch(/only a foreground command changes your working directory/i);
+    expect(d).toMatch(/leading `sleep`/);
+    expect(d).not.toMatch(/SIGKILL|force-kill/);
+    expect(d).not.toMatch(/\b124\b/);
+  });
+  it('the schema accepts run_in_background and stays strict', () => {
+    expect(BashTool.inputSchema.safeParse({ command: 'x', run_in_background: true }).success).toBe(true);
+    expect(BashTool.inputSchema.safeParse({ command: 'x', background: true }).success).toBe(false);
+  });
+});

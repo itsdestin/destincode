@@ -371,6 +371,11 @@ function handleMessage(data: string): void {
       // receive the SpecialistsEvent payload verbatim.
       dispatchEvent('specialists:event', payload);
       break;
+    case 'native:shell-event':
+      // G-1 — push-only (ipc-handlers.ts's nativeHost.on('shell-event', …)
+      // forwarder). window.claude.on.shellEvent subscribers get the ShellEvent.
+      dispatchEvent('native:shell-event', payload);
+      break;
     case 'social:presence-event':
       // Presence relay (Task 6). The host forwards one presence event (server
       // protocol frame or synthetic connection-state event). window.claude.social
@@ -857,6 +862,8 @@ export function installShim(): void {
       // fn, matching preload's specialistEvent (both keep window.claude.on's
       // shape consistent for the specialists card's cleanup effects).
       specialistEvent: (cb: Callback) => { addListener('specialists:event', cb); return () => removeListener('specialists:event', cb); },
+      // G-1: background command run records — mirrors preload's on.shellEvent.
+      shellEvent: (cb: Callback) => { addListener('native:shell-event', cb); return () => removeListener('native:shell-event', cb); },
       // Android-only push event — see remote-shim handleMessage above for rationale.
       sessionPermissionMode: (cb: Callback) => addListener('session:permission-mode', cb),
       uiAction: (cb: Callback) => addListener('ui:action:received', cb),
@@ -1592,6 +1599,9 @@ export function installShim(): void {
       setPermissionMode: (sessionId: string, mode: string) => invoke('native:set-permission-mode', { sessionId, mode }),
       getPermissionMode: (sessionId: string) => invoke('native:get-permission-mode', { sessionId }),
       sessionsList: () => invoke('native:sessions-list'),
+      // G-1: NOT gated on `supported` — a phone must be able to Stop a command
+      // running on the DESKTOP, whose runtime is the one that owns it.
+      killShell: (sessionId: string, shellId: string) => invoke('native:kill-shell', { sessionId, shellId }),
       onModelState: (cb: (s: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
         addListener('native:model-state', handler);

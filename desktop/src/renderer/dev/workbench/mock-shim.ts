@@ -83,6 +83,9 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
+  // G-1 — real backend as of 2026-08-28; hand-written so the gallery's Bash
+  // cards keep their fixture state instead of talking to a real process.
+  'native.killShell', 'on.shellEvent',
   'fs.readHead',
   // Specialists 1c — real backend as of Task 8 (see the contract test's
   // remote-shim/preload scan); still hand-written here so the workbench has
@@ -851,6 +854,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       }));
       return true;
     },
+    // G-1: the card's Stop just resolves — the gallery fixture stays in its
+    // captured state rather than spawning anything real.
+    killShell: async (_sessionId: string, _shellId: string) => ({ ok: true }),
   };
 
   // Fix (final review): SpecialistsSection's "Open folder" button reads
@@ -876,6 +882,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // exercises the picker's revert path.
   let tiers = seedDelegatedModels();
   const specialistSubs = new Set<(e: any) => void>();
+  const shellSubs = new Set<(e: any) => void>();   // G-1: background command run records
   const specialists = {
     // Task 10: real shape is { definitions, skipped, folders } — the roster
     // hook keys its cache on cwd and the definedBy() provenance line needs
@@ -1457,6 +1464,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // on Ns<'on'> yet (no real channel) — attached separately so the typed
   // members above stay compiler-checked.
   (on as any).specialistEvent = (cb: (e: any) => void) => { specialistSubs.add(cb); return () => { specialistSubs.delete(cb); }; };
+  (on as any).shellEvent = (cb: (e: any) => void) => { shellSubs.add(cb); return () => { shellSubs.delete(cb); }; };
 
   // `theme` is absent from useIpc.ts entirely, so NONE of this is
   // compiler-checked — the contract test is the only guard. Typed as a plain

@@ -21,6 +21,10 @@ const KNOWN_KINDS = new Set([
   // 'stalled' (Task 6): parks the turn via TRANSCRIPT_THINKING_HEARTBEAT so the
   // stalled card can be looked at in the workbench — no backend involved.
   'stalled',
+  // G-1 background Bash: the live run record a Bash card renders from
+  // (fixture-loader.ts dispatches it as SHELL_RUN_CHANGED). Landed with the
+  // card mockup in 69d066a3; this allowlist was missed, leaving the branch red.
+  'shell_run',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {

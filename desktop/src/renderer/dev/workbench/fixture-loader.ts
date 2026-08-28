@@ -287,6 +287,23 @@ export function loadFixture(
         const action: ChatAction = { type: 'SPECIALIST_RUN_CHANGED', sessionId, run };
         state = chatReducer(state, action);
         actions.push(action);
+      } else if (parsed.type === 'shell_run') {
+        // Background Bash (G-1): the live run record for a Bash card. The
+        // fixture gives `startedAgoMs` / `ranForMs` so the elapsed time reads
+        // naturally whenever the gallery is opened.
+        const startedAt = Date.now() - (parsed.startedAgoMs ?? 0);
+        const action: ChatAction = {
+          type: 'SHELL_RUN_CHANGED', sessionId,
+          run: {
+            toolUseId: parsed.tool_use_id, shellId: parsed.shellId ?? 'sh-1',
+            status: parsed.status ?? 'running', exitCode: parsed.exitCode,
+            stopReason: parsed.stopReason, detached: parsed.detached === true,
+            startedAt, endedAt: parsed.ranForMs != null ? startedAt + parsed.ranForMs : undefined,
+            tail: parsed.tail ?? '', logPath: parsed.logPath ?? '/tmp/youcoded-harness-bash-output/s1/bash-1.txt',
+          },
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
       } else if (parsed.type === 'specialist_report') {
         // Specialists 1c: the host-injected user-role turn carrying a
         // BACKGROUND report — folds into the launching Task card.

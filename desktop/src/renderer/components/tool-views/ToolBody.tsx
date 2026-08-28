@@ -1,5 +1,5 @@
-import React, { useMemo, useState, useRef, useEffect } from 'react';
-import { ToolCallState } from '../../../shared/types';
+import React, { useMemo, useState, useRef, useEffect, useCallback } from 'react';
+import { ToolCallState, type ShellRunView } from '../../../shared/types';
 import { UnifiedDiff } from '../diff/UnifiedDiff';
 import MarkdownContent from '../MarkdownContent';
 import { useChatState } from '../../state/chat-context';
@@ -23,6 +23,8 @@ import ChatsearchShowCard from './ChatsearchShowCard';
 // string methods / React child rendering, or renders "[object Object]".
 // asString (from the PR #295 ToolCard fix) treats non-strings as absent.
 import { asString } from '../../utils/tool-input';
+// G-1: the running-in-the-background strip and its Stop button.
+import { StatusStrip, Button } from '../ui';
 import { useSpecialistRunByChild, useSpecialistDefinition } from '../../hooks/useSpecialists';
 import { hasNestedAsk } from '../../utils/specialist-cards';
 import { SpecialistActions } from '../specialists/SpecialistActions';
@@ -305,15 +307,57 @@ function WriteView({ tool, sessionId }: { tool: ToolCallState; sessionId?: strin
 // Shared renderer for shell-like tools (Bash, MCP PowerShell, etc.). Shows the
 // command prominently, routes output through CR-strip + collapse, and promotes
 // error state to a pill at the top.
-function ShellView({ tool, commandField }: {
+// G-1 (background Bash): a ticking "2m 14s" for a running command, frozen at
+// its end time once it exits or is stopped. One interval per running card.
+function useElapsed(startedAt: number | undefined, endedAt: number | undefined): string {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (startedAt == null || endedAt != null) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [startedAt, endedAt]);
+  if (startedAt == null) return '';
+  const ms = Math.max(0, (endedAt ?? now) - startedAt);
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  // Whole minutes read as "40m", not "40m 0s".
+  return h > 0 ? `${h}h ${m}m` : m > 0 ? (sec ? `${m}m ${sec}s` : `${m}m`) : `${sec}s`;
+}
+
+// Why a background command stopped, in the user's words. 'assistant' is the
+// model calling KillShell; 'user' is the card's own Stop button.
+const STOP_REASON: Record<NonNullable<ShellRunView['stopReason']>, string> = {
+  user: 'Stopped by you',
+  assistant: 'Stopped by the assistant',
+  'conversation-closed': 'Stopped when the conversation closed',
+  'app-quit': 'Stopped when the app quit',
+};
+
+function ShellView({ tool, commandField, sessionId }: {
   tool: ToolCallState;
   commandField: string;
+  sessionId?: string;
 }) {
   // Fix: an object command rendered as a React child crashed the card.
   const cmd = asString(tool.input[commandField]);
-  const bg = tool.input.run_in_background as boolean | undefined;
+  // G-1: the run record is the truth for a background command — the tool
+  // result of a background start is only the launch acknowledgment.
+  const run = tool.shellRun;
+  const bg = run != null || (tool.input.run_in_background as boolean | undefined);
   const response = tool.response ? stripCarriageReturns(tool.response) : '';
-  const failed = tool.status === 'failed';
+  const failed = tool.status === 'failed' || (run?.status === 'exited' && run.exitCode !== 0);
+  // A rebuilt record (app quit) has no start time — show no timer rather than "0s".
+  const elapsed = useElapsed(run?.startedAt || undefined, run?.endedAt);
+  const [stopping, setStopping] = useState(false);
+  const stop = useCallback(async () => {
+    if (!run || !sessionId) return;
+    setStopping(true);
+    try {
+      const r = await window.claude.native.killShell(sessionId, run.shellId);
+      // A refusal (already ended, unknown id) must not leave "Stopping…" up forever.
+      if (!r.ok) setStopping(false);
+    } catch (err) { console.error('KillShell failed:', err); setStopping(false); }
+  }, [run, sessionId]);
 
   // Description is already shown as the collapsed-header label (see
   // friendlyToolDisplay in ToolCard.tsx); don't repeat it in the expanded body.
@@ -322,8 +366,18 @@ function ShellView({ tool, commandField }: {
   // status icon already covers success. Copy button is absolutely positioned
   // inside the code block's top-right corner (visible on hover).
   const chips: React.ReactNode[] = [];
-  if (bg) chips.push(<Chip key="bg" tone="info">Background</Chip>);
-  if (failed) chips.push(<Chip key="failed" tone="remove">Failed</Chip>);
+  // G-1: while the command runs, the status strip below carries the state, so
+  // the chip row only speaks once it has ended. "Exit N · 3m 12s" says how it
+  // ended; a stopped run names who stopped it.
+  if (bg && run?.status !== 'running') chips.push(<Chip key="bg" tone="info">{run?.detached ? 'Moved to background at its time limit' : 'Background'}</Chip>);
+  if (run?.status === 'exited') {
+    chips.push(<Chip key="exit" tone={run.exitCode === 0 ? 'add' : 'remove'}>Exit {run.exitCode ?? '?'}{elapsed ? ` · ${elapsed}` : ''}</Chip>);
+  } else if (run?.status === 'stopped') {
+    chips.push(<Chip key="stopped" tone="warn">{STOP_REASON[run.stopReason ?? 'user']}{elapsed ? ` · after ${elapsed}` : ''}</Chip>);
+  } else if (failed) chips.push(<Chip key="failed" tone="remove">Failed</Chip>);
+  // The output shown is the run's own tail once a run record exists (it keeps
+  // growing while the command runs); the tool result only for foreground calls.
+  const output = run ? run.tail : response;
 
   return (
     <div className="space-y-2">
@@ -338,11 +392,29 @@ function ShellView({ tool, commandField }: {
           </div>
         )}
       </div>
-      {response && (
+      {run?.status === 'running' && (
+        // G-1: the state in motion and the one action that resolves it. Stop
+        // ends the command AND everything it launched (process family), so a
+        // stopped `npm run dev` never leaves the real server behind.
+        <StatusStrip
+          tone="busy"
+          detail={run.detached ? 'Hit its time limit and kept running in the background — you\'ll be told when it finishes.' : 'The assistant carries on meanwhile and is told when it finishes.'}
+          action={<Button size="sm" variant="danger-outline" disabled={stopping} onClick={stop}>{stopping ? 'Stopping…' : 'Stop'}</Button>}
+        >
+          Running in the background{elapsed ? ` · ${elapsed}` : ''}
+        </StatusStrip>
+      )}
+      {output && (
         <div>
-          <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1">Output</div>
-          <CollapsibleBlock maxLines={20} className="bg-canvas">{response}</CollapsibleBlock>
+          <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1">{run?.status === 'running' ? 'Live output' : 'Output'}</div>
+          <CollapsibleBlock maxLines={20} className="bg-canvas">{output}</CollapsibleBlock>
         </div>
+      )}
+      {run?.logPath && (
+        // The full log outlives the card's tail; the path is the model's and the
+        // user's way back to all of it. Empty on a record rebuilt after a
+        // restart — nothing honest to show, so the line is dropped.
+        <div className="text-3xs text-fg-muted font-mono truncate" title={run.logPath}>Full log: {run.logPath}</div>
       )}
       {tool.error && <ErrorBlock error={tool.error} />}
     </div>
@@ -1085,7 +1157,7 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
             </div>
           );
         }
-        return <ShellView tool={tool} commandField="command" />;
+        return <ShellView tool={tool} commandField="command" sessionId={sessionId} />;
       }
       case 'TodoWrite':
         return <TodoWriteView tool={tool} />;
@@ -1125,7 +1197,7 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         // MCP PowerShell is shell-like — reuse ShellView. Other MCP tools fall
         // through to the raw view.
         if (tool.toolName === 'mcp__windows-control__PowerShell') {
-          return <ShellView tool={tool} commandField="command" />;
+          return <ShellView tool={tool} commandField="command" sessionId={sessionId} />;
         }
         return <RawFallbackView tool={tool} />;
       }
