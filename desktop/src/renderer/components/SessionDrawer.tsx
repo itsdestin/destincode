@@ -970,6 +970,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
               <div ref={contentRef} className="flex-1 min-h-0 overflow-hidden artifact-content-pane">
                 <ActiveArtifactView
                   ref={editRef}
+                  findBarOpen={findOpen}
                   artifact={active}
                   content={content}
                   contentInfo={contentInfo}

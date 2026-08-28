@@ -76,6 +76,11 @@ export function useZoomControls() {
   useEffect(() => {
     const handler = (e: WheelEvent) => {
       if (!e.ctrlKey) return; // Only intercept pinch (ctrlKey) wheel events
+      // The artifact viewer owns pinch/ctrl+wheel over a picture. This listener
+      // is capture-phase on window and does NOT stopPropagation, so without this
+      // bail BOTH handlers run and a single pinch resizes the app and the image
+      // together — two zoom readouts moving at once in opposite corners.
+      if ((e.target as Element | null)?.closest?.('[data-zoomable]')) return;
       e.preventDefault();
 
       // Accumulate delta and flush after a short pause — prevents one pinch
