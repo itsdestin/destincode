@@ -89,9 +89,13 @@ export function createSkillCatalog(entries: SkillEntry[] = scanSkills()): SkillC
       } catch (err: any) {
         throw new SkillUnreadable(id, `${file} could not be read (${err?.code ?? err?.message ?? 'unknown error'})`);
       }
+      // WHY: Claude Code fills ${CLAUDE_PLUGIN_ROOT} when it renders a plugin skill;
+      // our harness must too, or every plugin's documented command runs as `node /skills/…`.
+      const pluginRoot = path.dirname(path.dirname(entry.skillDir));
+      const body = stripFrontmatter(raw).trim().split('${CLAUDE_PLUGIN_ROOT}').join(pluginRoot);
       // entry.id, NOT the requested id: a bare name resolves to a qualified one,
       // and the caller labels the injected block with what actually ran.
-      return { id: entry.id, displayName: entry.displayName, description: entry.description, body: stripFrontmatter(raw).trim(), file };
+      return { id: entry.id, displayName: entry.displayName, description: entry.description, body, file };
     },
   };
 }
