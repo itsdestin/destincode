@@ -37,7 +37,7 @@ export const SendUserFileTool = defineTool({
     caption: z.string().optional().describe('One line of context for the files.'),
     status: z.enum(['normal', 'proactive']).optional().describe('Accepted for parity with Claude Code; ignored.'),
     display: z.enum(['render', 'attach']).optional().describe('"render": show the first file immediately (first request per reply only). "attach" or omitted: just the card.'),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   // Reads nothing, writes nothing — it names files the user should look at.
   // No path subject, so checkPathGuard's cwd jail does not apply: a chart in
   // /tmp must go through. The viewer applies its own read guards on open.

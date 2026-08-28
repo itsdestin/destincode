@@ -129,7 +129,7 @@ export const GlobTool = defineTool({
       .string()
       .describe('Glob pattern to match file paths against, e.g. "src/**/*.ts" or "**/*.{ts,tsx}". Supports *, **, ?, and non-nested {a,b,c} alternation.'),
     path: z.string().optional().describe('The directory to search in (relative to the working directory). Defaults to the current directory.'),
-  }),
+  }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   // Bounds are now explicit here rather than borrowed from DEFAULT_CAPS, since
   // Glob's own cap (RESULT_LIMIT, above) is what actually decides how much text
   // comes back — the pipeline's char cap should not silently apply a different

@@ -1478,6 +1478,17 @@ export function installShim(): void {
       focusAndSwitch: (_p: any) => {},
       openDetached: (_p: any) => {},
       requestTranscriptReplay: (_sid: string) => {},
+      // A REAL call, not a stub. requestTranscriptReplay above shipped as a
+      // no-op and silently gave the phone no history for months; paging is the
+      // phone's only way back through a long conversation, so it must reach the
+      // desktop.
+      requestTranscriptPage: (req: { sessionId: string; beforeCursor?: unknown; claudeSessionId?: string; projectSlug?: string }) =>
+        invoke('transcript:page', {
+          sessionId: req.sessionId,
+          beforeCursor: req.beforeCursor ?? null,
+          claudeSessionId: req.claudeSessionId,
+          projectSlug: req.projectSlug,
+        }),
       dropResolve: () => Promise.resolve({ targetWindowId: null as number | null }),
     },
     // Buddy floater is desktop-Electron only (MVP). Browser/Android get

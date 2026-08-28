@@ -1,8 +1,11 @@
 // WebFetch (spec §3.1): guardedFetch → Readability extraction → Markdown →
-// shared truncation. CC-compatible input shape {url, prompt?} so the existing
-// WebFetchView renders unchanged (it markdown-renders the result string).
+// shared truncation. Input shape {url} — the existing WebFetchView renders the
+// result unchanged (it markdown-renders the result string).
 // DESIGN (plan decision 9): no secondary summarization model — the result IS
-// the extracted markdown; `prompt` is echoed as a context header.
+// the extracted markdown. D-6 (2026-08-26 tools investigation): the CC-shaped
+// `prompt` parameter was DROPPED — it was only ever echoed back as a
+// "Fetched for:" header, which invited the model to expect an answer that
+// never came. (The renderer still tolerates `prompt` on Claude Code sessions.)
 // DOM provider is linkedom (NOT domino/jsdom) — Task 1 verified readability
 // 0.6.0 breaks on domino's non-iterable NodeLists.
 import { z } from 'zod';
@@ -31,8 +34,7 @@ export function __setWebFetchTestHooks(h: typeof testHooks): void { testHooks = 
 
 const inputSchema = z.object({
   url: z.string().describe('The URL to fetch (http/https only)'),
-  prompt: z.string().optional().describe('What you want to learn from this page'),
-});
+}).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
 
 const TEXT_TYPES = /^(text\/(plain|markdown|csv|xml)|application\/(json|xml|rss\+xml|atom\+xml))/;
 
@@ -820,10 +822,7 @@ export const WebFetchTool = defineTool<z.infer<typeof inputSchema>>({
         return { text: `WebFetch can only read HTML and text content; ${finalUrl} is ${contentType || 'an unknown binary type'}.`, isError: true };
       }
     }
-    const header = [
-      args.prompt ? `Fetched for: ${args.prompt}` : null,
-      `Source: ${finalUrl}`,
-    ].filter(Boolean).join('\n');
+    const header = `Source: ${finalUrl}`;
     if (!isHtml) {
       return {
         text: `${header}\n\n${raw}`,

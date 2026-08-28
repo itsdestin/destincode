@@ -226,6 +226,7 @@ const IPC = {
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
+  TRANSCRIPT_PAGE: 'transcript:page',
   APPEARANCE_BROADCAST: 'appearance:broadcast',
   APPEARANCE_SYNC: 'appearance:sync',
   APPEARANCE_GET_FAVORITE_THEMES: 'appearance:get-favorite-themes',
@@ -1013,6 +1014,12 @@ contextBridge.exposeInMainWorld('claude', {
     // uuid-based dedup handles any overlap with live events.
     requestTranscriptReplay: (sessionId: string) =>
       ipcRenderer.send(IPC.TRANSCRIPT_REPLAY, { sessionId }),
+    // Perf cycle 2: request/response, unlike the fire-and-forget replay above.
+    // Returns ONE page of history (newest when beforeCursor is null, else the
+    // page immediately older than the cursor) so opening a huge conversation
+    // renders ~30 turns instead of thousands.
+    requestTranscriptPage: (req: { sessionId: string; beforeCursor: unknown; claudeSessionId?: string; projectSlug?: string }) =>
+      ipcRenderer.invoke(IPC.TRANSCRIPT_PAGE, req),
   },
   theme: {
     list: () => ipcRenderer.invoke(IPC.THEME_LIST),

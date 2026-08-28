@@ -21,7 +21,7 @@ import type { ModelBinding } from '../../shared/provider-types';
 import type { HarnessManifest } from '../../shared/harness-manifest';
 import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
 import { bashGrantOptions, type GrantScope } from '../../shared/bash-grant-shapes';
-import type { NativeTool, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
+import type { NativeTool, ServedRead, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
 import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard, workspaceMatchFor } from './tools/guards';
 import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliverableImageMediaType, MAX_ATTACHMENT_BYTES } from './image-support';
@@ -125,6 +125,7 @@ export function rememberedRuleFor(
   return { tool: toolName, pattern: subject, action: 'allow', match: 'exact' };
 }
 import { formatAnswers } from './tools/ask-user-question';
+import { formatArgErrors } from './tools/arg-errors';
 import type { AskRequest, AskDecision } from './permission-broker';
 import { CLOUD_DEFAULT, type CapabilityProfile } from './capability-profile';
 import { adaptForWire } from './wire-adapter';
@@ -618,6 +619,23 @@ export class HarnessSession extends EventEmitter {
   // state — NOT persisted transcript. seedHistory() clears both on resume.
   private toolByName: Map<string, NativeTool>;
   private readRegistry = new Map<string, number>();  // canonical path → mtimeMs at last Read
+  /** G-11 (2026-08-26 tools investigation) — what Read has already served this
+   *  session (`path|offset|limit` → mtime + which call). Read answers a repeat
+   *  of an unchanged slice with "the content you already have is current"
+   *  instead of the content. That sentence is only true while the earlier
+   *  result is still in the model's view, so this is cleared at EVERY site that
+   *  discards or shrinks history: seedHistory (resume), clearHistory (/clear),
+   *  maybeCompact (any prune — prune slices old tool outputs to 2,000 chars, so
+   *  a long Read result may no longer be whole — or summarize), and compactNow.
+   *  Same KNOWN GAP as shownImages below: fitToContext trims the OUTGOING
+   *  request without touching `this.history`, so on a very small context window
+   *  a Read result can scroll out of view while this map still vouches for it.
+   *  Compaction fires at 75% of the window, well before fitToContext has to
+   *  trim, so in practice the map is cleared first; the residual exposure is
+   *  the same narrow tiny-window case documented for shownImages. */
+  private servedReads = new Map<string, ServedRead>();
+  /** 1-based running count of tool calls dispatched — lets Read say "N calls ago". */
+  private toolCallCount = 0;
   private todos: ToolContext['todos'] = [];
   /** Scoped-persistence shell cwd (ROADMAP 2026-07-17): where the next Bash call
    *  starts. null → the session root. Session runtime like readRegistry/todos —
@@ -766,6 +784,7 @@ export class HarnessSession extends EventEmitter {
     // satisfying the read-before-edit gate on the first edit after resume.
     this.readRegistry.clear();
     this.shownImages.clear();
+    this.servedReads.clear(); // G-11: the earlier Read results are not in a resumed session's view
     this.todos.length = 0;
     this.shellCwd = null; // a resumed session starts back at the workspace root
     this.shellEnv = null; // same contract — a resumed session starts with a fresh env too
@@ -1248,6 +1267,13 @@ export class HarnessSession extends EventEmitter {
     const imagesBeforePrune = countImageOutputs(this.history);
     this.history = pruneToolOutputs(this.history, cfg);   // always prune first
     if (countImageOutputs(this.history) < imagesBeforePrune) this.shownImages.clear();
+    // G-11: prune may have sliced an old Read result down to 2,000 chars (and
+    // summarize below discards it outright) — forget what was served so Read
+    // never claims the model still has content it no longer does. Cleared on
+    // every non-'none' action rather than diffed, because a text prune has no
+    // cheap before/after signal the way images do; the cost of over-clearing
+    // is one redundant re-read, the cost of under-clearing is a false notice.
+    this.servedReads.clear();
     if (decision.action === 'prune') return;
     const cut = this.summarizeCutIndex();
     if (cut <= 0) return;                                  // nothing safely condensable → pruned history stands
@@ -1390,6 +1416,7 @@ export class HarnessSession extends EventEmitter {
       const imagesBeforePrune = countImageOutputs(this.history);
       this.history = pruneToolOutputs(this.history, cfg);
       if (countImageOutputs(this.history) < imagesBeforePrune) this.shownImages.clear();
+      this.servedReads.clear(); // G-11: same reasoning as maybeCompact — prune may have cut a served Read
       const cut = this.summarizeCutIndex();
       // <2 user turns means there is no boundary we can cut on without risking
       // splitting a tool-call/result pair, so there is genuinely nothing to do.
@@ -1447,6 +1474,7 @@ export class HarnessSession extends EventEmitter {
     // (barring an unrelated mtime change). Clearing here makes the next Read
     // of that file deliver for real, matching what "already visible" claims.
     this.shownImages.clear();
+    this.servedReads.clear(); // G-11: same contract — the served Read results are gone with the history
     // Emitted (not just persisted) so the store appends it through the host's
     // normal chain AND every attached surface — other windows, the remote web
     // client — learns the conversation was cleared. On replay this same event
@@ -2703,7 +2731,10 @@ export class HarnessSession extends EventEmitter {
       } catch { /* not JSON — fall through to the normal arg error below */ }
     }
     if (!parsed.success) {
-      return { text: `Invalid arguments for ${call.toolName}: ${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')}. Fix the arguments and call again.`, isError: true };
+      // Worded in arg-errors.ts (ledger D-2): names the unknown / missing /
+      // mistyped parameter and, for an unknown one, the parameters that exist —
+      // the strict schemas below make that the common case for CC-trained models.
+      return { text: formatArgErrors(call.toolName, parsed.error, tool.inputSchema), isError: true };
     }
     const args = parsed.data;
 
@@ -2831,6 +2862,7 @@ export class HarnessSession extends EventEmitter {
     }
 
     // 5. Execute (defineTool owns truncation + the actionable-error catch).
+    this.toolCallCount += 1;
     return tool.execute(args, {
       sessionId: this.opts.sessionId,
       cwd: this.opts.cwd,
@@ -2846,6 +2878,8 @@ export class HarnessSession extends EventEmitter {
       // very next tool call, same as every other live-state field here.
       binding: this.binding,
       readRegistry: this.readRegistry,
+      servedReads: this.servedReads,      // G-11 re-read dedupe (see the field's WHY)
+      toolCallIndex: this.toolCallCount,
       shellCwd: this.shellCwd ?? this.opts.cwd,
       setShellCwd: (next: string) => {
         this.shellCwd = next;

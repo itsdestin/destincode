@@ -141,6 +141,39 @@ function addUsage(t: SessionTotals, u: TurnUsageLike): SessionTotals {
   return next;
 }
 
+/**
+ * Fold one accumulator into another. Sums add; the three "any…" flags OR.
+ *
+ * WHY this exists: this module's contract is that totals are "rebuilt for free
+ * when a resumed session replays its record" — which was true while resume
+ * replayed the WHOLE transcript. Paged history (perf cycle 2) replays one page
+ * at a time onto a scratch state, so without folding that page's totals in, a
+ * resumed session counted nothing at all. Each page contributes as it loads.
+ *
+ * Returns `into` UNCHANGED when there is nothing to add, keeping the
+ * referential-stability contract the useSyncExternalStore reader depends on.
+ */
+export function mergeTotals(into: SessionTotals, from: SessionTotals): SessionTotals {
+  if (from.inputTokens === 0 && from.outputTokens === 0 && from.cacheReadTokens === 0
+    && from.cacheCreationTokens === 0 && from.costUsd === 0 && from.linesAdded === 0
+    && from.linesRemoved === 0 && from.specialistRuns === 0 && from.specialistCostUsd === 0
+    && !from.anyPriced && !from.anyUnpriced && !from.anyFree) return into;
+  return {
+    inputTokens: into.inputTokens + from.inputTokens,
+    outputTokens: into.outputTokens + from.outputTokens,
+    cacheReadTokens: into.cacheReadTokens + from.cacheReadTokens,
+    cacheCreationTokens: into.cacheCreationTokens + from.cacheCreationTokens,
+    costUsd: into.costUsd + from.costUsd,
+    anyPriced: into.anyPriced || from.anyPriced,
+    anyUnpriced: into.anyUnpriced || from.anyUnpriced,
+    anyFree: into.anyFree || from.anyFree,
+    linesAdded: into.linesAdded + from.linesAdded,
+    linesRemoved: into.linesRemoved + from.linesRemoved,
+    specialistRuns: into.specialistRuns + from.specialistRuns,
+    specialistCostUsd: into.specialistCostUsd + from.specialistCostUsd,
+  };
+}
+
 export function addTurnUsage(t: SessionTotals, u: TurnUsageLike): SessionTotals {
   return addUsage(t, u);
 }

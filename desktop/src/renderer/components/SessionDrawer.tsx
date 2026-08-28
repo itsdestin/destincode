@@ -222,6 +222,30 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
   // Set when a pill click couldn't resolve; cleared on next click/selection/close.
   const pillError = state.pillError?.[sessionId] ?? null;
 
+  // Re-list this session's files whenever the drawer opens against a resolved
+  // project root.
+  //
+  // WHY this exists (perf cycle 2): the list used to be loaded once by ChatView
+  // at session mount, keyed on the session's `cwd`, and then refreshed as a SIDE
+  // EFFECT of transcript replay — the artifact tool-use tracker listens to
+  // transcript events, so re-streaming a whole conversation's history happened to
+  // re-list its files. Paged history no longer streams history through that
+  // channel, which left the drawer showing whatever ChatView saw at mount.
+  // Opening the Files drawer should show what is on disk NOW, and it should key
+  // off the RESOLVED projectRoot (useActiveProject), which is not always the raw
+  // cwd ChatView used.
+  useEffect(() => {
+    if (!drawerOpen || !projectRoot || !sessionId) return;
+    let cancelled = false;
+    (window.claude as any).artifacts?.listSession?.(sessionId, projectRoot)
+      .then((r: any) => {
+        if (cancelled || !r?.ok || !Array.isArray(r.artifacts)) return;
+        dispatch({ type: 'SESSION_ARTIFACTS_LOADED', sessionId, artifacts: r.artifacts });
+      })
+      .catch(() => { /* the drawer keeps whatever it already had */ });
+    return () => { cancelled = true; };
+  }, [drawerOpen, projectRoot, sessionId, dispatch]);
+
   // Existence check (unchanged): mark artifacts whose file is gone as orphans,
   // folded into the "deleted" UI state alongside explicit delete versions.
   const [orphanIds, setOrphanIds] = useState<Set<string>>(() => new Set());

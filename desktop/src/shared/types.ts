@@ -159,6 +159,42 @@ export type TranscriptEventType =
   // default branch drops it).
   | 'subagent-usage';
 
+/**
+ * Opaque-to-the-renderer handle for "the page before this one". `offset` is the
+ * byte at which the page it came from STARTS, so the next (older) page is read
+ * with `endOffset = offset`. For NATIVE sessions the same field carries an array
+ * index instead of a byte offset — the renderer never inspects it either way.
+ * `sizeAtRead` lets the reader notice a /clear or /compact rewrite.
+ */
+/** Payload for the TRANSCRIPT_PAGE request. `beforeCursor: null` = newest page. */
+export interface TranscriptPageRequest {
+  sessionId: string;
+  beforeCursor: PageCursor | null;
+  /**
+   * Fallback locator, used ONLY when the transcript watcher does not know this
+   * session yet. A just-resumed Claude Code session has no watched entry until
+   * CC's hook reports its transcript path, which is after the renderer wants to
+   * paint history — so the resume path passes the ids it already has and the
+   * handler resolves ~/.claude/projects/<slug>/<claudeSessionId>.jsonl itself.
+   */
+  claudeSessionId?: string;
+  projectSlug?: string;
+}
+
+export interface PageCursor {
+  path: string;
+  offset: number;
+  sizeAtRead: number;
+}
+
+/** One page of conversation history, oldest -> newest within the page. */
+export interface TranscriptPageResult {
+  events: TranscriptEvent[];
+  /** The handle for the NEXT (older) page; null when hasMore is false. */
+  cursor: PageCursor | null;
+  hasMore: boolean;
+}
+
 export interface TranscriptEvent {
   type: TranscriptEventType;
   sessionId: string; // desktop session ID
@@ -188,6 +224,11 @@ export interface TranscriptEvent {
      *  Deliverables auto-open rule (deliverable-auto-open.ts) reads this; native
      *  events keep their original `timestamp` through replay and need no field. */
     recordedAt?: number;
+    /** Byte offset of this JSONL line's start in the transcript file, stamped by
+     *  the paged-history reader (transcript-page.ts) on user-message events.
+     *  The seed for a future eviction cursor (cycle 3); unused today. Absent on
+     *  live-tailer events, which never know their own offset. */
+    offset?: number;
     // Task 1.1: widened turn-complete payload so the reducer can attach the
     // per-turn model, token/cache usage, and the Anthropic requestId to the
     // completing AssistantTurn for UI surfacing. All optional — the field is
@@ -1465,6 +1506,11 @@ export const IPC = {
   // Request the full transcript history for a session — used when a window
   // acquires ownership and needs to hydrate its reducer from disk.
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
+  // Perf cycle 2: request/response. Returns the last page of history (the most
+  // recent PAGE_TURNS turns), or the page before a cursor. Replaces
+  // TRANSCRIPT_REPLAY for first load — replay stays only for the ownership
+  // handoff, which also re-sends broker-held asks and specialist runs.
+  TRANSCRIPT_PAGE: 'transcript:page',
   // Appearance sync across peer windows — Renderer → Main broadcasts, Main
   // → other Renderers applies without re-broadcasting. Lets a theme change
   // in window 2 propagate to window 1 without a reload.
