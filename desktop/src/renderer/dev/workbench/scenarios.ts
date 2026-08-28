@@ -170,6 +170,11 @@ function sitePast(): PastSession[] {
 
 /** Builds a fresh state for a scenario. Every call re-runs the fixture
  *  factories, so two stores never share a mutable array. */
+function siteTitle(): string | null {
+  if (typeof location === 'undefined') return null;   // Node unit tests import this module
+  return new URLSearchParams(location.search).get('title');
+}
+
 export function seed(scenario: ScenarioId): MockState {
   const base: MockState = {
     sessions: sessions(),
@@ -196,7 +201,9 @@ export function seed(scenario: ScenarioId): MockState {
     case 'site':
       // Landing-page embed: providers/catalog/tags/defaults as default, one
       // native session, two past rows, no pre-set meta.
-      return { ...base, sessions: siteSessions(), past: sitePast(), meta: {} };
+      // `?title=` renames the one session — a loop that starts empty (`?seed=none`)
+      // should not sit under a "plan my week" tab either.
+      return { ...base, sessions: siteSessions().map((r) => ({ ...r, name: siteTitle() ?? r.name })), past: sitePast(), meta: {} };
     case 'refused':
     case 'default':
     default:

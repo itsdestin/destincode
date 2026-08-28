@@ -45,6 +45,11 @@ function stalledRequested(): boolean {
   return new URLSearchParams(location.search).get('stalled') === '1';
 }
 
+function seedRequested(): string | null {
+  if (typeof location === 'undefined') return null;
+  return new URLSearchParams(location.search).get('seed');
+}
+
 let cached: SerializedChatState | null = null;
 
 /** The hydrate payload for every mapped conversation fixture, merged into one
@@ -60,6 +65,11 @@ export function buildHydratePayload(): SerializedChatState {
   for (const [path, raw] of Object.entries(convos).sort(([a], [b]) => a.localeCompare(b))) {
     const name = path.split('/').pop()!.replace('.jsonl', '');
     const sessionId = SESSION_FOR[name];
+    // `?seed=none` (site scenario): leave the embed's conversation EMPTY so a
+    // filmed loop starts with the user's first message. Every landing-page loop
+    // used to open on the same "plan my week" thread, which had nothing to do
+    // with what the loop then showed (Destin, 2026-08-28 loop review).
+    if (name === 'site' && seedRequested() === 'none') continue;
     if (!sessionId) {
       console.warn(`[workbench] conversation fixture "${name}" has no session mapping — skipped`);
       continue;
