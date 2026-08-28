@@ -35,17 +35,6 @@ export interface QuickChip {
   prompt: string;
 }
 
-// Fallback defaults if no config exists yet
-const defaultChips: QuickChip[] = [
-  { label: 'Journal', prompt: "let's journal" },
-  { label: 'Inbox', prompt: 'check my inbox' },
-  { label: 'Git Status', prompt: "run git status and summarize what's changed" },
-  { label: 'Review PR', prompt: 'review the latest PR on this repo' },
-  { label: 'Fix Tests', prompt: 'run the tests and fix any failures' },
-  { label: 'Briefing', prompt: 'brief me on ' },
-  { label: 'Draft Text', prompt: 'help me draft a text to ' },
-];
-
 interface Props {
   onChipTap: (chip: QuickChip) => void;
 }
@@ -54,9 +43,13 @@ export default function QuickChips({ onChipTap }: Props) {
   const { chips, setChips, installed } = useSkills();
   const [editorOpen, setEditorOpen] = useState(false);
 
-  const displayChips: QuickChip[] = chips.length > 0
-    ? chips.map(c => ({ label: c.label, prompt: c.prompt }))
-    : defaultChips;
+  // The store is the only source. There is deliberately no hardcoded fallback
+  // list here: one used to stand in whenever `chips` was empty, which conflated
+  // "still loading" with "the user deleted every chip" — the row painted seven
+  // built-in chips that the editor, which reads the real store list, could not
+  // see or edit. Empty renders empty; the pencil holds the row's height, so
+  // nothing shifts when the chips arrive.
+  const displayChips: QuickChip[] = chips.map(c => ({ label: c.label, prompt: c.prompt }));
 
   // Outside-click dismissal now handled by the <Scrim> inside ChipEditorPopup.
 
@@ -74,9 +67,9 @@ export default function QuickChips({ onChipTap }: Props) {
   return (
     <div className="relative">
       <div className="flex gap-1 px-3 py-1 overflow-x-auto scrollbar-none items-center">
-        {displayChips.map((chip) => (
+        {displayChips.map((chip, i) => (
           <button
-            key={chip.label}
+            key={`${i}-${chip.label}`}
             onClick={() => onChipTap(chip)}
             className={`shrink-0 ${chipHeight} px-2.5 rounded-md bg-panel border border-edge-dim text-2xs text-fg-2 hover:bg-inset hover:text-fg transition-colors`}
           >
@@ -124,6 +117,37 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
   const [customLabel, setCustomLabel] = useState('');
   const [customPrompt, setCustomPrompt] = useState('');
 
+  // Tap-to-edit: the row at editIdx expands in place into label + prompt
+  // fields. Index (not a chip id) is the identity here because ChipConfig has
+  // no id — so every mutation that can shift indices closes the open row
+  // rather than risk writing the edit onto a different chip.
+  const [editIdx, setEditIdx] = useState<number | null>(null);
+  const [editLabel, setEditLabel] = useState('');
+  const [editPrompt, setEditPrompt] = useState('');
+
+  const beginEdit = useCallback((index: number) => {
+    const chip = chips[index];
+    if (!chip) return;
+    setShowAddForm(false);   // one form open at a time
+    setEditIdx(index);
+    setEditLabel(chip.label);
+    setEditPrompt(chip.prompt);
+  }, [chips]);
+
+  const cancelEdit = useCallback(() => setEditIdx(null), []);
+
+  const saveEdit = useCallback(() => {
+    if (editIdx === null) return;
+    const label = editLabel.trim();
+    const prompt = editPrompt.trim();
+    if (!label || !prompt) return;
+    // Spread the existing chip so skillId survives — a skill-backed chip whose
+    // prompt gets tuned must stay bound to its skill, or the uninstall cascade
+    // stops finding it.
+    setChips(chips.map((c, i) => (i === editIdx ? { ...c, label, prompt } : c)));
+    setEditIdx(null);
+  }, [editIdx, editLabel, editPrompt, chips, setChips]);
+
   // Skills not already assigned to a chip
   const chipSkillIds = useMemo(() => new Set(chips.map(c => c.skillId).filter(Boolean)), [chips]);
   const availableSkills = useMemo(
@@ -131,7 +155,12 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
     [installed, chipSkillIds]
   );
 
+  // Esc pops the open row before the dialog itself (useEscClose is a LIFO
+  // stack, and this hook registers below the dialog's own).
+  useEscClose(editIdx !== null, cancelEdit);
+
   const remove = useCallback((index: number) => {
+    setEditIdx(null);   // indices shift; never carry an open edit across it
     setChips(chips.filter((_, i) => i !== index));
   }, [chips, setChips]);
 
@@ -221,6 +250,7 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
       const next = [...chips];
       const [moved] = next.splice(dragIdx, 1);
       next.splice(overIdx, 0, moved);
+      setEditIdx(null);   // indices shift; never carry an open edit across it
       setChips(next);
     }
     setDragIdx(null);
@@ -264,6 +294,53 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
               <div ref={listRef} className="space-y-1 relative">
                 {chips.map((chip, i) => {
                   const isBeingDragged = dragIdx === i && isDragging.current;
+                  const isEditing = editIdx === i;
+
+                  // Expanded row: the same two fields the add form uses, in
+                  // place. Drag handlers are deliberately NOT attached — a text
+                  // field must own its own pointer events (caret placement,
+                  // drag-select) and `touch-none` would eat them.
+                  if (isEditing) {
+                    return (
+                      <div
+                        key={i}
+                        data-chip-idx={i}
+                        className="bg-inset border border-edge rounded-md p-2 space-y-1.5"
+                      >
+                        <TextInput
+                          size="sm"
+                          value={editLabel}
+                          onChange={(e) => setEditLabel(e.target.value.slice(0, 20))}
+                          placeholder="Label (max 20 chars)"
+                          aria-label="Chip label"
+                          className="w-full"
+                          autoFocus
+                        />
+                        {/* rows={3} so a tuned prompt is readable as a whole —
+                            the collapsed row can only show a clipped preview. */}
+                        <Textarea
+                          size="sm"
+                          value={editPrompt}
+                          onChange={(e) => setEditPrompt(e.target.value.slice(0, 500))}
+                          placeholder="Prompt text"
+                          rows={3}
+                          aria-label="Chip prompt"
+                          className="w-full"
+                        />
+                        <div className="flex gap-2 items-center">
+                          <Button
+                            size="sm"
+                            onClick={saveEdit}
+                            disabled={!editLabel.trim() || !editPrompt.trim()}
+                          >
+                            Save
+                          </Button>
+                          <button onClick={cancelEdit} className="px-2 py-1 text-3xs text-fg-muted hover:text-fg">Cancel</button>
+                        </div>
+                      </div>
+                    );
+                  }
+
                   return (
                     <div
                       key={i}
@@ -271,12 +348,20 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                       onPointerDown={(e) => handlePointerDown(e, i)}
                       onPointerMove={handlePointerMove}
                       onPointerUp={handlePointerUp}
-                      className={`group/row flex items-center gap-2 px-2 py-1.5 rounded-md bg-well border border-edge-dim text-2xs select-none touch-none ${
+                      // suppressClick is the same guard the ✕ uses: it is set
+                      // once a pointer run passes the 5px drag threshold, so a
+                      // reorder never also opens the row it just dropped.
+                      onClick={() => { if (!suppressClick.current) beginEdit(i); }}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); beginEdit(i); } }}
+                      title="Edit chip"
+                      className={`group/row flex items-center gap-2 px-2 py-1.5 rounded-md bg-well border border-edge-dim text-2xs select-none touch-none hover:bg-inset hover:border-edge transition-colors ${
                         isBeingDragged ? 'opacity-30' : ''
                       }`}
                       style={{
                         transition: 'opacity 150ms, background 150ms',
-                        cursor: isAndroid() ? 'default' : 'grab',
+                        cursor: isAndroid() ? 'pointer' : 'grab',
                       }}
                     >
                       {/* Drag grip — visible on hover (desktop only) */}
@@ -285,9 +370,14 @@ function ChipEditorPopup({ open, chips, setChips, installed, onClose }: ChipEdit
                       </span>
                       <span className="font-medium text-fg truncate flex-1">{chip.label}</span>
                       <span className="text-fg-muted truncate max-w-[100px]">{chip.prompt}</span>
+                      {/* Pencil affords the tap-to-edit the whole row carries —
+                          without it the row looks like a drag handle and a ✕. */}
+                      <span className="shrink-0 px-1 text-fg-faint opacity-0 group-hover/row:opacity-100 transition-opacity flex items-center">
+                        <PencilIcon size={9} />
+                      </span>
                       <button
                         onPointerDown={(e) => e.stopPropagation()}
-                        onClick={() => { if (!suppressClick.current) remove(i); }}
+                        onClick={(e) => { e.stopPropagation(); if (!suppressClick.current) remove(i); }}
                         // Deliberately NOT a ui/Button. Unlike InputBar's attachment ✕
                         // (which is a 16px badge and did migrate), this is a bare glyph
                         // with no background, radius or padding — routing it through the

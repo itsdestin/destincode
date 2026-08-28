@@ -58,6 +58,10 @@ if [ ! -f "$TOPIC_FILE" ] || [ ! -s "$TOPIC_FILE" ]; then
     echo "New Session" > "$TOPIC_FILE"
 fi
 
-MSG="[Auto-Title] Run this Bash command NOW before doing anything else: echo \"Topic Here\" > $TOPIC_FILE — replace Topic Here with a 3-5 word Title Case summary of this conversation. Do NOT skip this."
+if [ -z "$CURRENT_TOPIC" ] || [ "$CURRENT_TOPIC" = "New Session" ]; then
+    MSG="[Auto-Title] This conversation has no title yet. Run this Bash command NOW, before anything else: echo \"Topic Here\" > $TOPIC_FILE — replace Topic Here with a 3-5 word Title Case summary of this conversation. Do NOT skip this."
+else
+    MSG="[Auto-Title] This conversation is titled \"$CURRENT_TOPIC\". If that still describes it, do nothing at all — no tool call, no mention of this reminder. ONLY if the conversation has since moved to a genuinely different topic, run: echo \"New Title\" > $TOPIC_FILE (3-5 words, Title Case)."
+fi
 ESCAPED=$(echo "$MSG" | sed 's/\\/\\\\/g; s/"/\\"/g')
 echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"$ESCAPED\"}}"

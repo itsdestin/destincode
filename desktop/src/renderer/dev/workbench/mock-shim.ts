@@ -1248,7 +1248,25 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // 2026-08-25 all of these answered `[]`, so Marketplace/Library/skills drawer
   // rendered empty in the workbench and were unreviewable in any theme.
   let skillFavourites: string[] = ['civic-report', 'superpowers'];
+  // Quick chips are a STATEFUL mock, not a canned read: the editor writes
+  // through setChips on every add/remove/reorder/edit, so a read-only fixture
+  // would make every mutation appear to do nothing. Mirrors the real store's
+  // defaults so the composer row and the editor agree — QuickChips no longer
+  // carries a hardcoded fallback list to paper over an empty answer here.
+  let chipList: { skillId?: string; label: string; prompt: string }[] = [
+    { skillId: 'journaling-assistant', label: 'Journal', prompt: "let's journal" },
+    { skillId: 'claudes-inbox', label: 'Inbox', prompt: 'check my inbox' },
+    { label: 'Git Status', prompt: "run git status and summarize what's changed" },
+    { label: 'Review PR', prompt: 'review the latest PR on this repo' },
+    { label: 'Fix Tests', prompt: 'run the tests and fix any failures' },
+    { skillId: 'encyclopedia-librarian', label: 'Briefing', prompt: 'brief me on ' },
+    { label: 'Draft Text', prompt: 'help me draft a text to ' },
+  ];
   const skills = {
+    getChips: async () => chipList.map((c) => ({ ...c })),
+    setChips: async (next: { skillId?: string; label: string; prompt: string }[]) => {
+      chipList = next.map((c) => ({ ...c }));
+    },
     listMarketplace: async () => (marketplaceEmpty ? [] : MARKETPLACE_PLUGINS.map((p) => ({ ...p }))),
     list: async () => (marketplaceEmpty ? [] : INSTALLED_SKILLS.map((s) => ({ ...s }))),
     getFavorites: async () => [...skillFavourites],
