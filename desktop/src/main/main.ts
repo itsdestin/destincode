@@ -56,6 +56,7 @@ import { upsertSelf } from './sync-spaces/device-registry';
 import { startConversationStore, stopConversationStore, materializeOne, resumeSweeps, HANDOFF_SYNC_TIMEOUT_MS } from './conversations/service';
 import { runSlugRepair } from './conversations/slug-repair';
 import { startChatsearchIndex, stopChatsearchIndex } from './chatsearch-index/index-service';
+import { startOutboxDrain, stopOutboxDrain } from './chatsearch-index/outbox-drain';
 // One-time cleanup of the legacy sync-service's slug-symlink aggregation (Plan 2c).
 import { sweepProjectSymlinks } from './conversations/symlink-sweep';
 import { startTagRegistry } from './conversations/tag-registry-service';
@@ -1981,6 +1982,9 @@ void app.whenReady().then(async () => {
 
   // After the store AND tag registry — the index denormalizes both.
   startChatsearchIndex();
+  // WHY after the index: the drainer reads the same store root; requests it
+  // applies trigger the index rebuild through emitConversationMetaChanged.
+  startOutboxDrain();
 
   // The legacy session-end backup push (SyncService.pushSession) was removed in
   // sync-legacy-demolition. Conversations now travel via the sync-spaces
@@ -2032,6 +2036,7 @@ async function runShutdown(): Promise<void> {
   // listener, clears the periodic reconciler + pending debounce timers. Sync fn.
   try { stopConversationStore(); } catch {}
   try { stopChatsearchIndex(); } catch {}
+  try { stopOutboxDrain(); } catch {}
   // Plan 2b Task 8: tear down the lease client so its per-session renew timers
   // don't linger past a hard quit (destroy clears all held timers). Sync fn.
   try { leaseClient?.destroy(); } catch {}
