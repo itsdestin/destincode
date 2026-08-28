@@ -219,4 +219,27 @@ describe('mock shim Proxy semantics', () => {
     expect(performance.now() - started).toBeGreaterThanOrEqual(50);
     setLatency(0);
   });
+
+  // Native sessions (the `site` scenario's embed session, `provider: 'native'`)
+  // send through `native.send`, NOT `session.sendInput` — App's canPtySend
+  // refuses the PTY channel outright for provider:'native'. Pins that the two
+  // channels share the same reply machinery (startReply in mock-shim.ts) so a
+  // native send actually answers, and that the ack shape matches the real
+  // `NativeSendResult` contract (shared/types.ts) rather than session.sendInput's
+  // fire-and-forget `void`.
+  it('native.send answers a message and resolves the real ack shape', async () => {
+    vi.useFakeTimers();
+    const c = createMockShim(createStore('site')) as any;
+    const transcript: any[] = [];
+    c.on.transcriptEvent((e: any) => transcript.push(e));
+
+    const ack = c.native.send('site-1', 'hello');
+    await expect(ack).resolves.toEqual({ status: 'sent' });
+
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(transcript.length).toBeGreaterThan(0);
+    expect(transcript[0]).toMatchObject({ type: 'user-message', sessionId: 'site-1', data: { text: 'hello' } });
+    expect(transcript.at(-1)).toMatchObject({ type: 'turn-complete' });
+    vi.useRealTimers();
+  });
 });

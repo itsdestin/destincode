@@ -1,0 +1,12 @@
+{"type":"assistant_text","text":"I'll read each receipt, then build the spreadsheet.","delay":500}
+{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"Receipts/2026-03-02.jpg"},"delay":600}
+{"type":"tool_result","tool_use_id":"r1","content":"[image 1200×900] Trader Joe's — $42.17 — 2026-03-02","delay":900}
+{"type":"tool_use","id":"r2","name":"Read","input":{"file_path":"Receipts/2026-03-05.jpg"},"delay":300}
+{"type":"tool_result","tool_use_id":"r2","content":"[image 1200×900] Shell — $38.40 — 2026-03-05","delay":900}
+{"type":"tool_use","id":"r3","name":"Read","input":{"file_path":"Receipts/2026-03-09.jpg"},"delay":300}
+{"type":"tool_result","tool_use_id":"r3","content":"[image 1200×900] CVS — $12.99 — 2026-03-09","delay":900}
+{"type":"assistant_text","text":"Three receipts, $93.56 total. I'd like to write Receipts/march.xlsx — one row each, with a total.","delay":500}
+{"type":"permission_request","id":"p1","name":"Write","input":{"file_path":"Receipts/march.xlsx"},"delay":400}
+{"type":"tool_result","tool_use_id":"p1","content":"Wrote Receipts/march.xlsx (4 rows)","delay":1200}
+{"type":"assistant_text","text":"Done — march.xlsx is in your Receipts folder.","delay":400}
+{"type":"turn_complete","delay":300}

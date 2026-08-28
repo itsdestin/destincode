@@ -12,6 +12,9 @@ import {
 import type { MockState, MockSessionMeta } from './scenarios';
 import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
 import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
+// Scripted replies (site scenario / phase-2 play-through): a typed message
+// gets a fixture-driven answer instead of being swallowed by the catch-all.
+import { playReply, resolvePermission, parseReplyScript } from './reply-script';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
 // states (partial-view banner, handoff) against the fake backend.
@@ -56,6 +59,8 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'off', 'removeAllListeners',
   'session.list', 'session.create', 'session.browse', 'session.destroy',
   'session.setFlag', 'session.setTag', 'session.setNote', 'session.getMeta',
+  'session.sendInput', 'session.respondToPermission', 'on.transcriptEvent', 'on.hookEvent',
+  'native.send',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
   // contract test actually covers them; a channel absent from HAND_WRITTEN
@@ -324,6 +329,16 @@ const themeAssets = import.meta.glob('./fixtures/themes/*/assets/**/*', {
   query: '?url', import: 'default', eager: true,
 }) as Record<string, string>;
 
+// Reply fixtures for scripted replies (`?reply=<name>`, defaults to `demo`) —
+// eager + `?raw` so the shim can pick a script at sendInput() time without an
+// async fetch (matches the theme-manifest loading pattern just above).
+// @ts-ignore TS1343 — Vite rewrites import.meta.glob statically at build time.
+const REPLY_SCRIPTS = import.meta.glob('./fixtures/replies/*.jsonl', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+function replyScriptName(): string {
+  if (typeof location === 'undefined') return 'demo';
+  return new URLSearchParams(location.search).get('reply') ?? 'demo';
+}
+
 const slugOf = (path: string) => path.split('/fixtures/themes/')[1].split('/')[0];
 
 /** `halftone-dimension` -> { 'assets/pattern.svg': '/…/pattern.svg', … } */
@@ -416,6 +431,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     destroyed: new Set<(id: string) => void>(),
     renamed: new Set<(id: string, name: string) => void>(),
     meta: new Set<(id: string, meta: any) => void>(),
+    // Scripted replies: transcript/hook subscribers a played reply emits into.
+    transcript: new Set<(e: any) => void>(),
+    hook: new Set<(e: any) => void>(),
   };
 
   /** Applies a mutation only when writes are allowed, so the refused scenario
@@ -427,6 +445,22 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     if (store.refuseWrites) return Promise.resolve({ ok: false });
     mutate();
     return Promise.resolve({ ok: true });
+  };
+
+  // Site mode / phase-2 play-through: a typed message gets a scripted answer
+  // (`?reply=<name>`, fixtures/replies/). Shared by BOTH send channels —
+  // `session.sendInput` (Claude/PTY sessions) and `native.send` (native
+  // sessions, e.g. the `site` scenario's embed session) — because App picks
+  // the channel by `session.provider`, not by anything the reply machinery
+  // cares about; duplicating the lookup+play body per channel would just be
+  // two copies to keep in sync.
+  const startReply = (sessionId: string, text: string) => {
+    const raw = REPLY_SCRIPTS[`./fixtures/replies/${replyScriptName()}.jsonl`];
+    if (!raw) { console.warn(`[workbench] no reply script "${replyScriptName()}"`); return; }
+    void playReply(sessionId, text, parseReplyScript(raw), {
+      transcript: (e) => subs.transcript.forEach((f) => f(e)),
+      hook: (e) => subs.hook.forEach((f) => f(e)),
+    });
   };
 
   const session: Ns<'session'> & UntypedSessionWrites = {
@@ -467,6 +501,14 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       subs.destroyed.forEach((f) => f(sessionId));
       return true;
     },
+
+    // Claude/PTY sessions only (native sessions use `native.send` below).
+    // Control bytes are ignored inside playReply so the PTY-shaped calls App
+    // makes for Claude Code sessions ('\r', '\x1b') never start a script.
+    sendInput: (sessionId: string, text: string) => startReply(sessionId, text),
+    // Real signature is Promise<boolean> (useIpc.ts/preload.ts), not {ok} —
+    // resolvePermission already returns a boolean (false = stale/unknown id).
+    respondToPermission: async (requestId: string, _decision: object) => resolvePermission(requestId),
 
     // Reads the live-session meta slice, falling back to a `past` row of the
     // same id, then to empty. `supported: true` always — the desktop refuses
@@ -579,7 +621,20 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     }),
   };
 
-  const native: Ns<'native'> = { supported: true };
+  const native: Ns<'native'> = {
+    supported: true,
+    // Native sessions (no PTY) send through THIS channel, not
+    // `session.sendInput` — see native-send.ts / pty-input-gate.ts's
+    // `canPtySend`, which refuses provider:'native' outright. The `site`
+    // scenario's embed session is native, so without this the landing-page
+    // demo's composer looked broken (message accepted, nothing ever answers).
+    // Shares startReply with session.sendInput — see that helper's WHY.
+    send: async (sessionId: string, text: string, _attachments?: string[]) => {
+      if (store.refuseWrites) return { status: 'failed', reason: 'not-live' };
+      startReply(sessionId, text);
+      return { status: 'sent' };
+    },
+  };
 
   // Fix (final review): SpecialistsSection's "Open folder" button reads
   // shell.openPath's resolved value as an error message whenever it's truthy —
@@ -973,6 +1028,11 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       return () => {};
     },
   };
+  // Scripted replies: the transcript/hook events a played reply fixture emits
+  // (playReply in sendInput above). Same attachment pattern as specialistEvent
+  // below — Ns<'on'> doesn't carry these members.
+  (on as any).transcriptEvent = (cb: (e: any) => void) => { subs.transcript.add(cb); return () => { subs.transcript.delete(cb); }; };
+  (on as any).hookEvent = (cb: (e: any) => void) => { subs.hook.add(cb); return () => { subs.hook.delete(cb); }; };
   // Specialists 1c: the delegation feed (run records + delivered notes). Not
   // on Ns<'on'> yet (no real channel) — attached separately so the typed
   // members above stay compiler-checked.
