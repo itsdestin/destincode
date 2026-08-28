@@ -12,6 +12,11 @@ const BINARY_SNIFF_BYTES = 8000;
 // and anything >2 GB throws a raw RangeError from Buffer. Refuse before the read
 // (statSync is cheap) with a cap well above any legit source file.
 export const MAX_READ_BYTES = 50 * 1024 * 1024; // 50 MB
+/** G-5: per-call cap on the numbered text a Read returns ("~50 KB" in the
+ *  description). Matches OpenCode / Pi / OpenClaw; cut on a line boundary. */
+export const MAX_CHARS = 50_000;
+/** D-3: how many entries a Read-on-a-folder lists before declaring the rest. */
+const DIR_LIST_LIMIT = 50;
 
 // WHY (2026-08-10 review, Claim 10): Read's isError returns used to speak THREE
 // unreconciled dialects -- "Read failed: ..." (thrown exceptions, via
@@ -118,6 +123,30 @@ export const ReadTool = defineTool({
       }
       throw err;
     }
+    // D-3 (2026-08-26 tools investigation): a folder used to fall through to
+    // readFileSync and surface Node's raw "EISDIR: illegal operation on a
+    // directory" via defineTool's generic catch — an error code, not a tool
+    // message. Small models Read folders often. Say what it is, say what to use
+    // instead, and show the first entries so the call still bought something.
+    if (st.isDirectory()) {
+      let names: string[] = [];
+      try {
+        names = fs.readdirSync(abs, { withFileTypes: true })
+          .map((d) => (d.isDirectory() ? `${d.name}/` : d.name))
+          .sort((a, b) => a.localeCompare(b));
+      } catch {
+        // Unreadable folder (permissions): the "is a folder" message still stands on its own.
+      }
+      const shown = names.slice(0, DIR_LIST_LIMIT);
+      const head = `Read rejected: ${args.file_path} is a folder, not a file — use Glob to find files in it, or Bash \`ls\`.`;
+      return {
+        text: shown.length ? `${head}\n${shown.join('\n')}` : head,
+        isError: true,
+        bounds: names.length > shown.length
+          ? { shown: shown.length, total: names.length, unit: 'files' as const, moreHint: 'use Glob or Bash ls to see the rest' }
+          : undefined,
+      };
+    }
     const sizeErr = readSizeError(st.size, args.file_path);
     if (sizeErr) return { text: sizeErr, isError: true };
     // IMAGES (2026-08-11 spec): a vision model gets the actual picture — the tool
@@ -151,6 +180,31 @@ export const ReadTool = defineTool({
     if (undeliverableExt) {
       return { text: `Read rejected: ${args.file_path} is a ${path.extname(args.file_path).slice(1)} image — a format that cannot be delivered to the model. Convert it to PNG (e.g. Bash: magick in.svg out.png) and Read the copy.`, isError: true };
     }
+    const offset = args.offset ?? 1;
+    const limit = Math.min(args.limit ?? 2000, 2000);
+    const canonical = canonicalize(args.file_path, ctx.cwd);
+    // G-11 (2026-08-26 tools investigation): the same slice of an UNCHANGED file
+    // was already served this session — the model still has it (the session
+    // forgets these marks whenever history is discarded or shrunk, so this is
+    // never claimed across a compaction or resume). A short notice beats a
+    // second copy: Claude Code and Hermes both do this. Checked BEFORE the file
+    // is read so the repeat costs a stat and nothing else. Still counts as a
+    // Read for the edit gate — the registry stamp happens here as well as on the
+    // full path below (a binary file is only stamped AFTER it passes the binary
+    // refusal, so a refused Read never satisfies the gate; a dedupe hit can
+    // only be for a file that already passed it).
+    const servedKey = `${canonical}|${offset}|${limit}`;
+    const prior = ctx.servedReads?.get(servedKey);
+    if (prior && prior.mtimeMs === st.mtimeMs) {
+      ctx.readRegistry.set(canonical, st.mtimeMs);
+      const ago = ctx.toolCallIndex !== undefined ? ctx.toolCallIndex - prior.callIndex : undefined;
+      const when = ago !== undefined ? `(${ago} call${ago === 1 ? '' : 's'} ago)` : '(earlier this session)';
+      return {
+        text: `Read ${args.file_path}: lines ${prior.from}–${prior.to} — `
+          + `Unchanged since your earlier Read this session ${when} — the content you already have is current. `
+          + 'Use a different offset/limit to see another part of the file.',
+      };
+    }
     const buf = fs.readFileSync(abs);
     if (looksBinary(buf)) return { text: `Read rejected: ${args.file_path}: it is a binary file.`, isError: true };
     const raw = buf.toString('utf8');
@@ -159,33 +213,50 @@ export const ReadTool = defineTool({
     // 4) — drop it so line counts and the paging trailer are honest.
     if (raw.endsWith('\n')) all.pop();
     const totalLines = all.length;
-    const offset = args.offset ?? 1;
-    const limit = Math.min(args.limit ?? 2000, 2000);
     // Record for the read-before-edit gate (mtime so a later external change
     // invalidates it) — the file exists and was readable, so it counts as read
     // even if the requested page is past EOF.
-    ctx.readRegistry.set(canonicalize(args.file_path, ctx.cwd), st.mtimeMs);
+    ctx.readRegistry.set(canonical, st.mtimeMs);
     if (offset > totalLines) {
       return { text: `Read failed: ${args.file_path}: offset ${offset} is past the end of the file (${totalLines} lines).`, isError: true };
     }
     const slice = all.slice(offset - 1, offset - 1 + limit);
     const MAX_LINE = 2000;
-    const numbered = slice
-      .map(
-        (l, i) =>
-          `${String(offset + i).padStart(6)}\t${
-            l.length > MAX_LINE ? l.slice(0, MAX_LINE) + '…[line truncated]' : l
-          }`,
-      )
-      .join('\n');
+    // G-5: a second, per-call cap in CHARS on top of the line cap — 2,000 lines
+    // of long lines is megabytes of numbered text, which used to sail through to
+    // defineTool's generic 100k pipeline notice with no exact way to continue.
+    // Cut on a line boundary (never mid-line; always at least one line) and say
+    // precisely where to resume. The pipeline cap stays as a backstop but is now
+    // unreachable for text reads (≤ 50,000 + one notice line).
+    const numberedLines: string[] = [];
+    let chars = 0;
+    let charCapped = false;
+    for (let i = 0; i < slice.length; i++) {
+      const l = slice[i];
+      const line = `${String(offset + i).padStart(6)}\t${l.length > MAX_LINE ? l.slice(0, MAX_LINE) + '…[line truncated]' : l}`;
+      const cost = line.length + (i > 0 ? 1 : 0); // +1 for the '\n' joining it on
+      if (i > 0 && chars + cost > MAX_CHARS) { charCapped = true; break; }
+      numberedLines.push(line);
+      chars += cost;
+    }
+    const shownLines = numberedLines.length;
+    const last = offset + shownLines - 1;
+    ctx.servedReads?.set(servedKey, { mtimeMs: st.mtimeMs, callIndex: ctx.toolCallIndex ?? 0, from: offset, to: last });
     // WHY a declared bound instead of the hand-written trailer this used to carry:
     // every tool now reports paging the same way, and the "use offset=N" advice is
     // Read's own vocabulary rather than a shared string other tools inherited.
-    const more = offset - 1 + limit < totalLines;
+    const more = last < totalLines;
     return {
-      text: numbered,
+      text: numberedLines.join('\n'),
       bounds: more
-        ? { shown: slice.length, total: totalLines, unit: 'lines' as const, moreHint: `use offset=${offset + limit} to continue` }
+        ? {
+          shown: shownLines,
+          total: totalLines,
+          unit: 'lines' as const,
+          moreHint: charCapped
+            ? `~50 KB cap reached at line ${last}; use offset=${last + 1} to continue`
+            : `use offset=${last + 1} to continue`,
+        }
         : undefined,
     };
   },

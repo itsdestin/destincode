@@ -16,8 +16,10 @@ export function toHunks(oldText: string, newText: string, filePath: string): Str
   }));
 }
 
-/** Detect and preserve line endings + BOM (Windows repos — spec §2.3). */
-function preserveFormat(original: string, edited: string): string {
+/** Detect and preserve line endings + BOM (Windows repos — spec §2.3).
+ *  Exported (D-5, 2026-08-26) so Write's overwrite path applies the SAME rule —
+ *  before that a Write over a CRLF file silently converted it to LF. */
+export function preserveFormat(original: string, edited: string): string {
   const hasBom = original.charCodeAt(0) === 0xfeff;
   const crlf = original.includes('\r\n');
   let out = edited;
