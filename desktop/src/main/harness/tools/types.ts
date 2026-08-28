@@ -6,6 +6,7 @@ import type { StructuredPatchHunk, SpecialistRunView } from '../../../shared/typ
 import type { CatalogModel, ModelBinding } from '../../../shared/provider-types';
 import type { SpecialistDefinition } from '../specialists/registry';
 import type { DelegatedModels } from '../specialists/delegated-models';
+import type { ShellRegistry } from '../shell-registry';
 
 /** Task 6 — what the Task tool's execute() hands the host to actually run a
  *  specialist. Structural, mirroring the rest of ToolServices: the tool never
@@ -270,6 +271,11 @@ export interface ToolContext {
   /** Whether the SESSION's current model can see images (profile.supportsVision).
    *  Optional so test/one-off contexts default to the conservative false. */
   supportsVision?: boolean;
+  /** G-1 background Bash: this session's shell registry — where a
+   *  run_in_background start or a handed-off command lives, and what
+   *  BashOutput/KillShell read. Absent in test/one-off contexts, in which
+   *  case Bash refuses run_in_background and a time limit still kills. */
+  shells?: ShellRegistry;
 }
 
 /** What a tool omitted from its own result, and how to see more.

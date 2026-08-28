@@ -6,7 +6,7 @@
 // ctx.shells. Everything a run produces goes to an on-disk log from the
 // first byte; a 200-line ring stays in memory for the finished notice and
 // BashOutput; the card gets the last 40 lines over the wire.
-import { spawn, type ChildProcess, type SpawnOptions } from 'child_process';
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnOptions, type SpawnOptionsWithoutStdio } from 'child_process';
 import { EventEmitter } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -115,7 +115,15 @@ export type KillResult = { ok: true; run: ShellRun } | { ok: false; run?: ShellR
 /** spawn() in its own process group on POSIX. Why: a plain spawn puts the
  *  shell in OUR group, so a kill reaches only the outer bash and a `node` it
  *  started lives on (spec §1 — today's Escape orphans grandchildren). Windows
- *  has no groups worth using here; killTree walks the tree with taskkill. */
+ *  has no groups worth using here; killTree walks the tree with taskkill.
+ *
+ *  Two signatures for one implementation so callers keep the stream types they
+ *  had: a caller that does not name `stdio` gets Node's default all-pipes shape
+ *  (non-null stdout/stderr), which is what bash.ts relies on. Without the
+ *  overload, swapping spawn() for spawnDetached() silently widened every
+ *  `child.stdout` to `Readable | null`. */
+export function spawnDetached(cmd: string, args: string[], opts: SpawnOptionsWithoutStdio): ChildProcessWithoutNullStreams;
+export function spawnDetached(cmd: string, args: string[], opts: SpawnOptions): ChildProcess;
 export function spawnDetached(cmd: string, args: string[], opts: SpawnOptions): ChildProcess {
   return spawn(cmd, args, { ...opts, windowsHide: true, detached: process.platform !== 'win32' });
 }

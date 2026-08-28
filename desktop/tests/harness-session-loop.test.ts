@@ -1969,6 +1969,20 @@ describe('HarnessSession — empty final step recovery', () => {
     expect(cleared.map((e) => e.data.toolPreparing.toolCallId)).toEqual(['c1']);
   });
 
+  it('G-1: opts.shells reaches the tool as ctx.shells (absent when not wired)', async () => {
+    let seen: unknown = 'unset';
+    const probe = fakeTool('Read', { onExecute: (_a, c) => { seen = c.shells; return { text: 'ok' }; } });
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'done'), finishChunk('stop')),
+    ]);
+    const shells = { marker: 'registry' } as any;
+    const session = new HarnessSession(makeOpts({ tools: [probe], decide: async () => ALLOW, shells }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    expect(seen).toBe(shells);
+  });
+
   it("empty 'tool-calls' twice → empty_response (the honest end, not the raw passthrough)", async () => {
     const seen: any[] = [];
     const model = scriptedModel([stream(finishChunk('tool-calls'))], seen);

@@ -1,6 +1,5 @@
 // PTY-less exec (spec §2.3): none of the ConPTY 56-byte machinery applies —
 // that is a CC-TUI constraint, not an exec constraint.
-import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -16,6 +15,7 @@ import { workspaceRootMissHint } from './guards';
 import { spillDirFor, sweepOldSpillFilesOnce } from './spill-paths';
 import { takeHeadLines, takeTailLines } from './truncate';
 import type { ToolResultPayload } from './types';
+import { spawnDetached, killTree } from '../shell-registry';
 import { CWD_SENTINEL, ENV_SENTINEL, stripAnsi } from './shell-text';
 // Why re-exported: harness-tools-core.test.ts and other callers import
 // stripAnsi from here; moving the implementation into shell-text.ts (so the
@@ -487,9 +487,13 @@ export const BashTool = defineTool({
       // it escapes to defineTool as a bare `Bash failed: spawn <CODE>`.
       let child;
       try {
-        child = spawn(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command, captureEnv) : args.command], {
+        // G-1 (a behaviour change): spawnDetached gives the command its own
+        // process GROUP, so an interrupt reaches everything it started. The old
+        // plain spawn put it in ours, and child.kill() then reached only the
+        // outer bash — a `node` it had launched lived on as an orphan (spec §1).
+        // windowsHide is set inside spawnDetached.
+        child = spawnDetached(shell.cmd, [...shell.args, probe ? withCwdProbe(args.command, captureEnv) : args.command], {
           cwd: startCwd,
-          windowsHide: true,
           // Ask tools to emit plain output rather than stripping it after the fact
           // where possible — cleaner, and it keeps byte counts honest.
           env: spawnEnv,
@@ -857,7 +861,9 @@ export const BashTool = defineTool({
         }
       };
       const timer = setTimeout(() => {
-        child.kill('SIGKILL');
+        // Task 4 replaces this whole timer with a hand-off; until then a
+        // timeout still force-kills, now reaching the whole family.
+        killTree(child, { graceMs: 0 });
         finish(
           `Command timed out after ${timeout}ms. The process was force-killed (SIGKILL) — if it was mid-write to a file, that write may be incomplete.\n`,
           true,
@@ -870,7 +876,10 @@ export const BashTool = defineTool({
       // grandchild (e.g. bash → node) keeps the stdout pipe open, so 'close'
       // would never fire and the turn would hang.
       const onAbort = () => {
-        child.kill('SIGKILL');
+        // Kill the FAMILY and resolve NOW (the comment above explains why we
+        // cannot wait for 'close'); the SIGTERM->SIGKILL escalation runs on
+        // after this call returns, so nothing here blocks the turn.
+        killTree(child);
         finish('Canceled: the user interrupted this operation.\n', true);
       };
       ctx.signal.addEventListener('abort', onAbort, { once: true });

@@ -136,6 +136,7 @@ import { createSkillTool } from './tools/skill';
 import { createTaskTool } from './tools/task';
 import { ModelSearchTool } from './tools/model-search';
 import { BUILTIN_ROSTER, type SpecialistRoster } from './specialists/registry';
+import type { ShellRegistry } from './shell-registry';
 import { createSkillCatalog, type SkillCatalog } from './skills/skill-catalog';
 import { fitInjection } from './injection/injection-budget';
 import type { TriggerIndex } from './injection/path-triggers';
@@ -247,6 +248,11 @@ export interface HarnessSessionOpts {
    *  no-op — isSpecialistChild withholds Task entirely), so its own roster
    *  identity never matters. */
   specialistRoster?: SpecialistRoster;
+  /** G-1 background Bash: the HOST-owned registry for this session's
+   *  background/handed-off commands (NativeSessionHost.shellsFor). Reaches the
+   *  tools as ctx.shells; absent in tests, where Bash refuses a background
+   *  start and a time limit still kills. */
+  shells?: ShellRegistry;
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
@@ -2888,6 +2894,10 @@ export class HarnessSession extends EventEmitter {
       setShellEnv: (next: Record<string, string>) => {
         this.shellEnv = next;
       },
+      // G-1: the session's shell registry (host-owned — see
+      // NativeSessionHost.shellsFor). Spread so an unwired session leaves
+      // ctx.shells genuinely absent rather than explicitly undefined.
+      ...(this.opts.shells ? { shells: this.opts.shells } : {}),
       todos: this.todos,
       supportsVision: this.profile.supportsVision,
       ...(this.opts.toolServices ? { services: this.opts.toolServices } : {}),
