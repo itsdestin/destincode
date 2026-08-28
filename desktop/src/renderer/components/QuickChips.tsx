@@ -40,16 +40,16 @@ interface Props {
 }
 
 export default function QuickChips({ onChipTap }: Props) {
-  const { chips, setChips, chipsLoaded, installed } = useSkills();
+  const { chips, setChips, installed } = useSkills();
   const [editorOpen, setEditorOpen] = useState(false);
 
-  // Render nothing until the store answers. `chips` starts [], so before the
-  // load resolves an empty array means "not known yet", not "none" — and after
-  // it resolves, empty means empty. The pencil holds the row's height either
-  // way, so there is no layout shift when the chips arrive.
-  const displayChips: QuickChip[] = chipsLoaded
-    ? chips.map(c => ({ label: c.label, prompt: c.prompt }))
-    : [];
+  // The store is the only source. There is deliberately no hardcoded fallback
+  // list here: one used to stand in whenever `chips` was empty, which conflated
+  // "still loading" with "the user deleted every chip" — the row painted seven
+  // built-in chips that the editor, which reads the real store list, could not
+  // see or edit. Empty renders empty; the pencil holds the row's height, so
+  // nothing shifts when the chips arrive.
+  const displayChips: QuickChip[] = chips.map(c => ({ label: c.label, prompt: c.prompt }));
 
   // Outside-click dismissal now handled by the <Scrim> inside ChipEditorPopup.
 

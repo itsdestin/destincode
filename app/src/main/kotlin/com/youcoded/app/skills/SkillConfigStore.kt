@@ -405,11 +405,24 @@ class SkillConfigStore(private val homeDir: File) {
         }
         config.put("favorites", filteredFavs)
 
+        // Chips are `{label, prompt, skillId?}` OBJECTS, so the skill id lives on
+        // the `skillId` field — it is not the element itself the way a favorite
+        // id is. Reading them with optString() (as the favorites loop above
+        // correctly does for its bare strings) stringified each whole object,
+        // which failed twice over: the id never matched, so no chip was ever
+        // cascaded, AND the stringified object was written back in place of the
+        // object. migrateLegacyStringChips() then saw a string-shaped array on
+        // the next load and "upgraded" every entry into a chip whose label was
+        // the raw JSON blob and whose prompt was EMPTY — so uninstalling any
+        // plugin silently wiped every quick-chip prompt on Android.
         val chips = getChips()
         val filteredChips = JSONArray()
         for (i in 0 until chips.length()) {
-            val chip = chips.optString(i)
-            if (chip != id) filteredChips.put(chip)
+            val chip = chips.opt(i) ?: continue
+            val chipSkillId = (chip as? JSONObject)?.optString("skillId")?.takeIf { it.isNotEmpty() }
+            // A non-object entry is legacy data; keep it verbatim and let the
+            // migration promote it rather than dropping the user's chip here.
+            if (chipSkillId != id) filteredChips.put(chip)
         }
         config.put("chips", filteredChips)
 

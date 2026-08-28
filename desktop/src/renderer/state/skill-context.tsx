@@ -5,11 +5,6 @@ interface SkillState {
   installed: SkillEntry[];
   favorites: string[];
   chips: ChipConfig[];
-  /** False until the initial getChips() round-trip resolves. Consumers must not
-   *  treat an empty `chips` as "the user has no chips" before this flips — the
-   *  array starts empty, so the two states are otherwise indistinguishable and
-   *  QuickChips used to paper over the gap with its own hardcoded default list. */
-  chipsLoaded: boolean;
 }
 
 interface SkillActions {
@@ -41,7 +36,6 @@ export function SkillProvider({ children }: { children: ReactNode }) {
   const [installed, setInstalled] = useState<SkillEntry[]>([]);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [chips, setChipsState] = useState<ChipConfig[]>([]);
-  const [chipsLoaded, setChipsLoaded] = useState(false);
   const [drawerCommands, setDrawerCommands] = useState<CommandEntry[]>([]);
 
   // Fetch slash commands separately from skills — the remote-shim exposes
@@ -67,7 +61,6 @@ export function SkillProvider({ children }: { children: ReactNode }) {
     ]).then(async ([inst, favs, ch, defaults]) => {
       setInstalled(inst ?? []);
       setChipsState(ch ?? []);
-      setChipsLoaded(true);
 
       // First-run seeding: for each curated default we haven't seeded before,
       // persist it as a favorite so the drawer is non-empty out of the box.
@@ -91,8 +84,6 @@ export function SkillProvider({ children }: { children: ReactNode }) {
       }
     }).catch((err) => {
       console.error('[SkillContext] Failed to load:', err);
-      // Unblock the chip row rather than leaving it in a permanent loading state.
-      setChipsLoaded(true);
     });
   }, []);
 
@@ -127,10 +118,10 @@ export function SkillProvider({ children }: { children: ReactNode }) {
   const publish = useCallback((id: string) => window.claude.skills.publish(id), []);
 
   const value = useMemo<SkillContextValue>(() => ({
-    installed, favorites, chips, chipsLoaded, drawerSkills, drawerCommands,
+    installed, favorites, chips, drawerSkills, drawerCommands,
     refreshInstalled, setFavorite: setFavoriteAction, setChips: setChipsAction,
     setOverride: setOverrideAction, getShareLink, publish,
-  }), [installed, favorites, chips, chipsLoaded, drawerSkills, drawerCommands,
+  }), [installed, favorites, chips, drawerSkills, drawerCommands,
        refreshInstalled, setFavoriteAction, setChipsAction, setOverrideAction,
        getShareLink, publish]);
 
