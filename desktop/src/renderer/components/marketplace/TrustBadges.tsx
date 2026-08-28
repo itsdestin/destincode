@@ -75,6 +75,22 @@ export function ScanBadge({ scan, size = 'sm', responsiveLabel = false }: { scan
   );
 }
 
+/** Round 2 (Destin): the author is a chip in the same row as the two trust
+ *  badges, on every surface — not a line of grey text under the title. */
+export function AuthorBadge({ author, size = 'sm' }: { author: string; size?: 'sm' | 'md' }) {
+  return (
+    <span className={`${size === 'md' ? `${BADGE} text-xs px-2` : BADGE} max-w-[9rem]`} title={`Published by ${author}`} data-author>
+      <span className="text-fg-dim inline-flex" aria-hidden>
+        <svg width={size === 'md' ? 14 : 12} height={size === 'md' ? 14 : 12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="12" cy="8" r="4" />
+          <path d="M4 21a8 8 0 0 1 16 0" />
+        </svg>
+      </span>
+      <span className="truncate">{author}</span>
+    </span>
+  );
+}
+
 export function OriginBadge({ tier, size = 'sm' }: { tier: OriginTier; size?: 'sm' | 'md' }) {
   return (
     <span className={size === 'md' ? `${BADGE} text-xs px-2` : BADGE} title={ORIGIN_EXPLAINER[tier]} data-origin={tier}>

@@ -16,7 +16,7 @@ import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketp
 import LikeButton from "./LikeButton";
 // Marketplace overhaul (2026-08-27): trust line, "What this can do", and the
 // Feedback section (thumbs + comments) replace star reviews.
-import { OriginBadge, ScanBadge } from "./TrustBadges";
+import { OriginBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
 import { CapabilityList } from "./CapabilityList";
 import FeedbackSection from "./FeedbackSection";
 import { CATALOG_TYPE_LABEL } from "../../../shared/catalog-types";
@@ -247,15 +247,17 @@ function SkillBody({
       <header className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 sm:gap-4">
         <div className="min-w-0">
           <h1 className="text-xl sm:text-2xl font-semibold text-fg">{entry.displayName}</h1>
-          {(entry.author || typeLabel) && (
-            <p className="text-sm text-fg-dim">{[typeLabel, entry.author].filter(Boolean).join(" · ")}</p>
-          )}
-          {/* Overhaul: the trust line — who made it, was it checked, and
-              where it came from. Two badges, then plain text; never a score. */}
+          {typeLabel && <p className="text-sm text-fg-dim">{typeLabel}</p>}
+          {/* Legacy rows (no catalog block) keep the author as text. */}
+          {!catalog && entry.author && <p className="text-sm text-fg-dim">{entry.author}</p>}
+          {/* Overhaul: the trust line — was it checked, who made it (origin +
+              author chips), and where it came from. Badges, then plain text;
+              never a score. */}
           {catalog && (
             <div className="mt-2 flex items-center gap-1.5 flex-wrap text-xs text-fg-dim" data-trust-line>
               <ScanBadge scan={catalog.scan} size="md" />
               <OriginBadge tier={catalog.origin.tier} size="md" />
+              {entry.author && <AuthorBadge author={entry.author} size="md" />}
               {catalog.origin.mirroredFrom && <span>from {catalog.origin.mirroredFrom}</span>}
               {catalog.partOf && (
                 <button

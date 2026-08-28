@@ -13,7 +13,7 @@ import { plural } from "../../../shared/plural";
 import InstallFavoriteCorner from "./InstallFavoriteCorner";
 // Marketplace overhaul (2026-08-27): origin + scan badges, risky-capability
 // glyphs and the thumbs summary replace the star rating on every card.
-import { OriginBadge, ScanBadge } from "./TrustBadges";
+import { OriginBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
 import { capabilityLine } from "./CapabilityList";
 import { ThumbsSummary } from "./FeedbackSection";
 import { CATALOG_TYPE_LABEL } from "../../../shared/catalog-types";
@@ -114,6 +114,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const themeStats = item.kind === "theme" ? stats.themes[item.entry.slug] : undefined;
   const installs = pluginStats?.installs ?? 0;
   const likes = themeStats?.likes ?? 0;
+  const author = item.entry.author || "";
   // Overhaul: the catalog block (absent on pre-overhaul rows → no badges).
   const catalog = item.kind === "skill" ? item.entry.catalog : undefined;
   // A non-bundle kind gets its name in the byline ("Skill · Anthropic") so a
@@ -125,12 +126,30 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
     <div className="flex items-center gap-1 flex-nowrap min-w-0" data-trust>
       <ScanBadge scan={catalog.scan} responsiveLabel />
       <OriginBadge tier={catalog.origin.tier} />
+      {/* Round 3: the author is a chip here, not a grey line under the title. */}
+      {author && <AuthorBadge author={author} />}
     </div>
+  ) : null;
+  const corner = suppressCorner ? null : kind === "skill" ? (
+    <InstallFavoriteCorner inline installed={isInstalled} installing={isInstalling} favorited={isFavorited} onInstall={install} onToggleFavorite={toggleFavorite} />
+  ) : isInstalled ? (
+    <InstallFavoriteCorner inline installed installing={isInstalling} favorited={isFavorited} onInstall={install} onToggleFavorite={toggleFavorite} />
+  ) : null;
+  // Round 3: "412 installs" → a download arrow and the number; the words are
+  // on hover.
+  const installCount = installs > 0 ? (
+    <span className="inline-flex items-center gap-1 shrink-0" title={plural(installs, "install")}>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </svg>
+      {installs.toLocaleString()}
+    </span>
   ) : null;
   const capLine = catalog ? capabilityLine(catalog.capabilities) : null;
 
   const title = item.kind === "skill" ? item.entry.displayName : item.entry.name;
-  const author = item.kind === "skill" ? (item.entry.author || "") : (item.entry.author || "");
   const themePreviewUrl = item.kind === "theme" ? item.entry.preview : undefined;
   const blurb = item.kind === "skill"
     ? (item.entry.tagline || item.entry.description || "")
@@ -198,15 +217,15 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
             below stops working because the flex item can grow past parent. */}
         <div className="flex-1 min-w-0">
           <h3 className="font-medium text-fg truncate">{title}</h3>
-          {(author || typeLabel) && (
-            <p className="text-xs text-fg-dim truncate">{[typeLabel, author].filter(Boolean).join(" · ")}</p>
+          {(typeLabel || (!catalog && author)) && (
+            <p className="text-xs text-fg-dim truncate">{[typeLabel, catalog ? null : author].filter(Boolean).join(" · ")}</p>
           )}
           {blurb && <p className="text-xs text-fg-2 line-clamp-2">{blurb}</p>}
           {trust && <div className="mt-1">{trust}</div>}
           {thumbs || installs > 0 || likes > 0 ? (
             <div className="mt-1 flex items-center gap-3 text-xs text-fg-dim">
               {thumbs}
-              {installs > 0 && <span>{plural(installs, "install")}</span>}
+              {installCount}
               {likes > 0 && <span>{plural(likes, "like")}</span>}
             </div>
           ) : null}
@@ -271,27 +290,6 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           same absolute coordinates. Themes skip the install affordance so the
           corner is only wired for skills. Integrations opt out entirely via
           suppressCorner since their install/connect flow goes through onOpen. */}
-      {!suppressCorner && (
-        kind === "skill" ? (
-          <InstallFavoriteCorner
-            installed={isInstalled}
-            installing={isInstalling}
-            favorited={isFavorited}
-            onInstall={install}
-            onToggleFavorite={toggleFavorite}
-          />
-        ) : (
-          isInstalled && (
-            <InstallFavoriteCorner
-              installed
-              installing={isInstalling}
-              favorited={isFavorited}
-              onInstall={install}
-              onToggleFavorite={toggleFavorite}
-            />
-          )
-        )
-      )}
       {themePreviewUrl && (
         <img
           src={themePreviewUrl}
@@ -322,8 +320,8 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
             {/* Author on its own line at sm+; at narrow we hide it here and
                 render it inline with the bottom stats row to save vertical
                 space — see the bottom row below. */}
-            {(author || typeLabel) && (
-              <p className="hidden sm:block text-xs text-fg-dim truncate">{[typeLabel, author].filter(Boolean).join(" · ")}</p>
+            {(typeLabel || (!catalog && author)) && (
+              <p className="hidden sm:block text-xs text-fg-dim truncate">{[typeLabel, catalog ? null : author].filter(Boolean).join(" · ")}</p>
             )}
             {/* Overhaul: who made it + was it checked, right under the byline
                 so the two trust signals are read before the blurb. */}
@@ -365,15 +363,16 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
             statusBadge (integrations), it overrides the generic plugin-state
             vocabulary so labels like "Connected" / "Needs auth" / "Coming
             soon" can surface instead of just "Installed". */}
+        <div className="flex items-center gap-1 shrink-0">
         {statusBadge ? (
           <span
-            className={`relative z-10 text-3xs uppercase tracking-wide shrink-0 mt-0.5 px-2 py-0.5 rounded-full ${STATUS_TONE_CLASS[statusBadge.tone]}`}
+            className={`relative z-10 text-3xs uppercase tracking-wide shrink-0 px-2 py-0.5 rounded-full ${STATUS_TONE_CLASS[statusBadge.tone]}`}
           >
             {statusBadge.text}
           </span>
         ) : (isInstalling || updateAvailable || isInstalled) && (
           <span
-            className={`relative z-10 text-3xs uppercase tracking-wide shrink-0 mt-0.5 px-2 py-0.5 rounded-full ${
+            className={`relative z-10 text-3xs uppercase tracking-wide shrink-0 px-2 py-0.5 rounded-full ${
               isInstalling
                 ? 'text-accent border border-accent/50 bg-accent/10 animate-pulse'
                 : 'text-fg-dim'
@@ -382,6 +381,11 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
             {isInstalling ? 'Installing…' : updateAvailable ? 'Update' : 'Installed'}
           </span>
         )}
+        {/* Round 3: the star / download / spinner sits in the title row right
+            beside the status pill instead of floating in the corner. Themes
+            only get it once installed (favorite); integrations opt out. */}
+        {corner}
+        </div>
       </div>
       {/* Round 2: the blurb reserves two lines even when it is one, so every
           card in a row keeps the same shape (Destin: "not symmetrical"). */}
@@ -408,9 +412,9 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           {/* Author appears here at narrow only — keeps the byline visible without
               spending a whole row on it. Hidden at sm+ since it has its own line
               under the title up top. */}
-          {author && <span className="sm:hidden text-fg-dim truncate">{author}</span>}
+          {!catalog && author && <span className="sm:hidden text-fg-dim truncate">{author}</span>}
           {thumbs}
-          {installs > 0 && <span className="shrink-0">{plural(installs, "install")}</span>}
+          {installCount}
           {likes > 0 && <span className="shrink-0">{plural(likes, "like")}</span>}
           {/* Component peek (e.g. "2 skills · 3 commands") is wide-only and
               right-aligned so the row reads: feedback left, contents right. */}
