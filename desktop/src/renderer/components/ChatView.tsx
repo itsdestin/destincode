@@ -17,6 +17,7 @@ import CopyPicker from './CopyPicker';
 import ThinkingIndicator from './ThinkingIndicator';
 import AttentionBanner from './AttentionBanner';
 import ModelLoadingBar from './ModelLoadingBar';
+import { useObservedRef } from '../hooks/use-observed-ref';
 import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
 import { useArtifact } from '../state/ArtifactContext';
@@ -417,9 +418,22 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
     return () => bubbleObserverRef.current?.disconnect();
   }, []);
 
-  const observeEntry = useCallback((el: HTMLDivElement | null) => {
-    if (el) bubbleObserverRef.current?.observe(el);
-  }, []);
+  // Fix (perf cycle 3): release the element when React detaches the ref.
+  //
+  // An IntersectionObserver holds a STRONG reference to every target it
+  // observes, and this ref is attached to EVERY timeline entry. The old body
+  // only ever called observe(), so any entry removed from the DOM stayed
+  // reachable from the live observer for as long as this ChatView was mounted.
+  // Nothing removes a timeline entry today, so it never leaked in practice —
+  // but it means the FIRST change that drops an entry (eviction, or collapsing
+  // a distant entry to a placeholder) would free nothing at all, silently, with
+  // every existing test still green. Measured context: a conversation read to
+  // the top holds ~1.44M DOM nodes.
+  //
+  // React 19 supports returning a cleanup function from a callback ref, which
+  // fires on detach — that is the only hook where unobserve can be called, so
+  // it is used rather than hand-tracking a Set of observed nodes.
+  const observeEntry = useObservedRef<HTMLDivElement>(bubbleObserverRef);
 
   // Arrow key scrolling with acceleration when not typing
   const scrollSpeed = useRef(0);
