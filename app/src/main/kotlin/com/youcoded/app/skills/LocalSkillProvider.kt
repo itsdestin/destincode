@@ -536,8 +536,24 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         // genuinely up to date. Log it and keep going: the reconcile must not abort
         // just because the cache couldn't be refreshed, it should fall back to
         // whatever's already cached (same as desktop's behavior).
-        if (!installer.refreshLocalMarketplaceCache("youcoded")) {
-            Log.w("BundledPlugins", "marketplace cache refresh failed; comparing against the last cached copy")
+        //
+        // Fix (Track B final review, Finding F11): this used to hardcode
+        // "youcoded" while the compare a few lines below reads
+        // installer.cacheSourceDir(sourceRef, mp) using the entry's OWN `mp` —
+        // exactly the bug desktop's B3 review fixed (skill-provider.ts's
+        // reconcileBundledPlugins refreshes one cache per DISTINCT
+        // sourceMarketplace found among the bundled entries, not a hardcoded
+        // one). Latent today because all three bundled ids happen to be
+        // "youcoded", but the two halves silently disagreeing the moment
+        // that's no longer true is the same trap. Refresh every marketplace
+        // actually referenced by a bundled entry, not just one hardcoded name.
+        val marketplaces = BundledPlugins.IDS
+            .map { id -> findEntry(id)?.optString("sourceMarketplace")?.ifEmpty { "youcoded" } ?: "youcoded" }
+            .toSet()
+        for (mp in marketplaces) {
+            if (!installer.refreshLocalMarketplaceCache(mp)) {
+                Log.w("BundledPlugins", "marketplace cache refresh failed for $mp; comparing against the last cached copy")
+            }
         }
 
         for (id in BundledPlugins.IDS) {

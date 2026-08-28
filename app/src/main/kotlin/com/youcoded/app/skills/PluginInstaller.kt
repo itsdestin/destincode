@@ -412,7 +412,13 @@ class PluginInstaller(
             if (!target.exists() && retired.exists()) {
                 try { renameFn(retired, target) } catch (_: Exception) { /* nothing better to do */ }
             }
-            staging.deleteRecursively()
+            // Fix (Track B final review, "Also" minor finding): this was a bare
+            // `staging.deleteRecursively()` — the only one of the three staging
+            // cleanup sites in this function that still swallowed its boolean
+            // return silently. A partial leftover here (e.g. a file the OS is
+            // still holding open) would be just as silent as the two early-return
+            // sites this same fix already covers above.
+            if (!staging.deleteRecursively()) Log.w(TAG, "could not fully remove staged copy for $id at $staging")
             return@withContext InstallResult.Failed("upgrade copy failed: ${e.message}")
         }
         // WHY: deleting the retired tree is cleanup AFTER the swap already
