@@ -12,7 +12,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, cleanup } from '@testing-library/react';
 import React from 'react';
-import MarkdownContent, { SessionRefsEnabled } from '../src/renderer/components/MarkdownContent';
+import MarkdownContent from '../src/renderer/components/MarkdownContent';
+import { SessionRefsEnabled } from '../src/renderer/components/session-refs-context';
 import { parseConversationRefs, COPY, type ResolvedConversation } from '../src/shared/chatsearch-refs';
 
 const ID = 'a3f2aaaa-0000-4000-8000-000000000000';

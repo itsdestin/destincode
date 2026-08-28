@@ -237,7 +237,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
                         ? 'bg-accent/10 text-fg'
                         : f.exists
                           ? 'text-fg-2 hover:bg-inset hover:text-fg'
-                          : 'text-fg-faint hover:bg-inset'
+                          : 'text-fg-muted hover:bg-inset'
                     }`}
                   >
                     {/* Folder icon */}

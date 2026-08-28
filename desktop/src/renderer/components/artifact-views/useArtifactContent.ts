@@ -7,6 +7,7 @@
 // This hook keeps them apart via ArtifactContentState (see ActiveArtifactView).
 import { useCallback, useEffect, useState } from 'react';
 import type { ArtifactContentInfo, ArtifactContentState } from './ActiveArtifactView';
+import { rendersFromBytesOnly } from './RendererRegistry';
 
 // Turn the handler's error codes into specific, accurate user-facing strings —
 // unknown codes surface verbatim rather than being replaced with a guessed
@@ -32,15 +33,23 @@ export interface UseArtifactContentResult {
   contentState: ArtifactContentState;
   /** Re-runs the read after an error — wired to ErrorState's Retry. */
   retryRead: () => void;
+  /** Deliver a WHOLE artifacts:get response — text AND the facts about the text
+   * in one call. Prefer this over setContent for anything that came off disk. */
+  applyDiskRead: (res: any) => void;
 }
 
 export function useArtifactContent(
   projectRoot: string,
   artifactId: string | null | undefined,
+  // The file's path — needed to answer "does this file's viewer read its own
+  // bytes?" BEFORE we ask for text. Optional so older callers keep working.
+  artifactPath?: string | null,
 ): UseArtifactContentResult {
   const [content, setContent] = useState<string | null>(null);
   // get() metadata the content string cannot carry: binary sniff (routes
-  // unknown extensions to the code view), tooLarge (renders the size notice).
+  // unknown extensions to the code view), truncated (renders the partial-view
+  // banner), sizeBytes (the file's REAL size, which `content` cannot report once
+  // it is only a prefix).
   const [contentInfo, setContentInfo] = useState<ArtifactContentInfo | null>(null);
   const [contentState, setContentState] = useState<ArtifactContentState>({ phase: 'loading' });
   // Bumping the token re-runs the effect below — the Retry action.
@@ -52,6 +61,19 @@ export function useArtifactContent(
       setContent(null);
       setContentInfo(null);
       setContentState({ phase: 'loading' });
+      return;
+    }
+    // Images/PDFs/Office docs render through BinaryContent -> artifacts:read-binary,
+    // which has its OWN 50 MB ceiling. Asking artifacts:get for their text was
+    // pure waste AND applied the text editor's 2 MB cap to them -- the reported
+    // bug (spec 2026-08-25 §4.1). Settle straight into the exact shape an
+    // under-cap binary read already produces, so every consumer downstream is
+    // unchanged: no new content phase, and binary:true still holds the edit
+    // affordance shut.
+    if (artifactPath && rendersFromBytesOnly(artifactPath)) {
+      setContent(null);
+      setContentInfo({ binary: true });
+      setContentState({ phase: 'ready' });
       return;
     }
     let cancelled = false;
@@ -68,7 +90,7 @@ export function useArtifactContent(
       if (cancelled) return;
       if (res && res.ok) {
         setContent(res.content ?? null);
-        setContentInfo({ binary: res.binary, tooLarge: res.tooLarge, sizeBytes: res.sizeBytes });
+        setContentInfo({ binary: res.binary, truncated: res.truncated, sizeBytes: res.sizeBytes });
         // orphan:true is the handler's genuine not-found signal (ENOENT /
         // orphaned record) — the ONLY thing allowed to render "no longer on
         // disk". Everything else that resolved ok is ready.
@@ -84,7 +106,7 @@ export function useArtifactContent(
       }
     });
     return () => { cancelled = true; };
-  }, [projectRoot, artifactId, retryToken]);
+  }, [projectRoot, artifactId, artifactPath, retryToken]);
 
   const retryRead = useCallback(() => setRetryToken((t) => t + 1), []);
 
@@ -106,5 +128,17 @@ export function useArtifactContent(
     }
   }, []);
 
-  return { content, setContent: reconciledSetContent, contentInfo, contentState, retryRead };
+  // Content and its metadata, always together. Callers used to hand back only
+  // `res.content`, leaving contentInfo frozen at whatever the FIRST read said —
+  // so a file that grew past the cap while open kept its Edit button, and saving
+  // would have written the prefix over the whole file (spec §4.4). Editability
+  // is derived from sizeBytes, so a stale size is a data-loss bug, not cosmetics.
+  const applyDiskRead = useCallback((res: any) => {
+    if (!res || !res.ok || res.orphan) return;
+    setContent(res.content ?? null);
+    setContentInfo({ binary: res.binary, truncated: res.truncated, sizeBytes: res.sizeBytes });
+    setContentState({ phase: 'ready' });
+  }, []);
+
+  return { content, setContent: reconciledSetContent, contentInfo, contentState, retryRead, applyDiskRead };
 }

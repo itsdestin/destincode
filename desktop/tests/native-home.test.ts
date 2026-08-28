@@ -155,4 +155,26 @@ describe('NativeHome', () => {
     const ids = home.listSessionFiles().map((f) => f.sessionId);
     expect(ids).toEqual(['real-session']);
   });
+
+  // Task 3 (plan 1c): ensureTextFile is the ONE sanctioned way the personal
+  // specialists folder and its starter file get created (ADR 008 — NativeHome
+  // is the only ~/.youcoded writer). First call creates parents + file and
+  // reports true; a second call must never overwrite whatever the user has
+  // since typed into that file.
+  it('ensureTextFile creates parents + file, returns true; second call returns false and leaves edits alone', async () => {
+    const rel = path.join('specialists', 'example.md');
+    const target = path.join(root, '.youcoded', rel);
+    expect(fs.existsSync(target)).toBe(false);
+
+    const first = await home.ensureTextFile(rel, 'starter contents');
+    expect(first).toBe(true);
+    expect(fs.readFileSync(target, 'utf8')).toBe('starter contents');
+
+    // Simulate the user editing the file after it was created.
+    fs.writeFileSync(target, 'the user edited this');
+
+    const second = await home.ensureTextFile(rel, 'starter contents');
+    expect(second).toBe(false);
+    expect(fs.readFileSync(target, 'utf8')).toBe('the user edited this');
+  });
 });

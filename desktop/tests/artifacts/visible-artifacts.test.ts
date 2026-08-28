@@ -89,6 +89,15 @@ describe('trackedArtifacts', () => {
     expect(trackedArtifacts(arts, includes, [], ROOT).map((a: any) => a.id)).toEqual(['pinned']);
   });
 
+  it("shows an internal file whose only version is 'delivered', hides an external one (externals stay pin-gated)", () => {
+    const delivered = { type: 'delivered' };
+    const arts = [
+      { kind: 'internal', path: 'out/chart.png', absolutePath: null, versions: [delivered], id: 'in' },
+      { kind: 'external', path: 'chart.png', absolutePath: '/tmp/chart.png', versions: [delivered], id: 'ext' },
+    ];
+    expect(trackedArtifacts(arts, [], [], ROOT).map((a: any) => a.id)).toEqual(['in']);
+  });
+
   // The 2026-07-23 flip's version of this test asserted exclude still hid an
   // external that would OTHERWISE have been visible via edit history alone
   // (the flipped rule 4). That premise is gone on revert: rule 4 now hides any

@@ -5,7 +5,8 @@ import { NativeHome } from '../src/main/native-home';
 import { SessionStore } from '../src/main/harness/session-store';
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { scriptedModel, stream, textChunks, multiDeltaTextChunks, toolCallChunk, finishChunk } from './helpers/scripted-model';
-import { resolveSpecialist } from '../src/main/harness/specialists/registry';
+import { resolveSpecialist, type SpecialistDefinition, type SpecialistRoster } from '../src/main/harness/specialists/registry';
+import { createTaskTool } from '../src/main/harness/tools/task';
 import { SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS } from '../src/main/harness/specialists/limits';
 import { OWNER, RAW_REPORT_CAP_CHARS } from '../src/main/harness/specialists/delegation-ledger';
 import { computeReportBudget } from '../src/main/harness/specialists/report-budget';
@@ -132,6 +133,86 @@ describe('specialist foreground run (Task 7)', () => {
     expect(report).toContain('REPORT: found it');
     expect(report).toMatch(new RegExp(`## Report from \\w+ the \\w+ Explorer \\(${EXPLORER.id}\\)`));
     expect(report).toContain(`[specialist session ${childId}]`);
+  });
+
+  // Task 7 (plan 1c): a helper's REASONING belongs in its own card's Thinking
+  // row (R6) — the widened predicate (isSubagentDisplayEvent) re-emits an
+  // `assistant-thinking` event ONLY when it carries data.text, using the
+  // harness's REAL reasoning-delta stream path (harness-session.ts) rather
+  // than a synthetic event, so this pins the whole path end to end.
+  it('a child\'s assistant-thinking WITH text reaches the parent as a stamped copy (parentAgentToolUseId + agentId)', async () => {
+    await withParent([
+      stream(
+        { type: 'reasoning-start', id: 'r1' },
+        { type: 'reasoning-delta', id: 'r1', delta: 'weighing which file to check first' },
+        { type: 'reasoning-end', id: 'r1' },
+        ...textChunks('t', 'REPORT: found it at src/x.ts'),
+        finishChunk('stop'),
+      ),
+    ]);
+    const events = collect();
+
+    const { childId } = await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
+    });
+
+    const thinking = events.find((e) => e.type === 'assistant-thinking' && e.data?.agentId === childId);
+    expect(thinking).toBeDefined();
+    expect(thinking!.data.text).toBe('weighing which file to check first');
+    expect(thinking!.sessionId).toBe('root-1');
+    expect(thinking!.data.parentAgentToolUseId).toBe('tc-1');
+  });
+
+  // Task 7 (plan 1c): the three NON-text-bearing shapes `assistant-thinking`
+  // actually carries in production (harness-session.ts) — a payload-less
+  // watchdog heartbeat, a stallWarning countdown, and a toolPreparing notice —
+  // must never re-emit. Any of them showing up under the parent's id would
+  // render as the PARENT's own status (a stall/prepare notice that isn't
+  // happening to the parent at all), which is exactly what the predicate's
+  // `data.text` check exists to prevent. Emitted directly on the child's own
+  // session emitter (the same technique the heartbeat-staleness suite below
+  // uses) so this is independent of whatever the scripted model's real stream
+  // happens to produce.
+  it('a payload-less heartbeat, a stallWarning, and a toolPreparing thinking event never do', async () => {
+    const REPORT = stream(...textChunks('t', 'REPORT: done'), finishChunk('stop'));
+    let fired = false;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        if (!fired) {
+          fired = true;
+          const entry = [...(host as any).live.entries()].find(([id]: [string, unknown]) => id !== 'root-1')!;
+          const [liveChildId, liveEntry] = entry as [string, { session: any }];
+          liveEntry.session.emit('transcript-event', {
+            type: 'assistant-thinking', sessionId: liveChildId, uuid: 'evt-hb', timestamp: Date.now(), data: {},
+          });
+          liveEntry.session.emit('transcript-event', {
+            type: 'assistant-thinking', sessionId: liveChildId, uuid: 'evt-stall', timestamp: Date.now(),
+            data: { stallWarning: { retryInMs: 5000, willRetry: true } },
+          });
+          liveEntry.session.emit('transcript-event', {
+            type: 'assistant-thinking', sessionId: liveChildId, uuid: 'evt-prep', timestamp: Date.now(),
+            data: { toolPreparing: { toolCallId: 'tc-x', toolName: 'Glob', chars: 3 } },
+          });
+        }
+        return { stream: simulateReadableStream({ chunks: REPORT, initialDelayInMs: null, chunkDelayInMs: null }) };
+      },
+    });
+    store = new SessionStore(new NativeHome(root));
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, undefined,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const events = collect();
+
+    const { childId } = await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives', workDir: root, parentToolCallId: 'tc-1',
+      token: { parentId: 'root-1', writer: false },
+    });
+
+    const thinking = events.filter((e) => e.type === 'assistant-thinking' && e.data?.agentId === childId);
+    expect(thinking).toEqual([]);
   });
 
   // Fix: harness-session.ts:1769 emits one assistant-text event per STREAM
@@ -1705,5 +1786,167 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
     (host as any).queueDelivery('root-1');
     await (host as any).live.get('root-1').running;
     expect(events.filter((e) => e.data?.injected === 'specialist-report')).toHaveLength(1);
+  });
+});
+
+// ---- R12 (Task 4, plan 1c) — a running child keeps its spawn-time
+// definition when the roster changes mid-run --------------------------------
+// spawnSpecialist takes an already-RESOLVED SpecialistDefinition object (the
+// Task tool resolves it from the roster once, at the moment the model calls
+// Task — task.ts) and threads that exact object into buildSpecialistSession,
+// which builds the child's `tools` list ONCE, at construction
+// (native-session-host.ts's buildSpecialistSession: `CORE_TOOLS.filter((t) =>
+// allowed.has(t.name))`). Nothing about a running child ever re-reads a
+// roster. This test pins that by construction: it captures the child's OWN
+// tool set while it is genuinely live, then shows a widened SECOND definition
+// for the same id (what a re-read catalog would hand back on the NEXT
+// Task-tool build) changes nothing about the already-spawned child.
+describe('R12 (Task 4, plan 1c) — a running child keeps its spawn-time definition', () => {
+  let root: string;
+  let store: SessionStore;
+  let host: NativeSessionHost;
+
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-r12-')); });
+  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  it('a running child keeps its spawn-time definition when the roster changes mid-run: its tool set stays what it was hired with, and only the NEXT Task description reflects the change', async () => {
+    const SPEC_V1: SpecialistDefinition = {
+      id: 'custom-helper', displayName: 'Custom Helper', description: 'A file-defined helper.',
+      systemPrompt: 'Help with reading files.', allowedTools: ['Read'], charter: 'read-only',
+      stepCap: 10, reportBudgetTokens: 500, source: 'personal',
+    };
+
+    let capturedTools: string[] = [];
+    const REPORT_CHUNKS = stream(...textChunks('t', 'REPORT: done'), finishChunk('stop'));
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        // Capture the CHILD's own live tool set — proves what it was
+        // actually BUILT with, not what a later roster claims.
+        const entry = [...(host as any).live.entries()].find(([id]: [string, unknown]) => id !== 'root-1');
+        if (entry) {
+          const session = (entry[1] as { session: any }).session;
+          capturedTools = [...session.toolByName.keys()];
+        }
+        return { stream: simulateReadableStream({ chunks: REPORT_CHUNKS, initialDelayInMs: null, chunkDelayInMs: null }) };
+      },
+    });
+    const home = new NativeHome(root);
+    store = new SessionStore(home);
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, home,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    await host.spawnSpecialist('root-1', {
+      specialist: SPEC_V1, prompt: 'read and summarize the config', workDir: root,
+      parentToolCallId: 'tc-1', description: 'read config', token: { parentId: 'root-1', writer: false },
+    });
+
+    // Exactly what SPEC_V1.allowedTools named — no Bash, no Write, no Edit.
+    expect(capturedTools).toEqual(['Read']);
+
+    // "The roster changes mid-run": a repo (or a Settings edit) widens THIS
+    // same specialist's file to add Bash. Represented as a second definition
+    // object for the same id, since that's exactly what SpecialistCatalog
+    // would hand back on the NEXT createTaskTool() build (Task 4) — the
+    // catalog re-reads at the START of the next turn, never mid-turn.
+    const SPEC_V2: SpecialistDefinition = { ...SPEC_V1, allowedTools: ['Read', 'Bash'], charter: 'read-write' };
+    const widenedRoster: SpecialistRoster = {
+      list: () => [SPEC_V2],
+      resolve: (id) => (id === 'custom-helper' ? SPEC_V2 : undefined),
+    };
+    const nextDescription = createTaskTool(widenedRoster).description;
+    expect(nextDescription).toMatch(/custom-helper[^\n]*Bash/);
+
+    // The already-spawned (by now finished) child was never touched by that
+    // widening — it ran with exactly what it was hired with.
+    expect(capturedTools).toEqual(['Read']);
+  });
+});
+
+// Fix pass (Task 4 review, Important finding): the turn-start
+// `this.specialistCatalog.ensureFresh(entry.cwd)` at the top of runTurns
+// carried a comment claiming a specialist child never reaches runTurns "by
+// construction" (runSpecialist supposedly drives the child directly, never
+// through send()/this.live's queue). That claim is false: runSpecialist's own
+// runTurn() closure calls `this.send(childId, text)`, and send() unconditionally
+// dispatches into `this.runTurns(sessionId, entry, ...)` for whatever id it is
+// given — here the CHILD's id, with entry.cwd set to the child's own work_dir
+// (wireChildLive). So every specialist turn — the opening turn AND the
+// empty-report nudge — was re-reading (and permanently caching, on a Map with
+// no eviction) a catalog entry for a cwd nothing will ever read a roster for,
+// since createChild never calls toolWiring for a child.
+//
+// This suite proves the call path, not a flag: it drives a REAL root turn and
+// a REAL foreground specialist run through the actual send()/runTurns()
+// machinery, with a spy on the catalog's ensureFresh, and asserts it fires for
+// the root session's turn and never for the child's — using a child cwd
+// distinct from the root's so a call bearing it can only have come from the
+// child's own turn(s).
+describe('Task 4 fix pass — turn-start ensureFresh is root-only for real', () => {
+  let root: string;
+  let store: SessionStore;
+  let host: NativeSessionHost;
+
+  beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-turnstart-')); });
+  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+
+  // Root replies plainly (no delegation) on its own turn. The child (spawned
+  // directly via spawnSpecialist, same technique every other test in this file
+  // uses) reports on its FIRST turn — no nudge needed — so runSpecialist's
+  // runTurn() closure calls this.send(childId, ...) exactly once: the exact
+  // send() -> runTurns() path the finding traces.
+  const ROOT_REPLY = stream(...textChunks('t', 'sure, one moment'), finishChunk('stop'));
+  const CHILD_REPORT = stream(...textChunks('t', 'REPORT: done'), finishChunk('stop'));
+
+  it("ensureFresh runs for the root session's own turn, and never for a specialist child's turn — driven through the real send()/runTurns() path, not a boolean check", async () => {
+    const model = scriptedModel([ROOT_REPLY, CHILD_REPORT]);
+    store = new SessionStore(new NativeHome(root));
+    host = new NativeSessionHost(
+      store, async () => model as any, async () => ({ contextLength: null, totalSlots: null }), async () => null, async () => null,
+    );
+    await host.create({ sessionId: 'root-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+    // Spy AFTER create() so create()'s own one-time ensureFresh(cwd) call
+    // (Task 4: the roster must exist before toolWiring() reads it) isn't mixed
+    // into what this test checks — the TURN-START call this fix pass is about.
+    const ensureFreshSpy = vi.spyOn((host as any).specialistCatalog, 'ensureFresh');
+
+    // --- Root's own turn, dispatched through the public send()/runTurns
+    // machinery the finding says a child ALSO reaches. ---
+    const sendResult = host.send('root-1', 'go');
+    expect(sendResult.status).toBe('sent');
+    await (host as any).live.get('root-1').running;
+
+    expect(ensureFreshSpy).toHaveBeenCalledWith(root);
+    const rootCallsAfterRootTurn = ensureFreshSpy.mock.calls.filter(([cwd]) => cwd === root).length;
+    expect(rootCallsAfterRootTurn).toBeGreaterThan(0);
+
+    // --- A foreground specialist child, hired into a DIFFERENT cwd than
+    // root's — so a spy call bearing that cwd can only have come from the
+    // child's own turn(s), never from anything root-related. ---
+    const childWorkDir = path.join(root, 'child-sub');
+    fs.mkdirSync(childWorkDir, { recursive: true });
+
+    const { childId, report } = await host.spawnSpecialist('root-1', {
+      specialist: EXPLORER, prompt: 'find the config loader and report where it lives',
+      workDir: childWorkDir, parentToolCallId: 'tc-1', token: { parentId: 'root-1', writer: false },
+    });
+    expect(report).toContain('REPORT: done');
+    expect(childId).toBeDefined();
+
+    // THE assertion: the child's own turn (runSpecialist's runTurn() closure
+    // calling this.send(childId, ...), which dispatches into the SAME
+    // runTurns() as root's turn above) must never have called ensureFresh with
+    // the child's cwd. A test that only checked "runTurns wasn't invoked for
+    // the child" would be worthless here — it WAS invoked, via send(); this is
+    // what actually makes the call inside it root-only.
+    const childCwdCalls = ensureFreshSpy.mock.calls.filter(([cwd]) => cwd === childWorkDir);
+    expect(childCwdCalls).toEqual([]);
+
+    // Root's own tally is unaffected by the child's turn(s) running afterward.
+    const finalRootCalls = ensureFreshSpy.mock.calls.filter(([cwd]) => cwd === root).length;
+    expect(finalRootCalls).toBe(rootCallsAfterRootTurn);
   });
 });

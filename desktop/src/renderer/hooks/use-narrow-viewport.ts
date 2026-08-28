@@ -5,7 +5,11 @@
 
 import { useEffect, useState } from 'react';
 
-const QUERY = '(max-width: 639.98px)';
+// Exported so call sites that need the raw media query string (rather than a
+// hook subscription — e.g. a one-shot window.matchMedia check in App.tsx)
+// don't hardcode a second copy that can drift from this one.
+export const NARROW_VIEWPORT_QUERY = '(max-width: 639.98px)';
+const QUERY = NARROW_VIEWPORT_QUERY;
 
 export function useNarrowViewport(): boolean {
   // Read the real viewport on the FIRST render, not in the mount effect. This
@@ -17,7 +21,12 @@ export function useNarrowViewport(): boolean {
     () => typeof window !== 'undefined' && !!window.matchMedia?.(QUERY).matches,
   );
   useEffect(() => {
-    const mql = window.matchMedia(QUERY);
+    // Guarded the same way the initial state above already is. The two lines
+    // disagreed: the initial read used `matchMedia?.` while the effect called
+    // it outright, so any host without matchMedia (jsdom) survived the first
+    // render and then threw on the effect — one file, one API, two assumptions.
+    const mql = window.matchMedia?.(QUERY);
+    if (!mql) return;
     setNarrow(mql.matches);
     const onChange = (e: MediaQueryListEvent) => setNarrow(e.matches);
     mql.addEventListener('change', onChange);

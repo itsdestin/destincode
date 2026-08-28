@@ -10,7 +10,8 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent, type SpecialistsEvent } from '../shared/types';
+import { isPlaceholderModelId } from '../shared/model-ids';
 import { hasRealTitle } from '../shared/session-title';
 import { setPermissionOverrides } from './main';
 import { LocalSkillProvider } from './skill-provider';
@@ -41,6 +42,7 @@ import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
 import { NativeSessionHost } from './harness/native-session-host';
+import { SpecialistCatalog, toListResult } from './harness/specialists/catalog';
 import type { ProfileProviderType } from './harness/capability-profile';
 import { PermissionStore } from './harness/permission-store';
 // Type-only: the payload the permissions:remove handler forwards to the host.
@@ -71,7 +73,7 @@ import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dis
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
   syncSpacesStatus, syncSpacesEnable, syncSpacesSyncNow, syncSpacesCreateProject, syncSpacesImportProject,
-  syncSpacesRenameProject, syncSpacesStopProject, getManagedRoots, isSyncSpacesEnabled, getLastSyncByDevice,
+  syncSpacesRenameProject, syncSpacesStopProject, syncSpacesSetProjectDescription, getManagedRoots, isSyncSpacesEnabled, getLastSyncByDevice,
   getSelfLastSyncEpochMs, isSyncSpacesSyncing,
 } from './sync-spaces/service';
 // Self-row recency derivation (spec §4) — pure fn so the ms→wire-seconds
@@ -97,10 +99,17 @@ import { getChangelog } from './changelog-service';
 import { getOptIn as getAnalyticsOptIn, setOptIn as setAnalyticsOptIn } from './analytics-service';
 // Saved-folder store — extracted so sync-spaces/ can share the reader/writer.
 import { SavedFolder, readFolders, writeFolders } from './saved-folders';
+// Shared cap so a local folder's description can't drift from the synced
+// registry's limit (project-registry.ts uses the same constant).
+import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
 import type { PerformanceConfigSnapshot } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
-import { appendVersion, readSidecar, writeSidecar, renameArtifact, removeArtifactRecord, runSidecarMigration } from './artifacts/artifact-store';
+// 2026-08-27 OOM fix: read-only handlers (list, get, save, check-existence,
+// the binary-roots pass) go through readSidecarShared — one parsed copy per
+// project however many callers ask at once. Only the manual include/exclude
+// handlers, which mutate and write back, keep the private readSidecar.
+import { appendVersion, readSidecar, readSidecarShared, writeSidecar, renameArtifact, removeArtifactRecord, runSidecarMigration } from './artifacts/artifact-store';
 import { listProjects, removeProject } from './artifacts/central-index';
 // Shared with remote-server.ts — see that module's header for why these left
 // this file (they were closures, so the remote transport could not reach them).
@@ -110,9 +119,11 @@ import { ensureProject, ensureProjectCoalesced, applyGitTreatmentCoalesced } fro
 import { sweepStaleTmp } from './artifacts/cas-write';
 import { canonicalize } from '../shared/artifacts/canonicalize';
 import { evaluateBinaryRead } from './artifacts/read-binary-access';
+import { readFileHead } from './fs-read-head';
 import { initProjectWatchers, watchProject, unwatchProject, dropSubscriber, noteOwnWrite, invalidateSidecarIdCache } from './artifacts/project-watcher';
 import { searchProjectContent } from './artifacts/content-search';
-import { looksBinary, EDIT_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
+import { looksBinary, EDIT_MAX_BYTES, FULL_READ_MAX_BYTES, READ_BINARY_MAX_BYTES } from '../shared/artifacts/editable-path-policy';
+import { decideOverCapRead } from '../shared/artifacts/over-cap-read';
 import { authorizeArtifactRead, authorizeArtifactWrite, isAbsoluteRecorded } from './artifacts/write-authorization';
 import { trackedArtifacts } from './artifacts/visible-artifacts';
 import { importFile } from './artifacts/import-file';
@@ -1241,6 +1252,21 @@ export function registerIpcHandlers(
     return true;
   });
 
+  ipcMain.handle(IPC.FOLDERS_SET_DESCRIPTION, async (_event, folderPath: string, description: string) => {
+    const folders = readFolders();
+    const normalized = path.resolve(folderPath);
+    const entry = folders.find(f => path.resolve(f.path) === normalized);
+    if (!entry) return false;
+    // Trim + cap here as well as in the UI: the renderer is a mirror, never the
+    // boundary (same rule as the artifact write policy). String(… ?? '') matches
+    // the remote-server path's coercion: the renderer always sends a string
+    // today, but the two transports must be equally defensive so a future
+    // null/undefined caller throws on neither surface rather than only one.
+    entry.description = String(description ?? '').trim().slice(0, PROJECT_DESCRIPTION_MAX) || null;
+    writeFolders(folders);
+    return true;
+  });
+
   // --- Skills discovery & marketplace ---
   ipcMain.handle(IPC.SKILLS_LIST, async () => {
     return skillProvider.getInstalled();
@@ -2213,7 +2239,15 @@ export function registerIpcHandlers(
       // changes on an explicit /model switch, so writing on every block would
       // mean hundreds of redundant record writes per conversation — each one a
       // sync-visible change. Only a DIFFERENT model reaches the store.
-      if (typeof model === 'string' && model && lastModelSeen.get(claudeId) !== model) {
+      // Fix: never record CC's `<synthetic>` placeholder. It is stamped on
+      // assistant lines CC composed itself (session limit / out of credits /
+      // /login), so it is not a model — and this record OVERRIDES the Resume
+      // Browser's transcript scan (session-browser.ts, store overlay), so a
+      // single limit notice would print `<synthetic>` as the card's model and
+      // sync that to every other device. Read side is guarded too
+      // (store-core.ts sanitizeModelRef) to heal records written before this.
+      if (typeof model === 'string' && model && !isPlaceholderModelId(model)
+          && lastModelSeen.get(claudeId) !== model) {
         lastModelSeen.set(claudeId, model);
         noteModelUsed(claudeId, { modelId: model, providerType: 'claude-code', providerLabel: 'Claude Code' });
       }
@@ -2276,6 +2310,13 @@ export function registerIpcHandlers(
   // line — the normal case for almost every install.
   const mcpRegistry = new McpRegistry(nativeHome, secretsStore);
   const mcpManager = new McpManager({ registry: mcpRegistry, connectionFactory: createConnection });
+  // Task 4 (plan 1c) — the real per-cwd specialist catalog: reads personal
+  // (~/.youcoded/specialists/), Claude-Code user-level (~/.claude/agents/),
+  // and each project's own .claude/agents/, merged with the four built-ins.
+  // ONE instance for the app's whole life, shared by every project folder —
+  // its in-memory per-source state is what makes re-reading only a CHANGED
+  // folder work across turns and across conversations sharing one project.
+  const specialistCatalog = new SpecialistCatalog({ home: nativeHome });
   const nativeHost = new NativeSessionHost(
     new SessionStore(nativeHome),
     // Pass the per-turn opts (e.g. serialToolCalls for small local models) straight through.
@@ -2366,6 +2407,12 @@ export function registerIpcHandlers(
     // nativeHome instance every other ~/.youcoded/ writer above shares, never
     // a second one.
     nativeHome,
+    // specialistAskHoldMs (12th param) left at its real production default —
+    // explicit undefined only to reach the 13th positional slot below.
+    undefined,
+    // specialistCatalog (13th param, Task 4 plan 1c): the real catalog built
+    // above, sharing nativeHome with every other ~/.youcoded/ writer here.
+    specialistCatalog,
   );
 
   // Task 4: resolves sessionId's CURRENT model binding into the portable ref
@@ -2455,7 +2502,36 @@ export function registerIpcHandlers(
   nativeHost.on('hook-event', (event: HookEvent) => {
     sendForSession(event.sessionId, IPC.HOOK_EVENT, event);
     if (remoteServer) {
+      // Fix (not in the original plan — see the branch's commit history):
+      // native hook events reach remote clients ONLY through this direct
+      // broadcast() call. RemoteServer's own onHookEvent — which is what
+      // fills hookBuffers for connect-time replay — is wired solely to the
+      // LEGACY CC hookRelay, never to nativeHost. So a phone reconnecting
+      // while a native permission ask was HELD got nothing back: PermissionHeld
+      // is one-shot and the 3s heartbeat stops re-announcing once an ask is
+      // held (permission-broker.ts). bufferHookEvent() feeds the SAME
+      // hookBuffers map the legacy path fills, so the existing replay loop in
+      // replayBuffers() picks these up for free, in the same push order
+      // (request, then held).
+      remoteServer.bufferHookEvent(event);
       remoteServer.broadcast({ type: 'hook:event', payload: event });
+    }
+  });
+
+  // Task 8 (plan 1c) — the ledger's own write is the ONLY thing that fires
+  // this (see the 'specialists-event' emit in NativeSessionHost's
+  // constructor, next to DelegationLedger's construction): one mutate, one
+  // event, one changed hire. Push-only — there is no specialists:event
+  // REQUEST handler anywhere, same shape as native:model-state.
+  nativeHost.on('specialists-event', (event: SpecialistsEvent) => {
+    sendForSession(event.sessionId, IPC.SPECIALISTS_EVENT, event);
+    if (remoteServer) {
+      // Task 9 (plan 1c): the phone hydrates over this WebSocket, never
+      // through TRANSCRIPT_REPLAY, so it needs its own connect-time catch-up
+      // for a helper's run status — bufferSpecialistRun feeds the buffer
+      // replayBuffers() reads from on connect (mirrors bufferHookEvent above).
+      remoteServer.bufferSpecialistRun(event);
+      remoteServer.broadcast({ type: 'specialists:event', payload: event });
     }
   });
 
@@ -2470,7 +2546,11 @@ export function registerIpcHandlers(
   // ipc-handler-owned state into remoteServer — no global needed).
   // permissionStore rides along for the remote permissions:list case (M5 2a) —
   // the WS revokes go through nativeHost, which is already here.
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore });
+  // specialistCatalog (Task 8): the remote specialists:list WS case needs the
+  // SAME catalog instance the desktop handler below reads — a second instance
+  // would fingerprint-cache independently and could answer a re-read with
+  // stale data relative to whichever surface wrote last.
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore, specialistCatalog });
 
   // Plan 2b Task 11: give the remote server the SAME lease client/requester +
   // deviceId so its WS clients reach the identical lease/device state the
@@ -2503,6 +2583,18 @@ export function registerIpcHandlers(
     if (nativeEvents !== null) {
       for (const ev of nativeHost.pendingAskEventsFor(sessionId)) {
         evt.sender.send(IPC.HOOK_EVENT, ev);
+      }
+    }
+    // Task 9 (plan 1c): a replayed transcript rebuilds every tool card from
+    // the JSONL, but a specialist card's status IS its run record — the
+    // ledger the transcript itself says nothing about (delegation-ledger.ts's
+    // module comment). Without this, a reloaded window's helper card comes
+    // back with no status. Same "direct to the requesting window" ownership
+    // reason as the ask replay just above, and native-only for the same
+    // reason: nativeEvents is null for CC sessions, which have no ledger.
+    if (nativeEvents !== null) {
+      for (const run of nativeHost.specialistRunsFor(sessionId)) {
+        evt.sender.send(IPC.SPECIALISTS_EVENT, { kind: 'run', sessionId, run } satisfies SpecialistsEvent);
       }
     }
     // Terminal marker so the reducer can reap tool cards this history left
@@ -2629,6 +2721,23 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.PERMISSIONS_LIST, async () => permissionStore.list());
   ipcMain.handle(IPC.PERMISSIONS_REMOVE, async (_e, slug: string, rule: PermissionRule) => nativeHost.revokeRule(slug, rule));
   ipcMain.handle(IPC.PERMISSIONS_REMOVE_PROJECT, async (_e, slug: string) => nativeHost.revokeProject(slug));
+  // Specialists 1c (Task 8) — roster + tier reads/writes + card actions.
+  // list ALWAYS re-reads (catalog.reload) so a file dropped into a specialists
+  // folder a moment ago shows up without a separate "did it change" check;
+  // ensurePersonalFolder is opt-in (Settings' "Open folder" needs somewhere
+  // to open the FIRST time, before any file has ever been written there).
+  ipcMain.handle(IPC.SPECIALISTS_LIST, async (_e, opts?: { cwd?: string; ensurePersonalFolder?: boolean }) => {
+    if (opts?.ensurePersonalFolder) await specialistCatalog.ensurePersonalFolder();
+    await specialistCatalog.reload(opts?.cwd);
+    return toListResult(specialistCatalog.snapshot(opts?.cwd));
+  });
+  ipcMain.handle(IPC.SPECIALISTS_DELEGATED_GET, async () => nativeHost.getDelegatedModels());
+  ipcMain.handle(IPC.SPECIALISTS_DELEGATED_SET, async (_e, tier: 'budget' | 'frontier', binding: { providerId: string; modelId: string } | null) =>
+    nativeHost.setDelegatedModel(tier, binding));
+  ipcMain.handle(IPC.SPECIALISTS_STEER, async (_e, sessionId: string, childId: string, text: string) =>
+    nativeHost.steerFromUser(sessionId, childId, text));
+  ipcMain.handle(IPC.SPECIALISTS_INTERRUPT, async (_e, sessionId: string, childId: string) =>
+    nativeHost.interruptFromUser(sessionId, childId));
   // --- Local engine IPC (Plan B) ---
   // install/restart resolve to a fresh status() so the caller doesn't need a
   // second round-trip. The push emitters below keep every window + remote in
@@ -3254,6 +3363,9 @@ export function registerIpcHandlers(
     syncSpacesRenameProject(String(p?.name ?? ''), String(p?.displayName ?? '')));
   ipcMain.handle(IPC.SYNC_SPACES_STOP_PROJECT, (_e, p: { name: string }) =>
     syncSpacesStopProject(String(p?.name ?? '')));
+  // Synced project description (Task 3) — payload-object shape, matching renameProject.
+  ipcMain.handle(IPC.SYNC_SPACES_SET_PROJECT_DESCRIPTION, (_e, p: { name: string; description: string }) =>
+    syncSpacesSetProjectDescription(String(p?.name ?? ''), String(p?.description ?? '')));
 
   // Conversation-lease takeover (Plan 2b Task 9). Thin passthroughs to the lease
   // client (query) and the requester flow (takeover/force) built in main.ts.
@@ -3478,7 +3590,7 @@ export function registerIpcHandlers(
       path: string;
       kind: 'internal' | 'external';
       absolutePath: string | null;
-      type: 'create' | 'edit' | 'delete' | 'read';
+      type: 'create' | 'edit' | 'delete' | 'read' | 'delivered';
       author: 'agent' | 'user';
       toolUseId?: string;
     }
@@ -3572,7 +3684,7 @@ export function registerIpcHandlers(
     // done here at each of the three call sites instead, and only when a write
     // actually happened.
     if (migration.migrated) invalidateSidecarIdCache(projectRoot);
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, artifacts: [] };
     // Filter to artifacts touched by this session
     const result = sidecar.artifacts.filter((a) =>
@@ -3650,7 +3762,7 @@ export function registerIpcHandlers(
     // project per process, so this costs one Set lookup after the first call.
     const migration = await runSidecarMigration(projectRoot);
     if (migration.migrated) invalidateSidecarIdCache(projectRoot); // see LIST_SESSION's WHY
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
 
     let tracked: any[] = [];
     if (sidecar && !('corrupted' in sidecar)) {
@@ -3699,8 +3811,14 @@ export function registerIpcHandlers(
     return { ok: true, files: r.files, truncated: r.truncated };
   });
 
-  ipcMain.handle(ARTIFACT_IPC.GET, async (_e, projectRoot: string, artifactId: string) => {
-    const sidecar = await readSidecar(projectRoot);
+  ipcMain.handle(ARTIFACT_IPC.GET, async (
+    _e, projectRoot: string, artifactId: string,
+    // full: the user clicked "Load the whole file" on the partial-view bar. Still
+    // refused above FULL_READ_MAX_BYTES — the flag opts into a BIGGER read, not an
+    // unbounded one.
+    opts?: { full?: boolean },
+  ) => {
+    const sidecar = await readSidecarShared(projectRoot);
     const artifact = (sidecar && !('corrupted' in sidecar))
       ? sidecar.artifacts.find((a) => a.id === artifactId)
       : undefined;
@@ -3741,11 +3859,37 @@ export function registerIpcHandlers(
       if (e.code !== 'ENOENT') throw e;
       return { ok: true, artifact: artifact ?? null, content: null, orphan: true };
     }
-    if (st.size > EDIT_MAX_BYTES) {
-      return {
-        ok: true, artifact: artifact ?? null, content: null, orphan: false,
-        tooLarge: true, sizeBytes: st.size, mtimeMs: st.mtimeMs,
-      };
+    // Over the cap we no longer refuse blind. Sniff the head first: an over-cap
+    // IMAGE used to get the TEXT editor's error message, which is the bug this
+    // whole workstream exists to fix. Text comes back as a readable prefix.
+    const wantsFull = opts?.full === true && st.size <= FULL_READ_MAX_BYTES;
+    if (st.size > EDIT_MAX_BYTES && !wantsFull) {
+      const fh = await fs.promises.open(realPath, 'r');
+      try {
+        // fs.read is only contractually required to return SOME bytes, not to
+        // fill the buffer — so loop until the window is full or the file ends.
+        const readFully = async (len: number) => {
+          const buf = Buffer.allocUnsafe(len);
+          let off = 0;
+          while (off < len) {
+            const { bytesRead } = await fh.read(buf, off, len - off, off);
+            if (bytesRead === 0) break;
+            off += bytesRead;
+          }
+          return buf.subarray(0, off);
+        };
+        // Head first, so a file that turns out to be binary is decided on 8 KB.
+        const head = await readFully(8192);
+        const win = await readFully(EDIT_MAX_BYTES);
+        const d = decideOverCapRead(head, win);
+        return {
+          ok: true, artifact: artifact ?? null, orphan: false,
+          content: d.content, binary: d.binary, truncated: d.truncated,
+          sizeBytes: st.size, mtimeMs: st.mtimeMs,
+        };
+      } finally {
+        await fh.close();
+      }
     }
 
     let content: string | null = null;
@@ -3764,7 +3908,10 @@ export function registerIpcHandlers(
     // mtimeMs is the optimistic-concurrency token: round-trip it into
     // artifacts:save as baseMtimeMs and the save is rejected when the file
     // changed underneath (spec §12.9 — last-write-wins fix).
-    return { ok: true, artifact: artifact ?? null, content, orphan: false, binary, mtimeMs: st.mtimeMs };
+    // sizeBytes and truncated ride EVERY response: the renderer derives
+    // editability from the size, and a `full` read must clear the partial bar.
+    return { ok: true, artifact: artifact ?? null, content, orphan: false, binary,
+             truncated: false, sizeBytes: st.size, mtimeMs: st.mtimeMs };
   });
 
   // Read a file as base64 for the binary viewers (xlsx/docx/pdf/image). The
@@ -3779,7 +3926,6 @@ export function registerIpcHandlers(
   // session drawer legitimately shows), with well-known secret locations
   // (.ssh, .netrc, .credentials.json, …) refused even inside those roots.
   // Pure decision logic + tests live in artifacts/read-binary-access.ts.
-  const READ_BINARY_MAX_BYTES = 50 * 1024 * 1024; // 50 MB — base64 inflates 33%, and it all transits IPC/WS
   ipcMain.handle(ARTIFACT_IPC.READ_BINARY, async (_e, absolutePath: string) => {
     if (typeof absolutePath !== 'string' || absolutePath.length === 0) {
       return { ok: false, error: 'no path' };
@@ -3798,7 +3944,7 @@ export function registerIpcHandlers(
         // includes from each root's sidecar — covers e.g. a temp-dir xlsx.
         const tracked = new Set<string>();
         for (const root of roots) {
-          const sidecar = await readSidecar(root).catch(() => null);
+          const sidecar = await readSidecarShared(root).catch(() => null);
           if (!sidecar || 'corrupted' in sidecar) continue;
           for (const a of sidecar.artifacts) {
             if (a.kind === 'external' && a.absolutePath) tracked.add(canonicalize(a.absolutePath, null));
@@ -3821,6 +3967,13 @@ export function registerIpcHandlers(
     }
   });
 
+  // First bytes of a user-chosen file, for the composer's attachment cards
+  // (rendered markdown / mono text preview). The cap, the deny list and the
+  // reasoning for NOT roots-gating it live in main/fs-read-head.ts +
+  // shared/read-head.ts; remote-server.ts calls the same function.
+  ipcMain.handle(IPC.FS_READ_HEAD, (_e, filePath: string, maxBytes?: number) =>
+    readFileHead(filePath, maxBytes));
+
   ipcMain.handle(ARTIFACT_IPC.SAVE, async (
     _e,
     projectRoot: string,
@@ -3836,7 +3989,7 @@ export function registerIpcHandlers(
     // caller that never showed the dialog (D5 — mistake-prevention tier).
     opts?: { baseMtimeMs?: number; confirmed?: boolean }
   ) => {
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
     const artifact = (sidecar && !('corrupted' in sidecar))
       ? sidecar.artifacts.find((a) => a.id === artifactId)
       : undefined;
@@ -4203,7 +4356,7 @@ export function registerIpcHandlers(
     if (!projectRoot || !Array.isArray(artifactIds) || artifactIds.length === 0) {
       return { ok: true, missingIds: [] };
     }
-    const sidecar = await readSidecar(projectRoot);
+    const sidecar = await readSidecarShared(projectRoot);
     if (!sidecar || 'corrupted' in sidecar) return { ok: true, missingIds: [] };
     const byId = new Map(sidecar.artifacts.map((a) => [a.id, a]));
     const results = await Promise.all(

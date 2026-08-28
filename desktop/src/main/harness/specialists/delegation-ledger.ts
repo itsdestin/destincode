@@ -30,6 +30,7 @@ import type { NativeHome } from '../../native-home';
 // takes the FROZEN native-store slug like every other file under sessions/,
 // never the CC-mirroring one (slug-encoding.ts).
 import { nativeStoreSlug } from '../../slug-encoding';
+import type { SpecialistNote, SpecialistRunView } from '../../../shared/types';
 
 export type OwnerStamp = { pid: number; instanceId: string };
 
@@ -75,6 +76,27 @@ export interface DelegationRecord {
   owner: OwnerStamp;
   missedSteers: string[];
   stale?: boolean;
+  /** Mid-run steers sent to this hire, in order (plan 1c). Absent on a 1b
+   *  record written before this field existed — every reader treats a
+   *  missing array the same as an empty one, never a crash. */
+  notes?: SpecialistNote[];
+  /** Which model actually ran it, once resolved (plan 1c, tier fallback
+   *  stated honestly). Referenced from SpecialistRunView's own field type
+   *  (rather than a duplicated literal) so the two can never silently drift. */
+  model?: SpecialistRunView['model'];
+  /** D2 fix (2026-08-26, review Critical) — the content hash of the definition
+   *  file this child was SPAWNED from, i.e. the one the user actually saw and
+   *  consented to. Absent for a built-in (nothing on disk to change) and for a
+   *  1b/1c record written before this field existed; both are treated as "no
+   *  claim to check", never as a mismatch.
+   *
+   *  WHY it has to be recorded rather than re-derived: a `task_id` resume
+   *  re-resolves the specialist from the LIVE roster and rebuilds the child
+   *  from its current tools/charter. Without this, a helper approved as
+   *  read-only could be edited to add Bash and then resumed straight into a
+   *  write-capable run — in auto-edit with no card at all, because a task_id
+   *  call carries no work_dir and so has no permission subject to match. */
+  definitionFingerprint?: string;
 }
 
 // Full body cap for the copy that rides IN the ledger file. mutateJson is a
@@ -128,8 +150,17 @@ export function isOwnerAlive(owner: OwnerStamp): boolean {
   }
 }
 
+/** Plan 1c — fired after any ledger write that actually changed one or more
+ *  records for a parent. `changed` is only the touched records, never the
+ *  whole file, so a listener (Task 5's `specialists:event` push) can
+ *  forward exactly what moved instead of re-diffing the file itself. */
+export type LedgerChangeListener = (parentCwd: string, parentId: string, changed: DelegationRecord[]) => void;
+
 export class DelegationLedger {
-  constructor(private home: NativeHome) {}
+  // onChange is constructor-only, no setter (plan 1c) — the ONE place a
+  // listener can be wired is at construction, so there is never a window
+  // where a write happens with a listener silently unset partway through.
+  constructor(private home: NativeHome, private onChange?: LedgerChangeListener) {}
 
   private relPath(parentCwd: string, parentId: string): string {
     return path.join('sessions', nativeStoreSlug(parentCwd), `${parentId}.delegations.json`);
@@ -142,9 +173,27 @@ export class DelegationLedger {
     return cur && Array.isArray((cur as LedgerFile).delegations) ? (cur as LedgerFile) : EMPTY;
   }
 
-  async recordStart(parentCwd: string, parentId: string, rec: DelegationRecord): Promise<void> {
+  /** THE chokepoint (plan 1c). Every write funnels through here so the change
+   *  listener sees each of them — enumerating methods in the host would go stale
+   *  the day a twelfth is added. Changed = records whose object identity differs
+   *  from before (the map callbacks return the same `d` for untouched records;
+   *  recordStart appends) — a write that matches no record reports nothing.
+   *  (A write that DOES match a record always reports it, even when the patch
+   *  it applies happens to be content-identical to what was already there —
+   *  the map callback still returns a new object for a matched record.) */
+  private async mutate(parentCwd: string, parentId: string, fn: (data: LedgerFile) => LedgerFile): Promise<void> {
+    let before: DelegationRecord[] = []; let after: DelegationRecord[] | undefined;
     await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
-      const data = this.coerce(cur);
+      const data = this.coerce(cur); before = data.delegations;
+      const next = fn(data); after = next.delegations; return next;
+    });
+    if (!after || !this.onChange) return;
+    const changed = after.filter((d, i) => before[i] !== d);
+    if (changed.length > 0) this.onChange(parentCwd, parentId, changed);
+  }
+
+  async recordStart(parentCwd: string, parentId: string, rec: DelegationRecord): Promise<void> {
+    await this.mutate(parentCwd, parentId, (data) => {
       return { v: FILE_VERSION, delegations: [...data.delegations, rec] };
     });
   }
@@ -173,8 +222,7 @@ export class DelegationLedger {
       patch.rawReport !== undefined && patch.rawReport.length > RAW_REPORT_CAP_CHARS
         ? { ...patch, rawReport: patch.rawReport.slice(0, RAW_REPORT_CAP_CHARS) }
         : patch;
-    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
-      const data = this.coerce(cur);
+    await this.mutate(parentCwd, parentId, (data) => {
       return {
         v: FILE_VERSION,
         delegations: data.delegations.map((d) => {
@@ -221,8 +269,7 @@ export class DelegationLedger {
    * this field the way there is for `status`).
    */
   async updateIfRunning(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord>, appendSteers: string[] = []): Promise<void> {
-    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
-      const data = this.coerce(cur);
+    await this.mutate(parentCwd, parentId, (data) => {
       return {
         v: FILE_VERSION,
         delegations: data.delegations.map((d) => {
@@ -252,14 +299,37 @@ export class DelegationLedger {
    * runDelegation's own drain came back empty) may still call this with `[]`
    * — a no-op merge, not a clobber, unlike passing `missedSteers: []` through
    * update()'s patch used to be.
+   *
+   * `note` (plan 1c): when a live steer can't be delivered and gets parked
+   * here instead, its user-facing note lands in the SAME mutateJson call —
+   * global house rule "one ledger write per related change" (see the module
+   * comment on `update`'s appendSteers fold-in for the identical reasoning:
+   * two independent writes means a throw between them can durably park the
+   * steer while silently dropping the note the user saw, or vice versa).
    */
-  async appendMissedSteers(parentCwd: string, parentId: string, childId: string, steers: string[]): Promise<void> {
+  async appendMissedSteers(parentCwd: string, parentId: string, childId: string, steers: string[], note?: SpecialistNote): Promise<void> {
     if (steers.length === 0) return;
-    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
-      const data = this.coerce(cur);
+    await this.mutate(parentCwd, parentId, (data) => {
       return {
         v: FILE_VERSION,
-        delegations: data.delegations.map((d) => (d.childId === childId ? { ...d, missedSteers: [...d.missedSteers, ...steers] } : d)),
+        delegations: data.delegations.map((d) => {
+          if (d.childId !== childId) return d;
+          const withSteers = { ...d, missedSteers: [...d.missedSteers, ...steers] };
+          return note ? { ...withSteers, notes: [...(d.notes ?? []), note] } : withSteers;
+        }),
+      };
+    });
+  }
+
+  /** Live-delivered steer (plan 1c) — the child was reachable, so this is
+   *  just a note append, never a parked steer. Sibling to
+   *  appendMissedSteers' note branch, which is the SAME shape for the
+   *  parked case (see that method's WHY for the one-write rule). */
+  async appendNote(parentCwd: string, parentId: string, childId: string, note: SpecialistNote): Promise<void> {
+    await this.mutate(parentCwd, parentId, (data) => {
+      return {
+        v: FILE_VERSION,
+        delegations: data.delegations.map((d) => (d.childId === childId ? { ...d, notes: [...(d.notes ?? []), note] } : d)),
       };
     });
   }
@@ -305,8 +375,7 @@ export class DelegationLedger {
    */
   async takeMissedSteers(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord> = {}): Promise<string[]> {
     let taken: string[] = [];
-    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
-      const data = this.coerce(cur);
+    await this.mutate(parentCwd, parentId, (data) => {
       return {
         v: FILE_VERSION,
         delegations: data.delegations.map((d) => {
@@ -348,8 +417,7 @@ export class DelegationLedger {
    * finished outcome unrelated to the interrupt — needs protecting.
    */
   async updateUnlessCompleted(parentCwd: string, parentId: string, childId: string, patch: Partial<DelegationRecord>): Promise<void> {
-    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
-      const data = this.coerce(cur);
+    await this.mutate(parentCwd, parentId, (data) => {
       return {
         v: FILE_VERSION,
         delegations: data.delegations.map((d) => (d.childId === childId && d.status !== 'completed' ? { ...d, ...patch } : d)),
@@ -359,8 +427,7 @@ export class DelegationLedger {
 
   async claimUndelivered(parentCwd: string, parentId: string): Promise<DelegationRecord | null> {
     let claimed: DelegationRecord | null = null;
-    await this.home.mutateJson(this.relPath(parentCwd, parentId), (cur) => {
-      const data = this.coerce(cur);
+    await this.mutate(parentCwd, parentId, (data) => {
       // Eligible: completed OR failed (Task 4 — a background run that dies
       // still owes the parent a typed failure notice, not silence; this
       // filter originally covered 'completed' only, written before the
@@ -489,4 +556,28 @@ export class DelegationLedger {
     // record reads back exactly like "never claimed".
     await this.update(parentCwd, parentId, childId, { claimedBy: undefined, claimedAt: undefined });
   }
+}
+
+/** The renderer's view of one record: the record MINUS delivery bookkeeping
+ *  (delivered, injectionAttempted, claimedBy, claimedAt, owner, missedSteers,
+ *  rawReport, reportPath) — those are the host's business, never the card's.
+ *  Fields are picked explicitly rather than spread-then-delete so the
+ *  omitted set is visible right here in the code, not hidden behind a
+ *  runtime `delete`. */
+export function toRunView(rec: DelegationRecord): SpecialistRunView {
+  return {
+    childId: rec.childId,
+    parentToolCallId: rec.parentToolCallId,
+    agentType: rec.agentType,
+    title: rec.title,
+    description: rec.description,
+    background: rec.background,
+    status: rec.status,
+    startedAt: rec.startedAt,
+    endedAt: rec.endedAt,
+    steps: rec.steps,
+    stale: rec.stale,
+    model: rec.model,
+    notes: rec.notes,
+  };
 }

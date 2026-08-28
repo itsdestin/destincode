@@ -54,12 +54,17 @@ describe('App.tsx: youcoded:resume-session listener', () => {
     );
   });
 
-  it('is declared after handleResumeSession, not "next to" youcoded:open-library — a TDZ constraint, documented at the call site', () => {
+  it('is declared AFTER handleResumeSession — a TDZ constraint, documented at the call site', () => {
+    // The listener closes over a `const` declared with useCallback. Registering
+    // it above that declaration throws at module evaluation, which is why it
+    // does not sit with App's other custom-event listeners near the top.
+    // (This used to anchor on youcoded:open-library's listener as "the other
+    // listeners"; master removed that one, so the assertion measured a -1 and
+    // passed vacuously on the sign. Anchor on the declaration itself instead —
+    // that IS the constraint.)
     const resumeListenerIdx = src.indexOf("addEventListener('youcoded:resume-session'");
-    const openLibraryListenerIdx = src.indexOf("addEventListener('youcoded:open-library'");
     const handleResumeDeclIdx = src.indexOf('const handleResumeSession = useCallback');
-    expect(openLibraryListenerIdx).toBeGreaterThan(0);
-    expect(handleResumeDeclIdx).toBeGreaterThan(openLibraryListenerIdx);
+    expect(handleResumeDeclIdx).toBeGreaterThan(0);
     expect(resumeListenerIdx).toBeGreaterThan(handleResumeDeclIdx);
   });
 });

@@ -324,7 +324,7 @@ export default function ConnectGithubModal({ onClose, onConnected }: Props) {
                 {/* Plain-language scope disclosure (Phase 3, 2026-07-22): the
                     `repo` scope is broad — same as GitHub's own CLI — and the
                     user deserves to know that BEFORE approving, not in a doc. */}
-                <p className="text-2xs text-fg-faint leading-relaxed">
+                <p className="text-2xs text-fg-muted leading-relaxed">
                   Approving gives YouCoded the same access GitHub's own command-line
                   tool uses: it can read and write the repositories your account can.
                   YouCoded only uses it for your private sync repos, publishing, and

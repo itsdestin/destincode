@@ -13,7 +13,7 @@
     "test": "vitest",
     "knip": "knip",
     "lint": "eslint",
-    "postinstall": "node scripts/patch-node-pty.js"
+    "postinstall": "node scripts/patch-node-pty.js && node scripts/patch-xterm-webgl-mipmap.js"
   },
   "keywords": [],
   "author": "itsdestin",

@@ -1,17 +1,22 @@
-// Sticky chip bar — type, vibe, meta, search.
+// Sticky filter bar — type switch, vibe chips, meta chips, search.
 //
-// At ≥ 640px: chips render inline (current behavior).
-// At < 640px: only the search input + a "Filters" button render in the sticky
-//   bar; tapping the button opens a bottom-anchored FilterSheet that hosts the
-//   same chip groups stacked vertically. State shape and toggle logic are
+// At ≥ 640px: the Type switch + chips render inline, search on the right.
+// At < 640px: only the search pill (with its docked filters trigger) renders in
+//   the sticky bar; tapping the trigger opens a bottom-anchored FilterSheet that
+//   hosts the same groups stacked vertically. State shape and toggle logic are
 //   unchanged — the sheet is just a different layout container.
+//
+// P-1 (2026-08-26): Plugins/Themes is "pick one" so it is a SegmentedTabs row
+// (with an explicit All), not two chips drawn like the pick-any chips after it;
+// the search field is the app's shared SearchFilterPill at both widths.
 //
 // Active count for the Filters button: (type ? 1 : 0) + vibes.size + meta.size.
 // The query is excluded since it's already visible in the search input.
 
 import React, { useState } from "react";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { Button, InputGroup, TextInput } from "../ui";
+import { Button, FilterChip, SearchFilterPill, SegmentedTabs, SegmentedTabLabel, PluginIcon, PaletteIcon } from "../ui";
+import { useMarketplace } from "../../state/marketplace-context";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { useNarrowViewport } from "../../hooks/use-narrow-viewport";
 
@@ -40,6 +45,22 @@ function activeFilterCount(f: FilterState): number {
   return (f.type !== null ? 1 : 0) + f.vibes.size + f.meta.size;
 }
 
+// The Type switch always shows a selection (a tab row can't be "nothing lit"
+// the way the old chips were), so "All" stands in for "no type filter".
+// Round 2 (Destin, 2026-08-27): the switch is the SAME pill as the Library's Plugins |
+// Themes switcher — icon + label + count, variant="pill" — so the two surfaces read as one
+// control. Counts are registry sizes (what you can browse), the Library's are installed.
+function useTypeTabs(active: string) {
+  const mp = useMarketplace();
+  const plugins = mp.skillEntries.length;
+  const themes = mp.themeEntries.length;
+  return [
+    { id: "all", label: <SegmentedTabLabel icon={null} text="All" count={plugins + themes} active={active === "all"} /> },
+    { id: "skill", label: <SegmentedTabLabel icon={<PluginIcon />} text="Plugins" count={plugins} active={active === "skill"} /> },
+    { id: "theme", label: <SegmentedTabLabel icon={<PaletteIcon />} text="Themes" count={themes} active={active === "theme"} /> },
+  ];
+}
+
 interface Props {
   value: FilterState;
   onChange(next: FilterState): void;
@@ -48,6 +69,7 @@ interface Props {
 export default function MarketplaceFilterBar({ value, onChange }: Props) {
   const compact = useNarrowViewport();
   const [sheetOpen, setSheetOpen] = useState(false);
+  const typeTabs = useTypeTabs(value.type ?? "all");
 
   const toggleMulti = (key: "vibes" | "meta", v: any) => {
     const next = { ...value, vibes: new Set(value.vibes), meta: new Set(value.meta) };
@@ -55,60 +77,33 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
     if (set.has(v)) set.delete(v); else set.add(v);
     onChange(next);
   };
-  const setType = (t: TypeChip) => {
-    onChange({ ...value, type: value.type === t ? null : t });
+  // Maps a Type tab id back onto FilterState.type. "all" → null keeps
+  // isActive() / activeFilterCount() exactly as they were: no type filter.
+  // (The old chip toggle — click the lit chip to clear — had no other callers;
+  // the All tab is that clear action now.)
+  const setTypeTab = (id: string) => {
+    onChange({ ...value, type: id === "all" ? null : (id as TypeChip) });
   };
 
   if (compact) {
     const count = activeFilterCount(value);
     return (
       <>
-        {/* Leading magnifier icon, borderless input, trailing filter button. This
-            box was the PRECEDENT for the InputGroup primitive (change 77), so it
-            now uses it rather than hand-rolling the shape. The one deliberate
-            change: focus was `focus-within:ring-2 focus-within:ring-accent` and is
-            now the wrapper's `focus-within:border-accent` — fields focus by border,
-            never a ring (the ring belongs to buttons). */}
+        {/* P-1 #2: the shared SearchFilterPill (same shape as the file browsers
+            and the wide bar below) — magnifier, rounded pill, and the sliders
+            trigger docked inside with its active-count badge. Replaces a
+            hand-rolled InputGroup + icon button that drew the same thing. */}
         <div className="layer-surface sticky top-0 z-20 p-2">
-          <InputGroup size="md">
-            <span className="pl-2.5 text-fg-muted shrink-0" aria-hidden>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="11" cy="11" r="7" />
-                <line x1="21" y1="21" x2="16.65" y2="16.65" />
-              </svg>
-            </span>
-            {/* pl-0 so the text sits next to the magnifier rather than a second
-                indent — the wrapper's own gap-1 supplies the separation. */}
-            <InputGroup.Field
-              type="search"
-              aria-label="Search the marketplace"
-              placeholder="Search…"
-              className="pl-0"
-              value={value.query}
-              onChange={(e) => onChange({ ...value, query: e.target.value })}
-            />
-            {/* Left hand-rolled on purpose: icon-only with an absolutely positioned
-                count badge, which <Button> doesn't model. mr-1 dropped — the
-                InputGroup wrapper already insets its action with pr-1. */}
-            <button
-              type="button"
-              onClick={() => setSheetOpen(true)}
-              className="shrink-0 relative p-2 rounded-md text-fg-2 hover:text-fg hover:bg-edge-dim"
-              aria-label={count > 0 ? `Filters (${count} active)` : 'Filters'}
-              title={count > 0 ? `Filters (${count} active)` : 'Filters'}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-                <line x1="4" y1="6" x2="20" y2="6" />
-                <line x1="6" y1="12" x2="18" y2="12" />
-                <line x1="9" y1="18" x2="15" y2="18" />
-              </svg>
-              {count > 0 && (
-                <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-1 rounded-full bg-accent text-on-accent text-3xs font-medium leading-[16px] text-center">
-                  {count}
-                </span>
-              )}
-            </button>
-          </InputGroup>
+          <SearchFilterPill
+            value={value.query}
+            onChange={(q) => onChange({ ...value, query: q })}
+            placeholder="Search…"
+            inputAriaLabel="Search the marketplace"
+            activeFilters={count}
+            filterOpen={sheetOpen}
+            onToggleFilter={() => setSheetOpen(true)}
+            filterLabel="Filters"
+          />
         </div>
         {sheetOpen && (
           <FilterSheet
@@ -116,20 +111,25 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
             onChange={onChange}
             onClose={() => setSheetOpen(false)}
             toggleMulti={toggleMulti}
-            setType={setType}
+            setTypeTab={setTypeTab}
           />
         )}
       </>
     );
   }
 
-  // Wide layout — unchanged from before the mobile redesign.
+  // Wide layout.
   return (
     <div className="layer-surface sticky top-0 z-20 flex flex-wrap items-center gap-2 p-3">
-      <ChipGroup label="Type">
-        <Chip active={value.type === "skill"} onClick={() => setType("skill")}>Plugins</Chip>
-        <Chip active={value.type === "theme"} onClick={() => setType("theme")}>Themes</Chip>
-      </ChipGroup>
+      {/* P-1 #1: pick-one Type switch, visually distinct from the pick-any
+          chips that follow. Same position as the old Plugins/Themes chips. */}
+      <SegmentedTabs
+        variant="pill"
+        tabs={typeTabs}
+        value={value.type ?? "all"}
+        onChange={setTypeTab}
+        aria-label="Type"
+      />
       <Divider />
       <ChipGroup label="Vibe">
         {VIBES.map((v) => (
@@ -145,17 +145,16 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
         <Chip active={value.meta.has("picks")} onClick={() => toggleMulti("meta", "picks")}>Featured picks</Chip>
       </ChipGroup>
       <div className="w-full sm:w-auto sm:ml-auto">
-        {/* The wide layout's search box — unified with the compact one above onto
-            the shared FIELD surface. Same deliberate swap: focus ring → focus
-            border. Only the width utilities survive as a layout extra. */}
-        <TextInput
-          type="search"
-          size="md"
-          aria-label="Search the marketplace"
-          placeholder="Search…"
+        {/* P-1 #2: the same SearchFilterPill as the narrow bar, minus the
+            sliders trigger — the chips beside it ARE the filters, so passing no
+            onToggleFilter omits the button entirely. w-56 (was w-48) pays for
+            the magnifier so the placeholder still fits. */}
+        <SearchFilterPill
           value={value.query}
-          onChange={(e) => onChange({ ...value, query: e.target.value })}
-          className="w-full sm:w-48"
+          onChange={(q) => onChange({ ...value, query: q })}
+          placeholder="Search…"
+          inputAriaLabel="Search the marketplace"
+          className="w-full sm:w-56"
         />
       </div>
     </div>
@@ -167,17 +166,18 @@ export default function MarketplaceFilterBar({ value, onChange }: Props) {
 // blur, shadow, z-index) drive the look. Chip toggles update FilterState live —
 // "Apply" is just a close affordance.
 function FilterSheet({
-  value, onChange, onClose, toggleMulti, setType,
+  value, onChange, onClose, toggleMulti, setTypeTab,
 }: {
   value: FilterState;
   onChange(next: FilterState): void;
   onClose(): void;
   toggleMulti(key: 'vibes' | 'meta', v: any): void;
-  setType(t: TypeChip): void;
+  setTypeTab(id: string): void;
 }) {
   // FilterSheet pushes onto the EscClose LIFO stack — closes top-down ahead of
   // MarketplaceScreen's own ESC handler without a gate change in the screen.
   useEscClose(true, onClose);
+  const typeTabs = useTypeTabs(value.type ?? "all");
 
   const clearAll = () => {
     // Preserve the search query (it's still visible in the sticky bar) but
@@ -208,8 +208,14 @@ function FilterSheet({
         </header>
         <div className="flex-1 flex flex-col gap-4 p-4">
           <SheetGroup label="Type">
-            <Chip active={value.type === "skill"} onClick={() => setType("skill")}>Plugins</Chip>
-            <Chip active={value.type === "theme"} onClick={() => setType("theme")}>Themes</Chip>
+            {/* P-1 #1: same pick-one switch as the wide bar. */}
+            <SegmentedTabs
+              variant="pill"
+              tabs={typeTabs}
+              value={value.type ?? "all"}
+              onChange={setTypeTab}
+              aria-label="Type"
+            />
           </SheetGroup>
           <SheetGroup label="Vibe">
             {VIBES.map((v) => (
@@ -248,22 +254,12 @@ function SheetGroup({ label, children }: { label: string; children: React.ReactN
   );
 }
 
+// P-9 #1 (2026-08-27): the pick-any chip is the shared <FilterChip> now — this
+// bar's local Chip was extracted verbatim so the skills drawer could draw the
+// same control. Kept as a one-line alias so the JSX below reads unchanged;
+// tests/filter-chip.test.tsx pins that the recipe rendered here is identical.
 function Chip({ active, onClick, children }: { active: boolean; onClick(): void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={active}
-      onClick={onClick}
-      className={`px-3 py-1 rounded-full text-sm transition-colors ${
-        active
-          ? "bg-accent text-on-accent"
-          : "bg-inset text-fg-2 hover:text-fg border border-edge hover:border-edge-dim"
-      }`}
-    >
-      {children}
-    </button>
-  );
+  return <FilterChip active={active} onClick={onClick}>{children}</FilterChip>;
 }
 
 function ChipGroup({ label, children }: { label: string; children: React.ReactNode }) {

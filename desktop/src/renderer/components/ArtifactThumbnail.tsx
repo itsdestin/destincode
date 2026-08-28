@@ -5,8 +5,9 @@
 //     renderer origin (http in dev, app/asset in prod/Android) blocks file://
 //     subresources, so file:// thumbnails silently fell back to the letter
 //     glyph everywhere except a packaged file://-origin build.
-//   - Markdown / plain text → fetch content via artifacts.get, render first
-//     ~8 lines as tiny monospace text.
+//   - Markdown → fetch content via artifacts.get, RENDER the first ~600 bytes
+//     (MarkdownHeadPreview — Destin's rule 2026-08-27: never a raw `##`).
+//   - Plain text → same fetch, first ~8 lines as tiny monospace text.
 //   - HTML / htm → sandboxed <iframe srcDoc> with pointer-events: none so the
 //     parent card stays clickable. The empty sandbox attribute blocks scripts.
 //   - Everything else → fall back to the original ext-letter glyph.
@@ -15,6 +16,7 @@
 // issue hundreds of IPC reads on mount.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ArtifactRecord } from '../../shared/artifacts/types';
+import { MarkdownHeadPreview } from './HeadPreview';
 
 interface Props {
   artifact: ArtifactRecord;
@@ -27,10 +29,11 @@ interface Props {
 }
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico', 'avif']);
-const TEXT_EXTS = new Set(['md', 'markdown', 'txt', 'rtf']);
+const MARKDOWN_EXTS = new Set(['md', 'markdown']);
+const TEXT_EXTS = new Set(['txt', 'rtf']);
 const HTML_EXTS = new Set(['html', 'htm']);
 
-type Kind = 'image' | 'text' | 'html' | 'fallback';
+type Kind = 'image' | 'markdown' | 'text' | 'html' | 'fallback';
 
 function getExt(p: string): string {
   const filename = p.split(/[\\/]/).pop() ?? '';
@@ -62,6 +65,7 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
   const ext = getExt(artifact.path);
   const kind: Kind = useMemo(() => {
     if (IMAGE_EXTS.has(ext)) return 'image';
+    if (MARKDOWN_EXTS.has(ext)) return 'markdown';
     if (TEXT_EXTS.has(ext)) return 'text';
     if (HTML_EXTS.has(ext)) return 'html';
     return 'fallback';
@@ -136,12 +140,15 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
   // Fetch content once visible. Refetch when the artifact's lastModified
   // changes so an edit in another window updates the thumbnail.
   useEffect(() => {
-    if (!inView || (kind !== 'text' && kind !== 'html')) return;
+    if (!inView || (kind !== 'text' && kind !== 'markdown' && kind !== 'html')) return;
     let cancelled = false;
     (window.claude as any).artifacts.get(projectPath, artifact.id)
       .then((res: any) => {
         if (cancelled) return;
-        if (res && res.ok) setContent(res.content ?? '');
+        // A thumbnail shows a few lines. Over-cap files now return a real
+        // multi-MB prefix instead of null, so slice before it lands in state —
+        // otherwise every visible tile parks megabytes in React.
+        if (res && res.ok) setContent((res.content ?? '').slice(0, 2000));
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -168,7 +175,7 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
   const showFallbackGlyph =
     kind === 'fallback' ||
     (kind === 'image' && (imgFailed || !absolutePath)) ||
-    ((kind === 'text' || kind === 'html') && content === null);
+    ((kind === 'text' || kind === 'markdown' || kind === 'html') && content === null);
 
   return (
     <div
@@ -187,6 +194,14 @@ export function ArtifactThumbnail({ artifact, projectPath, className = '', bgCla
           className="w-full h-full object-cover"
           onError={() => setImgFailed(true)}
         />
+      )}
+
+      {kind === 'markdown' && content !== null && (
+        // Rendered, not raw: the same scaled MarkdownContent the composer's
+        // attachment card uses, over the first ~600 bytes.
+        <div className="absolute inset-0">
+          <MarkdownHeadPreview text={content.slice(0, 600)} />
+        </div>
       )}
 
       {kind === 'text' && content !== null && (

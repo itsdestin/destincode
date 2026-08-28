@@ -197,6 +197,8 @@ export function BubbleFeed({ sessionId }: Props) {
               text: event.data.text,
               timestamp: event.timestamp,
               partId: event.data.partId,
+              // Specialists 1c — MUST mirror App.tsx.
+              parentAgentToolUseId: event.data.parentAgentToolUseId,
             });
           } else {
             // Preparing tool card — the buddy feed renders tool cards too, so
@@ -302,9 +304,22 @@ export function BubbleFeed({ sessionId }: Props) {
       const action = hookEventToAction(event);
       if (action) dispatch(action);
     });
+    // Specialists 1c: delegation feed — MUST mirror App.tsx. Task 10: typed
+    // bridge — on.specialistEvent returns the unsubscribe function directly,
+    // and there is no separate 'note' event kind (a note rides on the run
+    // record; SPECIALIST_RUN_CHANGED's reducer case derives the Activity row).
+    const unsubSpecialist = window.claude.on.specialistEvent((event) => {
+      if (event.sessionId !== sessionId) return;
+      if (event.kind === 'run') {
+        dispatch({ type: 'SPECIALIST_RUN_CHANGED', sessionId, run: event.run });
+      }
+    });
 
     return () => {
       window.claude.off('hook:event', unsubHook);
+      // Task 10 fix: unsubSpecialist IS the unsubscribe function, not a
+      // listener for `.off()` — see the matching fix in App.tsx.
+      unsubSpecialist();
     };
   }, [sessionId, dispatch]);
 

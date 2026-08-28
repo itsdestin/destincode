@@ -111,6 +111,11 @@ const NOT_CALLOUTS: Record<string, { count: number; why: string }> = {
     why: 'two are K6 backend-row state tints, two are the warnings list (Fix/Dismiss buttons, so K5) '
       + 'and its context-menu danger hover',
   },
+  'SpecialistsChip.tsx': {
+    count: 2,
+    why: "StatusPill's Needs-you and Failed variants — rounded-full inline state badges, peers of the "
+      + 'same switch\'s untinted Stopped/Finished pills, not standalone passive text (Callout is rounded-lg/p-3)',
+  },
 };
 
 /**

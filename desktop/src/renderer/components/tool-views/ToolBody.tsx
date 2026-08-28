@@ -9,6 +9,8 @@ import { ChevronIcon } from '../Icons';
 import { useExpandAllToggle, getInitialExpanded, isExpandModeActive } from '../../hooks/useExpandAllToggle';
 import { useArtifactOptional } from '../../state/ArtifactContext';
 import { ArtifactThumbnail } from '../ArtifactThumbnail';
+import { matchSessionArtifact } from '../filepath-match';
+import { DeliverablesCard } from '../DeliverablesCard';
 import type { ArtifactRecord } from '../../../shared/artifacts/types';
 // Chatsearch session cards: same parser ToolCard uses for the header label,
 // so the collapsed header and expanded body always agree on what the call is.
@@ -21,6 +23,10 @@ import ChatsearchShowCard from './ChatsearchShowCard';
 // string methods / React child rendering, or renders "[object Object]".
 // asString (from the PR #295 ToolCard fix) treats non-strings as absent.
 import { asString } from '../../utils/tool-input';
+import { useSpecialistRunByChild, useSpecialistDefinition } from '../../hooks/useSpecialists';
+import { hasNestedAsk } from '../../utils/specialist-cards';
+import { SpecialistActions } from '../specialists/SpecialistActions';
+import { RunStatusLine } from '../specialists/RunStatusLine';
 
 // Parsed views for expanded tool cards. One dispatcher + inline view functions;
 // splitting per-file only becomes worthwhile if a single view grows past ~80
@@ -93,16 +99,6 @@ function PathHeader({ fp, extra }: { fp: string; extra?: React.ReactNode }) {
 // Match a tool's absolute file_path to one of the session's tracked artifacts.
 // Mirrors FilepathToken's suffix matching: internal artifacts store a
 // project-relative path, so the tool's absolute path ends with it.
-function matchSessionArtifact(arts: ArtifactRecord[], absPath: string): ArtifactRecord | undefined {
-  if (!absPath) return undefined;
-  const norm = absPath.replace(/\\/g, '/');
-  return arts.find((a) => {
-    const aPath = (a.kind === 'internal' ? a.path : a.absolutePath) ?? '';
-    const an = aPath.replace(/\\/g, '/');
-    return an === norm || norm.endsWith('/' + an) || an.endsWith('/' + norm);
-  });
-}
-
 // Derive the project root for the thumbnail's content fetch by stripping the
 // artifact's relative path off the tool's absolute file_path. Only internal
 // artifacts can be derived this way; external ones return '' (the thumbnail
@@ -435,7 +431,7 @@ function LifecyclePill({ status }: { status?: TaskStatus }) {
             <span className={
               active ? 'text-fg font-bold'
               : done ? 'text-fg-muted'
-              : 'text-fg-faint'
+              : 'text-fg-muted'
             }>
               <span className={
                 active ? 'inline-block w-2 h-2 rounded-full bg-fg mr-1 align-middle'
@@ -604,7 +600,7 @@ const SUBAGENT_TONE: Record<string, 'neutral' | 'add' | 'info' | 'warn'> = {
   'claude-code-guide': 'add',
 };
 
-function AgentView({ tool }: { tool: ToolCallState }) {
+function AgentView({ tool, sessionId }: { tool: ToolCallState; sessionId?: string }) {
   // Fix: object description/subagent_type rendered as React children crashed
   // the card; MarkdownContent requires a string prompt.
   const desc = asString(tool.input.description);
@@ -614,40 +610,141 @@ function AgentView({ tool }: { tool: ToolCallState }) {
   // the second name a native `explorer` specialist rendered a chip that said
   // "general-purpose", which is a wrong label, not just a missing one.
   const subagent = asString(tool.input.subagent_type) || asString(tool.input.agent) || 'general-purpose';
-  const prompt = asString(tool.input.prompt);
-  const segments = tool.subagentSegments || [];
 
-  // Auto-expand the activity section while running; auto-collapse once the
-  // parent Agent tool has a response (subagent completed). User toggles
-  // stick for the rest of the session.
-  const [showTimeline, setShowTimeline] = useState(() => getInitialExpanded(!tool.response));
-  // Start userToggled=true when the shortcut is already in effect so the
-  // auto-collapse-on-response effect below doesn't fight the user's intent.
-  const [userToggled, setUserToggled] = useState(() => isExpandModeActive());
-  const prevHadResponse = useRef(!!tool.response);
-  useEffect(() => {
-    if (userToggled) return;
-    const hasResponse = !!tool.response;
-    if (!prevHadResponse.current && hasResponse) setShowTimeline(false);
-    prevHadResponse.current = hasResponse;
-  }, [tool.response, userToggled]);
-  // Ctrl+O: mark userToggled so the auto-collapse-on-response effect doesn't
-  // fight the shortcut back closed as soon as the subagent completes.
-  useExpandAllToggle(
-    () => { setShowTimeline(true); setUserToggled(true); },
-    () => { setShowTimeline(false); setUserToggled(true); },
-  );
-
+  // Specialists 1c — a native Task card knows more than a CC Agent card: its
+  // run record (title, real status, background flag, model), the roster entry
+  // for its consent block, and — for a `task_id` call — the OTHER child it
+  // names. Everything below that reads `run`/`isNative` is 1c; the CC path
+  // is unchanged.
+  const isNative = tool.toolName === 'Task';
+  const run = isNative ? tool.specialistRun : undefined;
+  const taskId = isNative ? asString(tool.input.task_id) : '';
+  const target = useSpecialistRunByChild(sessionId, taskId || undefined);
+  // Task 10: same per-cwd lookup ToolCard/TaskConsentBlock use — a project's
+  // OWN specialists only resolve here if this card's session cwd is passed.
+  const artifacts = useArtifactOptional();
+  const cwd = sessionId ? artifacts?.state.sessionCwd?.[sessionId] : undefined;
+  const definition = useSpecialistDefinition(cwd, isNative ? subagent : undefined);
+  const title = run?.title;
   const tone = SUBAGENT_TONE[subagent] || 'neutral';
+  const charter = definition?.charter;
+  // The consent envelope for an awaiting Task call renders in ToolCard (above
+  // the buttons, visible without expanding) — not here, or it would double.
+  const awaiting = tool.status === 'awaiting-approval';
 
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 flex-wrap">
         <Chip tone={tone}>{subagent}</Chip>
-        {desc && <span className="text-xs font-medium text-fg-2">{desc}</span>}
+        {title && <span className="text-xs font-medium text-fg-2">{title}</span>}
+        {!title && taskId && target?.title && <span className="text-xs font-medium text-fg-2">{target.title}</span>}
+        {charter && !taskId && (
+          <Chip tone={charter === 'read-write' ? 'warn' : 'info'}>
+            {charter === 'read-write' ? 'can edit & run commands' : 'read-only'}
+          </Chip>
+        )}
+        {run?.model && (
+          <span className="text-4xs text-fg-muted" title={run.model.via === 'parent' ? "This conversation's model" : run.model.via === 'named' ? 'A model the assistant named' : `The ${run.model.via} model from Settings`}>
+            on {run.model.label}{run.model.fallback ? ' (fallback)' : ''}
+          </span>
+        )}
+        {desc && !title && <span className="text-xs font-medium text-fg-2">{desc}</span>}
       </div>
+      {desc && title && <div className="text-xs text-fg-dim">{desc}</div>}
+      {run && <RunStatusLine run={run} report={tool.specialistReport} />}
+      <AgentSections tool={tool} sessionId={sessionId} targetTitle={target?.title}>
+        {run && run.status === 'running' && !awaiting && sessionId && (
+          <SpecialistActions sessionId={sessionId} run={run} />
+        )}
+      </AgentSections>
+      {tool.error && <ErrorBlock error={tool.error} />}
+    </div>
+  );
+}
+
+/**
+ * The three collapsible sections of an Agent/Task card — Briefing, Activity,
+ * Report — as ONE component, so the specialists popup (SpecialistsChip) shows
+ * a helper's work with exactly the chat card's rendering instead of a second
+ * summary of it that could drift (Destin, 1c round 9). `children` slots
+ * between Activity and Report (the chat card puts Send-a-note / Stop there).
+ * `suppressAsk` hides the Yes/No buttons inside Activity where the host
+ * already shows the ask elsewhere (the popup's amber band).
+ */
+export function AgentSections({ tool, sessionId, targetTitle, suppressAsk = false, accordion = false, children }: {
+  tool: ToolCallState;
+  sessionId?: string;
+  /** For a task_id call: the other child's title (first name feeds the ask/note copy). */
+  targetTitle?: string;
+  suppressAsk?: boolean;
+  /** Popup mode (Destin, round 10): every section starts COLLAPSED and at most
+   *  one is open at a time. The chat card keeps its own behaviour (Activity
+   *  open while running, Report open when it lands, Ctrl+O expand-all). */
+  accordion?: boolean;
+  children?: React.ReactNode;
+}) {
+  const prompt = asString(tool.input.prompt);
+  const segments = tool.subagentSegments || [];
+  const isNative = tool.toolName === 'Task';
+  const run = isNative ? tool.specialistRun : undefined;
+  const taskId = isNative ? asString(tool.input.task_id) : '';
+  const title = run?.title;
+  const firstName = title ? title.split(' ')[0] : (targetTitle ? targetTitle.split(' ')[0] : undefined);
+  // "Settled" is what auto-collapses Activity. For a background hire the tool
+  // result is only the launch ack, so keying on `response` collapsed a card
+  // whose child was still streaming (Test 4) — the run record is the truth.
+  const settled = run ? run.status !== 'running' : !!tool.response;
+
+  // Auto-expand the activity section while running; auto-collapse once
+  // settled. User toggles stick for the rest of the session.
+  const [showTimeline, setShowTimeline] = useState(() => getInitialExpanded(!settled));
+  // Start userToggled=true when the shortcut is already in effect so the
+  // auto-collapse-on-settle effect below doesn't fight the user's intent.
+  const [userToggled, setUserToggled] = useState(() => isExpandModeActive());
+  const prevSettled = useRef(settled);
+  useEffect(() => {
+    if (userToggled) return;
+    if (!prevSettled.current && settled) setShowTimeline(false);
+    prevSettled.current = settled;
+  }, [settled, userToggled]);
+  // Specialists 1c: a helper's ask lives in Activity — open it when one
+  // arrives, even on a settled card (a held ask outlives the run). Not when
+  // the host shows the ask itself (suppressAsk): then Activity is just history.
+  const nestedAsk = hasNestedAsk(tool);
+  useEffect(() => { if (nestedAsk && !suppressAsk) setShowTimeline(true); }, [nestedAsk, suppressAsk]);
+  // Ctrl+O: mark userToggled so the auto-collapse effect doesn't fight the
+  // shortcut back closed as soon as the subagent completes.
+  useExpandAllToggle(
+    () => { setShowTimeline(true); setUserToggled(true); },
+    () => { setShowTimeline(false); setUserToggled(true); },
+  );
+
+  // The report section. Foreground: the tool result IS the report. Background:
+  // the delivered report folded into this card (specialistReport). A task_id
+  // call's result is the management outcome ("Steer delivered…") — a Response.
+  const report = tool.specialistReport
+    ? { title: tool.specialistReport.status === 'failed' ? 'Report — failed' : 'Report', text: displayReport(tool.specialistReport.text) }
+    : tool.response && !taskId && (run ? run.background === false : isNative)
+      ? { title: 'Report', text: displayReport(tool.response) }
+      : tool.response
+        ? { title: 'Response', text: tool.response }
+        : null;
+  // A background hire's launch ack is not worth a section: the header + status
+  // line already say "working in the background". Hide it while the report is
+  // pending; the folded report replaces it.
+  const hideLaunchAck = !!run && run.background && !tool.specialistReport && !!tool.response
+    && /is now working in the background/.test(tool.response);
+
+  // Accordion (popup) state: which ONE section is open, if any.
+  const [openOne, setOpenOne] = useState<'briefing' | 'activity' | 'report' | null>(null);
+  const acc = (key: 'briefing' | 'activity' | 'report') => accordion
+    ? { open: openOne === key, onToggle: () => setOpenOne(o => (o === key ? null : key)) }
+    : {};
+
+  return (
+    <>
       {prompt && (
-        <AgentSection title="Briefing" defaultOpen={false}>
+        <AgentSection title={taskId ? 'Message' : 'Briefing'} defaultOpen={false} {...acc('briefing')}>
           <div className="text-sm text-fg-dim">
             <MarkdownContent content={prompt} />
           </div>
@@ -656,22 +753,43 @@ function AgentView({ tool }: { tool: ToolCallState }) {
       {segments.length > 0 && (
         <AgentSection
           title={`Activity (${segments.length})`}
-          open={showTimeline}
-          onToggle={() => { setShowTimeline(s => !s); setUserToggled(true); }}
+          {...(accordion
+            ? acc('activity')
+            : { open: showTimeline, onToggle: () => { setShowTimeline(s => !s); setUserToggled(true); } })}
         >
-          <SubagentTimeline segments={segments} />
+          {/* Task 12: `run` (specialistRun) is already resolved above for this
+              card — its status is what lets a nested held ask tell a finished
+              helper apart from a running one. */}
+          <SubagentTimeline segments={segments} sessionId={sessionId} specialistName={firstName} suppressAsk={suppressAsk} runStatus={run?.status} />
         </AgentSection>
       )}
-      {tool.response && (
-        <AgentSection title="Response" defaultOpen={true}>
+      {children}
+      {report && !hideLaunchAck && (
+        <AgentSection title={report.title} defaultOpen={true} {...acc('report')}>
           <div className="text-sm text-fg-dim">
-            <MarkdownContent content={tool.response} />
+            <MarkdownContent content={report.text} />
           </div>
         </AgentSection>
       )}
-      {tool.error && <ErrorBlock error={tool.error} />}
-    </div>
+    </>
   );
+}
+
+// What the Report section shows. The text the MODEL reads carries framing
+// the card header already states — the injected "[Background specialist
+// finished] Kai (explorer) completed …" sentence, the "## Report from Kai
+// (explorer)" heading, and the trailing "[specialist session <id>]" tag — so
+// the section starts at the report body itself. Display-only: the model's
+// copy is untouched.
+function displayReport(text: string): string {
+  let t = text;
+  if (/^\[Background specialist/.test(t)) {
+    const idx = t.indexOf('\n\n');
+    t = idx === -1 ? t : t.slice(idx + 2);
+  }
+  t = t.replace(/^## Report from [^\n]*\n+/, '');
+  t = t.replace(/\n*\[specialist session [^\]]+\]\s*$/, '');
+  return t;
 }
 
 /**
@@ -988,7 +1106,7 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
       // tests/task-subagent-card.test.tsx.
       case 'Agent':
       case 'Task':
-        return <AgentView tool={tool} />;
+        return <AgentView tool={tool} sessionId={sessionId} />;
       case 'Grep':
         return <GrepView tool={tool} />;
       case 'Glob':
@@ -997,6 +1115,12 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         return <WebFetchView tool={tool} />;
       case 'WebSearch':
         return <WebSearchView tool={tool} />;
+      // SendUserFile normally renders as the in-bubble DeliverablesCard (pulled
+      // out of its tool group by AssistantTurnBubble). This case covers the
+      // places that still render a bare ToolCard for it — the tool gallery,
+      // the buddy window's strip — so it never falls to the raw JSON view.
+      case 'SendUserFile':
+        return <DeliverablesCard tools={[tool]} sessionId={sessionId ?? ''} />;
       default: {
         // MCP PowerShell is shell-like — reuse ShellView. Other MCP tools fall
         // through to the raw view.

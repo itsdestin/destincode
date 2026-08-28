@@ -49,7 +49,7 @@ export type { AnchorTipProps, AnchorTipTrigger, AnchorTipPlacement } from './Anc
 export { Toast } from './Toast';
 export type { ToastProps, ToastTone } from './Toast';
 
-export { SegmentedTabs } from './SegmentedTabs';
+export { SegmentedTabs, SegmentedTabLabel, PluginIcon, PaletteIcon } from './SegmentedTabs';
 export type { SegmentedTabsProps, SegmentedTab } from './SegmentedTabs';
 
 export { ProgressBar } from './ProgressBar';
@@ -57,6 +57,9 @@ export type { ProgressBarProps } from './ProgressBar';
 
 export { SearchFilterPill } from './SearchFilterPill';
 export type { SearchFilterPillProps } from './SearchFilterPill';
+
+export { FilterChip } from './FilterChip';
+export type { FilterChipProps } from './FilterChip';
 export { Dialog, DIALOG_WIDTHS } from './Dialog';
 export type { DialogProps, DialogSize } from './Dialog';
 

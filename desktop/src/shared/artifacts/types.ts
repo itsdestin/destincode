@@ -9,7 +9,12 @@ export type VersionAuthor = 'agent' | 'user';
 // card, without fabricating fake edit history. Only document-type files get a
 // 'read' version (see the artifact tracker in App.tsx); code/config reads are
 // not tracked.
-export type VersionType = 'create' | 'edit' | 'delete' | 'read';
+// 'delivered' (2026-08-25) marks a file the assistant handed to the user via
+// SendUserFile. Non-read — so an in-project file a script produced becomes
+// visible in Project View — but, like 'read', it never bumps lastModified:
+// delivery is not modification. Kotlin mirror is a String typealias, so an
+// older client reads it fine (labels it "created"; cosmetic).
+export type VersionType = 'create' | 'edit' | 'delete' | 'read' | 'delivered';
 
 export interface VersionEvent {
   id: string;            // ULID
@@ -71,6 +76,11 @@ export interface ProjectSidecar {
   manualIncludes: ManualInclude[];
 }
 
+// Max length of a user-written project description. Enforced in BOTH setters
+// (synced registry + saved folders) and as maxLength on the input, so a pasted
+// document can never bloat a file that syncs to every device.
+export const PROJECT_DESCRIPTION_MAX = 200;
+
 export interface CentralIndexProject {
   id: string;
   name: string;
@@ -93,6 +103,12 @@ export interface CentralIndexProject {
   // (home dir / drive root) get NO fileCount at all (no scan runs there).
   fileCountTruncated?: boolean;
   conversationCount?: number;
+  // The LOCAL-folder description, overlaid at list time from the saved-folders
+  // record exactly as `name` already is from `nickname` (saved-folder-projects.ts:53).
+  // A SYNCED project's description arrives instead on the syncSpaces status
+  // payload, mirroring how `displayName` is overlaid there — the hero prefers
+  // the synced one.
+  description?: string | null;
 }
 
 export interface CentralIndex {

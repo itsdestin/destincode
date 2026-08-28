@@ -10,6 +10,7 @@ import { Button } from './ui';
 import { FilepathToken } from './FilepathToken';
 import { CONVERSATIONS_FENCE, parseConversationRefs } from '../../shared/chatsearch-refs';
 import ChatsearchRefBlock from './tool-views/ChatsearchRefBlock';
+import { SessionRefsEnabled } from './session-refs-context';
 
 /**
  * Rehype plugin: tag every <code> that lives inside a <pre> with data-block.
@@ -275,10 +276,6 @@ function isConversationsFence(node: any): boolean {
   return list.includes(`language-${CONVERSATIONS_FENCE}`);
 }
 
-/** Off by default. Only a live assistant bubble turns it on — see the note in
- *  pre() for why a previewed past conversation must not. */
-export const SessionRefsEnabled = React.createContext(false);
-
 function ConversationsFence({ body }: { body: string }) {
   const enabled = React.useContext(SessionRefsEnabled);
   const ids = React.useMemo(() => parseConversationRefs(body), [body]);
@@ -287,14 +284,33 @@ function ConversationsFence({ body }: { body: string }) {
   if (!enabled) return <pre className="yc-code rounded-md bg-canvas border border-edge p-3 overflow-x-auto text-sm text-fg">{body}</pre>;
   return <ChatsearchRefBlock shortIds={ids} />;
 }
+// Preview mode: the same renderer with NOTHING interactive in it. WHY: a file tile is itself a
+// <button> (FilesTab, Deliverables), and the code-block Copy button / links inside a rendered
+// markdown preview made a <button> inside a <button> — invalid HTML, a React error on every
+// Projects screen (found by the 2026-08-27 sweep). Code blocks keep their look, links read as text.
+const mdPreviewComponents = {
+  ...mdComponents,
+  pre({ children, node: _node, ...props }: any) {
+    return (
+      <pre className="yc-code rounded-md bg-canvas border border-edge p-3 overflow-x-auto text-sm text-fg my-3" {...props}>
+        {children}
+      </pre>
+    );
+  },
+  a({ href: _href, children, ...props }: any) {
+    return <span className="text-link underline" {...props}>{children}</span>;
+  },
+};
 
 interface Props {
   content: string;
   /** When provided, file paths detected in text are rendered as FilepathToken chips. */
   sessionId?: string;
+  /** Decorative rendering for tiles: no Copy buttons, no links — nothing focusable or clickable. */
+  preview?: boolean;
 }
 
-export default React.memo(function MarkdownContent({ content, sessionId }: Props) {
+export default React.memo(function MarkdownContent({ content, sessionId, preview }: Props) {
   // Memoize the rehype plugin array and the component map by sessionId so that:
   // (a) When sessionId is absent, we use the stable module-scope arrays (no allocation).
   // (b) When sessionId is present, the filepath-token component is added once and
@@ -308,6 +324,7 @@ export default React.memo(function MarkdownContent({ content, sessionId }: Props
   );
 
   const components = useMemo(() => {
+    if (preview) return mdPreviewComponents;
     if (!sessionId) return mdComponents;
     // Extend the base component map with a handler for our custom <filepath-token> hast element.
     // react-markdown lowercases custom element names, so 'filepath-token' matches the tagName.
@@ -322,7 +339,7 @@ export default React.memo(function MarkdownContent({ content, sessionId }: Props
       },
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId]);
+  }, [sessionId, preview]);
 
   return (
     <ReactMarkdown

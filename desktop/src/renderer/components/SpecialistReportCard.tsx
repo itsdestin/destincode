@@ -67,7 +67,10 @@ export default React.memo(function SpecialistReportCard({ message, injected, met
           aria-expanded={expanded}
           title={expanded ? 'Hide the report' : 'Show the report'}
         >
-          <span className={`shrink-0 inline-flex ${failed ? 'text-danger' : 'text-fg-muted'}`}>
+          {/* Fix: `danger` isn't a real CSS token (no --color-danger exists), so this
+              icon rendered in plain text color instead of red on failure. `destructive-fg`
+              is the app's real token for destructive/error TEXT. */}
+          <span className={`shrink-0 inline-flex ${failed ? 'text-destructive-fg' : 'text-fg-muted'}`}>
             {failed ? <FailIcon className="w-3.5 h-3.5" /> : <CheckIcon className="w-3.5 h-3.5" />}
           </span>
           <span className="text-fg-faint text-xs select-none">|</span>

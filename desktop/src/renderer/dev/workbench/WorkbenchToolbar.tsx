@@ -113,7 +113,7 @@ export function WorkbenchToolbar({ narrow, onNarrow, view, onView }: WorkbenchTo
         />
       </label>
 
-      <span className="text-3xs text-fg-faint">
+      <span className="text-3xs text-fg-muted">
         Themes: Settings → Appearance
       </span>
 

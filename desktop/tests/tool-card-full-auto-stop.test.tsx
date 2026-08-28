@@ -47,7 +47,7 @@ describe('full-auto safety stop', () => {
     expect(screen.queryByRole('button', { name: /^yes$/i })).toBeNull();
     expect(screen.getByText('Stopped before pushing code')).toBeTruthy();
     expect(
-      screen.getByText('YouCoded limits this action, even in Full Auto — it changes your published code.'),
+      screen.getByText('Full auto still stops here — this changes your published code.'),
     ).toBeTruthy();
   });
 
@@ -89,7 +89,7 @@ describe('full-auto safety stop', () => {
     expect(screen.getByText('git push origin master')).toBeTruthy();
     expect(screen.getByText(/deleting or force-pushing the branch/)).toBeTruthy();
     expect(
-      screen.getByText("It may delete files or change published code, and you won't be asked again during future sessions in this project."),
+      screen.getByText("This can delete files or change published code, and you won't be asked again in this project."),
     ).toBeTruthy();
   });
 
@@ -98,6 +98,6 @@ describe('full-auto safety stop', () => {
     // footer must degrade honestly rather than invent a consequence.
     renderCard(stopTool({ input: {} }));
     expect(screen.getByText('Stopped before a risky command')).toBeTruthy();
-    expect(screen.getByText('YouCoded limits this action, even in Full Auto.')).toBeTruthy();
+    expect(screen.getByText('Full auto still stops here.')).toBeTruthy();
   });
 });

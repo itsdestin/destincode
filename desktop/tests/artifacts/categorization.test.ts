@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { categorizeArtifact, fileTypeGroup, fileTypeLabel } from '../../src/shared/artifacts/categorization';
+import { categorizeArtifact, fileTypeGroup, fileTypeLabel, fileKind, previewKind, fileExtension } from '../../src/shared/artifacts/categorization';
 
 describe('categorizeArtifact', () => {
   it('treats prose, office, and image files as documents', () => {
@@ -87,5 +87,41 @@ describe('fileTypeGroup', () => {
     expect(fileTypeLabel('logo.png')).toBe('Image');
     expect(fileTypeLabel('data.csv')).toBe('Spreadsheet');
     expect(fileTypeLabel('index.ts')).toBe('Code');
+  });
+});
+
+// fileKind / previewKind — the tile-and-chip mapping that moved here from the
+// attachment-chip mock-up when design C shipped (2026-08-27).
+describe('fileKind / previewKind', () => {
+  it('buckets by extension, with unknown for anything it cannot vouch for', () => {
+    const cases: Array<[string, string]> = [
+      ['shot.PNG', 'image'], ['budget.xlsx', 'sheet'], ['data.csv', 'sheet'],
+      ['report.docx', 'document'], ['mockup.html', 'document'],
+      ['InputBar.ts', 'code'], ['config.json', 'code'], ['build.gradle', 'code'],
+      ['notes.txt', 'text'], ['app.log', 'text'],
+      ['README.md', 'markdown'], ['spec.markdown', 'markdown'],
+      ['invoice.pdf', 'pdf'], ['memo.mp3', 'audio'], ['demo.mp4', 'video'],
+      ['assets.zip', 'archive'], ['assets.tar.gz', 'archive'],
+      ['sensor-log.dat', 'unknown'], ['Makefile', 'unknown'], ['.gitignore', 'unknown'],
+    ];
+    for (const [name, kind] of cases) expect(fileKind(`/x/${name}`), name).toBe(kind);
+  });
+
+  it('previews only what a tile can cheaply render', () => {
+    const cases: Array<[string, string]> = [
+      ['shot.png', 'image'], ['photo.JPG', 'image'], ['anim.gif', 'image'], ['hero.webp', 'image'],
+      ['icon.svg', 'glyph'], ['fav.ico', 'glyph'],
+      ['README.md', 'markdown'],
+      ['notes.txt', 'text'], ['InputBar.ts', 'text'], ['data.csv', 'text'], ['app.log', 'text'],
+      ['budget.xlsx', 'glyph'], ['invoice.pdf', 'glyph'], ['demo.mp4', 'glyph'],
+      ['report.docx', 'glyph'], ['sensor-log.dat', 'glyph'], ['mockup.html', 'glyph'],
+    ];
+    for (const [name, kind] of cases) expect(previewKind(`C:\\Users\\d\\${name}`), name).toBe(kind);
+  });
+
+  it('fileExtension is lowercase, dotless, and empty for dotfiles and bare names', () => {
+    expect(fileExtension('/a/b/Report.PDF')).toBe('pdf');
+    expect(fileExtension('C:\\a\\.env')).toBe('');
+    expect(fileExtension('Makefile')).toBe('');
   });
 });

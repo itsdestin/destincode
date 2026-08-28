@@ -33,6 +33,11 @@ describe('decidePermission', () => {
     expect(d.action).toBe('ask');
     expect(d.denyListed).toBe(true);
   });
+  it('SendUserFile is allowed in every mode baseline — it reads and writes nothing', () => {
+    for (const mode of ['ask', 'auto-edit', 'full-auto'] as const) {
+      expect(decidePermission('SendUserFile', '', layers(mode))).toMatchObject({ action: 'allow', denyListed: false });
+    }
+  });
   it('an explicit remembered rule beats the deny-list (spec ruling #2)', () => {
     const d = decidePermission('Bash', 'git push origin master',
       layers('full-auto', [{ tool: 'Bash', pattern: 'git push*', action: 'allow' }]));
@@ -89,6 +94,31 @@ describe('decidePermission', () => {
   it('Task is auto-allowed under auto-edit and full-auto (spec §5 walk-away autonomy)', () => {
     expect(decidePermission('Task', 'src', layers('auto-edit')).action).toBe('allow');
     expect(decidePermission('Task', 'src', layers('full-auto')).action).toBe('allow');
+  });
+
+  // D1 (2026-08-26) — the walk-away autonomy above was granted for BUILT-IN
+  // helpers, whose behaviour ships with the app. It was silently covering
+  // file-defined helpers too, because the baseline Task rule carries no
+  // pattern: in auto-edit no consent card rendered at all, which bypassed both
+  // halves of the plan-1c hire-grant design at once. A file-defined hire's
+  // subject contains ':file:' (tools/task.ts) and a built-in's never does.
+  it('auto-edit: a BUILT-IN hire still runs with no ask (unchanged)', () => {
+    expect(decidePermission('Task', 'read-write:/proj', layers('auto-edit')).action).toBe('allow');
+  });
+  it('auto-edit: a FILE-DEFINED hire asks — user-scoped and project-scoped alike', () => {
+    expect(decidePermission('Task', 'read-only:file:code-reviewer@abc123abc123', layers('auto-edit')).action)
+      .toBe('ask');
+    expect(decidePermission('Task', 'read-write:/proj:file:repo-worker@abc123abc123', layers('auto-edit')).action)
+      .toBe('ask');
+  });
+  it('auto-edit: a remembered grant still wins over that ask (the always-allow has to mean something)', () => {
+    const subject = 'read-only:file:code-reviewer@abc123abc123';
+    const remembered = [{ tool: 'Task', pattern: subject, action: 'allow', match: 'exact' }];
+    expect(decidePermission('Task', subject, layers('auto-edit', remembered)).action).toBe('allow');
+  });
+  it('full-auto is unchanged — it allows everything by explicit choice', () => {
+    expect(decidePermission('Task', 'read-only:file:code-reviewer@abc123abc123', layers('full-auto')).action)
+      .toBe('allow');
   });
 
   // Task 6 review fix 4: the Task tool's consent key is now CHARTER-SCOPED

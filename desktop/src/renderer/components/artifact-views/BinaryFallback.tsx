@@ -1,8 +1,25 @@
 import type { ArtifactViewProps } from './types';
 import { getPlatform } from '../../platform';
 import { Button } from '../ui';
+import { READ_BINARY_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 
-export function BinaryFallback({ path, absolutePath }: ArtifactViewProps) {
+export function BinaryFallback({ path, absolutePath, contentInfo, sniffedBinaryTextFile }: ArtifactViewProps) {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  const size = contentInfo?.sizeBytes;
+  // State the TRUE reason. Size is the reason ONLY when the file is genuinely
+  // past what we can load; otherwise the reason is the format — and saying "too
+  // large" about a 2.3 MB PNG is the bug that started all this (spec §4.5).
+  const message = size !== undefined && size > READ_BINARY_MAX_BYTES
+    // Size is the reason.
+    ? `This file is ${(size / (1024 * 1024)).toFixed(1)} MB — larger than YouCoded can display.`
+    : sniffedBinaryTextFile
+      // The FORMAT is supported; this particular file isn't text. Saying
+      // "can't display .md files" here would be plainly false.
+      ? `This ${ext ? `.${ext} ` : ''}file contains data that isn’t text, so it can’t be shown here.`
+      : path.includes('.') && ext
+        // The format is the reason.
+        ? `YouCoded can’t display .${ext} files.`
+        : 'YouCoded can’t display this kind of file.';
   // shell.openPath is desktop-only — the remote shim stubs it as a no-op and
   // Android has no handler, so showing the button there would silently do
   // nothing. Gate on the platform like SessionDrawer's toolbar does.
@@ -13,7 +30,7 @@ export function BinaryFallback({ path, absolutePath }: ArtifactViewProps) {
   };
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-fg-muted">
-      <p className="mb-4">Cannot preview this file type.</p>
+      <p className="mb-4">{message}</p>
       <p className="mb-4 font-mono text-sm">{path}</p>
       {isElectron && (
         <Button

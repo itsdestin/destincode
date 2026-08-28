@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { PastSession, HistoryMessage, SessionFlagName } from '../shared/types';
+import { isPlaceholderModelId } from '../shared/model-ids';
 // ccProjectSlug drive-normalizes before slugifying, so a store originalPath with
 // a lowercase Windows drive still maps to CC's uppercase-drive project dir.
 // nativeStoreSlug is the FROZEN app-private rule for native rows (deliberately
@@ -241,7 +242,8 @@ export interface SessionTranscriptMeta {
   /** Timestamp (ms) of the last parseable transcript line, or null. */
   lastTimestampMs: number | null;
   /**
-   * `message.model` from the last assistant line in the tail chunk, or null.
+   * `message.model` from the last assistant line in the tail chunk that names a
+   * REAL model — CC's `<synthetic>` placeholder lines are skipped — or null.
    *
    * This is how a CLAUDE CODE conversation gets a lastUsedModel at all. The
    * native side records one at bind time (conversations/service.ts
@@ -249,7 +251,9 @@ export interface SessionTranscriptMeta {
    * a field on each assistant message in the transcript. Null when the tail
    * chunk holds no assistant line with a model, which a long run of tool
    * results can cause; the chunk is deliberately NOT grown to chase it, because
-   * this runs once per transcript on every browse.
+   * this runs once per transcript on every browse. Measured 2026-08-26 over 755
+   * local transcripts: 39 hold no real model in the 64KB tail, and quadrupling
+   * the read to 256KB recovers only 2 of them — not worth 4x the IO per browse.
    */
   lastModelId: string | null;
 }
@@ -312,7 +316,20 @@ export async function readSessionTranscriptMeta(jsonlPath: string, wantTitle: bo
           const ts = Date.parse(parsed.timestamp);
           if (!Number.isNaN(ts)) lastTimestampMs = ts;
         }
-        if (lastModelId === null && parsed.type === 'assistant' && typeof parsed.message?.model === 'string') {
+        // Fix: skip Claude Code's own placeholder ids. CC stamps
+        // `"model": "<synthetic>"` on assistant lines IT generated rather than
+        // a model — "You've hit your session limit", "You're out of usage
+        // credits", "Please run /login · API Error: 401". Those are almost
+        // always the LAST assistant lines in a transcript, so taking the first
+        // one found labelled a 308-turn Opus session `<synthetic>`. Any
+        // `<...>`-wrapped id is treated the same way: CC brackets its
+        // placeholders, and a real model id never has that shape. The scan
+        // keeps walking backwards for a real id and settles for null if the
+        // chunk holds none — the pre-existing "no model recorded" case, which
+        // renders no chip rather than a wrong one.
+        if (lastModelId === null && parsed.type === 'assistant'
+            && typeof parsed.message?.model === 'string'
+            && !isPlaceholderModelId(parsed.message.model)) {
           lastModelId = parsed.message.model;
         }
       }

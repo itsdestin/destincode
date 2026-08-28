@@ -48,6 +48,7 @@ The most rigorous CC-version drift catch is: re-run `cc-snapshot.mjs` against th
 | Spinner glyph set | `✻ ✽ ✢ ✳ ✶ * ⏺ ◉ ·` (empirical; not from a documented contract) |
 | Input-bar echo delay | ~6.75 s on cold start (Ink batches renders; warm session is faster) |
 | Anthropic model ID convention | dotted-hyphen, e.g. `claude-opus-4-7` |
+| CC-composed assistant lines | `"model": "<synthetic>"` — angle-bracketed sentinel, not a model id |
 
 Update this table when you re-run snapshots after a CC version bump. Anything that doesn't match the current snapshot needs an audit before the release ships.
 
@@ -133,14 +134,19 @@ Update this table when you re-run snapshots after a CC version bump. Anything th
 - **Break symptom:** MCP reconciliation writes invalid config; CC refuses to load MCP servers after YouCoded touches the file; silent MCP-server drop-offs.
 
 ### Slash commands YouCoded references or intercepts
-- **Files:** `desktop/src/renderer/state/slash-command-dispatcher.ts`, `desktop/src/renderer/components/InputBar.tsx`, `desktop/src/renderer/components/ModelPickerPopup.tsx`, `desktop/src/renderer/components/StatusBar.tsx` (canonical `MODELS` alias list), `desktop/src/renderer/App.tsx` (Shift+Space cycle + `/model ${alias}` send)
+- **Files:** `desktop/src/renderer/state/slash-command-dispatcher.ts`, `desktop/src/renderer/components/InputBar.tsx`, `desktop/src/renderer/components/ModelPickerPopup.tsx`, `desktop/src/shared/model-ids.ts` (canonical `CLAUDE_ALIASES` list — `StatusBar.tsx` re-exports it as `MODELS`), `desktop/src/renderer/App.tsx` (Shift+Space cycle + `/model ${alias}` send)
 - **Depends on:** CC's command names stable across releases (`/model`, `/resume`, `/compact`, `/help`, etc.) AND CC's `/model` accepting the alias strings YouCoded sends — `haiku`, `sonnet`, `opus[1m]`, `fable`. The model picker/cycle writes `/model <alias>\r` into the PTY verbatim.
 - **Break symptom:** Session-pill reconciliation mis-detects model drift; user-facing tips reference dead commands; a renamed/removed alias (e.g. `fable`) makes the switch silently fail and surfaces the "couldn't switch" toast.
 
 ### Anthropic model ID convention
-- **Files:** `desktop/src/renderer/state/chat-reducer.ts` (per-turn metadata), `desktop/src/renderer/App.tsx` (session-pill model reconciliation useEffect)
+- **Files:** `desktop/src/shared/model-ids.ts` (`claudeAliasForModelId`, the one matcher), and its readers: `desktop/src/renderer/hooks/useActiveSessionModel.ts` (status-bar pill), `desktop/src/renderer/App.tsx` (`matchModelAlias` + the model-switch verify effect), `desktop/src/renderer/components/ResumeBrowser.tsx` (per-row resume prefill), `desktop/src/main/session-browser.ts` (Resume Browser model chip), `desktop/src/renderer/state/chat-reducer.ts` (per-turn metadata)
 - **Depends on:** Dotted-hyphen model ID form (`claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5-20251001`, `claude-fable-5`) served by CC in transcript `message.model`. The alias→ID matcher strips `[...]` then substring-matches (`'claude-fable-5'.includes('fable')`), so the served ID must keep containing the alias substring.
 - **Break symptom:** Unknown model IDs render raw in session pill; display-name lookup fails silently.
+
+### `<synthetic>` placeholder on CC-composed assistant lines
+- **Files:** `desktop/src/shared/model-ids.ts` (`isPlaceholderModelId`), and its five guards: `desktop/src/main/session-browser.ts` (transcript scan), `desktop/src/main/ipc-handlers.ts` (Conversation Store write), `desktop/src/main/conversations/store-core.ts` (`sanitizeModelRef`, the read-side heal), `desktop/src/renderer/hooks/useActiveSessionModel.ts`, `desktop/src/renderer/components/AssistantTurnBubble.tsx`, `desktop/src/renderer/App.tsx` (model-switch verify)
+- **Depends on:** CC stamping `"model": "<synthetic>"` — **in angle brackets** — on assistant lines CC composed itself rather than a model: "You've hit your session limit", "You're out of usage credits", "Please run /login · API Error: 401". The guard matches the bracket SHAPE (`/^<.*>$/`), not the literal string, so any future bracketed sentinel is covered. Verified 2026-08-26 against 2,933 local transcripts: `<synthetic>` is the only bracketed value present, and every API-error assistant line carries it.
+- **Break symptom:** If CC switches to an UNBRACKETED sentinel (`synthetic`, `none`, `unknown`), all six guards stop working at once with no test failure, and the placeholder returns as a model name in the Resume Browser chip, the per-turn metadata strip, and the status-bar pill — which also stops self-healing off its `unknown` sentinel. A poisoned value written to the Conversation Store then syncs to every other device and overrides the transcript scan there.
 
 ### CLI invocation flags
 - **Files:** `desktop/src/main/session-manager.ts`, `app/src/main/.../runtime/PtyBridge.kt`

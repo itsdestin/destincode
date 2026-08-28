@@ -2,13 +2,17 @@ import React, { useState } from 'react';
 import { AssistantTurn, abnormalStopReason } from '../state/chat-types';
 import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/types';
 import { assistantName } from '../utils/assistant-name';
-import MarkdownContent, { SessionRefsEnabled } from './MarkdownContent';
+import { hasNestedAsk } from '../utils/specialist-cards';
+import MarkdownContent from './MarkdownContent';
+import { SessionRefsEnabled } from './session-refs-context';
 import ToolCard from './ToolCard';
-import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
+import { DeliverablesCard, isSentFilesTool } from './DeliverablesCard';
+import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
 import { useTheme } from '../state/theme-context';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
+import { isPlaceholderModelId } from '../../shared/model-ids';
 
 interface Props {
   turn: AssistantTurn;
@@ -111,7 +115,11 @@ function TurnMetadataStrip({ turn }: { turn: AssistantTurn }) {
       className="text-[10.5px] text-fg-muted mt-1 pl-1 flex flex-wrap gap-x-3 gap-y-0.5 font-mono select-text"
       title="Per-turn metadata from transcript"
     >
-      {turn.model && <span>{turn.model}</span>}
+      {/* Fix: `<synthetic>` is CC's placeholder for a notice it wrote itself
+          (session limit, out of credits, /login), not a model — printing it
+          raw here showed the user a fake model name. Nothing replaces it: the
+          turn genuinely ran on no model. */}
+      {turn.model && !isPlaceholderModelId(turn.model) && <span>{turn.model}</span>}
       {u && (
         <>
           <span>in {u.inputTokens.toLocaleString()}</span>
@@ -131,9 +139,15 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
   const [expanded, setExpanded] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
 
-  const runningCount = tools.filter((t) => t.status === 'running').length;
-  const completedCount = tools.filter((t) => t.status === 'complete').length;
+  // Specialists 1c: a Task card whose helper is still working counts as
+  // running even though its tool result (the launch ack) already landed —
+  // otherwise a group of background hires read "all complete" while one of
+  // them was mid-job. A helper waiting on the user is called out too.
+  const stillWorking = (t: ToolCallState) => t.specialistRun?.status === 'running';
+  const runningCount = tools.filter((t) => t.status === 'running' || stillWorking(t)).length;
+  const completedCount = tools.filter((t) => t.status === 'complete' && !stillWorking(t)).length;
   const failedCount = tools.filter((t) => t.status === 'failed').length;
+  const askingCount = tools.filter(hasNestedAsk).length;
 
   // Build name summary: "Read, Grep, Grep" → "Read, Grep ×2"
   const nameCounts = new Map<string, number>();
@@ -150,7 +164,9 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
         onClick={() => setExpanded(!expanded)}
         className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left hover:bg-inset/50 transition-colors"
       >
-        {runningCount > 0 ? (
+        {askingCount > 0 ? (
+          <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+        ) : runningCount > 0 ? (
           <BrailleSpinner size="sm" />
         ) : failedCount > 0 ? (
           <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
@@ -163,6 +179,7 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
           {completedCount === tools.length && ' — all complete'}
           {runningCount > 0 && ` — ${runningCount} running`}
           {failedCount > 0 && ` — ${failedCount} failed`}
+          {askingCount > 0 && <span className="text-amber-500">{` — ${askingCount} waiting on you`}</span>}
         </span>
         <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={expanded} />
       </button>
@@ -178,6 +195,27 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
       )}
     </div>
   );
+}
+
+// Walks ONE bubble's tool groups and returns its SendUserFile calls in
+// invocation order. The card renders inside the bubble — last, after the tool
+// cards — so the hoist is per bubble, unlike Skills (per turn).
+// View-layer reorder only; reducer state untouched.
+function collectBubbleSentFiles(
+  bubble: VisualBubble,
+  toolGroups: Map<string, ToolGroupState>,
+  toolCalls: Map<string, ToolCallState>,
+): ToolCallState[] {
+  const out: ToolCallState[] = [];
+  for (const groupId of bubble.toolGroupIds) {
+    const group = toolGroups.get(groupId);
+    if (!group) continue;
+    for (const id of group.toolIds) {
+      const t = toolCalls.get(id);
+      if (isSentFilesTool(t)) out.push(t);
+    }
+  }
+  return out;
 }
 
 /**
@@ -201,7 +239,11 @@ export interface VisualBubble {
 }
 
 // Exported for test (see VisualBubble comment above).
-export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
+// Perf (cycle 1, N3): typed as Pick<…, 'segments'> on purpose — this function
+// reads NOTHING but the segments, and the component's useMemo below depends on
+// exactly that (it keys on turn.segments, not turn). If this ever needs another
+// field, the type will force the memo key to widen with it.
+export function splitIntoBubbles(turn: Pick<AssistantTurn, 'segments'>): VisualBubble[] {
   const bubbles: VisualBubble[] = [];
   let current: VisualBubble | null = null;
   // Buffer of reasoning content seen since the last bubble boundary.
@@ -293,7 +335,7 @@ export function splitIntoBubbles(turn: AssistantTurn): VisualBubble[] {
 // groups (where ToolGroupInline now filters them) and render them as a
 // trailing row of standalone cards on the last bubble of the turn.
 function collectTurnSkills(
-  turn: AssistantTurn,
+  turn: Pick<AssistantTurn, 'segments'>,
   toolGroups: Map<string, ToolGroupState>,
   toolCalls: Map<string, ToolCallState>,
 ): ToolCallState[] {
@@ -373,17 +415,25 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
   // Read opt-in metadata preference here so the strip below only renders when
   // the user has explicitly turned it on in PreferencesPopup (default false).
   const { showTurnMetadata } = useTheme();
-  // splitIntoBubbles is pure over `turn`, so cache it and only recompute when
-  // the turn object itself changes — not on every parent re-render. Combined
-  // with the memo comparator below, completed turns no longer re-split (and
-  // re-parse their markdown) on every streaming frame.
-  const bubbles = React.useMemo(() => splitIntoBubbles(turn), [turn]);
+  // splitIntoBubbles is pure over the turn's SEGMENTS, so cache it on those.
+  // Perf (cycle 1, N3): this used to key on `turn`, but the reducer mints a new
+  // turn object for every change to the turn — a streamed delta, but also a
+  // model capture, a usage/stopReason stamp at turn-complete, a tool status
+  // change routed through this turn — so while a turn was live the memo never
+  // hit and every one of those re-split the turn from scratch. `segments` is
+  // only replaced when a segment actually changes, so keying on it makes the
+  // split happen exactly when its input does. Combined with the memo
+  // comparator below, completed turns still never re-split (and never
+  // re-parse their markdown) on a sibling's streaming frame. Pinned by
+  // tests/assistant-turn-split-depends-on-segments.test.tsx.
+  const segments = turn.segments;
+  const bubbles = React.useMemo(() => splitIntoBubbles({ segments }), [segments]);
   // Skills are reordered to the end of the turn's last bubble (view-layer only).
   // ToolGroupInline filters Skills out of their groups; this list backs the
-  // trailing standalone-card row below.
+  // trailing standalone-card row below. Same segments-only key as above.
   const turnSkills = React.useMemo(
-    () => collectTurnSkills(turn, toolGroups, toolCalls),
-    [turn, toolGroups, toolCalls],
+    () => collectTurnSkills({ segments }, toolGroups, toolCalls),
+    [segments, toolGroups, toolCalls],
   );
 
   // Empty-step recovery (spec 2026-08-21, decision 4): a fully-contentless
@@ -417,8 +467,11 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
   return (
     <>
       {bubbles.map((bubble, i) => {
+        const sentFiles = collectBubbleSentFiles(bubble, toolGroups, toolCalls);
         const hasTools = bubble.toolGroupIds.length > 0;
-        const hasContent = !!(bubble.text || bubble.plan);
+        // A sent-files card counts as content: a bubble holding only that card
+        // must get the prose padding, not the tight tools-only padding.
+        const hasContent = !!(bubble.text || bubble.plan || sentFiles.length);
         const hasReasoning = !!bubble.reasoning;
         const toolsOnly = hasTools && !hasContent && !hasReasoning;
         const reasoningOnly = hasReasoning && !hasContent && !hasTools;
@@ -460,6 +513,12 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                     />
                   ))}
                 </div>
+              )}
+              {/* Sent-files card: LAST in the bubble, after the tool cards
+                  (Destin 2026-08-25). Its calls were filtered out of the groups
+                  above, so this is the only place they render. */}
+              {sentFiles.length > 0 && (
+                <DeliverablesCard tools={sentFiles} sessionId={sessionId} />
               )}
               {/* Trailing-Skills row: Skills are reordered to the end of the turn's
                   last bubble so they read as a status footer rather than co-mingled
@@ -564,11 +623,15 @@ function ToolGroupInline({
     // standalone row outside any group via AssistantTurnBubble (see
     // collectTurnSkills + the trailing-skills div on the last bubble).
     // View-layer reorder; reducer state untouched.
-    .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill');
+    // SendUserFile is ALSO pulled out: it renders as the DeliverablesCard at the
+    // end of the bubble, after the tool cards (collectBubbleSentFiles).
+    .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill' && !isSentFilesTool(t));
 
   if (tools.length === 0) return null;
 
-  // Skip awaiting-approval tools — they render as standalone bubbles at the bottom of the timeline
+  // Skip awaiting-approval tools — they render as standalone bubbles at the bottom of the timeline.
+  // (A Task card whose HELPER is asking stays put: those asks are managed from
+  // the specialists popup — SpecialistsChip — not by moving the card. Destin, 1c round 1.)
   const restTools = tools.filter((t) => t.status !== 'awaiting-approval');
   if (restTools.length === 0) return null;
 

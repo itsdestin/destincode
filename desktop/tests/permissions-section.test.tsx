@@ -29,6 +29,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/react';
 import PermissionsSection from '../src/renderer/components/PermissionsSection';
+import { CROSS_PROJECT_SLUG } from '../src/shared/permission-types';
+import { PERMISSIONS_EXPLAINER_SECTIONS } from '../src/renderer/components/permissions/permissions-explainer';
 
 const list = vi.fn();
 const remove = vi.fn();
@@ -105,7 +107,7 @@ describe('PermissionsSection — the overview', () => {
     // The labels on this screen are the two authored ones — that is what
     // uppercase is for.
     expect(await screen.findByRole('heading', { name: 'Always allowed' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Understanding agent permission modes' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Permission modes' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: /MyNotes/i })).toBeNull();
     expect(screen.queryByRole('heading', { name: /-home-destin-notes/ })).toBeNull();
 
@@ -202,7 +204,7 @@ describe('PermissionsSection — the modes block is reference content', () => {
 
   /** The block under the modes heading: its label plus the card beneath it. */
   function modesBlock(): HTMLElement {
-    return screen.getByRole('heading', { name: 'Understanding agent permission modes' })
+    return screen.getByRole('heading', { name: 'Permission modes' })
       .parentElement as HTMLElement;
   }
 
@@ -236,7 +238,7 @@ describe('PermissionsSection — the modes block is reference content', () => {
     // exist, so the reader does not hunt this screen for one.
     list.mockResolvedValue([]);
     render(<PermissionsSection />);
-    await screen.findByRole('heading', { name: 'Understanding agent permission modes' });
+    await screen.findByRole('heading', { name: 'Permission modes' });
     expect(modesBlock().textContent).toMatch(/bar at the bottom of the chat/i);
   });
 
@@ -521,5 +523,86 @@ describe('PermissionsSection — when the list is re-read', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Revoke all 2 permissions for p' }));
     fireEvent.click(screen.getByRole('button', { name: /^Confirm removing everything approved for/ }));
     await waitFor(() => expect(list).toHaveBeenCalledTimes(2));
+  });
+});
+
+// D2 (2026-08-26) — permissions.json grew ONE key that is not a folder: the
+// bucket holding grants on the user's own file-defined specialists, which are
+// in force wherever they are working. It arrives from permissions:list looking
+// like any other StoredProject, and everything about how it READS has to say it
+// is not a place — or the screen goes back to filing an everywhere-grant under
+// one folder's name, which is the false claim this whole fix exists to end.
+describe('PermissionsSection — the "All projects" card', () => {
+  const taskRule = { tool: 'Task', pattern: 'read-write:file:docs-writer@a1b2c3d4e5f6', action: 'allow', match: 'exact' };
+  const otherTaskRule = { tool: 'Task', pattern: 'read-only:file:notes@0f1e2d3c4b5a', action: 'allow', match: 'exact' };
+
+  it('reads first, is titled in words, and explains itself instead of apologising for a missing path', async () => {
+    list.mockResolvedValue([
+      { slug: '-home-d-alpha', cwd: '/home/d/alpha', rules: commands(2) },
+      { slug: CROSS_PROJECT_SLUG, rules: [taskRule] },
+    ]);
+    render(<PermissionsSection />);
+
+    // The bucket arrives SECOND from the backend and must still read first.
+    const headers = await screen.findAllByRole('button', { expanded: false });
+    expect(headers).toHaveLength(2);
+    expect(headers[0].textContent).toContain('All projects');
+    expect(headers[1].textContent).toContain('alpha');
+
+    expect(headers[0].textContent).toContain('These apply in every folder');
+    // Never the raw storage key, and never the wording for a folder whose path
+    // was lost — nothing is missing here, this card never had a path.
+    expect(screen.queryByText(CROSS_PROJECT_SLUG)).toBeNull();
+    expect(screen.queryByText(/wasn't recorded/i)).toBeNull();
+  });
+
+  it('takes one approval back with the reserved slug, like any other card', async () => {
+    list.mockResolvedValue([{ slug: CROSS_PROJECT_SLUG, rules: [taskRule] }]);
+    remove.mockResolvedValue(true);
+    render(<PermissionsSection />);
+    await openFolder(/All projects/);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Revoke permission:/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Confirm revoking permission:/ }));
+    await waitFor(() => expect(remove).toHaveBeenCalledWith(
+      CROSS_PROJECT_SLUG,
+      expect.objectContaining({ tool: 'Task', pattern: taskRule.pattern }),
+    ));
+  });
+
+  it('routes its "revoke all" with the reserved slug too', async () => {
+    list.mockResolvedValue([{ slug: CROSS_PROJECT_SLUG, rules: [taskRule, otherTaskRule] }]);
+    removeProject.mockResolvedValue(true);
+    render(<PermissionsSection />);
+    await openFolder(/All projects/);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke all 2 permissions for All projects' }));
+    fireEvent.click(screen.getByRole('button', { name: /^Confirm removing everything approved for/ }));
+    await waitFor(() => expect(removeProject).toHaveBeenCalledWith(CROSS_PROJECT_SLUG));
+  });
+});
+
+// Destin's 2026-08-26/27 copy review found a CORRECTNESS bug in the (i)
+// explainer, not just a wording one: it claimed every approval belongs to the
+// folder it was given in. A grant on a helper from your own specialists folder
+// is minted with no work dir (tools/task.ts permissionSubject), stored under
+// CROSS_PROJECT_SLUG, and rendered on this very screen under "All projects" —
+// so the old sentence contradicted the list right next to it. This pins the
+// correction, which is the one claim on that screen a user could act on and be
+// wrong about.
+describe('the (i) explainer on where an approval reaches', () => {
+  const section = () =>
+    PERMISSIONS_EXPLAINER_SECTIONS.find((s) => s.heading === "Approvals you've already given");
+
+  it('does not claim every approval is folder-scoped', () => {
+    const text = (section()?.paragraphs ?? []).join(' ');
+    expect(text).not.toMatch(/Every approval belongs to the folder/);
+    expect(text).toMatch(/Most approvals belong to the folder you were working in/);
+  });
+
+  it('names your own specialists as the every-folder exception, under the heading the list uses', () => {
+    const text = (section()?.paragraphs ?? []).join(' ');
+    expect(text).toMatch(/The exception is your own specialists/);
+    expect(text).toMatch(/applies in every folder, under \u201cAll projects\u201d/);
   });
 });

@@ -6,13 +6,14 @@ import './bootstrap/terminal-bridge';
 import React, { useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import TerminalView from './components/TerminalView';
 import ChatView from './components/ChatView';
-import HeaderBar from './components/HeaderBar';
+import HeaderBar, { BareHeaderBar } from './components/HeaderBar';
 import InputBar, { type InputBarHandle } from './components/InputBar';
 import StatusBar from './components/StatusBar';
 import { MODELS, type ModelAlias } from './components/StatusBar';
 import { modelChipFor, supportsAliasCycling } from './components/model-chip';
 import FolderSwitcher from './components/FolderSwitcher';
 import { isTypingTarget } from './utils/is-typing-target';
+import { isPlaceholderModelId } from '../shared/model-ids';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import { AnchorTip, Button, Dialog, Toast, Toggle } from './components/ui';
@@ -23,6 +24,8 @@ import { ChatProvider, useChatDispatch, useChatStore } from './state/chat-contex
 import { artifactReducer, initialArtifactState } from './state/artifact-tracker';
 import { ArtifactProvider } from './state/ArtifactContext';
 import { createArtifactToolUseTracker } from './state/artifact-tool-use-tracker';
+import { createDeliverableAutoOpen } from './state/deliverable-auto-open';
+import { openFilepath } from './hooks/useOpenFilepath';
 // Central slash-command router — also used by the drawer so drawer-initiated
 // slash commands behave the same as typed ones (otherwise drawer bypasses InputBar's intercept).
 import { dispatchSlashCommand, type DispatcherResult } from './state/slash-command-dispatcher';
@@ -96,6 +99,7 @@ import { BuddyOverlayApp } from './components/buddy/BuddyOverlayApp';
 import { EscCloseProvider, useEscStackEmpty, useDismissTop } from './hooks/use-esc-close';
 // Pure guard for the chat-focused ESC -> PTY forwarding listener below.
 import { shouldForwardEscToPty } from './state/should-forward-esc-to-pty';
+import { NARROW_VIEWPORT_QUERY } from './hooks/use-narrow-viewport';
 
 type ViewMode = 'chat' | 'terminal';
 
@@ -179,6 +183,10 @@ function AppInner() {
   // which needs to resolve cwd by sessionId).
   const sessionsRef = useRef<any[]>([]);
   useEffect(() => { sessionsRef.current = sessions; }, [sessions]);
+  // The focused conversation, readable from mount-once effects (the
+  // deliverable auto-open rule needs it without re-subscribing per switch).
+  const focusedSessionIdRef = useRef<string | null>(null);
+  useEffect(() => { focusedSessionIdRef.current = sessionId; }, [sessionId]);
   // Multi-window detach state (desktop-only; remote-shim stubs these as no-ops).
   // `myWindowId` identifies this renderer's BrowserWindow so the switcher can
   // distinguish local sessions from sessions owned by peer windows. `directory`
@@ -222,8 +230,8 @@ function AppInner() {
   // "Manage models…" in the unified ModelPicker. The picker renders inside
   // SessionStrip (which HeaderBar owns) and inside ResumeBrowser, so a prop
   // would have to drill through HeaderBar for a rarely-used escape hatch.
-  // Follows the existing deep-component→top-level-destination pattern
-  // (`youcoded:open-library`, ThemeScreen.tsx:229).
+  // Deep component → top-level destination via a window event, because a prop
+  // would have to drill through HeaderBar for a rarely-used escape hatch.
   useEffect(() => {
     const open = () => { setProvidersAutoOpen(true); setSettingsOpen(true); };
     window.addEventListener('youcoded:open-model-providers', open);
@@ -347,7 +355,6 @@ function AppInner() {
   const [marketplaceInitialDetailId, setMarketplaceInitialDetailId] = useState<string | undefined>(undefined);
   // Tab to show when Library opens — consumed by LibraryScreen (Task 5.2 wires
   // the prop; this state is lifted here so the event listener below can set it).
-  const [libraryInitialTab, setLibraryInitialTab] = useState<'skills' | 'themes' | 'updates' | undefined>(undefined);
 
   // Open the marketplace destination; `installed` routes to the Library
   // sibling. Omit `tab` (or pass undefined) to land on the discovery page
@@ -381,22 +388,6 @@ function AppInner() {
     [],
   );
 
-  // Listen for the global "open library" event dispatched by ThemeScreen's
-  // "Browse all themes" button. Opens Library to the requested tab and closes
-  // the Appearance popup (the popup is inside SettingsPanel which the user can
-  // close separately; we just navigate away by switching the active view).
-  useEffect(() => {
-    const onOpen = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      const tab = detail?.tab as 'skills' | 'themes' | 'updates' | undefined;
-      setLibraryInitialTab(tab);
-      setActiveView('library');
-      // Close settings panel so the Library fills the screen unobstructed.
-      setSettingsOpen(false);
-    };
-    window.addEventListener('youcoded:open-library', onOpen);
-    return () => window.removeEventListener('youcoded:open-library', onOpen);
-  }, []);
   const [publishThemeSlug, setPublishThemeSlug] = useState<string | null>(null);
   const [editorSkillId, setEditorSkillId] = useState<string | null>(null);
   const [shareSkillId, setShareSkillId] = useState<string | null>(null);
@@ -1038,6 +1029,20 @@ function AppInner() {
       });
     });
 
+    // Specialists 1c: the host's delegation feed — a hire's ledger record
+    // changed (status/steps/stale/model/notes). Lands on the launching Task
+    // card. MUST mirror BubbleFeed.tsx. Task 10: typed bridge — `on.specialistEvent`
+    // RETURNS the unsubscribe function directly (it does not hand back a raw
+    // listener for `.off()`, unlike most of this file's other `on.X` calls);
+    // there is also no separate 'note' event kind any more — a note is a
+    // field on the run record, so the SAME 'run' event carries it and
+    // SPECIALIST_RUN_CHANGED's reducer case derives the Activity-trail row.
+    const specialistHandler = window.claude.on.specialistEvent((event) => {
+      if (event.kind === 'run') {
+        dispatch({ type: 'SPECIALIST_RUN_CHANGED', sessionId: event.sessionId, run: event.run });
+      }
+    });
+
     const hookHandler = window.claude.on.hookEvent((event) => {
       const action = hookEventToAction(event);
       if (action) {
@@ -1230,6 +1235,9 @@ function AppInner() {
               text: event.data.text,
               timestamp: event.timestamp,
               partId: event.data.partId,
+              // Specialists 1c: a child's stamped reasoning routes into its
+              // Task card, not the parent's bubble. MUST mirror BubbleFeed.tsx.
+              parentAgentToolUseId: event.data.parentAgentToolUseId,
             });
           } else {
             // Argument-generation progress: draw/update the preparing tool card.
@@ -1537,6 +1545,32 @@ function AppInner() {
       artifactTracker.handle(event);
     });
 
+    // Deliverables auto-open (spec 2026-08-25 §3): a SendUserFile result whose
+    // call asked for display:"render" opens the panel to its first file — once
+    // per reply, focused conversation only, desktop only, never for replayed
+    // history, and never over unsaved edits. Same raw event feed as the tracker.
+    const deliverableAutoOpen = createDeliverableAutoOpen({
+      getFocusedSessionId: () => focusedSessionIdRef.current,
+      canAutoOpen: () => getPlatform() === 'electron' && !window.matchMedia?.(NARROW_VIEWPORT_QUERY).matches,
+      guard: guardDirtyEditor,
+      open: (sid, path) => {
+        // drawerOpensImmediately: false — nobody clicked this. Opening the
+        // panel before the lookup resolves just shows an empty/list-only
+        // viewer for however long resolution takes (measured ~4s on a large
+        // workspace); deferred mode reveals the panel already showing the
+        // file, or stays silent entirely on a miss.
+        void openFilepath(
+          { state: artifactStateRef.current, dispatch: dispatchArtifact },
+          sid,
+          path,
+          { drawerOpensImmediately: false }
+        );
+      },
+    });
+    const deliverableAutoOpenHandler = (window.claude.on as any).transcriptEvent?.((event: any) => {
+      deliverableAutoOpen.handle(event);
+    });
+
     // NOTE: the artifacts:changed push event is consumed directly by
     // ActiveArtifactView (edit-conflict banner). An earlier App-level
     // subscription here only set a pendingRefresh flag that nothing read —
@@ -1550,6 +1584,12 @@ function AppInner() {
       window.claude.off('session:created', createdHandler);
       window.claude.off('session:destroyed', destroyedHandler);
       window.claude.off('hook:event', hookHandler);
+      // Task 10 fix: specialistHandler IS the unsubscribe function
+      // (on.specialistEvent's return type), not a listener reference — the
+      // old `window.claude.off('specialists:event', specialistHandler)` call
+      // passed that function where `.off` expects the ORIGINAL callback, so
+      // it silently unsubscribed nothing and the feed kept running per mount.
+      specialistHandler();
       window.claude.off('session:renamed', renamedHandler);
       if (movedHandler) window.claude.off('session:moved', movedHandler);
       window.claude.off('status:data', statusHandler);
@@ -1563,6 +1603,8 @@ function AppInner() {
       if (chatHydrateHandler) window.claude.off('chat:hydrate', chatHydrateHandler);
       if (artifactToolUseHandler) window.claude.off('transcript:event', artifactToolUseHandler);
       artifactTracker.dispose();
+      if (deliverableAutoOpenHandler) window.claude.off('transcript:event', deliverableAutoOpenHandler);
+      deliverableAutoOpen.dispose();
     };
   }, [dispatch]);
 
@@ -1616,6 +1658,9 @@ function AppInner() {
   // crash/reload, where main kept every session alive but this is a brand-new React tree).
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
+      // Perf lab: boot-time session fetch has resolved (catches pre-existing
+      // sessions on mount — see comment above this effect).
+      performance.mark('yc:sessions-listed');
       if (!list || list.length === 0) return;
 
       // Fix: this per-session seeding used to run INSIDE the setSessions updater
@@ -1974,6 +2019,15 @@ function AppInner() {
       if (!postSwitchTurnReady.current) return;
 
       const actualModel = event.data.model as string;
+      // Fix: a `<synthetic>` turn is CC talking, not a model — "You've hit your
+      // session limit", "You're out of usage credits", "Please run /login". It
+      // carries no evidence about which model the switch landed on, so
+      // verifying against it produced "Couldn't switch to Sonnet" (and on a
+      // second one, "Model switch failed again… report a bug") when the switch
+      // had not failed at all. That is a guessed cause in a user-facing string
+      // — see docs/error-message-standards.md. Stay pending and verify against
+      // the next REAL turn instead.
+      if (isPlaceholderModelId(actualModel)) return;
       const baseKey = (k: string) => k.replace(/\[.*\]/, '');
       const matches = actualModel.includes(baseKey(pendingModel));
       if (matches) {
@@ -3030,7 +3084,35 @@ function AppInner() {
               </div>
           </>
         ) : (
-          <div className="flex-1 flex flex-col items-center justify-center gap-3">
+          <>
+            {/* Welcome screen gets the app's bare frame (P-6, Destin
+                2026-08-27: "a full frame around the welcome screen, as exists
+                in terminal view ... just bare frame like terminal view").
+                Same chrome-glass + chrome-wrapper + headerRef as the session
+                branch so a wallpaper theme paints this header exactly the way
+                it paints the session header, and useChromeMeasurements (keyed
+                on the same headerRef) publishes --top-chrome-height for the
+                glass cutout. `chrome-glass--bare` gives the donut a thin
+                --frame-edge bottom strip, like terminal view, instead of the
+                5rem fallback reserved for an input bar that isn't here. */}
+            <div className="chrome-glass chrome-glass--bare" />
+            <div ref={headerRef} className="chrome-wrapper bg-canvas">
+              <BareHeaderBar
+                settingsOpen={settingsOpen}
+                onToggleSettings={() => setSettingsOpen(prev => !prev)}
+                settingsBadge={settingsBadge}
+                settingsDangerBadge={settingsDangerBadge}
+              />
+            </div>
+          <div
+            className="flex-1 flex flex-col items-center justify-center gap-3"
+            // The header is position:absolute over the top of this area, so
+            // center the welcome content in the space BELOW it (and above the
+            // bare frame's bottom strip) rather than behind it. --top-chrome-
+            // bottom, not -height, so a floating header pill's own margin is
+            // cleared too — same reason ChatView's empty-state hint uses it.
+            style={{ paddingTop: 'var(--top-chrome-bottom, 2.5rem)', paddingBottom: 'var(--frame-edge, 10px)' }}
+          >
             <p className="text-xl text-fg-muted">No Active Session</p>
             {/* scene: the hero surface renders the theme's companions (sun,
                 motes, sparkles) orbiting the mascot — big canvas, no clipping. */}
@@ -3189,6 +3271,7 @@ function AppInner() {
               )}
             </div>
           </div>
+          </>
         )}
       </div>
 
@@ -3228,6 +3311,12 @@ function AppInner() {
           }
         }}
         hasActiveSession={!!sessionId}
+        // Task 10: Settings → Specialists needs the active session's cwd to
+        // show that project's OWN .claude/agents specialists, not just the
+        // two global sources — sourced from the same artifactState this
+        // ArtifactProvider tree already holds (SpecialistEnvelope reads the
+        // same field for the same reason).
+        activeSessionCwd={sessionId ? artifactState.sessionCwd[sessionId] : undefined}
         onOpenThemeMarketplace={() => { setSettingsOpen(false); openMarketplace('themes'); }}
         onPublishTheme={(slug) => { setSettingsOpen(false); setPublishThemeSlug(slug); }}
         // Model Providers popup → Claude Code section → opens the /config prefs popup.
@@ -3338,9 +3427,8 @@ function AppInner() {
       )}
       {/* Full-screen glass marketplace + library destinations. MarketplaceProvider
           is now app-wide (root provider tree) so ThemeScreen can also consume it.
-          libraryInitialTab is lifted state set by the youcoded:open-library event
-          (dispatched by ThemeScreen's "Browse all themes" button); Task 5.2 wires
-          it to LibraryScreen's initialTab prop. */}
+          (The "Browse all themes" button that used to deep-link the Library's
+          Themes tab was removed in Phase C, 2026-08-27, so no initialTab is passed.) */}
       {(activeView === 'marketplace' || activeView === 'library') && (
         activeView === 'marketplace' ? (
           <MarketplaceScreen
@@ -3354,11 +3442,10 @@ function AppInner() {
           />
         ) : (
           <LibraryScreen
-            onExit={() => { setActiveView('chat'); setLibraryInitialTab(undefined); }}
+            onExit={() => setActiveView('chat')}
             onOpenMarketplace={() => setActiveView('marketplace')}
             onOpenShareSheet={(id) => setShareSkillId(id)}
             onOpenThemeShare={(slug) => setPublishThemeSlug(slug)}
-            initialTab={libraryInitialTab}
           />
         )
       )}
@@ -3601,6 +3688,9 @@ function AppInnerProfiler({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
+  // Perf lab: React has mounted the app shell (first commit).
+  useEffect(() => { performance.mark('yc:app-mounted'); }, []);
+
   // Auto-show buddy on launch if the user previously enabled it. The effect
   // is called unconditionally (React rules-of-hooks) but no-ops inside
   // buddy windows themselves — only the main window should re-open the

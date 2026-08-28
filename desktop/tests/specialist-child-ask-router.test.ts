@@ -23,14 +23,34 @@ describe('childAskRouter', () => {
     const broker = new PermissionBroker();
     const emitted: any[] = [];
     broker.on('hook-event', (e) => emitted.push(e));
-    const router = childAskRouter({ broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'Wanda the Worker' });
+    const router = childAskRouter({
+      broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'Wanda the Worker',
+      parentToolCallId: 'tc-1',
+    });
     const p = router({ sessionId: 'child-1', toolName: 'Bash', toolInput: { command: 'rm -rf /' }, denyListed: true });
     expect(emitted[0].sessionId).toBe('parent-1');
     expect(firstPayload(emitted).tool_name).toBe('Bash');
-    expect(firstPayload(emitted).specialist).toEqual({ childId: 'child-1', agentType: 'worker', title: 'Wanda the Worker' });
+    expect(firstPayload(emitted).specialist).toEqual({
+      childId: 'child-1', agentType: 'worker', title: 'Wanda the Worker', parentToolCallId: 'tc-1',
+    });
     const requestId = firstPayload(emitted)._requestId as string;
     expect(broker.respond(requestId, { behavior: 'allow' })).toBe(true);
     await expect(p).resolves.toMatchObject({ behavior: 'allow' });
+  });
+
+  // Task 6 (1c): the renderer nests the routed ask row under the specialist
+  // card by matching parentToolCallId — without it the ask would render, but
+  // unattached to any card.
+  it('the routed ask carries parentToolCallId on specialist', async () => {
+    const broker = new PermissionBroker();
+    const emitted: any[] = [];
+    broker.on('hook-event', (e) => emitted.push(e));
+    const router = childAskRouter({
+      broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W',
+      parentToolCallId: 'tc-42',
+    });
+    void router({ sessionId: 'child-1', toolName: 'Bash', toolInput: {}, denyListed: true });
+    expect(firstPayload(emitted).specialist.parentToolCallId).toBe('tc-42');
   });
 
   it('after SPECIALIST_ASK_HOLD_MS the child receives the redirect deny and the entry stays answerable', async () => {
@@ -39,7 +59,10 @@ describe('childAskRouter', () => {
       const broker = new PermissionBroker();
       const emitted: any[] = [];
       broker.on('hook-event', (e) => emitted.push(e));
-      const router = childAskRouter({ broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W' });
+      const router = childAskRouter({
+        broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W',
+        parentToolCallId: 'tc-1',
+      });
       const p = router({ sessionId: 'child-1', toolName: 'Bash', toolInput: {}, denyListed: true });
       await vi.advanceTimersByTimeAsync(SPECIALIST_ASK_HOLD_MS);
       const d = await p;
@@ -62,7 +85,9 @@ describe('childAskRouter', () => {
     const broker = new PermissionBroker();
     const emitted: any[] = [];
     broker.on('hook-event', (e) => emitted.push(e));
-    const router = childAskRouter({ broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W' });
+    const router = childAskRouter({
+      broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W', parentToolCallId: 'tc-1',
+    });
     const p = router({ sessionId: 'child-1', toolName: 'Bash', toolInput: {}, denyListed: true });
     const requestId = firstPayload(emitted)._requestId as string;
     broker.respond(requestId, { behavior: 'deny' });
@@ -75,7 +100,9 @@ describe('childAskRouter', () => {
     const broker = new PermissionBroker();
     const emitted: any[] = [];
     broker.on('hook-event', (e) => emitted.push(e));
-    const router = childAskRouter({ broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W' });
+    const router = childAskRouter({
+      broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W', parentToolCallId: 'tc-1',
+    });
     const d = await router({ sessionId: 'child-1', toolName: 'AskUserQuestion', toolInput: { questions: [] }, denyListed: false });
     expect(d.behavior).toBe('deny');
     expect(d.message).toMatch(/AskUserQuestion/);
@@ -109,7 +136,7 @@ describe('childAskRouter', () => {
       broker.on('hook-event', (e) => emitted.push(e));
       const remember = vi.fn();
       const router = childAskRouter({
-        broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W', remember,
+        broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W', parentToolCallId: 'tc-1', remember,
       });
       const p = router({
         sessionId: 'child-1', toolName: 'Bash', toolInput: { command: 'git push origin feat/x' },
@@ -129,7 +156,7 @@ describe('childAskRouter', () => {
       broker.on('hook-event', (e) => emitted.push(e));
       const remember = vi.fn();
       const router = childAskRouter({
-        broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W', remember,
+        broker, parentId: 'parent-1', childId: 'child-1', agentType: 'worker', title: 'W', parentToolCallId: 'tc-1', remember,
       });
       // Bare `git push` — its target isn't in the command and changes
       // underneath the grant (same case rememberedRuleFor's own test suite

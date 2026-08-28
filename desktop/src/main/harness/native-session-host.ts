@@ -16,7 +16,7 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import * as path from 'path';
-import type { TranscriptEvent, NativeSendResult, HookEvent } from '../../shared/types';
+import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent, DelegatedModelsView, SpecialistRunView } from '../../shared/types';
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
@@ -25,7 +25,7 @@ import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision, type LateResponseEntry } from './permission-broker';
 import { resolvePreset, type ResolvedPreset } from './preset-registry';
 import { decidePermission } from './permission-engine';
-import { rulesForMode, sameRule, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
+import { rulesForMode, sameRule, isCrossProjectRule, CROSS_PROJECT_SLUG, DESTRUCTIVE_DENY_LIST, type NativePermissionMode, type PermissionRule } from '../../shared/permission-types';
 import { assembleSystemPrompt } from './prompt-assembly';
 import { resolveProfile, effectiveContextForModel, type CapabilityProfile, type ProfileProviderType } from './capability-profile';
 import { CORE_TOOLS } from './tools';
@@ -33,13 +33,14 @@ import type { ToolServices, SpecialistReservation, SpecialistSpawnOpts, Speciali
 import { createSkillCatalog, SkillNotFound, type SkillCatalog } from './skills/skill-catalog';
 import { canonicalize, resolveP } from './tools/guards';
 import { isUnderRoot } from '../artifacts/read-binary-access';
-import { resolveSpecialist, type SpecialistDefinition } from './specialists/registry';
+import type { SpecialistDefinition } from './specialists/registry';
+import { SpecialistCatalog } from './specialists/catalog';
 import { buildChildDecide } from './specialists/child-permissions';
 import { childAskRouter, BUDGET_ASK_TOOL_NAMES } from './specialists/child-ask-router';
 import { assignSpecialistName } from './specialists/names';
-import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS, SPECIALIST_ASK_HOLD_MS } from './specialists/limits';
-import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, isOwnerAlive, type DelegationRecord } from './specialists/delegation-ledger';
-import { DelegatedModels } from './specialists/delegated-models';
+import { HOSTED_MAX_CONCURRENT_SPECIALISTS, SPECIALIST_SPAWN_BUDGET_PER_SESSION, SPECIALIST_IDLE_STALE_MS, SPECIALIST_IN_TOOL_STALE_MS, SPECIALIST_ASK_HOLD_MS, SPECIALIST_NOTE_MAX_CHARS } from './specialists/limits';
+import { DelegationLedger, OWNER, RAW_REPORT_CAP_CHARS, isOwnerAlive, toRunView, type DelegationRecord } from './specialists/delegation-ledger';
+import { DelegatedModels, delegatedModelsView, type DelegatedTier } from './specialists/delegated-models';
 import type { NativeHome } from '../native-home';
 import { computeReportBudget } from './specialists/report-budget';
 import { truncateOutput, composeNotice } from './tools/truncate';
@@ -109,7 +110,33 @@ const SEND_QUEUE_LIMIT = 10;
 // Exported (Task 9) so restart-recovery card replay can filter against the
 // exact same set the live path uses, and so tests can assert against it
 // directly rather than duplicating the literal list.
+//
+// Plan 1c adds ONE more shape — assistant-thinking with text — because a
+// helper's reasoning belongs in ITS card's Thinking row (R6), never in the
+// parent's bubble. Heartbeats/stall/preparing payloads stay out: they would
+// render as the parent's own status. That widening lives in
+// isSubagentDisplayEvent below, NOT as a fourth Set entry — the frozen
+// TranscriptEventType surface means assistant-thinking must stay one Set
+// member that sometimes re-emits, rather than the Set growing a type whose
+// membership is conditional on payload. Anything checking "does this type
+// always re-emit" still reads SUBAGENT_DISPLAY_TYPES directly; anything
+// deciding whether ONE event re-emits must call isSubagentDisplayEvent.
 export const SUBAGENT_DISPLAY_TYPES = new Set<TranscriptEvent['type']>(['tool-use', 'tool-result', 'assistant-text']);
+
+/**
+ * The single predicate for "does this child event re-emit as a display copy
+ * on the parent" — used at BOTH sites (the live wireChildLive listener below
+ * and mergeChildEvents' replay filter) so the two can never drift apart.
+ * True for the three always-on types in SUBAGENT_DISPLAY_TYPES, or for an
+ * assistant-thinking event that carries non-empty data.text (a helper's
+ * actual reasoning, per the WHY above). A payload-less heartbeat, a
+ * stallWarning countdown, or a toolPreparing notice all fail this — none
+ * carries data.text — and stay child-only.
+ */
+export function isSubagentDisplayEvent(e: TranscriptEvent): boolean {
+  return SUBAGENT_DISPLAY_TYPES.has(e.type)
+    || (e.type === 'assistant-thinking' && typeof e.data.text === 'string' && e.data.text.length > 0);
+}
 
 /**
  * Card replay (Task 9) — pure splice function, exported for direct testing.
@@ -148,7 +175,7 @@ export function mergeChildEvents(
     const idx = merged.findIndex((e) => e.type === 'tool-use' && e.data.toolUseId === record.parentToolCallId);
     if (idx === -1) continue; // defensive skip — see the function's own WHY above
     const stamped = events
-      .filter((e) => SUBAGENT_DISPLAY_TYPES.has(e.type))
+      .filter(isSubagentDisplayEvent)
       .map((e) => ({
         ...e,
         sessionId: parentId,
@@ -586,23 +613,134 @@ export class NativeSessionHost extends EventEmitter {
    *  whatever it drained, erasing the steer this method just recorded.
    *  appendMissedSteers reads-and-appends from INSIDE the ledger's own lock,
    *  so two concurrent writers to the same record's `missedSteers` commute
-   *  instead of one clobbering the other — see its own WHY. */
-  steerSpecialist(parentId: string, childId: string, text: string): SpecialistManageOutcome {
+   *  instead of one clobbering the other — see its own WHY.
+   *
+   *  `from` (plan 1c, default 'assistant' so the Task tool's own task_id
+   *  steer call — which never names a `from` — keeps its existing behavior
+   *  unchanged): the note is recorded when it is ACCEPTED, whichever way it
+   *  travels, so the card learns of it from the run record the ledger emits
+   *  (spec §2) rather than a separate message type. A LIVE delivery is one
+   *  ledger write (appendNote); a PARKED steer's note rides in the SAME write
+   *  as the parked steer itself (appendMissedSteers' own `note` param) — the
+   *  global "one ledger write per related change" rule, so a throw between
+   *  two writes can never park the steer while dropping the note the user
+   *  saw, or the reverse. */
+  steerSpecialist(parentId: string, childId: string, text: string, from: 'user' | 'assistant' = 'assistant'): SpecialistManageOutcome {
     const loc = this.locateOwnChild(parentId, childId);
     if (!loc) return { status: 'not-yours' };
     if (!loc.live) return { status: 'not-running', agentType: loc.record.agentType };
     const { entry, record } = loc;
+    // `text` (unclamped) is what the helper actually receives — delivery and
+    // ledger-recording are separate concerns, and clamping delivery would
+    // silently cut what the helper was told to do, which nobody asked for.
     const delivered = entry.session.postSteer(text);
-    if (!delivered) {
-      const parentCwd = this.live.get(parentId)?.cwd;
-      if (this.ledger && parentCwd) {
-        void this.ledger.appendMissedSteers(parentCwd, parentId, childId, [text]).catch((err) => {
+    const parentCwd = this.live.get(parentId)?.cwd;
+    if (this.ledger && parentCwd) {
+      // Review finding fix (Task 5): the Global Constraints' flat 2,000-char
+      // note cap was only checked in steerFromUser (the human's send-a-note
+      // box). The model's own task_id steer call reaches this method
+      // directly via `from: 'assistant'` with nothing bounding it, and EVERY
+      // accepted steer is now a permanent ledger entry (read-modify-write
+      // WHOLE on every access, spec Task 5) — so a model that writes a huge
+      // steer grows that file without limit, forever, the same cost class
+      // RAW_REPORT_CAP_CHARS already guards on the report side. The cap is
+      // applied HERE, inside steerSpecialist itself, so it holds no matter
+      // which caller reaches this method.
+      //
+      // Reject vs. clamp differ ON PURPOSE by `from`: a user who typed too
+      // much gets told so (steerFromUser's own error, above this method) and
+      // can shorten it and resend — silently cutting their words would be
+      // confusing. A model can't "retype" a rejected steer without another
+      // round trip that itself risks looping, and the delivered text (what
+      // the helper actually acts on) is never touched anyway — only the
+      // saved copy is shortened, with a visible marker so nobody mistakes a
+      // clamped note for the model's whole message.
+      const CLAMP_MARK = ' … (cut short — the note was too long to save in full)';
+      const recordedText = text.length > SPECIALIST_NOTE_MAX_CHARS
+        ? text.slice(0, SPECIALIST_NOTE_MAX_CHARS - CLAMP_MARK.length) + CLAMP_MARK
+        : text;
+      const note = { text: recordedText, from, at: Date.now() };
+      if (delivered) {
+        void this.ledger.appendNote(parentCwd, parentId, childId, note).catch((err) => {
+          log('ERROR', 'NativeSessionHost', 'failed to record a steer note in the ledger', { childId, parentId, error: String(err) });
+        });
+      } else {
+        void this.ledger.appendMissedSteers(parentCwd, parentId, childId, [text], note).catch((err) => {
           log('ERROR', 'NativeSessionHost', 'failed to record a missed steer in the ledger', { childId, parentId, error: String(err) });
         });
       }
     }
     const { title, description } = this.titleAndDescriptionFor(childId, entry.cwd, record);
     return { status: 'ok', title, description };
+  }
+
+  /** Task 5 (plan 1c) — the user-facing "send a note" surface (mid-run steer
+   *  from the card, not the model's own task_id steer). Never throws: every
+   *  refusal is a plain-English string the renderer shows verbatim, so it
+   *  must read as a sentence a non-developer would understand, never a status
+   *  code or a guessed cause (error-message-standards.md). Validation runs
+   *  BEFORE steerSpecialist so an empty/oversized note never reaches the
+   *  ledger at all — trimmed here once, and the trimmed text is what actually
+   *  gets recorded (steerSpecialist sees `t`, not the raw `text`). */
+  steerFromUser(parentId: string, childId: string, text: string): { ok: true } | { ok: false; error: string } {
+    const t = text.trim();
+    if (!t) return { ok: false, error: 'The note is empty.' };
+    if (t.length > SPECIALIST_NOTE_MAX_CHARS) {
+      return {
+        ok: false,
+        error: `Notes are limited to ${SPECIALIST_NOTE_MAX_CHARS.toLocaleString()} characters — this one is ${t.length.toLocaleString()}.`,
+      };
+    }
+    const outcome = this.steerSpecialist(parentId, childId, t, 'user');
+    if (outcome.status === 'not-yours') return { ok: false, error: 'That helper isn’t part of this conversation.' };
+    if (outcome.status === 'not-running') return { ok: false, error: 'This helper has already finished, so a note can’t reach it.' };
+    return { ok: true };
+  }
+
+  /** Task 5 (plan 1c) — the user-facing "stop this helper" surface, the same
+   *  outcome-to-plain-English mapping as steerFromUser above (see its own
+   *  comment for why this never throws). No length/emptiness to validate —
+   *  interruptSpecialist itself has no input beyond the child to act on. */
+  interruptFromUser(parentId: string, childId: string): { ok: true } | { ok: false; error: string } {
+    const outcome = this.interruptSpecialist(parentId, childId);
+    if (outcome.status === 'not-yours') return { ok: false, error: 'That helper isn’t part of this conversation.' };
+    if (outcome.status === 'not-running') return { ok: false, error: 'This helper has already finished.' };
+    return { ok: true };
+  }
+
+  /** Task 8 (plan 1c) — Settings' two model-tier rows. `delegatedModels` is
+   *  only wired when this host was built with a real NativeHome (ipc-handlers'
+   *  production wiring always does; a bare test construction gets neither
+   *  tiers to designate nor a store to read them from) — that case reads as
+   *  "nothing designated" rather than throwing. Labels come from
+   *  toolServices.modelCatalog, the SAME closure the Task tool's own
+   *  ModelSearch/resolveDelegatedBinding already read (Finding 1 fix pass) —
+   *  one catalog source for every specialists surface. */
+  async getDelegatedModels(): Promise<DelegatedModelsView> {
+    if (!this.delegatedModels) return { budget: null, frontier: null };
+    const catalog = (await this.toolServices?.modelCatalog?.()) ?? null;
+    return delegatedModelsView(this.delegatedModels, catalog);
+  }
+
+  /** Task 8 — the tier picker's write path. A specific binding must resolve
+   *  to a REAL row in the live catalog (matched on providerId + modelId, not
+   *  modelId alone — a tier names one exact provider/model pair, not "any
+   *  provider that happens to have this id") or the write is refused
+   *  entirely; a stale/unconfirmed binding would let a helper silently spawn
+   *  on a model that no longer exists, with nothing on screen explaining why.
+   *  `binding: null` always clears the tier — no catalog lookup needed, since
+   *  clearing can never be "wrong". */
+  async setDelegatedModel(tier: DelegatedTier, binding: ModelBinding | null): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!this.delegatedModels) return { ok: false, error: 'Specialists aren’t available in this session.' };
+    if (binding !== null) {
+      const catalog = (await this.toolServices?.modelCatalog?.()) ?? null;
+      const found = catalog?.find((m) => m.id === binding.modelId && m.providerId === binding.providerId);
+      if (!found) {
+        return { ok: false, error: `"${binding.modelId}" isn’t in the model list right now — pick it from the list.` };
+      }
+    }
+    await this.delegatedModels.set(tier, binding);
+    return { ok: true };
   }
 
   /** Task 6 — cancel a RUNNING own child outright (`task_id` management
@@ -681,8 +819,28 @@ export class NativeSessionHost extends EventEmitter {
     const header = this.store.readHeader(opts.childId, workDir);
     if (!header) throw new Error(`Cannot resume specialist ${opts.childId}: its transcript could not be read.`);
     const agentType = header.agentType ?? record.agentType;
-    const specialist = resolveSpecialist(agentType);
+    // Task 4 (plan 1c) — resolved against the PARENT's own per-cwd roster
+    // (never the bare built-in lookup): the parent's cwd is where its
+    // specialists folders live, and ensureFresh(parent.cwd) has already run
+    // at least once by the time any session is live (create()/resume() both
+    // await it before wiring).
+    const specialist = this.specialistCatalog.roster(parent.cwd).resolve(agentType);
     if (!specialist) throw new Error(`Cannot resume specialist ${opts.childId}: its specialist type "${agentType}" is no longer available (it may have been removed from the roster).`);
+
+    // D2 fix (2026-08-26, review Critical) — a resume rebuilds the child from
+    // the specialist as it is RIGHT NOW (buildSpecialistSession below reads
+    // specialist.allowedTools / charter / systemPrompt), while the consent the
+    // user gave was for the file as it was at spawn. A resume call carries no
+    // work_dir, so it has no permission subject, so no card can be shown for
+    // it — under auto-edit the pattern-less Task allow answers first. That made
+    // resume a way to run an edited definition with no consent at all. Compare
+    // fingerprints and refuse instead. Both sides absent (built-ins, and rows
+    // written before this field existed) means "no claim to check" — never a
+    // mismatch, or every pre-existing hire would become unresumable.
+    if (record.definitionFingerprint && specialist.fingerprint
+        && record.definitionFingerprint !== specialist.fingerprint) {
+      return { status: 'definition-changed', agentType };
+    }
 
     const preset = resolvePreset(this.presetIdFor.get(parentId));
     const binding = header.binding;
@@ -857,6 +1015,9 @@ export class NativeSessionHost extends EventEmitter {
         childId,
         parentToolCallId: opts.parentToolCallId,
         agentType: opts.specialist.id,
+        // D2 fix: pin WHICH VERSION of the definition file was consented to,
+        // so a later resume can refuse if the file has changed underneath it.
+        definitionFingerprint: opts.specialist.fingerprint,
         title,
         workDir: opts.workDir,
         // Task 4: the Task tool's own per-call `description` argument — the
@@ -872,6 +1033,11 @@ export class NativeSessionHost extends EventEmitter {
         delivered: false,
         owner: OWNER,
         missedSteers: [],
+        // Task 5 (plan 1c) — whatever task.ts resolved this run's model to
+        // (or undefined, for a bare test/one-off construction that never
+        // wires ctx.binding). Stamped at spawn time so it's on the record
+        // from the child's very first ledger row, not backfilled later.
+        model: opts.model,
       });
     } catch (err) {
       try {
@@ -1358,14 +1524,19 @@ export class NativeSessionHost extends EventEmitter {
    *  competing for the same slice of the parent's headroom regardless of
    *  delivery order within the pass. Returns `reportPath` alongside the text
    *  (Task 10) so the caller can persist a NEWLY-created truncation-time spill
-   *  to the ledger — a failed/missing-specialist body has none to give. */
-  private formatDelivery(sessionId: string, rec: DelegationRecord, concurrentReporters: number): { text: string; reportPath?: string } {
+   *  to the ledger — a failed/missing-specialist body has none to give.
+   *
+   *  `cwd` (Task 4, plan 1c): the LIVE parent entry's cwd, passed by the
+   *  caller rather than re-derived here — resolves rec.agentType against the
+   *  parent's OWN per-cwd roster (a project's specialists folders live at
+   *  its cwd, not at some default), instead of the bare built-in lookup. */
+  private formatDelivery(sessionId: string, cwd: string, rec: DelegationRecord, concurrentReporters: number): { text: string; reportPath?: string } {
     if (rec.status === 'failed') {
       return { text: `[Background specialist failed] ${rec.title} (${rec.agentType}): ${rec.failureText ?? 'unknown error'}. Partial transcript: specialist session ${rec.childId}.` };
     }
     const minutesAgo = Math.max(0, Math.round((Date.now() - rec.startedAt) / 60000));
     const preamble = `[Background specialist finished] ${rec.title} (${rec.agentType}) completed the task you delegated ("${rec.description}", started ${minutesAgo}m ago, ${rec.steps ?? 0} steps).\n\n`;
-    const specialist = resolveSpecialist(rec.agentType);
+    const specialist = this.specialistCatalog.roster(cwd).resolve(rec.agentType);
     // Fix (Task 4 fix-pass, finding 1): rec.rawReport is the copy that rode in
     // the ledger file, already capped at RAW_REPORT_CAP_CHARS by
     // DelegationLedger.update() on every write — formatting from it alone
@@ -1857,6 +2028,20 @@ export class NativeSessionHost extends EventEmitter {
     // reasonable wall-clock time override it with a small number instead of
     // fighting this file's setImmediate-heavy async machinery with fake timers.
     private specialistAskHoldMs: number = SPECIALIST_ASK_HOLD_MS,
+    // Task 4 (plan 1c) — the per-cwd specialist catalog: three folders read
+    // per project folder (personal, ~/.claude/agents, <cwd>/.claude/agents),
+    // merged with the four built-ins into one roster. Optional + LAST, same
+    // reasoning as every other trailing param above: the default here has no
+    // `home` (so no personal source is ever read) and `claudeUserDir: null`
+    // (so ~/.claude/agents is never read either) — a bare test construction
+    // still only ever sees the four built-ins, exactly the pre-Task-4
+    // behavior every existing test relies on. The real wiring (ipc-handlers)
+    // passes a catalog built with the real home. Kept as ONE instance for
+    // this host's whole life (not re-created per session) — its in-memory
+    // per-source state is what makes ensureFresh()'s "unchanged folder costs
+    // no re-read" fingerprint check work across turns and across sessions
+    // sharing one project folder.
+    private specialistCatalog: SpecialistCatalog = new SpecialistCatalog({ claudeUserDir: null }),
   ) {
     super();
     // Re-emit broker asks/expirations so ipc-handlers can forward them to the
@@ -1866,7 +2051,25 @@ export class NativeSessionHost extends EventEmitter {
     // ask already timed out — see onLateResponse's own comment for the
     // live-child-vs-ended-child split.
     this.broker.setLateResponseHandler((entry, decision) => this.onLateResponse(entry, decision));
-    this.ledger = nativeHome ? new DelegationLedger(nativeHome) : undefined;
+    // Plan 1c — the ONE place a ledger write becomes a renderer-visible push.
+    // The listener lives HERE, at construction, and nowhere else: the global
+    // house rule is "emit in the ledger, never the host per method" — every
+    // one of the ledger's own write methods (recordStart, update, appendNote,
+    // appendMissedSteers, ...) already funnels through its single mutate()
+    // chokepoint, so wiring the listener once here means a future write
+    // method gets the push for free, with no call site in THIS file to
+    // remember to add one to. `changed` is only the records a write actually
+    // touched, so one steer/status/model change becomes exactly one event —
+    // never a re-diff of the whole file. toRunView() strips the delivery
+    // bookkeeping (delivered, claimedBy, missedSteers, rawReport, ...) the
+    // card never needs; see its own comment for the full omitted list.
+    this.ledger = nativeHome
+      ? new DelegationLedger(nativeHome, (cwd, parentId, changed) => {
+          for (const rec of changed) {
+            this.emit('specialists-event', { kind: 'run', sessionId: parentId, run: toRunView(rec) } satisfies SpecialistsEvent);
+          }
+        })
+      : undefined;
     this.nativeHome = nativeHome;
     this.delegatedModels = nativeHome ? new DelegatedModels(nativeHome) : undefined;
   }
@@ -1945,7 +2148,13 @@ export class NativeSessionHost extends EventEmitter {
    *  revokeRule / revokeProject are disk PLUS live memory. IPC handlers must call
    *  these, never the store's — "fixing the inconsistency" reintroduces the bug.
    *
-   *  Matching is by SLUG, never by path equality: nativeStoreSlug collapses ':',
+   *  ONE SLUG IS NOT A FOLDER: CROSS_PROJECT_SLUG ('all projects') is the bucket
+   *  holding grants on the user's OWN file-defined specialists, which apply in
+   *  every project (shared/permission-types.ts → isCrossProjectRule). Revoking
+   *  from it must reach every live session, not the ones whose cwd matches — see
+   *  the branch below.
+   *
+   *  Matching is otherwise by SLUG, never by path equality: nativeStoreSlug collapses ':',
    *  '\', '/' AND spaces all to '-', so two differently-spelled cwds ('/home/d/my
    *  project' and '/home/d/my-project') genuinely share one entry on disk — and
    *  must therefore both be cleared in memory too.
@@ -1962,7 +2171,11 @@ export class NativeSessionHost extends EventEmitter {
   async revokeRule(slug: string, rule: PermissionRule): Promise<boolean> {
     const hit = await this.permissionStore.remove(slug, rule);
     for (const [sessionId, entry] of this.live) {
-      if (nativeStoreSlug(entry.cwd) !== slug) continue;
+      // The cross-project bucket is not a folder, so no session's cwd slugs to
+      // it (its key contains a space, which nativeStoreSlug always collapses) —
+      // a cwd comparison would clear it from NOBODY. It was granted everywhere,
+      // so it has to be revoked everywhere: every live session, whatever its cwd.
+      if (slug !== CROSS_PROJECT_SLUG && nativeStoreSlug(entry.cwd) !== slug) continue;
       const mem = this.rememberedFor.get(sessionId);
       if (!mem) continue;
       this.rememberedFor.set(sessionId, mem.filter((r) => !sameRule(r, rule)));
@@ -1972,10 +2185,25 @@ export class NativeSessionHost extends EventEmitter {
 
   /** Revoke EVERY remembered rule for a project (the "clear all for this folder"
    *  control). Same disk-plus-live-memory contract and same slug matching as
-   *  revokeRule — see its comment for why both halves are mandatory. */
+   *  revokeRule — see its comment for why both halves are mandatory.
+   *
+   *  CROSS_PROJECT_SLUG is the exception, in BOTH directions: it matches every
+   *  live session (no cwd slugs to it), but it may only remove that session's
+   *  cross-project rules — its own project grants are a different card in
+   *  Settings and were not what the user cleared. */
   async revokeProject(slug: string): Promise<boolean> {
     const hit = await this.permissionStore.removeProject(slug);
     for (const [sessionId, entry] of this.live) {
+      // "Clear all" on the cross-project bucket clears the CROSS-PROJECT grants
+      // out of every live session — and nothing else. Dropping each session's
+      // whole memory here would silently take that session's own project grants
+      // with it, which the user never asked to revoke and Settings still shows
+      // under its own folder card.
+      if (slug === CROSS_PROJECT_SLUG) {
+        const mem = this.rememberedFor.get(sessionId);
+        if (mem) this.rememberedFor.set(sessionId, mem.filter((r) => !isCrossProjectRule(r)));
+        continue;
+      }
       // delete, not set([]): an absent entry and an empty one read identically in
       // buildDecide (`?? []`), and deleting keeps the map from accumulating empties.
       if (nativeStoreSlug(entry.cwd) === slug) this.rememberedFor.delete(sessionId);
@@ -2069,9 +2297,17 @@ export class NativeSessionHost extends EventEmitter {
    *  `profile` is accepted here so Task 6 can add a prompt variant without another
    *  signature change; this task doesn't use it yet (the session itself carries it
    *  via opts.profile). */
-  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers' | 'internalReadRoots'> {
+  private toolWiring(sessionId: string, cwd: string, preset: ResolvedPreset, profile: CapabilityProfile): Pick<HarnessSessionOpts, 'tools' | 'decide' | 'askUser' | 'systemPrompt' | 'toolServices' | 'skillCatalog' | 'triggers' | 'internalReadRoots' | 'specialistRoster'> {
     return {
       tools: CORE_TOOLS,
+      // Task 4 (plan 1c) — this project folder's roster, read live off the
+      // catalog's in-memory state at every roster()/list()/resolve() call
+      // (catalog.ts's own contract), never a snapshot frozen here. Callers
+      // (create()/resume()) must have already awaited
+      // this.specialistCatalog.ensureFresh(cwd) before reaching toolWiring —
+      // roster()'s own contract says it must not be called before that has
+      // resolved at least once for this cwd.
+      specialistRoster: this.specialistCatalog.roster(cwd),
       // Project rules + nested project instructions, indexed ONCE per session
       // (M3 item 3). Built here rather than in the session because it is
       // filesystem state scoped to the session's cwd, and re-statting the tree
@@ -2367,6 +2603,13 @@ export class NativeSessionHost extends EventEmitter {
     // The preset seeds the STARTING mode; an explicit setPermissionMode always
     // wins — modeFor is never overwritten here (plan decision 3).
     if (!this.modeFor.has(opts.sessionId)) this.modeFor.set(opts.sessionId, preset.defaultMode);
+    // Task 4 (plan 1c) — read this project folder's specialist catalog BEFORE
+    // toolWiring() ever calls this.specialistCatalog.roster(cwd) below: that
+    // call reads live in-memory state, and roster()'s own contract says it
+    // must not be called before ensureFresh() has resolved at least once for
+    // this cwd. Awaited here so no session ever ships the model an empty
+    // roster on its very first turn.
+    await this.specialistCatalog.ensureFresh(opts.cwd);
     // Acquire this session's MCP servers (Task 6) BEFORE constructing the
     // session, so mcpServers is available for the very first buildAiTools().
     const mcpLease = await this.acquireMcp(opts.sessionId);
@@ -2492,7 +2735,8 @@ export class NativeSessionHost extends EventEmitter {
     // where ipc-handlers mints a conversation record and feeds the title feeder —
     // a child would surface as a conversation the user never started. The child
     // gets the persistence half only; the display half (stamped COPIES of the
-    // three subagent event types, emitted under the PARENT's id) is Task 7.
+    // display-safe events per isSubagentDisplayEvent, emitted under the
+    // PARENT's id) is Task 7.
     this.wireChildLive(parentId, childId, workDir, session, binding, opts.parentToolCallId);
     return { childId, title };
   }
@@ -2558,7 +2802,16 @@ export class NativeSessionHost extends EventEmitter {
           parentDecide: this.buildDecide(parentId, parent.cwd, preset.presetRules, { specialistScope: specialist.id }),
           charter: specialist.charter,
           allowedTools: specialist.allowedTools,
-          envelopeGranted: true,   // the Task-tool ask (a new spawn) or the ORIGINAL spawn's ask (a resume) was the consent
+          // envelopeGranted: true means the hire was PERMITTED, not that the user was necessarily
+          // asked. Two ways that happens: (1) a Task-tool ask card (new spawn) or the original
+          // spawn's ask card (resume) was answered — real consent; or (2) the active permission
+          // mode allows Task outright with no pattern (auto-edit — see rulesForMode() in
+          // permission-types.ts), so harness-session.ts resolves the hire straight to 'allow' and
+          // no card is ever rendered. Path (2) has no explicit consent event; downstream
+          // child-permissions.ts reads this flag to auto-allow the child's own tool calls either
+          // way. Rewritten because this comment used to claim "the ask was the consent" as if
+          // that were always true — it isn't on path (2).
+          envelopeGranted: true,
         }),
         // ASKS (plan 1b Task 8): routed through the PARENT's broker under the
         // PARENT's sessionId — never the child's own (no window owns a raw
@@ -2578,6 +2831,9 @@ export class NativeSessionHost extends EventEmitter {
         // rememberedFor by the id it was BUILT with, which is parentId here).
         askUser: childAskRouter({
           broker: this.broker, parentId, childId, agentType: specialist.id, title,
+          // Task 6: carried through so a routed ask's `specialist` payload
+          // lets the renderer nest the row under the right specialist card.
+          parentToolCallId,
           timeoutMs: this.specialistAskHoldMs,
           remember: (rule) => this.rememberRule(parentId, parent.cwd, rule),
         }),
@@ -2603,8 +2859,8 @@ export class NativeSessionHost extends EventEmitter {
    *  where ipc-handlers mints a conversation record and feeds the title feeder
    *  — a child would surface as a conversation the user never started. This
    *  gives the child the persistence half only; the display half is the
-   *  stamped COPY of the three subagent event types, emitted under the
-   *  PARENT's id, below. */
+   *  stamped COPY of the display-safe events (isSubagentDisplayEvent),
+   *  emitted under the PARENT's id, below. */
   private wireChildLive(
     parentId: string, childId: string, workDir: string, session: HarnessSession, binding: ModelBinding, parentToolCallId: string,
   ): void {
@@ -2631,15 +2887,16 @@ export class NativeSessionHost extends EventEmitter {
             sessionId: childId, type: event.type, error: String(err),
           });
         });
-      // (2) DISPLAY (Task 7) — a stamped COPY, for the three types the
-      // renderer's subagent card consumes and NOTHING else (see
-      // SUBAGENT_DISPLAY_TYPES for what a stamped turn-complete would break).
+      // (2) DISPLAY (Task 7) — a stamped COPY, for what the renderer's
+      // subagent card consumes and NOTHING else (see isSubagentDisplayEvent /
+      // SUBAGENT_DISPLAY_TYPES for what a stamped turn-complete would break,
+      // and plan 1c's addition of text-bearing assistant-thinking).
       // The copy rides under the PARENT's session id, because that is the
       // session a window actually owns; `parentAgentToolUseId` threads it into
       // the parent's Task tool card and `agentId` identifies which child spoke.
       // The original is never mutated — the persisted event above and this copy
       // are two different objects on purpose.
-      if (!SUBAGENT_DISPLAY_TYPES.has(event.type)) return;
+      if (!isSubagentDisplayEvent(event)) return;
       this.emit('transcript-event', {
         ...event,
         sessionId: parentId,
@@ -2784,6 +3041,10 @@ export class NativeSessionHost extends EventEmitter {
     // Seed the STARTING mode from the resolved preset unless the caller already
     // set one for this id (an explicit setPermissionMode always wins).
     if (!this.modeFor.has(sessionId)) this.modeFor.set(sessionId, preset.defaultMode);
+    // Task 4 (plan 1c) — same reasoning as create()'s own call: awaited BEFORE
+    // toolWiring() reads this.specialistCatalog.roster(cwd) below, so a
+    // resumed session's first turn never ships an empty roster either.
+    await this.specialistCatalog.ensureFresh(cwd);
     // Acquire this session's MCP servers (Task 6). A RESUMED session reuses its
     // old sessionId, so this acquire() can overlap a release() still in flight
     // from a destroy() of the SAME id. That used to be the bug: both
@@ -2932,6 +3193,31 @@ export class NativeSessionHost extends EventEmitter {
     // already a discarded object and setting its `inFlight` flag touches
     // nothing live.
     try {
+      // Task 4 (plan 1c) — re-read this project folder's specialist catalog
+      // before dispatching this pass's turn(s): a file dropped into a
+      // specialists folder since the last turn is offered starting on THIS
+      // turn, without a session restart. ONE call per runTurns invocation
+      // (not per queued follow-up) — every turn drained in this same pass
+      // shares the roster this one read resolved. ensureFresh()'s own
+      // fingerprint check makes an unchanged folder cheap (a handful of
+      // stat() calls, never a re-parse); it never throws (every fallible fs
+      // call inside it is already individually guarded — see catalog.ts's
+      // own WHY comments), so this is not wrapped in its own try/catch.
+      // Fix (Task 4 review): gated on `!entry.parentSessionId` — ROOT sessions
+      // ONLY. A specialist child DOES reach this function: runSpecialist's
+      // runTurn() closure calls this.send(childId, ...), and send() dispatches
+      // unconditionally into this.runTurns() for whatever id it's given, so
+      // every child turn (the opening turn AND the empty-report nudge) used to
+      // run this call too — an earlier comment here claimed otherwise, which
+      // was simply wrong. The real reason to skip it for a child: its roster
+      // is fixed at spawn (R12) and never read again — createChild builds a
+      // child's tools by hand and never calls toolWiring(), so no child ever
+      // consults this.specialistCatalog.roster(cwd) for ITS OWN cwd. Without
+      // this gate, every child turn wrote a fresh entry into the catalog's
+      // per-cwd cache (a Map with no eviction) for a cwd nothing will ever
+      // read a roster for — often a work_dir narrowed to a subfolder nothing
+      // else touches — so the cache grew forever across the process's life.
+      if (!entry.parentSessionId) await this.specialistCatalog.ensureFresh(entry.cwd);
       let next: SendUnit | (() => Promise<void>) | undefined = first;
       while (next !== undefined) {
         try {
@@ -3103,7 +3389,7 @@ export class NativeSessionHost extends EventEmitter {
             log('WARN', 'NativeSessionHost', 'markInjectionAttempted failed — proceeding with delivery anyway; see markInjectionAttempted\'s own comment for the residual duplicate risk this can leave', { childId: rec.childId, parentId: sessionId, error: String((err as any)?.message ?? err) });
           }
           try {
-            const delivery = this.formatDelivery(sessionId, rec, concurrentReporters);
+            const delivery = this.formatDelivery(sessionId, entry.cwd, rec, concurrentReporters);
             // Task 10: a NEWLY-created truncation-time spill (delivery.reportPath
             // absent from the claimed record) gets recorded in the ledger too —
             // own try/catch, log-only: a bookkeeping failure here must never
@@ -3194,7 +3480,7 @@ export class NativeSessionHost extends EventEmitter {
           // has no live ledger row in a deliverable state to attach it to (see
           // this lane's own WHY, right above); the correct path is still what
           // lands in THIS injection's footer either way.
-          await entry.session.runNotice(this.formatDelivery(sessionId, fallback.rec, concurrentReporters).text);
+          await entry.session.runNotice(this.formatDelivery(sessionId, entry.cwd, fallback.rec, concurrentReporters).text);
           if (this.live.get(sessionId) !== entry) {
             // destroy() landed mid-notice: runNotice on a torn-down session
             // resolves normally without showing the report to anyone (same
@@ -3486,6 +3772,37 @@ export class NativeSessionHost extends EventEmitter {
     if (records.length === 0) return parentEvents;
     const children = records.map((record) => ({ record, events: this.store.readEvents(record.childId, record.workDir) }));
     return mergeChildEvents(sessionId, parentEvents, children);
+  }
+
+  /** Task 9 (plan 1c) — every run record for `sessionId`'s (as PARENT) live
+   *  specialist delegations, projected through the SAME toRunView the
+   *  ledger's own change listener uses to build the specialists:event push
+   *  (see the 'specialists-event' emit in the constructor above). A renderer
+   *  that just reloaded rebuilds its tool cards from the on-disk transcript
+   *  (TRANSCRIPT_REPLAY), but nothing in that replay re-sends a helper's
+   *  CURRENT status — the card's status IS its run record (R2) — so
+   *  ipc-handlers replays these the same way it replays open permission asks
+   *  just above (pendingAskEventsFor).
+   *
+   *  cwd comes from `this.live`, not a caller-supplied argument: getHistory()
+   *  already returns null for a non-live session for the identical reason
+   *  (see its own comment) — a dead session's specialists have no live turn
+   *  left to act on their status, so this matches that same "only when it IS
+   *  live" contract instead of inventing a second one.
+   *
+   *  Capped at SPECIALIST_SPAWN_BUDGET_PER_SESSION defensively: in
+   *  production the ledger can never hold more than that many records for
+   *  one parent — trySpendSpecialistSpawnBudget spends the budget BEFORE
+   *  recordStart ever runs (see its own comment), so every recordStart call
+   *  is already budget-gated. This slice is a belt-and-braces bound against
+   *  replay ever growing past what a single turn could actually have
+   *  spawned, not a correction for a real overflow. */
+  specialistRunsFor(sessionId: string): SpecialistRunView[] {
+    const entry = this.live.get(sessionId);
+    if (!entry || !this.ledger) return [];
+    return this.ledger.listFor(entry.cwd, sessionId)
+      .slice(0, SPECIALIST_SPAWN_BUDGET_PER_SESSION)
+      .map(toRunView);
   }
 
   /** True only when we can AFFIRM this native session has no work in flight —

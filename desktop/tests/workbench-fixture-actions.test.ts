@@ -13,6 +13,11 @@ const FIXTURE_ROOT = join(__dirname, '../src/renderer/dev/workbench/fixtures');
 const KNOWN_KINDS = new Set([
   'text', 'user_message', 'assistant_text', 'tool_use', 'tool_result',
   'permission_request',
+  // Specialists 1c: a child's stamped events, its routed ask, the run record
+  // (a delivered steer rides on the run record's own `notes` — Task 10 — so
+  // there is no separate line kind for it), and the folded background report.
+  'subagent_text', 'subagent_thinking', 'subagent_tool_use', 'subagent_tool_result',
+  'subagent_permission_request', 'specialist_run', 'specialist_report',
   // 'stalled' (Task 6): parks the turn via TRANSCRIPT_THINKING_HEARTBEAT so the
   // stalled card can be looked at in the workbench — no backend involved.
   'stalled',
@@ -112,14 +117,19 @@ describe('shipped fixtures replay', () => {
   it.each(fixtureFiles('conversations'))(
     'conversation $name emits one action per dispatched line',
     ({ name, raw }) => {
+      // A `subagent_permission_request` with `held: true` dispatches TWO
+      // actions (the ask, then PERMISSION_HELD) — the one line kind that is
+      // deliberately not 1:1.
       const dispatched = raw.split('\n')
         .map((l) => l.trim()).filter(Boolean)
-        .filter((l) => JSON.parse(l).type !== 'text');
+        .map((l) => JSON.parse(l))
+        .filter((p) => p.type !== 'text')
+        .reduce((n, p) => n + (p.type === 'subagent_permission_request' && p.held === true ? 2 : 1), 0);
       // includeStalled here so the count means what it says: EVERY dispatchable
       // line really was dispatched. The parked-turn line is opt-in at the
       // workbench level (see the default-off case below), not un-dispatchable.
       expect(loadFixture(name, raw, undefined, { includeStalled: true }).actions)
-        .toHaveLength(dispatched.length);
+        .toHaveLength(dispatched);
     },
   );
 
@@ -158,7 +168,7 @@ describe('chat hydrate payload', () => {
 
     // Both seeded sessions from fixtures/sessions.ts must be present, keyed by
     // the ids the session list uses — a mismatch shows an empty chat view.
-    expect([...restored.keys()].sort()).toEqual(['wb-1', 'wb-2']);
+    expect([...restored.keys()].sort()).toEqual(['wb-1', 'wb-11', 'wb-2']);
 
     for (const [sessionId, session] of restored) {
       expect(session.timeline.length, `${sessionId} timeline`).toBeGreaterThan(0);

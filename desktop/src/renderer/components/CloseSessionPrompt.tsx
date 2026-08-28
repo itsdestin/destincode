@@ -215,13 +215,10 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
 
   return (
     <>
-      <Dialog open onClose={onCancel} size="prompt" aria-label="Close session" scrollBody={false}>
-          <div className="px-4 pt-4 pb-3 border-b border-edge">
-            <h2 className="text-sm font-bold text-fg">Close session</h2>
-            {sessionName && (
-              <p className="text-2xs text-fg-muted mt-1 truncate">{sessionName}</p>
-            )}
-          </div>
+      {/* P-15: title + session name come from the shared Dialog header now, so
+          this prompt gets the same header (and the ✕) every other dialog has
+          instead of a hand-rolled copy of it. */}
+      <Dialog open onClose={onCancel} size="prompt" title="Close session" subtitle={sessionName} scrollBody={false}>
           {/* min-h-0 + overflow-y-auto: this dialog passes scrollBody={false}
               because it renders its own header and footer, and Dialog's own doc
               is explicit that doing so makes the SCROLL REGION the caller's
@@ -322,44 +319,31 @@ export default function CloseSessionPrompt({ open, sessionName, sessionId, onCan
               </>
             )}
           </div>
-          <div className="px-4 pb-4 flex items-center gap-2 justify-between">
+          {/* P-15 (review 2026-08-26): the dialog has a ✕ now, so "Cancel" is
+              redundant and gone. "Don't show again" stays bottom-left where it
+              always was, on the shared Toggle (a real switch), and with only one
+              button on the right nothing wraps at the prompt width any more. */}
+          <div className="px-4 pb-4 flex items-center justify-between gap-3">
             {/* Don't show again — persists suppress flag to localStorage so App.tsx
                 skips this prompt on future closes and destroys sessions directly. */}
-            <button
-              onClick={() => setDontShowAgain((v) => !v)}
-              className="flex items-center gap-1.5 text-3xs text-fg-muted hover:text-fg transition-colors"
-              aria-pressed={dontShowAgain}
-            >
-              <span
-                className={`w-7 h-4 rounded-full transition-colors flex-shrink-0 ${
-                  dontShowAgain ? 'bg-accent' : 'bg-edge'
-                }`}
-              >
-                <span
-                  className={`block w-3 h-3 rounded-full bg-on-accent shadow transition-transform mt-0.5 ${
-                    dontShowAgain ? 'translate-x-3.5' : 'translate-x-0.5'
-                  }`}
-                />
-              </span>
+            <label className="flex items-center gap-2 text-2xs text-fg-muted whitespace-nowrap cursor-pointer">
+              <Toggle checked={dontShowAgain} onChange={setDontShowAgain} aria-label="Don't show again" />
               Don't show again
-            </button>
-            <div className="flex gap-2">
-              <Button variant="ghost" onClick={onCancel}>
-                Cancel
-              </Button>
-              <Button
-                onClick={() => {
-                  // Persist suppress preference before confirming so the caller
-                  // can immediately skip the prompt on the next close.
-                  if (dontShowAgain) {
-                    localStorage.setItem(SUPPRESS_KEY, '1');
-                  }
-                  onConfirm(buildResult());
-                }}
-              >
-                Close session
-              </Button>
-            </div>
+            </label>
+            <Button
+              size="sm"
+              className="whitespace-nowrap"
+              onClick={() => {
+                // Persist suppress preference before confirming so the caller
+                // can immediately skip the prompt on the next close.
+                if (dontShowAgain) {
+                  localStorage.setItem(SUPPRESS_KEY, '1');
+                }
+                onConfirm(buildResult());
+              }}
+            >
+              Close session
+            </Button>
           </div>
       </Dialog>
       <TagManagerPopup open={manageOpen} onClose={() => setManageOpen(false)} registry={registry} layer={3} />

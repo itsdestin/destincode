@@ -29,6 +29,14 @@ describe('DevelopmentPopup', () => {
     openSpy.mockRestore();
   });
 
+  // P-15 (2026-08-25 UI audit): the popup used to hand-roll an uppercase
+  // <h3> and had no close button at all — Escape was the only exit.
+  it('carries the shared dialog header: a title and a ✕', () => {
+    render(<DevelopmentPopup open={true} onClose={() => undefined} onOpenBug={() => undefined} onOpenContribute={() => undefined} />);
+    expect(screen.getByRole('heading', { name: 'Development' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close Development' })).toBeInTheDocument();
+  });
+
   it('calls onOpenBug when Report row is clicked', () => {
     const onOpenBug = vi.fn();
     render(<DevelopmentPopup open={true} onClose={() => undefined} onOpenBug={onOpenBug} onOpenContribute={() => undefined} />);
@@ -50,6 +58,17 @@ describe('BugReportPopup', () => {
         openSessionIn: vi.fn().mockResolvedValue({ id: 's1' }),
       },
     };
+  });
+
+  // P-15: titleless before, so no ✕. The title follows the Bug/Feature switch.
+  it('titles itself after the selected report kind and offers a ✕', () => {
+    const onClose = vi.fn();
+    render(<BugReportPopup open={true} onClose={onClose} />);
+    expect(screen.getByRole('heading', { name: 'Report a bug' })).toBeInTheDocument();
+    fireEvent.click(screen.getByText(/^Feature$/));
+    expect(screen.getByRole('heading', { name: 'Request a feature' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Close Request a feature' }));
+    expect(onClose).toHaveBeenCalled();
   });
 
   it('disables Continue until description is at least 10 chars', () => {

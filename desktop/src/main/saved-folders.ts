@@ -11,6 +11,9 @@ export interface SavedFolder {
   path: string;
   nickname: string;
   addedAt: number;
+  // Local-only description. A plain folder has nothing to sync it to — the
+  // synced equivalent lives in the project registry (project-registry.ts).
+  description?: string | null;
 }
 
 function foldersFilePath(): string {

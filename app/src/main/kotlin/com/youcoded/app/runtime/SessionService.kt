@@ -1282,6 +1282,10 @@ class SessionService : Service() {
                         put("nickname", wd.label)
                         put("addedAt", 0)
                         put("exists", File(wd.path).isDirectory)
+                        // WHY: serve the per-folder description on the wire so the shared
+                        // React folder switcher can render it, matching desktop's
+                        // youcoded-folders.json entries (Task 4).
+                        put("description", wd.description)
                     })
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, arr) }
@@ -1329,6 +1333,23 @@ class SessionService : Service() {
                     }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, renamed) }
+            }
+            "folders:set-description" -> {
+                // WHY: local-folder counterpart to desktop's saved-folder description
+                // (Task 4) — folders:rename has a real Android implementation, so this
+                // needs one too instead of silently no-oping on mobile (see Task 5 brief).
+                val folderPath = msg.payload.optString("folderPath", "")
+                val description = msg.payload.optString("description", "")
+                var ok = false
+                if (folderPath.isNotEmpty()) {
+                    val homeDir = bootstrap?.homeDir ?: filesDir
+                    val store = com.youcoded.app.config.WorkingDirStore(homeDir)
+                    if (store.dirs.value.any { it.path == folderPath }) {
+                        store.setDescription(folderPath, description)
+                        ok = true
+                    }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, ok) }
             }
 
             "clipboard:save-image" -> {
@@ -3303,6 +3324,9 @@ class SessionService : Service() {
                 // Sets orphan=true when the backing file is missing.
                 val projectRoot = msg.payload.optString("projectRoot", "")
                 val artifactId  = msg.payload.optString("artifactId", "")
+                // full: the user tapped "Load the whole file" on the partial-view
+                // bar. Opts into a BIGGER read, not an unbounded one.
+                val wantsFullFlag = msg.payload.optBoolean("full", false)
                 if (projectRoot.isEmpty() || artifactId.isEmpty()) {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                         org.json.JSONObject().put("ok", false).put("error", "projectRoot and artifactId are required")) }
@@ -3362,12 +3386,31 @@ class SessionService : Service() {
                 // Size gate BEFORE reading (spec §2.3) — a multi-MB read blocks the
                 // bridge and the WebView renderer. mtimeMs doubles as the optimistic-
                 // concurrency token round-tripped into artifacts:save.
-                if (resolved.length() > EditablePathPolicy.EDIT_MAX_BYTES) {
-                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, org.json.JSONObject()
-                        .put("ok", true).put("artifact", artifact.toJson())
-                        .put("content", org.json.JSONObject.NULL).put("orphan", false)
-                        .put("tooLarge", true).put("sizeBytes", resolved.length())
-                        .put("mtimeMs", resolved.lastModified().toDouble())) }
+                //
+                // Above the cap we do NOT refuse blind: sniff the head first, because
+                // an over-cap IMAGE must reach the binary handoff rather than the TEXT
+                // editor's refusal (spec §4.2). Text comes back as a readable prefix.
+                // Mirrors desktop ipc-handlers.ts.
+                val wantsFull = wantsFullFlag &&
+                    resolved.length() <= EditablePathPolicy.FULL_READ_MAX_BYTES
+                if (resolved.length() > EditablePathPolicy.EDIT_MAX_BYTES && !wantsFull) {
+                    val head = ByteArray(8192)
+                    val headLen = EditablePathPolicy.readFully(resolved, head)
+                    val out = org.json.JSONObject()
+                        .put("ok", true).put("artifact", artifact.toJson()).put("orphan", false)
+                        .put("sizeBytes", resolved.length())
+                        .put("mtimeMs", resolved.lastModified().toDouble())
+                    if (EditablePathPolicy.looksBinary(head.copyOf(headLen))) {
+                        out.put("content", org.json.JSONObject.NULL)
+                           .put("binary", true).put("truncated", false)
+                    } else {
+                        val cap = EditablePathPolicy.EDIT_MAX_BYTES.toInt()
+                        val win = ByteArray(cap)
+                        val winLen = EditablePathPolicy.readFully(resolved, win)
+                        out.put("content", EditablePathPolicy.textPrefix(win, winLen, cap))
+                           .put("binary", false).put("truncated", true)
+                    }
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it, out) }
                     return@handleBridgeMessage
                 }
                 val bytes = try { resolved.readBytes() } catch (_: java.io.IOException) { null }
@@ -3386,7 +3429,58 @@ class SessionService : Service() {
                     .put("content",  if (binary) org.json.JSONObject.NULL else String(bytes, Charsets.UTF_8))
                     .put("orphan",   false)
                     .put("binary",   binary)
+                    // sizeBytes and truncated ride EVERY response: the renderer
+                    // derives editability from the size, not from a separate flag.
+                    .put("truncated", false)
+                    .put("sizeBytes", resolved.length())
                     .put("mtimeMs",  resolved.lastModified().toDouble())
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
+            }
+
+            "fs:read-head" -> {
+                // First bytes of a user-chosen file for the composer's attachment
+                // preview cards (rendered markdown / mono text). Mirrors desktop
+                // main/fs-read-head.ts: absolute paths only, the read-binary
+                // sensitive-path deny list, a hard 4096-byte cap whatever the
+                // caller asks for (READ_HEAD_MAX_BYTES in shared/read-head.ts),
+                // and a NUL sniff so a binary never comes back as U+FFFD soup.
+                // NOT roots-gated — the user attaches whatever the picker gives.
+                val headPath = msg.payload.optString("filePath", "")
+                if (headPath.isEmpty() || !java.io.File(headPath).isAbsolute) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "no path")) }
+                    return@handleBridgeMessage
+                }
+                val headFile = try { java.io.File(headPath).canonicalFile } catch (_: java.io.IOException) { java.io.File(headPath).absoluteFile }
+                if (EditablePathPolicy.isSensitivePath(canonicalize(headFile.path, null)) ||
+                    EditablePathPolicy.isSensitivePath(canonicalize(headPath, null))) {
+                    msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                        org.json.JSONObject().put("ok", false).put("error", "not-allowed")) }
+                    return@handleBridgeMessage
+                }
+                val requested = msg.payload.optInt("maxBytes", 600)
+                val cap = requested.coerceIn(1, 4096)
+                val payload = if (!headFile.exists()) {
+                    org.json.JSONObject().put("ok", false).put("error", "orphan")
+                } else if (!headFile.isFile) {
+                    org.json.JSONObject().put("ok", false).put("error", "not-a-file")
+                } else try {
+                    val buf = ByteArray(cap)
+                    val len = EditablePathPolicy.readFully(headFile, buf)
+                    val head = buf.copyOf(len)
+                    if (EditablePathPolicy.looksBinary(head)) {
+                        org.json.JSONObject().put("ok", false).put("error", "binary")
+                    } else {
+                        val truncated = headFile.length() > len
+                        // A cut mid-character decodes to U+FFFD at the very end;
+                        // when truncated that is the cut, not the file — drop it.
+                        var text = String(head, Charsets.UTF_8)
+                        if (truncated && text.endsWith("\uFFFD")) text = text.dropLast(1)
+                        org.json.JSONObject().put("ok", true).put("text", text).put("truncated", truncated)
+                    }
+                } catch (e: java.io.IOException) {
+                    org.json.JSONObject().put("ok", false).put("error", e.message ?: "read failed")
+                }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, payload) }
             }
 
@@ -3415,7 +3509,7 @@ class SessionService : Service() {
                 }
                 // 50MB gate, matching desktop READ_BINARY_MAX_BYTES — base64
                 // inflates 33% and it all transits the bridge.
-                if (resolvedBin.exists() && resolvedBin.length() > 50L * 1024 * 1024) {
+                if (resolvedBin.exists() && resolvedBin.length() > EditablePathPolicy.READ_BINARY_MAX_BYTES) {
                     msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                         org.json.JSONObject().put("ok", false).put("error", "too-large")) }
                     return@handleBridgeMessage
@@ -3756,6 +3850,19 @@ class SessionService : Service() {
             "permissions:list",
             "permissions:remove",
             "permissions:remove-project",
+            // Specialists 1c (Task 8) — roster + tier reads/writes + card
+            // actions all read/write the DESKTOP native harness (SpecialistCatalog,
+            // DelegationLedger, DelegatedModels), same as permissions:* above;
+            // Android has no native harness to hold any of that until M8. Reply
+            // not-implemented so the shared React UI degrades to a "desktop only"
+            // state instead of timing out. specialists:event (the ledger push) is
+            // OUTBOUND-only — same as native:model-state above — so it needs no
+            // entry here at all.
+            "specialists:list",
+            "specialists:delegated-get",
+            "specialists:delegated-set",
+            "specialists:steer",
+            "specialists:interrupt",
             // Local llama.cpp engine (Plan B) — desktop-only; no Android runtime yet.
             "engine:status",
             "engine:install",
@@ -3783,6 +3890,10 @@ class SessionService : Service() {
             // Cross-device project rename (display-name) + stop-syncing (2026-07-12)
             // are desktop-only (Phase 3 on Android).
             "syncspaces:rename-project",
+            // Synced project description (Task 3) — desktop-only for now; without this
+            // arm the description editor on a phone would wait ~30s for a response
+            // that never arrives instead of failing fast.
+            "syncspaces:set-project-description",
             "syncspaces:stop-project",
             // Plan 2b — conversation leases/takeover + device registry are
             // desktop-only (Android has no lease/takeover). The shared React UI

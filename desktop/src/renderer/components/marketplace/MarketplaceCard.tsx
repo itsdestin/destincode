@@ -8,6 +8,8 @@ import type { SkillEntry, SkillComponents } from "../../../shared/types";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";
 import { useMarketplace } from "../../state/marketplace-context";
+// P-21 #3: "1 installs" / "1 likes" — counts go through the shared pluraliser.
+import { plural } from "../../../shared/plural";
 import StarRating from "./StarRating";
 import InstallFavoriteCorner from "./InstallFavoriteCorner";
 
@@ -186,8 +188,8 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
               {rating != null && ratingCount > 0 && (
                 <StarRating value={rating} count={ratingCount} size="sm" />
               )}
-              {installs > 0 && <span>{installs.toLocaleString()} installs</span>}
-              {likes > 0 && <span>{likes.toLocaleString()} likes</span>}
+              {installs > 0 && <span>{plural(installs, "install")}</span>}
+              {likes > 0 && <span>{plural(likes, "like")}</span>}
             </div>
           ) : null}
         </div>
@@ -380,8 +382,8 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
         {rating != null && ratingCount > 0 && (
           <StarRating value={rating} count={ratingCount} size="sm" />
         )}
-        {installs > 0 && <span className="shrink-0">{installs.toLocaleString()} installs</span>}
-        {likes > 0 && <span className="shrink-0">{likes.toLocaleString()} likes</span>}
+        {installs > 0 && <span className="shrink-0">{plural(installs, "install")}</span>}
+        {likes > 0 && <span className="shrink-0">{plural(likes, "like")}</span>}
         {/* Component peek (e.g. "2 skills · 3 commands") is wide-only —
             saves a row at narrow where space is tight. */}
         {peek && <span className="hidden sm:inline text-fg-muted truncate">{peek}</span>}

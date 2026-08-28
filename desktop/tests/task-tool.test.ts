@@ -28,7 +28,13 @@ import * as fs from 'fs'; import * as os from 'os'; import * as path from 'path'
 // fakes, same as the rest of this file.
 import { NativeSessionHost } from '../src/main/harness/native-session-host';
 import { SessionStore } from '../src/main/harness/session-store';
-import { resolveSpecialist as resolveRealSpecialist } from '../src/main/harness/specialists/registry';
+import { resolveSpecialist as resolveRealSpecialist, type SpecialistDefinition, type SpecialistRoster } from '../src/main/harness/specialists/registry';
+// Task 4 (plan 1c) — the permission-subject test below drives the REAL
+// matcher (never a string comparison stand-in for it), so a passing test
+// actually proves a remembered grant does/doesn't apply, not just that the
+// two subject strings look different to a human reader.
+import { ruleMatches } from '../src/shared/subject-glob';
+import type { PermissionRule } from '../src/shared/permission-types';
 
 interface RunOpts {
   slotFree?: boolean;
@@ -48,10 +54,15 @@ interface RunOpts {
   // was actually requested.
   binding?: ModelBinding;
   models?: { designated: DelegatedModels; catalog: () => Promise<CatalogModel[] | null> };
+  // Task 4 (plan 1c) — undefined means "use BUILTIN_ROSTER" (createTaskTool's
+  // own default), so every pre-Task-4 test in this file keeps testing the
+  // built-in roster unmodified; only the new per-cwd-roster tests below pass
+  // a fake one.
+  roster?: SpecialistRoster;
 }
 
 function runTaskTool(args: Record<string, unknown>, opts: RunOpts = {}) {
-  const tool = createTaskTool();
+  const tool = createTaskTool(opts.roster);
   const spawn = opts.spawn ?? vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
   const release = opts.release ?? vi.fn();
   const ctx: ToolContext = {
@@ -368,6 +379,287 @@ describe('Task tool — roster names each specialist\'s tools (2026-08-16)', () 
   });
 });
 
+// ---------------------------------------------------------------------------
+// Task 4 (plan 1c) — createTaskTool(roster) is now built from the CALLER's
+// roster, never a module-level snapshot of the built-ins: the roster is
+// per-project-folder (SpecialistCatalog, Task 3), so a module-level enum
+// would show every session on the machine the same specialist list. Every
+// test above this block passes createTaskTool() with no argument and keeps
+// exercising BUILTIN_ROSTER unmodified (the default) — these are the only
+// tests that inject a different one.
+// ---------------------------------------------------------------------------
+describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
+  const DOCS_WRITER: SpecialistDefinition = {
+    id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes and edits project docs.',
+    systemPrompt: 'Write docs.', allowedTools: ['Read', 'Write'], charter: 'read-write',
+    stepCap: 10, reportBudgetTokens: 500, source: 'personal',
+    grantScope: 'user', fingerprint: 'aaaaaaaaaaaa',
+  };
+  const FAKE_ROSTER: SpecialistRoster = {
+    list: () => [DOCS_WRITER],
+    resolve: (id) => (id === 'docs-writer' ? DOCS_WRITER : undefined),
+  };
+
+  it('createTaskTool(roster) enumerates THAT roster in the description, the schema enum text, and shortDescription', () => {
+    const tool = createTaskTool(FAKE_ROSTER);
+    expect(tool.description).toContain('docs-writer');
+    expect(tool.description).toContain('Writes and edits project docs.');
+    // Never the built-in roster this fake roster doesn't include — proves
+    // this really came FROM the injected roster, not BUILTIN_ROSTER leaking
+    // through a stale default somewhere.
+    expect(tool.description).not.toContain('explorer');
+    // The schema's own `agent` field description is what the model actually
+    // reads to pick a value — built inside createTaskTool (buildSchema),
+    // never at module load, so it enumerates THIS roster's ids too.
+    const agentFieldDescription = (tool.inputSchema as any).shape.agent.description as string;
+    expect(agentFieldDescription).toContain('docs-writer');
+    expect(agentFieldDescription).not.toContain('explorer');
+    expect(tool.shortDescription).toContain('docs-writer');
+    expect(tool.shortDescription).not.toContain('explorer');
+  });
+
+  it('permissionSubject uses the roster to find the charter', () => {
+    const tool = createTaskTool(FAKE_ROSTER);
+    const subject = tool.permissionSubject!({ agent: 'docs-writer', work_dir: '/proj' } as any);
+    // docs-writer's charter (read-write, from its allowedTools) drives the
+    // subject prefix — this fake roster is the ONLY place that charter comes
+    // from, since 'docs-writer' isn't a built-in.
+    // D2: a PERSONAL-folder specialist is 'user'-scoped, so the work dir is
+    // deliberately absent — that is what makes one grant cover every project.
+    expect(subject).toBe('read-write:file:docs-writer@aaaaaaaaaaaa');
+  });
+
+  // The two-mechanism reasoning this pins (global-constraints.md, "Hire
+  // grants — do not simplify this into one mechanism"): permissionSubject is
+  // half (a) — it stops an OLD remembered grant (minted before this file ever
+  // existed) from silently covering a specialist a repository just shipped.
+  // Half (b) (the renderer suppressing Always-allow on a non-builtin hire) is
+  // a DIFFERENT file's job (Task 10) — this test only proves half (a) by
+  // driving the real decision-path matcher, never a string comparison.
+  it('permissionSubject: a built-in hire is `${charter}:${workDir}` (unchanged — old grants still match); a file-defined hire is `${charter}:${workDir}:file:${id}` (a remembered read-write grant for the Worker does NOT cover it)', () => {
+    const BUILTIN_WORKER = resolveRealSpecialist('worker')!; // source: 'builtin', charter: 'read-write'
+    const FILE_WORKER: SpecialistDefinition = {
+      id: 'repo-worker', displayName: 'Repo Worker', description: 'A worker a repo shipped.',
+      systemPrompt: 'Do repo work.', allowedTools: ['Read', 'Write', 'Bash'], charter: 'read-write',
+      stepCap: 25, reportBudgetTokens: 2000, source: 'claude-code',
+      grantScope: 'project', fingerprint: 'bbbbbbbbbbbb',
+    };
+    const MIXED_ROSTER: SpecialistRoster = {
+      list: () => [BUILTIN_WORKER, FILE_WORKER],
+      resolve: (id) => (id === 'worker' ? BUILTIN_WORKER : id === 'repo-worker' ? FILE_WORKER : undefined),
+    };
+    const tool = createTaskTool(MIXED_ROSTER);
+    const builtinSubject = tool.permissionSubject!({ agent: 'worker', work_dir: '/proj' } as any);
+    const fileSubject = tool.permissionSubject!({ agent: 'repo-worker', work_dir: '/proj' } as any);
+    expect(builtinSubject).toBe('read-write:/proj');                    // unchanged shape — old grants still match
+    expect(fileSubject).toBe('read-write:/proj:file:repo-worker@bbbbbbbbbbbb'); // file's own id AND its contents
+
+    // A user's PRE-EXISTING remembered grant for the built-in Worker at this
+    // path (the exact shape harness-session.ts's remember-rule persists).
+    const workerGrant: PermissionRule = { tool: 'Task', pattern: 'read-write:/proj', action: 'allow', match: 'exact' };
+    expect(ruleMatches(workerGrant, builtinSubject!)).toBe(true);   // still covers the built-in it was granted for
+    expect(ruleMatches(workerGrant, fileSubject!)).toBe(false);     // must NOT auto-approve a repo-shipped helper
+  });
+
+  // ---- D2 (2026-08-26): how wide an "Always allow" on a hire may be. ----
+  // These drive the REAL decision-path matcher (ruleMatches) against the REAL
+  // shape harness-session.ts's rememberedRuleFor persists, so they fail if
+  // either end drifts — a string comparison here would prove nothing.
+  describe('D2 — grant width follows grantScope, not the helper\'s name', () => {
+    const mk = (over: Partial<SpecialistDefinition>): SpecialistDefinition => ({
+      id: 'code-reviewer', displayName: 'code-reviewer', description: 'Reviews code.',
+      systemPrompt: 'Review.', allowedTools: ['Read', 'Grep'], charter: 'read-only',
+      stepCap: 10, reportBudgetTokens: 500, source: 'claude-code',
+      grantScope: 'project', fingerprint: 'f1f1f1f1f1f1', ...over,
+    });
+    const rosterOf = (d: SpecialistDefinition): SpecialistRoster =>
+      ({ list: () => [d], resolve: (id) => (id === d.id ? d : undefined) });
+    // Exactly what a remembered "Always allow" becomes on disk.
+    const grantFor = (subject: string): PermissionRule =>
+      ({ tool: 'Task', pattern: subject, action: 'allow', match: 'exact' });
+
+    it('a USER-folder helper: one grant covers every project (what Destin asked for)', () => {
+      const tool = createTaskTool(rosterOf(mk({ grantScope: 'user' })));
+      const inRepoX = tool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      const inRepoY = tool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoY' } as any)!;
+      expect(inRepoX).toBe(inRepoY);                      // no work dir in the subject at all
+      expect(ruleMatches(grantFor(inRepoX), inRepoY)).toBe(true);
+    });
+
+    it('a PROJECT helper: the grant stays in the repo it was given in', () => {
+      const tool = createTaskTool(rosterOf(mk({ grantScope: 'project' })));
+      const inRepoX = tool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      const inRepoY = tool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoY' } as any)!;
+      expect(inRepoX).not.toBe(inRepoY);
+      // THE hazard this exists for: repo Y ships its own code-reviewer.md under
+      // the same id. Always-allowing repo X's must never pre-approve it.
+      expect(ruleMatches(grantFor(inRepoX), inRepoY)).toBe(false);
+    });
+
+    it('editing the file revokes the grant — the fingerprint rides in the subject', () => {
+      const before = createTaskTool(rosterOf(mk({ grantScope: 'user', fingerprint: 'aaaa11112222' })));
+      const subjectBefore = before.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      const granted = grantFor(subjectBefore);
+      expect(ruleMatches(granted, subjectBefore)).toBe(true);
+
+      // Same id, same folder, same charter — only the file's CONTENTS changed
+      // (e.g. someone added Bash to its tools). The standing grant must not
+      // carry over to a definition the user never saw.
+      const after = createTaskTool(rosterOf(mk({ grantScope: 'user', fingerprint: 'bbbb33334444' })));
+      const subjectAfter = after.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      expect(ruleMatches(granted, subjectAfter)).toBe(false);
+    });
+
+    it('a user-folder grant never covers a project file of the same id, or vice versa', () => {
+      const userTool = createTaskTool(rosterOf(mk({ grantScope: 'user', fingerprint: 'cccc11112222' })));
+      const projTool = createTaskTool(rosterOf(mk({ grantScope: 'project', fingerprint: 'dddd33334444' })));
+      const userSubject = userTool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      const projSubject = projTool.permissionSubject!({ agent: 'code-reviewer', work_dir: '/repoX' } as any)!;
+      expect(ruleMatches(grantFor(userSubject), projSubject)).toBe(false);
+      expect(ruleMatches(grantFor(projSubject), userSubject)).toBe(false);
+    });
+
+    it('a built-in keeps its 1c subject exactly — no grant anyone already has is lost', () => {
+      const worker = resolveRealSpecialist('worker')!;
+      const tool = createTaskTool(rosterOf(worker));
+      expect(tool.permissionSubject!({ agent: 'worker', work_dir: '/proj' } as any))
+        .toBe('read-write:/proj');
+    });
+  });
+
+  it('an unknown agent id is refused naming the roster\'s ids', async () => {
+    const r = await runTaskTool({ agent: 'wizard' }, { roster: FAKE_ROSTER });
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/unknown specialist/i);
+    expect(r.text).toContain('docs-writer');       // names what IS available — from the injected roster
+    expect(r.text).not.toContain('explorer');       // never the built-in roster's ids
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D2 (2026-08-26, review Major — check-then-use). permissionSubject and
+// execute() each called roster.resolve() independently, and the catalog's
+// resolve reads LIVE state: `specialists:list` calls catalog.reload(), which
+// the renderer fires while a consent card is on screen. So the definition
+// whose fingerprint the user approved could be a DIFFERENT object from the one
+// that then spawned — the "the hash pins what you approved" promise is about
+// resolution TIME, and there were two of those. createTaskTool now resolves
+// once per id and reuses it for the life of that tool instance (= one turn).
+// ---------------------------------------------------------------------------
+describe('Task tool — one roster lookup per id, per tool instance (D2)', () => {
+  const BASE: SpecialistDefinition = {
+    id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes and edits project docs.',
+    systemPrompt: 'Write docs.', allowedTools: ['Read', 'Write'], charter: 'read-write',
+    stepCap: 10, reportBudgetTokens: 500, source: 'claude-code',
+    grantScope: 'project', fingerprint: 'aaaaaaaaaaaa',
+  };
+  const ARGS = { agent: 'docs-writer', work_dir: '/proj', description: 'd', prompt: 'a'.repeat(60) };
+
+  /** A roster whose resolve() hands back a FRESH object every call — exactly
+   *  what SpecialistCatalog does after a reload, and the only way a second
+   *  lookup is observable at all (identical field values would hide it). */
+  function freshRoster() {
+    const handedOut: SpecialistDefinition[] = [];
+    const resolve = vi.fn((id: string) => {
+      if (id !== BASE.id) return undefined;
+      const copy: SpecialistDefinition = { ...BASE };
+      handedOut.push(copy);
+      return copy;
+    });
+    return { handedOut, resolve, roster: { list: () => [{ ...BASE }], resolve } as SpecialistRoster };
+  }
+
+  it('permissionSubject then execute() look the id up ONCE, and spawn gets the very object the subject was built from', async () => {
+    const { handedOut, resolve, roster } = freshRoster();
+    const tool = createTaskTool(roster);
+    // The card the user sees is built from this subject...
+    const subject = tool.permissionSubject!(ARGS as any);
+    expect(subject).toBe('read-write:/proj:file:docs-writer@aaaaaaaaaaaa');
+
+    const spawn = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    const ctx: ToolContext = {
+      sessionId: 'parent-1', cwd: '/work', signal: new AbortController().signal,
+      readRegistry: new Map(), todos: [],
+      services: {
+        specialists: {
+          reserve: () => ({ ok: true, token: { parentId: 'parent-1', writer: true } }),
+          release: vi.fn(), trySpendSpawnBudget: () => true, spawn,
+        },
+      },
+    };
+    const r = await tool.execute(ARGS as any, ctx);
+    expect(r.isError).toBeFalsy();
+
+    // ...and this is what actually ran. One lookup, one object: there is no
+    // window between approval and spawn for a reload to swap the definition.
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(handedOut).toHaveLength(1);
+    expect(spawn.mock.calls[0][1].specialist).toBe(handedOut[0]);
+  });
+
+  it('memoises per id, not per tool — a second id still costs its own single lookup', () => {
+    const { resolve, roster } = freshRoster();
+    const tool = createTaskTool(roster);
+    tool.permissionSubject!(ARGS as any);
+    tool.permissionSubject!({ ...ARGS, agent: 'nobody-here' } as any);
+    tool.permissionSubject!({ ...ARGS, agent: 'nobody-here' } as any);
+    expect(resolve).toHaveBeenCalledTimes(2);           // one per distinct id
+    expect(resolve.mock.calls.map((c) => c[0])).toEqual(['docs-writer', 'nobody-here']);
+  });
+
+  it('a NEW tool instance looks the id up again — the memo is per-turn, never a permanent cache', () => {
+    const { resolve, roster } = freshRoster();
+    // harness-session.ts rebuilds the Task tool at the start of EVERY turn, so
+    // an edited definition still takes effect at the next turn. A memo that
+    // outlived the instance would freeze the roster for the whole session.
+    createTaskTool(roster).permissionSubject!(ARGS as any);
+    createTaskTool(roster).permissionSubject!(ARGS as any);
+    expect(resolve).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D2 (2026-08-26, review Major): permissionSubject resolved a relative
+// `work_dir` against `process.cwd()` — the Electron process's own directory,
+// which has nothing to do with the conversation. Two consequences, both bad
+// once a grant is pinned to that path: the remembered rule named a folder the
+// user was never in (so the grant they were told was saved never fired again),
+// and `work_dir: '.'` produced the SAME subject in every project, letting a
+// project-scoped grant travel between projects — exactly what D2 prevents.
+// ---------------------------------------------------------------------------
+describe('Task tool — work_dir resolves against the SESSION folder (D2)', () => {
+  const posix = (p: string) => p.replace(/\\/g, '/');
+
+  it('a relative work_dir resolves against the session folder the host passes', () => {
+    const tool = createTaskTool(undefined, '/sess/root');
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: 'sub' } as any)).toBe('read-only:/sess/root/sub');
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: '.' } as any)).toBe('read-only:/sess/root');
+  });
+
+  it('an absolute work_dir is unaffected by the session folder', () => {
+    const tool = createTaskTool(undefined, '/sess/root');
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: '/elsewhere' } as any)).toBe('read-only:/elsewhere');
+  });
+
+  // THE hazard: two conversations in two different projects, both hiring with
+  // the natural `work_dir: '.'`. Driven through the REAL decision-path matcher,
+  // never a string comparison, so this fails if either end drifts.
+  it('the same work_dir "." in two projects mints two DIFFERENT keys — a grant cannot travel', () => {
+    const inA = createTaskTool(undefined, '/work/projA').permissionSubject!({ agent: 'explorer', work_dir: '.' } as any)!;
+    const inB = createTaskTool(undefined, '/work/projB').permissionSubject!({ agent: 'explorer', work_dir: '.' } as any)!;
+    expect(inA).not.toBe(inB);
+    const grant: PermissionRule = { tool: 'Task', pattern: inA, action: 'allow', match: 'exact' };
+    expect(ruleMatches(grant, inA)).toBe(true);
+    expect(ruleMatches(grant, inB)).toBe(false);
+  });
+
+  it('with no session folder it still falls back to process.cwd() — every pre-existing caller is unchanged', () => {
+    const tool = createTaskTool();
+    expect(tool.permissionSubject!({ agent: 'explorer', work_dir: 'sub' } as any))
+      .toBe(`read-only:${posix(path.resolve(process.cwd(), 'sub'))}`);
+  });
+});
+
 describe('Task tool — model resolution (Task 14)', () => {
   const PARENT_BINDING: ModelBinding = { providerId: 'openrouter', modelId: 'parent-model' };
 
@@ -448,6 +740,56 @@ describe('Task tool — model resolution (Task 14)', () => {
     const r = await runTaskTool({ agent: 'explorer' }, { spawn });
     expect(r.isError).toBeFalsy();
     expect(spawn).toHaveBeenCalledWith('parent-1', expect.not.objectContaining({ binding: expect.anything() }));
+  });
+
+  // Task 5 (plan 1c) — the ledger record (and later the run view) needs to
+  // know what model actually ran, not just what binding was passed. `label`
+  // is always the raw model id — never a pretty name (see task.ts's own WHY).
+  it('Task passes model {label: modelId, via: tier|named|parent, fallback} into spawn opts', async () => {
+    // via: 'budget' — a tier that IS configured, no fallback.
+    const budgetBinding: ModelBinding = { providerId: 'openrouter', modelId: 'cheap-model' };
+    const designated1 = await designatedWith({ budget: budgetBinding });
+    const spawn1 = vi.fn(async () => ({ childId: 'child-1', report: 'done' }));
+    await runTaskTool(
+      { agent: 'explorer', model: 'budget' },
+      { spawn: spawn1, binding: PARENT_BINDING, models: { designated: designated1, catalog: async () => null } },
+    );
+    expect(spawn1).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      model: { label: 'cheap-model', via: 'budget', fallback: false },
+    }));
+
+    // via: 'named' — a specific model id resolved against the live catalog.
+    const designated2 = await designatedWith({});
+    const catalog: CatalogModel[] = [{ id: 'gpt-5', providerId: 'openai', label: 'GPT-5' }];
+    const spawn2 = vi.fn(async () => ({ childId: 'child-2', report: 'done' }));
+    await runTaskTool(
+      { agent: 'explorer', model: 'gpt-5' },
+      { spawn: spawn2, binding: PARENT_BINDING, models: { designated: designated2, catalog: async () => catalog } },
+    );
+    expect(spawn2).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      model: { label: 'gpt-5', via: 'named', fallback: false },
+    }));
+
+    // via: 'parent' — no model requested, no specialist preference: falls
+    // back to the conversation's own binding.
+    const spawn3 = vi.fn(async () => ({ childId: 'child-3', report: 'done' }));
+    await runTaskTool({ agent: 'explorer' }, { spawn: spawn3, binding: PARENT_BINDING });
+    expect(spawn3).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      model: { label: 'parent-model', via: 'parent', fallback: false },
+    }));
+
+    // via: 'frontier' with a genuine fallback (the tier isn't configured) —
+    // fallback: true, and the label is honestly the PARENT's model, not a
+    // frontier model that was never actually used.
+    const designated4 = await designatedWith({});
+    const spawn4 = vi.fn(async () => ({ childId: 'child-4', report: 'done' }));
+    await runTaskTool(
+      { agent: 'explorer', model: 'frontier' },
+      { spawn: spawn4, binding: PARENT_BINDING, models: { designated: designated4, catalog: async () => null } },
+    );
+    expect(spawn4).toHaveBeenCalledWith('parent-1', expect.objectContaining({
+      model: { label: 'parent-model', via: 'frontier', fallback: true },
+    }));
   });
 });
 
@@ -621,5 +963,78 @@ describe('Task tool — task_id management surface (Task 6)', () => {
       await host.destroyAll();
       fs.rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // ---- D2 (2026-08-26, review Critical): a resume rebuilds the child from
+  // the definition file AS IT IS NOW, while the consent the user gave was for
+  // the file as it was at the hire. A task_id call carries no work_dir, so it
+  // has no permission subject, so no consent card can render for it — under
+  // auto-edit the pattern-less Task allow answers first. The host catches this
+  // and returns a typed 'definition-changed'; these pin that the tool turns
+  // that into an error the model can ACT on, naming the one path that re-asks
+  // the user, on BOTH resume branches. ----
+  describe('a resume whose definition file changed since the hire (D2)', () => {
+    // Only a file-defined helper can ever hit this — a built-in has nothing on
+    // disk to change, so it carries no fingerprint to compare.
+    const DOCS_WRITER: SpecialistDefinition = {
+      id: 'docs-writer', displayName: 'Docs Writer', description: 'Writes and edits project docs.',
+      systemPrompt: 'Write docs.', allowedTools: ['Read', 'Write'], charter: 'read-write',
+      stepCap: 10, reportBudgetTokens: 500, source: 'claude-code',
+      grantScope: 'project', fingerprint: 'bbbbbbbbbbbb',
+    };
+    const ROSTER: SpecialistRoster = {
+      list: () => [DOCS_WRITER],
+      resolve: (id) => (id === 'docs-writer' ? DOCS_WRITER : undefined),
+    };
+    // 'not-running' means "this parent's own child, already finished" — the
+    // one answer that routes a task_id call into the resume path.
+    const notRunning = () => vi.fn(() => ({ status: 'not-running', agentType: 'docs-writer' }));
+
+    function expectRefusal(text: string) {
+      expect(text).toContain('"docs-writer"');
+      expect(text).toContain('has changed since this specialist was hired');
+      expect(text).toContain('never approved');
+      // Names the ONE path that goes through the user's consent card again.
+      expect(text).toContain('Hire it again');
+      expect(text).toContain('no task_id');
+    }
+
+    it('foreground: refuses, says what changed, and points at the path that re-asks the user', async () => {
+      const tool = createTaskTool(ROSTER);
+      const token = { parentId: 'parent-1', writer: true };
+      const reserve = vi.fn(() => ({ ok: true, token }));
+      const release = vi.fn();
+      const resumeSpecialist = vi.fn(async () => ({ status: 'definition-changed', agentType: 'docs-writer' }));
+      const r = await tool.execute(
+        { task_id: 'child-1', prompt: 'continue from where you left off' } as any,
+        manageCtx({ steerSpecialist: notRunning(), reserve, release, resumeSpecialist }),
+      );
+      // docs-writer is read-write, so the resume re-takes the writer lock —
+      // and must hand it straight back when the resume is refused.
+      expect(reserve).toHaveBeenCalledWith('parent-1', { writer: true });
+      expect(r.isError).toBe(true);
+      expectRefusal(r.text);
+      expect(release).toHaveBeenCalledWith(token);
+    });
+
+    it('background: refuses identically AND releases the reservation it took', async () => {
+      const tool = createTaskTool(ROSTER);
+      const token = { parentId: 'parent-1', writer: true };
+      const reserve = vi.fn(() => ({ ok: true, token }));
+      const release = vi.fn();
+      const resumeSpecialist = vi.fn(async () => ({ status: 'definition-changed', agentType: 'docs-writer' }));
+      const r = await tool.execute(
+        { task_id: 'child-1', prompt: 'pick up the refactor', background: true } as any,
+        manageCtx({ steerSpecialist: notRunning(), reserve, release, resumeSpecialist }),
+      );
+      expect(r.isError).toBe(true);
+      expectRefusal(r.text);
+      // The background branch owns its own release on every refusal — nothing
+      // downstream took ownership of this reservation, so a leak here would
+      // silently burn a concurrency slot for the rest of the conversation.
+      expect(release).toHaveBeenCalledWith(token);
+      // Never the launch ack: a refusal must not read as "it started".
+      expect(r.text).not.toMatch(/working in the background/);
+    });
   });
 });
