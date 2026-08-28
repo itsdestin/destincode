@@ -66,6 +66,12 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'session.sendInput', 'session.respondToPermission', 'on.transcriptEvent', 'on.hookEvent',
   'native.send', 'native.setBinding',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
+  // Local Models panel + engine card (site row8 loop) — real backend
+  // (engine-handlers / model-manager); hand-written so the card has a version
+  // and backend to print instead of "undefined".
+  'models.installed', 'models.curated', 'models.detectEndpoints', 'models.onDownloadProgress',
+  'engine.status', 'engine.models', 'engine.install', 'engine.restart', 'engine.setContext',
+  'engine.onInstallProgress', 'engine.onStatusChanged', 'engine.onModelsChanged',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
@@ -630,6 +636,36 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         detail: 'Loading it may evict another resident model.',
       }
       : { verdict: 'ok' as const, headline: '', detail: '' }),
+    // Settings → Model Providers → Local Models. The catch-all answered `[]`
+    // here, so the panel read "No models match" under an engine that claimed
+    // to be installed — the two ids match the local rows in fixtures/providers.ts
+    // so the picker chip and this list tell the same story.
+    installed: async () => [
+      { id: 'qwen2.5-coder:14b', sizeBytes: 8_990_000_000, quant: 'Q4_K_M', quantDescription: 'Recommended balance of quality and size', parts: 1 },
+      { id: 'llama3.1:8b', sizeBytes: 4_920_000_000, quant: 'Q4_K_M', quantDescription: 'Recommended balance of quality and size', parts: 1 },
+    ],
+    curated: async () => [],
+    detectEndpoints: async () => [],
+    onDownloadProgress: () => () => {},
+  };
+
+  // The local llama.cpp engine card (EngineCard.tsx). Without a hand-written
+  // status the catch-all's truthy `[]` reached the card with no fields, and it
+  // rendered "Installed undefined · undefined" — which the landing-page loop
+  // for the builders row (row8) filmed verbatim on 2026-08-27. Shape:
+  // shared/engine-types.ts EngineStatus.
+  const engine: Ns<'engine'> = {
+    status: async () => ({
+      installed: true, installedVersion: 'b9986', pinnedVersion: 'b9986', backend: 'vulkan' as const,
+      state: 'stopped' as const, cacheDir: '/home/destin/.youcoded/models', contextSize: 32768, port: 8080,
+    }),
+    models: async () => [],
+    install: async () => undefined,
+    restart: async () => undefined,
+    setContext: async () => undefined,
+    onInstallProgress: () => () => {},
+    onStatusChanged: () => () => {},
+    onModelsChanged: () => () => {},
   };
 
   const defaults: Ns<'defaults'> = {
@@ -1252,7 +1288,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   };
 
   return {
-    session, providers, permissions, models, defaults, native, detach, tags, on, theme, firstRun,
+    session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
     skills, marketplace, folders, fs, window: windowNs,
   } as unknown as Record<string, Record<string, unknown>>;
