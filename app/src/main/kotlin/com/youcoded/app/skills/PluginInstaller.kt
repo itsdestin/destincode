@@ -218,8 +218,10 @@ class PluginInstaller(
     // has other callers that intentionally want the config-store's record.
     fun isInstalledOnDisk(id: String): Boolean {
         val dir = File(pluginsDir, id)
-        return dir.exists() &&
-            (File(dir, "plugin.json").exists() || File(dir, ".claude-plugin/plugin.json").exists())
+        // Fix (review round 2): route through the same manifest predicate
+        // listInstalledPluginDirs() now uses, so "installed" can't mean two
+        // different things depending on which code path asks.
+        return dir.exists() && ClaudeCodeRegistry.hasPluginManifest(dir)
     }
 
     /**
@@ -340,8 +342,27 @@ class PluginInstaller(
      * all. The old tree is parked at `.old-<id>` until the swap fully
      * succeeds, and is put BACK if anything throws in between (matches
      * desktop's upgradePluginFromLocal in plugin-installer.ts).
+     *
+     * [renameFn] defaults to the real `File.renameTo` and exists ONLY as a
+     * test seam (review round 2, Finding 2). The plan's binding promise —
+     * "if the swap dies half-way the old tree must be put back" — covers the
+     * `!staging.renameTo(target)` branch below, which fires only once
+     * `target.renameTo(retired)` has ALREADY succeeded. By the time that
+     * second rename runs, target's path is guaranteed empty (freed by the
+     * first rename moments earlier, same thread, no suspension point in
+     * between), so nothing a test does with real files can plant an obstacle
+     * there deterministically — any filesystem-permission trick broad enough
+     * to block the second rename blocks the first one too, since both write
+     * into the same parent (pluginsDir). Injecting the rename operation is
+     * the only way to force that specific failure on demand and prove the
+     * rollback actually restores the old tree, not just skip the branch.
      */
-    suspend fun upgradeFromLocal(id: String, sourceRef: String, sourceMarketplace: String?): InstallResult = withContext(Dispatchers.IO) {
+    suspend fun upgradeFromLocal(
+        id: String,
+        sourceRef: String,
+        sourceMarketplace: String?,
+        renameFn: (File, File) -> Boolean = { from, to -> from.renameTo(to) },
+    ): InstallResult = withContext(Dispatchers.IO) {
         if (!SAFE_ID_RE.matches(id)) return@withContext InstallResult.Failed("Invalid plugin id")
         val cacheRepo = File(cacheDir, getCacheRepoName(sourceMarketplace))
         val sourceDir = cacheSourceDir(sourceRef, sourceMarketplace)
@@ -358,7 +379,7 @@ class PluginInstaller(
         retired.deleteRecursively()
         try {
             sourceDir.copyRecursively(staging, overwrite = true)
-            if (target.exists() && !target.renameTo(retired)) {
+            if (target.exists() && !renameFn(target, retired)) {
                 // Fix (review round 1, Finding 2): the copy above already staged a
                 // full second copy of the plugin at `.upgrade-<id>` — returning
                 // without deleting it left that copy on disk forever. Not just
@@ -368,22 +389,28 @@ class PluginInstaller(
                 // second installed copy of the plugin and can register duplicate
                 // hooks/MCP servers. Clean up on every exit, not just the
                 // exception path below.
-                staging.deleteRecursively()
+                // Fix (review round 2, Minor): deleteRecursively() swallows
+                // per-file failures instead of throwing — log when it can't
+                // fully clean up so a partial ".upgrade-<id>" leftover isn't
+                // silent (same failure class as the leak this branch fixes).
+                if (!staging.deleteRecursively()) Log.w(TAG, "could not fully remove staged copy for $id at $staging")
                 return@withContext InstallResult.Failed("could not move the old plugin aside")
             }
-            if (!staging.renameTo(target)) {
+            if (!renameFn(staging, target)) {
                 // WHY: put the old tree back immediately — a user must never end
                 // up with the plugin directory entirely gone.
-                if (!retired.renameTo(target)) Log.e(TAG, "upgrade rollback failed for $id: could not restore $retired")
+                if (!renameFn(retired, target)) Log.e(TAG, "upgrade rollback failed for $id: could not restore $retired")
                 // Fix (review round 1, Finding 2): same staging leak as above —
                 // the rename failed but the staged copy is still sitting on disk.
-                staging.deleteRecursively()
+                // Fix (review round 2, Minor): log a failed cleanup instead of
+                // swallowing it silently — see the WHY on the branch above.
+                if (!staging.deleteRecursively()) Log.w(TAG, "could not fully remove staged copy for $id at $staging")
                 return@withContext InstallResult.Failed("could not move the new plugin into place")
             }
         } catch (e: Exception) {
             // WHY: same rollback as above — the swap died mid-copy/rename.
             if (!target.exists() && retired.exists()) {
-                try { retired.renameTo(target) } catch (_: Exception) { /* nothing better to do */ }
+                try { renameFn(retired, target) } catch (_: Exception) { /* nothing better to do */ }
             }
             staging.deleteRecursively()
             return@withContext InstallResult.Failed("upgrade copy failed: ${e.message}")

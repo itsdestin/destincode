@@ -501,6 +501,18 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         val installer = pluginInstaller
             ?: return out.put(JSONObject().put("id", "").put("action", "failed").put("error", "installer not initialized"))
 
+        // Fix (review round 2, Finding 1b): a real process kill mid-swap in
+        // PluginInstaller.upgradeFromLocal() can leave `.upgrade-<id>` (a
+        // staged copy) or `.old-<id>` (the retired tree) behind in the
+        // marketplace plugins dir. ClaudeCodeRegistry.listInstalledPluginDirs()
+        // no longer scans them (Finding 1a), but nothing else clears them
+        // either — the only prior cleanup was the NEXT upgrade of that same
+        // id (upgradeFromLocal deletes its own staging/retired dirs at the
+        // start of its own run). Sweep on every launch so a crash's litter
+        // is cleared on the next launch, not left indefinitely. Only the two
+        // known staging prefixes are removed — never anything else here.
+        sweepStaleUpgradeDirs()
+
         var index = fetcher.fetchIndex()
         fun findEntry(id: String): JSONObject? {
             for (i in 0 until index.length()) {
@@ -584,6 +596,27 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             }
         }
         return out
+    }
+
+    /**
+     * Remove stale `.old-<id>` / `.upgrade-<id>` directories left behind by
+     * an upgradeFromLocal() that was killed mid-swap. Name-prefix match
+     * only — deliberately narrow so a real plugin id (which SAFE_ID_RE
+     * forbids from starting with ".") can never be swept by mistake.
+     */
+    private fun sweepStaleUpgradeDirs() {
+        val dir = ClaudeCodeRegistry.youcodedPluginsDir(homeDir)
+        val children = dir.listFiles { f -> f.isDirectory } ?: return
+        for (child in children) {
+            if (!child.name.startsWith(".old-") && !child.name.startsWith(".upgrade-")) continue
+            try {
+                if (!child.deleteRecursively()) {
+                    Log.w("BundledPlugins", "could not fully sweep stale ${child.name}")
+                }
+            } catch (e: Exception) {
+                Log.w("BundledPlugins", "failed to sweep stale ${child.name}", e)
+            }
+        }
     }
 
     // WHY: MarketplaceFetcher writes its 24h-TTL index cache to a fixed,
