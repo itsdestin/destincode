@@ -508,7 +508,11 @@ export const BashTool = defineTool({
   // This is generic advice for that now-rarer edge case, not a copy of the
   // per-call `bounds.moreHint` built in execute() (which names the real spill
   // path and can't be known statically).
-  moreHint: 'pipe through head -n 100, tail -n 100, or wc -l to narrow it',
+  // D-1 (2026-08-26 tools investigation, closed out 2026-08-28): this static
+  // fallback used to say "pipe through head/tail" — the same pipe advice the
+  // description and the per-call notice dropped, because with no `pipefail`
+  // `cmd | tail` reports tail's exit 0 and hides a failing build.
+  moreHint: 'Read the saved full-output file; if you must re-run, redirect to a file and print the exit code (cmd > out.txt 2>&1; echo exit=$?)',
   permissionSubject: (a) => a.command,
   async execute(args, ctx) {
     const timeout = Math.min(args.timeout ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);

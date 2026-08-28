@@ -188,7 +188,7 @@ own truncation sentence into `text`:
 interface ResultBounds {
   shown: number;
   total: number | null;   // null = genuinely unknown (e.g. a walk that stopped early)
-  unit: 'lines' | 'chars' | 'bytes' | 'files' | 'matches' | 'results';
+  unit: 'lines' | 'chars' | 'bytes' | 'files' | 'matches' | 'results' | 'pages';  // 'pages' added 2026-08-28 for PDF reads
   moreHint: string;       // this tool's own widening vocabulary, this call
 }
 ```
@@ -232,10 +232,10 @@ mode this contract removes.
 
 | Tool | `moreHint` |
 |---|---|
-| Bash | `pipe through head -n 100, tail -n 100, or wc -l to narrow it` |
+| Bash | `Read the saved full-output file; if you must re-run, redirect to a file and print the exit code (cmd > out.txt 2>&1; echo exit=$?)` — the 2026-08-10 wording said "pipe through head/tail"; dropped 2026-08-28 (D-1) because there is no `pipefail`, so `cmd \| tail` hides a failing command's exit code |
 | Grep | `narrow the pattern, add a glob filter, or use output_mode: "count"` |
 | Glob | `narrow the glob pattern or pass a more specific path` |
-| Read | static: `use offset and limit to read a smaller slice of the file`; the per-call `bounds.moreHint` instead interpolates the exact next offset, `use offset=N to continue` |
+| Read | static: `use offset and limit to read a smaller slice of the file (for a PDF, a narrower pages range)`; the per-call `bounds.moreHint` interpolates the exact next offset, `use offset=N to continue` (prefixed `~50 KB cap reached at line N;` when the char cap, not the line cap, stopped it); a PDF over 10 pages declares `unit: 'pages'` with `pass pages="11-20" for the next range` |
 | WebSearch | `narrow the query, or WebFetch a result to read it in full` |
 | WebFetch | `fetch a more specific URL, or a narrower section of the page` |
 | Skill | `load a narrower or different skill instead, or ask the user to split this oversized SKILL.md into smaller skills` |
@@ -303,6 +303,66 @@ On a hit, WebFetch appends a non-committal note stating only what was directly
 observed (how much visible text the server actually sent) without guessing what is
 missing — never a categorical claim like "this section doesn't exist," since the
 tool has no way to know that from a shell it never rendered.
+
+## Native tools — the 2026-08-26 harness-comparison ledger (shipped 2026-08-28)
+
+Source: `docs/active/investigations/2026-08-26-native-tools-vs-other-harnesses.md`
+(workspace) — YouCoded's Read/Edit/Write/Bash/Grep against ten other harnesses.
+Shipped as youcoded PRs #352, #353, #354, #355. What is now true, and why:
+
+- **Every native tool schema is `.strict()`; an unknown parameter is an error the model
+  can act on** (`tools/arg-errors.ts`, called from `runOneTool` step 1). Before, `z.object`
+  silently dropped unknown keys, so a Claude-Code-trained model sending `Grep {"-i": true}`
+  got a case-*sensitive* search and no error. The message names the bad key AND the valid
+  list. MCP tools stay pass-through on purpose — the server validates its own arguments
+  (pinned in `tool-registry-manifest.test.ts`). Nested list items (a todo, a question) are
+  not strict: a stray key there changes nothing the tool does.
+- **Grep** gained `ignore_case` (`-i`), `literal` (`-F`), `type` (`--type=NAME`, one token so a
+  value can never be read as a flag; rg validates the name), `multiline`
+  (`-U --multiline-dotall`). Flags omitted → the rg command line is byte-identical to before.
+- **Read** — (1) a folder returns "is a folder, not a file — use Glob or Bash `ls`" plus the
+  first 50 entries under the `bounds` contract, instead of Node's raw `EISDIR`; (2) a second
+  per-call cap of 50,000 chars, cut on a line boundary, with the exact `offset=N` to resume —
+  the 100k pipeline cap is now a backstop text reads cannot reach; (3) **re-read dedupe**: the
+  same `path|offset|limit` slice of a file whose mtime is unchanged returns a one-line
+  "unchanged since your earlier Read (N calls ago)" notice. The served-reads map
+  (`HarnessSession.servedReads`) is cleared on resume, `/clear`, every automatic compaction
+  action (prune AND summarize) and manual `/compact` — the model must never be told "you
+  already have it" about content compaction removed; (4) **PDFs** (`harness/pdf-text.ts`):
+  text layer only, page by page, `pages="1-5"` (max 20 per call; ≤10 pages read whole; >10
+  without `pages` → first 10 + `bounds`), scanned pages named up front ("pages 3–7 contain no
+  text layer"), vision models additionally told how to rasterise them, whole-empty → error,
+  encrypted/corrupt → pdf.js's own message. Uses the `pdfjs-dist` the renderer's viewer already
+  ships (legacy build, lazy `import()` on first PDF), and **extractions are serialized through
+  one promise chain** — the 2026-08-27 sidecar OOM was N concurrent parses of one file.
+  `offset`/`limit` are ignored for PDFs and the description says so. Desktop-only (Android
+  has no native harness). `electron-builder.yml` unpacks `pdfjs-dist/legacy`, `standard_fonts`,
+  `cmaps` from the asar — **unverified in a packaged build until someone reads a PDF in an
+  installer** (ROADMAP).
+- **Write** — refuses omission placeholders (`detectOmissionPlaceholder`, `tools/write.ts`):
+  a comment-only line carrying an ellipsis plus "rest of / existing code / unchanged /
+  remaining / omitted", quoting the line. Narrow on purpose (`foo(...args)`, a bare `// ...`,
+  prose never trip it) — the bias is toward missing an exotic placeholder over refusing real
+  content. Overwrites also preserve CRLF/BOM via Edit's exported `preserveFormat`.
+- **Edit** — every parameter described; `old_string` says: exactly once, never include Read's
+  `%6d\t` line-number prefix, keep to 1–3 lines. The read-gate refusal names session resume
+  as a cause (`readRegistry` resets on resume).
+- **Bash** — the description no longer suggests re-running "piped through head/tail" (no
+  `pipefail`: `cmd | tail` masks the exit code); it says Read the saved file, or redirect and
+  `echo exit=$?`. The same sentence was fixed in the per-call spill notice and the static
+  `moreHint`. Adds "prefer Read/Grep/Glob/Edit over cat/grep/find/sed" unconditionally —
+  `descriptionFor(caps)` does not know the permission mode (ROADMAP T-2).
+- **Skill** accepts `args` (`$ARGUMENTS` substituted, else a trailing `Arguments:` line).
+  **WebFetch**'s `prompt` parameter is gone — it was only echoed as a header.
+- **AskUserQuestion** — the card offers an "Other" row and a per-question text box
+  (`ToolCard.tsx`); a typed Other answer replaces a label in `answers[q]`, a note on a listed
+  choice arrives as `notes[q]` (rendered "Note from the user:") and as Claude Code's own
+  `annotations[q].notes`. `formatAnswers` flags an answer that is not one of the offered
+  labels as the user's own words. Still TOTAL on any shape.
+
+Guards: `tool-arg-errors.test.ts`, `native-tools-polish.test.ts`, `read-pdf.test.ts`,
+`ask-user-question-card-other.test.tsx`, plus the additions in `harness-tools-core`,
+`tool-registry-manifest`, `harness-session-loop`.
 
 ## MCP in native sessions (M3 item 4, phase 1)
 
