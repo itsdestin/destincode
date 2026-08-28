@@ -1,3 +1,4 @@
+import { MARKETPLACE_API_HOST } from '../../state/marketplace-api-client';
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
 import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
@@ -1563,6 +1564,34 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   };
 
   return {
+    // Marketplace feedback (overhaul §1.7). PARTIAL on purpose: only these three
+    // are hand-written; `install`, `rate`, `deleteRating`, `likeTheme` and
+    // `report` keep falling through to the catch-all, because withCatchAll takes
+    // from `impl` only the keys it hasOwnProperty — a partial namespace does not
+    // shadow the rest.
+    //
+    // They exist at all because the catch-all answers `[]`, and FeedbackSection
+    // correctly reads a non-{ok:true} response as a failure — so without these
+    // every vote in the workbench would render "Couldn't save your vote".
+    // The HTTP side is answered by fixtures/marketplace/worker-api-mock.ts;
+    // these just wrap it in the ApiResult envelope main would return, so the
+    // component's real success/failure handling runs.
+    marketplaceApi: {
+      thumb: async (input: { plugin_id: string; value: 'up' | 'down' | null }) => {
+        const r = await fetch(`${MARKETPLACE_API_HOST}/thumbs`, { method: 'POST', body: JSON.stringify(input) });
+        const v = (await r.json()) as { vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number };
+        return { ok: true as const, value: { vote: v.vote, thumbs_up: v.thumbs_up, thumbs_down: v.thumbs_down } };
+      },
+      myThumb: async (pluginId: string) => {
+        const r = await fetch(`${MARKETPLACE_API_HOST}/thumbs/${encodeURIComponent(pluginId)}`);
+        return { ok: true as const, value: (await r.json()) as { vote: 'up' | 'down' | null } };
+      },
+      comment: async (input: { plugin_id: string; text: string }) => {
+        const r = await fetch(`${MARKETPLACE_API_HOST}/comments`, { method: 'POST', body: JSON.stringify(input) });
+        const v = (await r.json()) as { id: string; hidden: boolean };
+        return { ok: true as const, value: { id: v.id, hidden: v.hidden } };
+      },
+    },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
     skills, marketplace, folders, fs, modes, chatsearch, window: windowNs,

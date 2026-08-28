@@ -1,7 +1,16 @@
 // CommentList — the thread of comments under a marketplace item. Grew out of
 // ReviewList (avatar · login · text · date · report) when the overhaul
 // (2026-08-27, decision #4) replaced star reviews with one-tap thumbs plus
-// an open comment thread: same row, no stars.
+// an open comment thread: same row, no stars — and NO report control.
+//
+// There is deliberately no Report button here (spec §5). It is not merely that
+// the backend is missing: the inherited ReportReviewButton files a report keyed
+// to (rating_user_id, rating_plugin_id), so "report this comment" would file a
+// complaint against that person's STAR RATING, and an admin resolving it
+// (DELETE /admin/ratings/...) would hide their rating while the comment stayed
+// up. A mis-aimed button, not a dead one. Takedown in v1 is the admin route
+// DELETE /admin/comments/:id; a real reporting flow needs a reports schema that
+// can key to a comment id (ROADMAP).
 //
 //   - Fetches via apiClient.listComments() on mount and whenever refreshKey changes
 //   - LoadingState / EmptyState / error, populated list
@@ -14,7 +23,6 @@ import {
   MARKETPLACE_API_HOST,
   type CommentEntry,
 } from '../../state/marketplace-api-client';
-import ReportReviewButton from './ReportReviewButton';
 import { LoadingState, EmptyState } from '../ui';
 
 // Unauthenticated client — listComments is a public endpoint
@@ -47,7 +55,6 @@ function CommentRow({ c, pluginId }: { c: CommentEntry; pluginId: string }) {
         )}
         <span className="text-xs font-medium text-fg">{c.user_login}</span>
         <span className="ml-auto text-2xs text-fg-muted shrink-0" title={when.title}>{when.text}</span>
-        <ReportReviewButton ratingUserId={c.user_id} pluginId={pluginId} reviewerLogin={c.user_login} />
       </div>
       <p className="text-sm text-fg-2 leading-relaxed whitespace-pre-wrap pl-8">{c.text}</p>
     </div>

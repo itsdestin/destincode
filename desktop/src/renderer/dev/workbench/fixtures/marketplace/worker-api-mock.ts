@@ -30,6 +30,8 @@ export function installWorkerApiMock(): void {
   // immediately, the way the real Worker would echo it back.
   const comments: Record<string, FakeComment[]> = JSON.parse(JSON.stringify(FAKE_COMMENTS));
   const stats = JSON.parse(JSON.stringify(FAKE_STATS)) as typeof FAKE_STATS;
+  // The signed-in viewer's own vote per plugin — backs GET /thumbs/<id>.
+  const myVotes: Record<string, 'up' | 'down'> = {};
 
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -49,14 +51,33 @@ export function installWorkerApiMock(): void {
       const body = JSON.parse(String(init?.body ?? '{}')) as { plugin_id: string; text: string };
       const row: FakeComment = { id: `c${Date.now()}`, user_id: 'github:you', user_login: 'you', user_avatar_url: '', text: body.text, created_at: Math.floor(Date.now() / 1000) };
       (comments[body.plugin_id] ??= []).unshift(row);
-      return json({ id: row.id });
+      // Shape matches the real Worker: { ok, id, hidden }. `hidden` lets the
+      // workbench show the "held for review" path without a classifier.
+      return json({ ok: true, id: row.id, hidden: false });
     }
+    // One vote per viewer, like the real route: re-voting REPLACES rather than
+    // adding, and `null` clears — otherwise clicking Helpful twice in the
+    // workbench shows +2 and nothing here would ever look wrong.
     if (path === '/thumbs' && method === 'POST') {
       const body = JSON.parse(String(init?.body ?? '{}')) as { plugin_id: string; value: 'up' | 'down' | null };
       const s = (stats[body.plugin_id] ??= { installs: 0, review_count: 0, rating: 0, thumbs_up: 0, thumbs_down: 0 });
+      const previous = myVotes[body.plugin_id] ?? null;
+      if (previous === 'up') s.thumbs_up -= 1;
+      if (previous === 'down') s.thumbs_down -= 1;
       if (body.value === 'up') s.thumbs_up += 1;
       if (body.value === 'down') s.thumbs_down += 1;
-      return json({ ok: true });
+      if (body.value === null) delete myVotes[body.plugin_id];
+      else myVotes[body.plugin_id] = body.value;
+      // The real route returns the new totals with the write — mirror that, or
+      // the workbench cannot show the number moving on click.
+      return json({ ok: true, vote: body.value, thumbs_up: s.thumbs_up, thumbs_down: s.thumbs_down });
+    }
+    // GET /thumbs/<id> — the viewer's own vote. In-memory so the workbench can
+    // demonstrate the point of the route: vote, navigate away, come back, and
+    // the thumb is still lit.
+    if (path.startsWith('/thumbs/') && method === 'GET') {
+      const id = decodeURIComponent(path.slice('/thumbs/'.length));
+      return json({ vote: myVotes[id] ?? null });
     }
     if (path === '/installs' && method === 'POST') return json({ ok: true });
     if (path === '/health') return json({ ok: true });
