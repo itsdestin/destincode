@@ -184,8 +184,23 @@ describe('readTranscriptSlice', () => {
 
   it('refuses a path outside every root even when the index names it', async () => {
     const { local, space } = setup();
-    expect(await readTranscriptSlice({ provider: 'claude', id: ID, tail: 5 }, depsFor(local, space, { transcriptPath: '/etc/hostname', tombstone: false }, null)))
+    // The decoy has to EXIST, or the reader reports the filesystem's ENOENT —
+    // which is also correct behaviour, just not the refusal under test. This
+    // used to name /etc/hostname: absent on macOS CI and on Windows, where the
+    // test failed with an ENOENT for D:\etc\hostname.
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'cs-outside-'));
+    const secret = path.join(outside, 'secret.jsonl');
+    fs.writeFileSync(secret, read('claude-session.jsonl'));
+    expect(await readTranscriptSlice({ provider: 'claude', id: ID, tail: 5 }, depsFor(local, space, { transcriptPath: secret, tombstone: false }, null)))
       .toEqual({ ok: false, error: COPY.errOutsideRoots });
+  });
+
+  it('reports the filesystem error when the index names a path that is not there at all', async () => {
+    // The other half of the pair above: absent is not the same as forbidden,
+    // and the reader must not word one as the other.
+    const { local, space } = setup();
+    const gone = await readTranscriptSlice({ provider: 'claude', id: ID, tail: 5 }, depsFor(local, space, { transcriptPath: path.join(space, 'nowhere', 'x.jsonl'), tombstone: false }, null));
+    expect(!gone.ok && gone.error).toMatch(/ENOENT/);
   });
 
   it('parses once per (path, mtime, size) — Load older does not re-read the file', async () => {

@@ -30,7 +30,12 @@ describe('App.tsx: youcoded:resume-session listener', () => {
     // The guard clause must run BEFORE the call, and must check all three —
     // a payload with a hole must never reach handleResumeSession's
     // positional arguments.
-    const onResumeBody = /const onResume = \(e: Event\) => \{([\s\S]*?)\};\n\s*window\.addEventListener/.exec(src)?.[1] ?? '';
+    // `\s*`, not `\n\s*`: a Windows checkout has CRLF line endings, so a
+    // literal \n never matched, the capture fell through to '', and the
+    // assertion below reported "expected '' to match" — a source-scanning test
+    // that silently measures nothing on one platform.
+    const onResumeBody = /const onResume = \(e: Event\) => \{([\s\S]*?)\};\s*window\.addEventListener/.exec(src)?.[1] ?? '';
+    expect(onResumeBody).not.toBe('');
     expect(onResumeBody).toMatch(/if \(!d\?\.claudeSessionId \|\| !d\.projectSlug \|\| !d\.projectPath\) return;/);
     // The guard must appear textually before the call it's guarding.
     const guardIdx = onResumeBody.indexOf('if (!d?.claudeSessionId');
