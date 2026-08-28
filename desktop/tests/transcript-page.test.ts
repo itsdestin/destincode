@@ -104,6 +104,47 @@ describe('readTranscriptPage — CC transcript', () => {
     expect(page.cursor).toBeNull();
   });
 
+  it('includes subagent events only for Agent tool_uses inside the page', async () => {
+    // Agent tool_use in turn 45 (inside the last PAGE_TURNS of 50) and in turn 3
+    // (outside it). Both have agent-*.jsonl + .meta.json on disk; only the
+    // in-page one may be replayed, because the index is primed from the page.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-test-'));
+    jsonlPath = path.join(dir, 'session.jsonl');
+    const subagentsDir = path.join(dir, 'cc-1', 'subagents');
+    fs.mkdirSync(subagentsDir, { recursive: true });
+
+    const agentToolUse = (i: number, desc: string) => JSON.stringify({
+      type: 'assistant', uuid: `ag-${i}`,
+      timestamp: new Date(1_700_000_000_500 + i).toISOString(),
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: `tu-${i}`, name: 'Agent', input: { description: desc, subagent_type: 'Explore' } }] },
+    }) + '\n';
+
+    let body = '';
+    for (let i = 0; i < PAGE_TURNS + 20; i++) {
+      body += turnLines(i);
+      if (i === 3) body += agentToolUse(i, 'old sweep');
+      if (i === 45) body += agentToolUse(i, 'new sweep');
+    }
+    fs.writeFileSync(jsonlPath, body);
+
+    for (const [agentId, desc, text] of [['a3', 'old sweep', 'OLD-SUBAGENT'], ['a45', 'new sweep', 'NEW-SUBAGENT']] as const) {
+      fs.writeFileSync(path.join(subagentsDir, `agent-${agentId}.meta.json`), JSON.stringify({ description: desc, agentType: 'Explore' }));
+      fs.writeFileSync(path.join(subagentsDir, `agent-${agentId}.jsonl`), JSON.stringify({
+        type: 'assistant', uuid: `sub-${agentId}`, isSidechain: true,
+        timestamp: new Date(1_700_000_000_900).toISOString(),
+        message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text }] },
+      }) + '\n');
+    }
+
+    const page = await readTranscriptPage({ jsonlPath, sessionId: 's1', endOffset: null, subagentsDir });
+    const texts = page.events.map((e) => e.data.text ?? '');
+    expect(texts).toContain('NEW-SUBAGENT');
+    expect(texts).not.toContain('OLD-SUBAGENT');
+    // And the replayed subagent event is stamped with its parent Agent tool_use.
+    const sub = page.events.find((e) => e.data.text === 'NEW-SUBAGENT');
+    expect(sub?.data.parentAgentToolUseId).toBe('tu-45');
+  });
+
   it('a cursor whose offset is past the current file size yields an empty final page', async () => {
     jsonlPath = writeTranscript(PAGE_TURNS + 20);
     const first = await readTranscriptPage({ jsonlPath, sessionId: 's1', endOffset: null });

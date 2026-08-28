@@ -1,5 +1,7 @@
 import * as fs from 'node:fs';
 import { parseTranscriptLine } from './transcript-watcher';
+import { SubagentIndex } from './subagent-index';
+import { SubagentWatcher } from './subagent-watcher';
 import type { PageCursor, TranscriptEvent, TranscriptPageResult } from '../shared/types';
 
 /**
@@ -26,6 +28,9 @@ export interface PageArgs {
   sessionId: string;
   /** Read the turns ending strictly before this byte. null = end of file. */
   endOffset: number | null;
+  /** `<transcriptDir>/<claudeSessionId>/subagents`. Omit for a session that has
+   *  none (or in tests that do not care). */
+  subagentsDir?: string;
 }
 
 /**
@@ -145,6 +150,31 @@ export async function readTranscriptPage(args: PageArgs): Promise<TranscriptPage
         if (ev.type === 'user-message') ev.data.offset = offset;
         events.push(ev);
       }
+    }
+
+    // --- 3. Subagent files, ONLY for Agent tool_uses inside this page ------
+    // A throwaway index primed with just the in-page parents: getHistory skips
+    // any agent whose parent it cannot bind, so an older page's subagent
+    // transcript is never dragged in. Same mechanism TranscriptWatcher.
+    // getHistory uses for a full replay, narrowed to the page.
+    if (args.subagentsDir) {
+      const replayIndex = new SubagentIndex();
+      for (const ev of events) {
+        if (ev.type === 'tool-use' && ev.data.toolName === 'Agent' && ev.data.toolUseId) {
+          replayIndex.recordParentAgentToolUse(
+            ev.data.toolUseId,
+            (ev.data.toolInput?.description as string) || '',
+            (ev.data.toolInput?.subagent_type as string) || '',
+          );
+        }
+      }
+      const watcher = new SubagentWatcher({
+        sessionId,
+        subagentsDir: args.subagentsDir,
+        index: replayIndex,
+        emit: () => { /* replay-only: this watcher never starts, so it never emits */ },
+      });
+      for (const ev of watcher.getHistory(replayIndex)) events.push(ev);
     }
 
     const cursor: PageCursor | null = hasMore
