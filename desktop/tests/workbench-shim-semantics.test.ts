@@ -243,3 +243,18 @@ describe('mock shim Proxy semantics', () => {
     vi.useRealTimers();
   });
 });
+
+describe('site mode additions', () => {
+  it('native.setBinding rebinds the session model', async () => {
+    const store = createStore('site');
+    const shim = createMockShim(store);
+    const ok = await shim.native.setBinding('site-1', { providerId: 'openrouter', modelId: 'anthropic/claude-sonnet-5' });
+    expect(ok).toBe(true);
+    const s = (await shim.session.list()).find((x: any) => x.id === 'site-1');
+    expect(s.model).toBe('anthropic/claude-sonnet-5');
+  });
+  it('theme.list includes the vendored golden-sunbreak pack', async () => {
+    const shim = createMockShim(createStore('default'));
+    expect(await shim.theme.list()).toContain('golden-sunbreak');
+  });
+});

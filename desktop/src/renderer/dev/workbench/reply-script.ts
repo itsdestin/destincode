@@ -91,6 +91,9 @@ export async function playReply(sessionId: string, text: string, script: ReplyLi
       case 'turn_complete':
         t('turn-complete', { stopReason: 'end_turn', model: line.model ?? null });
         break;
+      default:
+        // A typo in a fixture must be loud, not a silently skipped beat.
+        console.warn(`[workbench] reply script: unknown line type ${JSON.stringify((line as { type?: string }).type)} — skipped`);
     }
   }
 }

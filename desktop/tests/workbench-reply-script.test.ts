@@ -44,4 +44,22 @@ describe('reply-script', () => {
     await playReply('s1', '\x1b', parseReplyScript(SCRIPT), { transcript: (e) => transcript.push(e), hook: () => {} });
     expect(transcript.length).toBe(0);
   });
+
+  // A typo in a fixture's `type` field used to fall through the switch with no
+  // default and vanish silently — the beat just never played, with nothing in
+  // the console pointing at why. It must warn loudly instead of being dropped.
+  it('warns once and keeps playing when a line has an unknown type', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const transcript: any[] = [];
+    const script = parseReplyScript('{"type":"bogus","delay":10}\n{"type":"turn_complete","delay":10}');
+    const done = playReply('s1', 'hello', script, { transcript: (e) => transcript.push(e), hook: () => {} });
+    await vi.advanceTimersByTimeAsync(200);
+    await done;
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('unknown line type "bogus"');
+    expect(transcript.at(-1)).toMatchObject({ type: 'turn-complete' });
+    warn.mockRestore();
+    vi.useRealTimers();
+  });
 });

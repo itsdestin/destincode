@@ -60,7 +60,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'session.list', 'session.create', 'session.browse', 'session.destroy',
   'session.setFlag', 'session.setTag', 'session.setNote', 'session.getMeta',
   'session.sendInput', 'session.respondToPermission', 'on.transcriptEvent', 'on.hookEvent',
-  'native.send',
+  'native.send', 'native.setBinding',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
   // contract test actually covers them; a channel absent from HAND_WRITTEN
@@ -633,6 +633,20 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       if (store.refuseWrites) return { status: 'failed', reason: 'not-live' };
       startReply(sessionId, text);
       return { status: 'sent' };
+    },
+    // Model picker (ModelPickerPopup.tsx:304). Real backend rebinds the
+    // provider/model on the live session; here it updates the row the status
+    // bar and picker read from, so the chip changes on screen. No `subs.*`
+    // emit needed — App.tsx:3378 updates its `sessions` state directly from
+    // the popup's onNativeModelChanged callback rather than re-listening or
+    // re-fetching session.list().
+    setBinding: async (sessionId, b) => {
+      if (store.refuseWrites) return false;
+      store.setState((s) => ({
+        ...s,
+        sessions: s.sessions.map((x: any) => x.id === sessionId ? { ...x, model: b.modelId, providerId: b.providerId } : x),
+      }));
+      return true;
     },
   };
 
