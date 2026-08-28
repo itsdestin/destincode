@@ -154,6 +154,29 @@ import { tagFlagKey, isTagColor, TagColor } from '../shared/tags';
 import { getRepoInfo } from './project-repo';
 import { listContext, readContextFile, writeContextFile } from './project-context';
 
+// WHY: the chatsearch outbox drainer lives outside registerIpcHandlers but must
+// fire the SAME renderer + remote broadcast the IPC tag/flag/note handlers fire,
+// or the conversation list won't repaint when the CLI changes something.
+// sendForSession and remoteServer are function-local, so the handler registers
+// this bridge at startup — same hand-out pattern as setSessionMetaWiring.
+type MetaBroadcaster = (sessionId: string, payload: Record<string, unknown>) => void;
+let metaBroadcaster: MetaBroadcaster | null = null;
+export function broadcastSessionMeta(sessionId: string, payload: { flag: string; value: boolean } | { note: string }): void {
+  metaBroadcaster?.(sessionId, payload);
+}
+
+// WHY: same rationale as broadcastSessionMeta above — the outbox drainer
+// creates tags directly via getTagRegistry().create(), bypassing the
+// TAGS_CREATE handler below (the only other place a new tag reaches a
+// renderer/remote broadcast), so without this hand-out a tag the drainer
+// creates is invisible to an open window's tag registry and filter list
+// until a restart, even though the conversation it tagged already shows it.
+type TagsBroadcaster = () => void;
+let tagsBroadcaster: TagsBroadcaster | null = null;
+export function broadcastTagsChanged(): void {
+  tagsBroadcaster?.();
+}
+
 // Max age for clipboard paste images (1 hour)
 const CLIPBOARD_MAX_AGE_MS = 60 * 60 * 1000;
 
@@ -252,6 +275,11 @@ export function registerIpcHandlers(
     if (!mainWindow.isDestroyed()) mainWindow.webContents.send(channel, ...args);
   };
 
+  metaBroadcaster = (sessionId, payload) => {
+    sendForSession(sessionId, IPC.SESSION_META_CHANGED, sessionId, payload);
+    remoteServer?.broadcast({ type: IPC.SESSION_META_CHANGED, payload: { sessionId, ...payload } });
+  };
+
   // Broadcast a session-scoped channel to EVERY registered main window. Use this
   // (not sendForSession) when the payload is self-scoping — i.e. the renderer only
   // acts on it if it's actually displaying that session — AND the session may have
@@ -282,6 +310,15 @@ export function registerIpcHandlers(
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(channel, payload);
     }
+  };
+
+  // WHY defined here (not next to metaBroadcaster above): it needs
+  // broadcastToAllWindows, which doesn't exist yet at that point in the
+  // function — same hand-out pattern, just wired where its dependency is
+  // available. Fires the identical pair the TAGS_CREATE handler below fires.
+  tagsBroadcaster = () => {
+    remoteServer?.broadcast({ type: IPC.TAGS_CHANGED, payload: {} });
+    broadcastToAllWindows(IPC.TAGS_CHANGED, {});
   };
 
   // --- Theme file watcher ---
