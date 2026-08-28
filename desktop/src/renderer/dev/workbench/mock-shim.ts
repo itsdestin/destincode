@@ -1,4 +1,5 @@
 import type { MockStore } from './mock-store';
+import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
@@ -843,10 +844,25 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // `[]` is a truthy object with no `handle` — so HandlePrompt concluded the
   // user had just signed in without a handle and threw a modal over the whole
   // app on every load.
+  // `?signedIn=1` flips account.signedIn/user/refresh for filming — the
+  // landing page's games scene needs Connect Four past its sign-in wall.
+  // Signed OUT stays the default (see above) so the sign-in states themselves
+  // stay reviewable.
+  const signedInSwitch = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('signedIn') === '1';
+  const FIXTURE_USER: MarketplaceUser = {
+    id: 'workbench:you', login: 'you', avatar_url: '', display_name: 'You', handle: 'you',
+  };
   const account: Ns<'account'> = {
-    signedIn: async () => false,
-    user: async () => null,
-    refresh: async () => null,
+    signedIn: async () => signedInSwitch,
+    user: async () => (signedInSwitch ? FIXTURE_USER : null),
+    // account-context.tsx calls refresh() from a window "focus" listener that
+    // attaches as soon as signedIn flips true (confirmed empirically: it fires
+    // within seconds of the panel opening, well inside any real recording
+    // session). Leaving this on the old `async () => null` silently flipped
+    // `signedIn` back to false the first time the recording window regained
+    // focus — sabotaging the exact scene Fix 2 exists for. Must mirror the switch.
+    refresh: async () => (signedInSwitch ? FIXTURE_USER : null),
   };
 
   // Settings → Appearance shows FAVOURITED themes plus the active one as a

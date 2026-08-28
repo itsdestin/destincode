@@ -212,6 +212,30 @@ describe('mock shim Proxy semantics', () => {
     expect(DEFAULT_LATENCY).toBeGreaterThan(0);
   });
 
+  // `?signedIn=1` is the switch that lets the games scene be filmed past the
+  // sign-in wall. Signed-out stays the default so the sign-in states remain
+  // reviewable — this pins all three legs of that contract. `refresh` matters
+  // as much as `signedIn`/`user`: account-context.tsx's window-focus listener
+  // calls it (confirmed empirically against the running workbench — it fires
+  // within seconds of sign-in), and a `refresh` that always resolved null
+  // silently flipped `signedIn` back to false the moment the recording window
+  // regained focus, even though `signedIn()`/`user()` still said true.
+  it('account.signedIn/user/refresh follow the ?signedIn=1 URL switch', async () => {
+    vi.stubGlobal('location', { search: '?signedIn=1' });
+    const c = shim();
+    expect(await c.account.signedIn()).toBe(true);
+    expect(await c.account.user()).toMatchObject({ handle: 'you' });
+    expect(await c.account.refresh()).toMatchObject({ handle: 'you' });
+    vi.unstubAllGlobals();
+  });
+
+  it('account.signedIn/user/refresh stay signed out without the switch', async () => {
+    const c = shim();
+    expect(await c.account.signedIn()).toBe(false);
+    expect(await c.account.user()).toBeNull();
+    expect(await c.account.refresh()).toBeNull();
+  });
+
   it('applies latency to channel results when set', async () => {
     setLatency(60);
     const started = performance.now();
@@ -238,7 +262,8 @@ describe('mock shim Proxy semantics', () => {
 
     await vi.advanceTimersByTimeAsync(15000);
     expect(transcript.length).toBeGreaterThan(0);
-    expect(transcript[0]).toMatchObject({ type: 'user-message', sessionId: 'site-1', data: { text: 'hello' } });
+    // No user-message echo — the app renders the user's bubble itself.
+    expect(transcript[0]).toMatchObject({ type: 'assistant-text' });
     expect(transcript.at(-1)).toMatchObject({ type: 'turn-complete' });
     vi.useRealTimers();
   });

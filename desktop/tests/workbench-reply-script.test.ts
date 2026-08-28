@@ -22,8 +22,10 @@ describe('reply-script', () => {
       transcript: (e) => transcript.push(e), hook: (e) => hooks.push(e), cps: 1000,
     });
     await vi.advanceTimersByTimeAsync(200);
-    // user echo, streamed text (3 words → 3 chunks, one partId), tool-use, tool-result
-    expect(transcript[0]).toMatchObject({ type: 'user-message', sessionId: 's1', data: { text: 'turn these into a spreadsheet' } });
+    // No user echo — the app renders the user's bubble itself. Streamed text
+    // (3 words → 3 chunks, one partId), tool-use, tool-result.
+    expect(transcript.some((e) => e.type === 'user-message')).toBe(false);
+    expect(transcript[0]).toMatchObject({ type: 'assistant-text' });
     const chunks = transcript.filter((e) => e.type === 'assistant-text');
     expect(chunks.length).toBe(3);
     expect(new Set(chunks.map((c) => c.data.partId)).size).toBe(1);

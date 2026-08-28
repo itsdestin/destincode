@@ -3,6 +3,10 @@
 // ask — so a message typed into the workbench gets an answer. This is the
 // "phase 2 live play-through" the workbench spec deferred; the landing-page
 // embed needs it because a composer that swallows input reads as broken.
+// The script does NOT emit a `user-message` event: the real app already
+// renders the user's bubble optimistically the instant Enter is pressed
+// (App's `USER_PROMPT` dispatch), so the script starts at the assistant's
+// first line — emitting one here double-echoed the user's message.
 //
 // Fixture lines reuse the conversation-fixture vocabulary (fixture-loader.ts)
 // plus `delay` (ms before the line) and two new kinds:
@@ -56,7 +60,6 @@ export async function playReply(sessionId: string, text: string, script: ReplyLi
     sinks.transcript({ type, sessionId, uuid: uid(), timestamp: stamp(), data });
   const perChar = 1000 / (sinks.cps ?? 40);
 
-  t('user-message', { text });
   for (const line of script) {
     await sleep(line.delay ?? 400);
     switch (line.type) {
