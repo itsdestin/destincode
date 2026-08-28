@@ -81,14 +81,14 @@ export function AuthorBadge({ author, size = 'sm' }: { author: string; size?: 's
   return (
     // min-w-0 + overflow-hidden let the chip shrink and its name truncate
     // ("@des…") instead of the whole chip being clipped by the card edge.
-    <span className={`${size === 'md' ? `${BADGE} text-xs px-2` : BADGE} max-w-[9rem] min-w-0 overflow-hidden`} title={`Published by ${author}`} data-author>
+    <span className={`${size === 'md' ? `${BADGE} text-xs px-2` : BADGE} max-w-[9rem] min-w-[3.75rem] overflow-hidden`} title={`Published by ${author}`} data-author>
       <span className="text-fg-dim inline-flex" aria-hidden>
         <svg width={size === 'md' ? 14 : 12} height={size === 'md' ? 14 : 12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
           <circle cx="12" cy="8" r="4" />
           <path d="M4 21a8 8 0 0 1 16 0" />
         </svg>
       </span>
-      <span className="truncate">{author}</span>
+      <span className="truncate min-w-0">{author}</span>
     </span>
   );
 }
