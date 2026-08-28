@@ -51,15 +51,43 @@ describe('useEntryFolding', () => {
     expect(result.current.heightOf('a')).toBe(240);
   });
 
-  it('NEVER folds an entry whose height was never measured', () => {
-    // The scroll-destroying case: an entry created off-screen and never seen has
-    // no measured height, so a spacer for it would be 0px and the scroll height
-    // would collapse under the reader.
+  it('folds an entry that was NEVER on screen, by measuring it at fold time', () => {
+    // THE 6% BUG. Requiring a prior visible report quietly required every entry
+    // to have passed within FOLD_ROOT_MARGIN of the viewport. A page prepends
+    // ~60 entries at once and only the top few land inside that band, so ~56 of
+    // every 60 were never measured and never foldable: measured at 433/7000,
+    // 294/5000 and 1/100 in three separate builds. At fold time the element is
+    // in the DOM with a real height, so measure it then.
     const { result } = renderHook(() => useEntryFolding(true));
     const el = entry('never-seen', 500);
     act(() => { result.current.registerEntry(el); });
     act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
-    expect(result.current.isFolded('never-seen')).toBe(false);
+    expect(result.current.isFolded('never-seen')).toBe(true);
+    expect(result.current.heightOf('never-seen')).toBe(500);
+  });
+
+  it('still refuses to fold when the element measures 0 and nothing was remembered', () => {
+    // The scroll-destroying case that remains real: a 0px spacer would collapse
+    // the scroll height under the reader.
+    const { result } = renderHook(() => useEntryFolding(true));
+    const el = entry('zero', 0);
+    act(() => { result.current.registerEntry(el); });
+    act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
+    expect(result.current.isFolded('zero')).toBe(false);
+  });
+
+  it('falls back to a remembered height when the element now measures 0', () => {
+    // An inactive session's pane is content-visibility:hidden, so its entries lay
+    // out to 0. Without the fallback a background conversation — where most of
+    // the win is — could never fold.
+    const { result } = renderHook(() => useEntryFolding(true));
+    const el = entry('bg', 260);
+    act(() => { result.current.registerEntry(el); });
+    act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
+    Object.defineProperty(el, 'offsetHeight', { get: () => 0, configurable: true });
+    act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
+    expect(result.current.isFolded('bg')).toBe(true);
+    expect(result.current.heightOf('bg')).toBe(260);
   });
 
   it('does not re-measure while folded, so the spacer height cannot drift', () => {
@@ -163,15 +191,14 @@ describe('useEntryFolding', () => {
     const el = entry('late', 180);
     act(() => { result.current.registerEntry(el); });
 
-    // Reported out of view before ever being seen: correctly NOT folded yet.
-    act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
-    expect(result.current.isFolded('late')).toBe(false);
-
-    // It is seen once (measured), then leaves again.
-    act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
+    // Off-screen from the start and never seen: folds anyway, at its real height.
     act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
     expect(result.current.isFolded('late')).toBe(true);
     expect(result.current.heightOf('late')).toBe(180);
+
+    // And it unfolds again when it comes back into view.
+    act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
+    expect(result.current.isFolded('late')).toBe(false);
   });
 
   it('folds entries still out of view from an EARLIER report, not only newly-reported ones', () => {

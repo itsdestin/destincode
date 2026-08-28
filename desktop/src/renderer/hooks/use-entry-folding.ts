@@ -95,6 +95,17 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
   // instead means every flush re-evaluates every out-of-view entry, so one that
   // becomes measurable later is picked up by the next flush.
   const outOfView = useRef(new Set<string>());
+  // The live element per key, so a fold can MEASURE rather than remember.
+  //
+  // This is the difference between folding 6% of a conversation and folding all
+  // of it. Heights used to be recorded only when an entry reported *visible*,
+  // which quietly required every entry to have passed within FOLD_ROOT_MARGIN of
+  // the viewport at some point. A page prepends ~60 entries at once and only the
+  // top few of them fall inside that band, so the other ~56 were never measured
+  // and therefore never foldable — measured at 433/7000, 294/5000 and 1/100
+  // across three conversations, uniformly ~6%, in three different builds.
+  // At fold time the element is in the DOM and has a real height; just read it.
+  const elements = useRef(new Map<string, HTMLElement>());
   const observer = useRef<IntersectionObserver | null>(null);
   const unfoldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const foldTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -119,11 +130,19 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
     if (!enabledRef.current) return;
     let changed = false;
     for (const key of outOfView.current) {
-      // Never fold an entry whose height was never measured: the spacer would be
-      // 0px tall and the scroll height would collapse under the reader. It stays
-      // in outOfView, so the next flush reconsiders it once it has been seen.
-      if (!heights.current.has(key)) continue;
-      if (!folded.current.has(key)) { folded.current.add(key); changed = true; }
+      if (folded.current.has(key)) continue;
+      // Measure NOW, from the element itself. Falls back to a height captured
+      // while the entry was visible, which is what makes an inactive session
+      // foldable: its pane is `content-visibility: hidden`, so its children lay
+      // out to 0 and only the remembered height is usable.
+      const live = elements.current.get(key)?.offsetHeight ?? 0;
+      const h = live > 0 ? live : heights.current.get(key);
+      // Still nothing: never fold. A 0px spacer would collapse the scroll height
+      // under the reader. It stays in outOfView, so a later flush reconsiders it.
+      if (!h) continue;
+      heights.current.set(key, h);
+      folded.current.add(key);
+      changed = true;
     }
     if (changed) publish();
   }, [publish]);
@@ -178,10 +197,18 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
   // Same contract as useObservedRef: ALWAYS return a cleanup, so React never
   // falls back to calling the ref with null (see that hook for the regression).
   const registerEntry = useCallback((el: HTMLElement | null) => {
-    const io = el ? observer.current : null;
-    if (!io || !el) return NOOP;
+    if (!el) return NOOP;
+    const key = el.dataset.entryKey;
+    if (key) elements.current.set(key, el);
+    const io = observer.current;
+    if (!io) return () => { if (key) elements.current.delete(key); };
     io.observe(el);
-    return () => io.unobserve(el);
+    return () => {
+      io.unobserve(el);
+      // Only drop the mapping if it still points at THIS element: a re-render
+      // that swaps the node registers the new one before releasing the old.
+      if (key && elements.current.get(key) === el) elements.current.delete(key);
+    };
   }, []);
 
   const isFolded = useCallback((key: string) => state.folded.has(key), [state]);
