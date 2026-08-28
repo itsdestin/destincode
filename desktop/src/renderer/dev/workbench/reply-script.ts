@@ -17,6 +17,10 @@
 
 export type ReplyLine =
   | { type: 'assistant_text'; text: string; delay?: number; model?: string }
+  // A user bubble the SCRIPT puts on the timeline — for a turn nobody typed here
+  // (the phone half of the sync loop receives the desktop's message). Never use
+  // it for a message typed in this window: that bubble is already rendered.
+  | { type: 'user_message'; text: string; delay?: number }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown>; delay?: number }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean; delay?: number }
   | { type: 'permission_request'; id: string; name: string; input: Record<string, unknown>; delay?: number }
@@ -74,6 +78,9 @@ export async function playReply(sessionId: string, text: string, script: ReplyLi
         }
         break;
       }
+      case 'user_message':
+        t('user-message', { text: line.text });
+        break;
       case 'tool_use':
         t('tool-use', { toolUseId: line.id, toolName: line.name, toolInput: line.input });
         break;

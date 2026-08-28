@@ -45,6 +45,9 @@ function currentScenario(): ScenarioId {
  *  (platform.ts), which is the answer we want anyway. */
 function declarePlatform(): void {
   const w = window as any;
+  // `?platform=android` films the phone half of the landing page's sync row —
+  // the header drops its window buttons and the shell lays out as the phone does.
+  if (!w.__PLATFORM__ && new URLSearchParams(location.search).get('platform') === 'android') w.__PLATFORM__ = 'android';
   if (!w.__PLATFORM__) w.__PLATFORM__ = 'electron';
   if (typeof document !== 'undefined' && !document.documentElement.dataset.platform) {
     document.documentElement.dataset.platform = w.__PLATFORM__;

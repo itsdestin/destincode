@@ -501,6 +501,14 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     });
   };
 
+  // `?autoplay=<ms>`: play the fixture's first turn into the first seeded session
+  // with nothing typed — a message "arriving" (sync row, phone half). The fixture
+  // supplies the user bubble via a user_message line.
+  if (typeof location !== 'undefined') {
+    const ms = Number(new URLSearchParams(location.search).get('autoplay'));
+    if (ms > 0) setTimeout(() => { const id = store.getState().sessions[0]?.id; if (id) startReply(id, '(autoplay)'); }, ms);
+  }
+
   const session: Ns<'session'> & UntypedSessionWrites = {
     list: async () => store.getState().sessions,
     browse: async () => store.getState().past,

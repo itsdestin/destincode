@@ -39,7 +39,10 @@ const toggleOnLeft = typeof navigator !== 'undefined'
 
 function CaptionButtons() {
   const claude = (window as any).claude;
-  if (!claude?.window) return null;
+  // Android has no OS window controls in-app (see toggleOnLeft above) — gate on
+  // the platform too, not only on the bridge exposing `window`, so a bridge that
+  // happens to carry window.getId (the workbench does) can't paint them on a phone.
+  if (!claude?.window || isAndroid()) return null;
 
   const btnClass = "px-2 py-1 rounded-[var(--radius-toggle)] transition-colors text-fg-dim hover:text-fg-2 flex items-center justify-center";
 
