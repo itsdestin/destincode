@@ -11,6 +11,7 @@ import {
   abnormalStopReason,
 } from './chat-types';
 import { SubagentSegment, SpecialistNote, ToolCallState, ToolGroupState } from '../../shared/types';
+import { pageEventToAction } from './transcript-page-actions';
 
 // Fix: message ids are used as React keys. A hydrated remote client restarts
 // this counter at 0 while its snapshot already holds msg-1..msg-N, so new live
@@ -2044,73 +2045,59 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
-    case 'HISTORY_LOADED': {
+    // --- Paged history (perf cycle 2) ------------------------------------
+    // Replaces HISTORY_LOADED, which fetched the WHOLE transcript behind a "See
+    // previous messages" button and rebuilt it as flat `hist-` bubbles with no
+    // tool cards. Pages carry real TranscriptEvents, so a card from history is
+    // byte-for-byte a card from the live stream.
+
+    case 'HISTORY_PAGE_REQUESTED': {
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      next.set(action.sessionId, { ...session, history: { ...session.history, loading: true } });
+      return next;
+    }
+
+    case 'HISTORY_PAGE_FAILED': {
+      // Keep the cursor: the page is still there, the fetch just failed, and the
+      // sentinel will retry when the user scrolls.
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      next.set(action.sessionId, { ...session, history: { ...session.history, loading: false } });
+      return next;
+    }
+
+    case 'HISTORY_PAGE_LOADED': {
       const session = next.get(action.sessionId);
       if (!session) return state;
 
-      // Build timeline entries from historical messages
-      const historyTimeline: TimelineEntry[] = [];
-      const historyTurns = new Map(session.assistantTurns);
-      let historyMsgCounter = 0;
-
-      // Add "see previous messages" marker if there's more history
-      if (action.hasMore) {
-        historyTimeline.push({
-          kind: 'prompt',
-          prompt: {
-            promptId: HISTORY_EXPAND_PROMPT_ID,
-            title: 'See previous messages',
-            buttons: [],
-          },
-        });
+      // Build this page's own timeline on a SCRATCH state by replaying its
+      // events through the very same per-event cases the live path uses, then
+      // prepend. Nothing here knows how to render a tool card or a turn — it
+      // reuses what already does, which is why a paged card cannot drift from a
+      // live one.
+      //
+      // Ids stay counter-based (nextMessageId/nextTurnId/nextGroupId are module
+      // counters that only ever increase), so a prepended page can never collide
+      // with what is already on screen even though it is OLDER.
+      let scratch: ChatState = new Map();
+      scratch.set(action.sessionId, createSessionChatState());
+      for (const ev of action.events) {
+        const pageAction = pageEventToAction(ev);
+        if (pageAction) scratch = chatReducer(scratch, pageAction);
       }
+      const pageSess = scratch.get(action.sessionId)!;
 
-      // When replacing history (hasMore=false), remove old history entries and expand button
-      const existingTimeline = action.hasMore
-        ? session.timeline
-        : session.timeline.filter((e) => {
-            if (e.kind === 'prompt' && e.prompt.promptId === HISTORY_EXPAND_PROMPT_ID) return false;
-            if (e.kind === 'user' && e.message.id.startsWith('hist-')) return false;
-            if (e.kind === 'assistant-turn' && e.turnId.startsWith('hist-')) return false;
-            return true;
-          });
-
-      for (const msg of action.messages) {
-        // Same `/compact` echo the live path drops — loadHistory has no filter
-        // for it (it only gates on isMeta/promptId/non-empty), so without this
-        // a reloaded or resumed session grows back every bubble the live fix
-        // removed. Skipping before the counter is safe: it only ever advances
-        // on a push, so ids stay unique, and the same message list always
-        // regenerates the same ids for the hasMore=false `hist-` replacement.
-        if (msg.role === 'user' && isCompactCommandEcho(msg.content)) continue;
-        const id = `hist-${++historyMsgCounter}`;
-        if (msg.role === 'user') {
-          historyTimeline.push({
-            kind: 'user',
-            message: { id, role: 'user', content: msg.content, timestamp: msg.timestamp },
-          });
-        } else {
-          const turnId = `hist-turn-${historyMsgCounter}`;
-          const msgId = `hist-msg-${historyMsgCounter}`;
-          // History-loaded turns never saw a turn-complete, so metadata fields stay null.
-          historyTurns.set(turnId, {
-            id: turnId,
-            segments: [{ type: 'text', content: msg.content, messageId: msgId }],
-            timestamp: msg.timestamp,
-            stopReason: null,
-            model: null,
-            usage: null,
-            anthropicRequestId: null,
-          });
-          historyTimeline.push({ kind: 'assistant-turn', turnId });
-        }
-      }
-
-      // Prepend history before existing timeline
       next.set(action.sessionId, {
         ...session,
-        timeline: [...historyTimeline, ...existingTimeline],
-        assistantTurns: historyTurns,
+        timeline: [...pageSess.timeline, ...session.timeline],
+        // Union the maps page-first so a live entry always wins over a replayed
+        // one for the same key (it is the fresher of the two).
+        toolCalls: new Map([...pageSess.toolCalls, ...session.toolCalls]),
+        toolGroups: new Map([...pageSess.toolGroups, ...session.toolGroups]),
+        assistantTurns: new Map([...pageSess.assistantTurns, ...session.assistantTurns]),
+        seenUuids: new Set([...session.seenUuids, ...pageSess.seenUuids]),
+        history: { cursor: action.cursor, hasMore: action.hasMore, loading: false },
       });
       return next;
     }
