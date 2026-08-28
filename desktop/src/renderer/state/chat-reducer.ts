@@ -539,6 +539,31 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
  * the card whose run/agentId names the child — covers a routed ask that
  * arrived without the id (older host) after the run record already landed.
  */
+/** G-1 resume rule (spec §5.7): a Bash card whose result announced a shell id
+ *  but that carries no live run record after replay was running when the app
+ *  quit (a live registry would have replayed its record before this point).
+ *  Returns null when no card changes so the reducer can keep its Map ref. */
+export function markOrphanedShellRuns(toolCalls: Map<string, ToolCallState>): Map<string, ToolCallState> | null {
+  let out: Map<string, ToolCallState> | null = null;
+  for (const [id, card] of toolCalls) {
+    if (card.toolName !== 'Bash' || card.shellRun || !card.response) continue;
+    const m = /\(shell id (sh-[0-9a-f]+)\)/.exec(card.response);
+    if (!m) continue;
+    out ??= new Map(toolCalls);
+    out.set(id, {
+      ...card,
+      shellRun: {
+        toolUseId: card.toolUseId, shellId: m[1], status: 'stopped', stopReason: 'app-quit',
+        detached: /^Still running after/.test(card.response),
+        // Unknown after a restart: the card hides the timer and the log line
+        // when these are empty rather than inventing "0s" or a blank path.
+        startedAt: 0, tail: '', logPath: '',
+      },
+    });
+  }
+  return out;
+}
+
 function findSpecialistCard(
   toolCalls: Map<string, ToolCallState>,
   ref: { parentToolCallId?: string; childId?: string },
@@ -1095,6 +1120,40 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           attentionState: 'ok',
         });
         return next;
+      }
+
+      // G-1: a finished background command's notice folds into the Bash card
+      // that started it — one turn may carry several (D8). The model still
+      // reads this turn, so the turn boundary below is kept; only the bubble
+      // is not appended. A record the live push already set is never
+      // overwritten (it has the real tail); a missing or still-'running' one
+      // is filled from the meta so a resumed transcript reads correctly.
+      if (action.injected === 'shell-complete' && action.injectedMeta?.kind === 'shell') {
+        const toolCalls = new Map(session.toolCalls);
+        let folded = false;
+        for (const r of action.injectedMeta.runs) {
+          const card = toolCalls.get(r.toolUseId);
+          if (!card) continue;
+          folded = true;
+          if (card.shellRun && card.shellRun.status !== 'running') continue;
+          const startedAt = card.shellRun?.startedAt ?? action.timestamp - r.elapsedMs;
+          toolCalls.set(r.toolUseId, {
+            ...card,
+            shellRun: {
+              toolUseId: r.toolUseId, shellId: r.shellId,
+              status: r.stopReason ? 'stopped' : 'exited', exitCode: r.exitCode, stopReason: r.stopReason,
+              detached: card.shellRun?.detached, startedAt, endedAt: startedAt + r.elapsedMs,
+              tail: card.shellRun?.tail ?? '', logPath: r.logPath,
+            },
+          });
+        }
+        if (folded) {
+          next.set(action.sessionId, {
+            ...session, toolCalls, seenUuids, queuedMessages,
+            isThinking: true, currentGroupId: null, currentTurnId: null, attentionState: 'ok',
+          });
+          return next;
+        }
       }
 
       // Specialists 1c: a BACKGROUND specialist's delivered report folds back
@@ -1793,7 +1852,15 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // running. Only main can tell the two apart, and only for native
       // sessions (`entry.inFlight`); it reports false when it cannot affirm
       // idleness, so an unknown session is left exactly as it was.
-      if (!action.sessionIdle) return state;
+      // G-1 (spec §5.7): applied whether or not the session is idle — it only
+      // touches cards that got NO live record from the replay just before this.
+      const orphaned = markOrphanedShellRuns(session.toolCalls);
+      const withShells = orphaned ? { ...session, toolCalls: orphaned } : session;
+      if (!action.sessionIdle) {
+        if (!orphaned) return state;
+        next.set(action.sessionId, withShells);
+        return next;
+      }
       // Reuse endTurn rather than inventing a second notion of "tool that never
       // finished" — it fails orphaned running/awaiting cards AND clears the
       // in-flight turn state (isThinking, currentTurnId), which replay had left
@@ -1812,8 +1879,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // every re-dock replays into a fresh slot. If that ever changes, this
       // needs the same re-assert NATIVE_SESSION_ERROR does.
       next.set(action.sessionId, {
-        ...session,
-        ...endTurn(session, 'Session was closed while this was running'),
+        ...withShells,
+        ...endTurn(withShells, 'Session was closed while this was running'),
       });
       return next;
     }

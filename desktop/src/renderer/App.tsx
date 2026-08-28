@@ -1050,6 +1050,12 @@ function AppInner() {
       }
     });
 
+    // G-1: a background command's run record changed — lands on its Bash
+    // card. MUST mirror BubbleFeed.tsx. on.shellEvent returns the unsubscribe fn.
+    const shellHandler = window.claude.on.shellEvent((event) => {
+      dispatch({ type: 'SHELL_RUN_CHANGED', sessionId: event.sessionId, run: event.run });
+    });
+
     const hookHandler = window.claude.on.hookEvent((event) => {
       const action = hookEventToAction(event);
       if (action) {
@@ -1613,6 +1619,7 @@ function AppInner() {
       // passed that function where `.off` expects the ORIGINAL callback, so
       // it silently unsubscribed nothing and the feed kept running per mount.
       specialistHandler();
+      shellHandler();
       window.claude.off('session:renamed', renamedHandler);
       if (movedHandler) window.claude.off('session:moved', movedHandler);
       window.claude.off('status:data', statusHandler);

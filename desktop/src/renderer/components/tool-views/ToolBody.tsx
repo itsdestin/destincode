@@ -346,13 +346,17 @@ function ShellView({ tool, commandField, sessionId }: {
   const bg = run != null || (tool.input.run_in_background as boolean | undefined);
   const response = tool.response ? stripCarriageReturns(tool.response) : '';
   const failed = tool.status === 'failed' || (run?.status === 'exited' && run.exitCode !== 0);
-  const elapsed = useElapsed(run?.startedAt, run?.endedAt);
+  // A rebuilt record (app quit) has no start time — show no timer rather than "0s".
+  const elapsed = useElapsed(run?.startedAt || undefined, run?.endedAt);
   const [stopping, setStopping] = useState(false);
   const stop = useCallback(async () => {
     if (!run || !sessionId) return;
     setStopping(true);
-    try { await (window as any).claude.native.killShell(sessionId, run.shellId); }
-    catch (err) { console.error('KillShell failed:', err); setStopping(false); }
+    try {
+      const r = await window.claude.native.killShell(sessionId, run.shellId);
+      // A refusal (already ended, unknown id) must not leave "Stopping…" up forever.
+      if (!r.ok) setStopping(false);
+    } catch (err) { console.error('KillShell failed:', err); setStopping(false); }
   }, [run, sessionId]);
 
   // Description is already shown as the collapsed-header label (see
@@ -406,9 +410,10 @@ function ShellView({ tool, commandField, sessionId }: {
           <CollapsibleBlock maxLines={20} className="bg-canvas">{output}</CollapsibleBlock>
         </div>
       )}
-      {run && (
+      {run?.logPath && (
         // The full log outlives the card's tail; the path is the model's and the
-        // user's way back to all of it.
+        // user's way back to all of it. Empty on a record rebuilt after a
+        // restart — nothing honest to show, so the line is dropped.
         <div className="text-3xs text-fg-muted font-mono truncate" title={run.logPath}>Full log: {run.logPath}</div>
       )}
       {tool.error && <ErrorBlock error={tool.error} />}

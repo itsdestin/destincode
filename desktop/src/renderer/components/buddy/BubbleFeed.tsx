@@ -352,11 +352,18 @@ export function BubbleFeed({ sessionId }: Props) {
       }
     });
 
+    // G-1: background command records — MUST mirror App.tsx.
+    const unsubShell = window.claude.on.shellEvent((event) => {
+      if (event.sessionId !== sessionId) return;
+      dispatch({ type: 'SHELL_RUN_CHANGED', sessionId, run: event.run });
+    });
+
     return () => {
       window.claude.off('hook:event', unsubHook);
       // Task 10 fix: unsubSpecialist IS the unsubscribe function, not a
       // listener for `.off()` — see the matching fix in App.tsx.
       unsubSpecialist();
+      unsubShell();
     };
   }, [sessionId, dispatch]);
 
