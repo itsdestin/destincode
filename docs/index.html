@@ -669,8 +669,7 @@
      margin, so the paragraph pulls up into it). */
   .section-desc { max-width: 720px; margin: -12px 0 28px; font-size: 1rem; line-height: 1.6; color: var(--text-secondary); }
   .embed-frame { border-radius: 16px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.28); border: 1px solid var(--border); background: #0b1020; }
-  .embed-titlebar { display: flex; gap: 6px; padding: 10px 12px; background: rgba(255,255,255,.06); }
-  .embed-titlebar span { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,255,255,.25); }
+  .embed-wrap { position: relative; }
   .embed-stage { position: relative; aspect-ratio: 16 / 10; }
   .embed-poster, .embed-iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
   .embed-poster { object-fit: cover; }
@@ -685,13 +684,12 @@
   .embed-interact { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; background: transparent; border: 0; cursor: pointer; font: inherit; color: transparent; }
   .embed-interact::after { content: "Click to try it"; position: absolute; left: 50%; top: 62%; transform: translate(-50%,-50%); padding: 8px 16px; border-radius: 999px; background: rgba(0,0,0,.55); color: #fff; font-size: 13px; font-weight: 600; backdrop-filter: blur(6px); }
   .embed-frame.interactive .embed-interact { display: none; }
+  .embed-theme-btn { position: absolute; right: -14px; top: -14px; display: inline-flex; align-items: center; gap: 8px; padding: 9px 14px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-card); color: var(--text-primary); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; box-shadow: 0 8px 24px rgba(0,0,0,.18); transition: transform .15s, box-shadow .15s; }
+  .embed-theme-btn:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(0,0,0,.22); }
+  @media (max-width: 768px) { .embed-theme-btn { position: static; margin: 10px 0 0 auto; display: flex; } }
   .embed-start { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); padding: 14px 26px; border-radius: 999px; font: inherit; font-weight: 600; background: var(--title-highlight); color: #fff; border: 0; cursor: pointer; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
   /* The frame is always dark (#0b1020) regardless of the page theme, so the
      swatch labels get a fixed light color instead of inheriting the page's. */
-  .embed-swatches { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; background: rgba(255,255,255,.04); color: #e6e6ea; }
-  .embed-swatches button { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 13px; }
-  .embed-swatches button::before { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--sw); border: 1px solid rgba(0,0,0,.2); }
-  .embed-swatches button[aria-pressed="true"] { outline: 2px solid var(--title-highlight); }
   @media (max-width: 768px) { .embed-stage { aspect-ratio: 4 / 3; } }
 
   /* ═══ Showcase layout ═══ */
@@ -1503,8 +1501,8 @@
       <p class="section-label reveal">Try it</p>
       <h2 class="section-title reveal">Click around, I guess.</h2>
       <p class="section-desc reveal">Type a message, open the model picker, or switch the theme. This demo is a pixel-perfect representation of the real app's interface.</p>
-      <div class="embed-frame reveal">
-        <div class="embed-titlebar"><span></span><span></span><span></span></div>
+      <div class="embed-wrap reveal">
+      <div class="embed-frame">
         <div class="embed-stage">
           <!-- Its own poster (the embed's real first paint), not a row loop's frame — the row-1 poster is now that skit's last line. -->
           <img class="embed-poster" src="media/embed.webp" alt="YouCoded Assistant chat window" width="1440" height="900">
@@ -1515,15 +1513,13 @@
           <button class="embed-interact" type="button" hidden>Click to try it</button>
           <iframe class="embed-iframe" title="YouCoded Assistant live demo" loading="lazy" data-src="site/index.html?mode=workbench&amp;child=1&amp;scenario=site&amp;latency=0&amp;reply=site"></iframe>
         </div>
-        <div class="embed-swatches" role="group" aria-label="Change the theme">
-          <button type="button" data-theme="midnight" style="--sw:#0b1020" aria-pressed="true">Midnight</button>
-          <button type="button" data-theme="creme" style="--sw:#f3e8d8">Crème</button>
-          <button type="button" data-theme="light" style="--sw:#f4f4f5">Light</button>
-          <button type="button" data-theme="dark" style="--sw:#18181b">Dark</button>
-          <button type="button" data-theme="halftone-dimension" style="--sw:#2a1638">Halftone</button>
-          <button type="button" data-theme="meadow-mist" style="--sw:#6fa3c9">Meadow Mist</button>
-          <button type="button" data-theme="golden-sunbreak" style="--sw:#c98a2e">Golden Sunbreak</button>
-        </div>
+      </div>
+      <!-- Floats beside the window; opens the app's own Appearance screen inside the
+           embed (the real theme picker), instead of a swatch bar of our own. -->
+      <button class="embed-theme-btn" type="button" aria-label="Change theme">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="16" height="11" rx="1.5"/><path d="M12 2v2M8 15l-3 6M16 15l3 6M12 15v6"/></svg>
+        <span>Change theme</span>
+      </button>
       </div>
     </div>
   </section>
@@ -2173,7 +2169,7 @@
     (function () {
       var frame = document.querySelector('.embed-frame'); if (!frame) return;
       var iframe = frame.querySelector('.embed-iframe'), start = frame.querySelector('.embed-start'), interact = frame.querySelector('.embed-interact');
-      var theme = 'midnight', live = false;
+      var theme = 'midnight', live = false; // the app remembers a theme picked in its Appearance screen in its own storage
       function boot() {
         if (live) return; live = true;
         start.hidden = true; // a theme swatch re-shows the poster during reload; the button must not come back with it
@@ -2188,19 +2184,21 @@
       if (!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObserver' in window) {
         new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) boot(); }); }, { threshold: 0.6 }).observe(frame);
       }
-      frame.querySelectorAll('.embed-swatches button').forEach(function (b) {
-        b.addEventListener('click', function () {
-          theme = b.dataset.theme;
-          frame.querySelectorAll('.embed-swatches button').forEach(function (x) { x.setAttribute('aria-pressed', x === b); });
-          if (!live) return;
-          try { iframe.contentWindow.localStorage.setItem('youcoded-theme', theme); } catch (e) {}
-          // Live switch through the app's own cross-window theme sync (no reload,
-          // no poster flash); the reload is only the fallback if that hook is missing.
-          var sync = null; try { sync = iframe.contentWindow.__workbenchAppearanceSync; } catch (e) {}
-          if (typeof sync === 'function' && sync({ theme: theme }) > 0) return;
-          frame.classList.remove('live');
-          iframe.contentWindow.location.reload();
-        });
+      // "Change theme": open the app's own Settings → Appearance inside the embed.
+      // Same-origin, so we drive the real UI: the gear, then the Appearance row.
+      var themeBtn = frame.parentElement.querySelector('.embed-theme-btn');
+      themeBtn.addEventListener('click', function () {
+        boot(); frame.classList.add('interactive');
+        var tries = 0;
+        (function go() {
+          var d = null; try { d = iframe.contentDocument; } catch (e) { return; }
+          if (!d) return;
+          var row = Array.prototype.slice.call(d.querySelectorAll('button')).filter(function (b) { return /Appearance/.test(b.textContent); })[0];
+          if (row) { row.click(); return; }
+          var gear = d.querySelector('[title=Settings]');
+          if (gear) gear.click();
+          if (tries++ < 40) setTimeout(go, 150);
+        })();
       });
     })();
 
