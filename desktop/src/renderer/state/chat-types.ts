@@ -1,4 +1,4 @@
-import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState, type SpecialistRunView, type PageCursor, type TranscriptEvent } from '../../shared/types';
+import { ChatMessage, ToolCallState, ToolGroupState, type AttentionState, type SpecialistRunView, type ShellRunView, type PageCursor, type TranscriptEvent } from '../../shared/types';
 import { emptyTotals, type SessionTotals } from './session-totals';
 // Re-export so test files and future consumers can import these types from
 // chat-types directly, without reaching into the shared/types boundary.
@@ -606,6 +606,14 @@ export type ChatAction =
       type: 'SPECIALIST_RUN_CHANGED';
       sessionId: string;
       run: SpecialistRunView;
+    }
+  | {
+      // Background Bash (G-1): the live shell-run record lands on its Bash card
+      // (chat-reducer.ts's SHELL_RUN_CHANGED case). Same contract as
+      // SPECIALIST_RUN_CHANGED — a record for an unknown card is dropped.
+      type: 'SHELL_RUN_CHANGED';
+      sessionId: string;
+      run: ShellRunView;
     }
   | {
       type: 'PERMISSION_RESPONDED';

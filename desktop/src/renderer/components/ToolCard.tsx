@@ -107,7 +107,12 @@ export function friendlyToolDisplay(
       // .trimStart() throws — crashing the whole Chat pane via its ErrorBoundary.
       const cmd = asString(input.command);
       const desc = asString(input.description);
-      const bg = input.run_in_background ? ' ⟳' : '';
+      // G-1: "· in the background" only while the command is still there — a
+      // finished background command reads like any finished command (same rule
+      // as a background hire). CC cards keep their ⟳ mark.
+      const bg = tool.shellRun
+        ? (tool.shellRun.status === 'running' ? ' · in the background' : '')
+        : (input.run_in_background ? ' ⟳' : '');
       let label: string;
       if (desc) {
         label = desc;
@@ -1218,8 +1223,13 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   // tool result — a background hire's result is only the launch ack (Destin's
   // 1b hands-on, Test 4: the card read ✓ while the child was still working).
   const run = tool.toolName === 'Task' ? tool.specialistRun : undefined;
+  // G-1: a Bash card with a shell-run record shows the RUN's state the same
+  // way — its tool result is only the launch acknowledgment.
+  const shell = tool.toolName === 'Bash' ? tool.shellRun : undefined;
   const runIcon: 'spinner' | 'check' | 'fail' | 'stopped' | null =
-    !run || tool.status === 'awaiting-approval' ? null
+    tool.status === 'awaiting-approval' ? null
+    : shell ? (shell.status === 'running' ? 'spinner' : shell.status === 'stopped' ? 'stopped' : shell.exitCode === 0 ? 'check' : 'fail')
+    : !run ? null
     : run.status === 'running' ? 'spinner'
     : run.status === 'completed' ? (tool.specialistReport?.status === 'failed' ? 'fail' : 'check')
     : run.status === 'failed' ? 'fail'

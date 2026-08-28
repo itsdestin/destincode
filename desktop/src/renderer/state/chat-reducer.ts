@@ -2115,6 +2115,19 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
+    case 'SHELL_RUN_CHANGED': {
+      // Background Bash (G-1): the run record lands on the Bash card that
+      // started it, keyed by toolUseId. The card must already exist (the tool
+      // use precedes every run event); a record for an unknown card is dropped.
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const card = session.toolCalls.get(action.run.toolUseId);
+      if (!card) return state;
+      const toolCalls = new Map(session.toolCalls);
+      toolCalls.set(card.toolUseId, { ...card, shellRun: action.run });
+      next.set(action.sessionId, { ...session, toolCalls });
+      return next;
+    }
     case 'SPECIALIST_RUN_CHANGED': {
       // Specialists 1c: the ledger record lands on the launching Task card.
       // The card must already exist (the Task tool-use event precedes every

@@ -716,7 +716,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     }),
   };
 
-  const native: Ns<'native'> = { supported: true };
+  // G-1 (MOCK_ONLY 'native.killShell'): the card's Stop button. The fake just
+  // resolves; the gallery fixture stays in its captured state.
+  const native = { supported: true, killShell: async (_sessionId: string, _shellId: string) => ({ ok: true }) } as unknown as Ns<'native'>;
 
   // Fix (final review): SpecialistsSection's "Open folder" button reads
   // shell.openPath's resolved value as an error message whenever it's truthy —

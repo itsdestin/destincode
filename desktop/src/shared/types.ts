@@ -706,6 +706,38 @@ export interface ToolCallState {
    * report as its next turn; only the bubble moved here.
    */
   specialistReport?: SpecialistReportView;
+  /**
+   * Native Bash in the background (G-1, 2026-08-28 design): the live record of
+   * a command that outlived its call — started with `run_in_background`, or
+   * moved to the background when it hit its time limit. Drives the card's real
+   * state the way `specialistRun` does for a hire: the tool result of a
+   * background start is only the launch acknowledgment. Absent on foreground
+   * Bash calls and on CC cards.
+   */
+  shellRun?: ShellRunView;
+}
+
+/** Why a background command is no longer running — the card names it. */
+export type ShellStopReason = 'user' | 'assistant' | 'conversation-closed' | 'app-quit';
+
+export interface ShellRunView {
+  /** The Bash tool call this run belongs to (the card it renders on). */
+  toolUseId: string;
+  /** Short id the model uses with BashOutput/KillShell. */
+  shellId: string;
+  status: 'running' | 'exited' | 'stopped';
+  /** Set once the process ended on its own. */
+  exitCode?: number;
+  /** Set when status is 'stopped'. */
+  stopReason?: ShellStopReason;
+  /** True when the command was moved to the background at its time limit
+   *  rather than started there — the card says so. */
+  detached?: boolean;
+  startedAt: number;
+  endedAt?: number;
+  /** The last lines of output so far (the full log lives at logPath). */
+  tail: string;
+  logPath: string;
 }
 
 export interface ToolGroupState {
