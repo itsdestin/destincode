@@ -14,6 +14,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { ulid } from 'ulid';
 import { hfResolveUrl } from './hf-client';
+import { writeManifest, readManifest, removeManifest } from './download-manifest';
 import type { DownloadProgress, QuantOption } from '../../shared/model-manager-types';
 
 const PROGRESS_INTERVAL_MS = 250;
@@ -23,7 +24,6 @@ interface ActiveDownload {
   abort: AbortController;
   promise: Promise<void>;
   cancelled: boolean;
-  fileNames: string[];               // basenames this download writes — the orphan scan excludes their .partials
 }
 
 export class ModelDownloader {
@@ -38,11 +38,29 @@ export class ModelDownloader {
     for (const d of this.active.values()) {
       if (d.key === key) throw new Error('That model is already downloading.');
     }
+    const firstFile = path.basename(quant.files[0]);
+    // The manifest is what makes this download resumable after a crash — write
+    // it BEFORE any bytes, so a crash one second from now still leaves a trail.
+    // mkdir here (not only in run()) because the manifest lands in the same dir.
+    fs.mkdirSync(this.cacheDir, { recursive: true });
+    const prior = readManifest(this.cacheDir, firstFile);
+    if (prior && prior.repo !== repo) {
+      // Same filename, different publisher: the .partial on disk holds ANOTHER
+      // build's bytes, and Range-continuing it would fail the integrity check
+      // only after the whole remainder was fetched. The prior download has a
+      // row in Local Models (its manifest alone makes one), so the user can
+      // delete it there.
+      throw new Error(
+        `${firstFile} is already partly downloaded from ${prior.repo}. `
+        + `Delete that download in Local Models before downloading it from ${repo}.`
+      );
+    }
+    writeManifest(this.cacheDir, repo, quant, Date.now());
+
     const downloadId = ulid();
     const abort = new AbortController();
     const entry: ActiveDownload = {
       key, abort, cancelled: false, promise: Promise.resolve(),
-      fileNames: quant.files.map((f) => path.basename(f)),
     };
     entry.promise = this.run(downloadId, repo, quant, entry, onProgress)
       .finally(() => { /* keep the entry until wait() consumers observe it */ });
@@ -63,16 +81,6 @@ export class ModelDownloader {
     entry.abort.abort();
   }
 
-  /** Basenames of the `.partial` files THIS session's live downloads may be
-   *  writing. The orphan scan (ModelManager.orphanedPartials) subtracts these —
-   *  an in-flight download is not an orphan, it's just not finished yet. */
-  activePartialNames(): Set<string> {
-    const out = new Set<string>();
-    for (const d of this.active.values()) {
-      for (const name of d.fileNames) out.add(`${name}.partial`);
-    }
-    return out;
-  }
 
   private async run(
     downloadId: string, repo: string, quant: QuantOption,
@@ -114,6 +122,10 @@ export class ModelDownloader {
         fs.renameSync(partialPath, finalPath);
         doneBytes += received;
       }
+      // Clean completion of the WHOLE set — the trail is no longer needed.
+      // Deliberately NOT in a finally: cancel and error must keep it, because
+      // that is exactly when the user will want to resume.
+      removeManifest(this.cacheDir, path.basename(quant.files[0]));
       onProgress({ ...base, state: 'done', receivedBytes: doneBytes, currentPart: parts });
     } catch (e: any) {
       if (entry.cancelled) {

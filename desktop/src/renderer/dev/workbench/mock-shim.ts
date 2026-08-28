@@ -1,4 +1,5 @@
 import type { MockStore } from './mock-store';
+import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
@@ -57,6 +58,11 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'session.list', 'session.create', 'session.browse', 'session.destroy',
   'session.setFlag', 'session.setTag', 'session.setNote', 'session.getMeta',
   'providers.list', 'providers.catalog', 'models.memoryCheck',
+  // Local Models rows + Resume (2026-08-26). WHY these must be listed: the
+  // contract test only checks members named here, so a hand-written mock left
+  // off this list escapes the real-or-registered check entirely.
+  'models.installed', 'models.curated', 'models.delete', 'models.resume',
+  'models.onDownloadProgress', 'models.downloadCancel',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
@@ -560,6 +566,42 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
   };
 
+  // One fixture per row state, so a design review sees all three at once.
+  // Byte counts are Destin's real 2026-08-26 interruption — a four-file split
+  // GGUF stranded at part 3 — so the sheets show realistic numbers rather than
+  // round ones that hide formatting bugs. NOTE the app's gb() divides by 1024^3:
+  // 79_674_559_677 renders as 74.2 GB, 121_334_654_784 as 113.0 GB.
+  const LOCAL_MODELS: InstalledLocalModel[] = [
+    {
+      id: 'Qwen3.5-9B-Q8_0',
+      sizeBytes: 9_527_502_048,
+      quant: 'Q8_0', quantDescription: 'Highest quality quantization — near-original output',
+      parts: 1, status: 'complete', partsPresent: 1,
+      totalSizeBytes: null, repo: null,
+    },
+    {
+      id: 'Qwen3.8-Flash-Next-UD-Q4_K_XL-00001-of-00004',
+      sizeBytes: 79_674_559_677,
+      quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
+      parts: 4, status: 'unfinished', partsPresent: 2,
+      totalSizeBytes: 121_334_654_784, repo: 'unsloth/Qwen3.8-Flash-Next-GGUF',
+    },
+    {
+      id: 'Older-Model-UD-Q4_K_XL-00001-of-00002',
+      sizeBytes: 4_100_000_000,
+      quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
+      parts: 2, status: 'untraceable', partsPresent: 1,
+      totalSizeBytes: null, repo: null,
+    },
+  ];
+
+  // A fake progress stream so the MID-RESUME state (spec §4) can be photographed:
+  // Resume emits a 'downloading' event at ~70% and then creeps, never finishing.
+  const progressListeners = new Set<(p: DownloadProgress) => void>();
+  const emitProgress = (p: DownloadProgress) => { for (const cb of progressListeners) cb(p); };
+  let fakeTimer: ReturnType<typeof setInterval> | null = null;
+  let lastReceived = 0;
+
   const models: Ns<'models'> = {
     // RuntimeBinding.tsx only calls this for the local-engine provider. The
     // verdict union is checked by the compiler — useIpc.ts:329.
@@ -570,6 +612,46 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         detail: 'Loading it may evict another resident model.',
       }
       : { verdict: 'ok' as const, headline: '', detail: '' }),
+
+    installed: async () => LOCAL_MODELS,
+    curated: async () => [],
+    delete: async () => true,
+    onDownloadProgress: (cb: (p: DownloadProgress) => void) => {
+      progressListeners.add(cb);
+      return () => { progressListeners.delete(cb); };
+    },
+    resume: async (modelId: string) => {
+      const m = LOCAL_MODELS.find((x) => x.id === modelId);
+      if (!m || m.status !== 'unfinished' || !m.repo) throw new Error('Nothing to resume.');
+      let received = 85_000_000_000;
+      const base = {
+        downloadId: 'wb-resume-1', repo: m.repo, quant: m.quant ?? '',
+        totalBytes: m.totalSizeBytes ?? 0, parts: m.parts, currentPart: 3,
+      };
+      if (fakeTimer) clearInterval(fakeTimer);
+      lastReceived = received;
+      setTimeout(() => emitProgress({ ...base, state: 'downloading', receivedBytes: received }), 300);
+      fakeTimer = setInterval(() => {
+        received += 1_000_000_000;
+        lastReceived = received;
+        emitProgress({ ...base, state: 'downloading', receivedBytes: received });
+      }, 400);
+      return { downloadId: base.downloadId };
+    },
+    downloadCancel: async (downloadId: string) => {
+      if (fakeTimer) { clearInterval(fakeTimer); fakeTimer = null; }
+      const m = LOCAL_MODELS[1];
+      // Pausing banks the bytes fetched so far — the real models:installed
+      // re-reads the directory, so the row must come back at where it STOPPED,
+      // not at where it started. Without this the demo pauses at 73% and the
+      // row snaps back to 66%, which is the opposite of what resume promises.
+      m.sizeBytes = Math.max(m.sizeBytes, lastReceived);
+      emitProgress({
+        downloadId, repo: m.repo ?? '', quant: m.quant ?? '', state: 'cancelled',
+        receivedBytes: m.sizeBytes, totalBytes: m.totalSizeBytes ?? 0, parts: m.parts, currentPart: 3,
+      });
+      return true;
+    },
   };
 
   const defaults: Ns<'defaults'> = {

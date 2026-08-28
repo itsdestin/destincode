@@ -939,9 +939,10 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     ['models:download-cancel', 'MODELS_DOWNLOAD_CANCEL'],
     ['models:delete', 'MODELS_DELETE'],
     ['models:installed', 'MODELS_INSTALLED'],
-    // Orphaned .partial scan (2026-07-15) — Android stubs it like the rest of
-    // the desktop-only model-manager surface.
-    ['models:orphaned-partials', 'MODELS_ORPHANED_PARTIALS'],
+    // Resume an interrupted download from its manifest (2026-08-26). Replaced
+    // models:orphaned-partials, whose listing folded into models:installed —
+    // two lists over one directory could disagree, which was the bug.
+    ['models:resume', 'MODELS_RESUME'],
     ['endpoints:detect', 'ENDPOINTS_DETECT'],
   ];
   const pushChannels = ['models:download-progress'];
