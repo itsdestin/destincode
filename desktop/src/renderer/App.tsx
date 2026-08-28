@@ -239,7 +239,6 @@ function AppInner() {
   }, []);
   // Track which sessions the user has "seen" (switched to after activity completed)
   const [viewedSessions, setViewedSessions] = useState<Set<string>>(new Set());
-  const [resumeInfo, setResumeInfo] = useState<Map<string, { claudeSessionId: string; projectSlug: string }>>(new Map());
   const [resumeRequested, setResumeRequested] = useState(false);
   // Plan 2b "Moved Gate" (2026-07-14). Sessions another device took over: we keep
   // the pill and render <MovedGate> (instead of chat/terminal) when it's clicked.
@@ -1656,6 +1655,34 @@ function AppInner() {
   // Fetch session list on mount — catches sessions that existed before event handlers were registered
   // (e.g., remote browser reconnecting after the replay buffer events already fired, or a renderer
   // crash/reload, where main kept every session alive but this is a brand-new React tree).
+  // Perf cycle 2: load a session's most recent PAGE of history instead of
+  // replaying its whole transcript. Opening a huge conversation used to stream
+  // thousands of events through the reducer (~22s); a page is ~30 turns.
+  //
+  // claudeSessionId/projectSlug are the fallback locator for a session the
+  // transcript watcher does not know yet (a just-resumed CC session) — see
+  // TranscriptPageRequest.
+  const loadFirstPage = useCallback(async (sid: string, locator?: { claudeSessionId: string; projectSlug: string }) => {
+    dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId: sid });
+    try {
+      const page = await (window as any).claude?.detach?.requestTranscriptPage?.({
+        sessionId: sid,
+        beforeCursor: null,
+        claudeSessionId: locator?.claudeSessionId,
+        projectSlug: locator?.projectSlug,
+      });
+      if (page) {
+        dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId: sid, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
+      } else {
+        dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid });
+      }
+    } catch {
+      // The sentinel retries on the next scroll; a failed first page leaves an
+      // empty view rather than a wrong one.
+      dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid });
+    }
+  }, [dispatch]);
+
   useEffect(() => {
     window.claude.session.list().then((list: any[]) => {
       // Perf lab: boot-time session fetch has resolved (catches pre-existing
@@ -1709,13 +1736,13 @@ function AppInner() {
       // Ordering: the transcript:event listener is registered by an effect
       // declared ABOVE this one, so it is already attached when these replayed
       // events stream back; uuid dedup absorbs any overlap with live events.
-      // No-op on remote/Android (remote-shim stubs requestTranscriptReplay) —
-      // those hydrate via chat:hydrate on connect instead.
+      // Remote/Android hydrate via chat:hydrate on connect instead; their shim
+      // answers transcript:page for real once a page is asked for.
       for (const s of list) {
-        (window as any).claude?.detach?.requestTranscriptReplay?.(s.id);
+        void loadFirstPage(s.id);
       }
     }).catch(() => {});
-  }, [dispatch]);
+  }, [dispatch, loadFirstPage]);
 
   // Multi-window ownership wiring (Phase 2 of detach feature).
   // Subscribes to directory/leader/ownership pushes from main and mutates
@@ -1784,6 +1811,14 @@ function AppInner() {
       if (freshWindow) setSessionId(sid);
       // Hydrate reducer from disk. Main streams every transcript event back on
       // the normal channel; uuid dedup absorbs any overlap with live events.
+      //
+      // The LAST remaining requestTranscriptReplay caller, deliberately (perf
+      // cycle 2): the replay handler ALSO re-sends broker-held permission asks
+      // and specialist run records, which live only in main's memory and have no
+      // record in the JSONL — a page cannot carry them, so a re-docked native
+      // session would come back with a button-less ask and a status-less
+      // helper card. Folding those into the page response is a follow-up; until
+      // then a re-dock pays the full-replay cost that first open no longer does.
       det.requestTranscriptReplay?.(sid);
     });
 
@@ -2420,9 +2455,8 @@ function AppInner() {
       if (launchInNewWindow) {
         (window as any).claude?.detach?.openDetached?.({ sessionId: nativeSession.id });
       }
-      // Hydrate the chat view from disk. Main streams every historical
-      // TRANSCRIPT_EVENT back on the normal channel; uuid dedup absorbs overlap.
-      (window as any).claude?.detach?.requestTranscriptReplay?.(nativeSession.id);
+      // Hydrate the chat view from disk — the most recent page only.
+      void loadFirstPage(nativeSession.id);
       return true;
     }
 
@@ -2449,24 +2483,12 @@ function AppInner() {
       (window as any).claude?.detach?.openDetached?.({ sessionId: newSession.id });
     }
 
-    setResumeInfo((prev) => new Map(prev).set(newSession.id, { claudeSessionId, projectSlug }));
-
-    // Load recent history into chat view
-    try {
-      const messages = await (window as any).claude.session.loadHistory(claudeSessionId, projectSlug, 10, false);
-      if (messages.length > 0) {
-        dispatch({
-          type: 'HISTORY_LOADED',
-          sessionId: newSession.id,
-          messages,
-          hasMore: true,
-        });
-      }
-    } catch (err) {
-      console.error('Failed to load history:', err);
-    }
+    // Load the most recent page into the chat view. The transcript watcher does
+    // not know this session yet (CC's hook reports the path moments later), so
+    // pass the locator the page handler can resolve the file from.
+    void loadFirstPage(newSession.id, { claudeSessionId, projectSlug });
     return true;
-  }, [dispatch, currentModel, askTakeover]);
+  }, [dispatch, currentModel, askTakeover, loadFirstPage]);
 
   const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
 
@@ -2874,7 +2896,6 @@ function AppInner() {
                       // Deliberately not folded into `visible`: the two hide
                       // different things for different reasons.
                       sessionActive={s.id === sessionId}
-                      resumeInfo={resumeInfo}
                       provider={s.provider}
                       cwd={s.cwd}
                       // Game pane lives in the active session's framed-shell

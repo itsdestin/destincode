@@ -1018,7 +1018,7 @@ contextBridge.exposeInMainWorld('claude', {
     // Returns ONE page of history (newest when beforeCursor is null, else the
     // page immediately older than the cursor) so opening a huge conversation
     // renders ~30 turns instead of thousands.
-    requestTranscriptPage: (req: { sessionId: string; beforeCursor: unknown }) =>
+    requestTranscriptPage: (req: { sessionId: string; beforeCursor: unknown; claudeSessionId?: string; projectSlug?: string }) =>
       ipcRenderer.invoke(IPC.TRANSCRIPT_PAGE, req),
   },
   theme: {

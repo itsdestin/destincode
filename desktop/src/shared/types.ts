@@ -157,6 +157,15 @@ export type TranscriptEventType =
 export interface TranscriptPageRequest {
   sessionId: string;
   beforeCursor: PageCursor | null;
+  /**
+   * Fallback locator, used ONLY when the transcript watcher does not know this
+   * session yet. A just-resumed Claude Code session has no watched entry until
+   * CC's hook reports its transcript path, which is after the renderer wants to
+   * paint history — so the resume path passes the ids it already has and the
+   * handler resolves ~/.claude/projects/<slug>/<claudeSessionId>.jsonl itself.
+   */
+  claudeSessionId?: string;
+  projectSlug?: string;
 }
 
 export interface PageCursor {

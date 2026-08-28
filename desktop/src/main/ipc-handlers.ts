@@ -61,7 +61,7 @@ import { ddgBackend } from './harness/search/backends/ddg';
 import { tavilyBackend } from './harness/search/backends/tavily';
 import type { NativePermissionMode } from '../shared/permission-types';
 import { resolveMappingAction } from './session-id-mapping';
-import { listPastSessions, loadHistory } from './session-browser';
+import { listPastSessions, loadHistory, SAFE_ID_RE } from './session-browser';
 import { readTranscriptMeta } from './transcript-utils';
 import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THEMES_DIR } from './theme-watcher';
 import { isBundledPlugin } from '../shared/bundled-plugins';
@@ -2580,8 +2580,24 @@ export function registerIpcHandlers(
       };
     }
 
-    const source = transcriptWatcher.pageSourceFor(sessionId);
-    if (!source) return empty;
+    let source = transcriptWatcher.pageSourceFor(sessionId);
+    if (!source) {
+      // Not watched yet (a just-resumed CC session — the watcher starts when
+      // CC's hook reports the transcript path, which is after the renderer
+      // wants to paint). Resolve from the ids the caller already has. Both are
+      // validated: they shape a filesystem path.
+      const { claudeSessionId, projectSlug } = req;
+      if (typeof claudeSessionId !== 'string' || typeof projectSlug !== 'string'
+        || !SAFE_ID_RE.test(claudeSessionId) || !SAFE_ID_RE.test(projectSlug)) return empty;
+      const fallbackPath = path.join(os.homedir(), '.claude', 'projects', projectSlug, `${claudeSessionId}.jsonl`);
+      if (!fs.existsSync(fallbackPath)) return empty;
+      source = {
+        jsonlPath: fallbackPath,
+        subagentsDir: path.join(path.dirname(fallbackPath), claudeSessionId, 'subagents'),
+        // Nothing is tailing it yet, so read to EOF.
+        startOffset: 0,
+      };
+    }
     // The FIRST page ends where the live tailer started, so the page and the
     // live stream cannot overlap (transcript-watcher startOffset, Task 4). A
     // startOffset of 0 means the file didn't exist at watch time — read to EOF.
