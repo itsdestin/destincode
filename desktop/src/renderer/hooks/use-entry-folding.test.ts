@@ -133,6 +133,25 @@ describe('useEntryFolding', () => {
     expect(observed).not.toContain(el);
   });
 
+  it('keeps registerEntry stable across renders and across fold-state changes', () => {
+    // A ref callback whose identity changes is detached and re-attached by React
+    // on EVERY entry, EVERY render. At 7,000 entries that is 7,000
+    // unobserve+observe pairs per render, and because observe() delivers a fresh
+    // intersection report each time, it also restarted the fold idle timer — so
+    // folding could never fire and the change measured WORSE than doing nothing.
+    const { result, rerender } = renderHook(() => useEntryFolding(true));
+    const first = result.current.registerEntry;
+    rerender();
+    expect(result.current.registerEntry).toBe(first);
+
+    const el = entry('f', 50);
+    act(() => { result.current.registerEntry(el); });
+    act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
+    act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
+    expect(result.current.isFolded('f')).toBe(true);   // state really did change
+    expect(result.current.registerEntry).toBe(first);  // and the ref did not
+  });
+
   it('returns a cleanup even with no element or no observer', () => {
     // Same contract as useObservedRef: returning undefined puts the ref on
     // React's null-call convention and the next detach re-enters with null.

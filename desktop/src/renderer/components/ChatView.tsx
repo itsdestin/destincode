@@ -447,11 +447,21 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
 
   // One ref for both observers — the blur-gating one and the folding one — so a
   // timeline entry still carries a single callback ref.
+  // Depends on the two REGISTRATION callbacks, never on the `folding` object.
+  //
+  // That object is a fresh literal every render, so depending on it made
+  // attachEntry's identity change every render — and a ref callback whose
+  // identity changes is detached and re-attached by React on EVERY entry, every
+  // render. For a 7,000-entry conversation that is 7,000 unobserve+observe pairs
+  // per render, each observe delivering a fresh intersection report, which in
+  // turn restarted the fold idle timer so folding could never fire. It made the
+  // measured numbers WORSE than doing nothing (2026-08-28).
+  const registerFold = folding.registerEntry;
   const attachEntry = useCallback((el: HTMLDivElement | null) => {
     const releaseBlur = observeEntry(el);
-    const releaseFold = folding.registerEntry(el);
+    const releaseFold = registerFold(el);
     return () => { releaseBlur(); releaseFold(); };
-  }, [observeEntry, folding]);
+  }, [observeEntry, registerFold]);
 
   // Arrow key scrolling with acceleration when not typing
   const scrollSpeed = useRef(0);
