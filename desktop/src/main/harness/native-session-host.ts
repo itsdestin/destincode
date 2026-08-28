@@ -20,6 +20,7 @@ import type { TranscriptEvent, NativeSendResult, SpecialistsEvent, HookEvent, De
 import type { ModelBinding } from '../../shared/provider-types';
 import { HarnessSession, rememberedRuleFor, type ModelFactory, type HarnessSessionOpts } from './harness-session';
 import { rebuildHistory } from './history-rebuild';
+import { PAGE_TURNS } from '../transcript-page';
 import { readImageFromDisk } from './image-support';
 import { SessionStore, type NativeSessionListEntry } from './session-store';
 import { PermissionBroker, type AskDecision, type LateResponseEntry } from './permission-broker';
@@ -3757,6 +3758,37 @@ export class NativeSessionHost extends EventEmitter {
    *  e.g. drainDeliveries) — guarded the same way: log and fall back to the
    *  parent's own events alone, because a broken ledger read must degrade
    *  replay, never break it outright. */
+  /**
+   * Perf cycle 2: one page of a native session's history — the last PAGE_TURNS
+   * user turns before `beforeIndex` (null = the end). Returns null for a
+   * non-native id, exactly like getHistory.
+   *
+   * Windows the ALREADY-MERGED event array rather than paging the store's raw
+   * lines: mergeChildEvents interleaves each delegated child's events into the
+   * parent's, so slicing before the merge would drop a child whose parent card
+   * is in the page. Native transcripts are small (<=3 MB), so a full read +
+   * slice is cheap; a true byte-tail reader is a later optimisation.
+   *
+   * The "cursor" is an ARRAY INDEX, not a byte offset. The renderer treats the
+   * cursor as opaque, so the two source kinds can disagree about what it means.
+   */
+  getHistoryPage(sessionId: string, beforeIndex: number | null): { events: TranscriptEvent[]; nextIndex: number | null; hasMore: boolean } | null {
+    const all = this.getHistory(sessionId);
+    if (all === null) return null;
+    const end = beforeIndex == null ? all.length : Math.min(beforeIndex, all.length);
+    if (end <= 0) return { events: [], nextIndex: null, hasMore: false };
+    let boundaries = 0;
+    let start = 0;
+    for (let i = end - 1; i >= 0; i--) {
+      if (all[i].type === 'user-message') {
+        boundaries++;
+        if (boundaries === PAGE_TURNS) { start = i; break; }
+      }
+    }
+    const hasMore = start > 0;
+    return { events: all.slice(start, end), nextIndex: hasMore ? start : null, hasMore };
+  }
+
   getHistory(sessionId: string): TranscriptEvent[] | null {
     const entry = this.live.get(sessionId);
     if (!entry) return null;

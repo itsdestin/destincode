@@ -153,6 +153,12 @@ export type TranscriptEventType =
  * index instead of a byte offset — the renderer never inspects it either way.
  * `sizeAtRead` lets the reader notice a /clear or /compact rewrite.
  */
+/** Payload for the TRANSCRIPT_PAGE request. `beforeCursor: null` = newest page. */
+export interface TranscriptPageRequest {
+  sessionId: string;
+  beforeCursor: PageCursor | null;
+}
+
 export interface PageCursor {
   path: string;
   offset: number;
@@ -1446,6 +1452,11 @@ export const IPC = {
   // Request the full transcript history for a session — used when a window
   // acquires ownership and needs to hydrate its reducer from disk.
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
+  // Perf cycle 2: request/response. Returns the last page of history (the most
+  // recent PAGE_TURNS turns), or the page before a cursor. Replaces
+  // TRANSCRIPT_REPLAY for first load — replay stays only for the ownership
+  // handoff, which also re-sends broker-held asks and specialist runs.
+  TRANSCRIPT_PAGE: 'transcript:page',
   // Appearance sync across peer windows — Renderer → Main broadcasts, Main
   // → other Renderers applies without re-broadcasting. Lets a theme change
   // in window 2 propagate to window 1 without a reload.

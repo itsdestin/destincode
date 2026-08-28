@@ -7,7 +7,7 @@ import https from 'https';
 import { execFile } from 'child_process';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
-import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type HookEvent, type SpecialistsEvent } from '../shared/types';
+import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type TranscriptPageRequest, type TranscriptPageResult, type HookEvent, type SpecialistsEvent } from '../shared/types';
 import { isPlaceholderModelId } from '../shared/model-ids';
 import { hasRealTitle } from '../shared/session-title';
 import { setPermissionOverrides } from './main';
@@ -17,6 +17,7 @@ import { IntegrationInstaller, listWithState } from './integration-installer';
 import { RemoteConfig } from './remote-config';
 import { RemoteServer } from './remote-server';
 import { TranscriptWatcher } from './transcript-watcher';
+import { readTranscriptPage } from './transcript-page';
 import { nativeStoreSlug, ccProjectSlug } from './slug-encoding';
 // Native runtime (platform roadmap Phase 1 Plan A) — the first-party harness
 // stack: provider CRUD + key management, model catalog, and the live-session
@@ -2555,6 +2556,43 @@ export function registerIpcHandlers(
   if (leaseWiring && remoteServer) {
     remoteServer.setLeaseWiring({ client: leaseWiring.client, requester: leaseWiring.requester, deviceId: leaseWiring.deviceId, machineId: leaseWiring.machineId });
   }
+
+  // Perf cycle 2: paged history. A window opening/resuming a session asks for
+  // the NEWEST page (beforeCursor null) and, as the user scrolls up, for each
+  // older page. Request/response — unlike TRANSCRIPT_REPLAY, which streams
+  // every historical event back over TRANSCRIPT_EVENT and cost ~22s of main +
+  // renderer work on a huge conversation.
+  ipcMain.handle(IPC.TRANSCRIPT_PAGE, async (_evt, req: TranscriptPageRequest): Promise<TranscriptPageResult> => {
+    const empty: TranscriptPageResult = { events: [], cursor: null, hasMore: false };
+    if (!req || typeof req.sessionId !== 'string') return empty;
+    const { sessionId, beforeCursor } = req;
+
+    // Native sessions page over the merged event array; getHistoryPage returns
+    // null for non-native ids, so CC's watcher stays the source for claude
+    // sessions — the same discrimination the replay handler uses.
+    const nativePage = nativeHost.getHistoryPage(sessionId, beforeCursor ? beforeCursor.offset : null);
+    if (nativePage !== null) {
+      return {
+        events: nativePage.events,
+        // `offset` carries an ARRAY INDEX for native sources; opaque to the renderer.
+        cursor: nativePage.hasMore ? { path: `native:${sessionId}`, offset: nativePage.nextIndex!, sizeAtRead: 0 } : null,
+        hasMore: nativePage.hasMore,
+      };
+    }
+
+    const source = transcriptWatcher.pageSourceFor(sessionId);
+    if (!source) return empty;
+    // The FIRST page ends where the live tailer started, so the page and the
+    // live stream cannot overlap (transcript-watcher startOffset, Task 4). A
+    // startOffset of 0 means the file didn't exist at watch time — read to EOF.
+    const endOffset = beforeCursor ? beforeCursor.offset : (source.startOffset || null);
+    return readTranscriptPage({
+      jsonlPath: source.jsonlPath,
+      sessionId,
+      endOffset,
+      subagentsDir: source.subagentsDir,
+    });
+  });
 
   // Transcript replay: a window that just acquired a session asks for every
   // historical event so its reducer can hydrate. Events stream back on the

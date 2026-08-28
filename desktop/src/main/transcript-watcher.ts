@@ -435,6 +435,23 @@ export class TranscriptWatcher extends EventEmitter {
   }
 
   /**
+   * Everything the paged-history reader (transcript-page.ts) needs for a
+   * session, or null when the session isn't watched. Returned as data rather
+   * than exposing the sessions map — and read from HERE rather than importing
+   * the reader, which would make transcript-watcher <-> transcript-page a
+   * circular import (the reader needs parseTranscriptLine).
+   */
+  pageSourceFor(desktopSessionId: string): { jsonlPath: string; subagentsDir: string; startOffset: number } | null {
+    const session = this.sessions.get(desktopSessionId);
+    if (!session) return null;
+    return {
+      jsonlPath: session.jsonlPath,
+      subagentsDir: path.join(path.dirname(session.jsonlPath), session.claudeSessionId, 'subagents'),
+      startOffset: session.startOffset,
+    };
+  }
+
+  /**
    * Stop watching a specific session.
    */
   stopWatching(desktopSessionId: string): void {
