@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
+import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, cleanup } from '@testing-library/react';
 import { ChatProvider } from '../state/chat-context';
@@ -20,7 +21,11 @@ vi.mock('./MarkdownContent', () => {
     return <div data-testid="md-probe">{content}</div>;
   };
   Mock.__renders = renders;
-  return { default: Mock };
+  // The real module also exports the context that switches the `conversations`
+  // fence into a reference block. A partial mock has to carry it: the bubble
+  // wraps its markdown in the provider, and a missing export takes the whole
+  // component down at render.
+  return { default: Mock, SessionRefsEnabled: React.createContext(false) };
 });
 import MarkdownContent from './MarkdownContent';
 const mdRenders = (MarkdownContent as any).__renders as string[];

@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { AssistantTurn, abnormalStopReason } from '../state/chat-types';
 import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/types';
 import { assistantName } from '../utils/assistant-name';
-import MarkdownContent from './MarkdownContent';
+import MarkdownContent, { SessionRefsEnabled } from './MarkdownContent';
 import ToolCard from './ToolCard';
 import { CheckIcon, FailIcon, ChevronIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
@@ -425,7 +425,14 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
               {bubble.text && (
                 // Pass sessionId so MarkdownContent can render inline FilepathToken chips
                 // for detected file paths in this session's artifact set.
-                <MarkdownContent content={bubble.text.content} sessionId={sessionId} />
+                // SessionRefsEnabled: this is the ONE place a `conversations`
+                // fence becomes a reference block with live Preview/Resume rows.
+                // Everywhere else MarkdownContent renders (a previewed past
+                // conversation, an artifact) it stays plain text — ids from
+                // another device would resolve to a block of dead rows.
+                <SessionRefsEnabled.Provider value={true}>
+                  <MarkdownContent content={bubble.text.content} sessionId={sessionId} />
+                </SessionRefsEnabled.Provider>
               )}
               {bubble.plan && (
                 <PlanBubbleContent

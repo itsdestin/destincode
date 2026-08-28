@@ -34,17 +34,39 @@ export const COPY = {
   lookingUp: (n: number) => `Looking up ${n} conversation${n === 1 ? '' : 's'}…`,
   headerFind: (n: number) => `Found ${n} past conversation${n === 1 ? '' : 's'}`,
   headerShow: 'Past conversation',
-  paneSubtitle: (p: string) => `Past conversation · read-only · ${providerLabel(p)}`,
+  // Destin (2026-08-27 gate, M-caption): "remove 'past conversation'. put
+  // read-only to the right of the assistant." The drawer's own title bar
+  // already names the conversation, so repeating "Past conversation" here said
+  // nothing the row above hadn't.
+  paneSubtitle: (p: string) => `${providerLabel(p)} · read-only`,
   untitled: 'Untitled conversation',
   noProject: '(no project)',
-  toolsNotShown: (n: number) => `${n} tool call${n === 1 ? '' : 's'} not shown`,
+  // Reads like a real tool group's own header ("4 tools (Bash ×2) — all
+  // complete") because Destin asked for it to LOOK like one (2026-08-27 gate,
+  // M-toolgap). We don't know which tools ran — the reader dropped them — so
+  // the parenthetical every real group carries is honestly absent here.
+  toolsNotShown: (n: number) => `${n} tool${n === 1 ? '' : 's'} — not shown`,
   startOfConversation: 'start of conversation',
   loadOlder: 'Load older',
   // SessionPreviewPane's first-load spinner text. Deliberately terse (unlike
   // states.tsx's LoadingState, which names what's loading) — the pane's header
   // already shows the conversation title, so "Loading…" isn't ambiguous here.
   loading: 'Loading…',
-  rawOutput: 'Raw output',
+  // Destin (2026-08-27 gate, M-row): the raw output disclosure was dead weight
+  // — nobody opens it. What is worth saying is what Claude actually asked for.
+  // Printed ONLY when the query parses out of the command; a search whose words
+  // we cannot read prints nothing rather than a guess.
+  searchedFor: (q: string) => `Searched for “${q}”`,
+  readConversation: 'Claude read this conversation',
+  // The footnote that keeps the header honest once unresolvable rows are
+  // hidden: the card's header counts what the search returned, so without this
+  // a hidden row would make the card show fewer conversations than it claims.
+  hiddenNotHere: (n: number) => `${n} more not on this device`,
+  // The reference block the assistant writes into its own message (compare
+  // Round 8, candidate A). Heading is deliberately absent: the sentence above
+  // the block is what introduces it, and a heading would say the same thing
+  // twice — the whole point of the round was how the block attaches to prose.
+  refBlockEmpty: 'No conversations named here',
   referencedHeading: 'Referenced conversations',
   // The overflow chip a presented conversation's tag row shows once more than
   // two tags would crowd out the project name or the buttons next to them —
@@ -94,6 +116,43 @@ export const COPY = {
   askPreviewContext: (title: string, id: string) =>
     `(from the past conversation "${title || COPY.untitled}", id ${id})`,
 } as const;
+
+/**
+ * The reference block: how the assistant names past conversations inside its
+ * own message, and how the renderer finds them again.
+ *
+ * A fenced code block with this language, one short id per line:
+ *
+ *     ```conversations
+ *     a3f2
+ *     9c14
+ *     ```
+ *
+ * WHY a fence rather than an inline token: the block is a GROUP sitting between
+ * paragraphs (Destin picked that shape), and a fence is already block-level in
+ * every markdown renderer. It also fails safely — anywhere this parser does not
+ * run (an older client, copied text, a plain-text export) it degrades to a
+ * short code block listing the ids, which is ugly but not misleading.
+ */
+export const CONVERSATIONS_FENCE = 'conversations';
+
+/**
+ * Short ids out of a reference block's body. Tolerates the shapes a model
+ * actually writes: bare ids, `- ` bullets, and several on one line separated by
+ * commas or spaces. Anything that is not id-shaped is dropped rather than
+ * passed on to a lookup — the block is written by a model, so it is input, not
+ * a contract.
+ */
+export function parseConversationRefs(body: string): string[] {
+  const out: string[] = [];
+  for (const raw of body.split('\n')) {
+    for (const tok of raw.replace(/^[\s>*-]+/, '').split(/[\s,]+/)) {
+      const t = tok.trim().toLowerCase();
+      if (/^[0-9a-f-]{4,36}$/.test(t) && !out.includes(t)) out.push(t);
+    }
+  }
+  return out;
+}
 
 /** What `chatsearch:resolve` returns per requested id. */
 export type ResolvedConversation =
@@ -158,7 +217,7 @@ export const READ_TAIL_DEFAULT = 40;
 export const TRUNCATION_MARKERS = ['[...]', '[... ', 'characters truncated]'] as const;
 
 export type ChatsearchCall =
-  | { cmd: 'find'; shortIds: string[] }
+  | { cmd: 'find'; shortIds: string[]; query: string }
   | { cmd: 'show'; id: string; provider: string };
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -192,6 +251,23 @@ export function parseShowId(output: string): { id: string; provider: string } | 
   return { id, provider: provLine ? provLine.slice('provider:'.length).trim() : '' };
 }
 
+/**
+ * The words the model searched for, read off the request it sent the CLI.
+ * The request is JSON — on the command line or in a heredoc — so this looks for
+ * the `query` field in either. Returns '' when it cannot read one, and the card
+ * then shows no line at all: an invented search term would misrepresent what
+ * Claude did.
+ */
+export function parseFindQuery(command: string): string {
+  const m = /"query"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(command);
+  if (!m) return '';
+  try {
+    return JSON.parse(`"${m[1]}"`);
+  } catch {
+    return m[1];
+  }
+}
+
 /** Does this command run chatsearch with its stdout intact? Decidable from the
  *  command alone, so ToolCard can expand the card before the output exists. */
 export function isChatsearchCommand(command: string): boolean {
@@ -222,5 +298,5 @@ export function describeChatsearchCall(tool: ToolCallState): ChatsearchCall | nu
   const show = parseShowId(output);
   if (show) return { cmd: 'show', ...show };
   const shortIds = parseFindShortIds(output);
-  return shortIds.length ? { cmd: 'find', shortIds } : null;
+  return shortIds.length ? { cmd: 'find', shortIds, query: parseFindQuery(command) } : null;
 }
