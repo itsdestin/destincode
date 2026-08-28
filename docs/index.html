@@ -754,7 +754,8 @@
   .phone-bezel { position: absolute; right: -4%; bottom: -6%; width: 24%; border-radius: 22px; padding: 6px; background: #111; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
   .phone-bezel .row-video { border-radius: 16px; }
   /* Row 9 (roadmap): dashed everything — a sketch of a plan, not a screenshot. */
-  .roadmap-mock { display: grid; grid-template-columns: 30% 1fr; gap: 12px; padding: 16px; aspect-ratio: 16 / 10; background: transparent; border: 2px dashed var(--border); box-shadow: none; position: relative; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+  /* No fixed aspect ratio: the sketch is only as tall as its content (a 16/10 box left a blank third under it at 1440). Extra bottom padding keeps the absolutely-placed 'Run now' pill off the inbox rows. */
+  .roadmap-mock { display: grid; grid-template-columns: 30% 1fr; gap: 12px; padding: 16px 16px 64px; background: transparent; border: 2px dashed var(--border); box-shadow: none; position: relative; font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
   .rm-h { opacity: .6; text-transform: uppercase; font-size: 10px; letter-spacing: .08em; margin-bottom: 8px; }
   .rm-item, .rm-step, .rm-row { border: 1.5px dashed var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
   .rm-on { border-style: solid; }
@@ -766,7 +767,7 @@
   .rm-phone { position: absolute; right: 14px; bottom: 14px; border: 2px dashed var(--title-highlight); border-radius: 14px; padding: 10px 14px; color: var(--title-highlight); }
   .roadmap-chip { margin-left: 8px; border: 1px solid var(--title-highlight); color: var(--title-highlight); border-radius: 999px; padding: 1px 8px; font-size: 10px; text-transform: none; letter-spacing: 0; }
   @media (max-width: 768px) {
-    .roadmap-mock { grid-template-columns: 1fr; aspect-ratio: auto; font-size: 11px; }
+    .roadmap-mock { grid-template-columns: 1fr; font-size: 11px; }
     .rm-side { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
     .rm-side .rm-h { width: 100%; }
     .rm-phone { position: static; margin-top: 8px; justify-self: start; }
