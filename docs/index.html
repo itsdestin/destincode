@@ -29,7 +29,6 @@
 <link rel="preload" as="image" href="assets/strawberry-kitty-wallpaper.webp" type="image/webp">
 <link rel="preload" as="image" href="assets/halftone-pattern.svg" type="image/svg+xml">
 <link rel="preload" as="image" href="assets/strawberry-kitty-pattern.svg" type="image/svg+xml">
-<link rel="preload" as="image" href="assets/golden-sunbreak-wallpaper.jpg">
 <style>
   *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
   * { -webkit-tap-highlight-color: transparent; }
@@ -190,7 +189,7 @@
     opacity: 0;
     /* Default `ease` (not a snappy quart-out) so this layer stays in
        lockstep with `body { transition: background 0.5s }` and the
-       .nav/.feature-card/etc. 0.5s-ease rules. A sharper curve made
+       .nav/.prereq-card/etc. 0.5s-ease rules. A sharper curve made
        the layer pop ahead of the body-bg on midnight↔halftone, where
        midnight's gradient is nearly transparent so the body color is
        the thing actually changing. */
@@ -316,9 +315,9 @@
   a:hover { color: var(--cyan); }
 
   /* Smooth theme transitions on key elements */
-  .nav, .intro-box, .prereq-card, .feature-card, .faq-item,
+  .nav, .intro-box, .prereq-card, .faq-item,
   .download-card, .floating-cta, .back-to-top,
-  footer, .title-box, .step-icon-wrap {
+  footer {
     transition: background 0.5s, border-color 0.5s, color 0.5s, box-shadow 0.5s;
   }
 
@@ -347,25 +346,6 @@
     margin-bottom: 32px;
     text-shadow: var(--heading-shadow);
     transition: text-shadow 0.5s;
-  }
-
-  /* --- Toolkit badge --- */
-  .toolkit-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    font-family: var(--font-mono);
-    font-size: 0.6rem;
-    font-weight: 600;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    color: var(--cyan);
-    background: rgba(0, 184, 255, 0.1);
-    border: 1px solid rgba(0, 184, 255, 0.25);
-    padding: 2px 8px;
-    border-radius: 100px;
-    vertical-align: middle;
-    margin-left: 6px;
   }
 
   /* --- STICKY NAV --- */
@@ -664,156 +644,6 @@
     .cycler-word-final { opacity: 1; transform: none; }
   }
 
-  .hero-tagline {
-    font-size: 1.2rem;
-    color: var(--text-secondary);
-    margin: 24px auto 0;
-    line-height: 1.55;
-    max-width: 820px;
-  }
-
-  .hero-platforms {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 12px;
-    margin-top: 32px;
-  }
-
-  /* Highlights row — 4 compact cards directly under the CTAs that surface
-     the page's actual selling points (themes, skills, games, no API key)
-     before the visitor scrolls. Replaces the bullet-separated platform note. */
-  .hero-highlights {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 12px;
-    margin: 48px auto 0;
-    max-width: 880px;
-  }
-
-  .hero-highlight {
-    background: color-mix(in srgb, var(--bg-card) 55%, transparent);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 18px 14px;
-    text-align: center;
-    transition: border-color 0.2s, transform 0.2s;
-  }
-  .hero-highlight:hover { border-color: var(--border-accent); transform: translateY(-2px); }
-
-  .hero-highlight-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 38px;
-    height: 38px;
-    background: var(--accent-subtle);
-    border: 1px solid var(--border-accent);
-    border-radius: 9px;
-    margin-bottom: 10px;
-  }
-  .hero-highlight-icon svg { width: 18px; height: 18px; fill: var(--accent); }
-
-  .hero-highlight-title {
-    font-size: 0.88rem;
-    font-weight: 600;
-    color: var(--text-primary);
-    margin-bottom: 3px;
-    letter-spacing: -0.005em;
-  }
-
-  .hero-highlight-text {
-    font-size: 0.7rem;
-    color: var(--text-dim);
-    line-height: 1.4;
-  }
-
-  .hero-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 20px;
-    border-radius: 10px;
-    font-size: 0.85rem;
-    font-weight: 600;
-    text-decoration: none;
-    transition: all 0.2s;
-  }
-
-  .hero-btn-primary {
-    background: var(--accent);
-    color: #fff;
-    /* Theme-aware glow — uses each theme's accent-glow-strong instead of
-       hardcoded halftone red, so the button reads correctly in all themes. */
-    box-shadow: 0 0 20px var(--accent-glow-strong), 0 0 40px var(--accent-glow);
-  }
-  .hero-btn-primary:hover {
-    color: #fff;
-    box-shadow: 0 0 28px var(--accent-glow-strong), 0 0 56px var(--accent-glow);
-    transform: translateY(-1px);
-  }
-
-  .hero-btn-secondary {
-    background: var(--accent-subtle);
-    color: var(--text-primary);
-    border: 1px solid var(--border);
-  }
-  .hero-btn-secondary:hover {
-    color: var(--accent);
-    background: var(--accent-glow);
-    border-color: var(--border-accent);
-    transform: translateY(-1px);
-  }
-
-  .hero-btn svg { width: 16px; height: 16px; fill: currentColor; }
-
-  /* --- 3-STEP FLOW --- */
-  .steps-flow {
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    gap: 0;
-    margin-bottom: 0;
-  }
-
-  .step-item { text-align: center; flex: 1; max-width: 240px; }
-
-  .step-icon-wrap {
-    width: 64px;
-    height: 64px;
-    margin: 0 auto 16px;
-    background: var(--accent-subtle);
-    border: 2px solid var(--border-accent);
-    border-radius: 16px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .step-num {
-    font-family: var(--font-mono);
-    font-size: 0.7rem;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--accent);
-    margin-bottom: 4px;
-  }
-
-  .step-item h3 { font-size: 1rem; font-weight: 600; margin-bottom: 6px; }
-  .step-item p { font-size: 0.85rem; color: var(--text-secondary); line-height: 1.5; }
-
-  .step-arrow {
-    display: flex;
-    align-items: center;
-    padding-top: 20px;
-    color: var(--border-accent);
-    font-size: 1.5rem;
-    opacity: 0.6;
-  }
-
   /* --- ABOUT / INTRO --- */
   .intro-box {
     background: color-mix(in srgb, var(--bg-card) 70%, transparent);
@@ -945,7 +775,8 @@
   /* --- PREREQUISITES --- */
   .prereq-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    /* Four cards: as many columns as fit at 220px, wrapping on narrow screens. */
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
     gap: 16px;
     margin-bottom: 32px;
   }
@@ -962,7 +793,9 @@
   /* Badges sit inline with the service name (right-aligned) instead of
      taking their own row above it — removes the tall blank band the cards
      had when badges stacked on top. */
-  .prereq-badges { display: flex; gap: 6px; margin-left: auto; flex-shrink: 0; }
+  /* Badges may wrap onto a second line ("Optional" + "Pay as you go" is wider
+     than one card column at 1440) instead of spilling past the card edge. */
+  .prereq-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-left: auto; }
 
   .prereq-badge {
     font-family: var(--font-mono);
@@ -973,6 +806,7 @@
     padding: 2px 8px;
     border-radius: 100px;
   }
+  .prereq-badge.optional { background: color-mix(in srgb, var(--text-dim) 12%, transparent); color: var(--text-secondary); border: 1px solid var(--border); }
   .prereq-badge.required { background: rgba(232, 35, 74, 0.12); color: var(--accent); border: 1px solid rgba(232, 35, 74, 0.25); }
   .prereq-badge.paid { background: rgba(255, 234, 0, 0.08); color: var(--yellow); border: 1px solid rgba(255, 234, 0, 0.2); }
   .prereq-badge.free { background: rgba(76, 175, 80, 0.1); color: #4CAF50; border: 1px solid rgba(76, 175, 80, 0.2); }
@@ -1003,46 +837,6 @@
     margin-top: 16px;
     line-height: 1.6;
   }
-
-  /* --- ANDROID SECTION --- */
-  /* Hidden by default — JS shows it when the visitor is on Android. */
-  .android-gate { display: none; }
-  .android-section { padding: 16px 0; }
-
-  .android-pitch {
-    background: color-mix(in srgb, var(--bg-card) 70%, transparent);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 32px;
-    font-size: 0.95rem;
-    color: var(--text-secondary);
-    line-height: 1.75;
-  }
-  .android-pitch p + p { margin-top: 14px; }
-  .android-pitch strong { color: var(--text-primary); font-weight: 600; }
-
-  .android-lead {
-    font-size: 1.05rem;
-    color: var(--text-primary);
-    font-weight: 500;
-  }
-
-  .android-stack {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-    margin-top: 20px;
-    padding-top: 20px;
-    border-top: 1px solid var(--border-dim);
-  }
-  .android-stack-item {
-    font-size: 0.82rem;
-    color: var(--text-secondary);
-    line-height: 1.55;
-  }
-  .android-stack-item strong { color: var(--accent); display: block; font-size: 0.7rem; font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 4px; font-weight: 600; }
 
   /* --- DOWNLOAD SECTION --- */
   .download-section { padding: 16px 0; }
@@ -1078,8 +872,7 @@
     box-shadow: 0 0 20px var(--accent-glow);
   }
 
-  /* Icon tile — gives each download card a strong visual anchor and matches
-     the .feature-icon pattern used in the features section above. */
+  /* Icon tile — gives each download card a strong visual anchor. */
   .download-card-icon {
     display: inline-flex;
     align-items: center;
@@ -1136,57 +929,6 @@
     font-size: 0.78rem;
     color: var(--text-dim);
     margin-top: 24px;
-  }
-
-  /* --- FEATURES --- */
-  .features-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 16px;
-  }
-
-  .feature-card {
-    background: color-mix(in srgb, var(--bg-card) 70%, transparent);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 24px;
-    transition: border-color 0.2s;
-  }
-  .feature-card:hover { border-color: var(--border-accent); }
-
-  .feature-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 40px;
-    height: 40px;
-    background: var(--accent-subtle);
-    border: 1px solid var(--border-accent);
-    border-radius: 10px;
-    margin-bottom: 12px;
-  }
-  .feature-icon svg { width: 20px; height: 20px; fill: var(--accent); }
-
-  .feature-card h3 {
-    font-size: 1.1rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    margin-bottom: 8px;
-  }
-
-  .feature-card p {
-    font-size: 0.85rem;
-    color: var(--text-secondary);
-    line-height: 1.55;
-  }
-
-  .features-note {
-    font-size: 0.82rem;
-    color: var(--text-dim);
-    margin-top: 20px;
-    text-align: center;
   }
 
   /* --- GALLERY (scrollable strip) --- */
@@ -1590,19 +1332,6 @@
     transform: none;
   }
 
-  /* --- HERO MINI MOCKUP --- */
-  .hero-mini-mockup {
-    max-width: 560px;
-    margin: 48px auto 0;
-    border-radius: 14px;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3), 0 0 0 1px var(--accent-glow);
-  }
-  .hero-mini-mockup .demo-chat { min-height: auto; padding: 14px 12px; }
-  .hero-mini-mockup .demo-bubble { opacity: 1; transform: none; }
-  .hero-mini-mockup .demo-tool-card { opacity: 1; transform: none; }
-
   /* --- ORIGIN STORY --- */
   .origin-story-section { padding: 16px 0; }
 
@@ -1660,34 +1389,14 @@
 
   /* --- RESPONSIVE --- */
   @media (max-width: 768px) {
-    .steps-flow { flex-direction: column; align-items: center; gap: 16px; }
-    .step-arrow { transform: rotate(90deg); padding: 0; }
-    .step-item { max-width: 280px; }
-
-    .prereq-grid { grid-template-columns: 1fr; }
-    .features-grid { grid-template-columns: 1fr; }
     .download-grid { grid-template-columns: 1fr; }
-    .android-stack { grid-template-columns: 1fr; }
-    .android-pitch { padding: 24px; }
 
     .hero h1 { font-size: clamp(2rem, 8vw, 2.8rem); }
     .hero-sub { font-size: 17px; margin-top: 14px; }
-    .hero-tagline { font-size: 1.05rem; }
-    .hero-platforms { flex-direction: column; align-items: center; }
-    .hero-btn { width: 100%; max-width: 260px; justify-content: center; }
-    .hero-highlights { grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 36px; }
-
-    .hero-mini-mockup { max-width: 100%; margin-top: 32px; }
     .footer-inner { flex-direction: column; text-align: center; }
   }
 
   @media (max-width: 480px) {
-    .step-icon-wrap { width: 48px; height: 48px; border-radius: 12px; }
-    .step-num { font-size: 0.6rem; }
-    .step-item h3 { font-size: 0.85rem; }
-    .step-item p { font-size: 0.75rem; }
-    .step-arrow { font-size: 1rem; }
-
     .nav-links {
       display: none;
       position: absolute;
@@ -1742,7 +1451,7 @@
       <ul class="nav-links" id="nav-links">
         <li><a href="#about">About</a></li>
         <li><a href="#demo">Features</a></li>
-        <li><a href="#prerequisites">Download</a></li>
+        <li><a href="#get-started">Download</a></li>
         <li><a href="#faq">FAQ</a></li>
         <li class="nav-theme-desktop">
           <button class="theme-toggle" id="theme-toggle" aria-label="Cycle theme" title="Cycle theme">
@@ -1955,6 +1664,7 @@
       <div class="origin-story reveal">
         <p class="origin-story-text">Honestly, I really just wanted a cooler and more efficient way to journal and track my own tasks/goals. The very first thing I built with Claude is the Journaling and Life History system (now available in the marketplace), and I pretty quickly decided that I wanted to share it with my friends. However, the thought of installing and opening "Claude Code" in the terminal scared away most people almost immediately. I realized that the idea of advanced agentic AI is still rather new to most people, and that persuading them to adopt my fancy new journaling system would require it to be <em>much</em> more accessible and user-friendly. Towards this end, I kind of just&hellip; kept adding things. And now we're here.</p>
         <p class="origin-story-text" style="margin-top: 16px;">Every line of YouCoded was written through conversation with Claude by me, <strong>someone who has never written code</strong>. Every feature, every platform port, every theme, every multiplayer game. The entire app was built, and is currently maintained, without a single line typed by hand.</p>
+        <p class="origin-story-text" style="margin-top: 16px;">YouCoded Assistant is what that kind of AI looks like when it's built for everyone — not just the people who already know how to use it.</p>
         <a href="https://github.com/itsdestin" target="_blank" class="origin-story-link">Built by Destin &rarr;</a>
       </div>
     </div>
@@ -1962,46 +1672,47 @@
 
   <div class="container"><div class="divider"></div></div>
 
-  <!-- PREREQUISITES — shown before Download so visitors know the cost upfront -->
-  <section id="prerequisites">
+  <!-- GET STARTED — accounts, shown before Download so visitors know the
+       cost upfront. Only GitHub is required; the AI itself can be free (a
+       local model), a Claude plan, or OpenRouter pay-as-you-go. -->
+  <section id="get-started">
     <div class="container">
       <p class="section-label reveal">Get started</p>
-      <h2 class="section-title reveal">You'll need a couple of accounts.</h2>
+      <h2 class="section-title reveal">You may need a few accounts.</h2>
       <div class="prereq-grid">
         <div class="prereq-card reveal reveal-d1">
           <div class="prereq-header">
-            <h3>Anthropic</h3>
-            <div class="prereq-badges">
-              <span class="prereq-badge required">Required</span>
-              <span class="prereq-badge paid">Paid</span>
-            </div>
+            <h3>GitHub</h3>
+            <div class="prereq-badges"><span class="prereq-badge required">Required</span><span class="prereq-badge free">Free</span></div>
           </div>
-          <p>A Claude Pro ($20/mo) or Max ($100&ndash;200/mo) subscription for Claude Code, which powers everything in YouCoded. The app itself is free &mdash; you're paying for the AI.</p>
-          <a href="https://claude.ai/upgrade" target="_blank" class="prereq-link">Subscribe to Claude &rarr;</a>
+          <p>Keeps your conversations and files in sync across devices and delivers marketplace updates. Sign up with your Google or Apple account.</p>
+          <a href="https://github.com/signup" target="_blank" rel="noopener" class="prereq-link">Create a GitHub account &rarr;</a>
         </div>
         <div class="prereq-card reveal reveal-d2">
           <div class="prereq-header">
-            <h3>Google or Apple</h3>
-            <div class="prereq-badges">
-              <span class="prereq-badge required">Required</span>
-              <span class="prereq-badge free">Free</span>
-            </div>
+            <h3>Anthropic</h3>
+            <div class="prereq-badges"><span class="prereq-badge optional">Optional</span><span class="prereq-badge paid">Paid</span></div>
           </div>
-          <p>WeCoded marketplace skills store your personal data in your own Google Drive or iCloud account.</p>
-          <a href="https://accounts.google.com/signup" target="_blank" class="prereq-link">Create Google Account &rarr;</a>
+          <p>A Claude Pro or Max plan lets you use Claude &mdash; the model YouCoded was built with.</p>
+          <a href="https://claude.ai/upgrade" target="_blank" rel="noopener" class="prereq-link">See Claude plans &rarr;</a>
         </div>
         <div class="prereq-card reveal reveal-d3">
           <div class="prereq-header">
-            <h3>GitHub</h3>
-            <div class="prereq-badges">
-              <span class="prereq-badge required">Required</span>
-              <span class="prereq-badge free">Free</span>
-            </div>
+            <h3>OpenRouter</h3>
+            <div class="prereq-badges"><span class="prereq-badge optional">Optional</span><span class="prereq-badge paid">Pay as you go</span></div>
           </div>
-          <p>Required to receive marketplace updates. Sign up with your Google or Apple account.</p>
-          <a href="https://github.com/signup" target="_blank" class="prereq-link">Create GitHub Account &rarr;</a>
+          <p>One account provides access to hundreds of models from every AI company. Pay only for what you use.</p>
+          <a href="https://openrouter.ai/" target="_blank" rel="noopener" class="prereq-link">Create an OpenRouter account &rarr;</a>
+        </div>
+        <div class="prereq-card reveal reveal-d4">
+          <div class="prereq-header">
+            <h3>Google or Apple</h3>
+            <div class="prereq-badges"><span class="prereq-badge optional">Optional</span><span class="prereq-badge free">Free</span></div>
+          </div>
+          <p>An extra copy of your data in Google Drive or iCloud, on top of GitHub.</p>
         </div>
       </div>
+      <p class="prereq-note reveal">Or skip the paid ones entirely &mdash; run a model on your own computer, free and offline.</p>
     </div>
   </section>
 
@@ -2012,7 +1723,7 @@
       <h2 class="section-title reveal">Download YouCoded</h2>
       <div class="download-grid reveal">
         <!-- href is set dynamically by latest-release fetch below; releases page is the safe fallback.
-             The .download-card-icon wrapper anchors each card visually and matches .feature-icon. -->
+             The .download-card-icon wrapper anchors each card visually. -->
         <a id="dl-windows" href="https://github.com/itsdestin/youcoded/releases/latest" class="download-card">
           <span class="download-card-icon"><svg viewBox="0 0 24 24"><path d="M3,12V6.75L9,5.43V11.91L3,12M20,3V11.75L10,11.9V5.21L20,3M3,13L9,13.09V19.9L3,18.75V13M20,13.25V22L10,20.09V13.1L20,13.25Z"/></svg></span>
           <div class="download-card-text">
@@ -2042,7 +1753,7 @@
           </div>
         </a>
       </div>
-      <p class="download-note reveal">Free and open source. Just bring your <a href="https://claude.ai/upgrade" target="_blank">Claude Pro or Max</a> plan.<br>On iPhone? Use YouCoded from Safari by connecting to any computer running the app via remote access.</p>
+      <p class="download-note reveal">Free and open source. On iPhone? Use YouCoded Assistant from Safari by connecting to any computer running the app.</p>
     </div>
   </section>
 
@@ -2056,11 +1767,20 @@
       <div class="faq-list">
         <div class="faq-item reveal">
           <button class="faq-question" aria-expanded="false">
-            How is this different from claude.ai?
+            How is this different from ChatGPT or claude.ai?
             <span class="faq-chevron">&#9660;</span>
           </button>
           <div class="faq-answer" role="region">
-            <div class="faq-answer-inner">Claude.ai is a chat website. YouCoded is an app built on top of <strong>Claude Code</strong> — a more powerful form of Claude that can create files, run terminal commands, manage your computer, and interact more meaningfully with a wider range of external services. Think of claude.ai as texting Claude, and YouCoded as giving Claude hands (with themes, a marketplace, games, and remote access layered on top).</div>
+            <div class="faq-answer-inner">Those are chat websites. YouCoded Assistant is an app on your computer and phone that works in your own files — it opens, edits, and organizes them, runs tasks, and searches the web — and you choose the AI behind it: Claude, hundreds of cloud models, or one that runs locally for free.</div>
+          </div>
+        </div>
+        <div class="faq-item reveal">
+          <button class="faq-question" aria-expanded="false">
+            Do I have to pay for anything?
+            <span class="faq-chevron">&#9660;</span>
+          </button>
+          <div class="faq-answer" role="region">
+            <div class="faq-answer-inner">No. The app is free and open source. A model that runs on your own computer costs nothing. If you want Claude, that's a Claude Pro or Max plan from Anthropic; if you want other cloud models, OpenRouter bills per use.</div>
           </div>
         </div>
         <div class="faq-item reveal">
@@ -2069,16 +1789,7 @@
             <span class="faq-chevron">&#9660;</span>
           </button>
           <div class="faq-answer" role="region">
-            <div class="faq-answer-inner">Everything YouCoded and your installed WeCoded skills create — journal entries, your Encyclopedia, tasks — is stored in <strong>your own</strong> Google Drive or iCloud account. While data is temporarily sent to Claude/Anthropic to make the actual AI work, the long-term storage of your data is fully managed by you. YouCoded itself sends one anonymous daily ping — an irreversible hash of your device's hardware ID, the app version, platform and OS, and the country and approximate region from the connection — so we can see whether the app is growing and which versions people are running. No IP address, no username, no message content, nothing traceable back to you. You can turn this off at any time in <strong>Settings &rarr; About &rarr; Privacy</strong>. Skills, themes, and other marketplace entries you publish are shared publicly on purpose — those are the only contents you actively submit to YouCoded.</div>
-          </div>
-        </div>
-        <div class="faq-item reveal">
-          <button class="faq-question" aria-expanded="false">
-            What does the $20/month get me?
-            <span class="faq-chevron">&#9660;</span>
-          </button>
-          <div class="faq-answer" role="region">
-            <div class="faq-answer-inner">The $20 goes to Anthropic for a Claude Pro subscription, which gives you access to Claude Code — the AI that powers everything. YouCoded itself is free and open source. You're paying for the AI, not the app.</div>
+            <div class="faq-answer-inner">Your conversations, files, and settings live in your own GitHub (and, if you add them, your Google Drive or iCloud). Cloud models see what you send them while they work; a local model sends nothing anywhere. The app sends one anonymous daily ping — a hash of your device ID, the app version, platform, and rough region — so we can see how many people use it. No IP address, no username, no message content. Turn it off in Settings → About → Privacy.</div>
           </div>
         </div>
         <div class="faq-item reveal">
@@ -2087,7 +1798,7 @@
             <span class="faq-chevron">&#9660;</span>
           </button>
           <div class="faq-answer" role="region">
-            <div class="faq-answer-inner">Windows, macOS, Linux, and Android are all fully supported with native apps. You can also access YouCoded remotely from any web browser. Apple ecosystem integrations (iMessage, Apple Notes, etc.) are only available on macOS.</div>
+            <div class="faq-answer-inner">Windows, macOS, Linux, and Android, plus any web browser by connecting to a computer running the app. Apple integrations (iMessage, Apple Notes, and so on) work on macOS only.</div>
           </div>
         </div>
         <div class="faq-item reveal">
@@ -2096,16 +1807,16 @@
             <span class="faq-chevron">&#9660;</span>
           </button>
           <div class="faq-answer" role="region">
-            <div class="faq-answer-inner">Not at all. YouCoded was built entirely by a non-developer using Claude Code itself. The app is designed for everyone — students, professionals, and anyone else who uses AI regularly. If you can use ChatGPT, you can use YouCoded.</div>
+            <div class="faq-answer-inner">No. The whole app was built by someone who has never written code, by talking to AI. If you can use ChatGPT, you can use this.</div>
           </div>
         </div>
         <div class="faq-item reveal">
           <button class="faq-question" aria-expanded="false">
-            I've heard bad things about "agentic" AI. Is it safe?
+            Is "agentic" AI safe?
             <span class="faq-chevron">&#9660;</span>
           </button>
           <div class="faq-answer" role="region">
-            <div class="faq-answer-inner">YouCoded always asks for permission before taking actions, so it's hard to break things accidentally. Claude is also, in my personal experience, much less prone to errors and hallucinations than models like ChatGPT and Gemini. However, AI is still prone to mistakes. Claude's permission settings should prevent those mistakes from being translated into action, but you should always monitor your AI assistant when in use to verify it's acting as intended. You should be especially cautious when taking advantage of "Bypass Permissions" mode, which allows Claude to act without your input.</div>
+            <div class="faq-answer-inner">The app asks before it changes anything, and every standing permission you grant is listed on one screen where you can revoke it. AI still makes mistakes, so keep an eye on what it's doing — and be careful with full-auto mode, which lets it act without asking.</div>
           </div>
         </div>
         <div class="faq-item reveal">
@@ -2130,17 +1841,21 @@
       <h2 class="section-title reveal">See what people have built.</h2>
     </div>
     <div class="gallery-scroll reveal" id="gallery-scroll">
-      <!-- Screenshots: themed chat + terminal, marketplace, alt themes,
-           theme/settings/remote menus. Add more by dropping into
-           docs/gallery/ and linking here. loading="lazy" so the strip
-           doesn't block initial render. -->
-      <div class="gallery-item"><img src="gallery/devilsgarden-chat.png" alt="YouCoded chat view in the Devils Garden theme" loading="lazy"></div>
-      <div class="gallery-item"><img src="gallery/devilsgarden-terminal.png" alt="YouCoded terminal view in the Devils Garden theme" loading="lazy"></div>
-      <div class="gallery-item"><img src="gallery/kitty-marketplace.png" alt="WeCoded marketplace showing skills and themes in the Strawberry Kitty theme" loading="lazy"></div>
-      <div class="gallery-item"><img src="gallery/halftone-theme.png" alt="YouCoded in the Halftone Dimension theme" loading="lazy"></div>
-      <div class="gallery-item"><img src="gallery/theme-menu.png" alt="Theme picker and appearance menu" loading="lazy"></div>
-      <div class="gallery-item"><img src="gallery/creme-settings.png" alt="YouCoded settings panel in the Crème theme" loading="lazy"></div>
-      <div class="gallery-item"><img src="gallery/remote-access-menu.png" alt="Remote access configuration menu" loading="lazy"></div>
+      <!-- Stills of the real app from docs/gallery/ (8 screens × 6 themes,
+           regenerated by scripts/ui-review/site-assets.sh). loading="lazy"
+           so the strip doesn't block initial render. -->
+      <div class="gallery-item"><img src="gallery/home-midnight.webp" alt="YouCoded Assistant — chat in the Midnight theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/marketplace-meadow-mist.webp" alt="YouCoded Assistant — marketplace in the Meadow Mist theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/projects-light.webp" alt="YouCoded Assistant — project view in the Light theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/model-picker-creme.webp" alt="YouCoded Assistant — model picker in the Crème theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/connect4-halftone-dimension.webp" alt="YouCoded Assistant — Connect Four in the Halftone Dimension theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/permissions-dark.webp" alt="YouCoded Assistant — permissions screen in the Dark theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/tags-midnight.webp" alt="YouCoded Assistant — tags and notes in the Midnight theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/themes-creme.webp" alt="YouCoded Assistant — theme picker in the Crème theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/home-meadow-mist.webp" alt="YouCoded Assistant — chat in the Meadow Mist theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/marketplace-halftone-dimension.webp" alt="YouCoded Assistant — marketplace in the Halftone Dimension theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/home-dark.webp" alt="YouCoded Assistant — chat in the Dark theme" loading="lazy" width="1200" height="750"></div>
+      <div class="gallery-item"><img src="gallery/projects-creme.webp" alt="YouCoded Assistant — project view in the Crème theme" loading="lazy" width="1200" height="750"></div>
     </div>
   </section>
 
@@ -2166,7 +1881,7 @@
   </footer>
 
   <!-- Floating Get Started pill -->
-  <a href="#prerequisites" class="floating-cta" id="floating-cta">Download &darr;</a>
+  <a href="#get-started" class="floating-cta" id="floating-cta">Download &darr;</a>
 
   <!-- Install-tips modal: opened by any download-card click. Content inside
        .install-modal-body is rebuilt per-platform at click time by JS, and
@@ -2559,12 +2274,6 @@
         var primary = document.getElementById('dl-' + os);
         if (primary) primary.classList.add('primary');
       }
-      // Show the Android section + nav link only for Android visitors
-      if (os === 'android') {
-        document.querySelectorAll('.android-gate').forEach(function(el) {
-          el.style.display = '';
-        });
-      }
     })();
 
     // --- Latest release download links ---
@@ -2669,11 +2378,11 @@
     })();
 
     // --- Floating CTA visibility ---
-    // CTA targets #prerequisites (the start of the merged Get-started flow),
+    // CTA targets #get-started (the start of the merged Get-started flow),
     // so it should also hide based on that section's visibility — not the
     // inner #download block which sits further down in the same flow.
     var floatingCta = document.getElementById('floating-cta');
-    var ctaTarget = document.getElementById('prerequisites');
+    var ctaTarget = document.getElementById('get-started');
     if (floatingCta && ctaTarget) {
       floatingCta.classList.add('visible');
       var ctaObserver = new IntersectionObserver(function(entries) {
@@ -2713,9 +2422,9 @@
       // androidExtra HTML is appended only when the modal opens for Android.
       var AFTER_INSTALL = '' +
         '<ol>' +
-          '<li><strong>Sign in with your Claude account.</strong> YouCoded uses your existing <strong>Claude Pro or Max</strong> subscription &mdash; the same account you use on claude.ai. No separate account, no API key. If you don\'t have a paid plan yet, you can <a href="https://claude.ai/upgrade" target="_blank" rel="noopener">sign up here</a>.</li>' +
-          '<li><strong>Pick a starter theme and model.</strong> Both are changeable anytime from the settings panel, so don\'t overthink it.</li>' +
-          '<li><strong>Browse the marketplace.</strong> Skills (things that give Claude new abilities) and themes (visual overhauls) are a few taps away and shareable with friends.</li>' +
+          '<li>Sign in with GitHub.</li>' +
+          '<li>Choose where your AI comes from &mdash; Claude, OpenRouter, or a model on this computer (Settings &rarr; Model Providers).</li>' +
+          '<li>Pick a theme and browse the marketplace.</li>' +
         '</ol>';
 
       var ANDROID_AFTER_EXTRA = '' +
