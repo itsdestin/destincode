@@ -1,0 +1,21 @@
+{"type": "assistant_text", "text": "Checking this morning's mail.", "delay": 500}
+{"type": "tool_use", "id": "m1", "name": "mcp__gmail__search_emails", "input": {"query": "is:unread newer_than:12h"}, "delay": 500}
+{"type": "tool_result", "tool_use_id": "m1", "content": "6 unread. 3 newsletters · Dr. Patel: 'Quarterly report by Friday?' · 2 calendar invites (dentist Thu 2:30, team sync Fri 10:00)", "delay": 1400}
+{"type": "assistant_text", "text": "Three need you. Dr. Patel wants the quarterly report, and there are two invites. I'll draft the report first, using your Quarterly Report skill.", "delay": 500}
+{"type": "tool_use", "id": "m2", "name": "Skill", "input": {"skill": "quarterly-report"}, "delay": 600}
+{"type": "tool_result", "tool_use_id": "m2", "content": "Loaded: structure, tone, and the numbers to pull from Reports/", "delay": 700}
+{"type": "tool_use", "id": "m3", "name": "Read", "input": {"file_path": "Reports/q3-numbers.xlsx"}, "delay": 400}
+{"type": "tool_result", "tool_use_id": "m3", "content": "[xlsx 3 sheets] revenue, churn, hiring — Q3 2026", "delay": 900}
+{"type": "permission_request", "id": "m4", "name": "Write", "input": {"file_path": "Reports/Q3-draft.md"}, "delay": 500}
+{"type": "tool_result", "tool_use_id": "m4", "content": "Wrote Reports/Q3-draft.md (1,240 words)", "delay": 1100}
+{"type": "assistant_text", "text": "Draft is in Reports/Q3-draft.md for your review. Now the invites.", "delay": 500}
+{"type": "permission_request", "id": "m5", "name": "mcp__google_calendar__create_event", "input": {"title": "Dentist", "when": "Thu 2:30 PM"}, "delay": 500}
+{"type": "tool_result", "tool_use_id": "m5", "content": "Created: Dentist — Thu 2:30 PM", "delay": 800}
+{"type": "tool_use", "id": "m6", "name": "mcp__google_calendar__create_event", "input": {"title": "Team sync", "when": "Fri 10:00 AM"}, "delay": 300}
+{"type": "tool_result", "tool_use_id": "m6", "content": "Created: Team sync — Fri 10:00 AM", "delay": 800}
+{"type": "assistant_text", "text": "Both on your calendar. Want me to tell Dr. Patel the draft is coming today?", "delay": 500}
+{"type": "turn_complete", "delay": 300}
+{"type": "permission_request", "id": "m7", "name": "mcp__gmail__send_email", "input": {"to": "a.patel@northbay.edu", "subject": "Re: Quarterly report by Friday?"}, "delay": 600}
+{"type": "tool_result", "tool_use_id": "m7", "content": "Sent.", "delay": 900}
+{"type": "assistant_text", "text": "Sent. The newsletters I left alone.", "delay": 400}
+{"type": "turn_complete", "delay": 300}

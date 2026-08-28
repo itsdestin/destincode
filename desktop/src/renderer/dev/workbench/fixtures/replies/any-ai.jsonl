@@ -1,2 +1,6 @@
-{"type":"assistant_text","text":"Still here — same conversation, different model. Where were we? You wanted the chem review moved to Tuesday and Wednesday.","delay":500}
-{"type":"turn_complete","delay":300}
+{"type": "assistant_text", "text": "No can do, I'm a good boy!", "delay": 600}
+{"type": "turn_complete", "delay": 300}
+{"type": "assistant_text", "text": "PEE PEE POO POO NAKED WOMEN! SOMETHING BAD ABOUT MINORITIES! SCREW ALIGNMENT RAHHHH", "delay": 700}
+{"type": "turn_complete", "delay": 300}
+{"type": "assistant_text", "text": "Fair. Dialing it back — where were we? The chem review, Tuesday and Wednesday.", "delay": 700}
+{"type": "turn_complete", "delay": 300}

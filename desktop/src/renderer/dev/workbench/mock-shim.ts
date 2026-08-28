@@ -478,10 +478,24 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // the channel by `session.provider`, not by anything the reply machinery
   // cares about; duplicating the lookup+play body per channel would just be
   // two copies to keep in sync.
+  // A fixture may hold SEVERAL turns (one `turn_complete` each): the Nth
+  // message sent in a session plays the Nth turn, wrapping around at the end.
+  // The site's row-1 loop is a three-message skit (Claude declines, the model
+  // is switched, Grok answers, the user reacts) — replaying one fixed answer
+  // to every message could not film it. One-turn fixtures behave as before.
+  const replyCursor = new Map<string, number>();
   const startReply = (sessionId: string, text: string) => {
     const raw = REPLY_SCRIPTS[`./fixtures/replies/${replyScriptName()}.jsonl`];
     if (!raw) { console.warn(`[workbench] no reply script "${replyScriptName()}"`); return; }
-    void playReply(sessionId, text, parseReplyScript(raw), {
+    const lines = parseReplyScript(raw);
+    const turns: typeof lines[] = [[]];
+    for (const l of lines) { turns[turns.length - 1].push(l); if (l.type === 'turn_complete') turns.push([]); }
+    if (turns[turns.length - 1].length === 0) turns.pop();
+    if (turns.length === 0) return;
+    const n = replyCursor.get(sessionId) ?? 0;
+    // Control bytes (\r, ESC) must not advance the cursor — playReply ignores them.
+    if (text.trim().length > 0 && !text.startsWith('\x1b') && text !== '\r') replyCursor.set(sessionId, n + 1);
+    void playReply(sessionId, text, turns[n % turns.length], {
       transcript: (e) => subs.transcript.forEach((f) => f(e)),
       hook: (e) => subs.hook.forEach((f) => f(e)),
     });

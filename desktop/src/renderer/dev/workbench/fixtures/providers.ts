@@ -19,6 +19,7 @@ export function catalog(): CatalogRow[] {
   return [
     { id: 'anthropic/claude-sonnet-4-6', providerId: 'pv-openrouter', label: 'Claude Sonnet 4.6' },
     { id: 'openai/gpt-5', providerId: 'pv-openrouter', label: 'GPT-5' },
+    { id: 'x-ai/grok-4', providerId: 'pv-openrouter', label: 'Grok 4' },  // site row-1 skit switches to it
     { id: 'qwen2.5-coder:14b', providerId: 'local', label: 'Qwen2.5 Coder 14B' },
     { id: 'llama3.1:8b', providerId: 'local', label: 'Llama 3.1 8B' },
   ];
