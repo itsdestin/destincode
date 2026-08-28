@@ -64,7 +64,8 @@ export const ReadTool = defineTool({
     + 'PDFs return their text layer page by page (pages="1-5", max 20 per call; offset/limit '
     + 'do not apply); scanned pages have no text and are reported.',
   // Compact form for small local models (simplified presentation, spec §4.2).
-  shortDescription: "Read a file's contents by path, with optional line offset/limit. PDFs return their text page by page (pages=\"1-5\", max 20 per call).",
+  // Kept under the 120-char short-tier pin: the PDF clause is one short phrase.
+  shortDescription: "Read a file's contents by path, with optional line offset/limit. PDFs: text per page (pages=\"1-5\").",
   // Vision models are TOLD Read handles images; text-only models keep the
   // refusal-only wording. See NativeTool.descriptionFor.
   descriptionFor: (caps) => caps.supportsVision
@@ -84,7 +85,7 @@ export const ReadTool = defineTool({
   // Kept to one short clause: shortDescription exists to be small.
   shortDescriptionFor: (caps) => caps.supportsVision
     ? "Read a file's contents by path, with optional line offset/limit."
-      + ' Images come back as the actual picture. PDFs return their text page by page (pages="1-5", max 20 per call).'
+      + ' Images come back as the actual picture. PDFs: text per page (pages="1-5").'
     : undefined,
   inputSchema: z.object({
     file_path: z.string().describe('Absolute or workspace-relative path'),
