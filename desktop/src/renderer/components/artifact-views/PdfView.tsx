@@ -150,7 +150,7 @@ function PdfPages({ bytes, findBarOpen }: { bytes: Uint8Array; findBarOpen?: boo
         loupe={canLoupe ? { on: loupeOn, onToggle: () => setLoupeOn((v) => !v) } : null}
       />
 
-      {loupeOn && <Loupe resolveSource={resolveSource} displayScale={zoom} />}
+      {loupeOn && <Loupe resolveSource={resolveSource} displayScale={zoom} clipTo={rootRef} />}
     </div>
   );
 }

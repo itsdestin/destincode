@@ -104,6 +104,55 @@ describe('Loupe', () => {
     block.remove();
   });
 
+  it('hides outside the pane that clips the picture', () => {
+    // A picture zoomed past its pane is only trimmed by CSS overflow: its rect
+    // still reports the whole untrimmed box, so hit-testing the picture alone
+    // sent the lens out over the chat pane, magnifying off-screen margin
+    // (reported 2026-08-27). The clip box is the second gate.
+    const pane = document.createElement('div');
+    pane.getBoundingClientRect = () => ({
+      left: 100, top: 100, right: 400, bottom: 500, width: 300, height: 400, x: 100, y: 100, toJSON: () => ({}),
+    }) as DOMRect;
+    const clipTo = { current: pane };
+
+    const { container } = render(
+      // Source spans 0,0..800,600 — wider than the pane on the left.
+      <Loupe resolveSource={() => ({ el: sourceEl() })} displayScale={1} clipTo={clipTo} />,
+    );
+
+    fireEvent.pointerMove(window, { clientX: 20, clientY: 300 });   // on the picture, outside the pane
+    tick();
+    expect((container.firstElementChild as HTMLElement).style.visibility).toBe('hidden');
+
+    fireEvent.pointerMove(window, { clientX: 200, clientY: 300 });  // inside the pane
+    tick();
+    expect((container.firstElementChild as HTMLElement).style.visibility).toBe('visible');
+  });
+
+  it('goes quiet behind a dialog', () => {
+    // Reported 2026-08-27: with a dialog open, the lens kept tracking and
+    // painting behind the scrim. It should not react when it is not the surface
+    // being pointed at.
+    const { container } = render(
+      <Loupe resolveSource={() => ({ el: sourceEl() })} displayScale={1} />,
+    );
+    const lens = () => (container.firstElementChild as HTMLElement).style.visibility;
+
+    fireEvent.pointerMove(window, { clientX: 250, clientY: 300 });
+    tick();
+    expect(lens()).toBe('visible');
+
+    const scrim = document.createElement('div');
+    scrim.className = 'layer-scrim';
+    document.body.appendChild(scrim);
+    tick();
+    expect(lens()).toBe('hidden');
+
+    scrim.remove();
+    tick();
+    expect(lens()).toBe('visible');            // closing the dialog resumes it
+  });
+
   it('never reads pixels back — canvas tainting must stay unreachable', () => {
     const src = fs.readFileSync(
       path.join(process.cwd(), 'src/renderer/components/artifact-views/zoom/Loupe.tsx'),

@@ -180,7 +180,7 @@ function ImageContent({ bytes, absolutePath, findBarOpen }:
       )}
 
       {loupeOn && (
-        <Loupe resolveSource={resolveSource} displayScale={zoom.scale} vector={isSvg} />
+        <Loupe resolveSource={resolveSource} displayScale={zoom.scale} vector={isSvg} clipTo={boxRef} />
       )}
     </div>
   );

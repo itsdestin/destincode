@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 import { OverlayPanel } from '../../overlays/Overlay';
 import { pointInRect } from './zoom-math';
 
@@ -41,12 +41,16 @@ export interface LoupeProps {
   magnification?: number;
   /** True for vector sources (SVG): skips the raster "no more detail" clamp. */
   vector?: boolean;
+  /** The element that VISUALLY CLIPS the content — the pane's overflow box.
+   *  Required whenever the source can be bigger than what is on screen, which
+   *  is any zoomed picture or PDF page. See rule 5 below. */
+  clipTo?: RefObject<HTMLElement | null>;
 }
 
 /**
  * Cursor-following magnifier.
  *
- * Four rules here are load-bearing, each one a measured failure if broken:
+ * Five rules here are load-bearing, each one a measured failure if broken:
  *
  * 1. It moves by writing a CSS transform through a ref, NOT via React state.
  *    State-per-pointermove re-renders the whole viewer on every pixel of cursor
@@ -64,12 +68,18 @@ export interface LoupeProps {
  *    On Android and remote the app zoom is a CSS transform on <html>, so rects
  *    are ALREADY scaled — ratios cancel that out, absolute page coordinates
  *    would not.
+ * 5. The pointer must be inside `clipTo` as well as inside the source. A
+ *    zoomed picture is far larger than its pane and is only trimmed by CSS
+ *    `overflow: hidden`; getBoundingClientRect still reports the WHOLE untrimmed
+ *    box. Hit-testing the source alone therefore put the lens out over the chat
+ *    pane, magnifying image margin that was not on screen (reported 2026-08-27).
  *
  * It never calls getImageData/toDataURL. A display-only draw is unaffected by
  * canvas tainting; read-back is the thing tainting blocks.
  */
 export function Loupe({
   resolveSource, displayScale, diameter = LOUPE_DIAMETER, magnification = 2.5, vector = false,
+  clipTo,
 }: LoupeProps) {
   const lensRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -87,6 +97,20 @@ export function Loupe({
       const canvas = canvasRef.current;
       if (!lens || !canvas) return;
 
+      // Something is over the viewer? Do not paint. A dialog lays a scrim across
+      // the whole app (Overlay.tsx's .layer-scrim) and the lens kept tracking and
+      // rendering behind the blur (reported 2026-08-27). It HIDES rather than
+      // switching the mode off, so closing the dialog resumes where you were.
+      //
+      // NOT also gated on document.hasFocus(): that is false for any document
+      // that does not hold focus — including the workbench's iframe and a
+      // headless page — so it would silently disable the lens in places where it
+      // should work. Window-level focus is a different question from this one.
+      if (document.querySelector('.layer-scrim')) {
+        lens.style.visibility = 'hidden';
+        return;
+      }
+
       const p = pointer.current;
       // Controls first: a lens sitting on top of the button that turns it off is
       // a trap, and the same applies to the find bar. Any control that must stay
@@ -99,6 +123,13 @@ export function Loupe({
           }
         }
       }
+      // Outside the pane that clips the content, there is nothing on screen to
+      // magnify — even though the source element's rect still extends out there.
+      if (p && clipTo?.current && !pointInRect(p.x, p.y, clipTo.current.getBoundingClientRect())) {
+        lens.style.visibility = 'hidden';
+        return;
+      }
+
       const hit = p ? resolveSource(p.x, p.y) : null;
       if (!p || !hit) { lens.style.visibility = 'hidden'; return; }
 
@@ -137,7 +168,7 @@ export function Loupe({
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerleave', onLeave);
     };
-  }, [resolveSource, displayScale, diameter, magnification, vector]);
+  }, [resolveSource, displayScale, diameter, magnification, vector, clipTo]);
 
   return (
     <OverlayPanel
