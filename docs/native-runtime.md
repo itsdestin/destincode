@@ -905,3 +905,90 @@ bucket's revoke behaviour), `permission-store.test.ts` (bucket routing and reads
 `specialist-envelope.test.tsx`.
 
 Rule: `.claude/rules/native-specialists.md` → "Specialists (plan 1c)".
+
+## Background Bash (ledger G-1, shipped 2026-08-28)
+
+Design: workspace `docs/archive/specs/2026-08-28-bash-background-execution-design.md`; plan
+`docs/archive/plans/2026-08-28-bash-background-execution.md`. A native Bash command can outlive its
+call: `run_in_background: true` starts it and returns a shell id at once, and a foreground command
+still running at its `timeout` is HANDED OFF to the background instead of SIGKILLed (the 10-minute
+cap is gone). `BashOutput` reads new output since the last look (or lists this conversation's runs);
+`KillShell` stops one. The finished result always arrives on its own.
+
+- **`ShellRegistry` (`harness/shell-registry.ts`) is the one owner of every such run; the HOST
+  owns its lifetime.** One per session id in `NativeSessionHost.shellRegistries`, handed to the
+  `HarnessSession` as `opts.shells` → `ToolContext.shells`. Why host-owned and not session-owned:
+  a remote takeover and the session-exit backstop destroy the session but must leave its commands
+  running (D2 — the conversation is still open, elsewhere); those runs still need an owner that
+  can kill them at app quit and re-attach them if the same conversation is resumed in this process.
+  <!-- verify: {"path": "youcoded/desktop/src/main/harness/native-session-host.ts", "contains": "shellRegistries"} -->
+- **Honest family kill, foreground too.** Every Bash child is spawned in its own process group
+  (`spawnDetached`); a kill is `SIGTERM` to the group then `SIGKILL` after 2 s (`killTree`),
+  `taskkill /PID <pid> /T /F` on Windows. Escape used to kill only the outer bash and orphan a
+  `node` it started. `execute` still resolves IMMEDIATELY on abort — only the escalation runs on.
+  Pinned by the `sleep 30 & wait` grandchild tests (`shell-registry`, `bash-background`).
+  `spawnDetached` is OVERLOADED so a caller that names no `stdio` keeps Node's non-null stream
+  types; without that, swapping `spawn()` for it silently widens every `child.stdout`.
+  <!-- verify: {"path": "youcoded/desktop/src/main/harness/shell-registry.ts", "contains": "SIGTERM"} -->
+- **A time limit hands off; it never kills — except a leading `sleep`.** The same process is
+  adopted (`registry.adopt`), stdin is closed (D4: a prompt fails fast instead of hanging in a
+  slot forever), no cwd probe or `persistent_env` result is applied (D6 — the registry unlinks the
+  env temp file when the command finally exits), and the cwd/env sentinels it prints at exit are
+  filtered ON READ (tail, BashOutput, notice) while the raw log keeps them. That last guard is on
+  `handedOffTo`, NOT on "the command has not printed its sentinel yet": the timer can fire in the
+  same instant the command finishes. The cap (5) counts explicit starts only; a hand-off always
+  succeeds (D5).
+- **Output: on disk from the first byte, a 200-line ring in memory, 40 lines on the wire.**
+  The log reuses the spill naming and the 7-day sweep, which MOVED to `spill-paths.ts` in this
+  change so background logs are swept too (in `bash.ts` it only ever fired from a foreground
+  spill, so a user whose long commands all ran in the background never swept anything).
+  `lastReadBytes` (the log's byte length at the last BashOutput) is the read cursor, and the read
+  is POSITIONAL and capped at `READ_MAX_BYTES` — never load a multi-hundred-MB build log into the
+  main process to slice off its tail. Carriage-return redraws are normalized to newlines
+  (`normalizeNewlines`) so a progress bar cannot grow one unfinished line without bound.
+  `'change'` events are debounced to ≤4/s per run and carry a `ShellRunView` with the last 40
+  lines — the phone on cellular is the reader.
+  <!-- verify: {"path": "youcoded/desktop/src/main/harness/tools/spill-paths.ts", "contains": "sweepOldSpillFiles"} -->
+- **Delivery reuses the specialists' idle-boundary path.** `queueHostNotice(parentId, text,
+  meta, whyDropped)` → `drainDeliveries` → `runNotice(text, meta)` with `injected:
+  'shell-complete'`; `injectedMeta` is the union `SpecialistInjectedMeta | ShellInjectedMeta`, the
+  shell shape carrying a LIST of runs because every shell notice ready in one drain goes out as
+  ONE turn (D8 — a `runNotice` is a full model turn). `SpecialistInjectedMeta` declares
+  `kind?: undefined` so every reader can write `meta.kind === 'shell'`; without it TypeScript
+  refuses to read `.kind` off the union at all. KillShell's own result is its notice (none sent);
+  a user Stop IS reported; conversation-closed / app-quit have no session left to tell.
+  <!-- verify: {"path": "youcoded/desktop/src/main/harness/harness-session.ts", "contains": "shell-complete"} -->
+- **`BashOutput` is exempt from the doom-loop window and capped at 8 reads per turn (D7)** —
+  a poll is supposed to repeat; the flat cap covers the chatty-build case the old
+  "three empty checks" idea missed. Both companions are always-allowed (`rulesForMode`).
+- **IPC.** `native:kill-shell` rides the request parity (preload, remote-shim, remote-server WS,
+  `SessionService.kt` → not-implemented-on-mobile; pinned in `ipc-channels.test.ts`), NOT gated
+  on `native.supported` so a phone can Stop a desktop command. `native:shell-event` is a push in
+  the `specialists:event` shape (window + `remoteServer.bufferShellRun` + broadcast; replayed on
+  connect, pinned in `remote-server.test.ts`) and re-sent on `TRANSCRIPT_REPLAY` via
+  `nativeHost.shellRunsFor`.
+- **Resume rule.** After replay, a Bash card whose result announced a shell id and got no live
+  record renders "Stopped when the app quit" (`markOrphanedShellRuns`); a card with a
+  `shell-complete` turn in the transcript rebuilds its exit from the turn's meta.
+
+### Accepted limitations (declared, not bugs)
+
+- **App crash (not quit) leaves commands running with no owner** — nothing in userland runs on
+  SIGKILL or power loss. A close followed by a quit inside the 2 s SIGTERM→SIGKILL window IS
+  covered: `drainingShellRegistries` holds the registry until its kill settles.
+- **After a restart, a run that was stopped by KillShell or by the Stop button before the quit
+  also reads "Stopped when the app quit"** — the run's final state is never persisted; only the
+  finished notice is. The same label appears on the OTHER device after a takeover while the
+  command keeps running on the first one.
+- **Concurrent writes** by a background command to files the assistant is editing are not detected.
+- **Windows tree kill** relies on `taskkill /T`; the grandchild test is POSIX-only, the Windows
+  path is unit-mocked.
+- **The cap of 5 is per registry, and every specialist child gets its own** — a conversation
+  running five helpers can hold thirty background commands at once. Deliberate: a helper that
+  cannot start its own build cannot do its job, and every one of those runs still dies with its
+  child under `conversation-closed`.
+- **A read is capped at 1 MB per call** (`READ_MAX_BYTES`). A command printing more than that
+  between two `BashOutput` calls has its older lines skipped, not queued — `bounds.total` goes to
+  `null` ("at least N") and the hint names the log, which holds everything.
+
+Rule: `.claude/rules/harness-tools.md` → the "Background Bash" bullet.
