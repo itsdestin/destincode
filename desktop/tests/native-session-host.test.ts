@@ -16,6 +16,28 @@ import { OWNER, DelegationLedger } from '../src/main/harness/specialists/delegat
 import { ModelSearchTool } from '../src/main/harness/tools/model-search';
 import type { CatalogModel } from '../src/shared/provider-types';
 
+/** Remove a temp root a live NativeSessionHost was writing into.
+ *
+ *  `destroyAll()` does not drain the delegation ledger's writes — they are
+ *  fire-and-forget by design (native-session-host.ts documents this: a failed
+ *  bookkeeping write must never cost the user their session). So a `mutateJson`
+ *  can still land inside `<root>/.youcoded/sessions` a tick after teardown
+ *  begins, and a plain recursive remove then dies with
+ *  `ENOTEMPTY: directory not empty` — a file appeared during its own walk.
+ *  `force: true` does NOT cover that; it only swallows ENOENT.
+ *
+ *  Observed on ubuntu CI 2026-08-28 (a run otherwise fully green), failing a
+ *  test that had already passed, because the teardown throws INTO the test.
+ *
+ *  maxRetries is Node's own answer: fs.rm retries EBUSY/EMFILE/ENFILE/ENOTEMPTY
+ *  /EPERM with a linear backoff. Nothing is masked — a root that is genuinely
+ *  un-removable still throws after the retries.
+ */
+function rmHostRoot(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+}
+
+
 // One turn, two steps: step 1 calls the (gated) Write tool; step 2 — after the
 // tool result — stops with text. A FRESH instance per factory call so the
 // per-step counter resets each turn. Write is chosen because it is permission-
@@ -157,7 +179,7 @@ describe('NativeSessionHost', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-'));
     host = new NativeSessionHost(new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null);
   });
-  afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host.destroyAll(); rmHostRoot(root); });
 
   it('pendingAskEventsFor delegates to the broker for one session', () => {
     // Task 0 (ROADMAP #permissions): TRANSCRIPT_REPLAY needs a host-level
@@ -4707,7 +4729,7 @@ describe('NativeSessionHost', () => {
 describe('NativeSessionHost per-turn pricing', () => {
   let root: string;
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-host-price-')); });
-  afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
+  afterEach(() => rmHostRoot(root));
 
   // The scripted stream reports 3 input + 2 output tokens (CHUNKS, top of file).
   async function firstTurnUsage(opts: {
@@ -4900,7 +4922,7 @@ describe('G-1 background Bash — registry lifetime and finished notices', () =>
     host = new NativeSessionHost(store, chatty, NO_CONTEXT, async () => null, async () => null);
     await host.create({ sessionId: 'p1', cwd: root, binding });
   });
-  afterEach(async () => { await host.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host.destroyAll(); rmHostRoot(root); });
 
   it('every live session has a registry, reachable by the tool as ctx.shells', () => {
     expect(reg('p1')).toBeTruthy();

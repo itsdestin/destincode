@@ -12,6 +12,28 @@ import { OWNER, RAW_REPORT_CAP_CHARS } from '../src/main/harness/specialists/del
 import { computeReportBudget } from '../src/main/harness/specialists/report-budget';
 import { APPROX_CHARS_PER_TOKEN } from '../src/main/harness/message-size';
 
+/** Remove a temp root a live NativeSessionHost was writing into.
+ *
+ *  `destroyAll()` does not drain the delegation ledger's writes — they are
+ *  fire-and-forget by design (native-session-host.ts documents this: a failed
+ *  bookkeeping write must never cost the user their session). So a `mutateJson`
+ *  can still land inside `<root>/.youcoded/sessions` a tick after teardown
+ *  begins, and a plain recursive remove then dies with
+ *  `ENOTEMPTY: directory not empty` — a file appeared during its own walk.
+ *  `force: true` does NOT cover that; it only swallows ENOENT.
+ *
+ *  Observed on ubuntu CI 2026-08-28 (a run otherwise fully green), failing a
+ *  test that had already passed, because the teardown throws INTO the test.
+ *
+ *  maxRetries is Node's own answer: fs.rm retries EBUSY/EMFILE/ENFILE/ENOTEMPTY
+ *  /EPERM with a linear backoff. Nothing is masked — a root that is genuinely
+ *  un-removable still throws after the retries.
+ */
+function rmHostRoot(dir: string): void {
+  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
+}
+
+
 // ---- Task 7: the FOREGROUND specialist run ----------------------------------
 // spawnSpecialist mints a child (Task 5), delivers the brief as its first turn,
 // re-emits DISPLAY copies of its three subagent-visible event types under the
@@ -60,7 +82,7 @@ describe('specialist foreground run (Task 7)', () => {
   }
 
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-run-')); });
-  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host?.destroyAll(); rmHostRoot(root); });
 
   // Two tool steps (distinct inputs, so the doom-loop guard can't trip) then a
   // final report message.
@@ -625,7 +647,7 @@ describe('compaction-finalize steer (Task 12, item 4)', () => {
   let host: NativeSessionHost;
 
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-finalize-')); });
-  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host?.destroyAll(); rmHostRoot(root); });
 
   const FINALIZE_STEER = 'You are running low on room even after summarizing. Stop new exploration — '
     + 'write up what you have and finish with your report now.';
@@ -781,7 +803,7 @@ describe('heartbeat staleness (Task 7)', () => {
   afterEach(async () => {
     vi.useRealTimers();
     await host?.destroyAll();
-    fs.rmSync(root, { recursive: true, force: true });
+    rmHostRoot(root);
   });
 
   const REPORT_CHUNKS = stream(...textChunks('t', 'REPORT: done'), finishChunk('stop'));
@@ -1076,7 +1098,7 @@ describe('background execution + idle-boundary delivery (Task 4)', () => {
   }
 
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-bg-')); });
-  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host?.destroyAll(); rmHostRoot(root); });
 
   it('background Task resolves immediately with a task_id while the child is still running', async () => {
     // No gating needed: send()'s dispatch is deferred one macrotask
@@ -1819,7 +1841,7 @@ describe('R12 (Task 4, plan 1c) — a running child keeps its spawn-time definit
   let host: NativeSessionHost;
 
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-r12-')); });
-  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host?.destroyAll(); rmHostRoot(root); });
 
   it('a running child keeps its spawn-time definition when the roster changes mid-run: its tool set stays what it was hired with, and only the NEXT Task description reflects the change', async () => {
     const SPEC_V1: SpecialistDefinition = {
@@ -1902,7 +1924,7 @@ describe('Task 4 fix pass — turn-start ensureFresh is root-only for real', () 
   let host: NativeSessionHost;
 
   beforeEach(() => { root = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-spec-turnstart-')); });
-  afterEach(async () => { await host?.destroyAll(); fs.rmSync(root, { recursive: true, force: true }); });
+  afterEach(async () => { await host?.destroyAll(); rmHostRoot(root); });
 
   // Root replies plainly (no delegation) on its own turn. The child (spawned
   // directly via spawnSpecialist, same technique every other test in this file
