@@ -277,8 +277,16 @@ export function registerMarketplaceApiHandlers(
     })
   );
 
-  ipcMain.handle("marketplace:thumb:get", (_e, pluginId: string): Promise<ApiResult<{ vote: "up" | "down" | null }>> =>
-    wrap(async () => ({ vote: (await client.getThumb(pluginId)).vote }))
+  ipcMain.handle("marketplace:thumb:get", (_e, pluginId: string): Promise<ApiResult<Thumbs>> =>
+    wrap(async () => {
+      const r = await client.getThumb(pluginId);
+      // Totals come back WITH the vote. Returning only `vote` is what produced a
+      // lit thumb beside "No votes yet" on reopen: the vote was fresh from the
+      // server while the count fell back to the /stats snapshot taken at app
+      // start, which predates the vote (and /stats is max-age=300, so it cannot
+      // be refreshed into agreeing).
+      return { vote: r.vote, thumbs_up: r.thumbs_up, thumbs_down: r.thumbs_down };
+    })
   );
 
   ipcMain.handle("marketplace:comment", (_e, input: { plugin_id: string; text: string }): Promise<ApiResult<{ id: string; hidden: boolean }>> =>
