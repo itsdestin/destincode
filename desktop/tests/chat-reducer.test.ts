@@ -581,18 +581,22 @@ describe('TRANSCRIPT_USER_MESSAGE suppresses the redundant /compact bubble', () 
     expect(users[0].pending).toBe(false);
   });
 
-  // Reload/resume replays CC's JSONL through loadHistory, which has no filter
-  // for this (it only gates on isMeta/promptId/non-empty). Without the same
-  // rule here, every bubble the live fix removed grows back on reload.
+  // Reload/resume replays CC's JSONL. Without the same rule on that path, every
+  // bubble the live fix removed grows back on reload. Since perf cycle 2 the
+  // path is HISTORY_PAGE_LOADED, which replays real transcript events through
+  // the same per-event cases — so the suppression is inherited rather than
+  // duplicated, and this test pins that it really is.
   it('drops the echo from replayed history too', () => {
     let state = initState();
+    const ev = (type: string, uuid: string, text: string, ts: number) =>
+      ({ type, sessionId: SESSION, uuid, timestamp: ts, data: { text } }) as any;
     state = dispatch(state, {
-      type: 'HISTORY_LOADED', sessionId: SESSION, hasMore: false,
-      messages: [
-        { role: 'user', content: 'first question', timestamp: 1 },
-        { role: 'user', content: '/compact', timestamp: 2 },
-        { role: 'assistant', content: 'an answer', timestamp: 3 },
-        { role: 'user', content: 'second question', timestamp: 4 },
+      type: 'HISTORY_PAGE_LOADED', sessionId: SESSION, cursor: null, hasMore: false,
+      events: [
+        ev('user-message', 'h1', 'first question', 1),
+        ev('user-message', 'h2', '/compact', 2),
+        ev('assistant-text', 'h3', 'an answer', 3),
+        ev('user-message', 'h4', 'second question', 4),
       ],
     });
     const users = state.get(SESSION)!.timeline.filter((e) => e.kind === 'user') as any[];
