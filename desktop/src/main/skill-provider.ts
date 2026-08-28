@@ -1195,8 +1195,14 @@ export class LocalSkillProvider implements SkillProvider {
             if (fallbackDir) diskVersion = readPluginVersion(fallbackDir);
           }
           if (!diskVersion || diskVersion === pkg.version) continue;
+          // WHY: getPackages() hands back the LIVE config objects, and
+          // updatePackageVersion mutates pkg.version in place — so reading
+          // pkg.version after the write reports the new value as the old one,
+          // and the log's "from" would always equal its "to". Capture it first
+          // or the repair log silently claims nothing changed.
+          const from = pkg.version;
           this.configStore.updatePackageVersion(id, diskVersion);
-          repaired.push({ id, from: pkg.version, to: diskVersion });
+          repaired.push({ id, from, to: diskVersion });
         } catch (err) {
           log('WARN', 'bundled-plugins', 'package version repair failed for one package', { id, error: String(err) });
         }
