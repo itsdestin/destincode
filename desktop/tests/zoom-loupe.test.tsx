@@ -142,8 +142,19 @@ describe('Loupe', () => {
     tick();
     expect(lens()).toBe('visible');
 
+    // A scrim element is mounted at ALL times and fades in/out, so an invisible
+    // one must NOT hide the lens — testing for mere presence stopped the
+    // magnifier working entirely (2026-08-27).
+    const idle = document.createElement('div');
+    idle.className = 'layer-scrim';
+    idle.style.opacity = '0';
+    document.body.appendChild(idle);
+    tick();
+    expect(lens()).toBe('visible');
+
     const scrim = document.createElement('div');
     scrim.className = 'layer-scrim';
+    scrim.style.opacity = '1';
     document.body.appendChild(scrim);
     tick();
     expect(lens()).toBe('hidden');
@@ -151,6 +162,7 @@ describe('Loupe', () => {
     scrim.remove();
     tick();
     expect(lens()).toBe('visible');            // closing the dialog resumes it
+    idle.remove();
   });
 
   it('never reads pixels back — canvas tainting must stay unreachable', () => {

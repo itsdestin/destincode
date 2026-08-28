@@ -26,6 +26,20 @@ function drawCentreMark(ctx: CanvasRenderingContext2D, c: number) {
   }
 }
 
+/** Is a modal scrim actually SHOWING?
+ *
+ *  Not "does one exist": a scrim element stays mounted at all times and fades in
+ *  and out, so testing for its presence hid the lens permanently — the magnifier
+ *  stopped working entirely (2026-08-27). Only a painted scrim means something
+ *  is over the viewer. */
+function scrimIsUp(): boolean {
+  for (const el of Array.from(document.querySelectorAll('.layer-scrim'))) {
+    const cs = getComputedStyle(el);
+    if (cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity || '1') > 0.01) return true;
+  }
+  return false;
+}
+
 export interface LoupeSource { el: CanvasImageSource & Element }
 
 export interface LoupeProps {
@@ -106,7 +120,7 @@ export function Loupe({
       // that does not hold focus — including the workbench's iframe and a
       // headless page — so it would silently disable the lens in places where it
       // should work. Window-level focus is a different question from this one.
-      if (document.querySelector('.layer-scrim')) {
+      if (scrimIsUp()) {
         lens.style.visibility = 'hidden';
         return;
       }
