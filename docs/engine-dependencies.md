@@ -45,7 +45,7 @@ that is currently running (swapping the binary unloads the resident model). It
 never throws and never blocks startup; the Settings → Providers **Update** button
 is the manual retry when it could not run. A pin bump alone reaches nobody:
 `EngineAcquisition.installed()` keeps serving whatever is on disk.
-<!-- verify: {"path": "desktop/src/main/engine/engine-manager.ts", "contains": "autoUpdateOnLaunch"} -->
+<!-- verify: {"path": "youcoded/desktop/src/main/engine/engine-manager.ts", "contains": "autoUpdateOnLaunch"} -->
 
 **A new install must PROVE it boots before it replaces the old one.**
 `acquisition.install()` writes `.complete` and renames the directory into place
@@ -234,7 +234,7 @@ first part and cache-scan sums the parts' sizes into one entry.
   only when a download the ROUTER itself started finishes, and ours are app-side, so
   it never fires for us. There is no timer, no inotify, no SIGHUP, no 404-miss
   rescan, and a plain `GET /models` does NOT re-scan.
-  <!-- verify: {"path": "desktop/src/main/engine/engine-supervisor.ts", "contains": "reload=1"} -->
+  <!-- verify: {"path": "youcoded/desktop/src/main/engine/engine-supervisor.ts", "contains": "reload=1"} -->
   **A post-boot file is NOT servable until that rescan** — measured end-to-end on
   2026-08-16 against a real b9992 router on an isolated port: file dropped in after
   boot → absent from `GET /models` after 8s → `POST /v1/chat/completions` returns
@@ -292,7 +292,7 @@ lists differ by design — that is listing granularity, not an id-derivation mis
 assertion. Parts 2..N carry no architecture header, so a follower row offered to a
 user can only ever fail — that reached the model picker as four selectable rows for
 one Qwen3.8-Flash-Next download, three of which 500'd (2026-08-27).
-<!-- verify: {"path": "desktop/src/shared/gguf-split.ts", "contains": "isFollowerPart"} -->
+<!-- verify: {"path": "youcoded/desktop/src/shared/gguf-split.ts", "contains": "isFollowerPart"} -->
 
 ## Parallel slots (specialists, plan 1a probe)
 
