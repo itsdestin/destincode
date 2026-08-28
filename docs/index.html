@@ -841,6 +841,30 @@
     font-style: italic;
   }
 
+  /* --- LIVE EMBED --- */
+  /* One-line intro under a section title (the title carries 32px of bottom
+     margin, so the paragraph pulls up into it). */
+  .section-desc { max-width: 720px; margin: -12px 0 28px; font-size: 1rem; line-height: 1.6; color: var(--text-secondary); }
+  .embed-frame { border-radius: 16px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.28); border: 1px solid var(--border); background: #0b1020; }
+  .embed-titlebar { display: flex; gap: 6px; padding: 10px 12px; background: rgba(255,255,255,.06); }
+  .embed-titlebar span { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,255,255,.25); }
+  .embed-stage { position: relative; aspect-ratio: 16 / 10; }
+  .embed-poster, .embed-iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .embed-poster { object-fit: cover; }
+  /* The iframe is present but invisible until it has loaded; .live swaps it
+     in over the poster so the visitor never sees a blank white frame. */
+  .embed-iframe { opacity: 0; transition: opacity .35s; }
+  .embed-frame.live .embed-iframe { opacity: 1; }
+  .embed-frame.live .embed-poster, .embed-frame.live .embed-start { display: none; }
+  .embed-start { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); padding: 14px 26px; border-radius: 999px; font: inherit; font-weight: 600; background: var(--title-highlight); color: #fff; border: 0; cursor: pointer; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+  /* The frame is always dark (#0b1020) regardless of the page theme, so the
+     swatch labels get a fixed light color instead of inheriting the page's. */
+  .embed-swatches { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; background: rgba(255,255,255,.04); color: #e6e6ea; }
+  .embed-swatches button { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 13px; }
+  .embed-swatches button::before { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--sw); border: 1px solid rgba(0,0,0,.2); }
+  .embed-swatches button[aria-pressed="true"] { outline: 2px solid var(--title-highlight); }
+  @media (max-width: 768px) { .embed-stage { aspect-ratio: 4 / 3; } }
+
   /* --- DEMO APP MOCKUP --- */
   .demo-section { padding: 16px 0; }
 
@@ -2720,6 +2744,36 @@
 
   <div class="container"><div class="divider"></div></div>
 
+  <!-- LIVE EMBED — the real app's interface (the workbench build in site/),
+       booted in an iframe on click or when scrolled into view. The poster
+       is shown until the iframe has loaded so nothing flashes blank. -->
+  <section class="embed-section" id="see-it">
+    <div class="container">
+      <p class="section-label reveal">Try it</p>
+      <h2 class="section-title reveal">Click around, I guess.</h2>
+      <p class="section-desc reveal">Type a message, open the model picker, or switch the theme. This demo is a pixel-perfect representation of the real app's interface.</p>
+      <div class="embed-frame reveal">
+        <div class="embed-titlebar"><span></span><span></span><span></span></div>
+        <div class="embed-stage">
+          <img class="embed-poster" src="media/row1-any-ai.webp" alt="YouCoded Assistant chat window" width="1440" height="900">
+          <button class="embed-start" type="button">Start the demo</button>
+          <iframe class="embed-iframe" title="YouCoded Assistant live demo" loading="lazy" data-src="site/index.html?mode=workbench&amp;child=1&amp;scenario=site&amp;latency=150&amp;reply=demo"></iframe>
+        </div>
+        <div class="embed-swatches" role="group" aria-label="Change the theme">
+          <button type="button" data-theme="midnight" style="--sw:#0b1020" aria-pressed="true">Midnight</button>
+          <button type="button" data-theme="creme" style="--sw:#f3e8d8">Crème</button>
+          <button type="button" data-theme="light" style="--sw:#f4f4f5">Light</button>
+          <button type="button" data-theme="dark" style="--sw:#18181b">Dark</button>
+          <button type="button" data-theme="halftone-dimension" style="--sw:#2a1638">Halftone</button>
+          <button type="button" data-theme="meadow-mist" style="--sw:#6fa3c9">Meadow Mist</button>
+          <button type="button" data-theme="golden-sunbreak" style="--sw:#c98a2e">Golden Sunbreak</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="container"><div class="divider"></div></div>
+
   <!-- DEMO — Showcase gallery -->
   <section class="demo-section" id="demo">
     <div class="container">
@@ -3860,6 +3914,36 @@
         desc.classList.add('visible');
       });
     });
+
+    // --- Live embed: boot the real app's interface in the iframe ---
+    (function () {
+      var frame = document.querySelector('.embed-frame'); if (!frame) return;
+      var iframe = frame.querySelector('.embed-iframe'), start = frame.querySelector('.embed-start');
+      var theme = 'midnight', live = false;
+      function boot() {
+        if (live) return; live = true;
+        // Same-origin: preset the app's theme before it boots (index.tsx:12 reads this key).
+        iframe.addEventListener('load', function () { frame.classList.add('live'); });
+        iframe.src = iframe.dataset.src + '#t=' + theme;
+        try { iframe.contentWindow.localStorage.setItem('youcoded-theme', theme); } catch (e) {}
+      }
+      start.addEventListener('click', boot);
+      // Also boot when the visitor scrolls it into view, unless they asked for less motion.
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObserver' in window) {
+        new IntersectionObserver(function (es) { es.forEach(function (e) { if (e.isIntersecting) boot(); }); }, { threshold: 0.6 }).observe(frame);
+      }
+      frame.querySelectorAll('.embed-swatches button').forEach(function (b) {
+        b.addEventListener('click', function () {
+          theme = b.dataset.theme;
+          frame.querySelectorAll('.embed-swatches button').forEach(function (x) { x.setAttribute('aria-pressed', x === b); });
+          if (!live) return;
+          // Theme lives in the app's localStorage; a reload applies it (assets are cached, so it is ~instant).
+          frame.classList.remove('live');
+          try { iframe.contentWindow.localStorage.setItem('youcoded-theme', theme); } catch (e) {}
+          iframe.contentWindow.location.reload();
+        });
+      });
+    })();
 
     // --- FAQ accordion ---
     document.querySelectorAll('.faq-question').forEach(function(btn) {
