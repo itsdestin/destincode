@@ -126,14 +126,17 @@ export interface MarketplaceApiClient {
    *  Pass an AbortSignal to cancel in-flight requests on unmount or refresh. */
   listRatings(pluginId: string, signal?: AbortSignal): Promise<ListRatingsResponse>;
 
-  // ── Marketplace overhaul (2026-08-27) — thumbs + comments. NO Worker routes
-  //    exist yet; see fixtures/marketplace/worker-api-mock.ts for the shapes the
-  //    design assumes. Both auth'd; thumbs additionally require a prior install
-  //    (same rule as ratings today, so strangers can't game the number). ──
+  // ── Marketplace overhaul (2026-08-27) — thumbs + comments. Both auth'd; thumbs
+  //    additionally require a prior install (same rule as ratings today, so
+  //    strangers can't game the number). ──
   listComments(pluginId: string, signal?: AbortSignal): Promise<{ comments: CommentEntry[] }>;
-  postComment(input: { plugin_id: string; text: string }): Promise<{ id: string }>;
-  /** `null` clears the user's vote. */
-  setThumb(input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<void>;
+  postComment(input: { plugin_id: string; text: string }): Promise<{ ok: true; id: string; hidden: boolean }>;
+  /** `null` clears the user's vote. Returns the plugin's NEW totals so the caller
+   *  can move the number on the spot — /stats is served max-age=300 and cannot
+   *  answer that question for up to five minutes after the write. */
+  setThumb(input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<{ ok: true; vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>;
+  /** The caller's own vote, so the buttons don't forget it between visits. */
+  getThumb(pluginId: string): Promise<{ vote: 'up' | 'down' | null }>;
 
   // ── Social graph (accounts Phase 2). All auth'd. The Worker 404s an unknown or
   //    blocked handle (indistinguishable — no enumeration oracle), 429s on caps,
@@ -273,10 +276,11 @@ export function createMarketplaceApiClient(opts: {
     listComments: (plugin_id, signal?) =>
       request<{ comments: CommentEntry[] }>(`/comments/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
     postComment: (input) =>
-      request<{ id: string }>("/comments", { method: "POST", body: JSON.stringify(input), auth: true }),
-    setThumb: async (input) => {
-      await request("/thumbs", { method: "POST", body: JSON.stringify(input), auth: true });
-    },
+      request<{ ok: true; id: string; hidden: boolean }>("/comments", { method: "POST", body: JSON.stringify(input), auth: true }),
+    setThumb: (input) =>
+      request<{ ok: true; vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>("/thumbs", { method: "POST", body: JSON.stringify(input), auth: true }),
+    getThumb: (plugin_id) =>
+      request<{ vote: 'up' | 'down' | null }>(`/thumbs/${encodeURIComponent(plugin_id)}`, { method: "GET", auth: true }),
 
     // ── Social graph (accounts Phase 2). All auth'd; path params URL-encoded. The
     //    action endpoints (accept/decline/cancel/unfriend/block/unblock) return
