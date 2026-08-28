@@ -1156,7 +1156,7 @@ class Bootstrap(internal val context: Context) {
         val instruction = """
 ## Auto-Title
 
-When you see an `[Auto-Title]` reminder, **immediately** use Bash to write a 3-5 word Title Case topic summary to the file path specified. Use: `echo "Topic Here" > /path/to/file`. Do this BEFORE continuing with your response — do not skip or defer it.
+When you see an `[Auto-Title]` reminder, do exactly what it asks, before continuing your response. If it says the conversation has no title yet, use Bash to write a 3-5 word Title Case summary to the file path it names. If it tells you the current title and that title still describes the conversation, do nothing at all — no tool call, no comment.
 """.trimStart()
 
         if (claudeMd.exists()) {
