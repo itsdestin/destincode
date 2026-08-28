@@ -106,6 +106,38 @@ function waitForTurnComplete(host: NativeSessionHost, n: number): Promise<void> 
   });
 }
 
+// Resolve once `sessionId`'s turn is genuinely IN FLIGHT — the condition a LIVE
+// steer needs (postSteer delivers to a session mid-turn and parks the steer
+// otherwise). Waiting on the session's own first transcript event replaces a
+// fixed `setTimeout(…, 20)`, which was a guess that the turn had started: on a
+// loaded machine it had not, postSteer missed, the steer PARKED, and the
+// assertions below then failed as though the live-delivery logic were broken
+// (ROADMAP 2026-08-16, "a fixed 20ms delay stands in for a real completion
+// signal"). Attaching after send() is safe for the same reason
+// waitForTurnComplete documents: the async turn cannot run until the current
+// synchronous stack empties.
+function waitForTurnInFlight(host: NativeSessionHost, sessionId: string, timeoutMs = 10_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onEvent = (e: any) => {
+      // A child's events reach the host's listeners re-stamped under the
+      // PARENT's session id, with `data.agentId` naming the child that spoke
+      // (native-session-host.ts, createChild's transcript subscription) — so
+      // matching on e.sessionId alone never fires for a child.
+      if (e?.sessionId !== sessionId && e?.data?.agentId !== sessionId) return;
+      clearTimeout(timer);
+      host.off('transcript-event', onEvent);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      host.off('transcript-event', onEvent);
+      // Named, not a bare timeout: if this ever fires the turn never started,
+      // which is a different bug from the one the test is about.
+      reject(new Error(`no transcript event from session ${sessionId} within ${timeoutMs}ms — its turn never started`));
+    }, timeoutMs);
+    host.on('transcript-event', onEvent);
+  });
+}
+
 // A ModelFactory whose FIRST call throws (HarnessSession.send() catches this
 // inside its try/await and emits session-error, never a rejection) and whose
 // every later call succeeds via the plain `factory` stream — proves a
@@ -3378,7 +3410,7 @@ describe('NativeSessionHost', () => {
         status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
       });
       const turn = childSession(h, liveChildId).send('go');
-      await new Promise((r) => setTimeout(r, 20));
+      await waitForTurnInFlight(h, liveChildId);
 
       const events: any[] = [];
       h.on('specialists-event', (e) => events.push(e));
