@@ -11,7 +11,7 @@ const FIXTURE_ROOT = join(__dirname, '../src/renderer/dev/workbench/fixtures');
  *  the loader, so a typo'd kind in a fixture would simply vanish from the
  *  timeline with no error — which is exactly the failure this guards. */
 const KNOWN_KINDS = new Set([
-  'text', 'user_message', 'assistant_text', 'tool_use', 'tool_result',
+  'text', 'user_message', 'turn_complete', 'assistant_text', 'tool_use', 'tool_result',
   'permission_request',
   // Specialists 1c: a child's stamped events, its routed ask, the run record
   // (a delivered steer rides on the run record's own `notes` — Task 10 — so

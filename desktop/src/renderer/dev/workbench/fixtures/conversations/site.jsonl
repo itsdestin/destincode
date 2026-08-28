@@ -3,3 +3,4 @@
 {"type":"tool_use","id":"s1","name":"Write","input":{"file_path":"Documents/week-plan.md","content":"# This week\n\n- Mon: chem ch. 7–8 (2h)\n- Tue: chem practice exam (2h)\n- Wed: review wrong answers (1h)\n- Thu: MIDTERM 9am\n- Sat: shift 12–6\n"}}
 {"type":"tool_result","tool_use_id":"s1","content":"Wrote Documents/week-plan.md (6 lines)"}
 {"type":"assistant_text","text":"Want me to add reminders the night before each block?"}
+{"type":"turn_complete"}
