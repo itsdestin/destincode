@@ -95,6 +95,22 @@ describe('useMissingArtifacts', () => {
     expect(second.result.current.missingIds.has('b')).toBe(true);
   });
 
+  it('re-asks when the id set is unchanged but the files were not', async () => {
+    // A rename, a status flip, or Claude re-creating a file it had deleted all
+    // change what is on disk WITHOUT changing the id list. The drawer drives
+    // that refresh explicitly; this pins that a second call with the same ids
+    // is honoured once the first has finished, so a stale "deleted" cannot
+    // survive until the drawer is closed and reopened.
+    let answer: string[] = ['b'];
+    const spy = installBridge(async () => ({ ok: true, missingIds: answer }));
+    const { result } = renderHook(() => useMissingArtifacts(ROOT, ['a', 'b']));
+    await waitFor(() => expect(result.current.missingIds.has('b')).toBe(true));
+    answer = [];
+    await act(async () => { await refreshMissingArtifacts(ROOT, ['a', 'b']); });
+    expect(spy.mock.calls.length).toBe(2);
+    expect(result.current.missingIds.has('b')).toBe(false);
+  });
+
   it('coalesces an identical in-flight request instead of re-asking', async () => {
     const spy = installBridge(async () => ({ ok: true, missingIds: [] }));
     await act(async () => {

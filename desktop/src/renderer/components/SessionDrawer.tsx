@@ -67,6 +67,11 @@ function renameErrorCopy(code: unknown): string {
   }
 }
 
+// How long the file list will wait for the on-disk check before giving up and
+// painting anyway. Short enough that nobody perceives it as loading, long
+// enough to cover a local check on a large project. See listSettling below.
+const SETTLE_HOLD_MS = 500;
+
 interface Props {
   sessionId: string;
   projectRoot: string;
@@ -282,11 +287,15 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName, 
   useEffect(() => {
     if (!drawerOpen || !cwd || checkableIds.length === 0) return;
     void refreshMissingArtifacts(cwd, checkableIds);
-    // checkableIds rides the drawer-open edge only: a members-changed refresh
-    // is already the hook's own job, and depending on the array here would
-    // double-fire every time the list is re-listed.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drawerOpen, cwd]);
+    // Dep is the whole ARRAY (plus the drawer-open edge), not just the id set
+    // the hook itself watches: a rename, a status flip, or Claude re-creating a
+    // file it had deleted all change what is on disk WITHOUT changing the id
+    // list, and a stale "deleted" that only clears on close/reopen is exactly
+    // the kind of wrong-looking list this change exists to prevent. Same dep
+    // the pre-2026-08-30 effect used. Identical back-to-back requests coalesce
+    // inside refreshMissingArtifacts, so this and the hook's own refresh never
+    // produce two round trips.
+  }, [drawerOpen, cwd, allArtifacts, checkableIds]);
 
   const artifacts = useMemo(() => {
     return allArtifacts.filter((a) => {
@@ -484,7 +493,19 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName, 
   // Nothing renders in that window: not the rows, and not the empty state
   // either, since "Nothing here yet" would be its own wrong-then-corrected
   // flash.
-  const listSettling = !orphansKnown && checkableIds.length > 0;
+  //
+  // Two escape hatches, because a permanently blank file list is a far worse
+  // failure than the flash this replaces: the hold never engages without a cwd
+  // to check against (`cwd` is optional on both call sites), and it releases
+  // after SETTLE_HOLD_MS regardless, so a slow or wedged check degrades to the
+  // old behaviour instead of a dead-end empty pane.
+  const [holdExpired, setHoldExpired] = useState(false);
+  useEffect(() => {
+    if (orphansKnown) return;
+    const t = setTimeout(() => setHoldExpired(true), SETTLE_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [orphansKnown]);
+  const listSettling = !!cwd && !orphansKnown && !holdExpired && checkableIds.length > 0;
 
   // Collapse the list once the user actually engages the previewed artifact:
   // a click into the content pane or a scroll within it. Scroll is captured
