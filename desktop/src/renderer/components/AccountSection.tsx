@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
@@ -26,13 +26,82 @@ function GitHubIcon({ className = 'w-4 h-4' }: { className?: string }) {
   );
 }
 
-// Generic person glyph for the signed-out row (no avatar to show yet).
-function PersonIcon() {
+// Generic person glyph — the stand-in whenever there is no usable photo to show
+// (signed out, no avatar_url, or the photo failed to load).
+function PersonIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (
-    <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
+    <svg className={`${className} text-fg-muted`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="8" r="4" />
       <path d="M4 21c0-4 3.5-6 8-6s8 2 8 6" />
     </svg>
+  );
+}
+
+// Profile photo with a guaranteed fallback, used by both the Account row and the
+// popup's identity summary.
+//
+// Fix: an <img> whose src fails to load paints the browser's broken-image glyph,
+// and that was leaking into the Account row whenever the GitHub avatar CDN was
+// unreachable (offline, blocked, or a stale URL). The row must only ever show a
+// real photo or our own person glyph. Same onError guard MarketplaceAuthChip and
+// ReviewList already carry.
+//
+// We remember the URL that failed rather than a bare boolean so the fallback
+// un-sticks on its own: signing out and back in with a working photo changes the
+// URL, which no longer matches the failed one, so the photo is tried again.
+function AccountAvatar({ url, size }: { url?: string | null; size: 'row' | 'large' }) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const box = size === 'large' ? 'w-10 h-10' : 'w-5 h-5';
+
+  // Retry a failed photo. This is what makes the row behave like the popup.
+  //
+  // SettingsPanel is always mounted (it hides by sliding off-screen, it does not
+  // unmount), so the ROW's <img> is created seconds after app start and gets
+  // exactly one shot at the network — a browser <img> never re-requests a src it
+  // already failed on. The POPUP's <img> is created fresh on every open, so it
+  // always gets a new attempt and, once fetched, is served from the HTTP cache.
+  // That asymmetry is why the row could sit broken while the popup looked fine.
+  //
+  // Two short automatic retries cover a network stack that wasn't up yet at
+  // launch; after that we only retry on a real signal (back online, or the user
+  // returning to the window) so an offline machine isn't requesting on a loop.
+  // Same "next focus retries" philosophy the account refresh already uses.
+  const retriesRef = useRef(0);
+  useEffect(() => {
+    retriesRef.current = 0; // a different account's photo starts with a full budget
+  }, [url]);
+  useEffect(() => {
+    if (!failedSrc) return;
+    const retry = () => {
+      retriesRef.current += 1;
+      setFailedSrc(null);
+    };
+    window.addEventListener('online', retry);
+    window.addEventListener('focus', retry);
+    const timer =
+      retriesRef.current < 2 ? window.setTimeout(retry, 5000 * (retriesRef.current + 1)) : undefined;
+    return () => {
+      window.removeEventListener('online', retry);
+      window.removeEventListener('focus', retry);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [failedSrc]);
+
+  if (!url || url === failedSrc) {
+    // Signed-out row shows the bare glyph (unchanged); the popup's larger slot
+    // keeps its filled circle so the identity block doesn't look empty.
+    return size === 'large' ? (
+      <div className={`${box} rounded-full bg-inset flex items-center justify-center shrink-0`}>
+        <PersonIcon />
+      </div>
+    ) : (
+      <PersonIcon />
+    );
+  }
+
+  return (
+    // alt="" so the avatar doesn't leak into the row's accessible name.
+    <img src={url} alt="" onError={() => setFailedSrc(url)} className={`${box} rounded-full object-cover shrink-0`} />
   );
 }
 
@@ -48,14 +117,7 @@ export default function AccountSection() {
   return (
     <>
       <SettingRow
-        icon={
-          signedIn && user?.avatar_url ? (
-            // alt="" so the avatar doesn't leak into the row's accessible name.
-            <img src={user.avatar_url} alt="" className="w-5 h-5 rounded-full object-cover" />
-          ) : (
-            <PersonIcon />
-          )
-        }
+        icon={<AccountAvatar url={signedIn ? user?.avatar_url : null} size="row" />}
         title={rowLabel}
         description={rowDesc}
         onClick={() => setOpen(true)}
@@ -331,13 +393,7 @@ function SignedInBody({
     <>
       {/* Identity summary — avatar + display name + @handle, all read-only. */}
       <section className="flex items-center gap-3">
-        {user.avatar_url ? (
-          <img src={user.avatar_url} alt="" className="w-10 h-10 rounded-full object-cover shrink-0" />
-        ) : (
-          <div className="w-10 h-10 rounded-full bg-inset flex items-center justify-center shrink-0">
-            <PersonIcon />
-          </div>
-        )}
+        <AccountAvatar url={user.avatar_url} size="large" />
         <div className="min-w-0">
           <p className="text-sm text-fg font-medium truncate">{user.display_name ?? user.login}</p>
           {/* Plain words when there's no handle yet — no placeholder glyphs. */}

@@ -159,6 +159,99 @@ describe("AccountSection", () => {
     expect(utils.queryByRole("button", { name: "Delete account" })).toBeNull();
   });
 
+  // The Account row must NEVER paint the browser's broken-image glyph. Before the
+  // fix the <img> had no onError, so an unreachable avatar CDN left a broken-image
+  // placeholder sitting in Settings. Both slots (the row icon and the popup's
+  // identity summary) must swap to our own person glyph instead.
+  it("avatar that fails to load is replaced by the person glyph, in the row and the popup", async () => {
+    (globalThis as any).window.claude = signedInMock();
+    const utils = renderSection();
+    await flush();
+
+    // Row icon starts as the photo, then the load fails.
+    const rowImg = utils.container.querySelector('img[src="http://avatar"]') as HTMLImageElement;
+    expect(rowImg).toBeTruthy();
+    await act(async () => {
+      fireEvent.error(rowImg);
+    });
+    expect(utils.container.querySelector('img[src="http://avatar"]')).toBeNull();
+    expect(utils.container.querySelector("svg")).toBeTruthy();
+
+    // Same guard inside the popup's identity summary.
+    await openPopup(utils);
+    const popupImg = document.body.querySelector('img[src="http://avatar"]') as HTMLImageElement;
+    expect(popupImg).toBeTruthy();
+    await act(async () => {
+      fireEvent.error(popupImg);
+    });
+    expect(document.body.querySelector('img[src="http://avatar"]')).toBeNull();
+  });
+
+  // The row's <img> is created at app start and a browser never re-requests a src
+  // it already failed on, so a launch-time network race would strand the glyph for
+  // the whole session with no user action to trigger a retry. Two timed retries
+  // cover that; the third failure stops, so an offline machine isn't looping.
+  it("a failed avatar retries on a timer twice, then stops", async () => {
+    vi.useFakeTimers();
+    try {
+      (globalThis as any).window.claude = signedInMock();
+      const utils = renderSection();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      const fail = async () => {
+        const img = utils.container.querySelector('img[src="http://avatar"]') as HTMLImageElement;
+        expect(img).toBeTruthy();
+        await act(async () => {
+          fireEvent.error(img);
+        });
+        expect(utils.container.querySelector('img[src="http://avatar"]')).toBeNull();
+      };
+
+      // First failure → retried 5s later.
+      await fail();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+
+      // Second failure → retried 10s later.
+      await fail();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      // Third failure exhausts the timed budget — no further automatic retry.
+      await fail();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(utils.container.querySelector('img[src="http://avatar"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A photo that failed during an outage must come back on its own — Settings
+  // stays mounted while closed, so without the retry the glyph would outlive the
+  // outage until the app restarted.
+  it("a failed avatar is retried when the window regains focus", async () => {
+    (globalThis as any).window.claude = signedInMock();
+    const utils = renderSection();
+    await flush();
+
+    const rowImg = utils.container.querySelector('img[src="http://avatar"]') as HTMLImageElement;
+    await act(async () => {
+      fireEvent.error(rowImg);
+    });
+    expect(utils.container.querySelector('img[src="http://avatar"]')).toBeNull();
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(utils.container.querySelector('img[src="http://avatar"]')).toBeTruthy();
+  });
+
   it("Edit account reveals the editors + danger zone; Done returns to view mode", async () => {
     (globalThis as any).window.claude = signedInMock();
     const utils = renderSection();
