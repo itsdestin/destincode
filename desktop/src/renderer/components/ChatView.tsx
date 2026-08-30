@@ -1175,6 +1175,7 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
             <div className="drawer-pane">
               <SessionDrawer
                 sessionId={sessionId}
+                cwd={cwd ?? ''}
                 projectRoot={activeProject?.path ?? ''}
                 projectId={activeProject?.id ?? ''}
                 projectName={activeProject?.name ?? 'project'}

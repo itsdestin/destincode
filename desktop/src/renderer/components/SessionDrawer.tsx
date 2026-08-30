@@ -13,6 +13,7 @@ import { clampDrawerWidth, applyDrawerWidthVar } from '../state/drawer-width';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useProjectWatch } from '../hooks/useProjectWatch';
 import { useGitFileStatus } from '../hooks/useGitFileStatus';
+import { useMissingArtifacts, refreshMissingArtifacts } from '../hooks/useMissingArtifacts';
 import { gitFooterState } from '../utils/git-footer';
 import { ActiveArtifactView, type ActiveArtifactHandle } from './artifact-views/ActiveArtifactView';
 import SessionPreviewPane from './SessionPreviewPane';
@@ -71,6 +72,12 @@ interface Props {
   projectRoot: string;
   projectId: string;
   projectName: string;
+  /** The session's own working folder. Distinct from `projectRoot`, which is
+   *  resolved through an ASYNC projects-index lookup and is therefore '' for
+   *  the first moments of every drawer open. The on-disk check keys off this
+   *  one so it can answer before the drawer paints — and so it shares its
+   *  answer with the header file badge, which keys off the same value. */
+  cwd: string;
 }
 
 // ── Small inline icon helper (lucide-style, inherits currentColor) ──
@@ -132,7 +139,7 @@ function IconBtn({ name, title, onClick, active, glyph }: { name?: string; title
   );
 }
 
-export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }: Props) {
+export function SessionDrawer({ sessionId, projectRoot, projectId, projectName, cwd }: Props) {
   const { state, dispatch } = useArtifact();
   const { showDeletedArtifacts, setShowDeletedArtifacts, drawerWidth, setDrawerWidth, resetDrawerWidth } = useTheme();
   const allArtifacts = state.sessionArtifacts[sessionId] ?? [];
@@ -246,33 +253,40 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     return () => { cancelled = true; };
   }, [drawerOpen, projectRoot, sessionId, dispatch]);
 
-  // Existence check (unchanged): mark artifacts whose file is gone as orphans,
-  // folded into the "deleted" UI state alongside explicit delete versions.
-  const [orphanIds, setOrphanIds] = useState<Set<string>>(() => new Set());
   // Multi-select type filter; EMPTY set = all types. Matches Project View
   // (Destin, 2026-07-23 — the drawer gained the Type group).
   const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
+  // Orphans — artifacts whose file is gone from disk, folded into the same
+  // "deleted" UI state as explicit delete versions.
+  //
+  // Fix (2026-08-30, the deleted-rows flash): this used to be component-local
+  // state that reset to EMPTY on every close, so each open rendered the whole
+  // list and then removed rows an IPC round trip later. The verdict now lives
+  // in a project-scoped shared cache the header badge has already warmed, and
+  // it is never cleared before its replacement arrives — so the list is
+  // settled on the first painted frame. See hooks/useMissingArtifacts.ts.
+  //
+  // Exclude DISCOVERED (on-disk) records: their id is a relative path, not a
+  // sidecar id, so checkExistence would treat them as "missing" and wrongly
+  // mark a file that is literally on disk as deleted. They exist by definition
+  // (discovery only lists real files), so they are never asked about.
+  const checkableIds = useMemo(
+    () => allArtifacts.filter((a) => !(a as any).discovered).map((a) => a.id),
+    [allArtifacts]
+  );
+  const { missingIds: orphanIds, known: orphansKnown } =
+    useMissingArtifacts(cwd || null, checkableIds);
+  // Opening the drawer re-verifies disk state even when the id set has not
+  // changed — the moment the list is about to be READ is the moment it most
+  // needs to be right. It refreshes IN PLACE, so nothing blanks meanwhile.
   useEffect(() => {
-    if (!drawerOpen || allArtifacts.length === 0 || !projectRoot) {
-      setOrphanIds(new Set());
-      return;
-    }
-    let cancelled = false;
-    // Exclude DISCOVERED (on-disk) records: their id is a relative path, not a
-    // sidecar id, so checkExistence would treat them as "missing" and wrongly
-    // mark a file that's literally on disk as deleted. They exist by definition
-    // (discovery only lists real files), so skip them here.
-    const ids = allArtifacts.filter((a) => !(a as any).discovered).map((a) => a.id);
-    (window.claude as any).artifacts.checkExistence(projectRoot, ids)
-      .then((res: any) => {
-        if (cancelled || !res?.ok) return;
-        setOrphanIds(new Set(res.missingIds ?? []));
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-    // Dep is the ARRAY, not its length — a rename/status flip changes members
-    // without changing the count, and orphan detection must re-run then too.
-  }, [drawerOpen, allArtifacts, projectRoot]);
+    if (!drawerOpen || !cwd || checkableIds.length === 0) return;
+    void refreshMissingArtifacts(cwd, checkableIds);
+    // checkableIds rides the drawer-open edge only: a members-changed refresh
+    // is already the hook's own job, and depending on the array here would
+    // double-fire every time the list is re-listed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawerOpen, cwd]);
 
   const artifacts = useMemo(() => {
     return allArtifacts.filter((a) => {
@@ -461,6 +475,17 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
     return arr;
   }, [artifacts, searchQuery, sortBy, sessionId]);
 
+  // True only until the FIRST on-disk check for this folder has settled. That
+  // is normally already done before this drawer even mounts: the header's file
+  // badge (useArtifactCount) runs the same check against the same cwd from the
+  // moment a session exists, and shares its answer through the same cache. The
+  // flag covers the cold case — a session whose files were never counted — where
+  // painting rows now would mean removing some of them a round trip later.
+  // Nothing renders in that window: not the rows, and not the empty state
+  // either, since "Nothing here yet" would be its own wrong-then-corrected
+  // flash.
+  const listSettling = !orphansKnown && checkableIds.length > 0;
+
   // Collapse the list once the user actually engages the previewed artifact:
   // a click into the content pane or a scroll within it. Scroll is captured
   // (third arg true) because the real scroll happens on an inner overflow
@@ -555,7 +580,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             lists; the "Session" qualifier still carries the distinction: this
             drawer is one session's activity log (created/edited/viewed all
             appear), vs the project-wide set in Project View. */}
-        <span className="font-semibold text-sm">Session Files ({listedArtifacts.length})</span>
+        <span className="font-semibold text-sm">Session Files{listSettling ? '' : ` (${listedArtifacts.length})`}</span>
         {/* Only in the list-only shape (no artifact, no preview) — once
             either is showing, the top bar's own Close icon covers this, and
             showing both would be a redundant second close button. */}
@@ -609,7 +634,7 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName }
             {pillError}
           </div>
         )}
-        {listedArtifacts.length === 0 ? (
+        {listSettling ? null : listedArtifacts.length === 0 ? (
           pillError ? null /* the note above already explains the state */ : (
             /* Same EmptyState + way-out pattern as the Project View files tab and
                the Resume browser (change 32). A search that matched nothing gets a

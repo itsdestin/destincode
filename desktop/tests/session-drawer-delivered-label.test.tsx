@@ -4,7 +4,7 @@
 // and not "created" (it was not modified). Spec 2026-08-25 §4.2.
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, waitFor } from '@testing-library/react';
 import { ArtifactContext } from '../src/renderer/state/ArtifactContext';
 import { initialArtifactState } from '../src/renderer/state/artifact-tracker';
 import type { ArtifactRecord } from '../src/shared/artifacts/types';
@@ -22,7 +22,7 @@ import { SessionDrawer } from '../src/renderer/components/SessionDrawer';
 afterEach(cleanup);
 
 describe('SessionDrawer — delivered label', () => {
-  it('labels a delivered-only file "delivered"', () => {
+  it('labels a delivered-only file "delivered"', async () => {
     const artifact: ArtifactRecord = {
       id: 'a1', path: 'out/chart.png', kind: 'internal', absolutePath: null,
       lastModified: new Date().toISOString(), status: 'active',
@@ -40,7 +40,7 @@ describe('SessionDrawer — delivered label', () => {
     };
     const { container } = render(
       <ArtifactContext.Provider value={{ state, dispatch: vi.fn() }}>
-        <SessionDrawer sessionId="sess" projectRoot="/home/u/proj" projectId="proj-1" projectName="proj" />
+        <SessionDrawer sessionId="sess" projectRoot="/home/u/proj" cwd="/home/u/proj" projectId="proj-1" projectName="proj" />
       </ArtifactContext.Provider>,
     );
     // Read the label div directly (same approach as
@@ -51,6 +51,10 @@ describe('SessionDrawer — delivered label', () => {
     // never finds a word boundary before the "d" and always fails, pass or
     // fail state. Isolating the label div sidesteps that entirely; there is
     // only one row in this fixture so the class selector is unambiguous.
+    // The list holds one frame while the on-disk check settles (the drawer no
+    // longer paints rows it may be about to remove — see useMissingArtifacts),
+    // so the row arrives on the next tick rather than synchronously.
+    await waitFor(() => expect(container.querySelector('.text-3xs')).toBeTruthy());
     const label = container.querySelector('.text-3xs')?.textContent ?? '';
     expect(label).toMatch(/^delivered\b/);
     expect(label).not.toMatch(/^(created|viewed|edited)\b/);

@@ -62,6 +62,7 @@ export default function TerminalRightSlot({ sessionId, cwd, gamePane, drawerOpen
                 // close/reopen, not this cross-session case.
                 key={sessionId}
                 sessionId={sessionId}
+                cwd={cwd ?? ''}
                 projectRoot={activeProject?.path ?? ''}
                 projectId={activeProject?.id ?? ''}
                 projectName={activeProject?.name ?? 'project'}
