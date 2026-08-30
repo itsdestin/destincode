@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
@@ -53,18 +53,37 @@ function AccountAvatar({ url, size }: { url?: string | null; size: 'row' | 'larg
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const box = size === 'large' ? 'w-10 h-10' : 'w-5 h-5';
 
-  // Retry a failed photo when the machine comes back online or the user returns
-  // to the window. SettingsPanel stays mounted while closed, so without this the
-  // fallback glyph would outlive the outage and persist until the app restarts.
-  // Listeners are attached only while a photo is actually in the failed state.
+  // Retry a failed photo. This is what makes the row behave like the popup.
+  //
+  // SettingsPanel is always mounted (it hides by sliding off-screen, it does not
+  // unmount), so the ROW's <img> is created seconds after app start and gets
+  // exactly one shot at the network — a browser <img> never re-requests a src it
+  // already failed on. The POPUP's <img> is created fresh on every open, so it
+  // always gets a new attempt and, once fetched, is served from the HTTP cache.
+  // That asymmetry is why the row could sit broken while the popup looked fine.
+  //
+  // Two short automatic retries cover a network stack that wasn't up yet at
+  // launch; after that we only retry on a real signal (back online, or the user
+  // returning to the window) so an offline machine isn't requesting on a loop.
+  // Same "next focus retries" philosophy the account refresh already uses.
+  const retriesRef = useRef(0);
+  useEffect(() => {
+    retriesRef.current = 0; // a different account's photo starts with a full budget
+  }, [url]);
   useEffect(() => {
     if (!failedSrc) return;
-    const retry = () => setFailedSrc(null);
+    const retry = () => {
+      retriesRef.current += 1;
+      setFailedSrc(null);
+    };
     window.addEventListener('online', retry);
     window.addEventListener('focus', retry);
+    const timer =
+      retriesRef.current < 2 ? window.setTimeout(retry, 5000 * (retriesRef.current + 1)) : undefined;
     return () => {
       window.removeEventListener('online', retry);
       window.removeEventListener('focus', retry);
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [failedSrc]);
 
