@@ -14,7 +14,7 @@
 // timestamp — not the global edit history bleeding into this session's row.
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, waitFor } from '@testing-library/react';
 import { afterEach } from 'vitest';
 import { ArtifactContext } from '../src/renderer/state/ArtifactContext';
 import { initialArtifactState } from '../src/renderer/state/artifact-tracker';
@@ -54,7 +54,7 @@ afterEach(cleanup);
 }));
 
 describe('SessionDrawer row labels are scoped to THIS session', () => {
-  it('shows "viewed" and the read\'s own timestamp for a file only read in this session, ignoring edits from other sessions', () => {
+  it('shows "viewed" and the read\'s own timestamp for a file only read in this session, ignoring edits from other sessions', async () => {
     const now = Date.now();
     const threeHoursAgo = new Date(now - 3 * 60 * 60 * 1000).toISOString();
     const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -108,6 +108,7 @@ describe('SessionDrawer row labels are scoped to THIS session', () => {
         <SessionDrawer
           sessionId={SESSION}
           projectRoot={ROOT}
+          cwd={ROOT}
           projectId="proj-1"
           projectName="proj"
         />
@@ -118,6 +119,10 @@ describe('SessionDrawer row labels are scoped to THIS session', () => {
     // div (ArtifactListItem's "text-3xs" line), separate from the filename
     // div, so target it directly rather than a parent whose textContent
     // would concatenate the filename in front of the label.
+    // The list holds one frame while the on-disk check settles (the drawer no
+    // longer paints rows it may be about to remove — see useMissingArtifacts),
+    // so the row arrives on the next tick rather than synchronously.
+    await waitFor(() => expect(container.querySelector('.text-3xs')).toBeTruthy());
     const labelEl = container.querySelector('.text-3xs');
     const label = labelEl?.textContent ?? null;
 

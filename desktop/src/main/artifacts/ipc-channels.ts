@@ -32,9 +32,14 @@ export const ARTIFACT_IPC = {
   // Task 7.3: remove a project from the central index (and optionally its sidecar)
   DELETE_PROJECT: 'artifacts:delete-project',
   // Resolves each tracked path and runs fs.access on it in parallel, returning
-  // the IDs whose file is missing. Used by SessionDrawer + ProjectView to fold
-  // "file not on disk" into the same "deleted" UI state as sidecar-tracked
-  // delete versions, so the user only sees one concept.
+  // the IDs whose file is missing, so the renderer can fold "file not on disk"
+  // into the same "deleted" UI state as sidecar-tracked delete versions and the
+  // user only sees one concept. The ONE renderer caller is the shared
+  // useMissingArtifacts cache (hooks/useMissingArtifacts.ts), which the Session
+  // Drawer list and the header file badge both read; they used to call this
+  // separately and could disagree. (The comment here named Project View as a
+  // caller until 2026-08-30 — it has had none since its Files tab moved to
+  // on-disk discovery, which cannot list a file that is not there.)
   // (No apostrophes in this comment — the ipc-channels parity test scans for
   // single-quoted strings and any stray apostrophe would be treated as a channel.)
   CHECK_EXISTENCE: 'artifacts:check-existence',

@@ -7,33 +7,26 @@
 //      Delete tool, so this mostly never happens).
 //   2. "orphan" — the file was removed via `bash rm` (which produces NO
 //      artifact event), so the record stays status:'active' but the file is
-//      gone from disk. The drawer detects these with checkExistence; we mirror
-//      that here so the badge reflects what's actually on disk, not the full
-//      session activity log.
+//      gone from disk.
+//
+// Orphan detection is NOT done here: it lives in the shared, project-scoped
+// useMissingArtifacts cache so this badge and the Session Drawer's list can
+// never disagree, and so the badge (mounted for the whole session) warms that
+// cache before the drawer is ever opened — see useMissingArtifacts.ts for why
+// that ordering is what removes the drawer's deleted-row flash.
 
-import { useEffect, useState } from 'react';
 import { useArtifact } from '../state/ArtifactContext';
+import { useMissingArtifacts } from './useMissingArtifacts';
 
 export function useArtifactCount(activeSessionId: string | null, projectRoot?: string): number {
   const { state } = useArtifact();
   const sessionArtifacts = activeSessionId ? (state.sessionArtifacts[activeSessionId] ?? []) : [];
-  const drawerOpen = activeSessionId ? (state.drawerOpenBySession[activeSessionId] ?? false) : false;
 
-  const [missingIds, setMissingIds] = useState<Set<string>>(() => new Set());
   const liveIds = sessionArtifacts.filter((a) => a.status !== 'deleted').map((a) => a.id);
-  const idsKey = liveIds.join(',');
-
-  // Re-checks when the list changes or the drawer toggles (same triggers the
-  // drawer itself uses).
-  useEffect(() => {
-    if (!projectRoot || liveIds.length === 0) { setMissingIds(new Set()); return; }
-    let cancelled = false;
-    (window.claude as any).artifacts.checkExistence(projectRoot, liveIds)
-      .then((res: any) => { if (!cancelled && res?.ok) setMissingIds(new Set(res.missingIds ?? [])); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectRoot, idsKey, drawerOpen]);
+  // Re-checking when the drawer OPENS used to live here; it now lives in the
+  // drawer itself (one refreshMissingArtifacts call), so this badge no longer
+  // needs to know the drawer's state at all.
+  const { missingIds } = useMissingArtifacts(projectRoot ?? null, liveIds);
 
   return sessionArtifacts.filter((a) => a.status !== 'deleted' && !missingIds.has(a.id)).length;
 }
