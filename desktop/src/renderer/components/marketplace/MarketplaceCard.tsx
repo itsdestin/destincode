@@ -19,7 +19,7 @@ import UpdateButton from "./UpdateButton";
 import { OriginBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
 import { capabilityLine } from "./CapabilityList";
 import { ThumbsSummary } from "./FeedbackSection";
-import { CATALOG_TYPE_LABEL } from "../../../shared/catalog-types";
+import { CATALOG_TYPE_LABEL, isInstallableSource } from "../../../shared/catalog-types";
 
 export type MarketplaceCardEntry =
   | { kind: "skill"; entry: SkillEntry }
@@ -145,7 +145,14 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
       {author && <AuthorBadge author={author} />}
     </div>
   ) : null;
-  const corner = suppressCorner ? null : kind === "skill" ? (
+  // Task 21: a row the installer cannot take gets no Install affordance at all —
+  // the detail overlay offers "Open source" instead. Themes are always
+  // installable, so this only gates the skill side.
+  // `!isInstalled` is load-bearing: an ALREADY-installed item is described by the
+  // locally scanned entry, which carries no sourceType at all, and this must not
+  // strip its favorite star (the corner's installed state) on that account.
+  const notInstallable = kind === "skill" && !isInstalled && !isInstallableSource(item.entry);
+  const corner = suppressCorner || notInstallable ? null : kind === "skill" ? (
     <InstallFavoriteCorner inline installed={isInstalled} installing={isInstalling} favorited={isFavorited} onInstall={install} onToggleFavorite={toggleFavorite} />
   ) : isInstalled ? (
     <InstallFavoriteCorner inline installed installing={isInstalling} favorited={isFavorited} onInstall={install} onToggleFavorite={toggleFavorite} />
@@ -275,7 +282,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
               {compactStatus.text}
             </span>
           ) : null}
-          {!suppressCorner && kind === 'skill' && !isInstalled && !isInstalling && (
+          {!suppressCorner && !notInstallable && kind === 'skill' && !isInstalled && !isInstalling && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); install(); }}

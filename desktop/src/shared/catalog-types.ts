@@ -90,3 +90,20 @@ export interface CatalogMeta {
 export function catalogType(meta: CatalogMeta | undefined): CatalogItemType {
   return meta?.itemType ?? 'plugin';
 }
+
+/** Can the app's installer actually take this row?
+ *
+ *  True for plugins cloned from git (`local` / `url` / `git-subdir`) and for
+ *  prompt rows, which install as a private prompt rather than a package.
+ *  False for Connections mirrored from the MCP registry (`mcp-registry`) and
+ *  single-file rows (`file`) — the installer answers both with "Unknown source
+ *  type", so an Install button on them could only ever fail. Those listings show
+ *  "Open source" instead; per-type install is a ROADMAP follow-up.
+ *
+ *  A prompt counts as installable ONLY when the prompt text travels in the row:
+ *  the mirrored "instructions" listings are prompt-typed pointers carrying no
+ *  text, and installing one would store an empty prompt. */
+export function isInstallableSource(entry: { type?: string; sourceType?: string; prompt?: string }): boolean {
+  if (entry.type === 'prompt') return typeof entry.prompt === 'string' && entry.prompt.trim().length > 0;
+  return entry.sourceType === 'local' || entry.sourceType === 'url' || entry.sourceType === 'git-subdir';
+}

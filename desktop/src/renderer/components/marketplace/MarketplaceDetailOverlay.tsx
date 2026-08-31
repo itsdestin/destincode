@@ -19,13 +19,13 @@ import LikeButton from "./LikeButton";
 import { OriginBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
 import { CapabilityList } from "./CapabilityList";
 import FeedbackSection from "./FeedbackSection";
-import { CATALOG_TYPE_LABEL } from "../../../shared/catalog-types";
+import { CATALOG_TYPE_LABEL, isInstallableSource } from "../../../shared/catalog-types";
 import FileViewerOverlay, { type FileViewerTarget } from "./FileViewerOverlay";
 // Task 1: an installed item with an update available needs a way to take it —
 // the overlay swapped straight to Uninstall once installed, so the only route
 // was uninstall-then-reinstall (ROADMAP:736 for themes).
 import UpdateButton from "./UpdateButton";
-import { Button, CloseButton } from "../ui";
+import { Button, CloseButton, Callout } from "../ui";
 // Task 3: `longDescription` is markdown and used to be printed verbatim, so a
 // listing that wrote "**Heading**" showed the asterisks.
 import MarkdownContent from "../MarkdownContent";
@@ -341,6 +341,22 @@ function SkillBody({
                 </>
               );
             })()
+          ) : !isInstallableSource(entry) ? (
+            // Task 21: rows the installer cannot take (Connections from the MCP
+            // registry, single-file listings) never reach an Install button — it
+            // would only ever fail. Point at the source instead. Checked AFTER
+            // `installed` on purpose: an installed item is described by the
+            // locally scanned entry, which has no sourceType, and must keep its
+            // Uninstall button.
+            <Button
+              variant="secondary"
+              size="lg"
+              onClick={() => entry.repoUrl && window.open(entry.repoUrl, '_blank', 'noopener')}
+              disabled={!entry.repoUrl}
+              title={entry.repoUrl ? undefined : 'This listing does not say where its source lives.'}
+            >
+              Open source
+            </Button>
           ) : (
             <Button
               size="lg"
@@ -359,6 +375,19 @@ function SkillBody({
       {/* Overhaul (decision #3): what it does to your machine, in plain
           words, BEFORE the description — read it, then decide. */}
       {catalog && <CapabilityList catalog={catalog} />}
+
+      {/* Task 21: say plainly why there is no Install button, right where the
+          user is looking for one. */}
+      {!installed && !isInstallableSource(entry) && (
+        <Callout tone="info">
+          {/* Name the thing rather than always saying "connection": most of these
+              rows ARE connections, but single-file listings are not, and calling
+              one a connection would be plainly wrong. */}
+          This {catalog ? CATALOG_TYPE_LABEL[catalog.itemType].one.toLowerCase() : 'listing'} isn't
+          installable from here yet. What this can do lists how it runs (as a package or a
+          remote service); add it from the source page.
+        </Callout>
+      )}
 
       {/* Tags + audience + life area — only render when at least one is set,
           so legacy entries without these fields don't get an empty row. */}
