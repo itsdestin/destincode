@@ -4,7 +4,7 @@ import os from 'os';
 import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
-import { installPlugin, uninstallPlugin, upgradePluginFromLocal, refreshLocalMarketplaceCache, readPluginVersion, isPluginInstalled, marketplaceCacheDir, sweepStaleUpgradeDirs, type InstallResult } from './plugin-installer';
+import { installPlugin, uninstallPlugin, upgradePluginFromLocal, refreshLocalMarketplaceCache, readPluginVersion, isPluginInstalled, marketplaceCacheDir, sweepStaleUpgradeDirs, type InstallResult, upgradePluginFromGit } from './plugin-installer';
 import { pluginInstallDir, YOUCODED_PLUGINS_DIR, listInstalledPluginDirs } from './claude-code-registry';
 import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
 import { reconcileHooks } from './hook-reconciler';
@@ -451,11 +451,24 @@ export class LocalSkillProvider implements SkillProvider {
       // number while the on-disk plugin was untouched — a silent no-op that
       // reported success. upgradePluginFromLocal actually replaces the tree.
       // `via` is guaranteed 'YouCoded' here — the 'Claude Code' case returned above.
+      let gitUpgradeCommit: string | undefined;
       if (result.status === 'already_installed' && marketplaceEntry.sourceType === 'local') {
         const upgradeResult = await upgradePluginFromLocal(id, marketplaceEntry.sourceRef || id, marketplaceEntry.sourceMarketplace);
         if (upgradeResult.status !== 'installed') {
           return { ok: false, error: (upgradeResult as any).error ?? 'Update failed' };
         }
+      } else if (result.status === 'already_installed'
+                 && (marketplaceEntry.sourceType === 'url' || marketplaceEntry.sourceType === 'git-subdir')) {
+        // WHY: installPlugin returns 'already_installed' before it reaches any clone,
+        // so without this branch Update rewrote nothing for a git-sourced plugin — 237
+        // of the 302 live registry entries (measured 2026-08-31), i.e. most of the
+        // store. upgradePluginFromGit clones into staging and only swaps on success,
+        // so a failed update leaves the working install exactly as it was.
+        const upgradeResult = await upgradePluginFromGit(marketplaceEntry);
+        if (upgradeResult.status !== 'installed') {
+          return { ok: false, error: (upgradeResult as any).error ?? 'Update failed' };
+        }
+        gitUpgradeCommit = upgradeResult.commit;
       }
       // WHY plugin.json's version, not the index's: B7 makes the index copy
       // plugin.json, so the renderer's "Update available" compare (package
@@ -467,7 +480,10 @@ export class LocalSkillProvider implements SkillProvider {
       // changed. (Known gap: for url / git-subdir sources 'already_installed' is
       // the normal outcome, so those updates still do nothing on disk — that is a
       // pre-existing bug tracked separately, not something this line introduces.)
-      const landedCommit = result.status === 'installed' ? result.commit : undefined;
+      // The commit we actually landed on: from the fresh install, or from the git
+      // upgrade above. Still undefined when nothing was rewritten, so a no-op can
+      // never clear the update badge by recording a commit it did not check out.
+      const landedCommit = result.status === 'installed' ? result.commit : gitUpgradeCommit;
       this.configStore.updatePackageVersion(id, newVersion || '1.0.0', landedCommit);
       this.installedCache = null;
       this.onCacheInvalidated?.();

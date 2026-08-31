@@ -3,6 +3,9 @@ import { BUNDLED_PLUGIN_IDS } from '../src/shared/bundled-plugins';
 
 const inst = vi.hoisted(() => ({
   installPlugin: vi.fn(), upgradePluginFromLocal: vi.fn(), refreshLocalMarketplaceCache: vi.fn(),
+  // update() now routes url / git-subdir sources to the git upgrade path — without
+  // the export here the real call throws "not a function".
+  upgradePluginFromGit: vi.fn(),
   readPluginVersion: vi.fn(), isPluginInstalled: vi.fn(),
   // Fix (Track B final review, Finding F1): reconcileBundledPlugins() now
   // sweeps stale .old-/.upgrade- litter at the top of every run — the mock
@@ -364,8 +367,13 @@ describe('LocalSkillProvider.update', () => {
     const urlEntry = { id: 'ext-plugin', type: 'plugin', version: '1.0.0', sourceType: 'url', sourceRef: 'https://example.com/ext.git', sourceMarketplace: 'youcoded' };
     vi.spyOn(p as any, 'fetchIndex').mockResolvedValue([urlEntry]);
     inst.installPlugin.mockResolvedValue({ status: 'already_installed', via: 'YouCoded' });
+    inst.upgradePluginFromGit.mockResolvedValue({ status: 'installed', commit: 'f'.repeat(40) });
     const r = await p.update('ext-plugin');
     expect(inst.upgradePluginFromLocal).not.toHaveBeenCalled();
+    // …but the GIT upgrade must fire. installPlugin answers 'already_installed'
+    // before it reaches any clone, so without this the update rewrote nothing —
+    // the case that covers 237 of the 302 live registry entries.
+    expect(inst.upgradePluginFromGit).toHaveBeenCalled();
     expect(r.ok).toBe(true);
   });
 
@@ -373,9 +381,21 @@ describe('LocalSkillProvider.update', () => {
     const subdirEntry = { id: 'ext-plugin', type: 'plugin', version: '1.0.0', sourceType: 'git-subdir', sourceRef: 'https://example.com/ext.git', sourceSubdir: 'sub', sourceMarketplace: 'youcoded' };
     vi.spyOn(p as any, 'fetchIndex').mockResolvedValue([subdirEntry]);
     inst.installPlugin.mockResolvedValue({ status: 'already_installed', via: 'YouCoded' });
+    inst.upgradePluginFromGit.mockResolvedValue({ status: 'installed', commit: 'f'.repeat(40) });
     const r = await p.update('ext-plugin');
     expect(inst.upgradePluginFromLocal).not.toHaveBeenCalled();
+    expect(inst.upgradePluginFromGit).toHaveBeenCalled();
     expect(r.ok).toBe(true);
+  });
+
+  it('a failed git upgrade reports the real error and does NOT claim success', async () => {
+    const urlEntry = { id: 'ext-plugin', type: 'plugin', version: '1.0.0', sourceType: 'url', sourceRef: 'https://example.com/ext.git', sourceMarketplace: 'youcoded' };
+    vi.spyOn(p as any, 'fetchIndex').mockResolvedValue([urlEntry]);
+    inst.installPlugin.mockResolvedValue({ status: 'already_installed', via: 'YouCoded' });
+    inst.upgradePluginFromGit.mockResolvedValue({ status: 'failed', error: 'fatal: could not read from remote repository' });
+    const r = await p.update('ext-plugin');
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain('could not read from remote repository');
   });
 
   it('reports a failure, not success, when the plugin is installed via Claude Code', async () => {
