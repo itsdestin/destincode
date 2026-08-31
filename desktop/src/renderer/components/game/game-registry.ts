@@ -68,6 +68,7 @@ export const GAMES: readonly GameDefinition[] = [
     kind: 'solo',
     blurb: 'Fly your theme\u2019s mascot through the gaps.',
     Tile: FlappyTile,
+    Play: React.lazy(() => import('./FlappyGame')),
     defaultPaneWidth: 420,
     scoring: {
       label: 'Pipes cleared', higherIsBetter: true,
@@ -80,6 +81,8 @@ export const GAMES: readonly GameDefinition[] = [
     kind: 'solo',
     blurb: 'Slide and merge. Put it down mid-move; nothing is lost.',
     Tile: TwentyFortyEightTile,
+    // Lazy so a game's code is not in the bundle until someone opens it.
+    Play: React.lazy(() => import('./TwentyFortyEightGame')),
     defaultPaneWidth: 440,
     scoring: { label: 'Score', higherIsBetter: true, format: (n) => n.toLocaleString() },
   },

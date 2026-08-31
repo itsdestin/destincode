@@ -133,6 +133,25 @@ describe('the assistant-finishing rule (§7)', () => {
   }
 });
 
+describe('a focused game owns its keys', () => {
+  // Found by building 2048: the chat scrolls the transcript on Up/Down from a
+  // `window` capture listener that yields only for text fields. A game board is
+  // not a text field, so the chat scrolled BEHIND the player while they played.
+  // The game cannot win that race from its own side — the listener registers
+  // first and capture runs outermost-first — so the yield lives in ChatView.
+  it('ChatView yields arrow keys to a focused game board', () => {
+    const chat = readStripped(join(RENDERER, 'components', 'ChatView.tsx'));
+    expect(chat).toContain('[data-game-keys]');
+  });
+
+  it('a game that claims the arrow keys marks itself', () => {
+    // The other half of the contract: the marker has to be ON something, or
+    // ChatView's yield is dead code that reads as protection.
+    const claimers = gameFiles().filter((f) => readStripped(f).includes('data-game-keys'));
+    expect(claimers.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe('theming (§5.5)', () => {
   // The app DOES sanction four Tailwind palette names — the status colours,
   // which are theme-independent by standing rule (desktop/CLAUDE.md). Rather

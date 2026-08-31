@@ -426,6 +426,12 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (isTypingTarget(document.activeElement)) return;
+      // A focused game board owns its own arrow keys. Without this the chat
+      // scrolls BEHIND you while you play 2048, because a board is not a text
+      // field and so `isTypingTarget` says nothing about it. This listener is
+      // on `window` and registers first, so the game cannot win the race from
+      // its own side — the yield has to happen here.
+      if (document.activeElement?.closest('[data-game-keys]')) return;
       if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
 

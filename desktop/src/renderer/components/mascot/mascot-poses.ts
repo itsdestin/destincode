@@ -14,7 +14,7 @@ export type LimbId = (typeof LIMB_IDS)[number];
 // pose entries of its own today, so it stays out of LIMB_IDS.
 export type RigPartId = LimbId | 'rig-tail' | 'rig-body';
 export type FaceName = 'idle' | 'welcome' | 'curious' | 'shocked' | 'dizzy';
-export type PoseName = 'idle' | 'pressed' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'peek' | 'peek-right' | 'peek-left';
+export type PoseName = 'idle' | 'pressed' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'flap' | 'peek' | 'peek-right' | 'peek-left';
 
 export interface PartPose { rotate?: number; tx?: number; ty?: number; hidden?: boolean; }
 export interface PoseDef { parts: Partial<Record<RigPartId, PartPose>>; face: FaceName; wave?: boolean; }
@@ -38,6 +38,17 @@ export const POSES: Record<PoseName, PoseDef> = {
   curious: { parts: {}, face: 'curious' },
   shocked: { parts: { 'rig-arm-left': { rotate: 130 }, 'rig-arm-right': { rotate: -130 } }, face: 'shocked' },
   dizzy:   { parts: { 'rig-arm-left': { rotate: -14 }, 'rig-arm-right': { rotate: 14 } }, face: 'dizzy' },
+  // Wing-beat (Flappy, spec §5.1): both arms thrown UP and OUT, higher than
+  // 'shocked' (±130) so the two never read as the same gesture. The game flips
+  // to this on a flap and straight back to 'idle', and the arms' underdamped
+  // springs turn that flip into a real beat — the snap up, the overshoot, the
+  // settle back down — WITHOUT any animation code in the game.
+  //
+  // It lives here, in the shared table, rather than in the game: poses are the
+  // rig's extension point, so every theme that ships a mascot — including
+  // themes published after this app version — gets a flying mascot for free,
+  // with nothing for the theme author to do.
+  flap:    { parts: { 'rig-arm-left': { rotate: 150 }, 'rig-arm-right': { rotate: -150 } }, face: 'welcome' },
   // Bottom/top peek: arms curled INWARD = little hands gripping the screen
   // edge while the body sinks past it (BuddyMascot applies the sink transform).
   peek:    { parts: { 'rig-arm-left': { rotate: -160 }, 'rig-arm-right': { rotate: 160 } }, face: 'welcome' },

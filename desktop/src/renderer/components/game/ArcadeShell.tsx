@@ -11,7 +11,7 @@
 // keeps its real challenge-a-friend flow, rethemed. The playfields and the
 // state split land in Step 2 — this file should not need to change for them.
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import { useAccount } from '../../state/account-context';
 import { useTheme } from '../../state/theme-context';
@@ -71,7 +71,29 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
   const dispatch = useGameDispatch();
   const { signedIn, startSignIn } = useAccount();
   const [openGame, setOpenGame] = useState<GameDefinition | null>(null);
+  /** True while a solo run is actually on screen. Opening a game shows its
+   *  board first — you land on "here is where you stand", not mid-run. */
+  const [playing, setPlaying] = useState(false);
+  /** Bests set during THIS session, so the board updates the moment a run ends
+   *  instead of waiting on a round trip. The server's copy still wins on the
+   *  next fetch; this only ever fills the gap. */
+  const [localBest, setLocalBest] = useState<Record<string, number>>({});
   const { applyGameDefaultWidth } = useTheme();
+
+  const bestOf = (id: string) => localBest[id];
+
+  const endRun = (score: number) => {
+    setPlaying(false);
+    if (!openGame) return;
+    // Keep the higher of the two: a bad run must never lower your best.
+    setLocalBest((b) => ({ ...b, [openGame.id]: Math.max(b[openGame.id] ?? 0, score) }));
+    const api = (window.claude as unknown as {
+      arcade?: { submitScore?: (gameId: string, score: number) => Promise<unknown> };
+    }).arcade;
+    // Signed out, or the board unreachable, the run still counted locally —
+    // §4.2/§6.6: the leaderboard being down never costs you the game.
+    void api?.submitScore?.(openGame.id, score);
+  };
 
   // §4.3: a game opens at ITS default width the first time — chess wants 520px
   // where the picker wants 420. This is a no-op once the user has dragged the
@@ -80,6 +102,9 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
   // so dragging to exactly the default still counts as a choice.
   useEffect(() => {
     if (openGame) applyGameDefaultWidth(openGame.defaultPaneWidth);
+    // Leaving a game must end its run, or coming back drops you into a board
+    // that has been sitting frozen since you left.
+    setPlaying(false);
   }, [openGame, applyGameDefaultWidth]);
   const { statuses, board } = useArcadeData(openGame?.kind === 'solo' ? openGame.id : null);
 
@@ -105,6 +130,7 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
       dispatch({ type: 'RETURN_TO_LOBBY' });
     }
     setOpenGame(null);
+    setPlaying(false);
   };
 
   return (
@@ -138,10 +164,25 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
         )}
 
         {openGame?.kind === 'solo' && (
-          <div className="flex flex-col">
+          <div className="flex flex-col flex-1 min-h-0">
+            {playing && openGame.Play ? (
+              // The playfield takes the whole pane while a run is on. Suspense
+              // is required because the game is lazily imported — without it
+              // React throws on first open rather than showing anything.
+              <Suspense fallback={<LoadingState what={openGame.name} />}>
+                <openGame.Play onEnd={endRun} best={bestOf(openGame.id)} />
+              </Suspense>
+            ) : (
+              <>
             {/* G-4: one primary per view — Play is it. */}
             <div className="px-3 pt-3">
-              <Button variant="primary" size="md" className="w-full" onClick={() => { /* Step 2 */ }}>
+              <Button
+                variant="primary"
+                size="md"
+                className="w-full"
+                disabled={!openGame.Play}
+                onClick={() => setPlaying(true)}
+              >
                 Play
               </Button>
               <p className="text-2xs text-fg-muted leading-relaxed pt-2">{openGame.blurb}</p>
@@ -158,6 +199,8 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
                   onSignIn={() => { void startSignIn(); }}
                 />
               )}
+              </>
+            )}
           </div>
         )}
 
