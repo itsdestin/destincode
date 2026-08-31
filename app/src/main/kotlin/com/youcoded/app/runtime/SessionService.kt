@@ -2970,7 +2970,7 @@ class SessionService : Service() {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
-            // ── Games arcade (spec §6.1, §6.6) ───────────────────────────────────
+            // ── Games arcade (spec §6.1, §6.2, §6.6) ──────────────────────────────
             // Mirrors desktop/src/main/arcade-handlers.ts channel for channel. The
             // channel strings are byte-identical to the ones in preload.ts,
             // remote-shim.ts and remote-server.ts — drift silently breaks Android
@@ -3040,6 +3040,25 @@ class SessionService : Service() {
                     result.toJson { v -> v }
                 }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
+            }
+
+            "arcade:records" -> {
+                // payload: { game } — OPTIONAL. Absent/empty means every game, so
+                // null is passed through rather than "" (which would ask for the
+                // game literally named "" and always answer nothing).
+                //
+                // DELIBERATELY NOT CACHED, unlike arcade:leaderboard above.
+                // Desktop parity: arcade-handlers.ts. A leaderboard is on screen
+                // DURING play, so blanking it on an outage reads as "my scores are
+                // gone" — worth showing a labelled old copy. A records list is only
+                // read on a screen the player opened on purpose, where a stale
+                // "4-2" is a wrong FACT about a friend and is worse than no number.
+                // Signed out or offline, the error goes back untouched.
+                val game = msg.payload.optString("game", "").ifEmpty { null }
+                val result = marketplaceApiClient.gameRecords(game)
+                clearSessionOn401(result)
+                // value shape: bare array of HeadToHead
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
             }
 
             // ── Presence socket (Task 6) ─────────────────────────────────────────

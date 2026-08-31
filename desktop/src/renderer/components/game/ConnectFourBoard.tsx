@@ -117,6 +117,10 @@ export default function ConnectFourBoard({ connection }: Props) {
             return (
               <div
                 key={col}
+                // Lets the review rig play a real game to its end — without a
+                // stable hook the end-of-match card (and the head-to-head line
+                // on it) can only be reached by clicking blind coordinates.
+                data-col={col}
                 className={`flex-1 min-w-0 flex flex-col gap-1 rounded-sm cursor-pointer transition-colors ${
                   canMove && isHovered ? 'bg-accent/15' : ''
                 }`}

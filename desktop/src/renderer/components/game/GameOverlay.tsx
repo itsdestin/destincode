@@ -2,6 +2,7 @@ import { useGameState, useGameDispatch } from '../../state/game-context';
 import { GameConnection } from '../../state/game-types';
 import { OverlayPanel } from '../overlays/Overlay';
 import { Button } from '../ui';
+import { recordSentence } from './head-to-head';
 
 interface Props {
   connection: GameConnection;
@@ -49,6 +50,18 @@ export default function GameOverlay({ connection }: Props) {
           {outcome && !draw && (
             <span className="text-xs text-fg-muted">
               {youWon ? 'Congratulations!' : 'Better luck next time'}
+            </span>
+          )}
+          {/* The running record, once the SERVER has settled it (§6.2). It is
+              absent until both players have independently reported the same
+              result, so this line appears a moment after the headline — and
+              never at all if the two disagree. Showing a provisional number
+              here and correcting it later would be worse than showing none:
+              this is a fact about someone else, and it should appear once,
+              already true. */}
+          {state.record && (
+            <span className="text-xs text-fg-2 pt-1">
+              {recordSentence(state.record, state.opponent)}
             </span>
           )}
         </div>

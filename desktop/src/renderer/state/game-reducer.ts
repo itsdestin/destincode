@@ -96,6 +96,11 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         ...state,
         roomCode: action.code,
         seat: action.seat,
+        // The CHALLENGER's route to the opponent's account: they picked the
+        // person, so they have the id the game room will never tell them.
+        opponentId: action.opponentId,
+        matchesStarted: 0,
+        record: null,
         screen: 'waiting',
       };
 
@@ -103,6 +108,13 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       return {
         ...state,
         roomCode: action.code,
+        // The ACCEPTER's route to the same fact: whoever challenged them. Read
+        // here rather than passed in, because `joinGame(code, gameId)` is the
+        // one signature every game shares (§3.1) and must not grow a third arg
+        // that only head-to-head records care about.
+        opponentId: state.challengeFrom?.id ?? null,
+        matchesStarted: 0,
+        record: null,
         screen: 'joining',
       };
 
@@ -118,6 +130,13 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         turnSeat: action.turnSeat,
         screen: 'playing',
         outcome: null,
+        // Both clients count the same GAME_STARTs — the initial one and every
+        // mutually-agreed rematch — so both derive the same match id without
+        // negotiating one. If they ever diverge the two halves simply never
+        // agree and NOTHING is recorded, which is the safe direction to fail.
+        matchesStarted: state.matchesStarted + 1,
+        // Last match's record must not linger over this one.
+        record: null,
         chatMessages: [],
         rematchRequested: false,
         opponentDisconnected: false,
@@ -175,6 +194,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         // game's leftovers reaching the next game's board.
         play: null,
         opponent: null,
+        opponentId: null,
+        matchesStarted: 0,
+        record: null,
         chatMessages: [],
         challengeCode: null,
         challengeGame: null,
@@ -234,6 +256,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
 
     case 'CLEAR_CHALLENGE':
       return { ...state, challengeFrom: null, challengeCode: null, challengeGame: null, challengeDeclinedBy: null, partyError: null };
+
+    case 'MATCH_RECORDED':
+      return { ...state, record: action.record };
 
     case 'REMATCH_REQUESTED':
       return { ...state, rematchRequested: true };

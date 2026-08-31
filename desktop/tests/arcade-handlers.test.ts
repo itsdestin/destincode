@@ -144,3 +144,69 @@ describe('arcade ops — publishing a run', () => {
     expect(r.ok === false && r.status).toBe(429);
   });
 });
+
+describe('arcade ops — head-to-head records', () => {
+  const recordRows = [
+    { opponent_id: 'jake', game: 'chess', wins: 4, losses: 2, draws: 1, last_played_at: 1756600000 },
+    { opponent_id: 'jake', game: 'connect-four', wins: 1, losses: 0, draws: 0, last_played_at: 1756500000 },
+  ];
+
+  it('returns the bare array the Worker sends, untouched', async () => {
+    fetchMock.mockResolvedValueOnce(ok(recordRows));
+    const r = await createArcadeOps(store('tok')).records();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value).toEqual(recordRows);
+
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(String(url)).toContain('/games/records');
+    // No game asked for means no filter at all. `?game=` would ask the Worker
+    // for the game literally named "", which can never match anything.
+    expect(String(url)).not.toContain('?');
+    expect(init.method).toBe('GET');
+  });
+
+  it('narrows to one game via the query param', async () => {
+    fetchMock.mockResolvedValueOnce(ok([recordRows[0]]));
+    const r = await createArcadeOps(store('tok')).records('chess');
+    expect(r.ok).toBe(true);
+    expect(String(fetchMock.mock.calls[0]![0])).toContain('/games/records?game=chess');
+  });
+
+  it('NEVER serves a remembered list — an outage returns the error', async () => {
+    // The deliberate difference from leaderboard(): a records screen is opened
+    // on purpose, and a stale "4-2" is a wrong fact about a friend, which is
+    // worse than showing no number at all.
+    const ops = createArcadeOps(store('tok'));
+    fetchMock.mockResolvedValueOnce(ok(recordRows));
+    expect((await ops.records()).ok).toBe(true);
+
+    fetchMock.mockRejectedValueOnce(new Error('network down'));
+    const second = await ops.records();
+    expect(second.ok, 'records must not fall back to a cached copy').toBe(false);
+    expect(second.ok === false && second.message).toContain('network down');
+  });
+
+  it('signed out is a 401 with no network call', async () => {
+    const r = await createArcadeOps(store(null)).records();
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.status).toBe(401);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('a 401 clears the local session, same as every other auth\'d op', async () => {
+    fetchMock.mockResolvedValueOnce(fail(401, 'expired'));
+    const r = await createArcadeOps(store('tok')).records();
+    expect(r.ok).toBe(false);
+    expect(signedOut).toBe(1);
+  });
+
+  it('an empty array is a real answer, not an error', async () => {
+    // Nobody played anybody yet. That must render as "no records", not a fault.
+    fetchMock.mockResolvedValueOnce(ok([]));
+    const r = await createArcadeOps(store('tok')).records();
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value).toEqual([]);
+  });
+});

@@ -12,7 +12,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * The three games-arcade methods on MarketplaceApiClient, driven against a
+ * The four games-arcade methods on MarketplaceApiClient, driven against a
  * MockWebServer (same approach as AnalyticsServiceTest — no Robolectric, no
  * real network).
  *
@@ -181,5 +181,69 @@ class MarketplaceApiClientArcadeTest {
         assertTrue(result is ApiResult.Err)
         assertEquals(429, (result as ApiResult.Err).status)
         assertEquals("too many score submissions per hour", result.message)
+    }
+
+    @Test
+    fun `gameRecords GETs games records unfiltered and parses the bare array`() = runTest {
+        // The reply is a bare JSON ARRAY, so this method has to take the
+        // requestRaw path. Through request() it would flatten to an empty object
+        // and every friend row would silently read 0-0.
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """[{"opponent_id":"u2","game":"chess","wins":4,"losses":2,"draws":1,"last_played_at":1756600000}]"""
+            )
+        )
+        val result = signedInClient().gameRecords()
+
+        val req = server.takeRequest()
+        assertEquals("GET", req.method)
+        // No game asked for means NO query string at all — `?game=` would ask for
+        // the game literally named "", which can never match anything.
+        assertEquals("/games/records", req.path)
+        assertEquals("Bearer gh_tok_test", req.getHeader("Authorization"))
+
+        assertTrue(result is ApiResult.Ok)
+        val rows = (result as ApiResult.Ok).value
+        assertEquals(1, rows.length())
+        val row = rows.getJSONObject(0)
+        assertEquals("u2", row.getString("opponent_id"))
+        assertEquals(4, row.getInt("wins"))
+        assertEquals(2, row.getInt("losses"))
+        assertEquals(1, row.getInt("draws"))
+    }
+
+    @Test
+    fun `gameRecords narrows to one game with the query param`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("[]"))
+        signedInClient().gameRecords("chess")
+        assertEquals("/games/records?game=chess", server.takeRequest().path)
+    }
+
+    @Test
+    fun `gameRecords maps an empty array to Ok, not an error`() = runTest {
+        // Nobody has played anybody yet. That must render as "no records", not
+        // as a fault.
+        server.enqueue(MockResponse().setResponseCode(200).setBody("[]"))
+        val result = signedInClient().gameRecords()
+        assertTrue(result is ApiResult.Ok)
+        assertEquals(0, (result as ApiResult.Ok).value.length())
+    }
+
+    @Test
+    fun `gameRecords treats an unparseable 200 body as a fault, not as no records`() = runTest {
+        // An empty-list fallback here would paint a confident 0-0 against every
+        // friend while the real records were unreadable — same rule as listFriends.
+        server.enqueue(MockResponse().setResponseCode(200).setBody("not json"))
+        val result = signedInClient().gameRecords()
+        assertTrue(result is ApiResult.Err)
+    }
+
+    @Test
+    fun `gameRecords without a token is a 401 and makes no network call`() = runTest {
+        val client = MarketplaceApiClient(store, host = server.url("/").toString().trimEnd('/'))
+        val result = client.gameRecords()
+        assertTrue(result is ApiResult.Err)
+        assertEquals(401, (result as ApiResult.Err).status)
+        assertEquals(0, server.requestCount)
     }
 }

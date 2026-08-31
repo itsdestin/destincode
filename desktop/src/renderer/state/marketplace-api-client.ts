@@ -122,6 +122,21 @@ export interface GameBoard {
   you: GameBoardEntry | null;
   entries: GameBoardEntry[];
 }
+/** My record against ONE opponent in ONE game, from my point of view — so
+ *  `wins` is MY wins. `GET /games/records` returns a bare array of these.
+ *
+ *  Records deliberately SURVIVE an unfriend: the Worker reports what actually
+ *  happened, and the client paints a row only for people currently on the
+ *  friends list. So a caller must join this to its own friends list rather than
+ *  assume every `opponent_id` here is someone to display. */
+export interface HeadToHead {
+  opponent_id: string;
+  game: string;
+  wins: number;
+  losses: number;
+  draws: number;
+  last_played_at: number; // unix seconds, the most recent settled match
+}
 
 // GET /social/requests returns this object (both directions), NOT a bare array.
 export interface RequestsPayload {
@@ -211,6 +226,10 @@ export interface MarketplaceApiClient {
   /** Publish a finished run. Keeps the best, counts the run either way;
    *  `is_best` is the one fact the end-of-run screen can't work out itself. */
   submitGameScore(game: string, score: number): Promise<{ ok: true; best: number; best_at: number; runs: number; is_best: boolean }>;
+  /** Every head-to-head record I hold, one row per (opponent, game). Optionally
+   *  narrowed to a single game. Read once and joined to the friends list, so a
+   *  friend row can show "7-2 at chess" without a call per friend. */
+  gameRecords(game?: string): Promise<HeadToHead[]>;
 }
 
 export function createMarketplaceApiClient(opts: {
@@ -380,5 +399,14 @@ export function createMarketplaceApiClient(opts: {
         body: JSON.stringify({ game, score }),
         auth: true,
       }),
+    // `game` is a QUERY param here, not a path segment — the Worker filters the
+    // flat array server-side. Omitted entirely when absent so the URL stays
+    // `/games/records`, never `/games/records?game=` (which would filter to the
+    // empty-string game and always return nothing).
+    gameRecords: (game) =>
+      request<HeadToHead[]>(
+        game ? `/games/records?game=${encodeURIComponent(game)}` : "/games/records",
+        { method: "GET", auth: true },
+      ),
   };
 }

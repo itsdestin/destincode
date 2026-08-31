@@ -22,7 +22,7 @@ import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns }
 // Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
-import { arcadeStatusFor, arcadeBoardFor, arcadeVersusIsDown, type ArcadeScenario } from './arcade-fixtures';
+import { arcadeStatusFor, arcadeBoardFor, arcadeRecordsFor, arcadeVersusIsDown, type ArcadeScenario } from './arcade-fixtures';
 import { buildCatalog } from './fixtures/marketplace/catalog';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
@@ -1204,7 +1204,34 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // click-through handshake with a bot. A real challenge send still needs
     // to resolve `ok` so `usePresence.challengePlayer` doesn't synthesize a
     // CHALLENGE_FAILED for a button a developer clicks while poking around.
-    presenceSend: async () => ({ ok: true }),
+    presenceSend: async (msg?: { type?: string; game?: string; opponent?: string; outcome?: string }) => {
+      // A reported match settles (games §6.2). The real server holds the report
+      // until BOTH players send a matching one, then pushes the agreed record
+      // to each of them; here there is only one player, so the echo stands in
+      // for the opponent agreeing. It goes back through the SAME presence
+      // listener a real settlement uses, so the workbench exercises the actual
+      // reducer path rather than a shortcut.
+      //
+      // The tick of delay is load-bearing for review: the record legitimately
+      // arrives a moment AFTER the result card, and a screenshot taken before
+      // it lands is a state real players will also see.
+      if (msg?.type === 'game-result' && msg.game) {
+        const before = arcadeRecordsFor(arcadeScenario, msg.game).value[0];
+        const bump = msg.outcome === 'win' ? 'wins' : msg.outcome === 'loss' ? 'losses' : 'draws';
+        setTimeout(() => {
+          presenceListener?.({
+            type: 'game-record',
+            game: msg.game!,
+            opponent: msg.opponent,
+            source: 'attested',
+            record: before
+              ? { ...before, [bump]: (before[bump as 'wins'] ?? 0) + 1 }
+              : { opponent_id: msg.opponent, game: msg.game, wins: 0, losses: 0, draws: 0, last_played_at: 0, [bump]: 1 },
+          });
+        }, 300);
+      }
+      return { ok: true };
+    },
     onPresenceEvent: (cb) => {
       presenceListener = cb;
       return () => { if (presenceListener === cb) presenceListener = null; };
@@ -1609,6 +1636,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // so the renderer's "the server knows a higher best than this computer"
     // branch is exercised here rather than only in production. `best` echoes
     // the run: the workbench has no board to compare against.
+    records: async (game?: string) => arcadeRecordsFor(arcadeScenario, game),
     submitScore: async (_gameId: string, score: number) =>
       ({ ok: true as const, value: { ok: true as const, best: score, best_at: Math.floor(Date.now() / 1000), runs: 1, is_best: true } }),
   };

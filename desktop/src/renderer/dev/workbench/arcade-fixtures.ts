@@ -77,6 +77,26 @@ const ALONE: Record<string, BoardEntryFixture[]> = {
   'twenty-forty-eight': [you(12_480, 1)],
 };
 
+/** One head-to-head record, in the Worker's own vocabulary — MY wins first. */
+export interface HeadToHeadFixture {
+  opponent_id: string;
+  game: string;
+  wins: number;
+  losses: number;
+  draws: number;
+  last_played_at: number;
+}
+
+/** Records against the one friend the workbench has. Deliberately NOT symmetric
+ *  and not round: a 4-2-1 chess record and a 1-0 Connect 4 one show the three
+ *  columns doing different work, where 1-1 or 0-0 would hide a column that was
+ *  rendering wrong. `empty` has none — nobody has finished a versus game yet,
+ *  which is the state every new install is in. */
+const RECORDS: HeadToHeadFixture[] = [
+  { opponent_id: JAKE_ID, game: 'chess', wins: 4, losses: 2, draws: 1, last_played_at: T },
+  { opponent_id: JAKE_ID, game: 'connect-four', wins: 1, losses: 0, draws: 0, last_played_at: T - 86_400 },
+];
+
 export type ArcadeScenario = 'default' | 'empty' | 'alone' | 'degraded';
 
 /** True when the scenario is the one where the versus service is down. The mock
@@ -115,4 +135,12 @@ export function arcadeBoardFor(
       cachedAt,
     },
   };
+}
+
+export function arcadeRecordsFor(
+  scenario: ArcadeScenario,
+  game?: string,
+): Ok<HeadToHeadFixture[]> {
+  if (scenario === 'empty') return { ok: true, value: [] };
+  return { ok: true, value: game ? RECORDS.filter((r) => r.game === game) : RECORDS };
 }

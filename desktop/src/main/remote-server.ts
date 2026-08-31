@@ -2420,7 +2420,8 @@ export class RemoteServer {
       // leaderboard from the desktop window sitting beside it.
       case 'arcade:status':
       case 'arcade:leaderboard':
-      case 'arcade:submit-score': {
+      case 'arcade:submit-score':
+      case 'arcade:records': {
         const ops = getArcadeOps();
         if (!ops) {
           // Registration never ran (minimal boot). General but non-committal —
@@ -2431,6 +2432,10 @@ export class RemoteServer {
         this.respond(client.ws, type, id,
           type === 'arcade:status' ? await ops.status()
           : type === 'arcade:leaderboard' ? await ops.leaderboard(payload?.game)
+          // An absent payload.game means EVERY game — passing undefined through
+          // is the whole filter, so don't coerce it to '' (that would ask the
+          // Worker for the game literally named "", i.e. always nothing).
+          : type === 'arcade:records' ? await ops.records(payload?.game ?? undefined)
           : await ops.submitScore(payload?.game, payload?.score));
         break;
       }

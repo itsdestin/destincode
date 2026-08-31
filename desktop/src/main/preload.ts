@@ -1295,6 +1295,8 @@ contextBridge.exposeInMainWorld('claude', {
     status: () => ipcRenderer.invoke('arcade:status'),
     leaderboard: (game: string) => ipcRenderer.invoke('arcade:leaderboard', game),
     submitScore: (game: string, score: number) => ipcRenderer.invoke('arcade:submit-score', game, score),
+    // Head-to-head records. `game` is optional — omitted means every game.
+    records: (game?: string) => ipcRenderer.invoke('arcade:records', game),
   },
   permissions: {
     list: () => ipcRenderer.invoke('permissions:list'),

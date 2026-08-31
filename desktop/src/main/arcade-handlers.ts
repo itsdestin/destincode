@@ -14,7 +14,7 @@ import { ipcMain } from "electron";
 import type { MarketplaceAuthStore } from "./marketplace-auth-store";
 import { createMarketplaceApiClient, MARKETPLACE_API_HOST } from "../renderer/state/marketplace-api-client";
 import type { ApiResult } from "./marketplace-api-handlers";
-import type { GameBoard, GameScoreRow } from "../renderer/state/marketplace-api-client";
+import type { GameBoard, GameScoreRow, HeadToHead } from "../renderer/state/marketplace-api-client";
 // Shared with social-handlers.ts / marketplace-api-handlers.ts so the renderer
 // sees ONE ApiResult error contract across every authenticated namespace —
 // `.status` has to survive the contextBridge for 401 to stay distinguishable
@@ -29,6 +29,7 @@ const CHANNELS = [
   "arcade:status",
   "arcade:leaderboard",
   "arcade:submit-score",
+  "arcade:records",
 ] as const;
 
 /** What the renderer gets back for a board: the board itself, plus `cachedAt`
@@ -39,13 +40,14 @@ export interface BoardResult {
   cachedAt: number | null;
 }
 
-/** The three operations, independent of HOW they were called. Both transports
+/** The four operations, independent of HOW they were called. Both transports
  *  (Electron IPC and the remote-access WebSocket) run the same instance, so a
  *  remote browser shares the stale-board cache instead of keeping its own. */
 export interface ArcadeOps {
   status(): Promise<ApiResult<Record<string, GameScoreRow>>>;
   leaderboard(game: string): Promise<ApiResult<BoardResult>>;
   submitScore(game: string, score: number): Promise<ApiResult<{ ok: true; best: number; best_at: number; runs: number; is_best: boolean }>>;
+  records(game?: string): Promise<ApiResult<HeadToHead[]>>;
   clearCache(): void;
 }
 
@@ -58,7 +60,7 @@ let ops: ArcadeOps | null = null;
 /** Build the operations over one auth store. Exported for tests, which need an
  *  instance without an Electron `ipcMain`. */
 export function createArcadeOps(store: MarketplaceAuthStore): ArcadeOps {
-  // One client across all three operations. getToken() is read lazily per
+  // One client across all four operations. getToken() is read lazily per
   // request, so signing out takes effect on the very next call.
   const client = createMarketplaceApiClient({
     host: MARKETPLACE_API_HOST,
@@ -110,6 +112,21 @@ export function createArcadeOps(store: MarketplaceAuthStore): ArcadeOps {
     submitScore: (game: string, score: number) =>
       wrap(() => client.submitGameScore(game, score)).then(clearSessionOn401),
 
+    // Head-to-head records, optionally narrowed to one game.
+    //
+    // DELIBERATELY NOT CACHED, unlike leaderboard() above. The two look alike
+    // but fail differently: a leaderboard is on screen DURING play, so an
+    // outage that blanks it reads as "my scores are gone" — worth showing a
+    // labelled old copy. A records list is only read on a screen the player
+    // opened on purpose, where a stale "4-2" is a wrong FACT about a friend and
+    // is worse than no number at all. Signed out or offline, the error goes
+    // back untouched and the renderer paints nothing.
+    //
+    // Records outlive an unfriend by design: the Worker returns what actually
+    // happened, and the caller shows only opponents still on its friends list.
+    records: (game?: string) =>
+      wrap(() => client.gameRecords(game)).then(clearSessionOn401),
+
     clearCache: () => boardCache.clear(),
   };
 }
@@ -126,6 +143,7 @@ export function registerArcadeHandlers(store: MarketplaceAuthStore): void {
   ipcMain.handle("arcade:leaderboard", (_e, game: string) => instance.leaderboard(game));
   ipcMain.handle("arcade:submit-score", (_e, game: string, score: number) =>
     instance.submitScore(game, score));
+  ipcMain.handle("arcade:records", (_e, game?: string) => instance.records(game));
 }
 
 /** The live instance, for remote-server.ts's WebSocket cases. `null` before

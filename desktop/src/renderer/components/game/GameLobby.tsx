@@ -5,7 +5,8 @@ import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
 import { mergeFriends, statusLabel } from './friends-data';
 import { Button, InputGroup } from '../ui';
-import type { FriendRow, RequestsPayload } from '../../state/marketplace-api-client';
+import type { FriendRow, HeadToHead, RequestsPayload } from '../../state/marketplace-api-client';
+import { recordLabel, recordsByOpponent } from './head-to-head';
 // Task 7c, workbench-only auto-play — see the effect below and
 // dev/workbench/fake-party.ts. isWorkbenchAutoplay() is false in every
 // shipped build (it checks for a global only install-mock.ts ever sets).
@@ -237,6 +238,11 @@ function FriendsScreen({ connection, incognito, onToggleIncognito, gameId }: Pro
 
   const [friends, setFriends] = useState<FriendRow[] | null>(null);
   const [requests, setRequests] = useState<RequestsPayload | null>(null);
+  /** Head-to-head records for THIS game, keyed by opponent (§6.2). Empty until
+   *  the fetch lands, and empty forever if it fails — a row simply shows no
+   *  number, which is the honest state. A record is a fact about another
+   *  person, so it is better absent than approximate. */
+  const [records, setRecords] = useState<Map<string, HeadToHead>>(new Map());
   const [addHandle, setAddHandle] = useState('');
   // Add-friend inline feedback: plain sentence + tone (ok=green, else red).
   const [addFeedback, setAddFeedback] = useState<{ text: string; ok: boolean } | null>(null);
@@ -253,13 +259,20 @@ function FriendsScreen({ connection, incognito, onToggleIncognito, gameId }: Pro
 
   // Fetch both lists in parallel; called on mount and after every mutation.
   const refresh = useCallback(async () => {
-    const [fr, rq] = await Promise.all([
+    const arcade = (window.claude as { arcade?: { records?: (g?: string) => Promise<ApiResult<HeadToHead[]>> } }).arcade;
+    const [fr, rq, rec] = await Promise.all([
       window.claude.social.listFriends(),
       window.claude.social.listRequests(),
+      // Narrowed to this game: winning at Connect 4 says nothing about who is
+      // better at chess, so one number per (person, game) and never a total.
+      // Optional-chained because a surface with no arcade bridge still has a
+      // perfectly good lobby — it just shows no records.
+      arcade?.records?.(gameId) ?? Promise.resolve(null),
     ]);
     if (fr.ok) setFriends(fr.value);
     if (rq.ok) setRequests(rq.value);
-  }, []);
+    if (rec?.ok) setRecords(recordsByOpponent(rec.value, gameId));
+  }, [gameId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -526,6 +539,15 @@ function FriendsScreen({ connection, incognito, onToggleIncognito, gameId }: Pro
                     {row.name}
                     {row.handle && <span className="text-fg-muted ml-1">@{row.handle}</span>}
                   </span>
+                  {/* Your record against this person AT THIS GAME — the fact
+                      that decides who you want to play next. Absent for anyone
+                      you have never finished a game against, which is most
+                      people most of the time, so it must not leave a gap. */}
+                  {records.has(row.id) && (
+                    <span className="text-2xs text-fg-muted shrink-0 tabular-nums">
+                      {recordLabel(records.get(row.id)!)}
+                    </span>
+                  )}
                   {/* Challenge only when the friend is actually online (has a live
                       presence entry). row.id is the account id challengePlayer wants. */}
                   {row.online && (

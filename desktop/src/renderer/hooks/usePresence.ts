@@ -146,6 +146,35 @@ export function usePresence(isLeader: boolean = true) {
           dispatch({ type: 'CHALLENGE_FAILED', target: String(e.target) });
           break;
 
+        // ── Head-to-head records (games §6.2) ───────────────────────────
+        // The server never takes one player's word for how a match ended: both
+        // report, and only when the two agree does it write a row and push the
+        // settled record to BOTH of them. So this arrives already agreed — the
+        // client's job is to show it, not to compute it.
+        case 'game-record': {
+          const r = e.record as { wins?: unknown } | undefined;
+          // Defensive: a malformed frame must not put NaN on screen next to a
+          // friend's name. Anything that is not a well-formed record is dropped.
+          if (r && typeof r.wins === 'number') {
+            dispatch({ type: 'MATCH_RECORDED', record: e.record as never });
+          }
+          break;
+        }
+
+        // Your half is in; the server is waiting on your opponent's. Not an
+        // error and not worth a message — the record simply appears if and when
+        // they agree. Named here so it is visibly HANDLED rather than falling
+        // through as an unknown frame.
+        case 'game-result-pending':
+          break;
+
+        // The server declined the report (a match already settled, a bad id, a
+        // forfeit claimed while the opponent is still connected). Nothing is
+        // shown: the game itself is over and correct either way, and inventing
+        // a message about a record the player never asked for would be noise.
+        case 'game-result-rejected':
+          break;
+
         case 'pong':
           // Liveness only — no state change.
           break;

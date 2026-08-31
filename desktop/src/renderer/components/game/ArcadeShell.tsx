@@ -16,6 +16,7 @@ import { useTheme } from '../../state/theme-context';
 import { GameConnection } from '../../state/game-types';
 import { GAMES, type GameDefinition } from './game-registry';
 import { readAllBests, recordRun } from './local-best';
+import { useMatchReport } from '../../hooks/useMatchReport';
 import ArcadePicker from './ArcadePicker';
 import Leaderboard, { type LeaderboardRow } from './Leaderboard';
 import { arcadeApi, buildStatuses, mergeBests, serverBests, staleNote, toRows } from './arcade-api';
@@ -164,6 +165,11 @@ export default function ArcadeShell({ connection, chessConnection, incognito, on
   }, [state.challengeFrom, state.challengeGame, openGame]);
 
   const inPlay = state.screen === 'playing' || state.screen === 'game-over';
+
+  // A finished versus match reports itself, once (§6.2). Sited here because
+  // this is where the shell knows WHICH game just ended; the hook does nothing
+  // at all for a solo game, which has no opponent to have a record with.
+  useMatchReport(state, openGame?.kind === 'versus' ? openGame.id : null);
 
   // Which client is live. Leaving has to reach the RIGHT room — calling Connect
   // 4's leaveGame while a chess game is open would leave the player seated at a

@@ -266,7 +266,11 @@ export function useChessGame(
     rematchRequestedRef.current = false;
     opponentRef.current = null;
     playRef.current = null;
-    dispatch({ type: 'ROOM_CREATED', code, seat: 0 });
+    // `target` IS the opponent's account id (the lobby row's id). Carrying it
+    // into state here is the CHALLENGER's half of learning who they are
+    // playing — the game room only ever tags people by display name, which
+    // is not an identity a permanent record can be filed against.
+    dispatch({ type: 'ROOM_CREATED', code, seat: 0, opponentId: target });
     connectToRoom(code, playerName);
     lobbyChallenge(target, gameId, code);
   }, [playerName, dispatch, connectToRoom, lobbyChallenge]);

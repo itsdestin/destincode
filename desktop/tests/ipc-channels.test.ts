@@ -1359,7 +1359,7 @@ describe('marketplace Worker host parity (desktop ↔ Android)', () => {
 // same way `social:*` lives in `social-handlers.ts`: every call needs the
 // account bearer token, so it sits beside the other token-bound namespaces.
 describe('arcade:* channel parity', () => {
-  const TYPES = ['arcade:status', 'arcade:leaderboard', 'arcade:submit-score'];
+  const TYPES = ['arcade:status', 'arcade:leaderboard', 'arcade:submit-score', 'arcade:records'];
   const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
 
   it('exposed in preload.ts', () => {

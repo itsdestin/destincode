@@ -1,3 +1,8 @@
+// The head-to-head record shape is the SAME over both transports — the presence
+// socket pushes one when a match settles, and GET /games/records serves a list
+// of them. Imported rather than redeclared so the two can never drift apart.
+import type { HeadToHead } from './marketplace-api-client';
+export type { HeadToHead };
 export type GameScreen = 'setup' | 'lobby' | 'waiting' | 'joining' | 'playing' | 'game-over';
 
 /** Which of the two chairs you are sitting in. THE SHELL KNOWS NOTHING ELSE
@@ -22,6 +27,7 @@ export interface OnlineUser {
   status: 'idle' | 'in-game';
 }
 
+
 export interface ChatMessage {
   from: string;
   text: string;
@@ -36,6 +42,28 @@ export interface GameState {
   screen: GameScreen;
   roomCode: string | null;
   opponent: string | null;
+  /** The ACCOUNT of the person you are playing. `opponent` above is their
+   *  display name, which is what the game room tags moves with — but a
+   *  permanent head-to-head record has to be filed against an account, or two
+   *  friends who chose the same display name would share one record.
+   *
+   *  It never comes from the game room, which only ever sees display names. It
+   *  comes from the CHALLENGE: the challenger knows who they challenged, and
+   *  the accepter knows who challenged them. Two paths, one fact. */
+  opponentId: string | null;
+  /** How many matches have STARTED in the current room, so `${roomCode}#${n}`
+   *  is this match's identity.
+   *
+   *  A rematch REUSES the room (verified: 'rematch' dispatches GAME_START again
+   *  with no new code), so the room code alone is not a match identity — the
+   *  second game would look to the server like a duplicate of the first and be
+   *  silently dropped. Both clients count the same GAME_STARTs, so both derive
+   *  the same id without having to agree on one over the wire. */
+  matchesStarted: number;
+  /** The record the server settled for the match that just finished, pushed to
+   *  both players once they agree on how it ended. Null until then — a match
+   *  whose players disagree settles as nothing, which is the safe failure. */
+  record: HeadToHead | null;
 
   // ── The three things the shell needs from ANY turn-based game (§3.1) ──
   /** Which chair you are in, or null outside a game. */
@@ -80,9 +108,10 @@ export type GameAction =
   | { type: 'USER_JOINED'; user: OnlineUser }
   | { type: 'USER_LEFT'; id: string }
   | { type: 'USER_STATUS'; id: string; status: 'idle' | 'in-game' }
-  | { type: 'ROOM_CREATED'; code: string; seat: Seat }
+  | { type: 'ROOM_CREATED'; code: string; seat: Seat; opponentId: string }
   | { type: 'JOINING_GAME'; code: string }
   | { type: 'GAME_START'; seat: Seat; opponent: string; play: unknown; turnSeat: Seat }
+  | { type: 'MATCH_RECORDED'; record: HeadToHead }
   | { type: 'GAME_STATE'; play: unknown; turnSeat: Seat; outcome?: GameOutcome }
   | { type: 'CHAT_MESSAGE'; from: string; text: string }
   | { type: 'OPPONENT_DISCONNECTED' }
@@ -132,6 +161,9 @@ export function createInitialGameState(): GameState {
     screen: 'setup',
     roomCode: null,
     opponent: null,
+    opponentId: null,
+    matchesStarted: 0,
+    record: null,
     seat: null,
     turnSeat: null,
     outcome: null,
