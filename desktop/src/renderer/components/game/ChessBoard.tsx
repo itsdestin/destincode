@@ -74,24 +74,35 @@ interface Props {
 
 /** How the board's two square shades are made.
  *
- *  OPEN QUESTION for Destin (decision D-13). Measured square-to-square contrast
- *  on the shipped board is 1.05-1.40 across the six themes, where a physical
- *  board sits nearer 2.5-3 — so the checker pattern is close to invisible in
- *  Dark and Meadow Mist. `?board=` renders each candidate against the same
- *  position for a review deck. WORKBENCH-ONLY, exactly like `?chess=`: never a
- *  user setting, and `today` stays the default until he picks.
+ *  DECIDED (Destin, deck `board-contrast`, 2026-08-31): 'contrast' — full
+ *  strength, neutral. The three rejected candidates stay behind `?board=`, not
+ *  deleted, because this is the same question every future board-shaped game
+ *  will ask. WORKBENCH-ONLY, exactly like `?chess=`: never a user setting.
  *
- *  Why an OVERLAY and not two background classes: two `bg-*` utilities on one
- *  element do not blend, one wins. The shipped board says
- *  `bg-inset bg-accent/[0.07]` and renders as flat `--inset` — measured
- *  #D7D7D7 in light and #222222 in dark, the raw tokens. The intended wash has
- *  never rendered, which is the whole reason the contrast is where it is. */
+ *  WHAT WAS WRONG. The board said `bg-inset bg-accent/[0.07]` — two background
+ *  utilities on one element. They do not blend; one wins. So the intended tint
+ *  never painted and the two squares were the raw surface values one ladder
+ *  rung apart: measured #D7D7D7 vs #F9F9F9 in light, #222222 vs #1C1C1C in
+ *  dark. That is 1.05-1.40 square-to-square contrast where a physical board is
+ *  nearer 2.5-3, and it is why a bishop's colour was unreadable.
+ *
+ *  WHY NEUTRAL BEAT THE PRETTIER OPTION. 'wood' takes the theme's own accent
+ *  and looks markedly better in four themes (creme becomes a cream-and-brown
+ *  board). But it depends on a colour a THEME AUTHOR chose: pure accent
+ *  measured 1.40 on halftone-dimension and 1.44 on meadow-mist, and even
+ *  blended toward `--fg` it only reaches 1.80. 'contrast' is built from `--fg`,
+ *  which contrasts with its own surface by definition or the theme would be
+ *  unreadable — so it cannot be defeated by a community theme nobody has
+ *  reviewed, and those ship constantly.
+ *
+ *  Measured across the six themes: today 1.05-1.40 · soft 1.50-1.86 ·
+ *  contrast 2.01-2.97 · wood 1.80-2.86. */
 export type BoardShading = 'today' | 'soft' | 'contrast' | 'wood';
 
 function boardShading(): BoardShading {
-  if (typeof location === 'undefined') return 'today';
+  if (typeof location === 'undefined') return 'contrast';
   const v = new URLSearchParams(location.search).get('board');
-  return v === 'soft' || v === 'contrast' || v === 'wood' ? v : 'today';
+  return v === 'soft' || v === 'wood' || v === 'today' ? v : 'contrast';
 }
 
 /** The dark square's extra layer. `null` for `today`, which keeps the two raw
@@ -107,7 +118,8 @@ function boardShadeStyle(shading: BoardShading): { background: string } | null {
   switch (shading) {
     // Neutral, gentle. Reads as a board without competing with the pieces.
     case 'soft':     return { background: 'color-mix(in srgb, var(--fg) 22%, transparent)' };
-    // Neutral, full strength — the ratio a physical board has.
+    // SHIPPING (deck `board-contrast`). Neutral, full strength — the ratio a
+    // physical board has, in every theme including ones we have never seen.
     case 'contrast': return { background: 'color-mix(in srgb, var(--fg) 36%, transparent)' };
     // The theme's own colour, with a guaranteed floor. Creme goes brown and
     // midnight goes blue, the way a real board is two woods rather than two
@@ -133,7 +145,7 @@ export default function ChessBoard({ connection, treatment = 'outline' }: Props)
   const mySeat = state.seat ?? 0;
   const myColor = colorForSeat(mySeat);
   const pieces = useMemo(() => readPosition(play.fen), [play.fen]);
-  // Workbench-only while decision D-13 is open; `today` in every shipped build.
+  // 'contrast' in every shipped build; `?board=` renders the rejected three.
   const shading = boardShading();
   const shadeStyle = boardShadeStyle(shading);
 
