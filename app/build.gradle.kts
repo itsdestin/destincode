@@ -116,6 +116,17 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        // JVM unit tests run against a stubbed android.jar whose methods throw
+        // "Method ... not mocked" by default. MarketplaceFetcher.fetchIndex() calls
+        // android.util.Log.w on every fallback, so MarketplaceFetcherCatalogTest could
+        // not run without this. NOTE: this changes what EVERY JVM test in this module
+        // sees from an Android framework call — they now return a default (null / 0 /
+        // false) instead of throwing. It does not affect org.json, which comes from the
+        // real `org.json:json` test dependency below, not from android.jar.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 // Auto-bundle the React UI into Android assets before APK packaging.

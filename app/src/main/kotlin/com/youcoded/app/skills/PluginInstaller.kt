@@ -120,11 +120,21 @@ class PluginInstaller(
             val sourceRef = entry.optString("sourceRef")
             val sourceMarketplace = entry.optString("sourceMarketplace").takeIf { it.isNotEmpty() }
 
+            // Marketplace overhaul: the commit the catalog listed (and scanned), and ONLY
+            // that. Deliberately no fallback to the entry's `sourceSha` — that field is a
+            // stale snapshot from whenever the registry's sync.js last ran (236 of 302 live
+            // entries carry one), so falling back to it would freeze those plugins at a
+            // months-old commit forever and make Update a no-op that reports success.
+            // No catalog block -> null -> today's behaviour, which is "install latest".
+            val commit = entry.optJSONObject("catalog")
+                ?.optString("sourceCommit", "")
+                ?.takeIf { it.isNotEmpty() }
+
             val result = when (sourceType) {
                 // Phase 3a: pass sourceMarketplace so the installer clones the right repo
                 "local" -> installFromLocal(id, sourceRef, sourceMarketplace)
-                "url" -> installFromUrl(id, sourceRef)
-                "git-subdir" -> installFromGitSubdir(id, sourceRef, entry.optString("sourceSubdir"))
+                "url" -> installFromUrl(id, sourceRef, commit)
+                "git-subdir" -> installFromGitSubdir(id, sourceRef, entry.optString("sourceSubdir"), commit)
                 else -> InstallResult.Failed("Unknown source type: $sourceType")
             }
 
@@ -443,16 +453,33 @@ class PluginInstaller(
         InstallResult.Success
     }
 
-    private suspend fun installFromUrl(id: String, url: String): InstallResult {
+    /**
+     * Marketplace overhaul: move a freshly cloned repo onto the exact commit the catalog
+     * listed. After a `--depth 1` clone HEAD is whatever the branch happens to be today,
+     * which is not necessarily the code that was scanned and shown to the user. GitHub
+     * serves any reachable sha to a shallow fetch, so one extra fetch plus a detached
+     * checkout pins it. runGit already logs git's own output on failure.
+     */
+    private suspend fun pinToCommit(dir: File, commit: String): Boolean {
+        if (!runGit("-C", dir.absolutePath, "fetch", "--depth", "1", "origin", commit)) return false
+        return runGit("-C", dir.absolutePath, "checkout", "--detach", commit)
+    }
+
+    private suspend fun installFromUrl(id: String, url: String, commit: String?): InstallResult {
         val targetDir = File(pluginsDir, id)
         if (targetDir.exists()) targetDir.deleteRecursively()
 
         val ok = runGit("clone", "--depth", "1", url, targetDir.absolutePath)
-        return if (ok) InstallResult.Success
-        else InstallResult.Failed("git clone failed for $url")
+        if (!ok) return InstallResult.Failed("git clone failed for $url")
+        // A pin the catalog asked for that we could not honour is a failed install, not a
+        // silent downgrade to "latest" — the user was shown a scan of that specific commit.
+        if (!commit.isNullOrEmpty() && !pinToCommit(targetDir, commit)) {
+            return InstallResult.Failed("could not check out the listed version $commit")
+        }
+        return InstallResult.Success
     }
 
-    private suspend fun installFromGitSubdir(id: String, repoUrl: String, subdir: String): InstallResult {
+    private suspend fun installFromGitSubdir(id: String, repoUrl: String, subdir: String, commit: String?): InstallResult {
         if (subdir.isEmpty()) return InstallResult.Failed("Missing sourceSubdir for git-subdir source")
 
         val tmpDir = File(homeDir, "tmp/plugin-staging-$id")
@@ -465,6 +492,13 @@ class PluginInstaller(
 
             val sparseOk = runGit("-C", tmpDir.absolutePath, "sparse-checkout", "set", subdir)
             if (!sparseOk) return InstallResult.Failed("sparse-checkout failed for $subdir")
+
+            // Pin AFTER `sparse-checkout set`, never before: `checkout --detach`
+            // materialises whatever the sparse config allows at that moment, so pinning
+            // first would defeat the sparse clone and pull down the entire tree.
+            if (!commit.isNullOrEmpty() && !pinToCommit(tmpDir, commit)) {
+                return InstallResult.Failed("could not check out the listed version $commit")
+            }
 
             val sourceDir = File(tmpDir, subdir)
             if (!sourceDir.exists() || !sourceDir.isDirectory) {
