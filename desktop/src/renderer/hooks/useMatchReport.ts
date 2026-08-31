@@ -13,19 +13,14 @@
 // here. All this does is state, once, what this client saw.
 
 import { useEffect, useRef } from 'react';
-import type { GameState } from '../state/game-types';
+import { matchIdOf, type GameState } from '../state/game-types';
 
 /** What this client claims happened TO IT. The server's vocabulary. */
 type Outcome = 'win' | 'loss' | 'draw';
 
-/** `${roomCode}#${matchesStarted}` — see GameState.matchesStarted for why the
- *  room code alone will not do (a rematch reuses the room). Both clients derive
- *  the identical string from state they both hold, so neither has to send it to
- *  the other. */
-export function matchIdOf(state: Pick<GameState, 'roomCode' | 'matchesStarted'>): string | null {
-  if (!state.roomCode || state.matchesStarted < 1) return null;
-  return `${state.roomCode}#${state.matchesStarted}`;
-}
+// matchIdOf moved to state/game-types.ts — the reducer needs it too, and a
+// second copy of this string is how a record ends up on the wrong match.
+export { matchIdOf };
 
 /** How the finished match looks from THIS seat. Null when the match has not
  *  ended, or when we somehow have no seat to judge from. */

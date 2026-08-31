@@ -156,7 +156,18 @@ export function usePresence(isLeader: boolean = true) {
           // Defensive: a malformed frame must not put NaN on screen next to a
           // friend's name. Anything that is not a well-formed record is dropped.
           if (r && typeof r.wins === 'number') {
-            dispatch({ type: 'MATCH_RECORDED', record: e.record as never });
+            // WHO and WHICH MATCH travel with the numbers. They are not
+            // decoration: this subscription runs in EVERY window and every
+            // connected remote browser, so a record settled for a game in one
+            // window arrives in all of them, and the server can settle a match
+            // up to two minutes late. The reducer drops anything that is not
+            // for the match on screen — it can only do that if it is told.
+            dispatch({
+              type: 'MATCH_RECORDED',
+              record: e.record as never,
+              opponentId: String(e.opponent ?? ''),
+              matchId: String(e.match_id ?? ''),
+            });
           }
           break;
         }

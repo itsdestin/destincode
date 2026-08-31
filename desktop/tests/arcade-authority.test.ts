@@ -232,3 +232,42 @@ describe('the score boundary (§6.1)', () => {
     }
   });
 });
+
+// ── Stopping play is keyed on the OPEN GAME and nothing else ────────────────
+//
+// The bug: `setPlaying(false)` shared an effect with the one that applies a
+// game's default pane width, so that effect's dep list included a function from
+// the theme context. Committing a drag of the pane's edge changed that
+// function's identity, re-ran the effect, and ended the run — the player was 40
+// pipes into Flappy, dragged the pane wider, let go, and the game vanished with
+// the run uncounted.
+//
+// This is a fact about how the effect is WRITTEN, not about what it computes,
+// so no amount of rendering can pin it — hence a source-text guard. The
+// root-cause half (the callback's identity is now stable) is pinned by
+// tests/game-pane-width.test.tsx.
+describe('a resize cannot end a run (§4.3)', () => {
+  const shell = () => readStripped(join(GAME_DIR, 'ArcadeShell.tsx'));
+
+  it('setPlaying(false) lives in an effect that depends on openGame alone', () => {
+    const src = shell();
+    // Every `useEffect(..., [deps])` whose body stops play, with its dep list.
+    const effects = [...src.matchAll(/useEffect\(\s*\(\)\s*=>\s*\{([\s\S]*?)\}\s*,\s*\[([^\]]*)\]\s*\)/g)];
+    expect(effects.length, 'no effects found — the regex has drifted').toBeGreaterThan(1);
+
+    const stoppers = effects.filter(([, body]) => /setPlaying\(\s*false\s*\)/.test(body));
+    expect(stoppers.length, 'exactly one effect may stop play').toBe(1);
+
+    const deps = stoppers[0][2].split(',').map((d) => d.trim()).filter(Boolean);
+    expect(deps).toEqual(['openGame']);
+  });
+
+  it('the width helper is not in that effect', () => {
+    // Stated separately from the dep-list equality above so a regression names
+    // the actual culprit rather than just "deps changed".
+    const src = shell();
+    const stopper = /useEffect\(\s*\(\)\s*=>\s*\{[^}]*setPlaying\(\s*false\s*\)[^}]*\}\s*,\s*\[([^\]]*)\]\s*\)/.exec(src);
+    expect(stopper, 'the stop-playing effect moved — re-point this guard').toBeTruthy();
+    expect(stopper![1]).not.toContain('applyGameDefaultWidth');
+  });
+});

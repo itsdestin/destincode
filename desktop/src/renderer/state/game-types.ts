@@ -111,7 +111,9 @@ export type GameAction =
   | { type: 'ROOM_CREATED'; code: string; seat: Seat; opponentId: string }
   | { type: 'JOINING_GAME'; code: string }
   | { type: 'GAME_START'; seat: Seat; opponent: string; play: unknown; turnSeat: Seat }
-  | { type: 'MATCH_RECORDED'; record: HeadToHead }
+  // The three identity fields are NOT decoration — the reducer refuses a
+  // record that is not for the match currently on screen. See matchIdOf().
+  | { type: 'MATCH_RECORDED'; record: HeadToHead; opponentId: string; matchId: string }
   | { type: 'GAME_STATE'; play: unknown; turnSeat: Seat; outcome?: GameOutcome }
   | { type: 'CHAT_MESSAGE'; from: string; text: string }
   | { type: 'OPPONENT_DISCONNECTED' }
@@ -150,6 +152,19 @@ export interface GameConnection {
   /** Force a fresh presence socket — used by the ErrorScreen Retry button when
    * the platform-layer socket has dropped and needs a clean reconnect. */
   reconnectLobby: () => void;
+}
+
+/** This match's identity: `${roomCode}#${matchesStarted}`, the same string both
+ *  clients derive and the same one the server keys a settled record on.
+ *
+ *  Lives HERE rather than beside its sender (useMatchReport.ts) because both
+ *  ends of the round trip need it — the hook to SEND a report, and the reducer
+ *  to decide whether an arriving record belongs to the match on screen. Two
+ *  copies of this string is exactly how a record would end up filed against the
+ *  wrong game. */
+export function matchIdOf(state: Pick<GameState, 'roomCode' | 'matchesStarted'>): string | null {
+  if (!state.roomCode || state.matchesStarted < 1) return null;
+  return `${state.roomCode}#${state.matchesStarted}`;
 }
 
 export function createInitialGameState(): GameState {

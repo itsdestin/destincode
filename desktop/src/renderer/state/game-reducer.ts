@@ -1,4 +1,4 @@
-import { GameState, GameAction, createInitialGameState } from './game-types';
+import { GameState, GameAction, createInitialGameState, matchIdOf } from './game-types';
 
 export function gameReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
@@ -257,8 +257,23 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     case 'CLEAR_CHALLENGE':
       return { ...state, challengeFrom: null, challengeCode: null, challengeGame: null, challengeDeclinedBy: null, partyError: null };
 
-    case 'MATCH_RECORDED':
+    case 'MATCH_RECORDED': {
+      // A record is only shown against the match it is FOR. The presence socket
+      // fans every frame to EVERY window and every connected remote browser, and
+      // the server holds an unpaired report for up to two minutes — so a record
+      // for a different opponent, or for the match before this one, genuinely
+      // does arrive while another game is on screen. Without this guard the
+      // overlay printed those numbers next to whoever was showing: your Connect
+      // 4 record against Mira, captioned "You lead 5-1", under a chess win over
+      // Jake. Wrong about someone else is the one failure this feature must not
+      // have, so a record that does not match is dropped, not guessed at.
+      //
+      // The pair (opponent, matchId) is a complete check on its own: matchId
+      // carries the room code, and a room belongs to exactly one game.
+      if (action.opponentId !== state.opponentId) return state;
+      if (action.matchId !== matchIdOf(state)) return state;
       return { ...state, record: action.record };
+    }
 
     case 'REMATCH_REQUESTED':
       return { ...state, rematchRequested: true };

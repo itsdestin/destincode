@@ -227,10 +227,20 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // and the game's default until then. Deliberately does NOT persist and does
   // NOT write the key — a width the user never chose must not start
   // masquerading as one, and the NEXT game's default has to still apply.
-  const applyGameDefaultWidth = (px: number) => {
+  //
+  // useCallback WITH AN EMPTY DEP LIST IS LOAD-BEARING, not a micro-optimization.
+  // The arcade shell runs this in an effect keyed on the game that is open, so
+  // this function's identity is part of that effect's trigger. Recreated per
+  // render, it changed every time gamePaneWidth changed — i.e. every time the
+  // user finished dragging the pane — which re-fired the effect and tore down
+  // the run in progress: drag the pane wider mid-Flappy and the game vanished.
+  // It closes over nothing that can go stale (the setter is stable, the width
+  // arrives through the functional update, and the clamp reads window at call
+  // time), so an empty dep list is also correct on its own terms.
+  const applyGameDefaultWidth = useCallback((px: number) => {
     setGamePaneWidthState((current) =>
       clampDrawerWidth(gameWidthForOpen(px, current), window.innerWidth));
-  };
+  }, []);
 
   // Keep the <html> var in sync with the committed value…
   useEffect(() => { applyDrawerWidthVar(drawerWidth); }, [drawerWidth]);

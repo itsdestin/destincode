@@ -208,3 +208,68 @@ describe('gameReducer — the state split', () => {
     expect(s.challengeGame).toBe('connect-four');
   });
 });
+
+// ── MATCH_RECORDED: a record only ever belongs to the match on screen ────────
+//
+// The bug these pin: the presence socket fans every frame to EVERY window and
+// every connected remote browser, and the Worker holds an unpaired report for
+// up to two minutes before settling. So a record for a different opponent, or
+// for the match before this one, genuinely arrives while another game is
+// showing — and the overlay printed it next to whoever was on screen. Your
+// Connect 4 record against Mira, captioned "You lead 5-1", under a chess win
+// over Jake. Wrong about ANOTHER PERSON is the failure this feature must not
+// have, so anything that does not match is dropped rather than guessed at.
+describe('gameReducer — MATCH_RECORDED (games §6.2)', () => {
+  // Mid-match: chess against Jake, second game in room AAAA.
+  const playing: GameState = {
+    ...createInitialGameState(),
+    opponentId: 'acct_jake', opponent: 'Jake', roomCode: 'AAAA', matchesStarted: 2,
+  };
+  const record = (opponent: string, game: string) => ({
+    opponent_id: opponent, game, wins: 5, losses: 1, draws: 0, last_played_at: 0,
+  });
+
+  it('takes the record for the match on screen', () => {
+    const s = gameReducer(playing, {
+      type: 'MATCH_RECORDED',
+      record: record('acct_jake', 'chess'),
+      opponentId: 'acct_jake',
+      matchId: 'AAAA#2',
+    });
+    expect(s.record).toEqual(record('acct_jake', 'chess'));
+  });
+
+  it('drops a record settled for a DIFFERENT opponent', () => {
+    const s = gameReducer(playing, {
+      type: 'MATCH_RECORDED',
+      record: record('acct_mira', 'connect-four'),
+      opponentId: 'acct_mira',
+      matchId: 'ZZZZ#1',
+    });
+    expect(s.record).toBeNull();
+    expect(s).toBe(playing); // untouched, not a new object
+  });
+
+  it('drops a LATE record for the previous match against the same opponent', () => {
+    // Same person, same room — but match 1, and we are on match 2 now. Its
+    // numbers are one game out of date, which on this screen reads as a wrong
+    // score rather than an old one.
+    const s = gameReducer(playing, {
+      type: 'MATCH_RECORDED',
+      record: record('acct_jake', 'chess'),
+      opponentId: 'acct_jake',
+      matchId: 'AAAA#1',
+    });
+    expect(s.record).toBeNull();
+  });
+
+  it('drops one that arrives when no match is in progress', () => {
+    const s = gameReducer(createInitialGameState(), {
+      type: 'MATCH_RECORDED',
+      record: record('acct_jake', 'chess'),
+      opponentId: 'acct_jake',
+      matchId: 'AAAA#2',
+    });
+    expect(s.record).toBeNull();
+  });
+});

@@ -120,22 +120,32 @@ describe('the settled record', () => {
     wins: 4, losses: 2, draws: 1, last_played_at: 1756600000,
   };
 
+  /** A match actually in progress: chess against Jake, first game in ABCD.
+   *  These tests MUST start from one — a record is only accepted for the match
+   *  on screen, so dispatching against a lobby state would make every
+   *  assertion below pass vacuously (see the guard in game-reducer.test.ts). */
+  const inMatch = (): GameState => start(gameReducer(createInitialGameState(),
+    { type: 'ROOM_CREATED', code: 'ABCD', seat: 0, opponentId: 'acct-jake' }));
+
+  /** Settle THIS match — the id both clients derive, and the one the server
+   *  keys the record on. */
+  const settle = (s: GameState): GameState => gameReducer(s, {
+    type: 'MATCH_RECORDED', record, opponentId: 'acct-jake', matchId: matchIdOf(s)!,
+  });
+
   it('is stored when the server says both players agreed', () => {
-    const s = gameReducer(createInitialGameState(), { type: 'MATCH_RECORDED', record });
-    expect(s.record).toEqual(record);
+    expect(settle(inMatch()).record).toEqual(record);
   });
 
   it('does not linger into the next match', () => {
-    let s = gameReducer(createInitialGameState(), { type: 'MATCH_RECORDED', record });
-    s = start(s);
+    const s = start(settle(inMatch()));
     // Otherwise the rematch opens showing the score from the game before it,
     // which reads as though it already counted.
     expect(s.record).toBeNull();
   });
 
   it('is dropped on the way back to the lobby', () => {
-    let s = gameReducer(createInitialGameState(), { type: 'MATCH_RECORDED', record });
-    s = gameReducer(s, { type: 'RETURN_TO_LOBBY' });
+    const s = gameReducer(settle(inMatch()), { type: 'RETURN_TO_LOBBY' });
     expect(s.record).toBeNull();
   });
 });

@@ -145,10 +145,20 @@ export default function ArcadeShell({ connection, chessConnection, incognito, on
   // so dragging to exactly the default still counts as a choice.
   useEffect(() => {
     if (openGame) applyGameDefaultWidth(openGame.defaultPaneWidth);
-    // Leaving a game must end its run, or coming back drops you into a board
-    // that has been sitting frozen since you left.
-    setPlaying(false);
   }, [openGame, applyGameDefaultWidth]);
+
+  // Leaving a game must end its run, or coming back drops you into a board that
+  // has been sitting frozen since you left.
+  //
+  // ITS OWN EFFECT, KEYED ON openGame ALONE. This used to share the effect
+  // above, which also depends on a function from the theme context — so
+  // anything that changed that function's identity ended a run in progress.
+  // Finishing a drag of the pane's edge did exactly that: the player was 40
+  // pipes into Flappy, let go of the mouse, and the game vanished with the run
+  // uncounted. Changing games is the ONLY thing that should stop play.
+  useEffect(() => {
+    setPlaying(false);
+  }, [openGame]);
 
   // A challenge arriving while the picker is open must land on the game it is
   // FOR — otherwise Accept drops the player into the wrong board. Until the
