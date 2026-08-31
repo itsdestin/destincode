@@ -25,6 +25,10 @@ export interface PackResult {
   overflow: string[];
 }
 
+/** Horizontal gap between pills, in CSS px. Matches `gap-0.5` on the strip.
+ *  Shared with drag-order.ts so the two cannot drift apart. */
+export const PILL_GAP = 2;
+
 function sumWithGaps(widths: number[], gap: number): number {
   if (widths.length === 0) return 0;
   return widths.reduce((a, b) => a + b, 0) + gap * (widths.length - 1);

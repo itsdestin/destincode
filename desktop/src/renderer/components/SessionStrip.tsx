@@ -7,7 +7,7 @@ import FolderSwitcher from './FolderSwitcher';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
-import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
+import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -808,7 +808,7 @@ export default function SessionStrip({
       sessions: measurements,
       activeId: activeSessionId,
       budget,
-      gap: 2,          // matches gap-0.5 on the strip
+      gap: PILL_GAP,
       triggerWidth: 24, // ▾ button is w-5 + ml-1
     });
     setPack(result);
