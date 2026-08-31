@@ -132,3 +132,79 @@ describe('gameReducer — retired action types', () => {
     expect(next).toEqual(createInitialGameState());
   });
 });
+
+// ── The state split (spec §3.1) ────────────────────────────────────────────
+// The shell used to hold `board`, `myColor: 'red'|'yellow'`, `turn`, `winner`
+// and `winLine` — Connect 4's own vocabulary, in the state chess and 2048 also
+// had to read. It now holds only a SEAT, whose turn it is, and an outcome; the
+// game's own state rides in `play`, opaque to everything outside that game.
+describe('gameReducer — the state split', () => {
+  it('GAME_START takes the game\'s own state whole and does not inspect it', () => {
+    const weird = { anything: 'at all', nested: [1, 2, 3] };
+    const s = gameReducer(createInitialGameState(), {
+      type: 'GAME_START', seat: 1, opponent: 'Jake', play: weird, turnSeat: 0,
+    });
+    expect(s.play).toBe(weird);      // handed over by reference, untouched
+    expect(s.seat).toBe(1);
+    expect(s.turnSeat).toBe(0);
+    expect(s.screen).toBe('playing');
+    expect(s.outcome).toBeNull();
+  });
+
+  it('GAME_STATE ends the game only when an outcome arrives', () => {
+    const playing = gameReducer(createInitialGameState(), {
+      type: 'GAME_START', seat: 0, opponent: 'Jake', play: {}, turnSeat: 0,
+    });
+    const moved = gameReducer(playing, { type: 'GAME_STATE', play: { n: 1 }, turnSeat: 1 });
+    expect(moved.screen).toBe('playing');
+    expect(moved.outcome).toBeNull();
+
+    const won = gameReducer(moved, {
+      type: 'GAME_STATE', play: { n: 2 }, turnSeat: 0, outcome: { winnerSeat: 0 },
+    });
+    expect(won.screen).toBe('game-over');
+    expect(won.outcome).toEqual({ winnerSeat: 0 });
+  });
+
+  it('a draw is an outcome too, not a magic winner value', () => {
+    const s = gameReducer(createInitialGameState(), { type: 'GAME_STATE', play: {}, turnSeat: 1, outcome: { draw: true } });
+    expect(s.outcome).toEqual({ draw: true });
+    expect(s.screen).toBe('game-over');
+  });
+
+  it('RETURN_TO_LOBBY drops the game\'s own state', () => {
+    // Otherwise one game's leftovers reach the next game's board — the exact
+    // failure the split exists to make impossible.
+    const playing = gameReducer(createInitialGameState(), {
+      type: 'GAME_START', seat: 0, opponent: 'Jake', play: { board: 'stale' }, turnSeat: 0,
+    });
+    const back = gameReducer(playing, { type: 'RETURN_TO_LOBBY' });
+    expect(back.play).toBeNull();
+    expect(back.seat).toBeNull();
+    expect(back.turnSeat).toBeNull();
+    expect(back.outcome).toBeNull();
+  });
+
+  it('CHALLENGE_RECEIVED keeps WHICH game it is for', () => {
+    // This is the bug the split fixed: the wire has always carried gameType,
+    // and the reducer dropped it — so Accept could only ever open Connect 4.
+    const s = gameReducer(createInitialGameState(), {
+      type: 'CHALLENGE_RECEIVED',
+      from: { id: 'jake', name: 'Jake', handle: 'jake' },
+      gameType: 'chess',
+      code: 'ABCD',
+    });
+    expect(s.challengeGame).toBe('chess');
+    expect(gameReducer(s, { type: 'CLEAR_CHALLENGE' }).challengeGame).toBeNull();
+  });
+
+  it('an empty gameType falls back rather than leaving the accept path blank', () => {
+    const s = gameReducer(createInitialGameState(), {
+      type: 'CHALLENGE_RECEIVED',
+      from: { id: 'jake', name: 'Jake', handle: null },
+      gameType: '',
+      code: 'ABCD',
+    });
+    expect(s.challengeGame).toBe('connect-four');
+  });
+});

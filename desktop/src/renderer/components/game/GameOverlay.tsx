@@ -16,13 +16,17 @@ export default function GameOverlay({ connection }: Props) {
   const state = useGameState();
   const dispatch = useGameDispatch();
 
-  const { winner, myColor } = state;
+  // The split (§3.1): the shell records an OUTCOME, not a winning colour, so
+  // this reads the same for chess, Connect 4 and anything after them.
+  const { outcome, seat } = state;
+  const youWon = outcome != null && 'winnerSeat' in outcome && outcome.winnerSeat === seat;
+  const draw = outcome != null && 'draw' in outcome;
 
   let headline = 'Draw!';
   let headlineClass = 'text-fg';
 
-  if (winner && winner !== 'draw') {
-    if (winner === myColor) {
+  if (outcome && !draw) {
+    if (youWon) {
       headline = 'You Win!';
       // Retheme (§5.4): was `text-red-400`/`text-yellow-400`, picked to match
       // whichever disc you were playing. Now the winner's headline is the
@@ -42,9 +46,9 @@ export default function GameOverlay({ connection }: Props) {
       >
         <div className="flex flex-col items-center gap-1">
           <span className={`text-3xl font-black ${headlineClass}`}>{headline}</span>
-          {winner && winner !== 'draw' && (
+          {outcome && !draw && (
             <span className="text-xs text-fg-muted">
-              {winner === myColor ? 'Congratulations!' : 'Better luck next time'}
+              {youWon ? 'Congratulations!' : 'Better luck next time'}
             </span>
           )}
         </div>

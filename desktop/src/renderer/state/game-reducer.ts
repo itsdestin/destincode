@@ -95,7 +95,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       return {
         ...state,
         roomCode: action.code,
-        myColor: action.color,
+        seat: action.seat,
         screen: 'waiting',
       };
 
@@ -107,17 +107,18 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       };
 
     case 'GAME_START':
+      // `play` is the game's own opening state, handed over whole. The reducer
+      // does not know or care what is inside it (§3.1) — that is what lets
+      // chess and Connect 4 share this one case.
       return {
         ...state,
-        board: action.board,
-        myColor: action.you,
+        seat: action.seat,
         opponent: action.opponent,
-        turn: 'red',
+        play: action.play,
+        turnSeat: action.turnSeat,
         screen: 'playing',
-        winner: null,
-        winLine: null,
+        outcome: null,
         chatMessages: [],
-        lastMove: null,
         rematchRequested: false,
         opponentDisconnected: false,
       };
@@ -125,13 +126,12 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     case 'GAME_STATE': {
       const next: GameState = {
         ...state,
-        board: action.board,
-        turn: action.turn,
-        lastMove: action.lastMove,
+        play: action.play,
+        turnSeat: action.turnSeat,
       };
-      if (action.winner) {
-        return { ...next, winner: action.winner, winLine: action.winLine ?? null, screen: 'game-over' };
-      }
+      // A game ends when the GAME the referee runs says so — the shell just
+      // records the outcome and switches screens.
+      if (action.outcome) return { ...next, outcome: action.outcome, screen: 'game-over' };
       return next;
     }
 
@@ -156,7 +156,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         ...state,
         screen: 'lobby',
         roomCode: null,
-        myColor: null,
+        seat: null,
         partyError: 'That room is full. Try a different code.',
       };
 
@@ -168,14 +168,16 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         ...state,
         screen: 'lobby',
         roomCode: null,
-        myColor: null,
+        seat: null,
+        turnSeat: null,
+        outcome: null,
+        // Dropping the game's own state on the way out is what stops one
+        // game's leftovers reaching the next game's board.
+        play: null,
         opponent: null,
-        board: [],
-        winner: null,
-        winLine: null,
         chatMessages: [],
-        lastMove: null,
         challengeCode: null,
+        challengeGame: null,
         rematchRequested: false,
         opponentDisconnected: false,
         partyError: null,
@@ -189,6 +191,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         ...state,
         challengeFrom: { id: action.from.id, name: action.from.name, handle: action.from.handle },
         challengeCode: action.code,
+        // Keep WHICH game this challenge is for. Dropping it here is what made
+        // Accept always open Connect 4 no matter what you were challenged to.
+        challengeGame: action.gameType || 'connect-four',
         panelOpen: true,
       };
 
@@ -204,7 +209,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
           ...state,
           screen: 'lobby',
           roomCode: null,
-          myColor: null,
+          seat: null,
           challengeDeclinedBy: action.by,
         };
       }
@@ -220,7 +225,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
           ...state,
           screen: 'lobby',
           roomCode: null,
-          myColor: null,
+          seat: null,
           partyError: `${targetName} is no longer online.`,
         };
       }
@@ -228,7 +233,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     }
 
     case 'CLEAR_CHALLENGE':
-      return { ...state, challengeFrom: null, challengeCode: null, challengeDeclinedBy: null, partyError: null };
+      return { ...state, challengeFrom: null, challengeCode: null, challengeGame: null, challengeDeclinedBy: null, partyError: null };
 
     case 'REMATCH_REQUESTED':
       return { ...state, rematchRequested: true };

@@ -102,7 +102,7 @@ describe('FriendsScreen — friends list', () => {
       ])),
     });
 
-    const { findByText, getByText, getAllByText, queryByText, queryByPlaceholderText } = render(<GameLobby connection={makeConnection()} />);
+    const { findByText, getByText, getAllByText, queryByText, queryByPlaceholderText } = render(<GameLobby connection={makeConnection()} gameId="connect-four" />);
 
     // Wait for refresh() to populate the list.
     await findByText('Alice');
@@ -133,13 +133,13 @@ describe('FriendsScreen — friends list', () => {
       ])),
     });
 
-    const { findAllByText } = render(<GameLobby connection={makeConnection({ challengePlayer })} />);
+    const { findAllByText } = render(<GameLobby connection={makeConnection({ challengePlayer })} gameId="connect-four" />);
 
     // Exactly one Challenge button (Bob, the only online friend).
     const buttons = await findAllByText('Challenge');
     expect(buttons).toHaveLength(1);
     fireEvent.click(buttons[0]);
-    expect(challengePlayer).toHaveBeenCalledWith('github:2');
+    expect(challengePlayer).toHaveBeenCalledWith('github:2', 'connect-four');
   });
 });
 
@@ -148,7 +148,7 @@ describe('FriendsScreen — add a friend', () => {
     const sendRequest = vi.fn().mockResolvedValue(err(404));
     (window as any).claude.social = makeSocial({ sendRequest });
 
-    const { findByPlaceholderText, getByText } = render(<GameLobby connection={makeConnection()} />);
+    const { findByPlaceholderText, getByText } = render(<GameLobby connection={makeConnection()} gameId="connect-four" />);
     const input = (await findByPlaceholderText("friend's handle")) as HTMLInputElement;
 
     fireEvent.change(input, { target: { value: 'ghost' } });
@@ -159,7 +159,7 @@ describe('FriendsScreen — add a friend', () => {
   });
 
   it('lowercases the handle as the user types', async () => {
-    const { findByPlaceholderText } = render(<GameLobby connection={makeConnection()} />);
+    const { findByPlaceholderText } = render(<GameLobby connection={makeConnection()} gameId="connect-four" />);
     const input = (await findByPlaceholderText("friend's handle")) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'AlIcE' } });
     expect(input.value).toBe('alice');
@@ -182,7 +182,7 @@ describe('FriendsScreen — in-flight mutation guards', () => {
       acceptRequest,
     });
 
-    const { findByText } = render(<GameLobby connection={makeConnection()} />);
+    const { findByText } = render(<GameLobby connection={makeConnection()} gameId="connect-four" />);
     const accept = await findByText('Accept');
 
     fireEvent.click(accept);
@@ -204,7 +204,7 @@ describe('FriendsScreen — in-flight mutation guards', () => {
     );
     (window as any).claude.social = makeSocial({ sendRequest });
 
-    const { findByPlaceholderText, getByText } = render(<GameLobby connection={makeConnection()} />);
+    const { findByPlaceholderText, getByText } = render(<GameLobby connection={makeConnection()} gameId="connect-four" />);
     const input = (await findByPlaceholderText("friend's handle")) as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'zed' } });
 
@@ -228,7 +228,7 @@ describe('FriendsScreen — block is consequence-gated', () => {
       block: blockFn,
     });
 
-    const { findByLabelText, getByRole, getByText, queryByText } = render(<GameLobby connection={makeConnection()} />);
+    const { findByLabelText, getByRole, getByText, queryByText } = render(<GameLobby connection={makeConnection()} gameId="connect-four" />);
 
     // Open the row menu.
     const menuBtn = await findByLabelText('Friend options');

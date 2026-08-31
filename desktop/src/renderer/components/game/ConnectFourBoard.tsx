@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import { GameConnection } from '../../state/game-types';
+import type { ConnectFourPlay } from '../../game/connect-four';
 import { Button, StatusStrip } from '../ui';
 
 const COLS = 7;
@@ -26,7 +27,13 @@ export default function ConnectFourBoard({ connection }: Props) {
   const dispatch = useGameDispatch();
   const [hoveredCol, setHoveredCol] = useState<number | null>(null);
 
-  const isMyTurn = state.myColor !== null && state.turn === state.myColor;
+  // The state split (§3.1): the shell holds only your SEAT, whose turn it is,
+  // and the outcome. Connect 4's own board lives in `state.play`, which the
+  // shell treats as opaque — this narrowing is the one place that knows the
+  // shape, and it is inside Connect 4's own component where it belongs.
+  const play = (state.play ?? { board: [], lastMove: null, winLine: null }) as ConnectFourPlay;
+
+  const isMyTurn = state.seat !== null && state.turnSeat === state.seat;
   const isPlaying = state.screen === 'playing';
   const canMove = isMyTurn && isPlaying && !state.opponentDisconnected;
 
@@ -37,9 +44,9 @@ export default function ConnectFourBoard({ connection }: Props) {
 
   // Ghost piece: find the lowest empty row in the hovered column
   const getGhostRow = (col: number): number | null => {
-    if (!canMove || hoveredCol !== col || !state.board[col]) return null;
+    if (!canMove || hoveredCol !== col || !play.board[col]) return null;
     for (let row = 0; row < ROWS; row++) {
-      if (!state.board[col][row]) return row;
+      if (!play.board[col][row]) return row;
     }
     return null; // column full
   };
@@ -119,8 +126,8 @@ export default function ConnectFourBoard({ connection }: Props) {
                 {/* Render rows top-down visually (ROWS-1 down to 0 in data) */}
                 {Array.from({ length: ROWS }, (_, visualRow) => {
                   const dataRow = ROWS - 1 - visualRow;
-                  const value = cellValue(state.board, col, dataRow);
-                  const isWin = isWinCell(state.winLine, col, dataRow);
+                  const value = cellValue(play.board, col, dataRow);
+                  const isWin = isWinCell(play.winLine, col, dataRow);
                   const isGhost = ghostRow === dataRow;
 
                   // Discs are OWNERSHIP, not colour: `mine` is whichever seat
@@ -129,7 +136,9 @@ export default function ConnectFourBoard({ connection }: Props) {
                   // a conversation. `ring-white` went with the blue board: a
                   // literal white ring is invisible on the light themes, so the
                   // win line rings in the accent instead.
-                  const mine = state.myColor === 'red' ? 1 : 2;
+                  // The board stores 1 for seat 0's discs and 2 for seat 1's,
+                  // so your own discs are `seat + 1`.
+                  const mine = (state.seat ?? 0) + 1;
                   // `flex-1` + `aspect-square`: the disc takes its size from
                   // the column, which takes its size from the pane.
                   let cellClass = 'flex-1 min-h-0 aspect-square rounded-full transition-all ';

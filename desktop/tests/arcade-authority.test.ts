@@ -67,6 +67,48 @@ describe('the game slot (§3)', () => {
   });
 });
 
+describe('the state split (§3.1)', () => {
+  // `state.play` is the open game's OWN state, opaque to the shell. Exactly one
+  // file may narrow it: the game whose state it is. If a shell file starts
+  // reaching in, the split has quietly collapsed back into the one shared pot
+  // it took the largest piece of work in the project to get out of.
+  const MAY_READ_PLAY = new Set(['ConnectFourBoard.tsx']);
+
+  it('only a game\'s own board narrows state.play', () => {
+    const offenders = gameFiles()
+      .filter((f) => /\bstate\.play\b/.test(readStripped(f)))
+      .map((f) => f.split('/').pop()!)
+      .filter((n) => !MAY_READ_PLAY.has(n));
+    expect(offenders).toEqual([]);
+  });
+
+  it('Connect 4\'s vocabulary is gone from the shared state', () => {
+    // `myColor`, `turn`, `winner`, `winLine` and `board` all lived on the shell
+    // state and made chess and 2048 read Connect 4's language to render at all.
+    const shared = readStripped(join(RENDERER, 'state', 'game-types.ts'))
+      + readStripped(join(RENDERER, 'state', 'game-reducer.ts'));
+    for (const gone of ['myColor', 'PlayerColor', 'winLine:', 'lastMove:']) {
+      expect(shared, `${gone} is back on the shared state`).not.toContain(gone);
+    }
+    // And the replacements are actually there, so this cannot pass by the
+    // whole file having been deleted.
+    for (const want of ['seat', 'turnSeat', 'outcome', 'play']) {
+      expect(shared).toContain(want);
+    }
+  });
+
+  it('the challenge carries which game, end to end', () => {
+    // The wire always sent `gameType`; the reducer dropped it, so Accept could
+    // only ever open Connect 4. All four links must stay connected.
+    expect(readStripped(join(RENDERER, 'hooks', 'usePresence.ts'))).toContain('gameType');
+    expect(readStripped(join(RENDERER, 'state', 'game-reducer.ts'))).toContain('challengeGame');
+    expect(readStripped(join(RENDERER, 'components', 'game', 'GameLobby.tsx'))).toContain('challengeGame');
+    // And nobody hardcodes the game on the way out any more.
+    expect(readStripped(join(RENDERER, 'hooks', 'usePartyGame.ts')))
+      .not.toContain("lobbyChallenge(target, 'connect-four'");
+  });
+});
+
 describe('the assistant-finishing rule (§7)', () => {
   // DECIDED BY DESTIN, 2026-08-30: when the assistant finishes, NOTHING happens
   // beyond the existing ready chime and the header status light. No game pauses,

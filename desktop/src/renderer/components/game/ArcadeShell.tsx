@@ -87,11 +87,15 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
   // FOR — otherwise Accept drops the player into the wrong board. Until the
   // reducer carries the game (§3.1 item 3), Connect 4 is the only thing that
   // can be challenged, so route there and leave a marker for Step 2.
+  // A challenge arriving while the picker is open lands on the game it is FOR.
+  // The reducer now keeps `challengeGame` (§3.1 item 3), so this is the real
+  // game rather than the Connect 4 it used to always assume.
   useEffect(() => {
     if (state.challengeFrom && !openGame) {
-      setOpenGame(GAMES.find((g) => g.id === 'connect-four') ?? null);
+      const g = GAMES.find((x) => x.id === state.challengeGame);
+      setOpenGame(g ?? GAMES.find((x) => x.id === 'connect-four') ?? null);
     }
-  }, [state.challengeFrom, openGame]);
+  }, [state.challengeFrom, state.challengeGame, openGame]);
 
   const inPlay = state.screen === 'playing' || state.screen === 'game-over';
 
@@ -169,7 +173,7 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
               {state.screen === 'game-over' && <GameOverlay connection={connection} />}
             </div>
           ) : (
-            <GameLobby connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} />
+            <GameLobby connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} gameId={openGame.id} />
           )
         )}
       </div>

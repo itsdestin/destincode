@@ -1,3 +1,15 @@
+/** Connect 4's own game state — what rides in `GameState.play` while a Connect
+ *  4 game is open (spec §3.1). It lives HERE, in Connect 4's own module, and
+ *  not in the shared state types: the whole point of the split is that the
+ *  shell never learns what a board or a win line is.
+ *
+ *  `board` is [col][row]: 0 empty, 1 seat-0's discs, 2 seat-1's. */
+export interface ConnectFourPlay {
+  board: number[][];
+  lastMove: { col: number; row: number } | null;
+  winLine: [number, number][] | null;
+}
+
 // Re-export shared game logic for the renderer.
 // The shared/ directory is outside Vite's root (src/renderer) and outside
 // the TypeScript rootDir (src/), so we copy the essential exports here.

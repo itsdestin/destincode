@@ -21,6 +21,10 @@ interface Props {
   connection: GameConnection;
   incognito?: boolean;
   onToggleIncognito?: () => void;
+  /** WHICH game this lobby is challenging people to. The arcade shell passes
+   *  the game the user opened; before the split every challenge was hardcoded
+   *  to Connect 4 (§3.1 item 3). */
+  gameId: string;
 }
 
 // Classify the lobby error so the hint matches the actual cause.
@@ -222,7 +226,7 @@ function FriendRowMenu({ onUnfriend, onBlock, pending }: { onUnfriend: () => voi
 // requests, and challenge buttons gated to online friends. Presence relays only
 // ONLINE FRIENDS, so onlineUsers is merged onto the server friends list to light
 // up "Online" / "In game" and the Challenge button.
-function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
+function FriendsScreen({ connection, incognito, onToggleIncognito, gameId }: Props) {
   const state = useGameState();
   const dispatch = useGameDispatch();
   // Review fix: self-exclusion keys on the ACCOUNT ID (ids-not-names principle) —
@@ -397,7 +401,10 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
               size="md"
               onClick={() => {
                 connection.respondToChallenge(state.challengeFrom!.id, true);
-                connection.joinGame(state.challengeCode!);
+                // Join the game you were actually challenged to. The reducer
+                // now keeps it; it used to be dropped, so Accept always opened
+                // Connect 4 whatever the challenge said (§3.1 item 3).
+                connection.joinGame(state.challengeCode!, state.challengeGame ?? gameId);
                 dispatch({ type: 'CLEAR_CHALLENGE' });
               }}
               className="flex-1"
@@ -533,7 +540,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => connection.challengePlayer(row.id)}
+                      onClick={() => connection.challengePlayer(row.id, gameId)}
                       className="shrink-0"
                     >
                       Challenge
@@ -593,7 +600,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
   );
 }
 
-function JoiningScreen({ connection }: Props) {
+function JoiningScreen({ connection }: { connection: GameConnection }) {
   const dispatch = useGameDispatch();
   const [timedOut, setTimedOut] = useState(false);
 
@@ -629,7 +636,7 @@ function JoiningScreen({ connection }: Props) {
   );
 }
 
-function WaitingScreen({ connection }: Props) {
+function WaitingScreen({ connection }: { connection: GameConnection }) {
   const dispatch = useGameDispatch();
 
   // The only way here is challenging a friend, so the old share-this-room-code
@@ -689,7 +696,7 @@ function SignInScreen() {
   );
 }
 
-export default function GameLobby({ connection, incognito, onToggleIncognito }: Props) {
+export default function GameLobby({ connection, incognito, onToggleIncognito, gameId }: Props) {
   const state = useGameState();
   const { signedIn } = useAccount();
 
@@ -704,7 +711,7 @@ export default function GameLobby({ connection, incognito, onToggleIncognito }: 
   useEffect(() => {
     if (incognito || !isWorkbenchAutoplay()) return;
     if (state.connected && state.screen === 'lobby') {
-      connection.challengePlayer(JAKE_ID);
+      connection.challengePlayer(JAKE_ID, gameId);
     }
   }, [state.connected, state.screen, incognito, connection]);
 
@@ -727,5 +734,5 @@ export default function GameLobby({ connection, incognito, onToggleIncognito }: 
       </div>
     );
   }
-  return <FriendsScreen connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} />;
+  return <FriendsScreen connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} gameId={gameId} />;
 }
