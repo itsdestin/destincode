@@ -4,9 +4,15 @@
 // items mirrored from the sources the strategy doc ranks first, and fake
 // feedback (thumbs + comments) served by worker-api-mock.ts.
 //
-// Every value here is INVENTED for the design review — capabilities are what
-// a file scan would plausibly find, not what these plugins actually do. The
-// real catalog (Layer A) computes them; nothing in this file ships.
+// SHAPES mirror the Worker's GET /catalog contract: `{ generated_at, entries }`
+// where each entry is an index.json row plus a `catalog` block. That contract is
+// real now (wecoded-marketplace worker/src/catalog/), so this file is no longer a
+// guess about the shape — keep it in step with catalog-types.ts.
+//
+// The VALUES are still invented: capabilities here are what a file scan would
+// plausibly find, not what these plugins actually do. The real catalog computes
+// them from the files at each repo's current commit. The workbench never talks to
+// the network, so nothing in this file ships.
 /* eslint-disable */
 import type { SkillEntry } from '../../../../../shared/types';
 import type { CatalogMeta, Capability } from '../../../../../shared/catalog-types';
