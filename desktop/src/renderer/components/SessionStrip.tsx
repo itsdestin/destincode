@@ -901,7 +901,7 @@ export default function SessionStrip({
                     // branch on release — without it the pill would snap from
                     // 30% to full instead of fading, which `transition: all`
                     // used to cover.
-                    : 'transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1), border-color 150ms cubic-bezier(0.34, 1.56, 0.64, 1), background-color 150ms cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 150ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 150ms cubic-bezier(0.34, 1.56, 0.64, 1)',
+                    : 'transform var(--dur-hover) var(--ease-bounce), border-color var(--dur-hover) var(--ease-bounce), background-color var(--dur-hover) var(--ease-bounce), box-shadow var(--dur-hover) var(--ease-bounce), opacity var(--dur-hover) var(--ease-bounce)',
                   transform: (!isBeingDragged && isHovered && !isActive) ? 'scale(1.02)' : undefined,
                   boxShadow: (!forceSingle && isActive) ? GLOW_SHADOW[color] : undefined,
                   cursor: 'default',
@@ -991,7 +991,7 @@ export default function SessionStrip({
               left: pillCenter != null
                 ? Math.min(Math.max(0, pillCenter - halfDropdown), window.innerWidth - halfDropdown * 2)
                 : `calc(50% - ${halfDropdown}px)`,
-              animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both',
+              animation: 'dropdown-in 120ms var(--ease-out) both',
             };
           })()}
         >
@@ -1282,7 +1282,7 @@ export default function SessionStrip({
             left: ghostTarget.x,
             top: ghostTarget.y,
             transform: 'translate(-50%, -50%)',
-            transition: 'left 120ms cubic-bezier(0.34, 1.56, 0.64, 1), top 120ms ease',
+            transition: 'left 120ms var(--ease-bounce), top 120ms ease',
           }}
         >
           <div className="w-0.5 h-4 rounded-full bg-accent" style={{ opacity: 0.8 }} />

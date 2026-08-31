@@ -266,6 +266,18 @@ describe('motion vocabulary', () => {
     }
   });
 
+  it('leaves no hand-written curve in SessionStrip', () => {
+    // Five distinct curves accumulated in the renderer, three of them the same
+    // overshoot with drifted numbers (1.56 / 1.5 / 1.62), because each was
+    // typed out by hand. Scoped to the one file that has been converted — the
+    // rest of the app is a separate cleanup with its own before/after deck.
+    //
+    // This bans hand-written CURVES, not hand-written timing functions:
+    // `steps()` is the frame budget and is required, and the assertions at the
+    // top of this file pin the two `steps()` sites in this same file.
+    expect(read('components', 'SessionStrip.tsx')).not.toMatch(/cubic-bezier\(/);
+  });
+
   it('attaches pill hover handlers unconditionally', () => {
     // Fix: attaching them only to non-pack-expanded pills means a pill the
     // packer collapses UNDER a stationary cursor never gets its mouseenter,
