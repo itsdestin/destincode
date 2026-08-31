@@ -316,9 +316,39 @@ export function projectsWithCounts(): CentralIndexProject[] {
   }));
 }
 
+/** The landing-page embed's session (scenario=site, cwd ~/Documents). Its own
+ *  two files rather than the youcoded repo's twelve: the recorded loop opens
+ *  this drawer on camera, and a stranger watching a demo about a spreadsheet
+ *  should see the spreadsheet, not somebody's source tree. */
+const SITE_FILES: ArtifactRecord[] = [
+  {
+    id: 'a-q3-sales',
+    path: 'Q3-sales.xlsx',
+    kind: 'internal',
+    absolutePath: null,
+    lastModified: T,
+    status: 'active',
+    versions: [version('site-1', 'read', T)],
+    comments: [],
+    tags: [],
+  },
+  {
+    id: 'a-sales-chart',
+    path: 'Q3-sales.html',
+    kind: 'internal',
+    absolutePath: null,
+    lastModified: T,
+    status: 'active',
+    versions: [version('site-1', 'create', T)],
+    comments: [],
+    tags: [],
+  },
+];
+
 export function sessionArtifacts(sessionId: string): ArtifactRecord[] {
   // Session ids come from fixtures/sessions.ts; wb-1 works in youcoded, wb-2 in
   // wecoded-themes, matching each session's cwd.
+  if (sessionId === 'site-1') return SITE_FILES;
   if (sessionId === 'wb-2') return BY_PROJECT['/home/destin/youcoded-dev/wecoded-themes'];
   return BY_PROJECT['/home/destin/youcoded-dev/youcoded'];
 }
@@ -376,6 +406,42 @@ scrolling. Throttling it to animation frames cut renderer CPU from 38% to 6%.
 | master | 38% | 212 |
 | throttled | 6% | 3 |
 `,
+  // The landing-page demo's generated chart, shown and EDITED on camera.
+  // Two constraints the body has to satisfy, both learned the hard way:
+  //   1. every bar takes its colour from ONE custom property, because the loop
+  //      edits that single line and the whole chart must repaint from it;
+  //   2. no comments explaining the CSS -- this file is on screen in a product
+  //      demo, so it has to read like something the assistant wrote. (The bar
+  //      heights are percentages, which need `height:100%` on .col: a flex item
+  //      sized by its content has no definite height and every bar came out at
+  //      zero. That note belongs here, not in the fixture.)
+  'a-sales-chart': `<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  :root { --bar: #6E56CF; }
+  body { margin: 0; padding: 34px 40px; font-family: system-ui, sans-serif;
+         background: #fbfaff; color: #1a1524; }
+  h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: -.02em; }
+  p.sub { margin: 0 0 28px; color: #6b6480; font-size: 14px; }
+  .chart { display: flex; align-items: stretch; gap: 26px; height: 300px;
+           padding: 0 6px 12px; border-bottom: 1px solid #e4e0ee; }
+  .col { flex: 1; height: 100%; display: flex; flex-direction: column;
+         justify-content: flex-end; align-items: center; gap: 8px; }
+  .bar { width: 100%; border-radius: 8px 8px 0 0; background: var(--bar); }
+  .val { font-size: 13px; font-weight: 600; color: #4a4360; }
+  .labels { display: flex; gap: 26px; padding: 10px 6px 0; }
+  .labels span { flex: 1; text-align: center; font-size: 13px; color: #6b6480; }
+</style></head><body>
+  <h1>Q3 sales by region</h1>
+  <p class="sub">Thousands of dollars &middot; July&ndash;September 2026</p>
+  <div class="chart">
+    <div class="col"><span class="val">128</span><div class="bar" style="height:64%"></div></div>
+    <div class="col"><span class="val">196</span><div class="bar" style="height:98%"></div></div>
+    <div class="col"><span class="val">84</span><div class="bar" style="height:42%"></div></div>
+    <div class="col"><span class="val">151</span><div class="bar" style="height:76%"></div></div>
+    <div class="col"><span class="val">112</span><div class="bar" style="height:56%"></div></div>
+  </div>
+  <div class="labels"><span>North</span><span>South</span><span>East</span><span>West</span><span>Online</span></div>
+</body></html>`,
   'a-sent-mockup': `<!doctype html>
 <html><head><style>
   body { margin: 0; font-family: system-ui, sans-serif; background: #f6f4ef; color: #222; }

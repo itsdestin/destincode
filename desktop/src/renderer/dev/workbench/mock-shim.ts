@@ -107,7 +107,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'artifacts.listProjectsIndex', 'artifacts.listSession', 'artifacts.listProject',
   'artifacts.listAllFiles', 'artifacts.get', 'artifacts.checkExistence',
   'artifacts.searchContent', 'artifacts.watchProject', 'artifacts.unwatchProject',
-  'artifacts.readBinary',
+  'artifacts.readBinary', 'artifacts.save',
   'syncSpaces.status', 'syncSpaces.syncNow', 'syncSpaces.stopProject',
   'syncSpaces.renameProject', 'syncSpaces.setProjectDescription',
   'folders.rename', 'folders.setDescription',
@@ -1219,6 +1219,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // shells — the catch-all's `[]` is not `{ ok, projects }`, so every consumer
   // bails on the `res?.ok` guard and shows nothing. An empty surface is not a
   // reviewable mockup, which is the whole point of the workbench.
+  // Bodies written by the artifact editor this session. Memory only, cleared by
+  // a reload — the Workbench has no disk and must not pretend otherwise.
+  const EDITED_ARTIFACTS = new Map<string, string>();
+  const EDITED_MTIME = new Map<string, number>();
   const artifacts = {
     listProjectsIndex: async (opts?: { withCounts?: boolean }) => ({
       ok: true,
@@ -1237,6 +1241,15 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       ok: true, files: allFiles(projectId), truncated: false,
     }),
     get: async (_projectRoot: string, artifactId: string, opts?: { full?: boolean }) => {
+      // An in-session edit wins over the seeded body. Without this the artifact
+      // editor was a dead end in the Workbench: Save had no handler at all, so
+      // the panel snapped back to the fixture and the whole edit-a-file story
+      // could not be shown, let alone recorded.
+      const edited = EDITED_ARTIFACTS.get(artifactId);
+      if (edited !== undefined) {
+        return { ok: true, content: edited, orphan: false, binary: false,
+                 truncated: false, sizeBytes: edited.length, mtimeMs: EDITED_MTIME.get(artifactId) ?? 1 };
+      }
       const content = ARTIFACT_CONTENT[artifactId];
       const asBinary = BINARY_FIXTURES[artifactId];
       if (asBinary !== undefined) {
@@ -1269,6 +1282,19 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         ok: true, content, orphan: false, binary: false, truncated: false,
         sizeBytes: fake ?? content.length, mtimeMs: 1,
       };
+    },
+    // Real handler shape (ipc-handlers.ts artifacts:save): { ok, mtimeMs } or a
+    // conflict/refusal. The mock only ever succeeds — there is no second writer
+    // in a Workbench, so a stale-mtime conflict is a state it cannot honestly
+    // produce, and faking one would put a scary dialog in a recorded demo.
+    save: async (
+      _projectRoot: string, _projectId: string, _projectName: string,
+      artifactId: string, content: string,
+    ) => {
+      const mtimeMs = Date.now();
+      EDITED_ARTIFACTS.set(artifactId, content);
+      EDITED_MTIME.set(artifactId, mtimeMs);
+      return { ok: true, mtimeMs };
     },
     // Nothing is missing from disk here — every fixture "exists" by construction.
     checkExistence: async () => ({ ok: true, missingIds: [] as string[] }),
