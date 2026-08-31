@@ -239,8 +239,10 @@ export default function TwentyFortyEightGame({ onEnd, best, onExit }: SoloGamePr
           <RunOverCard
             reason="No moves left"
             score={game.score.toLocaleString()}
-            isBest={best == null || game.score > best}
-            best={best != null && game.score <= best ? best.toLocaleString() : undefined}
+            // Same rule as Flappy: a zero is not a new best, and "Your best: 0"
+            // is not a target worth printing.
+            isBest={game.score > 0 && game.score > (best ?? 0)}
+            best={best != null && best > 0 && game.score <= best ? best.toLocaleString() : undefined}
             onRetry={restart}
             onExit={onExit}
             retryKeyHint="Enter"

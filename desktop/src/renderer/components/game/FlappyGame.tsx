@@ -642,8 +642,13 @@ export default function FlappyGame({ onEnd, best, onExit }: SoloGameProps) {
             <RunOverCard
               reason={deathReason(sim.current.deathCause)}
               score={score === 1 ? '1 pipe' : `${score} pipes`}
-              isBest={best == null || score > best}
-              best={best != null && score <= best ? (best === 1 ? '1 pipe' : `${best} pipes`) : undefined}
+              // A zero is never a "New best", and "Your best: 0 pipes" is not
+              // a target — it is a slightly insulting way to say nothing. Below
+              // one pipe the card simply shows the score and the retry.
+              isBest={score > 0 && score > (best ?? 0)}
+              best={best != null && best > 0 && score <= best
+                ? (best === 1 ? '1 pipe' : `${best} pipes`)
+                : undefined}
               onRetry={restart}
               onExit={onExit}
               retryKeyHint="Space"

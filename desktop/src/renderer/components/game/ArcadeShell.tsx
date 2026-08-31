@@ -86,7 +86,11 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
   const bestOf = (id: string) => localBest[id];
 
   const endRun = (score: number) => {
-    setPlaying(false);
+    // DELIBERATELY DOES NOT STOP PLAYING. The first version did, and it yanked
+    // the game out from under its own end-of-run screen the instant the bird
+    // hit a pipe — the player was thrown back to the leaderboard and never saw
+    // their score. A run ending is the GAME's moment: it shows the result and
+    // offers Play again. Leaving is the player's choice, through `onExit`.
     if (!openGame) return;
     // Written to disk, not just to state: closing the panel used to forget it.
     const best = recordRun(openGame.id, score);
