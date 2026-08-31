@@ -101,6 +101,11 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const isLocalTheme = item.kind === 'theme' && !!item.entry.isLocal;
   const localTooltipId = useId();
   const [iconFailed, setIconFailed] = useState(false);
+  // Task 3: a theme preview that fails to download used to leave a blank grey
+  // band with no fallback and no retry (ROADMAP: Devil's Garden, Kuromi
+  // Dreamer). Every other <img> on this card already had an onError; this one
+  // did not, so any hiccup fetching the PNG was permanent and silent.
+  const [themePreviewFailed, setThemePreviewFailed] = useState(false);
 
   const toggleFavorite = () => {
     if (kind === "theme") mp.favoriteTheme(item.entry.slug, !isFavorited).catch(() => {});
@@ -160,7 +165,17 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const capLine = catalog ? capabilityLine(catalog.capabilities) : null;
 
   const title = item.kind === "skill" ? item.entry.displayName : item.entry.name;
-  const themePreviewUrl = item.kind === "theme" ? item.entry.preview : undefined;
+  const themePreviewUrl = item.kind === "theme" && !themePreviewFailed ? item.entry.preview : undefined;
+  // Fallback for a preview that would not load: the theme's own colours. Not a
+  // screenshot, but it identifies the theme and the card stops looking broken.
+  const themeTokens = item.kind === "theme" ? item.entry.previewTokens : undefined;
+  const themeSwatches = item.kind === "theme" && themePreviewFailed && themeTokens && Object.keys(themeTokens).length > 0 ? (
+    <div data-theme-swatches className="w-full h-36 flex border-b border-edge-dim" title={`${item.entry.name} colours — preview image unavailable`}>
+      {Object.entries(themeTokens).map(([name, color]) => (
+        <span key={name} className="flex-1" style={{ background: color as string }} />
+      ))}
+    </div>
+  ) : null;
   const blurb = item.kind === "skill"
     ? (item.entry.tagline || item.entry.description || "")
     : (item.entry.description || "");
@@ -218,7 +233,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
             {showIcon ? (
               <img src={iconUrl!} alt="" className="w-full h-full object-contain" onError={() => setIconFailed(true)} />
             ) : (
-              <img src={themePreviewUrl!} alt="" className="w-full h-full object-cover" loading="lazy" />
+              <img src={themePreviewUrl!} alt="" className="w-full h-full object-cover" loading="lazy" onError={() => setThemePreviewFailed(true)} />
             )}
           </div>
         )}
@@ -308,8 +323,10 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           alt=""
           loading="lazy"
           className="w-full h-36 object-cover border-b border-edge-dim"
+          onError={() => setThemePreviewFailed(true)}
         />
       )}
+      {themeSwatches}
       {/* p-3/gap-1.5 at narrow shrinks the rail tile so 2-3 fit on a phone screen
           without losing the visual-card feel. Wide stays at p-4/gap-2. */}
       <div className="p-3 sm:p-4 flex flex-col gap-1.5 sm:gap-2 flex-1">

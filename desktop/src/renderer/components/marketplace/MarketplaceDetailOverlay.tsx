@@ -26,6 +26,9 @@ import FileViewerOverlay, { type FileViewerTarget } from "./FileViewerOverlay";
 // was uninstall-then-reinstall (ROADMAP:736 for themes).
 import UpdateButton from "./UpdateButton";
 import { Button, CloseButton } from "../ui";
+// Task 3: `longDescription` is markdown and used to be printed verbatim, so a
+// listing that wrote "**Heading**" showed the asterisks.
+import MarkdownContent from "../MarkdownContent";
 
 export type DetailTarget =
   | { kind: "skill"; id: string }
@@ -364,8 +367,8 @@ function SkillBody({
       {entry.longDescription ? (
         <section>
           <h2 className="text-sm uppercase tracking-wide text-fg-dim mb-2">About</h2>
-          <div className="prose prose-sm max-w-none text-fg-2 whitespace-pre-wrap">
-            {entry.longDescription}
+          <div className="prose prose-sm max-w-none text-fg-2">
+            <MarkdownContent content={entry.longDescription} />
           </div>
         </section>
       ) : (
