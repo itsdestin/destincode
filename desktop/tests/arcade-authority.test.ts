@@ -1,7 +1,7 @@
 // desktop/tests/arcade-authority.test.ts
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { stripComments, readStripped, RENDERER } from './helpers/guard-scope';
 import { GAMES, gameById } from '../src/renderer/components/game/game-registry';
 
@@ -77,7 +77,12 @@ describe('the state split (§3.1)', () => {
   it('only a game\'s own board narrows state.play', () => {
     const offenders = gameFiles()
       .filter((f) => /\bstate\.play\b/.test(readStripped(f)))
-      .map((f) => f.split('/').pop()!)
+      // basename(), not split('/'): join() emits BACKSLASHES on Windows, so
+      // splitting on '/' handed back the whole path and neither allowed file
+      // ever matched MAY_READ_PLAY. The guard then failed on Windows CI naming
+      // the two files it exists to permit — green on Linux, red on Windows,
+      // and wrong in the direction that hides a real offender behind noise.
+      .map((f) => basename(f))
       .filter((n) => !MAY_READ_PLAY.has(n));
     expect(offenders).toEqual([]);
   });
@@ -176,7 +181,7 @@ describe('theming (§5.5)', () => {
     const offenders: string[] = [];
     for (const f of gameFiles()) {
       for (const m of stripComments(readStripped(f)).matchAll(PALETTE)) {
-        if (!allowed.has(m[1]!)) offenders.push(`${f.split('/').pop()}: ${m[0]}`);
+        if (!allowed.has(m[1]!)) offenders.push(`${basename(f)}: ${m[0]}`);
       }
     }
     expect(offenders).toEqual([]);
@@ -210,7 +215,7 @@ describe('the score boundary (§6.1)', () => {
     for (const f of files) {
       const src = stripComments(readFileSync(f, 'utf8'));
       for (const w of GAME_WORDS) {
-        if (src.includes(w)) offenders.push(`${f.split('/').pop()}: ${w}`);
+        if (src.includes(w)) offenders.push(`${basename(f)}: ${w}`);
       }
     }
     expect(offenders).toEqual([]);
