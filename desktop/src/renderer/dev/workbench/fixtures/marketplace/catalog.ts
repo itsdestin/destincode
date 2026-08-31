@@ -153,6 +153,10 @@ function member(bundle: SkillEntry, itemType: CatalogMeta['itemType'], name: str
     publishedAt: (bundle as any).publishedAt,
     updatedAt: (bundle as any).updatedAt,
     pluginName: bundle.id,
+    // Task 21: the UI hides Install on any row whose sourceType the installer
+    // cannot take. Members install via their bundle, so they carry its source.
+    sourceType: (bundle as any).sourceType ?? 'url',
+    sourceRef: (bundle as any).sourceRef ?? bundle.repoUrl,
     catalog: {
       itemType,
       partOf: { id: bundle.id, displayName: bundle.displayName },
@@ -207,6 +211,11 @@ const standalone = (e: Partial<SkillEntry> & { id: string; displayName: string; 
   visibility: 'published',
   publishedAt: '2026-08-20T00:00:00Z',
   updatedAt: '2026-08-26T00:00:00Z',
+  // Task 21: a Connection mirrored from the MCP registry genuinely CANNOT be
+  // installed as a plugin yet, so the fixture says so and the workbench shows
+  // the real "Open source" state. Everything else clones from git like a plugin.
+  sourceType: e.catalog.itemType === 'tool' ? 'mcp-registry' : 'url',
+  sourceRef: e.repoUrl ?? '',
   ...e,
 } as SkillEntry);
 
@@ -299,7 +308,12 @@ export const STANDALONE_ENTRIES: SkillEntry[] = [
  *  bundles with their catalog block, their member rows, and the standalone
  *  items. Order matters for the discovery grid (bundles first, as today). */
 export function buildCatalog(plugins: readonly unknown[]): SkillEntry[] {
-  const bundles = (plugins as SkillEntry[]).map((p) => ({ ...p, catalog: CATALOG_META[p.id] }));
+  // registry.ts is a trimmed copy of the published index and drops sourceType;
+  // the UI needs it to know an Install button would work (Task 21), so default
+  // the bundles to the git clone every real plugin row uses.
+  const bundles = (plugins as SkillEntry[]).map((p) => ({
+    sourceType: 'url', sourceRef: (p as any).repoUrl ?? '', ...p, catalog: CATALOG_META[p.id],
+  }));
   return [...bundles, ...STANDALONE_ENTRIES, ...buildMemberEntries(bundles)];
 }
 
