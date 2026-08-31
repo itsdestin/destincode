@@ -360,13 +360,52 @@ class SkillConfigStore(private val homeDir: File) {
     fun getPrivateSkills(): JSONArray =
         config.optJSONArray("privateSkills") ?: JSONArray()
 
+    // A marketplace prompt must keep its MARKETPLACE id: update() looks the row up
+    // by that id, so replacing it would make every refresh a no-op. Prompts that
+    // arrive WITHOUT an id (a share-link import, a hand-made one from Settings)
+    // get a minted `user:` id, because a row with no id is unaddressable — it can
+    // never be updated, favorited or deleted, all of which look it up by id.
+    // Mirrors desktop's SkillConfigStore.createPromptSkill.
     fun createPromptSkill(skill: JSONObject): JSONObject? {
         val skills = getPrivateSkills()
         if (skills.length() >= MAX_PRIVATE_SKILLS) return null
+        if (skill.optString("id").isEmpty()) {
+            val rand = java.util.UUID.randomUUID().toString().replace("-", "").take(6)
+            skill.put("id", "user:${System.currentTimeMillis()}-$rand")
+        }
         skills.put(skill)
         config.put("privateSkills", skills)
         save()
         return skill
+    }
+
+    /**
+     * Overwrite an installed prompt's stored content in place, keeping its id.
+     * Returns false when no row with that id exists — the caller MUST NOT report
+     * success in that case (see LocalSkillProvider.update). Mirrors desktop's
+     * SkillConfigStore.updatePromptSkill.
+     */
+    fun updatePromptSkill(id: String, patch: JSONObject): Boolean {
+        if (id.isEmpty()) return false
+        val skills = getPrivateSkills()
+        for (i in 0 until skills.length()) {
+            val row = skills.optJSONObject(i) ?: continue
+            if (row.optString("id") != id) continue
+            // Merge the new fields over the stored row rather than replacing it:
+            // fields the marketplace entry does not carry (source, visibility,
+            // installedAt) must survive the update.
+            val keys = patch.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                row.put(k, patch.get(k))
+            }
+            row.put("id", id)
+            skills.put(i, row)
+            config.put("privateSkills", skills)
+            save()
+            return true
+        }
+        return false
     }
 
     // ── Packages (unified marketplace tracking, replaces installed_plugins) ──
@@ -498,6 +537,13 @@ class SkillConfigStore(private val homeDir: File) {
         val overrides = getOverrides()
         overrides.remove(skillId)
         config.put("overrides", overrides)
+
+        // …and the package record. A marketplace-installed prompt now records one
+        // (so the Update badge can light); leaving it behind after an uninstall
+        // would keep counting a ghost item in the Library's "Updates" tab.
+        val packages = getPackages()
+        packages.remove(skillId)
+        config.put("packages", packages)
 
         save()
     }

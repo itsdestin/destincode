@@ -324,12 +324,29 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         }
 
         if (entry.optString("type") == "prompt") {
-            // Prompt skill — store directly in config
+            // Prompt skill — store directly in config, keeping the MARKETPLACE id
+            // so update() can find the row again.
             val skill = JSONObject(entry.toString())
             skill.put("source", "marketplace")
             skill.put("visibility", "published")
             skill.put("installedAt", nowIso())
-            configStore.createPromptSkill(skill)
+            val created = configStore.createPromptSkill(skill)
+                ?: return JSONObject().put("status", "failed")
+                    .put("error", "Maximum of 100 prompt shortcuts reached")
+            // Record a package exactly as the plugin branch below does. Without this
+            // packages[id] stays undefined, the renderer's update check hits
+            // `if (!pkg) continue`, and an installed prompt could NEVER be flagged
+            // out of date — the Update badge was unreachable for this whole type.
+            // Mirrors desktop's skill-provider.ts install() prompt branch.
+            configStore.recordPackageInstall(created.optString("id"), JSONObject().apply {
+                put("version", entry.optString("version", "1.0.0"))
+                put("source", "marketplace")
+                put("installedAt", java.time.Instant.now().toString())
+                put("removable", true)
+                // A prompt lives inside youcoded-skills.json, not in a plugin
+                // directory, so there is no path to record.
+                put("components", JSONArray())
+            })
             installedCache = null
             return JSONObject().put("status", "installed").put("type", "prompt")
         }
@@ -375,7 +392,17 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             ?: return JSONObject().put("ok", false).put("error", "Skill not found in marketplace: $id")
 
         if (entry.optString("type") == "prompt") {
-            // Prompt update: the config store private skill gets replaced
+            // Prompt update: overwrite the stored prompt with the new content.
+            // This used to fall straight through to updatePackageVersion and return
+            // ok:true having rewritten NOTHING — a success the app never performed.
+            // Say what actually happened instead, and only move the recorded version
+            // after the content really changed on disk. Mirrors desktop's
+            // skill-provider.ts update() prompt branch.
+            val written = configStore.updatePromptSkill(id, entry)
+            if (!written) {
+                return JSONObject().put("ok", false)
+                    .put("error", "$id is not installed as a prompt")
+            }
             configStore.updatePackageVersion(id, entry.optString("version", "1.0.0"))
             installedCache = null
             return JSONObject().put("ok", true).put("newVersion", entry.optString("version"))
