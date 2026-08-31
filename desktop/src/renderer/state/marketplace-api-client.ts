@@ -40,7 +40,10 @@ export interface StatsResponse {
   // feedback replaces star ratings. Optional until the Worker ships them; the
   // UI shows nothing (not "0%") when they are absent.
   plugins: Record<string, { installs: number; review_count: number; rating: number; thumbs_up?: number; thumbs_down?: number }>;
-  themes: Record<string, { likes: number }>;
+  // installs: marketplace overhaul Task 22 — theme download counts. Optional
+  // because an older Worker does not report it; the card then shows no count
+  // rather than a misleading "0".
+  themes: Record<string, { likes: number; installs?: number }>;
 }
 
 // One comment on a plugin — GET /comments/:plugin_id (marketplace overhaul,

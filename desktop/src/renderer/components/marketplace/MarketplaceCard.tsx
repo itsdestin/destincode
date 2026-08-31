@@ -127,7 +127,10 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const showUpdateAction = !!updateAvailable && !statusBadge && !isLocalTheme;
   const pluginStats = item.kind === "skill" ? stats.plugins[item.entry.id] : undefined;
   const themeStats = item.kind === "theme" ? stats.themes[item.entry.slug] : undefined;
-  const installs = pluginStats?.installs ?? 0;
+  // Task 22: a theme's downloads live under themes[slug], not plugins[] — the
+  // Worker counts them from a separate `theme:<slug>` id. Reading only
+  // pluginStats meant a theme card's count was always 0, so it never rendered.
+  const installs = (item.kind === "theme" ? themeStats?.installs : pluginStats?.installs) ?? 0;
   const likes = themeStats?.likes ?? 0;
   const author = item.entry.author || "";
   // Overhaul: the catalog block (absent on pre-overhaul rows → no badges).

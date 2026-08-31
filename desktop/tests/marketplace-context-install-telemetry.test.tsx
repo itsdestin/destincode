@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 // marketplace-context-install-telemetry.test.tsx
-// Verifies that installSkill() fires POST /installs telemetry after a successful
-// local install and that telemetry failures never surface to the caller.
+// Verifies that installSkill() and installTheme() fire POST /installs telemetry
+// after a successful local install and that telemetry failures never surface to
+// the caller. Themes report under a `theme:<slug>` plugin id — Task 22; without
+// this call the installs table holds zero theme rows and a theme's download
+// count would read 0 forever.
 
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -16,11 +19,16 @@ import {
 
 function Probe({
   onInstall,
+  onInstallTheme,
 }: {
-  onInstall: (fn: (id: string) => Promise<void>) => void;
+  onInstall?: (fn: (id: string) => Promise<void>) => void;
+  onInstallTheme?: (fn: (slug: string) => Promise<void>) => void;
 }) {
-  const { installSkill } = useMarketplace();
-  React.useEffect(() => { onInstall(installSkill); }, []);
+  const { installSkill, installTheme } = useMarketplace();
+  React.useEffect(() => {
+    onInstall?.(installSkill);
+    onInstallTheme?.(installTheme);
+  }, []);
   return null;
 }
 
@@ -30,10 +38,12 @@ function makeMock({
   installResolves = true,
   signedIn = true,
   telemetryReject = false,
+  themeInstallFails = false,
 }: {
   installResolves?: boolean;
   signedIn?: boolean;
   telemetryReject?: boolean;
+  themeInstallFails?: boolean;
 } = {}) {
   const skills = {
     install: installResolves
@@ -69,13 +79,22 @@ function makeMock({
   const theme = {
     marketplace: {
       list: vi.fn().mockResolvedValue([]),
-      install: vi.fn().mockResolvedValue(undefined),
+      // theme-marketplace:install resolves { status } — it does not throw on
+      // failure, which is why the telemetry call has to read the status.
+      install: themeInstallFails
+        ? vi.fn().mockResolvedValue({ status: "failed", error: "Theme not found in registry" })
+        : vi.fn().mockResolvedValue({ status: "installed" }),
       uninstall: vi.fn().mockResolvedValue(undefined),
       update: vi.fn().mockResolvedValue({ ok: true }),
     },
   };
 
-  return { skills, marketplace, account, marketplaceApi, theme };
+  const appearance = {
+    getFavoriteThemes: vi.fn().mockResolvedValue([]),
+    favoriteTheme: vi.fn().mockResolvedValue(undefined),
+  };
+
+  return { skills, marketplace, account, marketplaceApi, theme, appearance };
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -170,5 +189,77 @@ describe("installSkill telemetry", () => {
       expect.stringContaining("[marketplace] install telemetry threw"),
       expect.any(Error),
     );
+  });
+});
+
+// ── Theme installs (Task 22) ───────────────────────────────────────────────────
+// Themes are recorded under a `theme:<slug>` plugin id so the Worker can count
+// them separately from plugins. Before this, installTheme() never told the
+// Worker anything, so the installs table had no theme rows at all.
+
+describe("installTheme telemetry", () => {
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    (globalThis as any).window = (globalThis as any).window ?? {};
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
+
+  async function mount(mock: ReturnType<typeof makeMock>) {
+    (globalThis as any).window.claude = mock;
+    let captured: ((slug: string) => Promise<void>) | undefined;
+    render(
+      <SkillProvider>
+        <MarketplaceProvider>
+          <Probe onInstallTheme={(fn) => { captured = fn; }} />
+        </MarketplaceProvider>
+      </SkillProvider>
+    );
+    await act(async () => {});
+    return captured!;
+  }
+
+  it("fires marketplaceApi.install('theme:<slug>') after a successful theme install", async () => {
+    const mock = makeMock({ signedIn: true });
+    const installTheme = await mount(mock);
+
+    await act(async () => { await installTheme("ocean-depths"); });
+
+    expect(mock.theme.marketplace.install).toHaveBeenCalledWith("ocean-depths");
+    expect(mock.marketplaceApi.install).toHaveBeenCalledWith("theme:ocean-depths");
+  });
+
+  it("skips theme telemetry when signed out", async () => {
+    const mock = makeMock({ signedIn: false });
+    const installTheme = await mount(mock);
+
+    await act(async () => { await installTheme("ocean-depths"); });
+
+    expect(mock.theme.marketplace.install).toHaveBeenCalledWith("ocean-depths");
+    expect(mock.marketplaceApi.install).not.toHaveBeenCalled();
+  });
+
+  it("records nothing when the theme did not actually install", async () => {
+    const mock = makeMock({ signedIn: true, themeInstallFails: true });
+    const installTheme = await mount(mock);
+
+    await act(async () => { await installTheme("ocean-depths"); });
+
+    expect(mock.marketplaceApi.install).not.toHaveBeenCalled();
+  });
+
+  it("still resolves when theme telemetry rejects (non-fatal)", async () => {
+    const mock = makeMock({ signedIn: true, telemetryReject: true });
+    const installTheme = await mount(mock);
+
+    await act(async () => {
+      await expect(installTheme("ocean-depths")).resolves.toBeUndefined();
+    });
+
+    expect(mock.theme.marketplace.install).toHaveBeenCalledWith("ocean-depths");
+    expect(mock.marketplaceApi.install).toHaveBeenCalledWith("theme:ocean-depths");
   });
 });

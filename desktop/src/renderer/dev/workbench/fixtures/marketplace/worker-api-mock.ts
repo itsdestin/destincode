@@ -40,7 +40,7 @@ export function installWorkerApiMock(): void {
     const method = (init?.method ?? 'GET').toUpperCase();
 
     if (path === '/stats' && method === 'GET') {
-      return json({ generated_at: Math.floor(Date.now() / 1000), plugins: stats, themes: { 'golden-sunbreak': { likes: 41 }, 'meadow-mist': { likes: 88 }, 'halftone-dimension': { likes: 120 } } });
+      return json({ generated_at: Math.floor(Date.now() / 1000), plugins: stats, themes: { 'golden-sunbreak': { likes: 41, installs: 512 }, 'meadow-mist': { likes: 88, installs: 1240 }, 'halftone-dimension': { likes: 120, installs: 87 } } });
     }
     if (path.startsWith('/ratings/') && method === 'GET') return json({ ratings: [] });
     if (path.startsWith('/comments/') && method === 'GET') {

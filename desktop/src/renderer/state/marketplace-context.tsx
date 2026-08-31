@@ -265,7 +265,26 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     const key = `theme:${slug}`;
     markInstalling(key);
     try {
-      await claude().theme.marketplace.install(slug);
+      const res = await claude().theme.marketplace.install(slug);
+      // Task 22: tell the Worker a theme was installed, so theme cards can show
+      // a download count. Themes are recorded under a `theme:<slug>` id, which
+      // is how /stats tells them apart from plugins. Same rules as the skill
+      // path above: only when signed in, never blocks, and a Worker failure is
+      // logged but never fails the install the user actually asked for.
+      // The status check matters — theme-marketplace:install RESOLVES with
+      // { status: 'failed' } instead of throwing, so without it a theme that
+      // never landed on disk would still be counted as a download.
+      if (res?.status !== 'failed') {
+        try {
+          const signedIn = await claude().account.signedIn();
+          if (signedIn) {
+            const stat = await claude().marketplaceApi.install(`theme:${slug}`);
+            if (!stat.ok) console.warn("[marketplace] theme install telemetry failed:", stat.status, stat.message);
+          }
+        } catch (err) {
+          console.warn("[marketplace] theme install telemetry threw (non-fatal):", err);
+        }
+      }
       // Auto-favorite on install (mirrors skills)
       try { await claude().appearance.favoriteTheme(slug, true); } catch {}
       // Fix: reload ThemeProvider's userThemes BEFORE fetchAll flips the
