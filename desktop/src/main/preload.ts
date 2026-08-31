@@ -265,6 +265,9 @@ const IPC = {
   MARKETPLACE_INSTALL: 'marketplace:install',
   MARKETPLACE_RATE: 'marketplace:rate',
   MARKETPLACE_RATE_DELETE: 'marketplace:rate:delete',
+  MARKETPLACE_THUMB: 'marketplace:thumb',
+  MARKETPLACE_THUMB_GET: 'marketplace:thumb:get',
+  MARKETPLACE_COMMENT: 'marketplace:comment',
   MARKETPLACE_THEME_LIKE: 'marketplace:theme:like',
   MARKETPLACE_REPORT: 'marketplace:report',
   // Remote-access state sync — chat snapshot export and attention state relay
@@ -707,6 +710,12 @@ contextBridge.exposeInMainWorld('claude', {
       ipcRenderer.invoke(IPC.MARKETPLACE_RATE_DELETE, pluginId),
     likeTheme: (themeId: string): Promise<ApiResult<{ liked: boolean }>> =>
       ipcRenderer.invoke(IPC.MARKETPLACE_THEME_LIKE, themeId),
+    thumb: (input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<ApiResult<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>> =>
+      ipcRenderer.invoke(IPC.MARKETPLACE_THUMB, input),
+    myThumb: (pluginId: string): Promise<ApiResult<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>> =>
+      ipcRenderer.invoke(IPC.MARKETPLACE_THUMB_GET, pluginId),
+    comment: (input: { plugin_id: string; text: string }): Promise<ApiResult<{ id: string; hidden: boolean }>> =>
+      ipcRenderer.invoke(IPC.MARKETPLACE_COMMENT, input),
     report: (input: { rating_user_id: string; rating_plugin_id: string; reason?: string }): Promise<ApiResult<void>> =>
       ipcRenderer.invoke(IPC.MARKETPLACE_REPORT, input),
   },

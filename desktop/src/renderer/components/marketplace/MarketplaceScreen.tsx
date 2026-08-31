@@ -9,8 +9,9 @@ import { useMemo, useState, useEffect } from "react";
 import { useMarketplace } from "../../state/marketplace-context";
 import MarketplaceHero from "./MarketplaceHero";
 import MarketplaceFilterBar, {
-  type FilterState, emptyFilter, isActive,
+  type FilterState, type TypeChip, emptyFilter, isActive,
 } from "./MarketplaceFilterBar";
+import { catalogType } from "../../../shared/catalog-types";
 import MarketplaceRail from "./MarketplaceRail";
 import MarketplaceCard, { STATUS_TONE_CLASS } from "./MarketplaceCard";
 import MarketplaceGrid from "./MarketplaceGrid";
@@ -47,7 +48,7 @@ interface Props {
   // Threaded down to the detail overlay via these callbacks.
   onOpenShareSheet?(skillId: string): void;
   onOpenThemeShare?(themeSlug: string): void;
-  initialTypeChip?: "skill" | "theme";
+  initialTypeChip?: TypeChip;
   // When set, open the given plugin's detail overlay on mount. Set by
   // App.tsx's openMarketplaceDetail; cleared via onDetailConsumed after
   // consumption so re-entering the marketplace doesn't re-trigger the overlay.
@@ -192,6 +193,11 @@ export default function MarketplaceScreen({
     return ids;
   }, [mp.installedSkills]);
 
+  // Overhaul: a row that lives inside a bundle is installed when its bundle
+  // is — the installer still works in bundles until per-item install ships.
+  const isInstalled = (s: SkillEntry): boolean =>
+    installedIds.has(s.id) || (!!s.catalog?.partOf && installedIds.has(s.catalog.partOf.id));
+
   const skillById = useMemo(() => {
     const m = new Map<string, SkillEntry>();
     for (const s of mp.skillEntries) m.set(s.id, s);
@@ -219,17 +225,24 @@ export default function MarketplaceScreen({
   const filtered = useMemo(() => {
     if (mode !== "search") return [];
     const q = filter.query.trim().toLowerCase();
-    const picksOnly = filter.meta.has("picks");
+    const picksOnly = filter.view === "picks";
 
     const skillPass = (s: SkillEntry): boolean => {
-      if (filter.type !== null && filter.type !== "skill") return false;
+      // Overhaul (decision #1): grouped when browsing, split when looking for
+      // something specific. A type tab shows every row of that kind, members
+      // of bundles included; a typed search shows members too (typing "pdf"
+      // must find the pdf skill, not the 19-skill bundle around it); chips
+      // alone (a vibe, "New") keep the grouped view — bundles, no members.
+      if (filter.type !== null) {
+        if (filter.type === "theme") return false;
+        if (catalogType(s.catalog) !== filter.type) return false;
+      } else if (s.catalog?.partOf && !q) {
+        return false;
+      }
       // "Featured picks" chip: hard filter against the curated slug set so the
       // chip actually narrows results instead of just reordering them.
       if (picksOnly && !pickSlugs.has(s.id)) return false;
-      if (filter.vibes.size > 0) {
-        const areas = s.lifeArea || [];
-        if (!areas.some((a) => filter.vibes.has(a as any))) return false;
-      }
+      if (filter.vibe && !(s.lifeArea || []).includes(filter.vibe)) return false;
       if (q) {
         const hay = `${s.displayName} ${s.description} ${s.tagline || ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -239,7 +252,7 @@ export default function MarketplaceScreen({
     const themePass = (t: ThemeRegistryEntryWithStatus): boolean => {
       if (filter.type !== null && filter.type !== "theme") return false;
       if (picksOnly && !pickSlugs.has(t.slug)) return false;
-      if (filter.vibes.size > 0) return false; // themes have no lifeArea (yet)
+      if (filter.vibe) return false; // themes have no lifeArea (yet)
       if (q) {
         const hay = `${t.name} ${t.description || ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -261,12 +274,12 @@ export default function MarketplaceScreen({
     const recency = (item: typeof combined[number]): string =>
       item.kind === "skill" ? (item.entry.updatedAt || "") : (item.entry.updated || "");
 
-    if (filter.meta.has("popular")) {
+    if (filter.view === "popular") {
       combined.sort((a, b) => (
         (b.kind === "skill" ? (b.entry.installs || 0) : 0) -
         (a.kind === "skill" ? (a.entry.installs || 0) : 0)
       ));
-    } else if (filter.meta.has("new")) {
+    } else if (filter.view === "new") {
       combined.sort((a, b) => recency(b).localeCompare(recency(a)));
     }
     return combined;
@@ -491,11 +504,14 @@ export default function MarketplaceScreen({
               {/* P-1 #4: loading / unreachable state under the heading. */}
               {registryState ?? (
                 <MarketplaceGrid dense>
-                  {mp.skillEntries.map((s) => (
+                  {/* Overhaul: the grouped view — bundles and standalone items
+                      only. Rows that live inside a bundle are reached through
+                      the type tabs, search, or the bundle's own page. */}
+                  {mp.skillEntries.filter((s) => !s.catalog?.partOf).map((s) => (
                     <MarketplaceCard
                       key={s.id}
                       item={{ kind: "skill", entry: s }}
-                      installed={installedIds.has(s.id)}
+                      installed={isInstalled(s)}
                       updateAvailable={!!mp.updateAvailable[s.id]}
                       onOpen={() => open({ kind: "skill", id: s.id })}
                     />
@@ -526,7 +542,13 @@ export default function MarketplaceScreen({
                     <MarketplaceCard
                       key={item.kind === "skill" ? item.entry.id : `theme:${item.entry.slug}`}
                       item={item}
-                      installed={item.kind === "skill" && installedIds.has(item.entry.id)}
+                      installed={item.kind === "skill" && isInstalled(item.entry)}
+                      // Overhaul: a member row says which bundle it came from;
+                      // the tag jumps to the bundle's page.
+                      pluginBadge={item.kind === "skill" && item.entry.catalog?.partOf ? {
+                        name: `Part of ${item.entry.catalog.partOf.displayName}`,
+                        onClick: () => open({ kind: "skill", id: item.entry.catalog!.partOf!.id }),
+                      } : undefined}
                       onOpen={() =>
                         open(item.kind === "skill"
                           ? { kind: "skill", id: item.entry.id }
@@ -545,6 +567,7 @@ export default function MarketplaceScreen({
         <MarketplaceDetailOverlay
           target={detail}
           onClose={() => setDetail(null)}
+          onNavigate={setDetail}
           onOpenShareSheet={onOpenShareSheet}
           onOpenThemeShare={onOpenThemeShare}
         />

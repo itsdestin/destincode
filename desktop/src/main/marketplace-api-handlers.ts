@@ -17,6 +17,11 @@ import { wrap, makeClearSessionOn401 } from "./handler-utils";
 // keeps social-handlers → this module a pure type edge; the value edge here is
 // one-way (this → social-handlers) so there's no runtime import cycle.
 import { notifySignedOut } from "./social-handlers";
+import { reconcileInstalls, type InstalledSkillSource } from "./install-reconcile";
+
+/** Shape returned by `marketplace:thumb` — the caller's new vote AND the plugin's
+ *  new totals, so the button can move the number without re-fetching /stats. */
+type Thumbs = { vote: "up" | "down" | null; thumbs_up: number; thumbs_down: number };
 
 // ── Discriminated union returned by all API-calling handlers ─────────────────
 // WHY: Custom Error fields (MarketplaceApiError.status) are dropped by
@@ -48,11 +53,19 @@ const CHANNELS = [
   "marketplace:install",
   "marketplace:rate",
   "marketplace:rate:delete",
+  "marketplace:thumb",
+  "marketplace:thumb:get",
+  "marketplace:comment",
   "marketplace:theme:like",
   "marketplace:report",
 ] as const;
 
-export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): void {
+export function registerMarketplaceApiHandlers(
+  store: MarketplaceAuthStore,
+  // Optional so existing callers/tests keep working; without it the sign-in
+  // reconcile reports plugin directories only and skill-level pages stay gated.
+  installedSkillSource: InstalledSkillSource | null = null,
+): void {
   // WHY: ipcMain.handle throws on re-registration. Clear prior handlers so
   // hot-reload dev sessions (scripts/run-dev.sh) don't crash on reload.
   for (const ch of CHANNELS) ipcMain.removeHandler(ch);
@@ -97,6 +110,13 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
         } else {
           store.setToken(res.token); // older Worker without `user` in the payload
         }
+        // Tell the Worker what this machine already has. Until this ran, the
+        // server only knew about installs made while signed in — so bundled
+        // plugins (auto-installed at launch, never through the marketplace
+        // client) and anything installed while signed out were invisible to it,
+        // and the install gate refused votes on plugins the user demonstrably
+        // has. Deliberately NOT awaited: sign-in must not wait on bookkeeping.
+        void reconcileInstalls(store, installedSkillSource);
       }
       return res;
     })
@@ -233,7 +253,17 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
   // contextBridge (structuredClone drops custom Error fields).
 
   ipcMain.handle("marketplace:install", (_e, pluginId: string): Promise<ApiResult<void>> =>
-    wrap(() => client.postInstall(pluginId))
+    wrap(async () => {
+      await client.postInstall(pluginId);
+      // Marketplace overhaul Task 18: report what the machine ACTUALLY has now,
+      // not just the id the user clicked. One install can land several votable
+      // pages — a plugin's skills each get their own page, and clicking a bundle
+      // member installs the whole bundle — and the Worker refuses a vote on any
+      // id it has no install row for. Without this, those pages stayed
+      // un-votable until the next launch re-ran the reconcile. Deliberately not
+      // awaited: this is bookkeeping, and the install already succeeded.
+      void reconcileInstalls(store, installedSkillSource);
+    })
   );
 
   ipcMain.handle("marketplace:rate", (_e, input: PostRatingInput): Promise<ApiResult<{ hidden: boolean }>> =>
@@ -242,6 +272,38 @@ export function registerMarketplaceApiHandlers(store: MarketplaceAuthStore): voi
 
   ipcMain.handle("marketplace:rate:delete", (_e, pluginId: string): Promise<ApiResult<void>> =>
     wrap(() => client.deleteRating(pluginId))
+  );
+
+  // Marketplace overhaul (spec §1.7): one-tap vote and comment. Both go through
+  // main because the sign-in token lives here — the renderer's own API client is
+  // built with `getToken: () => null` and can never authenticate.
+  ipcMain.handle("marketplace:thumb", (_e, input: { plugin_id: string; value: "up" | "down" | null }): Promise<ApiResult<Thumbs>> =>
+    wrap(async () => {
+      const r = await client.setThumb(input);
+      // Pass the totals through: the renderer moves the number from THIS
+      // response rather than re-fetching /stats, which is served max-age=300
+      // and so could not show the new count for five minutes.
+      return { vote: r.vote, thumbs_up: r.thumbs_up, thumbs_down: r.thumbs_down };
+    })
+  );
+
+  ipcMain.handle("marketplace:thumb:get", (_e, pluginId: string): Promise<ApiResult<Thumbs>> =>
+    wrap(async () => {
+      const r = await client.getThumb(pluginId);
+      // Totals come back WITH the vote. Returning only `vote` is what produced a
+      // lit thumb beside "No votes yet" on reopen: the vote was fresh from the
+      // server while the count fell back to the /stats snapshot taken at app
+      // start, which predates the vote (and /stats is max-age=300, so it cannot
+      // be refreshed into agreeing).
+      return { vote: r.vote, thumbs_up: r.thumbs_up, thumbs_down: r.thumbs_down };
+    })
+  );
+
+  ipcMain.handle("marketplace:comment", (_e, input: { plugin_id: string; text: string }): Promise<ApiResult<{ id: string; hidden: boolean }>> =>
+    wrap(async () => {
+      const r = await client.postComment(input);
+      return { id: r.id, hidden: r.hidden };
+    })
   );
 
   ipcMain.handle("marketplace:theme:like", (_e, themeId: string): Promise<ApiResult<{ liked: boolean }>> =>

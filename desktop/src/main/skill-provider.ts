@@ -4,7 +4,7 @@ import os from 'os';
 import { scanSkills } from './skill-scanner';
 import { SkillConfigStore } from './skill-config-store';
 import { encodeSkillLink, decodeSkillLink } from './skill-share';
-import { installPlugin, uninstallPlugin, upgradePluginFromLocal, refreshLocalMarketplaceCache, readPluginVersion, isPluginInstalled, marketplaceCacheDir, sweepStaleUpgradeDirs, type InstallResult } from './plugin-installer';
+import { installPlugin, uninstallPlugin, upgradePluginFromLocal, refreshLocalMarketplaceCache, readPluginVersion, isPluginInstalled, marketplaceCacheDir, sweepStaleUpgradeDirs, type InstallResult, upgradePluginFromGit } from './plugin-installer';
 import { pluginInstallDir, YOUCODED_PLUGINS_DIR, listInstalledPluginDirs } from './claude-code-registry';
 import { getConfig as getMarketplaceConfig } from './marketplace-config-store';
 import { reconcileHooks } from './hook-reconciler';
@@ -12,6 +12,9 @@ import { reconcileMcp } from './mcp-reconciler';
 import { log } from './logger';
 import { BUNDLED_PLUGIN_IDS } from '../shared/bundled-plugins';
 import { isNewerVersion } from '../shared/version-compare';
+// Marketplace overhaul Task 16: the Worker host the catalog is served from.
+// Main already imports this module (install-reconcile.ts, marketplace-api-handlers.ts).
+import { MARKETPLACE_API_HOST } from '../renderer/state/marketplace-api-client';
 import type {
   SkillEntry, SkillDetailView, SkillFilters, ChipConfig,
   MetadataOverride, SkillProvider,
@@ -81,7 +84,19 @@ const REGISTRY_BASE = `https://raw.githubusercontent.com/itsdestin/wecoded-marke
 
 const INDEX_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
-interface CacheMeta { fetchedAt: number; }
+// Marketplace overhaul: the Worker's catalog is the source of truth — it carries
+// the type / origin / scan / capabilities block the redesigned UI renders, and CI
+// refreshes it hourly. index.json on GitHub stays as the fallback so a Worker
+// outage (or an old Worker) degrades to today's behaviour, not to an empty grid.
+// YOUCODED_CATALOG_URL: tests point it at a fake; "" disables the catalog step.
+const CATALOG_URL = process.env.YOUCODED_CATALOG_URL ?? `${MARKETPLACE_API_HOST}/catalog`;
+const CATALOG_CACHE = path.join(CACHE_DIR, 'catalog.json');
+// 1h, not 24h: the Worker already caches 5 min and CI refreshes hourly, so a newly
+// published item shows up within the hour instead of the next day.
+const CATALOG_TTL = 60 * 60 * 1000;
+
+// `etag` is optional: only the catalog cache stores one, every other cache omits it.
+interface CacheMeta { fetchedAt: number; etag?: string; }
 
 export class LocalSkillProvider implements SkillProvider {
   // Phase 3a: made public so ThemeMarketplaceProvider can share the same
@@ -251,12 +266,40 @@ export class LocalSkillProvider implements SkillProvider {
     const entry = index.find(e => e.id === id);
     if (!entry) return { status: 'failed', error: `Skill not found in marketplace: ${id}` };
 
+    // Marketplace overhaul (spec §1.4): a skill / specialist / connection that
+    // lives INSIDE a bundle is installed by installing the bundle — installing
+    // one member on its own is a ROADMAP follow-up. The UI already shows a
+    // member as installed once its bundle is.
+    // The `parent !== id` check is a cycle guard, not paranoia: `partOf` comes
+    // from a catalog built by a background job we do not control, and a row
+    // pointing at itself (or a two-row loop) would recurse until the process
+    // dies. One hop only — a bundle is never itself a member of something.
+    const parent = entry.catalog?.partOf?.id;
+    if (parent && parent !== id) {
+      const bundle = index.find(e => e.id === parent);
+      if (!bundle?.catalog?.partOf) return this.install(parent);
+      return { status: 'failed', error: `catalog error: ${id} and ${parent} both claim to be inside another item` };
+    }
+
     if (entry.type === 'prompt') {
-      this.configStore.createPromptSkill({
+      const created = this.configStore.createPromptSkill({
         ...entry,
         source: 'marketplace',
         visibility: 'published',
         installedAt: new Date().toISOString(),
+      });
+      // Record a package exactly as the plugin branch below does. Without this
+      // packages[id] stays undefined, marketplace-context's update check hits
+      // `if (!pkg) continue`, and an installed prompt could NEVER be flagged
+      // out of date — the Update badge was unreachable for this whole type.
+      this.configStore.recordPackageInstall(created.id, {
+        version: entry.version || '1.0.0',
+        source: 'marketplace',
+        installedAt: new Date().toISOString(),
+        removable: true,
+        // A prompt lives inside youcoded-skills.json, not in a plugin
+        // directory, so there is no path to record.
+        components: [],
       });
       this.installedCache = null;
       this.onCacheInvalidated?.();
@@ -271,6 +314,13 @@ export class LocalSkillProvider implements SkillProvider {
       sourceRef: marketplaceEntry.sourceRef || '',
       sourceSubdir: marketplaceEntry.sourceSubdir,
       sourceMarketplace: marketplaceEntry.sourceMarketplace,
+      // Marketplace overhaul: pin to the commit the catalog scanned — and ONLY
+      // that. Deliberately no `?? sourceSha` fallback: that field is a stale
+      // snapshot from whenever the registry's sync job last ran (236 of the 302
+      // live entries carry one), so falling back to it would freeze those
+      // plugins at an old version forever and make Update a no-op that claims
+      // success. No catalog block → today's behaviour (install latest).
+      sourceCommit: marketplaceEntry.catalog?.sourceCommit,
       description: marketplaceEntry.description,
       author: marketplaceEntry.author,
       // WHY: this was never wired through, which left installFromLocal's
@@ -293,6 +343,10 @@ export class LocalSkillProvider implements SkillProvider {
         source: 'marketplace',
         installedAt: new Date().toISOString(),
         removable: true,
+        // The sha the installer actually checked out (absent unless the catalog
+        // pinned one). This is the installed half of the marketplace's commit
+        // comparison — without it that check has no data and stays silent.
+        ...(result.status === 'installed' && result.commit ? { commit: result.commit } : {}),
         components: [{
           type: 'plugin',
           // New install location under our Claude Code marketplace root —
@@ -331,12 +385,13 @@ export class LocalSkillProvider implements SkillProvider {
     const marketplaceEntry = entry as any;
 
     if (entry.type === 'prompt') {
-      // Prompt update: overwrite the private skill entry with new content
-      const config = this.configStore.load();
-      const idx = config.privateSkills.findIndex(s => s.id === id);
-      if (idx >= 0) {
-        config.privateSkills[idx] = { ...config.privateSkills[idx], ...entry, id };
-      }
+      // Prompt update: overwrite the private skill entry with new content.
+      // The miss used to fall straight through to updatePackageVersion and
+      // return { ok: true } having rewritten nothing — a success the app had
+      // not performed. Say what actually happened instead, and only move the
+      // recorded version after the content really changed on disk.
+      const written = this.configStore.updatePromptSkill(id, entry);
+      if (!written) return { ok: false, error: `${id} is not installed as a prompt` };
       this.configStore.updatePackageVersion(id, entry.version || '1.0.0');
       this.installedCache = null;
       this.onCacheInvalidated?.();
@@ -350,6 +405,9 @@ export class LocalSkillProvider implements SkillProvider {
       sourceRef: marketplaceEntry.sourceRef || '',
       sourceSubdir: marketplaceEntry.sourceSubdir,
       sourceMarketplace: marketplaceEntry.sourceMarketplace,
+      // Same pin as install() — see the comment there for why there is no
+      // `?? sourceSha` fallback.
+      sourceCommit: marketplaceEntry.catalog?.sourceCommit,
       description: marketplaceEntry.description,
       author: marketplaceEntry.author,
       // Decomposition v3 §9.5: pass through postInstall + recommends so
@@ -393,17 +451,40 @@ export class LocalSkillProvider implements SkillProvider {
       // number while the on-disk plugin was untouched — a silent no-op that
       // reported success. upgradePluginFromLocal actually replaces the tree.
       // `via` is guaranteed 'YouCoded' here — the 'Claude Code' case returned above.
+      let gitUpgradeCommit: string | undefined;
       if (result.status === 'already_installed' && marketplaceEntry.sourceType === 'local') {
         const upgradeResult = await upgradePluginFromLocal(id, marketplaceEntry.sourceRef || id, marketplaceEntry.sourceMarketplace);
         if (upgradeResult.status !== 'installed') {
           return { ok: false, error: (upgradeResult as any).error ?? 'Update failed' };
         }
+      } else if (result.status === 'already_installed'
+                 && (marketplaceEntry.sourceType === 'url' || marketplaceEntry.sourceType === 'git-subdir')) {
+        // WHY: installPlugin returns 'already_installed' before it reaches any clone,
+        // so without this branch Update rewrote nothing for a git-sourced plugin — 237
+        // of the 302 live registry entries (measured 2026-08-31), i.e. most of the
+        // store. upgradePluginFromGit clones into staging and only swaps on success,
+        // so a failed update leaves the working install exactly as it was.
+        const upgradeResult = await upgradePluginFromGit(marketplaceEntry);
+        if (upgradeResult.status !== 'installed') {
+          return { ok: false, error: (upgradeResult as any).error ?? 'Update failed' };
+        }
+        gitUpgradeCommit = upgradeResult.commit;
       }
       // WHY plugin.json's version, not the index's: B7 makes the index copy
       // plugin.json, so the renderer's "Update available" compare (package
       // record vs index) stays in one number space.
       const newVersion = readPluginVersion(installDir) ?? entry.version;
-      this.configStore.updatePackageVersion(id, newVersion || '1.0.0');
+      // Record the new commit ONLY when installPlugin actually re-cloned
+      // ('installed'). On 'already_installed' it touched no files, so writing the
+      // catalog's newer sha here would clear the update badge for code that never
+      // changed. (Known gap: for url / git-subdir sources 'already_installed' is
+      // the normal outcome, so those updates still do nothing on disk — that is a
+      // pre-existing bug tracked separately, not something this line introduces.)
+      // The commit we actually landed on: from the fresh install, or from the git
+      // upgrade above. Still undefined when nothing was rewritten, so a no-op can
+      // never clear the update badge by recording a commit it did not check out.
+      const landedCommit = result.status === 'installed' ? result.commit : gitUpgradeCommit;
+      this.configStore.updatePackageVersion(id, newVersion || '1.0.0', landedCommit);
       this.installedCache = null;
       this.onCacheInvalidated?.();
 
@@ -691,7 +772,7 @@ export class LocalSkillProvider implements SkillProvider {
   // caches so the next fetchIndex/getFeatured call hits the network. Used
   // right after /feature curation lands — skips the 24h wait.
   async invalidateCache(): Promise<void> {
-    for (const file of [INDEX_CACHE, DEFAULTS_CACHE, FEATURED_CACHE]) {
+    for (const file of [CATALOG_CACHE, INDEX_CACHE, DEFAULTS_CACHE, FEATURED_CACHE]) {
       try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { /* best-effort */ }
     }
   }
@@ -705,7 +786,12 @@ export class LocalSkillProvider implements SkillProvider {
   // rail and defaults on every launch too. This narrower version clears only
   // the index cache.
   async invalidateIndexCache(): Promise<void> {
-    try { if (fs.existsSync(INDEX_CACHE)) fs.unlinkSync(INDEX_CACHE); } catch { /* best-effort */ }
+    // Both listing caches, because fetchIndex reads the catalog FIRST: clearing
+    // index.json alone would leave the stale catalog copy answering and the
+    // refetch this method exists to force would never reach the network.
+    for (const file of [CATALOG_CACHE, INDEX_CACHE]) {
+      try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { /* best-effort */ }
+    }
   }
 
   // Marketplace redesign Phase 1: new `hero` + `rails` fields drive the
@@ -750,21 +836,48 @@ export class LocalSkillProvider implements SkillProvider {
   // --- Fetch helpers ---
 
   private async fetchIndex(): Promise<SkillEntry[]> {
+    // 1. Fresh catalog cache.
+    const cachedCatalog = this.readCache<SkillEntry[]>(CATALOG_CACHE, CATALOG_TTL);
+    if (cachedCatalog) return cachedCatalog;
+    // 2. The Worker's catalog. The ETag matters: this response is several MB and we
+    //    ask for it every hour, so on the ~23 hours out of 24 when nothing changed
+    //    the Worker answers 304 with an empty body and we keep what we already have.
+    //    A 503 here is the CATALOG_ENABLED kill switch — treat it as any other failure.
+    if (CATALOG_URL) {
+      try {
+        const prevTag = this.readCacheEtag(CATALOG_CACHE);
+        const resp = await fetch(CATALOG_URL, prevTag ? { headers: { 'If-None-Match': prevTag } } : undefined);
+        if (resp.status === 304) {
+          const stale = this.readCache<SkillEntry[]>(CATALOG_CACHE, Infinity);
+          if (stale) { this.touchCache(CATALOG_CACHE, prevTag); return stale; }
+        } else if (resp.ok) {
+          const body = await resp.json() as { entries?: SkillEntry[] };
+          if (Array.isArray(body.entries)) {
+            this.writeCache(CATALOG_CACHE, body.entries, resp.headers.get('ETag') ?? undefined);
+            return body.entries;
+          }
+        }
+      } catch { /* fall through to index.json */ }
+    }
+    // 3. Raw index.json on GitHub (pre-overhaul path, unchanged).
     const cached = this.readCache<SkillEntry[]>(INDEX_CACHE, INDEX_TTL);
     if (cached) return cached;
     try {
       const resp = await fetch(`${REGISTRY_BASE}/index.json`);
-      // Stale cache beats the bundled skill-registry.json — those ids are
-      // `<plugin>:<skill>` sub-skills with no sourceRef, so "Get" buttons on
-      // them wouldn't actually install anything. Empty list on true first-run
-      // offline is the honest answer; the UI already renders "No skills found".
-      if (!resp.ok) return this.readCache<SkillEntry[]>(INDEX_CACHE, Infinity) ?? [];
-      const data = await resp.json() as SkillEntry[];
-      this.writeCache(INDEX_CACHE, data);
-      return data;
-    } catch {
-      return this.readCache<SkillEntry[]>(INDEX_CACHE, Infinity) ?? [];
-    }
+      if (resp.ok) {
+        const data = await resp.json() as SkillEntry[];
+        this.writeCache(INDEX_CACHE, data);
+        return data;
+      }
+    } catch { /* fall through to the stale caches below */ }
+    // 4. Anything stale, newest source first. Stale beats the bundled
+    //    skill-registry.json — those ids are `<plugin>:<skill>` sub-skills with no
+    //    sourceRef, so "Get" buttons on them wouldn't actually install anything. An
+    //    empty list on a true first-run offline is the honest answer; the UI already
+    //    renders "No skills found".
+    return this.readCache<SkillEntry[]>(CATALOG_CACHE, Infinity)
+      ?? this.readCache<SkillEntry[]>(INDEX_CACHE, Infinity)
+      ?? [];
   }
 
   private readCache<T>(filePath: string, ttl: number): T | null {
@@ -778,9 +891,27 @@ export class LocalSkillProvider implements SkillProvider {
     }
   }
 
-  private writeCache(filePath: string, data: unknown): void {
+  private writeCache(filePath: string, data: unknown, etag?: string): void {
     try {
-      fs.writeFileSync(filePath, JSON.stringify({ fetchedAt: Date.now(), data }), 'utf8');
+      fs.writeFileSync(filePath, JSON.stringify({ fetchedAt: Date.now(), etag, data }), 'utf8');
+    } catch { /* best-effort cache */ }
+  }
+
+  /** The ETag stored beside a cached body, regardless of how old the body is —
+   *  a stale body is exactly when we want to ask the server "still this one?". */
+  private readCacheEtag(filePath: string): string | undefined {
+    try {
+      return (JSON.parse(fs.readFileSync(filePath, 'utf8')) as CacheMeta).etag;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Reset a cache's TTL after a 304 without re-serialising megabytes of body. */
+  private touchCache(filePath: string, etag?: string): void {
+    try {
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8')) as CacheMeta & { data: unknown };
+      fs.writeFileSync(filePath, JSON.stringify({ ...raw, fetchedAt: Date.now(), etag: etag ?? raw.etag }), 'utf8');
     } catch { /* best-effort cache */ }
   }
 

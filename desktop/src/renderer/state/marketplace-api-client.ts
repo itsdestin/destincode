@@ -36,8 +36,26 @@ export type AuthPollResponse =
 
 export interface StatsResponse {
   generated_at: number;
-  plugins: Record<string, { installs: number; review_count: number; rating: number }>;
-  themes: Record<string, { likes: number }>;
+  // thumbs_up / thumbs_down: marketplace overhaul (2026-08-27) — one-tap
+  // feedback replaces star ratings. Optional until the Worker ships them; the
+  // UI shows nothing (not "0%") when they are absent.
+  plugins: Record<string, { installs: number; review_count: number; rating: number; thumbs_up?: number; thumbs_down?: number }>;
+  // installs: marketplace overhaul Task 22 — theme download counts. Optional
+  // because an older Worker does not report it; the card then shows no count
+  // rather than a misleading "0".
+  themes: Record<string, { likes: number; installs?: number }>;
+}
+
+// One comment on a plugin — GET /comments/:plugin_id (marketplace overhaul,
+// no Worker route yet; the workbench answers it from fixtures).
+export interface CommentEntry {
+  id: string;
+  user_id: string;
+  user_login: string;
+  user_avatar_url: string;
+  text: string;
+  /** Unix timestamp in seconds */
+  created_at: number;
 }
 
 // Shape of a single rating entry from GET /ratings/:plugin_id
@@ -110,6 +128,22 @@ export interface MarketplaceApiClient {
   /** Fetch all visible ratings for a plugin. Unauthenticated; newest-first, LIMIT 50.
    *  Pass an AbortSignal to cancel in-flight requests on unmount or refresh. */
   listRatings(pluginId: string, signal?: AbortSignal): Promise<ListRatingsResponse>;
+
+  // ── Marketplace overhaul (2026-08-27) — thumbs + comments. Both auth'd; thumbs
+  //    additionally require a prior install (same rule as ratings today, so
+  //    strangers can't game the number). ──
+  listComments(pluginId: string, signal?: AbortSignal): Promise<{ comments: CommentEntry[] }>;
+  postComment(input: { plugin_id: string; text: string }): Promise<{ ok: true; id: string; hidden: boolean }>;
+  /** Reconcile: report EVERY plugin the client currently has, in one call.
+   *  Idempotent server-side and never moves `installed_at`. */
+  postInstalls(pluginIds: string[]): Promise<{ ok: true; recorded: number }>;
+  /** `null` clears the user's vote. Returns the plugin's NEW totals so the caller
+   *  can move the number on the spot — /stats is served max-age=300 and cannot
+   *  answer that question for up to five minutes after the write. */
+  setThumb(input: { plugin_id: string; value: 'up' | 'down' | null }): Promise<{ ok: true; vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>;
+  /** The caller's own vote AND the plugin's current totals. Both, because the
+   *  page would otherwise show a lit thumb beside a stale "No votes yet". */
+  getThumb(pluginId: string): Promise<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>;
 
   // ── Social graph (accounts Phase 2). All auth'd. The Worker 404s an unknown or
   //    blocked handle (indistinguishable — no enumeration oracle), 429s on caps,
@@ -246,6 +280,16 @@ export function createMarketplaceApiClient(opts: {
     // signal allows callers to cancel mid-flight on unmount or refreshKey change.
     listRatings: (plugin_id, signal?) =>
       request<ListRatingsResponse>(`/ratings/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
+    listComments: (plugin_id, signal?) =>
+      request<{ comments: CommentEntry[] }>(`/comments/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
+    postInstalls: (plugin_ids) =>
+      request<{ ok: true; recorded: number }>("/installs", { method: "POST", body: JSON.stringify({ plugin_ids }), auth: true }),
+    postComment: (input) =>
+      request<{ ok: true; id: string; hidden: boolean }>("/comments", { method: "POST", body: JSON.stringify(input), auth: true }),
+    setThumb: (input) =>
+      request<{ ok: true; vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>("/thumbs", { method: "POST", body: JSON.stringify(input), auth: true }),
+    getThumb: (plugin_id) =>
+      request<{ vote: 'up' | 'down' | null; thumbs_up: number; thumbs_down: number }>(`/thumbs/${encodeURIComponent(plugin_id)}`, { method: "GET", auth: true }),
 
     // ── Social graph (accounts Phase 2). All auth'd; path params URL-encoded. The
     //    action endpoints (accept/decline/cancel/unfriend/block/unblock) return

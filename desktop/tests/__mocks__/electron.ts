@@ -20,6 +20,9 @@ export const protocol = {
 
 export const ipcMain = {
   handle: vi.fn(),
+  // Handler modules clear prior registrations before re-registering (hot reload);
+  // without this the mock throws before a single handler is captured.
+  removeHandler: vi.fn(),
   on: vi.fn(),
 };
 

@@ -265,7 +265,26 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
     const key = `theme:${slug}`;
     markInstalling(key);
     try {
-      await claude().theme.marketplace.install(slug);
+      const res = await claude().theme.marketplace.install(slug);
+      // Task 22: tell the Worker a theme was installed, so theme cards can show
+      // a download count. Themes are recorded under a `theme:<slug>` id, which
+      // is how /stats tells them apart from plugins. Same rules as the skill
+      // path above: only when signed in, never blocks, and a Worker failure is
+      // logged but never fails the install the user actually asked for.
+      // The status check matters — theme-marketplace:install RESOLVES with
+      // { status: 'failed' } instead of throwing, so without it a theme that
+      // never landed on disk would still be counted as a download.
+      if (res?.status !== 'failed') {
+        try {
+          const signedIn = await claude().account.signedIn();
+          if (signedIn) {
+            const stat = await claude().marketplaceApi.install(`theme:${slug}`);
+            if (!stat.ok) console.warn("[marketplace] theme install telemetry failed:", stat.status, stat.message);
+          }
+        } catch (err) {
+          console.warn("[marketplace] theme install telemetry threw (non-fatal):", err);
+        }
+      }
       // Auto-favorite on install (mirrors skills)
       try { await claude().appearance.favoriteTheme(slug, true); } catch {}
       // Fix: reload ThemeProvider's userThemes BEFORE fetchAll flips the
@@ -353,12 +372,32 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   // Phase 3b: compute update-available map by comparing marketplace versions
   // against installed package versions. Themes use the "theme:<slug>" key
   // prefix in the packages map to avoid colliding with skill ids.
+  //
+  // Today this is ONE signal: the version string an author bumps by hand. Two
+  // known sharp edges follow from that, and neither is fixed here:
+  //   • an entry with no version is recorded as '1.0.0' (the `|| '1.0.0'`
+  //     fallbacks in skill-provider.ts), so it can be flagged spuriously;
+  //   • an author who changes files without bumping the version is invisible.
+  // Two independent signals, OR'd — "either differs" means there is something
+  // new to fetch (marketplace overhaul, Tasks 1 + 17):
+  //   • the VERSION is what an author bumps deliberately;
+  //   • the COMMIT is what actually changed in the repo. Half the catalog
+  //     mirrors projects whose authors never touch the version, so without this
+  //     their updates were invisible.
+  // Kept separate on purpose, and the commit check only ever ADDS a badge:
+  //   • no commit recorded on the package (every install made before Task 17)
+  //     contributes nothing, so an old library never lights up all at once;
+  //   • no commit listed by the catalog (a Worker outage falls back to
+  //     index.json, which has no catalog block) contributes nothing either,
+  //     rather than reading as "downgraded".
   const updateAvailable = useMemo<Record<string, boolean>>(() => {
     const result: Record<string, boolean> = {};
     for (const entry of skillEntries) {
       const pkg = packages[entry.id];
       if (!pkg) continue; // not installed via marketplace
-      if (isNewerVersion(pkg.version, entry.version)) {
+      const listedCommit = entry.catalog?.sourceCommit;
+      const commitMoved = !!pkg.commit && !!listedCommit && pkg.commit !== listedCommit;
+      if (isNewerVersion(pkg.version, entry.version) || commitMoved) {
         result[entry.id] = true;
       }
     }

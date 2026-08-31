@@ -14,7 +14,10 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
 
     val configStore = SkillConfigStore(homeDir)
     private val scanner = SkillScanner(homeDir, context)
-    private val fetcher = MarketplaceFetcher(homeDir) { getBundledIndex() }
+    // Named argument, NOT a trailing lambda: MarketplaceFetcher gained a third
+    // parameter (`readUrl`, the injectable HTTP reader), so a trailing lambda would
+    // silently bind to that one instead of the bundled-index fallback.
+    private val fetcher = MarketplaceFetcher(homeDir, bundledIndexProvider = { getBundledIndex() })
     private var installedCache: JSONArray? = null
 
     // Injected after construction — plugin installer for marketplace plugins
@@ -296,6 +299,29 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
             if (index.getJSONObject(i).optString("id") == id) { entry = index.getJSONObject(i); break }
         }
         if (entry == null) return JSONObject().put("status", "failed").put("error", "Skill not found in marketplace: $id")
+
+        // Marketplace overhaul (spec 1.4): a skill / specialist / connection that lives
+        // inside a bundle is installed by installing the bundle — per-item install is a
+        // ROADMAP follow-up, and the UI already shows a member as installed once its
+        // bundle is. Mirrors desktop's skill-provider.ts install().
+        //
+        // The two id checks are a cycle guard, not paranoia: `partOf` comes from a catalog
+        // built by a background job we do not control at install time, and a row pointing
+        // at itself (or a two-row loop) would recurse until the process dies. One hop
+        // only — a member's bundle is never itself a member.
+        val parent = entry.optJSONObject("catalog")
+            ?.optJSONObject("partOf")
+            ?.optString("id", "")
+            ?.takeIf { it.isNotEmpty() && it != id }
+        if (parent != null) {
+            var bundle: JSONObject? = null
+            for (i in 0 until index.length()) {
+                if (index.getJSONObject(i).optString("id") == parent) { bundle = index.getJSONObject(i); break }
+            }
+            if (bundle?.optJSONObject("catalog")?.optJSONObject("partOf") == null) return install(parent)
+            return JSONObject().put("status", "failed")
+                .put("error", "catalog error: $id and $parent both claim to be inside another item")
+        }
 
         if (entry.optString("type") == "prompt") {
             // Prompt skill — store directly in config

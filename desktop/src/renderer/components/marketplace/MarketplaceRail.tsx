@@ -1,7 +1,7 @@
 // Horizontal-scroll rail. Transparent container so only cards composite
 // against the wallpaper (keeps backdrop-filter stacking at ≤2).
 
-import React, { useRef } from "react";
+import React, { useRef, useState, useEffect, useCallback } from "react";
 
 interface Props {
   title: string;
@@ -10,8 +10,40 @@ interface Props {
   children: React.ReactNode;
 }
 
+// Task 3 / UI audit P-17 + #26: a rail cut its last card off with no fade, no
+// scrollbar and — below the `md` breakpoint, which is every phone — no arrows
+// either, so nothing on screen said there was more to the right. This fades the
+// content itself (a MASK, not a painted gradient) so the wallpaper still shows
+// through on wallpaper themes, and only on the side that actually has more.
+const FADE_MASK: Record<'none' | 'left' | 'right' | 'both', string | undefined> = {
+  none: undefined,
+  right: 'linear-gradient(to right, #000 calc(100% - 44px), transparent 100%)',
+  left: 'linear-gradient(to right, transparent 0, #000 44px)',
+  both: 'linear-gradient(to right, transparent 0, #000 44px, #000 calc(100% - 44px), transparent 100%)',
+};
+
 export default function MarketplaceRail({ title, description, onSeeAll, children }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none');
+
+  // 1px slack absorbs sub-pixel scroll positions, which would otherwise leave a
+  // permanent hairline fade at a rail that is already scrolled to its end.
+  const updateFade = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    if (max <= 1) { setFade('none'); return; }
+    const more = { left: el.scrollLeft > 1, right: el.scrollLeft < max - 1 };
+    setFade(more.left && more.right ? 'both' : more.left ? 'left' : more.right ? 'right' : 'none');
+  }, []);
+
+  // Deliberately window `resize` rather than a ResizeObserver: the rail's width
+  // only changes with the window, and this needs no polyfill in the test env.
+  useEffect(() => {
+    updateFade();
+    window.addEventListener('resize', updateFade);
+    return () => window.removeEventListener('resize', updateFade);
+  }, [updateFade, children]);
 
   const scrollBy = (dir: 1 | -1) => {
     const el = scrollRef.current;
@@ -40,6 +72,9 @@ export default function MarketplaceRail({ title, description, onSeeAll, children
         <div
           ref={scrollRef}
           role="list"
+          onScroll={updateFade}
+          data-fade={fade}
+          style={{ maskImage: FADE_MASK[fade], WebkitMaskImage: FADE_MASK[fade] }}
           // overflow-x-auto coerces overflow-y to scroll/auto per CSS spec —
           // the rail's clip box becomes the cards' bounding box, so any
           // vertical shadow extending past the card top/bottom gets sliced,

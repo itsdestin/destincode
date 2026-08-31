@@ -213,6 +213,40 @@ class MarketplaceApiClient(
         return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
     }
 
+    // ── Marketplace feedback (overhaul §1.7) — thumbs + comments ──
+
+    /** POST /thumbs — "up" / "down" / null (clear). Requires token; 403 without a
+     *  prior install. The response carries the plugin's NEW totals so the React
+     *  UI can move the number without re-fetching /stats. */
+    suspend fun setThumb(pluginId: String, value: String?): ApiResult<JSONObject> {
+        val payload = JSONObject().apply {
+            put("plugin_id", pluginId)
+            put("value", value ?: JSONObject.NULL)
+        }
+        val (code, body) = request("/thumbs", method = "POST", body = payload, auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** GET /thumbs/{id} — the caller's own vote, or null. URL-encoded like
+     *  toggleThemeLike: a bundle member's id is `<bundle>/<name>`, and an
+     *  unencoded slash would address a different path. */
+    suspend fun getThumb(pluginId: String): ApiResult<JSONObject> {
+        val encoded = URLEncoder.encode(pluginId, "UTF-8")
+        val (code, body) = request("/thumbs/$encoded", method = "GET", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** POST /comments — requires token, no install needed (asking a question
+     *  BEFORE installing is the point). */
+    suspend fun postComment(pluginId: String, text: String): ApiResult<JSONObject> {
+        val payload = JSONObject().apply {
+            put("plugin_id", pluginId)
+            put("text", text)
+        }
+        val (code, body) = request("/comments", method = "POST", body = payload, auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
     // ── Account endpoints (Worker accounts Phase 1) — all auth'd, small JSON bodies ──
     // These mirror the desktop MarketplaceApiClient account methods. The wire shape
     // returned to React (via ApiResult.toJson) is identical to marketplace:rate etc.

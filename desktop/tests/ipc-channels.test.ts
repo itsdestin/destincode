@@ -1253,3 +1253,99 @@ describe('fs:* channel parity', () => {
     expect(kt).toContain(`coerceIn(1, ${READ_HEAD_MAX_BYTES})`);
   });
 });
+
+// Four-surface parity for the marketplace feedback channels (overhaul Plan 1,
+// Task 8). FOUR, not five: marketplace write channels have no remote-server.ts
+// WS case — `marketplace:rate` has none either, so the remote browser cannot
+// rate today and cannot vote either. This block pins the status quo; it does
+// not fix it (ROADMAP).
+describe('marketplace feedback channel parity', () => {
+  // Three channels, not two: reading your OWN vote is an authed GET, so it
+  // cannot be a direct renderer fetch the way the public comment list is —
+  // the sign-in token lives in the main process.
+  const NEW_TYPES = ['marketplace:thumb', 'marketplace:thumb:get', 'marketplace:comment'];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+  it('registered in marketplace-api-handlers.ts', () => {
+    const src = read('src', 'main', 'marketplace-api-handlers.ts');
+    for (const t of NEW_TYPES) expect(src, `${t} missing from marketplace-api-handlers.ts`).toContain(`"${t}"`);
+  });
+  it('handled by SessionService.kt (Android)', () => {
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    for (const t of NEW_TYPES) expect(kt, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+  });
+  it('the thumb handlers forward the TOTALS, not just the vote', () => {
+    // Both thumbs routes return { vote, thumbs_up, thumbs_down }. A handler that
+    // rebuilds the object and forgets the totals type-checks, passes every
+    // component test (they mock the channel), and ships the bug it was written
+    // to fix: a lit thumb beside "No votes yet" on reopen, because the count
+    // falls back to the /stats snapshot taken at app start. Caught in a dev
+    // build after a silent no-op edit, never by the suite — hence this guard.
+    const src = read('src', 'main', 'marketplace-api-handlers.ts');
+    for (const ch of ['marketplace:thumb', 'marketplace:thumb:get']) {
+      const start = src.indexOf(`ipcMain.handle("${ch}"`);
+      expect(start, `${ch} handler not found`).toBeGreaterThan(-1);
+      const body = src.slice(start, start + 900);
+      expect(body, `${ch} must forward thumbs_up`).toContain('thumbs_up');
+      expect(body, `${ch} must forward thumbs_down`).toContain('thumbs_down');
+    }
+  });
+
+  it('the shim sends an OBJECT payload for every one, never a bare id', () => {
+    // Android reads `msg.payload.optString("plugin_id")`. A bare string payload
+    // is not a JSON object there, so the id arrives empty and the call silently
+    // does nothing on a phone — no error on either side. The two legal shapes are
+    // an object literal (`{ plugin_id: pluginId }`) or the conventional `input`
+    // variable, which is always an object type; anything else — `pluginId`,
+    // `themeId`, `slug` — is the bug.
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of NEW_TYPES) {
+      const call = src.match(new RegExp(`invoke\\('${t}',\\s*([^)]*)\\)`));
+      expect(call, `no invoke('${t}', ...) found in remote-shim.ts`).toBeTruthy();
+      const arg = call![1]!.trim();
+      expect(
+        arg.startsWith('{') || arg === 'input',
+        `invoke('${t}') must pass an object literal or \`input\`, got: ${arg}`,
+      ).toBe(true);
+    }
+  });
+});
+
+// The marketplace Worker's host is spelled out in two languages: TypeScript
+// (MARKETPLACE_API_HOST) and Kotlin (MarketplaceFetcher.kt, which the Android
+// catalog fetch builds `$MARKETPLACE_API_HOST/catalog` from). Neither can import
+// the other, so the string is duplicated — exactly the drift these parity tests
+// exist to catch. If someone moves the Worker, both copies must move together or
+// Android silently keeps fetching the old host and falls back to index.json
+// forever, with no error anywhere.
+describe('marketplace Worker host parity (desktop ↔ Android)', () => {
+  it('MarketplaceFetcher.kt names the same host as MARKETPLACE_API_HOST', () => {
+    const tsSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'renderer', 'state', 'marketplace-api-client.ts'),
+      'utf8',
+    );
+    const ktSrc = fs.readFileSync(
+      path.join(
+        __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+        'com', 'youcoded', 'app', 'skills', 'MarketplaceFetcher.kt',
+      ),
+      'utf8',
+    );
+
+    const ts = tsSrc.match(/export const MARKETPLACE_API_HOST = "([^"]+)"/);
+    expect(ts, 'MARKETPLACE_API_HOST not found in marketplace-api-client.ts').toBeTruthy();
+
+    const kt = ktSrc.match(/const val MARKETPLACE_API_HOST = "([^"]+)"/);
+    expect(kt, 'MARKETPLACE_API_HOST not found in MarketplaceFetcher.kt').toBeTruthy();
+
+    expect(kt![1]).toBe(ts![1]);
+  });
+});
