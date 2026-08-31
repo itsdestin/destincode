@@ -1,3 +1,5 @@
+import type { CatalogMeta } from './catalog-types';
+
 // 'auto' is Claude Code's classifier-backed mode (CC v2.1.83+, March 2026).
 // Sits between 'auto-accept' (only file edits + 7 safe bash) and 'bypass'
 // (no checks): a background classifier blocks risky actions like mass deletion
@@ -858,6 +860,11 @@ export interface SkillEntry {
   // bundled plugin — 'youcoded' vs 'youcoded-core' vs upstream Anthropic.
   sourceMarketplace?: string;
 
+  // Marketplace overhaul (2026-08-27): type / origin / scan / capabilities /
+  // membership for the new catalog. Optional — today's registry has none of
+  // it, and the UI treats an absent block as "a plugin, community, unchecked".
+  catalog?: CatalogMeta;
+
   // Absolute path to the skill's own directory (the one holding SKILL.md).
   // Populated by scanSkills for filesystem-discovered skills. The native harness
   // needs it because `prompt` is only the slash-command string — it carries no
@@ -932,6 +939,12 @@ export interface PackageInfo {
   installedAt: string;
   removable: boolean;
   components: PackageComponent[];
+  // Marketplace overhaul Task 17: the exact upstream commit this install landed
+  // on, recorded only when the catalog listed one (`catalog.sourceCommit`).
+  // The marketplace Update check compares it against the catalog's current value,
+  // alongside the version compare. Absent on every pre-Task-17 install, which is
+  // why the compare must treat "no commit recorded" as "nothing to say".
+  commit?: string;
   // Decomposition v3 §9.8: cross-device sync can surface a package that's
   // present in config but not yet on disk (e.g., Android pulled a desktop
   // config but hasn't installed the package yet). "pending" UIs can show an

@@ -90,7 +90,10 @@ export interface InstallMeta {
 }
 
 export type InstallResult =
-  | { status: 'installed'; type?: 'plugin' | 'prompt' }
+  // `commit` is the exact upstream sha the install landed on, present only when
+  // the catalog listed one (see pinToCommit). The package record stores it so the
+  // Update check can tell "the repo moved" from "the author bumped the version".
+  | { status: 'installed'; type?: 'plugin' | 'prompt'; commit?: string }
   | { status: 'already_installed'; via: string; type?: 'plugin' | 'prompt' }
   | { status: 'failed'; error: string; type?: 'plugin' | 'prompt' }
   | { status: 'installing'; type?: 'plugin' | 'prompt' };
@@ -101,6 +104,10 @@ interface MarketplaceEntry {
   sourceRef: string;
   sourceSubdir?: string;
   sourceMarketplace?: string;
+  // Marketplace overhaul: the exact upstream commit the catalog listed — the
+  // files that were actually scanned. Absent for local (our own repo) sources
+  // and for any entry with no catalog block, which keeps installing latest.
+  sourceCommit?: string;
   description?: string;
   author?: string;
   // Used to detect when a cached local-source package has drifted from the
@@ -355,6 +362,60 @@ export async function refreshLocalMarketplaceCache(sourceMarketplace?: string): 
  * plugin at all. The old tree is parked under `.old-<id>-<pid>` until the
  * swap fully succeeds, and is put BACK if anything throws in between.
  */
+/** Update a plugin that came from git (`url` or `git-subdir`).
+ *
+ *  WHY THIS EXISTS: `update()` re-runs `installPlugin`, which returns
+ *  `already_installed` as soon as the plugin directory exists — before it reaches any
+ *  clone. Only `local` sources had a real upgrade path, so pressing Update on a git
+ *  plugin rewrote nothing at all. That was 237 of the 302 live registry entries
+ *  (measured 2026-08-31): the large majority of the store.
+ *
+ *  The order is deliberate and is the whole safety story: clone into a STAGING
+ *  directory, and only once the clone AND the pin have both succeeded swap it into
+ *  place — retiring the old tree first so it can be put back if the swap dies
+ *  half-way. A failed update therefore leaves the working install exactly as it was,
+ *  which a plain "delete then re-clone" could not promise. Mirrors
+ *  upgradePluginFromLocal's staging/retire/rollback dance.
+ */
+export async function upgradePluginFromGit(entry: MarketplaceEntry): Promise<InstallResult> {
+  const { id, sourceType, sourceRef } = entry;
+  if (!SAFE_ID_RE.test(id)) return { status: 'failed', error: 'Invalid plugin id' };
+  if (sourceType !== 'url' && sourceType !== 'git-subdir') {
+    return { status: 'failed', error: `upgradePluginFromGit does not handle source type "${sourceType}"` };
+  }
+  fs.mkdirSync(PLUGINS_DIR, { recursive: true });
+  const targetDir = path.join(PLUGINS_DIR, id);
+  const staging = path.join(PLUGINS_DIR, `.upgrade-${id}-${process.pid}`);
+  const retired = path.join(PLUGINS_DIR, `.old-${id}-${process.pid}`);
+  fs.rmSync(staging, { recursive: true, force: true });
+
+  const fetched = sourceType === 'url'
+    ? await installFromUrl(id, sourceRef, entry.sourceCommit, staging)
+    : await installFromGitSubdir(id, sourceRef, entry.sourceSubdir || '', entry.sourceCommit, staging);
+
+  // Nothing on disk has been touched yet — return the real git message untouched.
+  if (fetched.status !== 'installed') {
+    fs.rmSync(staging, { recursive: true, force: true });
+    return fetched;
+  }
+
+  try {
+    if (fs.existsSync(targetDir)) fs.renameSync(targetDir, retired);
+    fs.renameSync(staging, targetDir);
+  } catch (err: unknown) {
+    // Put the old tree back if the swap died half-way — a user must never end up
+    // with the plugin directory entirely gone.
+    if (!fs.existsSync(targetDir) && fs.existsSync(retired)) {
+      try { fs.renameSync(retired, targetDir); } catch { /* nothing better to do */ }
+    }
+    fs.rmSync(staging, { recursive: true, force: true });
+    return { status: 'failed', error: `upgrade swap failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  // Cleanup AFTER the swap already succeeded; a failure here is not an upgrade failure.
+  fs.rmSync(retired, { recursive: true, force: true });
+  return { status: 'installed', commit: fetched.commit };
+}
+
 export async function upgradePluginFromLocal(id: string, sourceRef: string, sourceMarketplace?: string): Promise<InstallResult> {
   if (!SAFE_ID_RE.test(id)) return { status: 'failed', error: 'Invalid plugin id' };
   const cacheRepo = path.join(CACHE_DIR, getCacheRepoName(sourceMarketplace));
@@ -438,20 +499,44 @@ export function sweepStaleUpgradeDirs(): void {
   }
 }
 
-async function installFromUrl(id: string, url: string): Promise<InstallResult> {
+// After a `--depth 1` clone, HEAD is whatever the default branch is right now;
+// the catalog listed (and scanned) one specific commit. GitHub serves any
+// reachable sha to a shallow fetch, so fetch that sha and detach onto it.
+// On failure git's own output is returned untouched — "unknown sha" and
+// "network is down" read completely differently and the user must see which.
+export async function pinToCommit(dir: string, commit: string): Promise<{ ok: boolean; output: string; commit?: string }> {
+  const fetched = await runGit('-C', dir, 'fetch', '--depth', '1', 'origin', commit);
+  if (!fetched.ok) return fetched;
+  const checked = await runGit('-C', dir, 'checkout', '--detach', commit);
+  if (!checked.ok) return checked;
+  // Report the FULL sha we landed on: the package record stores it and the
+  // marketplace's Update check reads it back against the catalog's sourceCommit,
+  // which is a full sha — comparing a short sha to a full one never matches.
+  const head = await runGit('-C', dir, 'rev-parse', 'HEAD');
+  return { ok: true, output: checked.output, commit: head.ok ? head.output.trim() : commit };
+}
+
+async function installFromUrl(id: string, url: string, commit?: string, targetOverride?: string): Promise<InstallResult> {
   // Security: only allow HTTPS git URLs to prevent ext::, file://, ssh:// attacks
   if (!url.startsWith('https://')) {
     return { status: 'failed', error: 'Only HTTPS git URLs are supported' };
   }
-  const targetDir = path.join(PLUGINS_DIR, id);
+  // targetOverride lets upgradePluginFromGit clone into a STAGING directory so a
+  // failed update never touches the copy the user already has installed.
+  const targetDir = targetOverride ?? path.join(PLUGINS_DIR, id);
   if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });
 
   const { ok, output } = await runGit('clone', '--depth', '1', url, targetDir);
   if (!ok) return { status: 'failed', error: `git clone failed: ${output.slice(0, 200)}` };
+  if (commit) {
+    const pinned = await pinToCommit(targetDir, commit);
+    if (!pinned.ok) return { status: 'failed', error: `could not check out the listed version ${commit}: ${pinned.output.slice(0, 200)}` };
+    return { status: 'installed', commit: pinned.commit };
+  }
   return { status: 'installed' };
 }
 
-async function installFromGitSubdir(id: string, repoUrl: string, subdir: string): Promise<InstallResult> {
+async function installFromGitSubdir(id: string, repoUrl: string, subdir: string, commit?: string, targetOverride?: string): Promise<InstallResult> {
   if (!subdir) return { status: 'failed', error: 'Missing sourceSubdir for git-subdir source' };
   // Security: only allow HTTPS git URLs
   if (!repoUrl.startsWith('https://')) {
@@ -466,15 +551,26 @@ async function installFromGitSubdir(id: string, repoUrl: string, subdir: string)
     const sparseResult = await runGit('-C', tmpDir, 'sparse-checkout', 'set', subdir);
     if (!sparseResult.ok) return { status: 'failed', error: `sparse-checkout failed: ${sparseResult.output.slice(0, 200)}` };
 
+    // Pin AFTER the sparse paths are configured, never before: `checkout --detach`
+    // materialises whatever the sparse config allows at that moment, so pinning
+    // first would defeat the sparse clone and pull down the whole tree.
+    let pinnedCommit: string | undefined;
+    if (commit) {
+      const pinned = await pinToCommit(tmpDir, commit);
+      if (!pinned.ok) return { status: 'failed', error: `could not check out the listed version ${commit}: ${pinned.output.slice(0, 200)}` };
+      pinnedCommit = pinned.commit;
+    }
+
     const sourceDir = path.join(tmpDir, subdir);
     if (!fs.existsSync(sourceDir) || !fs.statSync(sourceDir).isDirectory()) {
       return { status: 'failed', error: `Subdirectory not found after checkout: ${subdir}` };
     }
 
-    const targetDir = path.join(PLUGINS_DIR, id);
+    // See installFromUrl: targetOverride is the staging path used by upgrades.
+    const targetDir = targetOverride ?? path.join(PLUGINS_DIR, id);
     if (fs.existsSync(targetDir)) fs.rmSync(targetDir, { recursive: true, force: true });
     copyDirSync(sourceDir, targetDir);
-    return { status: 'installed' };
+    return { status: 'installed', commit: pinnedCommit };
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   }
@@ -513,10 +609,10 @@ export async function installPlugin(entry: MarketplaceEntry): Promise<InstallRes
         result = await installFromLocal(id, sourceRef, entry.sourceMarketplace, entry.version);
         break;
       case 'url':
-        result = await installFromUrl(id, sourceRef);
+        result = await installFromUrl(id, sourceRef, entry.sourceCommit);
         break;
       case 'git-subdir':
-        result = await installFromGitSubdir(id, sourceRef, entry.sourceSubdir || '');
+        result = await installFromGitSubdir(id, sourceRef, entry.sourceSubdir || '', entry.sourceCommit);
         break;
       default:
         result = { status: 'failed', error: `Unknown source type: ${sourceType}` };

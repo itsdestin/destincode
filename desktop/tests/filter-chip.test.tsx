@@ -6,8 +6,9 @@
 //   1. The recipe is the Marketplace's ORIGINAL, verbatim — the extraction must
 //      not repaint the marketplace bar. The strings below were copied from the
 //      pre-extraction Chip; if they change, the marketplace changed with them.
-//   2. Both consumers actually render it (the drawer's chips AND its Favorites
-//      toggle), so no surface quietly grows its own chip recipe again.
+//   2. The skills drawer actually renders it (its chips AND its Favorites
+//      toggle), so no surface quietly grows its own chip recipe again. (The
+//      marketplace bar stopped using chips in the 2026-08-28 overhaul round 2.)
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import React from 'react';
 import { render, cleanup, screen, fireEvent } from '@testing-library/react';
@@ -62,17 +63,20 @@ describe('FilterChip', () => {
 });
 
 describe('MarketplaceFilterBar after the extraction', () => {
-  it('renders its Vibe and Meta chips with the unchanged recipe', () => {
-    const value = { ...emptyFilter(), vibes: new Set(['work' as const]) };
-    render(<MarketplaceFilterBar value={value} onChange={() => {}} />);
-    expect(screen.getByRole('checkbox', { name: 'Work' }).className).toBe(ACTIVE);
-    expect(screen.getByRole('checkbox', { name: 'School' }).className).toBe(INACTIVE);
-    expect(screen.getByRole('checkbox', { name: 'Featured picks' }).className).toBe(INACTIVE);
+  // Marketplace overhaul round 2 (Destin, 2026-08-28: "keep the container to a
+  // single row … collapse the other filter toggles into dropdowns"): the bar's
+  // Vibe and Meta chips became two pick-one dropdowns, so the marketplace no
+  // longer renders FilterChip at all. The recipe itself is still pinned above
+  // and the skills drawer still consumes it (test below).
+  it('draws no pick-any chips — Vibe and Show are dropdowns', () => {
+    render(<MarketplaceFilterBar value={emptyFilter()} onChange={() => {}} />);
+    expect(screen.queryAllByRole('checkbox')).toHaveLength(0);
+    expect(screen.getByLabelText('Vibe')).toBeTruthy();
+    expect(screen.getByLabelText('Show')).toBeTruthy();
   });
 
   it('no longer carries a chip recipe of its own', () => {
     const src = stripComments(readFileSync(join(RENDERER, 'components', 'marketplace', 'MarketplaceFilterBar.tsx'), 'utf8'));
-    expect(src).toContain('<FilterChip');
     expect(src).not.toContain('bg-accent text-on-accent');
     expect(src).not.toContain('rounded-full text-sm');
   });

@@ -30,6 +30,8 @@ import type { PortableModelRef } from '../../../shared/types';
 // state; build real features, no interim 'not available yet' shims".
 
 import { CLAUDE_ALIASES, type ClaudeAlias } from '../../../shared/model-ids';
+import { resolveModelBrand, type ProviderIconKey } from '../provider-brand';
+import { ProviderIcon } from '../ProviderIcon';
 
 export type ModelChoice =
   | { runtime: 'claude'; alias: string }
@@ -45,6 +47,15 @@ const CLAUDE_MODELS = CLAUDE_ALIASES.map((alias) => ({ alias, label: CLAUDE_LABE
 
 const CLAUDE_SOURCE = 'claude';
 
+/** How much brand COLOUR the list carries. The company mark is always drawn in
+ *  full colour at every level — the variable is how far the colour spreads into
+ *  the text.
+ *    'mark'  — marks only; every model name stays neutral.
+ *    'current' — marks everywhere + the CURRENT model's name is brand-coloured
+ *                on the closed button, matching the status-bar chip. (default)
+ *    'all'   — marks everywhere + every row's name is brand-coloured.
+ *  Review deck 2026-08-31 captures all three; the loser gets deleted. */
+
 interface ProviderRow { id: string; type: string; label: string; ready: boolean }
 interface CatalogRow { id: string; providerId: string; label: string }
 
@@ -55,6 +66,28 @@ interface Entry {
   sourceId: string;      // 'claude' or a providerId — the filter dimension
   sourceLabel: string;   // rendered inline after the divider dot
   local: boolean;        // local-engine models, for the "runs on this device" filter
+  /** Provider type ('anthropic' | 'openai' | 'local-engine' | …). Only used as
+   *  the brand matcher's fallback when the model id itself names no company —
+   *  e.g. a direct Anthropic key serving an id we don't recognise. */
+  providerType?: string;
+}
+
+/** Which company mark + colour a row carries.
+ *
+ *  Claude Code rows are pinned to the CC mascot and Claude orange rather than
+ *  going through resolveModelBrand: the alias ("Sonnet") is not a model id, and
+ *  the status-bar chip already pins those four to the same mark. Keeping the two
+ *  in step is the whole point — a model must not change identity between the
+ *  chip and the list you picked it from.
+ *
+ *  Returns null for anything unrecognised; callers fall back to the neutral
+ *  ModelIcon, never to a wrong company's mark. */
+function brandForEntry(e: Entry): { icon?: ProviderIconKey; color: string } | null {
+  if (e.choice.runtime === 'claude') {
+    return { icon: 'claudecode', color: 'var(--brand-claude)' };
+  }
+  const brand = resolveModelBrand(e.choice.modelId, e.providerType);
+  return brand ? { icon: brand.icon, color: brand.color } : null;
 }
 
 function choiceKey(c: ModelChoice): string {
@@ -310,6 +343,7 @@ export default function ModelPicker({
         out.push({
           key: choiceKey(choice), label: m.label, choice,
           sourceId: p.id, sourceLabel: p.label, local: p.type === 'local-engine',
+          providerType: p.type,
         });
       }
     }
@@ -366,20 +400,50 @@ export default function ModelPicker({
 
   const pick = (c: ModelChoice) => { onSelect(c); setOpen(false); setFilterOpen(false); };
 
+  /** Brand for the CLOSED button. Derived from `value` directly rather than by
+   *  looking the row up in `entries`, because the button must stay correct in
+   *  the two cases where there is no row: the catalog hasn't loaded yet, and a
+   *  freeform id the user typed for a custom endpoint. */
+  const currentBrand = useMemo(() => {
+    if (!value) return null;
+    if (value.runtime === 'claude') return { icon: 'claudecode' as ProviderIconKey, color: 'var(--brand-claude)' };
+    const providerType = providers.find((p) => p.id === value.providerId)?.type;
+    const b = resolveModelBrand(value.modelId, providerType);
+    return b ? { icon: b.icon, color: b.color } : null;
+  }, [value, providers]);
+
   const row = (e: Entry) => {
     const selected = !!value && choiceKey(value) === e.key;
     const fav = favorites.has(e.key);
+    const brand = brandForEntry(e);
+    // On the selected row the accent fill owns the foreground: painting a brand
+    // colour on top of it is the one place the mark can genuinely fail contrast,
+    // because the accent is theme-authored and unknown to us. `currentColor`
+    // inherits text-on-accent, which the theme guarantees against its own accent.
+    // Only the MARK carries brand colour; every model name stays in the list's
+    // own text colour. Destin, review deck 2026-08-31 (MB-2), choosing between
+    // marks-only, marks-plus-current, and every-row-coloured: a list of tinted
+    // names reads as decoration rather than meaning.
+    const markColor = selected ? undefined : brand?.color;
     return (
       <div key={e.key} className="group/model flex items-center gap-1 px-2">
         <button
           type="button"
           onClick={() => pick(e.choice)}
           aria-pressed={selected}
-          className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors ${
+          className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors flex items-center gap-2 ${
             selected ? 'bg-accent text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
           }`}
         >
-          <span className="truncate block">
+          {/* The company mark. A fixed-width box whether or not a mark resolves,
+              so an unrecognised model's name still lines up with its neighbours'
+              instead of hanging one glyph-width to the left. */}
+          <span className="w-[13px] shrink-0 inline-flex items-center justify-center" style={markColor ? { color: markColor } : undefined}>
+            {brand?.icon
+              ? <ProviderIcon icon={brand.icon} size={13} />
+              : <ModelIcon className="w-3 h-3 opacity-40" />}
+          </span>
+          <span className="truncate block min-w-0">
             {e.label}
             {/* Divider dot + source, inline per row — this is what replaced the
                 per-provider sections. One flat list reads the same at 4 models
@@ -431,7 +495,16 @@ export default function ModelPicker({
         // fixes it without disturbing the other ~25 fields.
         className={fieldClasses('sm', 'w-full text-left truncate flex items-center gap-1.5 justify-between bg-well border-edge')}
       >
-        <ModelIcon className="w-3 h-3 shrink-0 text-fg-muted" />
+        {/* The current model's company mark, in its brand colour — the same
+            pairing the status-bar chip shows, so the control you set it from and
+            the chip that reports it read as the same thing. Falls back to the
+            neutral stacked-layers glyph when nothing is picked or the company
+            isn't recognised. */}
+        <span className="w-3 h-3 shrink-0 inline-flex items-center justify-center" style={currentBrand ? { color: currentBrand.color } : undefined}>
+          {currentBrand?.icon
+            ? <ProviderIcon icon={currentBrand.icon} size={12} />
+            : <ModelIcon className="w-3 h-3 text-fg-muted" />}
+        </span>
         <span className={`flex-1 truncate ${value ? '' : 'text-fg-muted'}`}>{currentLabel}</span>
         <svg className={`w-3 h-3 shrink-0 text-fg-faint transition-transform ${open ? 'rotate-180' : ''}`}
           fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>

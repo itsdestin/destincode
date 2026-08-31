@@ -10,6 +10,7 @@ import { SCENARIO_IDS, type ScenarioId } from './scenarios';
 import { FakePartySocket, isWorkbenchAutoplay } from './fake-party';
 import { __setPartySocketFactory } from '../../game/party-client';
 import type { WidgetId } from '../../state/status-widgets';
+import { installWorkerApiMock } from './fixtures/marketplace/worker-api-mock';
 
 /** Scenario comes from ?scenario= so a reload lands on the same seed. An
  *  unrecognised value falls back to 'default' rather than throwing — a typo in
@@ -112,4 +113,7 @@ export function installMock(): void {
   if (isWorkbenchAutoplay()) {
     __setPartySocketFactory(FakePartySocket);
   }
+  // The Worker (install counts, thumbs, comments) is reached with plain fetch,
+  // not via window.claude — fake it too, or the workbench talks to production.
+  installWorkerApiMock();
 }

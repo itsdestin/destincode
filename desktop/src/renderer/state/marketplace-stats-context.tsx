@@ -31,6 +31,12 @@ interface Ctx {
   plugins: StatsResponse["plugins"];
   themes: StatsResponse["themes"];
   refresh(): Promise<void>;
+  /** Write a plugin's vote totals straight into the shared stats, no network.
+   *  Every card reads `plugins[id]`, and `/stats` is served Cache-Control
+   *  max-age=300 — so after you vote, refresh() CANNOT show the new number and
+   *  the card you just voted on keeps its old percentage. The vote routes hand
+   *  the fresh totals back with the response; this is where they land. */
+  applyThumbs(pluginId: string, thumbsUp: number, thumbsDown: number): void;
 }
 
 const MarketplaceStatsContext = createContext<Ctx | null>(null);
@@ -126,9 +132,26 @@ export function MarketplaceStatsProvider({
   // refresh() bypasses the cache — callers use this to force a live re-fetch
   const refresh = useCallback(() => fetchStats(true), [fetchStats]);
 
+  // Patch one plugin's totals in place. Also writes through to the module-level
+  // cache: without that, a provider remount would restore the pre-vote number
+  // and the card would silently revert.
+  const applyThumbs = useCallback((pluginId: string, thumbsUp: number, thumbsDown: number) => {
+    setPlugins((prev) => {
+      const current = prev[pluginId];
+      if (current && current.thumbs_up === thumbsUp && current.thumbs_down === thumbsDown) return prev;
+      // Defaults FIRST only when there is no row yet — spreading them before
+      // `current` would be a no-op, and after it would wipe the real installs.
+      const base = current ?? { installs: 0, review_count: 0, rating: 0, thumbs_up: 0, thumbs_down: 0 };
+      const entry = { ...base, thumbs_up: thumbsUp, thumbs_down: thumbsDown };
+      const next = { ...prev, [pluginId]: entry };
+      if (cachedStats) cachedStats = { ...cachedStats, value: { ...cachedStats.value, plugins: next } };
+      return next;
+    });
+  }, []);
+
   const value = useMemo<Ctx>(
-    () => ({ loading, plugins, themes, refresh }),
-    [loading, plugins, themes, refresh]
+    () => ({ loading, plugins, themes, refresh, applyThumbs }),
+    [loading, plugins, themes, refresh, applyThumbs]
   );
 
   return (

@@ -443,6 +443,16 @@ export function applyThemeToDom(theme: ThemeDefinition, reducedEffects = false):
   // 1. data-theme attribute (drives existing [data-theme] CSS blocks as fallback)
   root.setAttribute('data-theme', theme.slug);
 
+  // 1b. data-theme-mode — light/dark WITHOUT naming a slug. The [data-theme="…"]
+  //     blocks in globals.css only match the four built-in slugs, so anything
+  //     token-ish defined there is invisible to a community theme, which then
+  //     silently inherits the :root (light) values no matter how dark it is.
+  //     Provider brand colours hit exactly that: measured 2026-08-31, all seven
+  //     published community themes failed 4.5:1 on the model chip and the three
+  //     dark ones sat at 2.25–2.38:1. `dark` is a REQUIRED field on every
+  //     ThemeDefinition, so this is authoritative rather than a luminance guess.
+  root.setAttribute('data-theme-mode', theme.dark ? 'dark' : 'light');
+
   // 2. Color tokens as CSS custom properties on :root
   for (const [prop, value] of Object.entries(buildTokenCSS(theme.tokens))) {
     root.style.setProperty(prop, value);

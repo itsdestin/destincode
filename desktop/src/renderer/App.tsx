@@ -354,7 +354,7 @@ function AppInner() {
   const [activeView, setActiveView] = useState<'chat' | 'terminal' | 'marketplace' | 'library'>('chat');
   // Preferred type chip when the marketplace is opened from a legacy entry
   // point (e.g. SettingsPanel theme picker). Cleared after the screen reads it.
-  const [marketplaceInitialType, setMarketplaceInitialType] = useState<'skill' | 'theme' | undefined>(undefined);
+  const [marketplaceInitialType, setMarketplaceInitialType] = useState<'plugin' | 'theme' | undefined>(undefined);
   // When the CommandDrawer's plugin-name badge is clicked, we navigate to
   // the marketplace AND immediately open that plugin's detail overlay.
   // MarketplaceScreen reads this, opens the overlay on mount, then calls
@@ -372,7 +372,7 @@ function AppInner() {
       setActiveView('library');
       return;
     }
-    if (tab === 'skills') setMarketplaceInitialType('skill');
+    if (tab === 'skills') setMarketplaceInitialType('plugin');
     else if (tab === 'themes') setMarketplaceInitialType('theme');
     else setMarketplaceInitialType(undefined);
     setActiveView('marketplace');

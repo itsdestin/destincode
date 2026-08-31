@@ -69,6 +69,11 @@ const sampleSkill: SkillEntry = {
   source: 'marketplace',
   type: 'plugin',
   visibility: 'published',
+  // Every non-deprecated row in the live registry carries a sourceType; without
+  // one the card now (correctly) hides Install, because the installer could not
+  // take it — see tests/marketplace-not-installable.test.tsx.
+  sourceType: 'url',
+  sourceRef: 'https://github.com/o/r.git',
   components: null,
   lifeArea: [],
   tags: [],

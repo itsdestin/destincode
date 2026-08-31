@@ -17,6 +17,8 @@ import type {
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
 } from '../../shared/model-manager-types';
 import { stripSplitSuffix } from '../../shared/gguf-split';
+import { resolveModelBrand } from './provider-brand';
+import { ProviderIcon } from './ProviderIcon';
 
 // quants() decorates every option with a GPU-aware fit label.
 type QuantWithFit = QuantOption & { fit: FitEstimate };
@@ -388,6 +390,7 @@ function RepoCard({
           <svg className={`w-3 h-3 mt-1 text-fg-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
           </svg>
+          <LocalBrandMark id={repo} />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-fg font-medium truncate">{label}</p>
             {sub && <p className="text-3xs text-fg-muted truncate">{sub}</p>}
@@ -451,6 +454,26 @@ function RepoCard({
 function percentOf(onDisk: number, total: number | null): number | null {
   if (total == null || total <= 0) return null;
   return Math.min(100, Math.round((onDisk / total) * 100));
+}
+
+/** The company mark for a local model row, matched off the repo/file name
+ *  ("Qwen/Qwen3-30B…", "google/gemma-3…"). Local weights are published under the
+ *  lab that trained them, so the name is a reliable signal; anything
+ *  unrecognised renders no mark rather than a wrong one. */
+function LocalBrandMark({ id }: { id: string }) {
+  const b = resolveModelBrand(id, 'local-engine');
+  if (!b?.icon) return null;
+  return (
+    // `self-start` + a 2px nudge, NOT the row's own alignment: the installed row
+    // is a `items-center` flex, so without this the mark floated to the vertical
+    // middle of a three-line block instead of sitting beside the name. Destin,
+    // review deck 2026-08-31 (MB-6): "top left in-line with the name please, not
+    // just on the left side generally". The 2px drops the 14px glyph onto the
+    // optical centre of the 16px line box the name renders in.
+    <span className="shrink-0 self-start mt-[2px] inline-flex items-center justify-center w-4" style={{ color: b.color }}>
+      <ProviderIcon icon={b.icon} size={14} />
+    </span>
+  );
 }
 
 /** The name a person recognises, with the two machine suffixes stripped:
@@ -695,6 +718,7 @@ export function LocalModelRow({
 
       <div className="px-3 pt-2 pb-2">
         <div className="flex items-center justify-between gap-3">
+          <LocalBrandMark id={model.id} />
           <div className="min-w-0 flex-1">
             {/* title= carries the full id on hover: the name is truncated by the
                 buttons beside it, and the tail is what tells two builds apart.

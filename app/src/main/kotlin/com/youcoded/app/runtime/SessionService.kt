@@ -2797,6 +2797,49 @@ class SessionService : Service() {
                 }
             }
 
+            "marketplace:thumb" -> {
+                // payload passed flat: { plugin_id, value: "up" | "down" | null }
+                val pluginId = msg.payload.optString("plugin_id", "")
+                val value = if (msg.payload.isNull("value")) null else msg.payload.optString("value", "")
+                val result = marketplaceApiClient.setThumb(pluginId, value)
+                msg.id?.let {
+                    // value shape: { vote, thumbs_up, thumbs_down } — the totals ride
+                    // along so the UI moves the number without re-fetching /stats.
+                    bridgeServer.respond(ws, msg.type, it, result.toJson { v ->
+                        JSONObject()
+                            .put("vote", v.opt("vote") ?: JSONObject.NULL)
+                            .put("thumbs_up", v.optInt("thumbs_up"))
+                            .put("thumbs_down", v.optInt("thumbs_down"))
+                    })
+                }
+            }
+
+            "marketplace:thumb:get" -> {
+                // payload: { plugin_id } — the shim wraps the id in an object on
+                // purpose; a bare string would not be a JSONObject here.
+                val pluginId = msg.payload.optString("plugin_id", "")
+                val result = marketplaceApiClient.getThumb(pluginId)
+                msg.id?.let {
+                    // value shape: { vote: "up" | "down" | null }
+                    bridgeServer.respond(ws, msg.type, it, result.toJson { v ->
+                        JSONObject().put("vote", v.opt("vote") ?: JSONObject.NULL)
+                    })
+                }
+            }
+
+            "marketplace:comment" -> {
+                // payload passed flat: { plugin_id, text }
+                val pluginId = msg.payload.optString("plugin_id", "")
+                val text = msg.payload.optString("text", "")
+                val result = marketplaceApiClient.postComment(pluginId, text)
+                msg.id?.let {
+                    // value shape: { id, hidden }
+                    bridgeServer.respond(ws, msg.type, it, result.toJson { v ->
+                        JSONObject().put("id", v.optString("id")).put("hidden", v.optBoolean("hidden"))
+                    })
+                }
+            }
+
             "marketplace:report" -> {
                 // payload passed flat: { rating_user_id, rating_plugin_id, reason? } (snake_case)
                 val ratingUserId   = msg.payload.optString("rating_user_id", "")
