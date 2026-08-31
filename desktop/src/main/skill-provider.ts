@@ -252,11 +252,24 @@ export class LocalSkillProvider implements SkillProvider {
     if (!entry) return { status: 'failed', error: `Skill not found in marketplace: ${id}` };
 
     if (entry.type === 'prompt') {
-      this.configStore.createPromptSkill({
+      const created = this.configStore.createPromptSkill({
         ...entry,
         source: 'marketplace',
         visibility: 'published',
         installedAt: new Date().toISOString(),
+      });
+      // Record a package exactly as the plugin branch below does. Without this
+      // packages[id] stays undefined, marketplace-context's update check hits
+      // `if (!pkg) continue`, and an installed prompt could NEVER be flagged
+      // out of date — the Update badge was unreachable for this whole type.
+      this.configStore.recordPackageInstall(created.id, {
+        version: entry.version || '1.0.0',
+        source: 'marketplace',
+        installedAt: new Date().toISOString(),
+        removable: true,
+        // A prompt lives inside youcoded-skills.json, not in a plugin
+        // directory, so there is no path to record.
+        components: [],
       });
       this.installedCache = null;
       this.onCacheInvalidated?.();
@@ -331,12 +344,13 @@ export class LocalSkillProvider implements SkillProvider {
     const marketplaceEntry = entry as any;
 
     if (entry.type === 'prompt') {
-      // Prompt update: overwrite the private skill entry with new content
-      const config = this.configStore.load();
-      const idx = config.privateSkills.findIndex(s => s.id === id);
-      if (idx >= 0) {
-        config.privateSkills[idx] = { ...config.privateSkills[idx], ...entry, id };
-      }
+      // Prompt update: overwrite the private skill entry with new content.
+      // The miss used to fall straight through to updatePackageVersion and
+      // return { ok: true } having rewritten nothing — a success the app had
+      // not performed. Say what actually happened instead, and only move the
+      // recorded version after the content really changed on disk.
+      const written = this.configStore.updatePromptSkill(id, entry);
+      if (!written) return { ok: false, error: `${id} is not installed as a prompt` };
       this.configStore.updatePackageVersion(id, entry.version || '1.0.0');
       this.installedCache = null;
       this.onCacheInvalidated?.();

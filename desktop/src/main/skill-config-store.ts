@@ -193,16 +193,34 @@ export class SkillConfigStore {
     return this.load().privateSkills;
   }
 
-  createPromptSkill(skill: Omit<SkillEntry, 'id'>): SkillEntry {
+  // A marketplace prompt must keep its MARKETPLACE id: update() looks the row
+  // up by that id, so a minted `user:` one would make every refresh a no-op.
+  // That already happened to work — `{ id, ...skill }` spread the caller's id
+  // last, so it silently won — but only by accident of property order, which a
+  // tidy-up would have quietly broken. It is deliberate now. Hand-made prompts
+  // (Settings, share links) pass no id and keep the generated one.
+  createPromptSkill(skill: Omit<SkillEntry, 'id'> & { id?: string }): SkillEntry {
     const config = this.load();
     if (config.privateSkills.length >= 100) {
       throw new Error('Maximum of 100 private prompt shortcuts reached');
     }
-    const id = `user:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const entry: SkillEntry = { id, ...skill };
+    const id = skill.id ?? `user:${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const entry: SkillEntry = { ...skill, id };
     config.privateSkills.push(entry);
     this.save();
     return entry;
+  }
+
+  /** Overwrite an installed prompt's content in place, keeping its id.
+   *  Returns false when no row with that id exists — the caller MUST NOT
+   *  report success in that case (see LocalSkillProvider.update). */
+  updatePromptSkill(id: string, patch: Partial<SkillEntry>): boolean {
+    const config = this.load();
+    const idx = config.privateSkills.findIndex(s => s.id === id);
+    if (idx < 0) return false;
+    config.privateSkills[idx] = { ...config.privateSkills[idx], ...patch, id };
+    this.save();
+    return true;
   }
 
   deletePromptSkill(id: string): void {
@@ -212,6 +230,10 @@ export class SkillConfigStore {
     config.favorites = config.favorites.filter(f => f !== id);
     config.chips = config.chips.filter(c => c.skillId !== id);
     delete config.overrides[id];
+    // …and the package record. A marketplace-installed prompt now records one
+    // (so the Update badge can light); leaving it behind after an uninstall
+    // would keep counting a ghost item in the Library's "Updates" tab.
+    if (config.packages) delete config.packages[id];
     this.save();
   }
 
