@@ -82,6 +82,34 @@ const GROUND_STRIPE_FILL = 'color-mix(in srgb, var(--accent) 40%, var(--inset))'
  *  moving", not to be looked at. */
 const SKY_STREAK_FILL = 'color-mix(in srgb, var(--accent) 7%, transparent)';
 
+/* ── Depth (Destin: "slightly more interesting") ─────────────────────────────
+ *
+ * The sky was one flat sheet of diagonal streaks, so the playfield read as a
+ * pattern rather than a place. Three cheap layers fix that WITHOUT adding
+ * anything to look at:
+ *
+ *   far    soft clouds drifting at a SIXTH of the world's speed
+ *   near   the existing streaks, at a third
+ *   fixed  a haze thickening toward the horizon
+ *
+ * Different speeds are what make it read as distance — one layer at one speed
+ * is wallpaper no matter how pretty it is. Everything is still theme tokens
+ * mixed toward the accent, so it inherits any pack including ones nobody here
+ * has seen, and all of it is skipped under a wallpaper theme (§5.1: there, the
+ * wallpaper IS the sky) and pinned under reduced motion (§10). */
+const CLOUD_FILL = 'color-mix(in srgb, var(--accent) 6%, transparent)';
+const CLOUD_FILL_SOFT = 'color-mix(in srgb, var(--accent) 4%, transparent)';
+/** One tile of sky, repeated. Two clouds at different heights and sizes so the
+ *  repeat is not obvious at a glance — a single centred blob tiles visibly. */
+const CLOUD_TILE_PX = 220;
+const CLOUD_IMAGE = [
+  `radial-gradient(38px 15px at 44px 26%, ${CLOUD_FILL} 0 62%, transparent 64%)`,
+  `radial-gradient(26px 11px at 74px 22%, ${CLOUD_FILL} 0 62%, transparent 64%)`,
+  `radial-gradient(50px 18px at 158px 52%, ${CLOUD_FILL_SOFT} 0 62%, transparent 64%)`,
+].join(', ');
+/** Haze toward the horizon. Static — distance does not scroll. */
+const SKY_HAZE = 'linear-gradient(to bottom, transparent 45%, color-mix(in srgb, var(--accent) 8%, transparent) 100%)';
+
 /** Static motion for the rig: the bird is never dragged, so the limb springs
  *  are driven only by the pose. Same shape `Icons.tsx` uses for non-buddy
  *  surfaces. */
@@ -160,6 +188,7 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
   const birdRef = useRef<HTMLDivElement>(null);
   const groundRef = useRef<HTMLDivElement>(null);
   const skyRef = useRef<HTMLDivElement>(null);
+  const cloudRef = useRef<HTMLDivElement>(null);
   const pipeRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   // Pixel size of the letterboxed playfield. State (so the box can be sized in
@@ -275,6 +304,13 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
         // repeat length of the streak gradient below, so the wrap is seamless.
         const off = reduced ? 0 : -((s.distance * scale * 0.34) % 46);
         skyRef.current.style.transform = `translateX(${off.toFixed(1)}px)`;
+      }
+      if (cloudRef.current) {
+        // A SIXTH of the world's speed — half the streaks' rate, so the clouds
+        // sit visibly further away than the layer in front of them. Without the
+        // difference in speed the two layers are one flat sheet.
+        const off = reduced ? 0 : -((s.distance * scale * 0.5) % CLOUD_TILE_PX);
+        cloudRef.current.style.transform = `translateX(${off.toFixed(1)}px)`;
       }
     };
 
@@ -395,14 +431,38 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
               it) and under reduced effects, where the transform is pinned at 0
               anyway. */}
           {!wallpaperSky && !reducedEffects && (
+            <>
+              {/* FAR: clouds, drifting at a sixth of the world's speed. */}
+              <div
+                ref={cloudRef}
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 pointer-events-none"
+                style={{
+                  width: `calc(100% + ${CLOUD_TILE_PX}px)`,
+                  backgroundImage: CLOUD_IMAGE,
+                  backgroundSize: `${CLOUD_TILE_PX}px 100%`,
+                  backgroundRepeat: 'repeat-x',
+                }}
+              />
+              {/* NEAR: the original streaks, at a third. */}
+              <div
+                ref={skyRef}
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 pointer-events-none"
+                style={{
+                  width: 'calc(100% + 60px)',
+                  backgroundImage: `repeating-linear-gradient(115deg, transparent 0 30px, ${SKY_STREAK_FILL} 30px 46px)`,
+                }}
+              />
+            </>
+          )}
+          {/* FIXED: haze toward the horizon. Kept under reduced motion — it
+              does not move, so there is nothing to spare the reader from. */}
+          {!wallpaperSky && (
             <div
-              ref={skyRef}
               aria-hidden="true"
-              className="absolute inset-y-0 left-0 pointer-events-none"
-              style={{
-                width: 'calc(100% + 60px)',
-                backgroundImage: `repeating-linear-gradient(115deg, transparent 0 30px, ${SKY_STREAK_FILL} 30px 46px)`,
-              }}
+              className="absolute inset-0 pointer-events-none"
+              style={{ backgroundImage: SKY_HAZE }}
             />
           )}
 
