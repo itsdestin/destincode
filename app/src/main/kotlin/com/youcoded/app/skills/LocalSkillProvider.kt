@@ -416,7 +416,12 @@ class LocalSkillProvider(private val homeDir: File, private val context: Context
         return when (result) {
             is PluginInstaller.InstallResult.Success,
             is PluginInstaller.InstallResult.AlreadyInstalled -> {
-                configStore.updatePackageVersion(id, entry.optString("version", "1.0.0"))
+                // The commit we actually landed on — only from a real reinstall.
+                // On AlreadyInstalled the installer touched no files, so writing a
+                // newer sha here would clear the update badge for code that never
+                // changed. Null leaves the stored commit untouched.
+                val landedCommit = (result as? PluginInstaller.InstallResult.Success)?.commit
+                configStore.updatePackageVersion(id, entry.optString("version", "1.0.0"), landedCommit)
                 installedCache = null
                 onPluginsChanged?.invoke()
                 JSONObject().put("ok", true).put("newVersion", entry.optString("version"))
