@@ -12,6 +12,9 @@ import { reconcileMcp } from './mcp-reconciler';
 import { log } from './logger';
 import { BUNDLED_PLUGIN_IDS } from '../shared/bundled-plugins';
 import { isNewerVersion } from '../shared/version-compare';
+// Marketplace overhaul Task 16: the Worker host the catalog is served from.
+// Main already imports this module (install-reconcile.ts, marketplace-api-handlers.ts).
+import { MARKETPLACE_API_HOST } from '../renderer/state/marketplace-api-client';
 import type {
   SkillEntry, SkillDetailView, SkillFilters, ChipConfig,
   MetadataOverride, SkillProvider,
@@ -81,7 +84,19 @@ const REGISTRY_BASE = `https://raw.githubusercontent.com/itsdestin/wecoded-marke
 
 const INDEX_TTL = 24 * 60 * 60 * 1000; // 24 hours
 
-interface CacheMeta { fetchedAt: number; }
+// Marketplace overhaul: the Worker's catalog is the source of truth — it carries
+// the type / origin / scan / capabilities block the redesigned UI renders, and CI
+// refreshes it hourly. index.json on GitHub stays as the fallback so a Worker
+// outage (or an old Worker) degrades to today's behaviour, not to an empty grid.
+// YOUCODED_CATALOG_URL: tests point it at a fake; "" disables the catalog step.
+const CATALOG_URL = process.env.YOUCODED_CATALOG_URL ?? `${MARKETPLACE_API_HOST}/catalog`;
+const CATALOG_CACHE = path.join(CACHE_DIR, 'catalog.json');
+// 1h, not 24h: the Worker already caches 5 min and CI refreshes hourly, so a newly
+// published item shows up within the hour instead of the next day.
+const CATALOG_TTL = 60 * 60 * 1000;
+
+// `etag` is optional: only the catalog cache stores one, every other cache omits it.
+interface CacheMeta { fetchedAt: number; etag?: string; }
 
 export class LocalSkillProvider implements SkillProvider {
   // Phase 3a: made public so ThemeMarketplaceProvider can share the same
@@ -705,7 +720,7 @@ export class LocalSkillProvider implements SkillProvider {
   // caches so the next fetchIndex/getFeatured call hits the network. Used
   // right after /feature curation lands — skips the 24h wait.
   async invalidateCache(): Promise<void> {
-    for (const file of [INDEX_CACHE, DEFAULTS_CACHE, FEATURED_CACHE]) {
+    for (const file of [CATALOG_CACHE, INDEX_CACHE, DEFAULTS_CACHE, FEATURED_CACHE]) {
       try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { /* best-effort */ }
     }
   }
@@ -719,7 +734,12 @@ export class LocalSkillProvider implements SkillProvider {
   // rail and defaults on every launch too. This narrower version clears only
   // the index cache.
   async invalidateIndexCache(): Promise<void> {
-    try { if (fs.existsSync(INDEX_CACHE)) fs.unlinkSync(INDEX_CACHE); } catch { /* best-effort */ }
+    // Both listing caches, because fetchIndex reads the catalog FIRST: clearing
+    // index.json alone would leave the stale catalog copy answering and the
+    // refetch this method exists to force would never reach the network.
+    for (const file of [CATALOG_CACHE, INDEX_CACHE]) {
+      try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch { /* best-effort */ }
+    }
   }
 
   // Marketplace redesign Phase 1: new `hero` + `rails` fields drive the
@@ -764,21 +784,48 @@ export class LocalSkillProvider implements SkillProvider {
   // --- Fetch helpers ---
 
   private async fetchIndex(): Promise<SkillEntry[]> {
+    // 1. Fresh catalog cache.
+    const cachedCatalog = this.readCache<SkillEntry[]>(CATALOG_CACHE, CATALOG_TTL);
+    if (cachedCatalog) return cachedCatalog;
+    // 2. The Worker's catalog. The ETag matters: this response is several MB and we
+    //    ask for it every hour, so on the ~23 hours out of 24 when nothing changed
+    //    the Worker answers 304 with an empty body and we keep what we already have.
+    //    A 503 here is the CATALOG_ENABLED kill switch — treat it as any other failure.
+    if (CATALOG_URL) {
+      try {
+        const prevTag = this.readCacheEtag(CATALOG_CACHE);
+        const resp = await fetch(CATALOG_URL, prevTag ? { headers: { 'If-None-Match': prevTag } } : undefined);
+        if (resp.status === 304) {
+          const stale = this.readCache<SkillEntry[]>(CATALOG_CACHE, Infinity);
+          if (stale) { this.touchCache(CATALOG_CACHE, prevTag); return stale; }
+        } else if (resp.ok) {
+          const body = await resp.json() as { entries?: SkillEntry[] };
+          if (Array.isArray(body.entries)) {
+            this.writeCache(CATALOG_CACHE, body.entries, resp.headers.get('ETag') ?? undefined);
+            return body.entries;
+          }
+        }
+      } catch { /* fall through to index.json */ }
+    }
+    // 3. Raw index.json on GitHub (pre-overhaul path, unchanged).
     const cached = this.readCache<SkillEntry[]>(INDEX_CACHE, INDEX_TTL);
     if (cached) return cached;
     try {
       const resp = await fetch(`${REGISTRY_BASE}/index.json`);
-      // Stale cache beats the bundled skill-registry.json — those ids are
-      // `<plugin>:<skill>` sub-skills with no sourceRef, so "Get" buttons on
-      // them wouldn't actually install anything. Empty list on true first-run
-      // offline is the honest answer; the UI already renders "No skills found".
-      if (!resp.ok) return this.readCache<SkillEntry[]>(INDEX_CACHE, Infinity) ?? [];
-      const data = await resp.json() as SkillEntry[];
-      this.writeCache(INDEX_CACHE, data);
-      return data;
-    } catch {
-      return this.readCache<SkillEntry[]>(INDEX_CACHE, Infinity) ?? [];
-    }
+      if (resp.ok) {
+        const data = await resp.json() as SkillEntry[];
+        this.writeCache(INDEX_CACHE, data);
+        return data;
+      }
+    } catch { /* fall through to the stale caches below */ }
+    // 4. Anything stale, newest source first. Stale beats the bundled
+    //    skill-registry.json — those ids are `<plugin>:<skill>` sub-skills with no
+    //    sourceRef, so "Get" buttons on them wouldn't actually install anything. An
+    //    empty list on a true first-run offline is the honest answer; the UI already
+    //    renders "No skills found".
+    return this.readCache<SkillEntry[]>(CATALOG_CACHE, Infinity)
+      ?? this.readCache<SkillEntry[]>(INDEX_CACHE, Infinity)
+      ?? [];
   }
 
   private readCache<T>(filePath: string, ttl: number): T | null {
@@ -792,9 +839,27 @@ export class LocalSkillProvider implements SkillProvider {
     }
   }
 
-  private writeCache(filePath: string, data: unknown): void {
+  private writeCache(filePath: string, data: unknown, etag?: string): void {
     try {
-      fs.writeFileSync(filePath, JSON.stringify({ fetchedAt: Date.now(), data }), 'utf8');
+      fs.writeFileSync(filePath, JSON.stringify({ fetchedAt: Date.now(), etag, data }), 'utf8');
+    } catch { /* best-effort cache */ }
+  }
+
+  /** The ETag stored beside a cached body, regardless of how old the body is —
+   *  a stale body is exactly when we want to ask the server "still this one?". */
+  private readCacheEtag(filePath: string): string | undefined {
+    try {
+      return (JSON.parse(fs.readFileSync(filePath, 'utf8')) as CacheMeta).etag;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Reset a cache's TTL after a 304 without re-serialising megabytes of body. */
+  private touchCache(filePath: string, etag?: string): void {
+    try {
+      const raw = JSON.parse(fs.readFileSync(filePath, 'utf8')) as CacheMeta & { data: unknown };
+      fs.writeFileSync(filePath, JSON.stringify({ ...raw, fetchedAt: Date.now(), etag: etag ?? raw.etag }), 'utf8');
     } catch { /* best-effort cache */ }
   }
 
