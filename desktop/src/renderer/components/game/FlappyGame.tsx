@@ -23,7 +23,6 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { useTheme } from '../../state/theme-context';
 import { isTypingTarget } from '../../utils/is-typing-target';
 import { isAndroid, isRemoteMode } from '../../platform';
-import { hasBackgroundLayer } from '../../themes/theme-engine';
 import { MascotRig, type RigMotion } from '../mascot/MascotRig';
 import { sanitizeRigSvg } from '../mascot/sanitize-rig-svg';
 import type { PoseName } from '../mascot/mascot-poses';
@@ -78,37 +77,97 @@ const PIPE_FILL = 'color-mix(in srgb, var(--accent) 20%, var(--inset))';
 const PIPE_CAP_FILL = 'color-mix(in srgb, var(--accent) 32%, var(--inset))';
 const GROUND_FILL = 'color-mix(in srgb, var(--accent) 26%, var(--inset))';
 const GROUND_STRIPE_FILL = 'color-mix(in srgb, var(--accent) 40%, var(--inset))';
-/** The drifting sky texture. Barely there on purpose: it exists to say "you are
- *  moving", not to be looked at. */
-const SKY_STREAK_FILL = 'color-mix(in srgb, var(--accent) 7%, transparent)';
+/* ── The landscape ───────────────────────────────────────────────────────────
+ *
+ * TWO THINGS WERE WRONG BEFORE (Destin, both correct):
+ *
+ * 1. On the wallpaper themes the playfield was EMPTY. §5.1 says "where the
+ *    theme ships a wallpaper, that is the sky", and I built it that way — but
+ *    the games pane is an OPAQUE panel, so a wallpaper sitting behind the whole
+ *    app can never show through it. The result was a blank field on exactly the
+ *    themes with the best art (Meadow Mist has a mountain range four inches to
+ *    the left of a completely empty playfield). So the sky is now ALWAYS
+ *    painted. The spec sentence was wrong, not the implementation of it.
+ *
+ * 2. Blobs and diagonal streaks were not art. What reads instantly as a place
+ *    is a HORIZON — so the sky is now a landscape: a sun, clouds, and three
+ *    bands of rolling hills at three depths, each drifting slower than the one
+ *    in front of it. Hills are what your eye reads as distance; the parallax
+ *    just confirms it.
+ *
+ * Still no palette of its own (§5.5): every colour is the theme's accent mixed
+ * into the theme's own surfaces, so this inherits any pack — including
+ * community ones nobody here has seen — and cannot clash with one. */
+const SKY_TOP = 'color-mix(in srgb, var(--accent) 3%, var(--well))';
+const SKY_HORIZON = 'color-mix(in srgb, var(--accent) 14%, var(--well))';
+const SKY_GRADIENT = `linear-gradient(to bottom, ${SKY_TOP} 0%, ${SKY_HORIZON} 100%)`;
 
-/* ── Depth (Destin: "slightly more interesting") ─────────────────────────────
- *
- * The sky was one flat sheet of diagonal streaks, so the playfield read as a
- * pattern rather than a place. Three cheap layers fix that WITHOUT adding
- * anything to look at:
- *
- *   far    soft clouds drifting at a SIXTH of the world's speed
- *   near   the existing streaks, at a third
- *   fixed  a haze thickening toward the horizon
- *
- * Different speeds are what make it read as distance — one layer at one speed
- * is wallpaper no matter how pretty it is. Everything is still theme tokens
- * mixed toward the accent, so it inherits any pack including ones nobody here
- * has seen, and all of it is skipped under a wallpaper theme (§5.1: there, the
- * wallpaper IS the sky) and pinned under reduced motion (§10). */
-const CLOUD_FILL = 'color-mix(in srgb, var(--accent) 6%, transparent)';
-const CLOUD_FILL_SOFT = 'color-mix(in srgb, var(--accent) 4%, transparent)';
-/** One tile of sky, repeated. Two clouds at different heights and sizes so the
- *  repeat is not obvious at a glance — a single centred blob tiles visibly. */
-const CLOUD_TILE_PX = 220;
+/** The three hill bands, far to near. Each is darker and faster than the one
+ *  behind it — the two together are what sell the distance. `tile` is how wide
+ *  one repeat of the wave is; different tiles stop the three bands from
+ *  marching in step, which is the thing that makes parallax look fake. */
+const HILLS = [
+  { fill: 'color-mix(in srgb, var(--accent) 10%, var(--well))', tile: 340, top: 46, amp: 13, speed: 0.10 },
+  { fill: 'color-mix(in srgb, var(--accent) 17%, var(--well))', tile: 250, top: 58, amp: 11, speed: 0.20 },
+  { fill: 'color-mix(in srgb, var(--accent) 25%, var(--well))', tile: 190, top: 70, amp: 8,  speed: 0.34 },
+] as const;
+
+const SUN_FILL = 'color-mix(in srgb, var(--accent) 13%, transparent)';
+const CLOUD_FILL = 'color-mix(in srgb, var(--accent) 7%, transparent)';
+const CLOUD_FILL_SOFT = 'color-mix(in srgb, var(--accent) 5%, transparent)';
+/** One tile of cloud, repeated. Three puffs of different sizes at different
+ *  heights — one centred blob tiles visibly and reads as a repeating pattern. */
+const CLOUD_TILE_PX = 260;
 const CLOUD_IMAGE = [
-  `radial-gradient(38px 15px at 44px 26%, ${CLOUD_FILL} 0 62%, transparent 64%)`,
-  `radial-gradient(26px 11px at 74px 22%, ${CLOUD_FILL} 0 62%, transparent 64%)`,
-  `radial-gradient(50px 18px at 158px 52%, ${CLOUD_FILL_SOFT} 0 62%, transparent 64%)`,
+  `radial-gradient(34px 13px at 40px 20%, ${CLOUD_FILL} 0 60%, transparent 62%)`,
+  `radial-gradient(22px 9px at 66px 17%, ${CLOUD_FILL} 0 60%, transparent 62%)`,
+  `radial-gradient(44px 16px at 176px 34%, ${CLOUD_FILL_SOFT} 0 60%, transparent 62%)`,
+  `radial-gradient(28px 11px at 206px 30%, ${CLOUD_FILL_SOFT} 0 60%, transparent 62%)`,
 ].join(', ');
-/** Haze toward the horizon. Static — distance does not scroll. */
-const SKY_HAZE = 'linear-gradient(to bottom, transparent 45%, color-mix(in srgb, var(--accent) 8%, transparent) 100%)';
+
+/** One band of rolling hills, drifting at its own speed.
+ *
+ *  WHY a path and not a repeating CSS gradient: a gradient can only make
+ *  stripes and blobs, and stripes and blobs were the problem — they read as a
+ *  pattern. A path can make a HORIZON, which is what the eye reads as a place.
+ *
+ *  The wave is one `Q` followed by a run of `T`s. Each `T` mirrors the previous
+ *  control point, so the curve alternates crest/trough on its own and every
+ *  half-tile lands at exactly the same height — which makes it seamless by
+ *  construction rather than by a number someone tuned. The band is drawn one
+ *  full tile wider than the field so it can slide a whole tile before wrapping.
+ */
+function HillBand({
+  bandRef, fill, tile, top, amp, width,
+}: {
+  bandRef: React.RefObject<HTMLDivElement | null>;
+  fill: string; tile: number; top: number; amp: number; width: number;
+}) {
+  const total = width + tile;
+  const half = tile / 2;
+  let d = `M 0 ${amp} Q ${tile / 4} 0, ${half} ${amp}`;
+  for (let x = tile; x <= total + half; x += half) d += ` T ${x} ${amp}`;
+  d += ` L ${total + half} 100 L 0 100 Z`;
+  return (
+    <div
+      ref={bandRef}
+      aria-hidden="true"
+      className="absolute left-0 pointer-events-none"
+      style={{ top: `${top}%`, bottom: 0, width: total + half }}
+    >
+      {/* preserveAspectRatio="none" so the band stretches to the pane's height
+          at any size — the hills get taller with the window, not clipped. */}
+      <svg
+        width="100%"
+        height="100%"
+        viewBox={`0 0 ${total + half} 100`}
+        preserveAspectRatio="none"
+      >
+        <path d={d} fill={fill} />
+      </svg>
+    </div>
+  );
+}
 
 /** Static motion for the rig: the bird is never dragged, so the limb springs
  *  are driven only by the pose. Same shape `Icons.tsx` uses for non-buddy
@@ -170,7 +229,6 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
   const rigUrl = useWingedRig();
   // Where the theme ships a wallpaper, THAT is the sky (§5.1) — the playfield
   // paints no background of its own and the theme's image shows through.
-  const wallpaperSky = hasBackgroundLayer(activeTheme?.background);
 
   // ── The simulation. A ref, not state: it changes sixty times a second and
   //    nothing about a re-render would make the picture more correct.
@@ -187,8 +245,14 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
   const fieldRef = useRef<HTMLDivElement>(null);
   const birdRef = useRef<HTMLDivElement>(null);
   const groundRef = useRef<HTMLDivElement>(null);
-  const skyRef = useRef<HTMLDivElement>(null);
   const cloudRef = useRef<HTMLDivElement>(null);
+  // One ref per hill band. Fixed length, created once — HILLS is a constant, so
+  // this is not a conditional-hook hazard.
+  const hillRefs = [
+    useRef<HTMLDivElement>(null),
+    useRef<HTMLDivElement>(null),
+    useRef<HTMLDivElement>(null),
+  ];
   const pipeRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   // Pixel size of the letterboxed playfield. State (so the box can be sized in
@@ -298,19 +362,19 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
         const off = reduced ? 0 : -((s.distance * scale) % stripe);
         groundRef.current.style.transform = `translateX(${off.toFixed(1)}px)`;
       }
-      if (skyRef.current) {
-        // Parallax: the sky moves at a third of the world's speed, which is
-        // what makes the pipes read as nearer than the background. 46px is the
-        // repeat length of the streak gradient below, so the wrap is seamless.
-        const off = reduced ? 0 : -((s.distance * scale * 0.34) % 46);
-        skyRef.current.style.transform = `translateX(${off.toFixed(1)}px)`;
-      }
+      // Parallax. Each layer wraps on its OWN tile width, so every one of them
+      // is seamless independently — the thing that makes distance read is that
+      // the speeds differ, not that they share a rhythm.
       if (cloudRef.current) {
-        // A SIXTH of the world's speed — half the streaks' rate, so the clouds
-        // sit visibly further away than the layer in front of them. Without the
-        // difference in speed the two layers are one flat sheet.
-        const off = reduced ? 0 : -((s.distance * scale * 0.5) % CLOUD_TILE_PX);
+        const off = reduced ? 0 : -((s.distance * scale * 0.06) % CLOUD_TILE_PX);
         cloudRef.current.style.transform = `translateX(${off.toFixed(1)}px)`;
+      }
+      for (let i = 0; i < HILLS.length; i++) {
+        const el = hillRefs[i]?.current;
+        if (!el) continue;
+        const h = HILLS[i]!;
+        const off = reduced ? 0 : -((s.distance * scale * h.speed) % h.tile);
+        el.style.transform = `translateX(${off.toFixed(1)}px)`;
       }
     };
 
@@ -415,10 +479,9 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
           style={{ width: box.w || undefined, height: box.h || undefined }}
           className={[
             'relative overflow-hidden rounded-lg border outline-none select-none touch-none',
-            // Where the theme has a wallpaper, the playfield paints nothing and
-            // the wallpaper IS the sky (§5.1). Otherwise the deepest surface
-            // shade reads as a window cut into the pane.
-            wallpaperSky ? '' : 'bg-well',
+            // The deepest surface shade, so the field reads as a window cut
+            // into the pane. The painted sky sits on top of it.
+            'bg-well',
             // Focus is not decoration here — it is the difference between Space
             // flapping and Space scrolling, so it gets a real ring rather than
             // a focus-visible-only one (clicking would not trigger
@@ -430,41 +493,54 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
               theme's own image is the background and does not want stripes over
               it) and under reduced effects, where the transform is pinned at 0
               anyway. */}
-          {!wallpaperSky && !reducedEffects && (
-            <>
-              {/* FAR: clouds, drifting at a sixth of the world's speed. */}
-              <div
-                ref={cloudRef}
-                aria-hidden="true"
-                className="absolute inset-y-0 left-0 pointer-events-none"
-                style={{
-                  width: `calc(100% + ${CLOUD_TILE_PX}px)`,
-                  backgroundImage: CLOUD_IMAGE,
-                  backgroundSize: `${CLOUD_TILE_PX}px 100%`,
-                  backgroundRepeat: 'repeat-x',
-                }}
-              />
-              {/* NEAR: the original streaks, at a third. */}
-              <div
-                ref={skyRef}
-                aria-hidden="true"
-                className="absolute inset-y-0 left-0 pointer-events-none"
-                style={{
-                  width: 'calc(100% + 60px)',
-                  backgroundImage: `repeating-linear-gradient(115deg, transparent 0 30px, ${SKY_STREAK_FILL} 30px 46px)`,
-                }}
-              />
-            </>
-          )}
-          {/* FIXED: haze toward the horizon. Kept under reduced motion — it
-              does not move, so there is nothing to spare the reader from. */}
-          {!wallpaperSky && (
-            <div
-              aria-hidden="true"
-              className="absolute inset-0 pointer-events-none"
-              style={{ backgroundImage: SKY_HAZE }}
+          {/* THE SKY IS ALWAYS PAINTED. It used to be skipped under a
+              wallpaper theme, on the reasoning that the theme's own background
+              would show through — but the games pane is opaque, so it never
+              could, and those themes got an empty field instead. */}
+          <div
+            aria-hidden="true"
+            className="absolute inset-0 pointer-events-none"
+            style={{ backgroundImage: SKY_GRADIENT }}
+          />
+
+          {/* The sun. Static and low-contrast: it places the light, it is not
+              something to look at. */}
+          <div
+            aria-hidden="true"
+            className="absolute rounded-full pointer-events-none"
+            style={{
+              right: '14%', top: '10%',
+              width: Math.max(26, box.w * 0.13), height: Math.max(26, box.w * 0.13),
+              background: `radial-gradient(circle, ${SUN_FILL} 0 58%, transparent 70%)`,
+            }}
+          />
+
+          {/* Clouds, then three hill bands far-to-near. Each drifts slower than
+              the one in front of it (see the rAF loop) — that difference is
+              what reads as distance. Under reduced motion they all pin at 0 and
+              simply become a still landscape, which is still a landscape. */}
+          <div
+            ref={cloudRef}
+            aria-hidden="true"
+            className="absolute inset-y-0 left-0 pointer-events-none"
+            style={{
+              width: `calc(100% + ${CLOUD_TILE_PX}px)`,
+              backgroundImage: CLOUD_IMAGE,
+              backgroundSize: `${CLOUD_TILE_PX}px 100%`,
+              backgroundRepeat: 'repeat-x',
+            }}
+          />
+          {HILLS.map((h, i) => (
+            <HillBand
+              key={h.top}
+              bandRef={hillRefs[i]!}
+              fill={h.fill}
+              tile={h.tile}
+              top={h.top}
+              amp={h.amp}
+              width={box.w}
             />
-          )}
+          ))}
 
           {/* Pipe pool. Mounted once and reused — see PIPE_SLOTS. */}
           {Array.from({ length: PIPE_SLOTS }, (_, i) => (
