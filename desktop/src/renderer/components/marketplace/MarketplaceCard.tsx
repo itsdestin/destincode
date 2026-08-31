@@ -11,6 +11,9 @@ import { useMarketplace } from "../../state/marketplace-context";
 // P-21 #3: "1 installs" / "1 likes" — counts go through the shared pluraliser.
 import { plural } from "../../../shared/plural";
 import InstallFavoriteCorner from "./InstallFavoriteCorner";
+// Task 1: the "Update" corner is a real button now — see UpdateButton.tsx for
+// why it had to become a shared component.
+import UpdateButton from "./UpdateButton";
 // Marketplace overhaul (2026-08-27): origin + scan badges, risky-capability
 // glyphs and the thumbs summary replace the star rating on every card.
 import { OriginBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
@@ -110,6 +113,13 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   };
 
   const id = item.kind === "skill" ? item.entry.id : `theme:${item.entry.slug}`;
+  // What mp.update() wants: the bare marketplace id for a plugin, the bare slug
+  // for a theme (it adds the `theme:` prefix itself).
+  const updateId = item.kind === "skill" ? item.entry.id : item.entry.slug;
+  // The corner offers Update whenever one is available — except on integrations
+  // (they supply their own statusBadge) and local themes, which have no
+  // marketplace copy to update from.
+  const showUpdateAction = !!updateAvailable && !statusBadge && !isLocalTheme;
   const pluginStats = item.kind === "skill" ? stats.plugins[item.entry.id] : undefined;
   const themeStats = item.kind === "theme" ? stats.themes[item.entry.slug] : undefined;
   const installs = pluginStats?.installs ?? 0;
@@ -172,17 +182,17 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
     // Status pill: "Local" for local themes wins over generic Installed/Update,
     // since local themes are always "installed" but the more interesting fact
     // is that they're not in the marketplace.
+    // Task 1: the "Update" pill is gone from this list — an available update is
+    // now a real button (rendered below), not a label that did nothing.
     const compactStatus: { text: string; tone: 'ok' | 'warn' | 'err' | 'neutral' | 'locked' } | null = statusBadge
       ? statusBadge
       : isLocalTheme
         ? { text: 'Local', tone: 'neutral' }
         : isInstalling
           ? { text: 'Installing…', tone: 'neutral' }
-          : updateAvailable
-            ? { text: 'Update', tone: 'warn' }
-            : isInstalled
-              ? { text: 'Installed', tone: 'neutral' }
-              : null;
+          : isInstalled
+            ? { text: 'Installed', tone: 'neutral' }
+            : null;
 
     return (
       <div
@@ -241,13 +251,15 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
             via p-3 — well above WCAG 2.2's 24px minimum and close to iOS
             HIG's 44pt recommendation. */}
         <div className="shrink-0 flex flex-col items-end gap-1.5">
-          {compactStatus && (
+          {showUpdateAction ? (
+            <UpdateButton id={updateId} kind={kind} />
+          ) : compactStatus ? (
             <span
               className={`text-3xs uppercase tracking-wide px-2 py-0.5 rounded-full ${STATUS_TONE_CLASS[compactStatus.tone]}`}
             >
               {compactStatus.text}
             </span>
-          )}
+          ) : null}
           {!suppressCorner && kind === 'skill' && !isInstalled && !isInstalling && (
             <button
               type="button"
@@ -370,7 +382,12 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
           >
             {statusBadge.text}
           </span>
-        ) : (isInstalling || updateAvailable || isInstalled) && (
+        ) : showUpdateAction ? (
+          // Task 1: this corner used to render the word "Update" inside a
+          // <span> with no handler — on every card, for plugins and themes
+          // alike. It is the real action now.
+          <UpdateButton id={updateId} kind={kind} />
+        ) : (isInstalling || isInstalled) && (
           <span
             className={`relative z-10 text-3xs uppercase tracking-wide shrink-0 px-2 py-0.5 rounded-full ${
               isInstalling
@@ -378,7 +395,7 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
                 : 'text-fg-dim'
             }`}
           >
-            {isInstalling ? 'Installing…' : updateAvailable ? 'Update' : 'Installed'}
+            {isInstalling ? 'Installing…' : 'Installed'}
           </span>
         )}
         {/* Round 3: the star / download / spinner sits in the title row right

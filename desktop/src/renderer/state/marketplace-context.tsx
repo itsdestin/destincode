@@ -353,6 +353,20 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   // Phase 3b: compute update-available map by comparing marketplace versions
   // against installed package versions. Themes use the "theme:<slug>" key
   // prefix in the packages map to avoid colliding with skill ids.
+  //
+  // Today this is ONE signal: the version string an author bumps by hand. Two
+  // known sharp edges follow from that, and neither is fixed here:
+  //   • an entry with no version is recorded as '1.0.0' (the `|| '1.0.0'`
+  //     fallbacks in skill-provider.ts), so it can be flagged spuriously;
+  //   • an author who changes files without bumping the version is invisible.
+  // TODO(marketplace overhaul Task 17 — commit pinning): once the installer
+  // records the commit it actually checked out (`PackageInfo.commit`) and the
+  // catalog publishes `catalog.sourceCommit`, add that comparison ALONGSIDE
+  // this one — "either differs" means an update is available. Keep the two
+  // separate: the version is what an author bumps deliberately, the commit is
+  // what actually changed. A package with no recorded commit (anything
+  // installed before Task 17) must contribute nothing, so old installs never
+  // grow a spurious badge. Do NOT replace the version compare with it.
   const updateAvailable = useMemo<Record<string, boolean>>(() => {
     const result: Record<string, boolean> = {};
     for (const entry of skillEntries) {

@@ -21,6 +21,10 @@ import { CapabilityList } from "./CapabilityList";
 import FeedbackSection from "./FeedbackSection";
 import { CATALOG_TYPE_LABEL } from "../../../shared/catalog-types";
 import FileViewerOverlay, { type FileViewerTarget } from "./FileViewerOverlay";
+// Task 1: an installed item with an update available needs a way to take it —
+// the overlay swapped straight to Uninstall once installed, so the only route
+// was uninstall-then-reinstall (ROADMAP:736 for themes).
+import UpdateButton from "./UpdateButton";
 import { Button, CloseButton } from "../ui";
 
 export type DetailTarget =
@@ -87,6 +91,7 @@ export default function MarketplaceDetailOverlay({
           favorited={favorited}
           isInstalling={installing}
           installError={errEntry?.message ?? null}
+          updateAvailable={!!mp.updateAvailable[target.id]}
           onNavigate={onNavigate}
           memberId={memberId}
           onInstall={() => mp.installSkill(entry.id).catch(() => undefined)}
@@ -110,6 +115,7 @@ export default function MarketplaceDetailOverlay({
           entry={entry}
           isInstalling={installing}
           installError={errEntry?.message ?? null}
+          updateAvailable={!!mp.updateAvailable[target.slug]}
           isActive={isActive}
           favorited={favorited}
           onInstall={() => mp.installTheme(entry.slug).catch(() => undefined)}
@@ -219,7 +225,7 @@ function ShareIcon() {
 // ── Skill body ──────────────────────────────────────────────────────────────
 
 function SkillBody({
-  entry, installed, favorited, isInstalling, installError,
+  entry, installed, favorited, isInstalling, installError, updateAvailable,
   onInstall, onUninstall, onToggleFavorite, onShare, onNavigate, memberId,
 }: {
   entry: SkillEntry;
@@ -227,6 +233,7 @@ function SkillBody({
   favorited: boolean;
   isInstalling: boolean;
   installError: string | null;
+  updateAvailable: boolean;
   onInstall(): void;
   onUninstall(): void;
   onToggleFavorite(): void;
@@ -311,18 +318,24 @@ function SkillBody({
             (() => {
               const bundled = isBundledPlugin(entry.id);
               return (
-                // Was a FILLED inset button, which read as a second primary
-                // sitting next to Install. Bordered secondary makes the hierarchy
-                // obvious.
-                <Button
-                  variant="secondary"
-                  size="lg"
-                  onClick={onUninstall}
-                  disabled={bundled}
-                  title={bundled ? BUNDLED_REASON : undefined}
-                >
-                  Uninstall
-                </Button>
+                <>
+                  {/* Update sits BEFORE Uninstall: it is the action a user with
+                      an out-of-date item actually wants, and putting it after
+                      makes Uninstall the first thing under the cursor. */}
+                  {updateAvailable && <UpdateButton id={entry.id} kind="skill" variant="button" />}
+                  {/* Was a FILLED inset button, which read as a second primary
+                      sitting next to Install. Bordered secondary makes the
+                      hierarchy obvious. */}
+                  <Button
+                    variant="secondary"
+                    size="lg"
+                    onClick={onUninstall}
+                    disabled={bundled}
+                    title={bundled ? BUNDLED_REASON : undefined}
+                  >
+                    Uninstall
+                  </Button>
+                </>
               );
             })()
           ) : (
@@ -492,12 +505,13 @@ function ComponentsPeek({
 // ── Theme body ──────────────────────────────────────────────────────────────
 
 function ThemeBody({
-  entry, isInstalling, installError, isActive, favorited,
+  entry, isInstalling, installError, updateAvailable, isActive, favorited,
   onInstall, onUninstall, onApply, onToggleFavorite, onShare,
 }: {
   entry: ThemeRegistryEntryWithStatus;
   isInstalling: boolean;
   installError: string | null;
+  updateAvailable: boolean;
   isActive: boolean;
   favorited: boolean;
   onInstall(): void;
@@ -575,6 +589,9 @@ function ThemeBody({
               <Button variant="secondary" size="lg" disabled>
                 Active
               </Button>
+              {/* installTheme already overwrites an installed slug in place, so
+                  the update path always worked — there was simply no button. */}
+              {updateAvailable && <UpdateButton id={entry.slug} kind="theme" variant="button" />}
               <Button variant="ghost" size="lg" onClick={handleUninstall}>
                 Uninstall
               </Button>
@@ -584,6 +601,7 @@ function ThemeBody({
               <Button size="lg" onClick={onApply}>
                 Apply theme
               </Button>
+              {updateAvailable && <UpdateButton id={entry.slug} kind="theme" variant="button" />}
               <Button variant="ghost" size="lg" onClick={handleUninstall}>
                 Uninstall
               </Button>
