@@ -96,6 +96,17 @@ export function useMarketplace(): MarketplaceContextValue {
 
 // ── Provider ─────────────────────────────────────────────────────────────────
 
+// The one place the install-progress key is spelled. Both halves of the
+// "Installing…" indicator — the writer here and every reader (MarketplaceCard,
+// MarketplaceDetailOverlay, InstallingFooterStrip) — must go through this, or
+// the reader silently asks for a key that is never set.
+// The `skill:` / `theme:` prefix is load-bearing beyond equality:
+// InstallingFooterStrip splits on it to decide which registry holds the
+// display name for the item being installed.
+export function installTrackingKey(kind: 'skill' | 'theme', idOrSlug: string): string {
+  return `${kind}:${idOrSlug}`;
+}
+
 export function MarketplaceProvider({ children }: { children: React.ReactNode }) {
   const [skillEntries, setSkillEntries] = useState<SkillEntry[]>([]);
   const [themeEntries, setThemeEntries] = useState<ThemeRegistryEntryWithStatus[]>([]);
@@ -195,7 +206,10 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
 
   // ── Actions ──────────────────────────────────────────────────────────────
 
-  // Renderer-only install-tracking. Keys: `skill:<id>` | `theme:<slug>`.
+  // Renderer-only install-tracking. Keys are built by `installTrackingKey`
+  // (exported above) — never hand-spelled. MarketplaceCard used to ask for a
+  // bare marketplace id here while this file wrote `skill:<id>`, so the two
+  // strings could never match and a plugin install showed no progress at all.
   // Cleared in `finally` AFTER `fetchAll()` resolves — clearing before would
   // briefly flash Install → Installed because installed-state derivation
   // hasn't caught up.
@@ -218,7 +232,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   }, []);
 
   const installSkill = useCallback(async (id: string) => {
-    const key = `skill:${id}`;
+    const key = installTrackingKey('skill', id);
     markInstalling(key);
     try {
       await window.claude.skills.install(id);
@@ -247,7 +261,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   }, [fetchAll, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   const uninstallSkill = useCallback(async (id: string) => {
-    const key = `skill:${id}`;
+    const key = installTrackingKey('skill', id);
     markInstalling(key);
     try {
       await window.claude.skills.uninstall(id);
@@ -262,7 +276,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   }, [fetchAll, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   const installTheme = useCallback(async (slug: string) => {
-    const key = `theme:${slug}`;
+    const key = installTrackingKey('theme', slug);
     markInstalling(key);
     try {
       const res = await claude().theme.marketplace.install(slug);
@@ -303,7 +317,7 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   }, [fetchAll, reloadUserThemes, refreshDrawerSkills, markInstalling, clearInstalling, recordInstallError]);
 
   const uninstallTheme = useCallback(async (slug: string) => {
-    const key = `theme:${slug}`;
+    const key = installTrackingKey('theme', slug);
     markInstalling(key);
     try {
       await claude().theme.marketplace.uninstall(slug);

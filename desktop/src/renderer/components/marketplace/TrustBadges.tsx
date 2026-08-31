@@ -1,6 +1,6 @@
-// The two trust signals a listing carries (design 2026-08-27, decision #2):
+// The two facts a listing carries (design 2026-08-27, decision #2):
 //   ScanBadge   — WAS IT CHECKED: Likely safe · Caution · Not checked
-//   OriginBadge — WHO published it: YouCoded · Verified · Community
+//   SourceBadge — WHERE IT CAME FROM: the list we mirrored it out of
 // Kept as two separate marks on purpose: merging them into one score hides
 // the reason. Both are G-14 tag/badge shape — `sm` radius, icon + neutral
 // text — never coloured text.
@@ -13,17 +13,49 @@ import React from 'react';
 import type { CatalogMeta, OriginTier, ScanStatus } from '../../../shared/catalog-types';
 import { OriginIcon } from './type-icons';
 
-export const ORIGIN_LABEL: Record<OriginTier, string> = {
-  youcoded: 'YouCoded',
-  verified: 'Verified',
-  community: 'Community',
+// WHY THIS REPLACED THE "Verified / Community" TIER (2026-08-31).
+//
+// The old badge said "Verified" and its tooltip claimed "the publisher proved they own
+// this name (their GitHub account or website matches)". No such check exists anywhere in
+// the ingest or the Worker — it was never written. What the tier actually recorded is
+// which upstream list a row was copied out of: Anthropic's official plugin list, the
+// github/awesome-copilot repo, or an image Docker themselves built.
+//
+// Three things made that worse than merely vague. It sat on 89% of the catalog (3,681 of
+// 4,156 rows), so it drew the eye without dividing anything. It contradicted the badge
+// beside it — 1,268 rows read "Verified" and "Not checked" at the same time. And it drew
+// a SHIELD WITH A TICK, all but identical to the safety shield, so the strongest trust
+// mark on the screen was making a promise nobody had checked.
+//
+// Naming the list instead is shorter, true, and strictly more informative: "Anthropic"
+// tells you who curated it, and the safety shield beside it stays the only claim about
+// whether anyone looked at the code.
+const SOURCE_LABEL: Record<string, string> = {
+  'anthropics/claude-plugins-official': 'Anthropic',
+  'github/awesome-copilot': 'GitHub',
+  'Docker MCP Catalog': 'Docker',
+  'PatrickJS/awesome-cursorrules': 'awesome-cursorrules',
 };
 
-export const ORIGIN_EXPLAINER: Record<OriginTier, string> = {
-  youcoded: 'Made and maintained by the YouCoded team.',
-  verified: 'The publisher proved they own this name (their GitHub account or website matches).',
-  community: 'Published by someone we could not verify. Read what it can do before installing.',
-};
+/** The list this listing was mirrored out of, as a person would say it. `null` when we
+ *  published it ourselves — the YouCoded case is named, not sourced. */
+export function sourceLabel(origin: CatalogMeta['origin']): string | null {
+  if (origin.tier === 'youcoded') return 'YouCoded';
+  const from = origin.mirroredFrom;
+  if (!from) return null;
+  // Fall back to the last path segment so an upstream we have not mapped still reads as
+  // a name rather than an owner/repo slug.
+  return SOURCE_LABEL[from] ?? from.split('/').pop() ?? from;
+}
+
+export function sourceExplainer(origin: CatalogMeta['origin']): string {
+  if (origin.tier === 'youcoded') return 'Made and maintained by the YouCoded team.';
+  const name = sourceLabel(origin);
+  // Deliberately says only what is true: we copied this listing from that list. It makes
+  // no claim about the publisher's identity and none about safety — the shield beside it
+  // is the only thing that speaks to whether the code was looked at.
+  return `Listed because ${name} carries it in their catalogue. That is where it came from — it is not a check of who published it, or of what the code does.`;
+}
 
 export const SCAN_LABEL: Record<ScanStatus, string> = {
   checked: 'Likely safe',
@@ -98,11 +130,15 @@ export function AuthorBadge({ author, size = 'sm' }: { author: string; size?: 's
   );
 }
 
-export function OriginBadge({ tier, size = 'sm' }: { tier: OriginTier; size?: 'sm' | 'md' }) {
+/** Where the listing came from. Renders nothing when there is nothing true to say.
+ *  No shield: the old one was visually a second safety mark. */
+export function SourceBadge({ origin, size = 'sm' }: { origin: CatalogMeta['origin']; size?: 'sm' | 'md' }) {
+  const label = sourceLabel(origin);
+  if (!label) return null;
   return (
-    <span className={size === 'md' ? `${BADGE} text-xs px-2` : BADGE} title={ORIGIN_EXPLAINER[tier]} data-origin={tier}>
-      <span className="text-fg-dim inline-flex" aria-hidden><OriginIcon tier={tier} size={size === 'md' ? 14 : 12} /></span>
-      {ORIGIN_LABEL[tier]}
+    <span className={size === 'md' ? `${BADGE} text-xs px-2` : BADGE} title={sourceExplainer(origin)} data-origin={origin.tier} data-source={label}>
+      <span className="text-fg-dim inline-flex" aria-hidden><OriginIcon tier={origin.tier} size={size === 'md' ? 14 : 12} /></span>
+      {label}
     </span>
   );
 }

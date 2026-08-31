@@ -27,6 +27,10 @@ class PluginInstaller(
     private val homeDir: File,
     private val bootstrap: Bootstrap,
     private val configStore: SkillConfigStore,
+    // Test seam ONLY (same role as upgradeFromLocal's `renameFn`): there is no
+    // Termux git binary in a JVM unit test, so the commit-recording path could
+    // not otherwise be exercised. Null in production — runGit() shells out for real.
+    private val gitRunner: ((List<String>) -> GitResult)? = null,
 ) {
     // Marketplace-installed plugins live at
     // ~/.claude/plugins/marketplaces/youcoded/plugins/<id>/, NOT the legacy
@@ -76,8 +80,19 @@ class PluginInstaller(
             else "claude-plugins-official"
     }
 
+    /**
+     * What one git invocation did: whether it exited 0, and everything it printed.
+     * runGit used to return a bare Boolean, so git's output was unreachable — which
+     * is why the installed commit could never be recorded and why a failed clone
+     * could only be reported with a hand-written guess. Mirrors desktop's
+     * plugin-installer.ts runGit(), which returns { ok, output }.
+     */
+    data class GitResult(val ok: Boolean, val output: String)
+
     sealed class InstallResult {
-        object Success : InstallResult()
+        /** [commit] is the sha the installer actually checked out — present only when
+         *  the catalog pinned one and git confirmed where it landed. */
+        data class Success(val commit: String? = null) : InstallResult()
         data class AlreadyInstalled(val via: String) : InstallResult()
         data class Failed(val error: String) : InstallResult()
         object InProgress : InstallResult()
@@ -170,6 +185,12 @@ class PluginInstaller(
                     put("source", "marketplace")
                     put("installedAt", java.time.Instant.now().toString())
                     put("removable", true)
+                    // The sha the installer actually checked out (absent unless the
+                    // catalog pinned one). This is the installed half of the
+                    // marketplace's commit comparison — without it that check has no
+                    // data and the Update badge stays silent. Mirrors desktop's
+                    // skill-provider.ts recordPackageInstall.
+                    result.commit?.let { put("commit", it) }
                     put("components", org.json.JSONArray().put(JSONObject().apply {
                         put("type", "plugin")
                         put("path", targetDir.absolutePath)
@@ -271,14 +292,16 @@ class PluginInstaller(
         if (!cacheRepo.exists()) {
             Log.i(TAG, "Cloning marketplace repo: $repoUrl")
             cacheDir.mkdirs()
-            val ok = runGit("clone", "--depth", "1", repoUrl, cacheRepo.absolutePath)
-            if (!ok) return InstallResult.Failed("Failed to clone marketplace repo")
+            val cloned = runGit("clone", "--depth", "1", repoUrl, cacheRepo.absolutePath)
+            // Surface git's own words — "repository not found" and "network is
+            // unreachable" read completely differently and the user must see which.
+            if (!cloned.ok) return InstallResult.Failed("Failed to clone marketplace repo: ${cloned.output.take(200)}")
             setCacheTimestamp(cacheRepo)
         } else if (System.currentTimeMillis() - getCacheTimestamp(cacheRepo) > CACHE_REFRESH_MS) {
-            val fetchOk = runGit("-C", cacheRepo.absolutePath, "fetch", "origin")
+            val fetchOk = runGit("-C", cacheRepo.absolutePath, "fetch", "origin").ok
             if (fetchOk) {
                 // Default branch: master per workspace convention
-                val resetOk = runGit("-C", cacheRepo.absolutePath, "reset", "--hard", "origin/master")
+                val resetOk = runGit("-C", cacheRepo.absolutePath, "reset", "--hard", "origin/master").ok
                 if (resetOk) setCacheTimestamp(cacheRepo)
                 // reset failure → proceed with cached copy, don't bump stamp
             }
@@ -293,7 +316,8 @@ class PluginInstaller(
         val targetDir = File(pluginsDir, id)
         targetDir.mkdirs()
         sourceDir.copyRecursively(targetDir, overwrite = true)
-        return InstallResult.Success
+        // A local (cache-copied) install has no upstream sha to record.
+        return InstallResult.Success()
     }
 
     // ── Task B5: bundled-plugin upgrade (port of desktop's readPluginVersion /
@@ -334,13 +358,13 @@ class PluginInstaller(
         val repoUrl = getMarketplaceRepo(sourceMarketplace)
         if (!cacheRepo.exists()) {
             cacheDir.mkdirs()
-            val ok = runGit("clone", "--depth", "1", repoUrl, cacheRepo.absolutePath)
+            val ok = runGit("clone", "--depth", "1", repoUrl, cacheRepo.absolutePath).ok
             if (ok) setCacheTimestamp(cacheRepo)
             return@withContext ok
         }
         if (System.currentTimeMillis() - getCacheTimestamp(cacheRepo) < CACHE_REFRESH_MS) return@withContext true
-        if (!runGit("-C", cacheRepo.absolutePath, "fetch", "origin")) return@withContext false
-        val resetOk = runGit("-C", cacheRepo.absolutePath, "reset", "--hard", "origin/master")
+        if (!runGit("-C", cacheRepo.absolutePath, "fetch", "origin").ok) return@withContext false
+        val resetOk = runGit("-C", cacheRepo.absolutePath, "reset", "--hard", "origin/master").ok
         if (resetOk) setCacheTimestamp(cacheRepo)
         resetOk
     }
@@ -450,7 +474,8 @@ class PluginInstaller(
         } catch (e: Exception) {
             return@withContext InstallResult.Failed("Registry write failed: ${e.message}")
         }
-        InstallResult.Success
+        // Upgraded from the local cache copy — no upstream sha involved.
+        InstallResult.Success()
     }
 
     /**
@@ -460,23 +485,40 @@ class PluginInstaller(
      * serves any reachable sha to a shallow fetch, so one extra fetch plus a detached
      * checkout pins it. runGit already logs git's own output on failure.
      */
-    private suspend fun pinToCommit(dir: File, commit: String): Boolean {
-        if (!runGit("-C", dir.absolutePath, "fetch", "--depth", "1", "origin", commit)) return false
-        return runGit("-C", dir.absolutePath, "checkout", "--detach", commit)
+    private suspend fun pinToCommit(dir: File, commit: String): PinResult {
+        val fetched = runGit("-C", dir.absolutePath, "fetch", "--depth", "1", "origin", commit)
+        if (!fetched.ok) return PinResult(false, fetched.output, null)
+        val checked = runGit("-C", dir.absolutePath, "checkout", "--detach", commit)
+        if (!checked.ok) return PinResult(false, checked.output, null)
+        // Report the FULL sha we LANDED on, read back from git — never the sha the
+        // catalog asked for. The package record stores this and the marketplace's
+        // Update check compares it against the catalog's sourceCommit; echoing the
+        // catalog's own value back would always compare equal and the badge would
+        // silently never fire again. Mirrors desktop's pinToCommit().
+        val head = runGit("-C", dir.absolutePath, "rev-parse", "HEAD")
+        return PinResult(true, checked.output, head.output.trim().takeIf { head.ok && it.isNotEmpty() })
     }
+
+    /** Outcome of pinning a clone to a listed commit: whether it worked, git's own
+     *  output for the failure message, and the sha actually checked out. */
+    private data class PinResult(val ok: Boolean, val output: String, val commit: String?)
 
     private suspend fun installFromUrl(id: String, url: String, commit: String?): InstallResult {
         val targetDir = File(pluginsDir, id)
         if (targetDir.exists()) targetDir.deleteRecursively()
 
-        val ok = runGit("clone", "--depth", "1", url, targetDir.absolutePath)
-        if (!ok) return InstallResult.Failed("git clone failed for $url")
+        val cloned = runGit("clone", "--depth", "1", url, targetDir.absolutePath)
+        if (!cloned.ok) return InstallResult.Failed("git clone failed for $url: ${cloned.output.take(200)}")
         // A pin the catalog asked for that we could not honour is a failed install, not a
         // silent downgrade to "latest" — the user was shown a scan of that specific commit.
-        if (!commit.isNullOrEmpty() && !pinToCommit(targetDir, commit)) {
-            return InstallResult.Failed("could not check out the listed version $commit")
+        if (!commit.isNullOrEmpty()) {
+            val pinned = pinToCommit(targetDir, commit)
+            if (!pinned.ok) {
+                return InstallResult.Failed("could not check out the listed version $commit: ${pinned.output.take(200)}")
+            }
+            return InstallResult.Success(pinned.commit)
         }
-        return InstallResult.Success
+        return InstallResult.Success()
     }
 
     private suspend fun installFromGitSubdir(id: String, repoUrl: String, subdir: String, commit: String?): InstallResult {
@@ -487,17 +529,22 @@ class PluginInstaller(
             if (tmpDir.exists()) tmpDir.deleteRecursively()
 
             // Sparse clone: only fetch the subdirectory we need
-            val cloneOk = runGit("clone", "--depth", "1", "--filter=blob:none", "--sparse", repoUrl, tmpDir.absolutePath)
-            if (!cloneOk) return InstallResult.Failed("git clone failed for $repoUrl")
+            val cloned = runGit("clone", "--depth", "1", "--filter=blob:none", "--sparse", repoUrl, tmpDir.absolutePath)
+            if (!cloned.ok) return InstallResult.Failed("git clone failed for $repoUrl: ${cloned.output.take(200)}")
 
-            val sparseOk = runGit("-C", tmpDir.absolutePath, "sparse-checkout", "set", subdir)
-            if (!sparseOk) return InstallResult.Failed("sparse-checkout failed for $subdir")
+            val sparse = runGit("-C", tmpDir.absolutePath, "sparse-checkout", "set", subdir)
+            if (!sparse.ok) return InstallResult.Failed("sparse-checkout failed for $subdir: ${sparse.output.take(200)}")
 
             // Pin AFTER `sparse-checkout set`, never before: `checkout --detach`
             // materialises whatever the sparse config allows at that moment, so pinning
             // first would defeat the sparse clone and pull down the entire tree.
-            if (!commit.isNullOrEmpty() && !pinToCommit(tmpDir, commit)) {
-                return InstallResult.Failed("could not check out the listed version $commit")
+            var pinnedCommit: String? = null
+            if (!commit.isNullOrEmpty()) {
+                val pinned = pinToCommit(tmpDir, commit)
+                if (!pinned.ok) {
+                    return InstallResult.Failed("could not check out the listed version $commit: ${pinned.output.take(200)}")
+                }
+                pinnedCommit = pinned.commit
             }
 
             val sourceDir = File(tmpDir, subdir)
@@ -510,7 +557,7 @@ class PluginInstaller(
             targetDir.mkdirs()
             sourceDir.copyRecursively(targetDir, overwrite = true)
 
-            return InstallResult.Success
+            return InstallResult.Success(pinnedCommit)
         } finally {
             tmpDir.deleteRecursively()
         }
@@ -595,9 +642,11 @@ class PluginInstaller(
 
     /**
      * Run a git command using the embedded runtime (linker64 + env).
-     * Returns true on exit code 0, false otherwise.
+     * Returns git's exit status AND everything it printed — callers need the output
+     * both to report a real failure reason and to read `rev-parse HEAD` back.
      */
-    private suspend fun runGit(vararg args: String): Boolean = withContext(Dispatchers.IO) {
+    private suspend fun runGit(vararg args: String): GitResult = withContext(Dispatchers.IO) {
+        gitRunner?.let { return@withContext it(args.toList()) }
         try {
             // Fix: Termux binaries live at <filesDir>/usr/bin/, NOT <filesDir>/home/usr/bin/.
             // homeDir is filesDir/home (Bootstrap.homeDir); usrDir is filesDir/usr (Bootstrap.usrDir).
@@ -622,17 +671,20 @@ class PluginInstaller(
             if (!exited) {
                 process.destroyForcibly()
                 Log.e(TAG, "git timed out: ${args.joinToString(" ")}")
-                return@withContext false
+                return@withContext GitResult(false, "git timed out after ${GIT_TIMEOUT_SECONDS}s")
             }
 
             val exitCode = process.exitValue()
             if (exitCode != 0) {
                 Log.w(TAG, "git ${args.firstOrNull()} failed (exit $exitCode): ${output.take(500)}")
             }
-            exitCode == 0
+            // WHY: when git itself never ran the output is empty, which would leave a
+            // caller's message trailing off after a colon — fall back to naming the
+            // exit code rather than saying nothing. Never a guessed cause.
+            GitResult(exitCode == 0, output.trim().ifEmpty { "git exited $exitCode with no output" })
         } catch (e: Exception) {
             Log.e(TAG, "git execution error: ${args.joinToString(" ")}", e)
-            false
+            GitResult(false, e.message ?: "git could not be started")
         }
     }
 

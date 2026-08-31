@@ -7,7 +7,7 @@ import { useId, useState } from "react";
 import type { SkillEntry, SkillComponents } from "../../../shared/types";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";
-import { useMarketplace } from "../../state/marketplace-context";
+import { useMarketplace, installTrackingKey } from "../../state/marketplace-context";
 // P-21 #3: "1 installs" / "1 likes" — counts go through the shared pluraliser.
 import { plural } from "../../../shared/plural";
 import InstallFavoriteCorner from "./InstallFavoriteCorner";
@@ -16,7 +16,7 @@ import InstallFavoriteCorner from "./InstallFavoriteCorner";
 import UpdateButton from "./UpdateButton";
 // Marketplace overhaul (2026-08-27): origin + scan badges, risky-capability
 // glyphs and the thumbs summary replace the star rating on every card.
-import { OriginBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
+import { ScanBadge, AuthorBadge } from "./TrustBadges";
 import { capabilityLine } from "./CapabilityList";
 import { ThumbsSummary } from "./FeedbackSection";
 import { CATALOG_TYPE_LABEL, isInstallableSource } from "../../../shared/catalog-types";
@@ -90,7 +90,13 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const stats = useMarketplaceStats();
   const mp = useMarketplace();
   const kind = item.kind;
-  const installKey = kind === "theme" ? `theme:${item.entry.slug}` : item.entry.id;
+  // Fix: this used to be the BARE marketplace id for a plugin, while
+  // marketplace-context records progress under `skill:<id>` — so the lookup
+  // below never matched and a plugin install showed no "Installing…" state
+  // at all. Both sides now build the key with the same helper.
+  const installKey = kind === "theme"
+    ? installTrackingKey("theme", item.entry.slug)
+    : installTrackingKey("skill", item.entry.id);
   const isInstalling = mp.installingIds.has(installKey);
   const isFavorited =
     kind === "theme"
@@ -143,7 +149,10 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const trust = catalog ? (
     <div className="flex items-center gap-1 flex-nowrap min-w-0" data-trust>
       <ScanBadge scan={catalog.scan} responsiveLabel />
-      <OriginBadge tier={catalog.origin.tier} />
+      {/* 2026-08-31: the source chip moved to the detail page. On a card it was a
+          third chip competing with the two that answer what you actually ask while
+          scanning a grid — is this safe, and who made it. Where it was mirrored from
+          matters when you are deciding to install, which is the detail page. */}
       {/* Round 3: the author is a chip here, not a grey line under the title. */}
       {author && <AuthorBadge author={author} />}
     </div>

@@ -1,19 +1,23 @@
 // Docked footer strip that lists in-flight skill/theme installs. Visible iff
 // installingIds.size > 0. Uses theme tokens (.layer-surface + accent accent)
 // so no hardcoded colors. Respects safe-area-inset-bottom for Android.
-import { useMarketplace } from '../../state/marketplace-context';
+import { useMarketplace, installTrackingKey } from '../../state/marketplace-context';
 
 function labelForKey(
   key: string,
   skillEntries: { id: string; displayName?: string }[],
   themeEntries: { slug: string; name?: string }[],
 ): string {
-  if (key.startsWith('skill:')) {
-    const id = key.slice('skill:'.length);
+  // Built with the same helper the writer uses, so the prefix this splits on
+  // can never drift out from under it.
+  const skillPrefix = installTrackingKey('skill', '');
+  const themePrefix = installTrackingKey('theme', '');
+  if (key.startsWith(skillPrefix)) {
+    const id = key.slice(skillPrefix.length);
     return skillEntries.find(s => s.id === id)?.displayName ?? id;
   }
-  if (key.startsWith('theme:')) {
-    const slug = key.slice('theme:'.length);
+  if (key.startsWith(themePrefix)) {
+    const slug = key.slice(themePrefix.length);
     return themeEntries.find(t => t.slug === slug)?.name ?? slug;
   }
   return key;

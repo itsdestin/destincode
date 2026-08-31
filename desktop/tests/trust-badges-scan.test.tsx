@@ -11,7 +11,8 @@ import React from 'react';
 import '@testing-library/jest-dom/vitest';
 import { describe, it, expect, afterEach } from 'vitest';
 import { render, cleanup, screen } from '@testing-library/react';
-import { ScanBadge, scanExplainer, SCAN_LABEL } from '../src/renderer/components/marketplace/TrustBadges';
+import { ScanBadge, scanExplainer, SCAN_LABEL, SourceBadge, sourceLabel, sourceExplainer } from '../src/renderer/components/marketplace/TrustBadges';
+import type { CatalogMeta } from '../src/shared/catalog-types';
 
 afterEach(cleanup);
 
@@ -48,5 +49,56 @@ describe('ScanBadge', () => {
   it('never claims a check that did not happen', () => {
     expect(scanExplainer({ status: 'checked' })).toMatch(/read every file/i);
     expect(scanExplainer({ status: 'unchecked' })).not.toMatch(/found nothing/i);
+  });
+});
+
+// ── Where it came from ──────────────────────────────────────────────────────
+//
+// WHY THIS EXISTS: until 2026-08-31 this badge said "Verified" and its hover text
+// claimed "the publisher proved they own this name (their GitHub account or website
+// matches)". No such check has ever existed in the ingest or the Worker — it was a
+// trust claim the product could not back, on the most trust-loaded word in the UI,
+// drawn as a shield with a tick right beside the real safety shield. It shipped
+// because nothing pinned it. These tests are that pin: the badge may only ever name
+// where a listing was mirrored from, and must never again imply a check of the
+// publisher or of the code.
+describe('SourceBadge — names the list, never a vetting', () => {
+  const origin = (tier: 'youcoded' | 'verified' | 'community', mirroredFrom?: string) =>
+    ({ tier, ...(mirroredFrom ? { mirroredFrom } : {}) }) as CatalogMeta['origin'];
+
+  it('shows the real source name, not a trust tier', () => {
+    expect(sourceLabel(origin('verified', 'anthropics/claude-plugins-official'))).toBe('Anthropic');
+    expect(sourceLabel(origin('verified', 'github/awesome-copilot'))).toBe('GitHub');
+    expect(sourceLabel(origin('community', 'Docker MCP Catalog'))).toBe('Docker');
+    expect(sourceLabel(origin('youcoded'))).toBe('YouCoded');
+  });
+
+  it('never renders the words that made a promise nobody kept', () => {
+    for (const o of [origin('verified', 'github/awesome-copilot'), origin('community', 'Docker MCP Catalog')]) {
+      render(<SourceBadge origin={o} />);
+    }
+    expect(screen.queryByText('Verified')).toBeNull();
+    expect(screen.queryByText('Community')).toBeNull();
+  });
+
+  it('the hover text claims nothing about the publisher or the code', () => {
+    const text = sourceExplainer(origin('verified', 'anthropics/claude-plugins-official'));
+    expect(text).toMatch(/Anthropic/);
+    // The three claims it must never make again.
+    expect(text).not.toMatch(/proved/i);
+    expect(text).not.toMatch(/own this name/i);
+    expect(text).not.toMatch(/verif/i);
+    // …and it must say plainly what it is NOT.
+    expect(text).toMatch(/not a check/i);
+  });
+
+  it('renders nothing when there is nothing true to say', () => {
+    // A community row with no upstream list: silence beats an empty trust word.
+    const { container } = render(<SourceBadge origin={origin('community')} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it('falls back to a readable name for an upstream we have not mapped', () => {
+    expect(sourceLabel(origin('community', 'SomeOwner/some-new-list'))).toBe('some-new-list');
   });
 });
