@@ -9,7 +9,7 @@ import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLast
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
-import { nearestPillId, reorderIndices, type PillRect } from './header/drag-order';
+import { nearestPillId, reorderIndices, neighbourOffsets, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useFrozenPack } from './header/use-frozen-pack';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -21,6 +21,10 @@ import { PRIORITY_TAG } from './tags/built-in-tags';
 import { NotePageGlyph } from './tags/glyphs';
 import { TagChip } from './tags/TagChip';
 import type { TagRecord } from '../../shared/tags';
+
+// Stable empty map for the non-dragging render, so a new Map is not allocated
+// on every frame the strip re-renders.
+const EMPTY_OFFSETS: ReadonlyMap<string, number> = new Map();
 
 interface SessionEntry {
   id: string;
@@ -300,9 +304,6 @@ export default function SessionStrip({
   // rect) drifts.
   const pillRectsRef = useRef<PillRect[]>([]);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
-  const [dragLabel, setDragLabel] = useState<string>('');
-  const [dragColor, setDragColor] = useState<SessionStatusColor>('gray');
-  const [ghostTarget, setGhostTarget] = useState<{ x: number; y: number } | null>(null);
   // Track whether pointer moved enough to distinguish drag from click
   const dragOrigin = useRef<{ x: number; y: number } | null>(null);
   const isDragging = useRef(false);
@@ -527,8 +528,6 @@ export default function SessionStrip({
           return { id: el.dataset.sessionId!, left: r.left, right: r.right };
         });
     }
-    setDragLabel(s.name);
-    setDragColor(sessionStatuses?.get(s.id) || 'gray');
 
     // Measure where in the pill the cursor landed. Used when the live-detach
     // spawns a new window: we offset that window's screen position so the
@@ -621,7 +620,6 @@ export default function SessionStrip({
             setDragId(null);
             setOverId(null);
             setDragPos(null);
-            setGhostTarget(null);
           }).catch(() => {
             liveDetachPending.current = false;
           });
@@ -651,7 +649,6 @@ export default function SessionStrip({
     setDragId(null);
     setOverId(null);
     setDragPos(null);
-    setGhostTarget(null);
     dragOrigin.current = null;
     isDragging.current = false;
     liveDetachedWindowId.current = null;
@@ -841,6 +838,29 @@ export default function SessionStrip({
 
   const dragging = dragId !== null && isDragging.current && dragPos !== null;
 
+  // Chrome's model: the dragged pill IS the thing that moves, clamped to the
+  // strip, and every pill between its origin and its target steps aside by one
+  // pill-width so the gap it will land in is already open. On release there is
+  // nothing to jump to — it is already there.
+  const dragOffsets = dragging && dragId
+    ? neighbourOffsets(pillRectsRef.current, dragId, overId)
+    : EMPTY_OFFSETS;
+
+  const draggedShift = (() => {
+    if (!dragging || !dragId || !dragPos || !dragOrigin.current) return 0;
+    const bar = pillBarRef.current;
+    const self = pillRectsRef.current.find(r => r.id === dragId);
+    const raw = dragPos.x - dragOrigin.current.x;
+    if (!bar || !self) return raw;
+    // Clamp so the pill rides the strip instead of leaving it. `self` comes
+    // from the geometry FROZEN at pointer-down: measuring it live would include
+    // the translateX being computed right here, so the clamp would chase its
+    // own output and drift. Vertical is tear-off only and is handled in
+    // handlePointerMove — never here.
+    const barRect = bar.getBoundingClientRect();
+    return Math.max(barRect.left - self.left, Math.min(raw, barRect.right - self.right));
+  })();
+
   return (
     <>
       <div
@@ -888,7 +908,7 @@ export default function SessionStrip({
                     ? 'border-edge bg-panel'
                     : 'border-transparent'
                   }
-                  ${isBeingDragged ? 'opacity-30 scale-95' : ''}
+                  ${isBeingDragged ? 'cursor-grabbing' : ''}
                 `}
                 style={{
                   // Explicit property list, not `all`: `all` animates every
@@ -899,15 +919,28 @@ export default function SessionStrip({
                   // because the active pill's glow is set right below from
                   // GLOW_SHADOW — without it the glow would snap on.
                   transition: isBeingDragged
-                    ? 'opacity 150ms, transform 150ms'
-                    // `opacity` is in the list because `opacity-30` (dragging)
-                    // is dropped by the SAME render that switches back to this
-                    // branch on release — without it the pill would snap from
-                    // 30% to full instead of fading, which `transition: all`
-                    // used to cover.
-                    : 'transform var(--dur-hover) var(--ease-bounce), border-color var(--dur-hover) var(--ease-bounce), background-color var(--dur-hover) var(--ease-bounce), box-shadow var(--dur-hover) var(--ease-bounce), opacity var(--dur-hover) var(--ease-bounce)',
-                  transform: (!isBeingDragged && isHovered && !isActive) ? 'scale(1.02)' : undefined,
-                  boxShadow: (!forceSingle && isActive) ? GLOW_SHADOW[color] : undefined,
+                    // The pill in hand tracks the cursor 1:1 — a transition on
+                    // transform here would make it lag behind the pointer.
+                    // Only the lift is animated.
+                    ? 'opacity var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out)'
+                    // `transform` gets the drag curve while a drag is in flight
+                    // (neighbours stepping aside) and the settle curve when it
+                    // ends (neighbours returning to zero). NOT --ease-bounce:
+                    // that would make a release overshoot. The hover feel is
+                    // carried by the scale(1.02) itself, not by the curve.
+                    : `transform var(--dur-hover) ${dragging ? 'var(--ease-out)' : 'var(--ease-settle)'}, border-color var(--dur-hover) var(--ease-bounce), background-color var(--dur-hover) var(--ease-bounce), box-shadow var(--dur-hover) var(--ease-bounce), opacity var(--dur-hover) var(--ease-bounce)`,
+                  // Three mutually exclusive transform states: the pill in
+                  // hand (follows the cursor, lifted), a neighbour stepping
+                  // aside, or a plain hover.
+                  transform: isBeingDragged
+                    ? `translateX(${draggedShift}px) scale(1.05)`
+                    : dragOffsets.has(s.id)
+                      ? `translateX(${dragOffsets.get(s.id)}px)`
+                      : (isHovered && !isActive) ? 'scale(1.02)' : undefined,
+                  zIndex: isBeingDragged ? 10 : undefined,
+                  boxShadow: isBeingDragged
+                    ? '0 8px 20px rgba(0,0,0,0.35)'
+                    : ((!forceSingle && isActive) ? GLOW_SHADOW[color] : undefined),
                   cursor: 'default',
                 }}
                 title={s.name}
@@ -1279,37 +1312,6 @@ export default function SessionStrip({
         // backdrop-filter can sample the compositing tree for live content blur
       )}
 
-      {/* ── Insertion indicator — shows where the pill will land ── */}
-      {dragging && ghostTarget && (
-        <div
-          className="fixed z-[9998] pointer-events-none"
-          style={{
-            left: ghostTarget.x,
-            top: ghostTarget.y,
-            transform: 'translate(-50%, -50%)',
-            transition: 'left 120ms var(--ease-bounce), top 120ms ease',
-          }}
-        >
-          <div className="w-0.5 h-4 rounded-full bg-accent" style={{ opacity: 0.8 }} />
-        </div>
-      )}
-
-      {/* ── Floating drag ghost — follows cursor freely ──── */}
-      {dragging && dragPos && (
-        <div
-          className="fixed z-[9999] pointer-events-none flex items-center gap-1.5 rounded-full px-2.5 py-1 bg-inset border border-edge shadow-lg shadow-black/40"
-          style={{
-            left: dragPos.x,
-            top: dragPos.y,
-            transform: 'translate(-50%, -50%) scale(1.05)',
-          }}
-        >
-          <SessionDot color={dragColor} isActive />
-          <span className="text-xs font-medium text-fg whitespace-nowrap max-w-[180px] truncate">
-            {dragLabel}
-          </span>
-        </div>
-      )}
     </>
   );
 }

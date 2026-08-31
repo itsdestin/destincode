@@ -266,6 +266,25 @@ describe('motion vocabulary', () => {
     }
   });
 
+  it('has no floating ghost and no insertion line', () => {
+    // Chrome's model: the pill itself moves and the neighbours step aside, so
+    // the gap IS the indicator. A ghost plus a line pointing at a gap that
+    // does not exist is what this replaced.
+    //
+    // Only `ghostTarget` is asserted, not the JSX comment headings the old
+    // draft also checked: read() strips block comments, so `Floating drag
+    // ghost` was never in the string being searched and those assertions
+    // passed before the code was written.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).not.toMatch(/ghostTarget/);
+    expect(strip).not.toMatch(/dragLabel|dragColor/);
+  });
+
+  it('positions the real pill and its neighbours from drag state', () => {
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/neighbourOffsets\(/);
+  });
+
   it('keys drag state by session id, never by index', () => {
     // See drag-order.ts's header for why. A single surviving `sessions[dragIdx]`
     // puts the two index spaces back in the same code.
