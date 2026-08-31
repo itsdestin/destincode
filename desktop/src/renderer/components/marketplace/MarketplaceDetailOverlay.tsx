@@ -6,7 +6,7 @@
 import React, { useState } from "react";
 import { useEscClose } from "../../hooks/use-esc-close";
 import { Scrim, OverlayPanel } from "../overlays/Overlay";
-import { useMarketplace } from "../../state/marketplace-context";
+import { useMarketplace, installTrackingKey } from "../../state/marketplace-context";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";
 import { useAccount } from "../../state/account-context";
 import { useTheme } from "../../state/theme-context";
@@ -85,8 +85,8 @@ export default function MarketplaceDetailOverlay({
         return mp.skillEntries.some((e) => e.id === id) ? id : null;
       };
       const favorited = mp.favorites.includes(target.id);
-      const installing = mp.installingIds.has(`skill:${target.id}`);
-      const errEntry = mp.installError.get(`skill:${target.id}`);
+      const installing = mp.installingIds.has(installTrackingKey('skill', target.id));
+      const errEntry = mp.installError.get(installTrackingKey('skill', target.id));
       content = (
         <SkillBody
           entry={entry}
@@ -109,8 +109,8 @@ export default function MarketplaceDetailOverlay({
     if (!entry) {
       content = <NotFound label="Theme" onClose={onClose} />;
     } else {
-      const installing = mp.installingIds.has(`theme:${target.slug}`);
-      const errEntry = mp.installError.get(`theme:${target.slug}`);
+      const installing = mp.installingIds.has(installTrackingKey('theme', target.slug));
+      const errEntry = mp.installError.get(installTrackingKey('theme', target.slug));
       const favorited = mp.themeFavorites.includes(target.slug);
       const isActive = activeThemeSlug === target.slug;
       content = (

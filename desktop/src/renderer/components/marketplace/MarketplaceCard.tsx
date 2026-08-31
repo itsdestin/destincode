@@ -7,7 +7,7 @@ import { useId, useState } from "react";
 import type { SkillEntry, SkillComponents } from "../../../shared/types";
 import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketplace-types";
 import { useMarketplaceStats } from "../../state/marketplace-stats-context";
-import { useMarketplace } from "../../state/marketplace-context";
+import { useMarketplace, installTrackingKey } from "../../state/marketplace-context";
 // P-21 #3: "1 installs" / "1 likes" — counts go through the shared pluraliser.
 import { plural } from "../../../shared/plural";
 import InstallFavoriteCorner from "./InstallFavoriteCorner";
@@ -90,7 +90,13 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const stats = useMarketplaceStats();
   const mp = useMarketplace();
   const kind = item.kind;
-  const installKey = kind === "theme" ? `theme:${item.entry.slug}` : item.entry.id;
+  // Fix: this used to be the BARE marketplace id for a plugin, while
+  // marketplace-context records progress under `skill:<id>` — so the lookup
+  // below never matched and a plugin install showed no "Installing…" state
+  // at all. Both sides now build the key with the same helper.
+  const installKey = kind === "theme"
+    ? installTrackingKey("theme", item.entry.slug)
+    : installTrackingKey("skill", item.entry.id);
   const isInstalling = mp.installingIds.has(installKey);
   const isFavorited =
     kind === "theme"
