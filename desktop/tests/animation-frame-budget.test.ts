@@ -266,6 +266,26 @@ describe('motion vocabulary', () => {
     }
   });
 
+  it('animates the incoming conversation, never the outgoing one', () => {
+    const chat = read('components', 'ChatView.tsx');
+    // The gate is sessionActive, not `visible` — `visible` also flips on Ctrl+`.
+    // The trailing `&& sessionActive` is what makes it one-directional: the
+    // window opens on the way out too, and this is what closes it. See the
+    // hook's header.
+    expect(chat).toMatch(/useOneShotWindow\(\s*sessionActive\s*\)\s*&&\s*sessionActive/);
+  });
+
+  it('defines the arrival animation with a finite iteration count', () => {
+    // Perpetual animation is the thing this file exists to prevent. One run.
+    expect(globals).toMatch(/\.switch-arrival\s*\{[^}]*animation:[^;]*switch-arrival/);
+    expect(globals).not.toMatch(/\.switch-arrival\s*\{[^}]*infinite/);
+  });
+
+  it('gates the arrival animation on reduced motion AND Reduce Visual Effects', () => {
+    expect(globals).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\.switch-arrival[^}]*\}/);
+    expect(globals).toMatch(/\[data-reduced-effects\] \.switch-arrival/);
+  });
+
   it('has no floating ghost and no insertion line', () => {
     // Chrome's model: the pill itself moves and the neighbours step aside, so
     // the gap IS the indicator. A ghost plus a line pointing at a gap that
