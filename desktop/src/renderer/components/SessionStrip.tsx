@@ -9,6 +9,7 @@ import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLast
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
+import { nearestPillId, reorderIndices, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
@@ -283,8 +284,20 @@ export default function SessionStrip({
   const sessionListRef = useScrollFade<HTMLDivElement>();
 
   /* ── Pointer-event drag state ──────────────────────────── */
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [overIdx, setOverIdx] = useState<number | null>(null);
+  // Keyed by SESSION ID, not index — see header/drag-order.ts.
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
+  // The strip's pill geometry, MEASURED ONCE at pointer-down and not touched
+  // again until the next one. A ref, not state: the render reads it to position
+  // neighbours, but writing it must not itself schedule a render.
+  //
+  // WHY frozen rather than re-measured per move: getBoundingClientRect()
+  // INCLUDES the translateX applied to the neighbours while a drag is in
+  // flight. Re-measuring would feed this frame's answer to "which pill am I
+  // over?" back in as next frame's input — the pills chatter back and forth at
+  // the boundaries, and the dragged pill's travel clamp (computed from its own
+  // rect) drifts.
+  const pillRectsRef = useRef<PillRect[]>([]);
   const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
   const [dragLabel, setDragLabel] = useState<string>('');
   const [dragColor, setDragColor] = useState<SessionStatusColor>('gray');
@@ -492,13 +505,22 @@ export default function SessionStrip({
     dragOrigin.current = { x: e.clientX, y: e.clientY };
     isDragging.current = false;
 
-    // Resolve canonical index from the full sessions array (visibleSessions
-    // may be a filtered subset on Android, so raw map idx can't be trusted).
-    const idx = sessions.findIndex(s => s.id === sessionId);
-    if (idx === -1) return;
-    const s = sessions[idx];
+    const s = sessions.find(x => x.id === sessionId);
+    if (!s) return;
     // Capture label + color eagerly so pointermove can start immediately
-    setDragIdx(idx);
+    setDragId(s.id);
+
+    // Freeze the strip's geometry for the whole drag — see pillRectsRef.
+    const barEl = pillBarRef.current;
+    if (barEl) {
+      // Array.from, not spread: this tsconfig's lib has no DOM.Iterable, so a
+      // NodeList is not iterable here.
+      pillRectsRef.current = Array.from(barEl.querySelectorAll<HTMLElement>('[data-session-id]'))
+        .map(el => {
+          const r = el.getBoundingClientRect();
+          return { id: el.dataset.sessionId!, left: r.left, right: r.right };
+        });
+    }
     setDragLabel(s.name);
     setDragColor(sessionStatuses?.get(s.id) || 'gray');
 
@@ -522,9 +544,9 @@ export default function SessionStrip({
   }, [sessions, sessionStatuses]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    // Live tear-off continuation — runs even after we've cleared dragIdx so the
+    // Live tear-off continuation — runs even after we've cleared dragId so the
     // detached window keeps following the cursor. Must be checked BEFORE the
-    // dragIdx null-guard below.
+    // dragId null-guard below.
     if (liveDetachedWindowId.current !== null) {
       (window as any).claude?.detach?.dragWindowMove?.({
         windowId: liveDetachedWindowId.current,
@@ -536,7 +558,7 @@ export default function SessionStrip({
       return;
     }
 
-    if (dragIdx === null || !dragOrigin.current) return;
+    if (dragId === null || !dragOrigin.current) return;
 
     // Require 5px movement to start drag (prevents accidental drags on click)
     if (!isDragging.current) {
@@ -547,7 +569,8 @@ export default function SessionStrip({
       suppressClick.current = true;
       // Tell main this is a real drag — it starts the cross-window cursor
       // ticker so peer windows can highlight their strip as a drop target.
-      const draggedSession = sessions[dragIdx];
+      const draggedSession = sessions.find(x => x.id === dragId);
+      if (!draggedSession) return;
       (window as any).claude?.detach?.dragStarted?.({ sessionId: draggedSession.id });
     }
 
@@ -562,7 +585,7 @@ export default function SessionStrip({
     // Don't allow tearing off the only session in a window — matches Chrome
     // (a single tab can't be torn out of its window) and avoids the broken
     // click-through state when the source window empties mid-drag.
-    if (!liveDetachPending.current && bar && dragIdx !== null && sessions.length > 1) {
+    if (!liveDetachPending.current && bar && dragId !== null && sessions.length > 1) {
       const stripRect = bar.getBoundingClientRect();
       const outsideOwnWindow =
         e.clientY < 0 || e.clientY > window.innerHeight ||
@@ -572,7 +595,8 @@ export default function SessionStrip({
       const belowStrip = e.clientY > stripRect.bottom + 60;
       if (belowStrip || outsideOwnWindow) {
         liveDetachPending.current = true;
-        const draggedSession = sessions[dragIdx];
+        const draggedSession = sessions.find(x => x.id === dragId);
+        if (!draggedSession) return;
         const det = (window as any).claude?.detach;
         if (det?.detachLive) {
           det.detachLive({
@@ -588,8 +612,8 @@ export default function SessionStrip({
             // Pointer capture stays on pillBarRef so the source keeps getting
             // pointermove (via Electron's mouse passthrough on the new window)
             // and fires pointerup when the user releases.
-            setDragIdx(null);
-            setOverIdx(null);
+            setDragId(null);
+            setOverId(null);
             setDragPos(null);
             setGhostTarget(null);
           }).catch(() => {
@@ -600,65 +624,26 @@ export default function SessionStrip({
       }
     }
 
-    // Hit-test: find nearest pill by horizontal distance (Y-independent, wide pickup range)
+    // Hit-test by horizontal distance only, against the geometry frozen at
+    // pointer-down. Y is ignored on purpose: the pickup range is the full
+    // height of the window, so a slightly-low drag still reorders.
     if (!bar) return;
-    const els = bar.querySelectorAll('[data-session-idx]');
-
-    let closest: number | null = null;
-    let closestDist = Infinity;
-    const pillRects: { idx: number; rect: DOMRect }[] = [];
-
-    els.forEach(el => {
-      const idx = parseInt((el as HTMLElement).dataset.sessionIdx!, 10);
-      const rect = el.getBoundingClientRect();
-      pillRects.push({ idx, rect });
-      const centerX = (rect.left + rect.right) / 2;
-      const dist = Math.abs(e.clientX - centerX);
-      if (idx !== dragIdx && dist < closestDist) {
-        closestDist = dist;
-        closest = idx;
-      }
-    });
-
-    setOverIdx(closest);
-
-    // Compute ghost target position — snap to the insertion gap between pills
-    if (closest !== null) {
-      const targetIdx = closest; // const for TS narrowing in callbacks
-      pillRects.sort((a, b) => a.idx - b.idx);
-      const barRect = bar.getBoundingClientRect();
-      const y = (barRect.top + barRect.bottom) / 2;
-      let x: number;
-
-      if (targetIdx < dragIdx) {
-        // Ghost appears before the target pill (item moves left)
-        const target = pillRects.find(r => r.idx === targetIdx)!;
-        const prev = pillRects.find(r => r.idx === targetIdx - 1);
-        x = prev ? (prev.rect.right + target.rect.left) / 2 : target.rect.left - 16;
-      } else {
-        // Ghost appears after the target pill (item moves right)
-        const target = pillRects.find(r => r.idx === targetIdx)!;
-        const next = pillRects.find(r => r.idx === targetIdx + 1);
-        x = next ? (target.rect.right + next.rect.left) / 2 : target.rect.right + 16;
-      }
-
-      setGhostTarget({ x, y });
-    } else {
-      setGhostTarget(null);
-    }
-  }, [dragIdx]);
+    setOverId(nearestPillId(pillRectsRef.current, e.clientX, dragId));
+  }, [dragId]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
     const wasDragging = isDragging.current;
-    const releasedDragIdx = dragIdx;
-    const releasedOverIdx = overIdx;
-    const releasedSession = releasedDragIdx !== null ? sessions[releasedDragIdx] : null;
+    const releasedDragId = dragId;
+    const releasedOverId = overId;
+    const releasedSession = releasedDragId !== null
+      ? sessions.find(x => x.id === releasedDragId) ?? null
+      : null;
     const wasLiveDetached = liveDetachedWindowId.current !== null;
 
     // Reset all local drag state immediately so the UI snaps back cleanly.
     // We do the cross-window resolution async below using the captured values.
-    setDragIdx(null);
-    setOverIdx(null);
+    setDragId(null);
+    setOverId(null);
     setDragPos(null);
     setGhostTarget(null);
     dragOrigin.current = null;
@@ -668,7 +653,7 @@ export default function SessionStrip({
     setTimeout(() => { suppressClick.current = false; }, 0);
 
     // Always notify main that the drag ended — even when live-detach already
-    // cleared dragIdx (so releasedSession is null). Main relies on this to
+    // cleared dragId (so releasedSession is null). Main relies on this to
     // turn off mouse-passthrough on the detached window and focus it. Skipping
     // it leaves the new window click-through forever.
     const det = (window as any).claude?.detach;
@@ -725,8 +710,10 @@ export default function SessionStrip({
         return;
       }
       // Local drop → reorder within this window's strip (existing behavior)
-      if (releasedOverIdx !== null && onReorderSessions && releasedDragIdx !== null) {
-        onReorderSessions(releasedDragIdx, releasedOverIdx);
+      // Both ends resolved against the FULL session list — see drag-order.ts.
+      if (releasedOverId !== null && onReorderSessions && releasedDragId !== null) {
+        const move = reorderIndices(sessions.map(x => x.id), releasedDragId, releasedOverId);
+        if (move) onReorderSessions(move.from, move.to);
       }
       onSelectSession(releasedSession.id);
     };
@@ -734,15 +721,17 @@ export default function SessionStrip({
     // If detach IPC isn't available (remote-shim / Android), fall back to
     // the legacy local-only behavior.
     if (!det?.dropResolve) {
-      if (releasedOverIdx !== null && onReorderSessions && releasedDragIdx !== null) {
-        onReorderSessions(releasedDragIdx, releasedOverIdx);
+      // Both ends resolved against the FULL session list — see drag-order.ts.
+      if (releasedOverId !== null && onReorderSessions && releasedDragId !== null) {
+        const move = reorderIndices(sessions.map(x => x.id), releasedDragId, releasedOverId);
+        if (move) onReorderSessions(move.from, move.to);
       }
       onSelectSession(releasedSession.id);
       return;
     }
 
     resolveAndRoute();
-  }, [dragIdx, overIdx, onReorderSessions, sessions, onSelectSession]);
+  }, [dragId, overId, onReorderSessions, sessions, onSelectSession]);
 
   const handleClick = useCallback((id: string) => {
     if (suppressClick.current) return;
@@ -836,7 +825,7 @@ export default function SessionStrip({
 
   if (sessions.length === 0) return null;
 
-  const dragging = dragIdx !== null && isDragging.current && dragPos !== null;
+  const dragging = dragId !== null && isDragging.current && dragPos !== null;
 
   return (
     <>
@@ -859,12 +848,13 @@ export default function SessionStrip({
           const showName = forceSingle
             ? isActive
             : pack.expanded.has(s.id) || isHovered || isActive;
-          const isBeingDragged = dragIdx === idx && isDragging.current;
+          const isBeingDragged = dragId === s.id && isDragging.current;
 
           return (
             <React.Fragment key={s.id}>
               <button
                 data-session-idx={idx}
+                data-session-id={s.id}
                 onPointerDown={(e) => handlePointerDown(e, s.id)}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
@@ -1011,11 +1001,12 @@ export default function SessionStrip({
               <div className="py-1">
               {sessions.map((s, idx) => {
                 const color = sessionStatuses?.get(s.id) || 'gray';
-                const isBeingDragged = dragIdx === idx && isDragging.current;
+                const isBeingDragged = dragId === s.id && isDragging.current;
                 return (
                   <div
                     key={s.id}
                     data-session-idx={idx}
+                    data-session-id={s.id}
                     ref={shiftNavIdx === idx ? (el) => el?.scrollIntoView({ block: 'nearest' }) : undefined}
                     onPointerDown={(e) => handlePointerDown(e, s.id)}
                     onPointerMove={handlePointerMove}

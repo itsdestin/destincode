@@ -266,6 +266,21 @@ describe('motion vocabulary', () => {
     }
   });
 
+  it('keys drag state by session id, never by index', () => {
+    // See drag-order.ts's header for why. A single surviving `sessions[dragIdx]`
+    // puts the two index spaces back in the same code.
+    //
+    // NOTE the attribute is checked as PRESENT, not as gone: `data-session-idx`
+    // stays. It is read from outside the renderer by main.ts (torn-off window
+    // placement, inside a string tsc cannot see) and by scripts/perf-lab, both
+    // of which fail SILENTLY on a rename.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/data-session-id=\{s\.id\}/);
+    expect(strip).toMatch(/data-session-idx=\{idx\}/);
+    expect(strip).not.toMatch(/\bdragIdx\b/);
+    expect(strip).not.toMatch(/\boverIdx\b/);
+  });
+
   it('leaves no hand-written curve in SessionStrip', () => {
     // Five distinct curves accumulated in the renderer, three of them the same
     // overshoot with drifted numbers (1.56 / 1.5 / 1.62), because each was
