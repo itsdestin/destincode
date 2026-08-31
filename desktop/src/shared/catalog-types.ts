@@ -66,12 +66,24 @@ export interface CatalogMeta {
    *  Grouped views hide members; type-filtered views and search show them. */
   partOf?: { id: string; displayName: string };
   origin: { tier: OriginTier; mirroredFrom?: string };
-  scan: { status: ScanStatus; checkedAt?: string; findings?: string[] };
+  /** `rules` is the version of the scan rule set that produced this verdict
+   *  (`SCAN_RULES_VERSION`). Never rendered — the ingest reads it back through
+   *  `/admin/catalog/shas` so that improving the scanner re-scans the catalog
+   *  on the next hourly run instead of waiting for someone to remember
+   *  `--force-rescan`. */
+  scan: { status: ScanStatus; checkedAt?: string; findings?: string[]; rules?: string };
   capabilities: Capability[];
   /** SPDX id, e.g. "MIT". Absent = unknown / all rights reserved. */
   license?: string;
   /** The exact upstream commit this listing was taken from (pinned). */
   sourceCommit?: string;
+  /** The listing's id in its upstream registry (reverse-DNS MCP name, Docker
+   *  slug, …) — shown in the detail footer, used by the ingest to dedupe. */
+  upstreamId?: string;
+  /** GitHub stars at ingest time, where the source reports them (Docker's
+   *  `metadata.githubStars`, our own repo lookups). Display and future ranking
+   *  only — nothing hides a listing based on it. */
+  stars?: number;
 }
 
 /** Type of an entry, defaulting to `plugin` for pre-overhaul registry rows. */
