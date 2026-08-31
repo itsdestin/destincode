@@ -441,6 +441,9 @@ export default function SessionStrip({
   }, [sessions, activeSessionId, onSelectSession]);
 
   const handleEnter = useCallback((id: string) => {
+    // A pack-expanded pill already shows its name — there is nothing to
+    // reveal, and setting hoveredId would only cost a render.
+    if (packRef.current.expanded.has(id)) return;
     if (leaveTimer.current) { clearTimeout(leaveTimer.current); leaveTimer.current = null; }
     setHoveredId(id);
   }, []);
@@ -763,6 +766,13 @@ export default function SessionStrip({
   // still as it is today.
   const expandArmed = useOneShotWindow(activeSessionId);
 
+  // Mirror of `pack` for event handlers — they must read the CURRENT pack at
+  // event time, not the one captured when the callback was created. A ref, so
+  // handleEnter does not need `pack` in its dependency list and stays stable
+  // across repacks.
+  const packRef = useRef(pack);
+  useEffect(() => { packRef.current = pack; }, [pack]);
+
   // Persistent measuring canvas — exists once per component, reused.
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   if (measureCanvasRef.current === null && typeof document !== 'undefined') {
@@ -859,8 +869,13 @@ export default function SessionStrip({
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
                 onClick={() => handleClick(s.id)}
-                onMouseEnter={pack.expanded.has(s.id) ? undefined : () => handleEnter(s.id)}
-                onMouseLeave={pack.expanded.has(s.id) ? undefined : handleLeave}
+                // Fix: these used to be `undefined` for pack-expanded pills.
+                // A pill the packer collapsed to a dot while the cursor was
+                // already on it therefore never received a mouseenter and sat
+                // as a dot until the user moved away and back. Always attach;
+                // decide inside, where pack state is read at event time.
+                onMouseEnter={() => handleEnter(s.id)}
+                onMouseLeave={handleLeave}
                 className={`
                   relative flex items-center gap-1 rounded-full px-1.5 py-px
                   border select-none touch-none overflow-hidden

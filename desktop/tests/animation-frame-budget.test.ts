@@ -266,6 +266,16 @@ describe('motion vocabulary', () => {
     }
   });
 
+  it('attaches pill hover handlers unconditionally', () => {
+    // Fix: attaching them only to non-pack-expanded pills means a pill the
+    // packer collapses UNDER a stationary cursor never gets its mouseenter,
+    // so it stays a dot until the user moves off and back on. Gate inside the
+    // handler instead, where the current pack state is read at event time.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).not.toMatch(/onMouseEnter=\{pack\.expanded\.has\(s\.id\)\s*\?\s*undefined/);
+    expect(strip).not.toMatch(/onMouseLeave=\{pack\.expanded\.has\(s\.id\)\s*\?\s*undefined/);
+  });
+
   it('routes the session pill label through pillLabelStyle', () => {
     const strip = read('components', 'SessionStrip.tsx');
     expect(strip).toMatch(/pillLabelStyle\(/);
