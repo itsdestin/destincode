@@ -265,4 +265,12 @@ describe('motion vocabulary', () => {
       expect(block.slice(0, block.indexOf('}'))).not.toMatch(/--ease-bounce|--dur-hover/);
     }
   });
+
+  it('routes the session pill label through pillLabelStyle', () => {
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/pillLabelStyle\(/);
+    // The old inline style is gone — both halves of it.
+    expect(strip).not.toMatch(/maxWidth:\s*showName/);
+    expect(strip).not.toMatch(/'max-width 200ms ease, opacity 150ms ease'/);
+  });
 });

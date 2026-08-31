@@ -8,6 +8,8 @@ import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, type SessionMeasurement, type PackResult } from './header/pack-sessions';
+import { pillLabelStyle } from './header/pill-label-style';
+import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
 import { isTypingTarget } from '../utils/is-typing-target';
@@ -753,6 +755,14 @@ export default function SessionStrip({
     overflow: [],
   });
 
+  // Fix (active pill snapped open): packSessions always marks the active pill
+  // expanded, and the label's `transition: 'none'` — which exists to stop pills
+  // sliding on every repack — therefore silenced exactly the pill the user just
+  // clicked. Open a short window on a change of active session id, during which
+  // that `none` is overridden. Nothing else opens it, so repack churn stays as
+  // still as it is today.
+  const expandArmed = useOneShotWindow(activeSessionId);
+
   // Persistent measuring canvas — exists once per component, reused.
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   if (measureCanvasRef.current === null && typeof document !== 'undefined') {
@@ -886,15 +896,14 @@ export default function SessionStrip({
                 <SessionDot color={color} isActive={isActive} />
                 <span
                   className={`text-xs font-medium text-fg-2 whitespace-nowrap overflow-hidden text-ellipsis ${isActive ? 'min-w-0' : ''}`}
-                  style={{
-                    // Active pill flex-shrinks so ellipsis kicks in when the
-                    // strip is narrower than the full name (no hard cap).
-                    maxWidth: showName
-                      ? (isActive ? undefined : 120)
-                      : 0,
-                    opacity: showName ? 1 : 0,
-                    transition: pack.expanded.has(s.id) ? 'none' : 'max-width 200ms ease, opacity 150ms ease',
-                  }}
+                  style={pillLabelStyle({
+                    showName,
+                    isActive,
+                    packExpanded: pack.expanded.has(s.id),
+                    // Only the pill that just became active is allowed through
+                    // the repack-churn kill-switch.
+                    animateExpand: expandArmed && isActive,
+                  })}
                 >
                   {s.name}
                 </span>
