@@ -404,4 +404,65 @@ class MarketplaceApiClient(
             try { ApiResult.Ok(JSONArray(raw)) } catch (_: Exception) { ApiResult.Err(code, "malformed response") }
         } else ApiResult.Err(code, extractMessage(raw, code))
     }
+
+    // ── Games arcade (spec §6.1, §6.2) ─ mirrors the four desktop client methods
+    //    in marketplace-api-client.ts (gameScores / gameBoard / submitGameScore /
+    //    gameRecords). All are auth'd. The first three return a JSON OBJECT, so
+    //    plain request() serves them; gameRecords returns a bare ARRAY and so
+    //    takes the requestRaw()/JSONArray path that listFriends/listBlocks use.
+    //
+    //    Scores cross this boundary as RAW NUMBERS. How a game WORDS a score
+    //    ("31 pipes", "12,480") lives in that game's entry in the renderer's
+    //    game-registry.ts, so adding a game never touches this file. ──
+
+    /** GET /games/scores ─ my own best in every solo game I have played, keyed by
+     *  game id: { "flappy": { best, best_at, runs } }. `{}` when nothing has been
+     *  played, which is a legitimate empty result and not an error. */
+    suspend fun gameScores(): ApiResult<JSONObject> {
+        val (code, body) = request("/games/scores", method = "GET", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** GET /games/scores/:game ─ one game's friends leaderboard,
+     *  { game, you, entries }. URL-encoded like the other path params above. */
+    suspend fun gameBoard(game: String): ApiResult<JSONObject> {
+        val (code, body) = request("/games/scores/${URLEncoder.encode(game, "UTF-8")}", method = "GET", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** POST /games/scores ─ publish a finished run. Returns
+     *  { ok, best, best_at, runs, is_best }; `is_best` is the one fact the
+     *  end-of-run screen cannot work out for itself. */
+    suspend fun submitGameScore(game: String, score: Int): ApiResult<JSONObject> {
+        val payload = JSONObject().apply {
+            put("game", game)
+            put("score", score)
+        }
+        val (code, body) = request("/games/scores", method = "POST", body = payload, auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** GET /games/records[?game=…] ─ every head-to-head record I hold, one entry
+     *  per (opponent, game), from MY point of view (`wins` are my wins). A bare
+     *  JSON ARRAY, hence requestRaw() — request() parses only a JSONObject and
+     *  would silently flatten the array to an empty object.
+     *
+     *  Records deliberately survive an unfriend: the Worker reports what actually
+     *  happened, and the caller paints a row only for people currently on the
+     *  friends list.
+     *
+     *  `game` is a QUERY param, not a path segment. Null/blank means "every
+     *  game" and the query is omitted entirely — sending `?game=` would ask for
+     *  the game literally named "", which always matches nothing. */
+    suspend fun gameRecords(game: String? = null): ApiResult<JSONArray> {
+        val path =
+            if (game.isNullOrEmpty()) "/games/records"
+            else "/games/records?game=${URLEncoder.encode(game, "UTF-8")}"
+        val (code, raw) = requestRaw(path, auth = true)
+        return if (code in 200..299) {
+            // Fix: a 2xx with an unparseable body is a FAULT, not "no records" —
+            // an empty-array fallback would paint a confident 0-0 (see listFriends).
+            try { ApiResult.Ok(JSONArray(raw)) } catch (_: Exception) { ApiResult.Err(code, "malformed response") }
+        } else ApiResult.Err(code, extractMessage(raw, code))
+    }
 }

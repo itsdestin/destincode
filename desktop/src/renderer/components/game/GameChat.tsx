@@ -31,17 +31,19 @@ export default function GameChat({ connection }: Props) {
     }
   };
 
-  const colorForSender = (from: string): string => {
-    if (from === state.username) {
-      return state.myColor === 'red' ? 'text-red-400' : 'text-yellow-400';
-    }
-    // Opponent
-    const opponentColor = state.myColor === 'red' ? 'yellow' : 'red';
-    return opponentColor === 'red' ? 'text-red-400' : 'text-yellow-400';
-  };
+  // Retheme (§5.4/§5.5): the sender's name was coloured by their Connect 4
+  // disc (red/yellow), which is meaningless in a game with no discs and
+  // identical in every theme. Speakers now use the app's you-vs-them pair —
+  // the same one the board, the leaderboard and chat itself use — so the name
+  // above a message matches the piece on the board without a lookup.
+  const colorForSender = (from: string): string =>
+    from === state.username ? 'text-accent' : 'text-fg-muted';
 
   return (
-    <div className="border-t border-edge flex flex-col" style={{ maxHeight: '160px', minHeight: '120px' }}>
+    // `flex-1 min-h-0` instead of the old 120–160px cap: the chat fills the
+    // rest of the pane so the input sits at the bottom, rather than the board
+    // and a stub of chat huddling at the top of a tall pane (Destin, G-7).
+    <div className="border-t border-edge flex flex-col flex-1 min-h-0">
       {/* Header */}
       <div className="px-3 py-1.5 border-b border-edge shrink-0">
         <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Game Chat</span>

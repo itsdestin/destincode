@@ -1,4 +1,4 @@
-import { GameState, GameAction, createInitialGameState } from './game-types';
+import { GameState, GameAction, createInitialGameState, matchIdOf } from './game-types';
 
 export function gameReducer(state: GameState, action: GameAction): GameState {
   switch (action.type) {
@@ -95,7 +95,12 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       return {
         ...state,
         roomCode: action.code,
-        myColor: action.color,
+        seat: action.seat,
+        // The CHALLENGER's route to the opponent's account: they picked the
+        // person, so they have the id the game room will never tell them.
+        opponentId: action.opponentId,
+        matchesStarted: 0,
+        record: null,
         screen: 'waiting',
       };
 
@@ -103,21 +108,36 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
       return {
         ...state,
         roomCode: action.code,
+        // The ACCEPTER's route to the same fact: whoever challenged them. Read
+        // here rather than passed in, because `joinGame(code, gameId)` is the
+        // one signature every game shares (§3.1) and must not grow a third arg
+        // that only head-to-head records care about.
+        opponentId: state.challengeFrom?.id ?? null,
+        matchesStarted: 0,
+        record: null,
         screen: 'joining',
       };
 
     case 'GAME_START':
+      // `play` is the game's own opening state, handed over whole. The reducer
+      // does not know or care what is inside it (§3.1) — that is what lets
+      // chess and Connect 4 share this one case.
       return {
         ...state,
-        board: action.board,
-        myColor: action.you,
+        seat: action.seat,
         opponent: action.opponent,
-        turn: 'red',
+        play: action.play,
+        turnSeat: action.turnSeat,
         screen: 'playing',
-        winner: null,
-        winLine: null,
+        outcome: null,
+        // Both clients count the same GAME_STARTs — the initial one and every
+        // mutually-agreed rematch — so both derive the same match id without
+        // negotiating one. If they ever diverge the two halves simply never
+        // agree and NOTHING is recorded, which is the safe direction to fail.
+        matchesStarted: state.matchesStarted + 1,
+        // Last match's record must not linger over this one.
+        record: null,
         chatMessages: [],
-        lastMove: null,
         rematchRequested: false,
         opponentDisconnected: false,
       };
@@ -125,13 +145,12 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     case 'GAME_STATE': {
       const next: GameState = {
         ...state,
-        board: action.board,
-        turn: action.turn,
-        lastMove: action.lastMove,
+        play: action.play,
+        turnSeat: action.turnSeat,
       };
-      if (action.winner) {
-        return { ...next, winner: action.winner, winLine: action.winLine ?? null, screen: 'game-over' };
-      }
+      // A game ends when the GAME the referee runs says so — the shell just
+      // records the outcome and switches screens.
+      if (action.outcome) return { ...next, outcome: action.outcome, screen: 'game-over' };
       return next;
     }
 
@@ -156,7 +175,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         ...state,
         screen: 'lobby',
         roomCode: null,
-        myColor: null,
+        seat: null,
         partyError: 'That room is full. Try a different code.',
       };
 
@@ -168,14 +187,19 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         ...state,
         screen: 'lobby',
         roomCode: null,
-        myColor: null,
+        seat: null,
+        turnSeat: null,
+        outcome: null,
+        // Dropping the game's own state on the way out is what stops one
+        // game's leftovers reaching the next game's board.
+        play: null,
         opponent: null,
-        board: [],
-        winner: null,
-        winLine: null,
+        opponentId: null,
+        matchesStarted: 0,
+        record: null,
         chatMessages: [],
-        lastMove: null,
         challengeCode: null,
+        challengeGame: null,
         rematchRequested: false,
         opponentDisconnected: false,
         partyError: null,
@@ -189,6 +213,9 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
         ...state,
         challengeFrom: { id: action.from.id, name: action.from.name, handle: action.from.handle },
         challengeCode: action.code,
+        // Keep WHICH game this challenge is for. Dropping it here is what made
+        // Accept always open Connect 4 no matter what you were challenged to.
+        challengeGame: action.gameType || 'connect-four',
         panelOpen: true,
       };
 
@@ -204,7 +231,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
           ...state,
           screen: 'lobby',
           roomCode: null,
-          myColor: null,
+          seat: null,
           challengeDeclinedBy: action.by,
         };
       }
@@ -220,7 +247,7 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
           ...state,
           screen: 'lobby',
           roomCode: null,
-          myColor: null,
+          seat: null,
           partyError: `${targetName} is no longer online.`,
         };
       }
@@ -228,7 +255,25 @@ export function gameReducer(state: GameState, action: GameAction): GameState {
     }
 
     case 'CLEAR_CHALLENGE':
-      return { ...state, challengeFrom: null, challengeCode: null, challengeDeclinedBy: null, partyError: null };
+      return { ...state, challengeFrom: null, challengeCode: null, challengeGame: null, challengeDeclinedBy: null, partyError: null };
+
+    case 'MATCH_RECORDED': {
+      // A record is only shown against the match it is FOR. The presence socket
+      // fans every frame to EVERY window and every connected remote browser, and
+      // the server holds an unpaired report for up to two minutes — so a record
+      // for a different opponent, or for the match before this one, genuinely
+      // does arrive while another game is on screen. Without this guard the
+      // overlay printed those numbers next to whoever was showing: your Connect
+      // 4 record against Mira, captioned "You lead 5-1", under a chess win over
+      // Jake. Wrong about someone else is the one failure this feature must not
+      // have, so a record that does not match is dropped, not guessed at.
+      //
+      // The pair (opponent, matchId) is a complete check on its own: matchId
+      // carries the room code, and a room belongs to exactly one game.
+      if (action.opponentId !== state.opponentId) return state;
+      if (action.matchId !== matchIdOf(state)) return state;
+      return { ...state, record: action.record };
+    }
 
     case 'REMATCH_REQUESTED':
       return { ...state, rematchRequested: true };

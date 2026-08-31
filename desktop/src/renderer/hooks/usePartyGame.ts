@@ -13,6 +13,16 @@ function generateCode(): string {
   return code;
 }
 
+/** Connect 4's two colours ARE the two seats: the room's creator plays red and
+ *  sits in seat 0. Kept as one-line helpers so the translation happens in
+ *  exactly one place rather than at each of the eight dispatch sites. */
+const seatOf = (c: 'red' | 'yellow'): 0 | 1 => (c === 'red' ? 0 : 1);
+const playOf = (
+  board: number[][],
+  lastMove: { col: number; row: number } | null,
+  winLine: [number, number][] | null = null,
+) => ({ board, lastMove, winLine });
+
 export function usePartyGame(
   lobbyStatusUpdate: (status: 'idle' | 'in-game') => void,
   lobbyChallenge: (target: string, gameType: string, code: string) => void,
@@ -88,9 +98,10 @@ export function usePartyGame(
             opponentRef.current = data.username;
             dispatch({
               type: 'GAME_START',
-              board,
-              you: myColorRef.current!,
+              seat: seatOf(myColorRef.current!),
               opponent: data.username,
+              play: playOf(board, null),
+              turnSeat: 0,
             });
             lobbyStatusUpdate('in-game');
             break;
@@ -123,29 +134,28 @@ export function usePartyGame(
             const nextTurn = turnRef.current === 'red' ? 'yellow' : 'red';
             turnRef.current = nextTurn;
 
+            // The winner is whoever just MOVED, which is the turn before this one.
+            const moverSeat = seatOf(nextTurn === 'red' ? 'yellow' : 'red');
+            const lm = { col: data.column, row: result.row };
             if (winLine) {
               dispatch({
                 type: 'GAME_STATE',
-                board: result.board,
-                turn: nextTurn,
-                lastMove: { col: data.column, row: result.row },
-                winner: nextTurn === 'red' ? 'yellow' : 'red',
-                winLine: winLine as [number, number][],
+                play: playOf(result.board, lm, winLine as [number, number][]),
+                turnSeat: seatOf(nextTurn),
+                outcome: { winnerSeat: moverSeat },
               });
             } else if (isDraw) {
               dispatch({
                 type: 'GAME_STATE',
-                board: result.board,
-                turn: nextTurn,
-                lastMove: { col: data.column, row: result.row },
-                winner: 'draw',
+                play: playOf(result.board, lm),
+                turnSeat: seatOf(nextTurn),
+                outcome: { draw: true },
               });
             } else {
               dispatch({
                 type: 'GAME_STATE',
-                board: result.board,
-                turn: nextTurn,
-                lastMove: { col: data.column, row: result.row },
+                play: playOf(result.board, lm),
+                turnSeat: seatOf(nextTurn),
               });
             }
             break;
@@ -168,9 +178,10 @@ export function usePartyGame(
               rematchRequestedRef.current = false;
               dispatch({
                 type: 'GAME_START',
-                board,
-                you: myColorRef.current,
+                seat: seatOf(myColorRef.current),
                 opponent: data.username,
+                play: playOf(board, null),
+                turnSeat: 0,
               });
             } else {
               // Opponent wants a rematch; we haven't agreed yet
@@ -189,7 +200,11 @@ export function usePartyGame(
   // createGame (manual room creation for the old Create Game button) was
   // removed 2026-07-09 along with the room-code UI — challengePlayer below is
   // the only room-creating path now, and it generates its own code.
-  const joinGame = useCallback((code: string) => {
+  // `gameId` is accepted and ignored HERE because this hook is Connect 4's own
+  // client — it exists so the shell can call one signature for every game
+  // (§3.1). Chess brings its own client and its own room; the arcade shell
+  // picks between them by the id the challenge carried.
+  const joinGame = useCallback((code: string, _gameId: string) => {
     if (!playerName) return;
     myColorRef.current = 'yellow';
     rematchRequestedRef.current = false;
@@ -198,7 +213,11 @@ export function usePartyGame(
     connectToRoom(code, playerName);
   }, [playerName, dispatch, connectToRoom]);
 
-  const makeMove = useCallback((column: number) => {
+  // The shell hands moves through as `unknown` so one interface serves every
+  // game (§3.1). Connect 4's move IS a column, so it narrows here — at the
+  // game's own boundary, which is the only place that knows the shape.
+  const makeMove = useCallback((move: unknown) => {
+    const column = move as number;
     if (!clientRef.current || !playerName) return;
     const playerNum = turnRef.current === 'red' ? 1 : 2;
     const result = dropPiece(boardRef.current, column, playerNum);
@@ -213,29 +232,26 @@ export function usePartyGame(
 
     clientRef.current.send({ type: 'move', username: playerName, column });
 
+    const lm = { col: column, row: result.row };
     if (winLine) {
       dispatch({
         type: 'GAME_STATE',
-        board: result.board,
-        turn: nextTurn,
-        lastMove: { col: column, row: result.row },
-        winner: mover,
-        winLine: winLine as [number, number][],
+        play: playOf(result.board, lm, winLine as [number, number][]),
+        turnSeat: seatOf(nextTurn),
+        outcome: { winnerSeat: seatOf(mover) },
       });
     } else if (isDraw) {
       dispatch({
         type: 'GAME_STATE',
-        board: result.board,
-        turn: nextTurn,
-        lastMove: { col: column, row: result.row },
-        winner: 'draw',
+        play: playOf(result.board, lm),
+        turnSeat: seatOf(nextTurn),
+        outcome: { draw: true },
       });
     } else {
       dispatch({
         type: 'GAME_STATE',
-        board: result.board,
-        turn: nextTurn,
-        lastMove: { col: column, row: result.row },
+        play: playOf(result.board, lm),
+        turnSeat: seatOf(nextTurn),
       });
     }
   }, [playerName, dispatch]);
@@ -275,15 +291,21 @@ export function usePartyGame(
   // generates one and sends it with the challenge; the recipient's Accept joins
   // by it. Only the manual create/join-by-code UI was removed (2026-07-09,
   // Destin: friends/handles cover the real use case).
-  const challengePlayer = useCallback((target: string) => {
+  const challengePlayer = useCallback((target: string, gameId: string) => {
     if (!playerName) return;
     const code = generateCode();
     myColorRef.current = 'red';
     rematchRequestedRef.current = false;
     opponentRef.current = null;
-    dispatch({ type: 'ROOM_CREATED', code, color: 'red' });
+    // `target` IS the opponent's account id (the lobby row's id). Carrying it
+    // into state here is the CHALLENGER's half of learning who they are
+    // playing — the game room only ever tags people by display name, which
+    // is not an identity a permanent record can be filed against.
+    dispatch({ type: 'ROOM_CREATED', code, seat: 0, opponentId: target });
     connectToRoom(code, playerName);
-    lobbyChallenge(target, 'connect-four', code);
+    // The challenge now carries WHICH game, instead of the hardcoded
+    // 'connect-four' that made every challenge a Connect 4 challenge (§3.1).
+    lobbyChallenge(target, gameId, code);
   }, [playerName, dispatch, connectToRoom, lobbyChallenge]);
 
   return { joinGame, makeMove, sendChat, requestRematch, leaveGame, challengePlayer };
