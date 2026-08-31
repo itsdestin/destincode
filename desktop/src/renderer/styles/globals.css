@@ -1739,6 +1739,26 @@ pre.yc-code code {
 :root {
   --frame-edge: 10px;
   --frame-corner: 12px;
+  /* ── Motion vocabulary (2026-08-31) ────────────────────────────────
+     Three curves and three durations, so related motion in the session
+     strip and on session switch reads as one decision instead of six.
+     All three curve VALUES already existed inline elsewhere in the app —
+     this is a rename, not a new look.
+
+     Deliberately in this theme-independent :root block, NOT in the
+     `[data-theme=...]` palette blocks above: a community theme that only
+     redefines colors must not be able to accidentally drop the app's motion.
+
+     These are for TRANSIENT, gesture-triggered motion only (a click, a
+     hover-in, a session switch). Anything that animates perpetually keeps
+     steps() timing — see the frame-budget note at the top of this file and
+     tests/animation-frame-budget.test.ts. */
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);  /* overshoot — pill expand, hover */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);         /* decelerate — neighbours sliding */
+  --ease-settle: cubic-bezier(0.28, 0.84, 0.42, 1);  /* gentle stop — drag release */
+  --dur-hover: 150ms;
+  --dur-reveal: 200ms;
+  --dur-switch: 240ms;
   /* Bottom chrome height INCLUDING the soft keyboard. The chrome-glass cutout
      polygon is anchored to the bottom of the layout viewport, which does not
      shrink when the keyboard opens (interactive-widget=resizes-visual) — so a

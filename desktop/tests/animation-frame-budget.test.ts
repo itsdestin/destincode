@@ -229,3 +229,40 @@ describe('perpetual animations are frame-budgeted', () => {
     expect(mascotCss).toMatch(/data-doc-hidden[^{]*\{[^}]*animation-play-state:\s*paused/);
   });
 });
+
+// The motion vocabulary (2026-08-31 spec §3). These are source-text assertions
+// for the same reason the rest of this file is: nothing breaks visually when a
+// token drifts back to a hand-written curve, the app just quietly grows a sixth
+// bespoke easing again.
+describe('motion vocabulary', () => {
+  const globals = read('styles', 'globals.css');
+
+  it('defines three curves, reusing values the app already had', () => {
+    expect(globals).toMatch(/--ease-bounce:\s*cubic-bezier\(0\.34,\s*1\.56,\s*0\.64,\s*1\)/);
+    expect(globals).toMatch(/--ease-out:\s*cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
+    expect(globals).toMatch(/--ease-settle:\s*cubic-bezier\(0\.28,\s*0\.84,\s*0\.42,\s*1\)/);
+  });
+
+  it('defines three durations matching the design guide', () => {
+    expect(globals).toMatch(/--dur-hover:\s*150ms/);
+    expect(globals).toMatch(/--dur-reveal:\s*200ms/);
+    expect(globals).toMatch(/--dur-switch:\s*240ms/);
+  });
+
+  it('puts them in the theme-independent :root block', () => {
+    // They must NOT live in any `[data-theme=...]` palette block — a community
+    // theme that redefines only colours would otherwise drop the app's motion.
+    //
+    // WHY sliced this way: an earlier draft of this test cut the file at
+    // Tailwind's `@theme` (:281) and asserted the tokens were not above it.
+    // EVERY palette block is above it (`[data-theme="light"], :root` is at :14),
+    // so that assertion was true no matter where the tokens landed — including
+    // inside a palette block further down, which is the one thing it claimed
+    // to prevent. Assert the real shape instead: present in a bare `:root`,
+    // absent from every themed block.
+    expect(globals).toMatch(/(^|\n):root \{[^}]*--ease-bounce/);
+    for (const block of globals.split(/\[data-theme=/).slice(1)) {
+      expect(block.slice(0, block.indexOf('}'))).not.toMatch(/--ease-bounce|--dur-hover/);
+    }
+  });
+});
