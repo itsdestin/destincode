@@ -253,7 +253,17 @@ export function registerMarketplaceApiHandlers(
   // contextBridge (structuredClone drops custom Error fields).
 
   ipcMain.handle("marketplace:install", (_e, pluginId: string): Promise<ApiResult<void>> =>
-    wrap(() => client.postInstall(pluginId))
+    wrap(async () => {
+      await client.postInstall(pluginId);
+      // Marketplace overhaul Task 18: report what the machine ACTUALLY has now,
+      // not just the id the user clicked. One install can land several votable
+      // pages — a plugin's skills each get their own page, and clicking a bundle
+      // member installs the whole bundle — and the Worker refuses a vote on any
+      // id it has no install row for. Without this, those pages stayed
+      // un-votable until the next launch re-ran the reconcile. Deliberately not
+      // awaited: this is bookkeeping, and the install already succeeded.
+      void reconcileInstalls(store, installedSkillSource);
+    })
   );
 
   ipcMain.handle("marketplace:rate", (_e, input: PostRatingInput): Promise<ApiResult<{ hidden: boolean }>> =>

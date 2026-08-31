@@ -266,6 +266,21 @@ export class LocalSkillProvider implements SkillProvider {
     const entry = index.find(e => e.id === id);
     if (!entry) return { status: 'failed', error: `Skill not found in marketplace: ${id}` };
 
+    // Marketplace overhaul (spec §1.4): a skill / specialist / connection that
+    // lives INSIDE a bundle is installed by installing the bundle — installing
+    // one member on its own is a ROADMAP follow-up. The UI already shows a
+    // member as installed once its bundle is.
+    // The `parent !== id` check is a cycle guard, not paranoia: `partOf` comes
+    // from a catalog built by a background job we do not control, and a row
+    // pointing at itself (or a two-row loop) would recurse until the process
+    // dies. One hop only — a bundle is never itself a member of something.
+    const parent = entry.catalog?.partOf?.id;
+    if (parent && parent !== id) {
+      const bundle = index.find(e => e.id === parent);
+      if (!bundle?.catalog?.partOf) return this.install(parent);
+      return { status: 'failed', error: `catalog error: ${id} and ${parent} both claim to be inside another item` };
+    }
+
     if (entry.type === 'prompt') {
       const created = this.configStore.createPromptSkill({
         ...entry,

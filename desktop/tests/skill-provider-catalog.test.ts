@@ -187,3 +187,57 @@ describe('install — the catalog commit is passed down and recorded', () => {
     expect(p.configStore.getPackage('superpowers')?.commit).toBeUndefined();
   });
 });
+
+describe('install — a member row installs its bundle', () => {
+  const meta = (over: Record<string, unknown>) => ({
+    itemType: 'skill', origin: { tier: 'verified' }, scan: { status: 'checked' }, capabilities: [], ...over,
+  });
+
+  beforeEach(() => {
+    fs.rmSync(CACHE_DIR, { recursive: true, force: true });
+    vi.clearAllMocks();
+    inst.installPlugin.mockResolvedValue({ status: 'installed' });
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  function providerWith(rows: any[]) {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ generated_at: 1, entries: rows }), { status: 200 }));
+    const config: any = { version: 2, favorites: [], chips: [], overrides: {}, privateSkills: [], packages: {} };
+    const p = makeProvider();
+    vi.spyOn(p.configStore, 'load').mockImplementation(() => config);
+    vi.spyOn(p.configStore as any, 'save').mockImplementation(() => {});
+    return p;
+  }
+
+  it('resolves catalog.partOf and installs the bundle id', async () => {
+    const member = { ...CATALOG_ROW, id: 'superpowers/brainstorming', displayName: 'Brainstorming',
+      catalog: meta({ partOf: { id: 'superpowers', displayName: 'Superpowers' } }) };
+    const p = providerWith([CATALOG_ROW, member]);
+    const spy = vi.spyOn(p, 'install');
+    await p.install('superpowers/brainstorming').catch(() => undefined);
+    // Second call is the recursion onto the bundle.
+    expect(spy).toHaveBeenNthCalledWith(2, 'superpowers');
+    expect(inst.installPlugin.mock.calls[0][0].id).toBe('superpowers');
+  });
+
+  it('does not recurse forever on a catalog that points a row at itself', async () => {
+    const loop = { ...CATALOG_ROW, id: 'loopy', catalog: meta({ partOf: { id: 'loopy', displayName: 'Loopy' } }) };
+    const p = providerWith([loop]);
+    const spy = vi.spyOn(p, 'install');
+    await p.install('loopy').catch(() => undefined);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a two-row loop instead of bouncing between them', async () => {
+    const a = { ...CATALOG_ROW, id: 'a', catalog: meta({ partOf: { id: 'b', displayName: 'B' } }) };
+    const b = { ...CATALOG_ROW, id: 'b', catalog: meta({ partOf: { id: 'a', displayName: 'A' } }) };
+    const p = providerWith([a, b]);
+    const spy = vi.spyOn(p, 'install');
+    const r = await p.install('a');
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(r.status).toBe('failed');
+    expect(inst.installPlugin).not.toHaveBeenCalled();
+  });
+});
