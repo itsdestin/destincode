@@ -116,7 +116,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // Games arcade Step 1 — NO real backend yet; both are declared in
   // mock-only.ts so the contract test knows they are deliberately unbuilt
   // rather than a fake quietly standing in for something real.
-  'arcade.status', 'arcade.leaderboard',
+  'arcade.status', 'arcade.leaderboard', 'arcade.submitScore',
   // Multiplayer games (Task 7c) — friends graph + presence socket. Real
   // backend (social-handlers.ts / preload.ts), hand-written here so Connect
   // Four has a scripted friend ("Jake") instead of sitting on "Connecting…"
@@ -1590,6 +1590,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   const arcade = {
     status: async () => arcadeStatusFor(arcadeScenario),
     leaderboard: async (gameId: string) => arcadeBoardFor(arcadeScenario, gameId),
+    // Accepts and drops it. The workbench has no board to write to, and the
+    // renderer already keeps the run locally — this exists so the call path is
+    // exercised rather than short-circuited by optional chaining.
+    submitScore: async (_gameId: string, _score: number) => ({ ok: true }),
   };
 
   return {

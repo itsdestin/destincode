@@ -33,4 +33,9 @@ export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
   // show the you-alone and stale states without a live board.
   { channel: 'arcade.status', feature: 'Games arcade — per-game deciding fact in the picker (§4.1)' },
   { channel: 'arcade.leaderboard', feature: 'Games arcade — solo friend leaderboard (§6.1)' },
+  // The Worker side of this one EXISTS (wecoded-marketplace, feat/games-arcade-scores)
+  // — what is missing is the renderer→main→Worker path. Registered so the
+  // dangling `arcade.submitScore?.()` call in ArcadeShell shows up on this
+  // to-do list instead of silently doing nothing forever.
+  { channel: 'arcade.submitScore', feature: 'Games arcade — publish a finished run to the board (§6.1)' },
 ];
