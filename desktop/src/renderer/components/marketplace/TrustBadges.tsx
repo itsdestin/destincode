@@ -39,7 +39,12 @@ export function scanExplainer(scan: CatalogMeta['scan']): string {
   if (scan.status === 'caution') {
     return `The automatic check found ${n} thing${n === 1 ? '' : 's'} worth reading before you install — they are listed under "What this can do".`;
   }
-  return 'This version has not been checked yet. It may be fine; we just have not looked.';
+  // Task 15 (Destin, 2026-08-30): the grey shield stays, so it has to earn its
+  // space. "Not checked" on its own only describes our system; roughly half the
+  // catalog will carry it, and a badge that names a state the user can do
+  // nothing with is noise. This sentence hands the check back to them and names
+  // the two things they can actually look at. Copy pending Destin's sign-off.
+  return 'We haven\'t checked this one — read "What this can do" and look at the source before you install it.';
 }
 
 const BADGE = 'inline-flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-2xs text-fg-2 bg-inset border border-edge-dim whitespace-nowrap';
