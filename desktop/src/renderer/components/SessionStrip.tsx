@@ -11,6 +11,7 @@ import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from
 import { pillLabelStyle } from './header/pill-label-style';
 import { nearestPillId, reorderIndices, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
+import { useFrozenPack } from './header/use-frozen-pack';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
 import { isTypingTarget } from '../utils/is-typing-target';
@@ -457,6 +458,9 @@ export default function SessionStrip({
     // A pack-expanded pill already shows its name — there is nothing to
     // reveal, and setting hoveredId would only cost a render.
     if (packRef.current.expanded.has(id)) return;
+    // Widths freeze for the duration of a drag: dragging OVER a pill must not
+    // trigger its hover reveal and grow the row under the cursor.
+    if (dragIdRef.current !== null) return;
     if (leaveTimer.current) { clearTimeout(leaveTimer.current); leaveTimer.current = null; }
     setHoveredId(id);
   }, []);
@@ -509,6 +513,8 @@ export default function SessionStrip({
     if (!s) return;
     // Capture label + color eagerly so pointermove can start immediately
     setDragId(s.id);
+    // Any standing hover would keep that pill wide for the whole drag.
+    setHoveredId(null);
 
     // Freeze the strip's geometry for the whole drag — see pillRectsRef.
     const barEl = pillBarRef.current;
@@ -755,12 +761,20 @@ export default function SessionStrip({
   // still as it is today.
   const expandArmed = useOneShotWindow(activeSessionId);
 
-  // Mirror of `pack` for event handlers — they must read the CURRENT pack at
-  // event time, not the one captured when the callback was created. A ref, so
-  // handleEnter does not need `pack` in its dependency list and stays stable
-  // across repacks.
-  const packRef = useRef(pack);
-  useEffect(() => { packRef.current = pack; }, [pack]);
+  // Everything below reads the FROZEN pack. `pack` is the live one; only the
+  // measuring effect writes it. See header/use-frozen-pack.ts.
+  const displayPack = useFrozenPack(pack, dragId !== null);
+
+  // Mirror of `displayPack` for event handlers — they must read the CURRENT
+  // pack at event time, not the one captured when the callback was created. A
+  // ref, so handleEnter does not need it in its dependency list and stays
+  // stable across repacks.
+  const packRef = useRef(displayPack);
+  useEffect(() => { packRef.current = displayPack; }, [displayPack]);
+
+  // Mirror of dragId for the same reason.
+  const dragIdRef = useRef<string | null>(null);
+  useEffect(() => { dragIdRef.current = dragId; }, [dragId]);
 
   // Persistent measuring canvas — exists once per component, reused.
   const measureCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -821,7 +835,7 @@ export default function SessionStrip({
   const forceSingle = isAndroid();
   const visibleSessions = forceSingle
     ? sessions.filter(s => s.id === activeSessionId)
-    : sessions.filter(s => pack.expanded.has(s.id) || pack.collapsed.includes(s.id));
+    : sessions.filter(s => displayPack.expanded.has(s.id) || displayPack.collapsed.includes(s.id));
 
   if (sessions.length === 0) return null;
 
@@ -847,7 +861,7 @@ export default function SessionStrip({
           const isHovered = hoveredId === s.id;
           const showName = forceSingle
             ? isActive
-            : pack.expanded.has(s.id) || isHovered || isActive;
+            : displayPack.expanded.has(s.id) || isHovered || isActive;
           const isBeingDragged = dragId === s.id && isDragging.current;
 
           return (
@@ -870,7 +884,7 @@ export default function SessionStrip({
                   relative flex items-center gap-1 rounded-full px-1.5 py-px
                   border select-none touch-none overflow-hidden
                   ${isActive ? 'min-w-0 shrink' : 'shrink-0'}
-                  ${showName && (isActive || !pack.expanded.has(s.id))
+                  ${showName && (isActive || !displayPack.expanded.has(s.id))
                     ? 'border-edge bg-panel'
                     : 'border-transparent'
                   }
@@ -904,7 +918,7 @@ export default function SessionStrip({
                   style={pillLabelStyle({
                     showName,
                     isActive,
-                    packExpanded: pack.expanded.has(s.id),
+                    packExpanded: displayPack.expanded.has(s.id),
                     // Only the pill that just became active is allowed through
                     // the repack-churn kill-switch.
                     animateExpand: expandArmed && isActive,
