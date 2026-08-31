@@ -16,7 +16,7 @@ import type { ThemeRegistryEntryWithStatus } from "../../../shared/theme-marketp
 import LikeButton from "./LikeButton";
 // Marketplace overhaul (2026-08-27): trust line, "What this can do", and the
 // Feedback section (thumbs + comments) replace star reviews.
-import { OriginBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
+import { SourceBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
 import { CapabilityList } from "./CapabilityList";
 import FeedbackSection from "./FeedbackSection";
 import { CATALOG_TYPE_LABEL, isInstallableSource } from "../../../shared/catalog-types";
@@ -266,9 +266,8 @@ function SkillBody({
           {catalog && (
             <div className="mt-2 flex items-center gap-1.5 flex-wrap text-xs text-fg-dim" data-trust-line>
               <ScanBadge scan={catalog.scan} size="md" />
-              <OriginBadge tier={catalog.origin.tier} size="md" />
+              <SourceBadge origin={catalog.origin} size="md" />
               {entry.author && <AuthorBadge author={entry.author} size="md" />}
-              {catalog.origin.mirroredFrom && <span>from {catalog.origin.mirroredFrom}</span>}
               {catalog.partOf && (
                 <button
                   type="button"

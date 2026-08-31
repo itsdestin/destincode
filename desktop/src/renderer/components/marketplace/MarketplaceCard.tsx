@@ -16,7 +16,7 @@ import InstallFavoriteCorner from "./InstallFavoriteCorner";
 import UpdateButton from "./UpdateButton";
 // Marketplace overhaul (2026-08-27): origin + scan badges, risky-capability
 // glyphs and the thumbs summary replace the star rating on every card.
-import { OriginBadge, ScanBadge, AuthorBadge } from "./TrustBadges";
+import { ScanBadge, AuthorBadge } from "./TrustBadges";
 import { capabilityLine } from "./CapabilityList";
 import { ThumbsSummary } from "./FeedbackSection";
 import { CATALOG_TYPE_LABEL, isInstallableSource } from "../../../shared/catalog-types";
@@ -143,7 +143,10 @@ export default function MarketplaceCard({ item, onOpen, installed, updateAvailab
   const trust = catalog ? (
     <div className="flex items-center gap-1 flex-nowrap min-w-0" data-trust>
       <ScanBadge scan={catalog.scan} responsiveLabel />
-      <OriginBadge tier={catalog.origin.tier} />
+      {/* 2026-08-31: the source chip moved to the detail page. On a card it was a
+          third chip competing with the two that answer what you actually ask while
+          scanning a grid — is this safe, and who made it. Where it was mirrored from
+          matters when you are deciding to install, which is the detail page. */}
       {/* Round 3: the author is a chip here, not a grey line under the title. */}
       {author && <AuthorBadge author={author} />}
     </div>

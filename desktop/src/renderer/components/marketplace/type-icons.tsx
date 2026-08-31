@@ -68,11 +68,14 @@ export function OriginIcon({ tier, size = 12 }: { tier: OriginTier; size?: numbe
     return <PluginIcon />;
   }
   if (tier === 'verified') {
-    // Shield with a check — the publisher proved they own the name.
+    // A LIBRARY/LIST mark, not a shield. The old icon was a shield with a tick —
+    // visually a second safety badge sitting beside the real one, promising a
+    // publisher check that has never existed (see TrustBadges.tsx). This says
+    // what is actually true: the listing was taken from someone's catalogue.
     return (
       <svg width={size} height={size} viewBox="0 0 24 24" {...s}>
-        <path d="M12 2l8 3v6c0 5-3.5 9.5-8 11-4.5-1.5-8-6-8-11V5z" />
-        <path d="M8.5 12l2.5 2.5 4.5-5" />
+        <path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10v16H5.5A1.5 1.5 0 0 1 4 18.5z" />
+        <path d="M14 4h4.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H14z" />
       </svg>
     );
   }
