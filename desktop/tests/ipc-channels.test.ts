@@ -1318,3 +1318,34 @@ describe('marketplace feedback channel parity', () => {
     }
   });
 });
+
+// The marketplace Worker's host is spelled out in two languages: TypeScript
+// (MARKETPLACE_API_HOST) and Kotlin (MarketplaceFetcher.kt, which the Android
+// catalog fetch builds `$MARKETPLACE_API_HOST/catalog` from). Neither can import
+// the other, so the string is duplicated — exactly the drift these parity tests
+// exist to catch. If someone moves the Worker, both copies must move together or
+// Android silently keeps fetching the old host and falls back to index.json
+// forever, with no error anywhere.
+describe('marketplace Worker host parity (desktop ↔ Android)', () => {
+  it('MarketplaceFetcher.kt names the same host as MARKETPLACE_API_HOST', () => {
+    const tsSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'src', 'renderer', 'state', 'marketplace-api-client.ts'),
+      'utf8',
+    );
+    const ktSrc = fs.readFileSync(
+      path.join(
+        __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+        'com', 'youcoded', 'app', 'skills', 'MarketplaceFetcher.kt',
+      ),
+      'utf8',
+    );
+
+    const ts = tsSrc.match(/export const MARKETPLACE_API_HOST = "([^"]+)"/);
+    expect(ts, 'MARKETPLACE_API_HOST not found in marketplace-api-client.ts').toBeTruthy();
+
+    const kt = ktSrc.match(/const val MARKETPLACE_API_HOST = "([^"]+)"/);
+    expect(kt, 'MARKETPLACE_API_HOST not found in MarketplaceFetcher.kt').toBeTruthy();
+
+    expect(kt![1]).toBe(ts![1]);
+  });
+});
