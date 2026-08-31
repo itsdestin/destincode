@@ -174,7 +174,11 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
               // is required because the game is lazily imported — without it
               // React throws on first open rather than showing anything.
               <Suspense fallback={<LoadingState what={openGame.name} />}>
-                <openGame.Play onEnd={endRun} best={bestOf(openGame.id)} />
+                <openGame.Play
+                  onEnd={endRun}
+                  best={bestOf(openGame.id)}
+                  onExit={() => setPlaying(false)}
+                />
               </Suspense>
             ) : (
               <>

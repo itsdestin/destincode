@@ -31,8 +31,9 @@ import type { SoloGameProps } from './game-registry';
 import {
   createFlappyState, flap, step,
   FLAPPY_DEFAULTS, WORLD_W, WORLD_H, GROUND_H, BIRD_X, BIRD_DRAW_RADIUS,
-  type FlappyState,
+  type FlappyState, type DeathCause,
 } from './flappy-engine';
+import RunOverCard from './RunOverCard';
 
 const CFG = FLAPPY_DEFAULTS;
 /** The playfield's shape. Fixed, because the engine's world is fixed — see the
@@ -124,6 +125,15 @@ const CLOUD_IMAGE = [
   `radial-gradient(44px 16px at 176px 34%, ${CLOUD_FILL_SOFT} 0 60%, transparent 62%)`,
   `radial-gradient(28px 11px at 206px 30%, ${CLOUD_FILL_SOFT} 0 60%, transparent 62%)`,
 ].join(', ');
+
+/** Why the run ended, in words. Naming the cause is what turns a loss into
+ *  feedback — "you hit the ceiling" and "you hit the ground" are different
+ *  mistakes and the player should not have to have been watching to know which. */
+function deathReason(cause: DeathCause | null): string {
+  if (cause === 'ground') return 'You hit the ground';
+  if (cause === 'ceiling') return 'You hit the ceiling';
+  return 'You hit a pipe';
+}
 
 /** One band of rolling hills, drifting at its own speed.
  *
@@ -224,7 +234,7 @@ function hasWings(svgText: string): boolean {
   return clean.includes('id="rig-arm-left"') && clean.includes('id="rig-arm-right"');
 }
 
-export default function FlappyGame({ onEnd, best }: SoloGameProps) {
+export default function FlappyGame({ onEnd, best, onExit }: SoloGameProps) {
   const { activeTheme, reducedEffects } = useTheme();
   const rigUrl = useWingedRig();
   // Where the theme ships a wallpaper, THAT is the sky (§5.1) — the playfield
@@ -393,6 +403,9 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
       setPose((p) => (p === want ? p : want));
       if (s.status === 'dead' && !reported.current) {
         reported.current = true;
+        // Starts the short window in which a key-retry is ignored, so the tap
+        // already in the air when you hit the pipe cannot skip your own score.
+        diedAt.current = now;
         // Exactly once per run, whatever else happens afterwards.
         onEndRef.current(s.score);
       }
@@ -409,8 +422,16 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
     flapUntil.current = performance.now() + FLAP_POSE_MS;
   }, []);
 
+  // When the run ended. A key-retry is ignored for a moment after death so the
+  // tap that was already in the air — you are mid-flap when you hit the pipe —
+  // cannot skip straight past your own score. Clicking Play again has no such
+  // guard: a click is deliberate in a way a held rhythm is not.
+  const diedAt = useRef(0);
+  const RETRY_LOCKOUT_MS = 450;
+
   const restart = useCallback(() => {
     reported.current = false;
+    diedAt.current = 0;
     flapUntil.current = 0;
     sim.current = createFlappyState(newSeed());
     setScore(0);
@@ -431,7 +452,10 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
     if (e.repeat) { e.preventDefault(); return; }
     // Space would otherwise scroll the pane this playfield sits in.
     e.preventDefault();
-    if (sim.current.status === 'dead') { restart(); return; }
+    if (sim.current.status === 'dead') {
+      if (performance.now() - diedAt.current >= RETRY_LOCKOUT_MS) restart();
+      return;
+    }
     doFlap();
   }, [doFlap, restart]);
 
@@ -613,18 +637,17 @@ export default function FlappyGame({ onEnd, best }: SoloGameProps) {
 
           {phase === 'dead' && (
             // Game state, not app state: this appears because you hit a pipe,
-            // never because the assistant did something (§7).
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-canvas/85">
-              <span className="text-sm font-semibold text-fg">
-                {score === 1 ? '1 pipe' : `${score} pipes`}
-              </span>
-              {best != null && score > best && (
-                <span className="text-2xs font-semibold px-2 py-1 rounded-md bg-accent text-on-accent">
-                  New best
-                </span>
-              )}
-              <Button variant="primary" size="sm" onClick={restart}>Play again</Button>
-            </div>
+            // never because the assistant did something (§7). The card itself
+            // is shared with every other solo game (G-1) — see RunOverCard.
+            <RunOverCard
+              reason={deathReason(sim.current.deathCause)}
+              score={score === 1 ? '1 pipe' : `${score} pipes`}
+              isBest={best == null || score > best}
+              best={best != null && score <= best ? (best === 1 ? '1 pipe' : `${best} pipes`) : undefined}
+              onRetry={restart}
+              onExit={onExit}
+              retryKeyHint="Space"
+            />
           )}
         </div>
       </div>

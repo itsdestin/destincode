@@ -27,6 +27,9 @@ export interface SoloGameProps {
   /** The player's current best, for the game to show in its own chrome if it
    *  wants to. Undefined means they have never finished a run. */
   best?: number;
+  /** Back to the games shelf. The end-of-run card offers it, so a player who is
+   *  done does not have to hunt for the header's back arrow. */
+  onExit?: () => void;
 }
 
 export interface GameDefinition {

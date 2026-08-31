@@ -15,6 +15,7 @@ import { useTheme } from '../../state/theme-context';
 import { isTypingTarget } from '../../utils/is-typing-target';
 import { Button } from '../ui';
 import type { SoloGameProps } from './game-registry';
+import RunOverCard from './RunOverCard';
 import {
   SIZE, createGame, move, type Direction, type Game, type Rng, type Tile,
 } from './twenty-forty-eight';
@@ -65,7 +66,7 @@ const KEYS: Record<string, Direction> = {
 const FRAME_INSET = '2.6%'; // gap between the board's border and the grid
 const CELL_PAD = '1.6%';    // half the gap between two tiles
 
-export default function TwentyFortyEightGame({ onEnd, best }: SoloGameProps) {
+export default function TwentyFortyEightGame({ onEnd, best, onExit }: SoloGameProps) {
   const { reducedEffects } = useTheme();
   // Real play is unpredictable; the rules module never calls Math.random itself.
   const rng = useRef<Rng>(Math.random).current;
@@ -121,12 +122,26 @@ export default function TwentyFortyEightGame({ onEnd, best }: SoloGameProps) {
     // Modifier combinations belong to the app (shortcuts, text selection), never
     // to the board.
     if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+    // Enter starts the next game once the board is dead — the same
+    // press-again-to-retry Flappy has, so the two do not disagree about how to
+    // begin a run. Arrows deliberately do NOT retry: on a dead board they are
+    // the reflex of someone still trying to move, not a decision to start over.
+    if (e.key === 'Enter') {
+      if (overRef.current) { e.preventDefault(); restart(); }
+      return;
+    }
     const dir = KEYS[e.key.toLowerCase()];
     if (!dir) return;
     // Stops the arrow key ALSO scrolling the pane this board sits in.
     e.preventDefault();
     setGame((g) => (g.over ? g : move(g, dir, rng).game));
-  }, [rng]);
+  }, [rng, restart]);
+
+  // WHY a ref and not `game.over` straight from the closure: the handler is
+  // memoised on [rng, restart], so reading state directly would see whatever
+  // the board was when it was last rebuilt — which is not when it died.
+  const overRef = useRef(game.over);
+  useEffect(() => { overRef.current = game.over; }, [game.over]);
 
   // Ghost tiles are the ones just swallowed by a merge; they exist only to be
   // animated out. With animation off there is nothing for them to do, so they
@@ -218,12 +233,18 @@ export default function TwentyFortyEightGame({ onEnd, best }: SoloGameProps) {
 
         {game.over && (
           // Game state, not app state — this appears because the board is dead,
-          // never because the assistant did something (§7).
-          <div className="absolute inset-0 rounded-lg flex flex-col items-center justify-center gap-2 bg-canvas/85">
-            <span className="text-sm font-semibold text-fg">No moves left</span>
-            <span className="text-xs text-fg-muted">Score {game.score.toLocaleString()}</span>
-            <Button variant="primary" size="sm" onClick={restart}>Play again</Button>
-          </div>
+          // never because the assistant did something (§7). The card is shared
+          // with Flappy (G-1); before it, this screen silently failed to
+          // celebrate a new best while Flappy's did.
+          <RunOverCard
+            reason="No moves left"
+            score={game.score.toLocaleString()}
+            isBest={best == null || game.score > best}
+            best={best != null && game.score <= best ? best.toLocaleString() : undefined}
+            onRetry={restart}
+            onExit={onExit}
+            retryKeyHint="Enter"
+          />
         )}
       </div>
 
