@@ -17,6 +17,7 @@ import { useAccount } from '../../state/account-context';
 import { useTheme } from '../../state/theme-context';
 import { GameConnection } from '../../state/game-types';
 import { GAMES, type GameDefinition } from './game-registry';
+import { readAllBests, recordRun } from './local-best';
 import ArcadePicker, { type ArcadeStatus } from './ArcadePicker';
 import Leaderboard, { type LeaderboardRow } from './Leaderboard';
 import ChessBoard, { type PieceTreatment } from './ChessBoard';
@@ -74,10 +75,12 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
   /** True while a solo run is actually on screen. Opening a game shows its
    *  board first — you land on "here is where you stand", not mid-run. */
   const [playing, setPlaying] = useState(false);
-  /** Bests set during THIS session, so the board updates the moment a run ends
-   *  instead of waiting on a round trip. The server's copy still wins on the
-   *  next fetch; this only ever fills the gap. */
-  const [localBest, setLocalBest] = useState<Record<string, number>>({});
+  /** Your own bests, read from this computer on mount (§4.2). These are what
+   *  every screen shows when there is no server board — which is currently
+   *  ALWAYS outside the workbench, and is also the signed-out and offline case. */
+  const [localBest, setLocalBest] = useState<Record<string, number>>(
+    () => readAllBests(GAMES.map((g) => g.id)),
+  );
   const { applyGameDefaultWidth } = useTheme();
 
   const bestOf = (id: string) => localBest[id];
@@ -85,8 +88,9 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
   const endRun = (score: number) => {
     setPlaying(false);
     if (!openGame) return;
-    // Keep the higher of the two: a bad run must never lower your best.
-    setLocalBest((b) => ({ ...b, [openGame.id]: Math.max(b[openGame.id] ?? 0, score) }));
+    // Written to disk, not just to state: closing the panel used to forget it.
+    const best = recordRun(openGame.id, score);
+    setLocalBest((b) => ({ ...b, [openGame.id]: best }));
     const api = (window.claude as unknown as {
       arcade?: { submitScore?: (gameId: string, score: number) => Promise<unknown> };
     }).arcade;
@@ -155,7 +159,7 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
             ? <LoadingState what="games" />
             : (
               <ArcadePicker
-                statuses={statuses}
+                statuses={mergeLocalBests(statuses, localBest)}
                 onPick={setOpenGame}
                 signedIn={!!signedIn}
                 onSignIn={() => { void startSignIn(); }}
@@ -194,9 +198,17 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
                   game={openGame}
                   rows={board.rows}
                   staleNote={board.staleNote}
-                  // Signed out, a solo best is real but unranked (§4.2).
-                  unpublishedBest={!signedIn ? statuses?.[openGame.id]?.bestScore : undefined}
-                  onSignIn={() => { void startSignIn(); }}
+                  // Your own best, whenever the ranked board has no row for you
+                  // — signed out, offline, or (today) no backend at all. Without
+                  // this the screen showed a column heading and nothing under it.
+                  unpublishedBest={
+                    board.rows.some((r) => r.isYou)
+                      ? undefined
+                      : localBest[openGame.id] !== undefined
+                        ? openGame.scoring?.format(localBest[openGame.id]!)
+                        : null
+                  }
+                  onSignIn={signedIn ? undefined : () => { void startSignIn(); }}
                 />
               )}
               </>
@@ -231,6 +243,21 @@ function chessTreatment(): PieceTreatment {
   if (typeof location === 'undefined') return 'outline';
   const v = new URLSearchParams(location.search).get('chess');
   return v === 'disc' || v === 'fill' ? v : 'outline';
+}
+
+/** Overlay your own local bests onto whatever the server reported, so a card
+ *  shows the run you just finished even when there is no board to publish to. */
+function mergeLocalBests(
+  statuses: Record<string, ArcadeStatus>,
+  localBest: Record<string, number>,
+): Record<string, ArcadeStatus> {
+  const out: Record<string, ArcadeStatus> = { ...statuses };
+  for (const game of GAMES) {
+    const mine = localBest[game.id];
+    if (mine === undefined || !game.scoring) continue;
+    out[game.id] = { ...out[game.id], bestScore: game.scoring.format(mine) };
+  }
+  return out;
 }
 
 function ArcadeHeader({ title, onBack, onClose }: { title: string; onBack?: () => void; onClose: () => void }) {

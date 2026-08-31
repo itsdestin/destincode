@@ -28,8 +28,10 @@ interface Props {
   /** Set when the last fetch failed and these rows are from an earlier one.
    *  Human-readable and non-committal — we do not guess the cause. */
   staleNote?: string;
-  /** Solo score not yet published because the player is signed out (§4.2). */
-  unpublishedBest?: string;
+  /** Your own best when the ranked board has no row for you — signed out,
+   *  offline, or no backend yet (§4.2). `null` means you have genuinely never
+   *  finished a run, which is a DIFFERENT screen from "we don't know yet". */
+  unpublishedBest?: string | null;
   onSignIn?: () => void;
 }
 
@@ -37,21 +39,28 @@ export default function Leaderboard({ game, rows, staleNote, unpublishedBest, on
   const label = game.scoring?.label ?? 'Score';
   const alone = rows.length === 1 && rows[0]!.isYou;
 
-  // Signed out: there is no board to rank against, but there IS a personal
-  // best worth showing. Showing a locked/empty board here would punish the
-  // player for the exact choice §4.2 says is fine.
-  if (rows.length === 0 && unpublishedBest !== undefined) {
+  // No ranked board — signed out, offline, or no backend yet. There is still
+  // something true to say, and saying nothing is what this screen did before:
+  // a column heading with empty space under it, after a run the player had
+  // just finished and watched the game count.
+  if (rows.length === 0) {
     return (
       <div className="flex flex-col gap-2 px-3 py-3">
         <Eyebrow>{label}</Eyebrow>
         <div className="rounded-lg bg-well border border-edge-dim px-3 py-2.5 flex items-baseline justify-between gap-2">
           <span className="text-sm text-fg">Your best</span>
-          <span className="text-sm font-medium text-fg tabular-nums">{unpublishedBest}</span>
+          <span className="text-sm font-medium text-fg tabular-nums">
+            {/* An em dash, not a zero: you have not scored nothing, you have
+                not played. A "0" reads as a bad run. */}
+            {unpublishedBest ?? '—'}
+          </span>
         </div>
         <p className="text-2xs text-fg-muted leading-relaxed">
-          Saved on this device. Sign in to rank it against your friends.
+          {unpublishedBest
+            ? 'Saved on this device. Sign in to rank it against your friends.'
+            : 'Play a round and your best shows up here.'}
         </p>
-        {onSignIn && (
+        {onSignIn && unpublishedBest && (
           <button
             type="button"
             onClick={onSignIn}
