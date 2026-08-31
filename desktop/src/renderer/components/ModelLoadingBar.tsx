@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import type { EngineModelState } from '../../shared/engine-types';
 import { Button, ProgressBar } from './ui';
 import BrailleSpinner from './BrailleSpinner';
+import { resolveModelBrand } from './provider-brand';
+import { ProviderIcon } from './ProviderIcon';
 
 // Centered status strip that floats just ABOVE the input area for a NATIVE
 // (local-model) session. States (2026-07-14 memory-lifecycle UX):
@@ -101,6 +103,10 @@ const ModelLoadingBar = React.forwardRef<HTMLDivElement, Props>(function ModelLo
   if (!modelInfo || (!loading && !showReload)) return null;
 
   const name = friendlyName(modelInfo.modelId);
+  // Local GGUF filenames name their company ("qwen2.5-coder…", "gemma-3-27b…"),
+  // so the mark resolves off the id alone. Null for a model whose file is named
+  // after nothing recognisable — the line then reads exactly as it does today.
+  const brand = resolveModelBrand(modelInfo.modelId, 'local-engine');
   const size = modelInfo.sizeBytes;
   // Determinate GB progress when we have both resident bytes and a total size.
   const hasProgress = loading && loadedBytes != null && loadedBytes > 0 && size != null && size > 0;
@@ -131,6 +137,7 @@ const ModelLoadingBar = React.forwardRef<HTMLDivElement, Props>(function ModelLo
               {finalizing ? (
                 <>
                   <span className="italic">Preparing</span>
+                  {brand?.icon && <span className="inline-flex shrink-0" style={{ color: brand.color }}><ProviderIcon icon={brand.icon} size={12} /></span>}
                   <span className="font-medium">{name}</span>
                   <span
                     className="text-fg-dim text-xs"
@@ -142,6 +149,7 @@ const ModelLoadingBar = React.forwardRef<HTMLDivElement, Props>(function ModelLo
               ) : (
                 <>
                   <span className="italic">Loading</span>
+                  {brand?.icon && <span className="inline-flex shrink-0" style={{ color: brand.color }}><ProviderIcon icon={brand.icon} size={12} /></span>}
                   <span className="font-medium">{name}</span>
                   {hasProgress ? (
                     <span className="text-fg-dim text-xs tabular-nums">

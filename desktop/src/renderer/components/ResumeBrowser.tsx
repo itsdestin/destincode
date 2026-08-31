@@ -21,6 +21,8 @@ import { PRIORITY_TAG, PRIORITY_HINT } from './tags/built-in-tags';
 import { TagGlyph } from './tags/glyphs';
 import { NoteEditor } from './tags/NoteEditor';
 import ModelPicker, { ModelIcon, type ModelChoice } from './model/ModelPicker';
+import { resolveModelBrand } from './provider-brand';
+import { ProviderIcon } from './ProviderIcon';
 import { claudeAliasForModelId } from '../../shared/model-ids';
 import type { ModelBinding } from '../../shared/provider-types';
 
@@ -1028,7 +1030,20 @@ export default function ResumeBrowser({ open, onClose, onResume, defaultModel, d
                       className="flex items-center gap-1 min-w-0"
                       title={`Last used ${s.lastUsedModel.modelId} (${s.lastUsedModel.providerLabel})`}
                     >
-                      <ModelIcon className="w-3 h-3 shrink-0" />
+                      {/* Company mark instead of the generic stacked-layers
+                          glyph. The mark carries the brand colour; the model
+                          NAME stays muted like the rest of the meta line — this
+                          is a card of five grey facts, and colouring the text
+                          would promote the model above the project and the date
+                          for no reason. PortableModelRef already carries
+                          providerType, so the match works even for an id that
+                          names no company (a bare custom-endpoint id). */}
+                      {(() => {
+                        const b = resolveModelBrand(s.lastUsedModel.modelId, s.lastUsedModel.providerType);
+                        return b?.icon
+                          ? <span className="shrink-0 inline-flex" style={{ color: b.color }}><ProviderIcon icon={b.icon} size={12} /></span>
+                          : <ModelIcon className="w-3 h-3 shrink-0" />;
+                      })()}
                       <span className="truncate">{formatModelId(s.lastUsedModel.modelId)}</span>
                     </span>
                   ) : null,

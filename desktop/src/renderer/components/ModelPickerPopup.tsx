@@ -4,6 +4,7 @@ import type { ModelAlias } from './StatusBar';
 import { FastIcon } from './Icons';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Button, Dialog, TextInput, Toggle, FOCUS_RING, LoadingState, SettingRow } from './ui';
+import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 
 // Model + effort + fast picker. Replaces the cycle-only status bar chip with
 // a full picker. Invoked by:
@@ -224,6 +225,34 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
     }
   };
 
+  /** One entry point for both runtimes, so the chip's dialog can offer the same
+   *  list everywhere. A CC pick is a PTY `/model <alias>` (via onSelectModel); a
+   *  native pick is an in-memory setBinding. The list is already scoped to the
+   *  session's runtime below, so the other arm is unreachable in practice — it
+   *  is written out anyway because a scoping bug should mis-render, not
+   *  mis-dispatch. */
+  const applyChoice = async (c: ModelChoice) => {
+    if (c.runtime === 'claude') {
+      handleModelSelect(c.alias as ModelAlias);
+      onClose();
+      return;
+    }
+    setNativeError(null);
+    setNativeSwapping(true);
+    let ok = false;
+    try {
+      ok = await window.claude.native.setBinding(sessionId!, { providerId: c.providerId, modelId: c.modelId });
+    } catch { ok = false; }
+    setNativeSwapping(false);
+    if (!ok) {
+      // Never close on failure: closing reads as "changed", and it did not.
+      setNativeError("Couldn't switch models. The session may have ended — try again.");
+      return;
+    }
+    onNativeModelChanged?.(c.modelId);
+    onClose();
+  };
+
   const applyFast = (v: boolean) => {
     // Forward to Claude Code via PTY first, guarded (pending-prompt gate) —
     // a raw sendInput while CC shows an interactive prompt would answer the
@@ -275,101 +304,35 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   // models would need a mode flag threading through selection semantics,
   // ack timing, and error display — not a clean extraction, so this branch
   // is left as its own thing.
-  if (provider === 'native') {
-    const q = nativeSearch.trim().toLowerCase();
-    const filtered = q
-      ? catalog.filter((m) =>
-          m.label.toLowerCase().includes(q) ||
-          m.id.toLowerCase().includes(q) ||
-          (providerLabels[m.providerId] ?? '').toLowerCase().includes(q))
-      : catalog;
-    // Group by provider label, preserving catalog order.
-    const groups = new Map<string, typeof catalog>();
-    for (const m of filtered) {
-      const key = providerLabels[m.providerId] ?? m.providerId;
-      const arr = groups.get(key) ?? [];
-      arr.push(m);
-      groups.set(key, arr);
-    }
-    const selectModel = async (providerId: string, modelId: string) => {
-      if (!sessionId) { onClose(); return; }
-      setNativeError(null);
-      setNativeSwapping(true);
-      // Await the swap — setBinding resolves false (unknown session) or rejects
-      // on failure. Only close + refresh the header on genuine success; on
-      // failure keep the popup open with an inline error so the user isn't told
-      // the model changed when it didn't.
-      let ok = false;
-      try {
-        ok = await window.claude.native.setBinding(sessionId, { providerId, modelId });
-      } catch {
-        ok = false;
-      }
-      setNativeSwapping(false);
-      if (!ok) {
-        setNativeError("Couldn't switch models. The session may have ended — try again.");
-        return;
-      }
-      // #7: keep App's SessionInfo.model current so the header reflects the swap
-      // (setBinding is in-memory, so sessionsList would stay stale otherwise).
-      onNativeModelChanged?.(modelId);
-      onClose();
-    };
-    return createPortal(
-      <>
-        <Dialog open onClose={onClose} title="Model" size="panel" scrollBody={false}>
-          <div className="px-5 pt-3">
-            {/* Change 20: the shared field surface. No submit button belongs
-                inside it — the list below filters as you type. */}
-            <TextInput
-              value={nativeSearch}
-              onChange={(e) => setNativeSearch(e.target.value)}
-              placeholder="Search models…"
-              aria-label="Search models"
-              className="w-full"
-            />
-          </div>
-          <div className="p-5 pt-3 overflow-y-auto space-y-4">
-            {nativeError && (
-              <p className="text-xs text-destructive-fg">{nativeError}</p>
-            )}
-            {catalog.length === 0 ? (
-              <p className="text-sm text-fg-muted text-center py-4">No models available. Add a provider key in Settings → Providers.</p>
-            ) : groups.size === 0 ? (
-              <p className="text-sm text-fg-muted text-center py-4">No models match your search.</p>
-            ) : (
-              [...groups.entries()].map(([label, models]) => (
-                <section key={label}>
-                  <div className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1.5">{label}</div>
-                  <div className="flex flex-col gap-1">
-                    {models.map((m) => {
-                      // Prefer App's live SessionInfo.model (updated on every swap)
-                      // over the possibly-stale persisted-header binding.
-                      const activeModelId = currentModelId ?? nativeBinding?.modelId;
-                      const isCurrent = m.id === activeModelId;
-                      return (
-                        <button
-                          key={`${m.providerId}:${m.id}`}
-                          onClick={() => selectModel(m.providerId, m.id)}
-                          disabled={nativeSwapping}
-                          className={`text-left text-sm rounded px-3 py-2 transition-colors disabled:opacity-50 ${
-                            isCurrent ? 'bg-accent text-on-accent font-medium' : 'bg-inset text-fg-2 hover:bg-well'
-                          }`}
-                        >
-                          {m.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))
-            )}
-          </div>
-        </Dialog>
-      </>,
-      document.body,
-    );
-  }
+  // The native early-return branch used to live here: a second, hand-built model
+  // list with its own search box and provider sections. It is gone. The dialog
+  // below now serves BOTH runtimes off the shared <ModelPicker> — the same list
+  // the five other pick surfaces use — so search, favourites and source filters
+  // are finally available from the status-bar chip, which is where models are
+  // actually changed. Effort and Fast stay Claude-Code-only; they are CC
+  // concepts the native harness does not implement, and rendering them for a
+  // native session would be a control that lies.
+
+  const isNative = provider === 'native';
+
+  /** What the picker should show as the session's current model.
+   *
+   *  The live bound id (App's SessionInfo.model, updated on every swap) is the
+   *  truth; the persisted header binding is only a fallback for the moment
+   *  before sessionsList lands. The owning provider is looked up in the catalog
+   *  rather than taken from the binding, because a session can be bound to a
+   *  model the stored binding no longer names — and requiring BOTH halves is
+   *  what made this read "Choose a model…" on a session that plainly had one. */
+  const nativeValue: ModelChoice | null = (() => {
+    const modelId = currentModelId ?? nativeBinding?.modelId;
+    if (!modelId) return null;
+    // Last resort is an EMPTY provider id, not null: the picker falls back to
+    // printing the raw model id when it can't match a catalog row, and a
+    // truthful "openai/gpt-5.6-sol" beats "Choose a model…" on a session that
+    // demonstrably has one. An empty id simply highlights no row.
+    const providerId = catalog.find((m) => m.id === modelId)?.providerId ?? nativeBinding?.providerId ?? '';
+    return { runtime: 'native', providerId, modelId };
+  })();
 
   // "max" effort is top-tier-only (Opus 1M + Fable); disable the button otherwise.
   const maxAllowed = currentModel != null && MAX_EFFORT_MODELS.includes(currentModel);
@@ -377,88 +340,90 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   return createPortal(
     // Overlay layer L2 — theme-driven scrim/surface via Scrim/OverlayPanel.
     <>
-      <Dialog open onClose={onClose} title="Model & Effort" size="panel" scrollBody={false}>
+      <Dialog open onClose={onClose} title={isNative ? "Model" : "Model & Effort"} size="panel" scrollBody={false}>
 
         {!loaded ? (
           <LoadingState what="models" />
         ) : (
           <div className="p-5 space-y-5">
-            {/* Model */}
+            {/* Model — the SHARED picker, scoped to this session's runtime. A
+                live session cannot move between runtimes (a CC session has a PTY
+                and no binding; a native one has a binding and no PTY), so the
+                other runtime's models are filtered out rather than offered and
+                then refused. */}
             <section>
               <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Model</h3>
-              <div className="flex gap-2">
-                {MODELS.map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => handleModelSelect(m.id)}
-                    className={`flex-1 py-2 px-3 text-sm rounded transition-colors flex items-center justify-center ${
-                      currentModel === m.id
-                        ? 'bg-accent text-on-accent font-medium'
-                        : 'bg-inset text-fg-2 hover:bg-well'
-                    }`}
-                  >
-                    {m.label}
-                    <ModelInfoTooltip model={m.id} />
-                  </button>
-                ))}
-              </div>
+              <ModelPicker
+                value={isNative ? nativeValue : (currentModel ? { runtime: 'claude', alias: currentModel } : null)}
+                onSelect={(c) => { void applyChoice(c); }}
+                includeClaude={!isNative}
+                includeNative={isNative}
+              />
+              {nativeError && <p className="text-xs text-destructive-fg mt-2">{nativeError}</p>}
+              {nativeSwapping && <p className="text-xs text-fg-muted mt-2">Switching…</p>}
             </section>
 
             {/* Effort */}
-            <section>
-              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
-                Effort Level
-              </h3>
-              <div className="grid grid-cols-5 gap-1.5">
-                {EFFORT_LEVELS.map((level) => {
-                  const disabled = level === 'max' && !maxAllowed;
-                  return (
-                    <button
-                      key={level}
-                      onClick={() => !disabled && updateEffort(level)}
-                      disabled={disabled}
-                      title={disabled ? 'Max effort requires Opus or Fable' : undefined}
-                      className={`py-1.5 text-xs rounded transition-colors capitalize ${
-                        effort === level
-                          ? 'bg-accent text-on-accent font-medium'
-                          : disabled
-                          ? 'bg-inset/50 text-fg-faint cursor-not-allowed'
-                          : 'bg-inset text-fg-2 hover:bg-well'
-                      }`}
-                    >
-                      {level}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="text-2xs text-fg-muted mt-1.5">
-                How hard Claude thinks before responding. Higher = slower but smarter.
-              </p>
-            </section>
+            {/* Effort and Fast are Claude Code concepts — the native harness
+                implements neither, so for a native session they are not
+                rendered at all rather than shown inert. A control that does
+                nothing is worse than a control that isn't there. */}
+            {!isNative && (<>
+              <section>
+                <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">
+                  Effort Level
+                </h3>
+                <div className="grid grid-cols-5 gap-1.5">
+                  {EFFORT_LEVELS.map((level) => {
+                    const disabled = level === 'max' && !maxAllowed;
+                    return (
+                      <button
+                        key={level}
+                        onClick={() => !disabled && updateEffort(level)}
+                        disabled={disabled}
+                        title={disabled ? 'Max effort requires Opus or Fable' : undefined}
+                        className={`py-1.5 text-xs rounded transition-colors capitalize ${
+                          effort === level
+                            ? 'bg-accent text-on-accent font-medium'
+                            : disabled
+                            ? 'bg-inset/50 text-fg-faint cursor-not-allowed'
+                            : 'bg-inset text-fg-2 hover:bg-well'
+                        }`}
+                      >
+                        {level}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="text-2xs text-fg-muted mt-1.5">
+                  How hard Claude thinks before responding. Higher = slower but smarter.
+                </p>
+              </section>
 
-            {/* Fast mode toggle */}
-            <section>
-              {/* K2: the icon moves out of the title and into the icon slot,
-                  which is what that slot is for — inline, it was pushing the
-                  title text off the alignment every other row shares. */}
-              <SettingRow
-                variant="item"
-                icon={<FastIcon className="w-3.5 h-3.5 text-yellow-500" />}
-                title="Fast mode"
-                description="Same model, faster output streaming"
-                control={
-                  // Was a fifth hand-rolled toggle geometry (32x16) with a
-                  // hardcoded green-600 on-state. One geometry now, and the
-                  // on-state is the theme's accent (changes 15/16). It already
-                  // had role="switch" but no accessible name.
-                  <Toggle
-                    checked={fast}
-                    onChange={handleFastToggle}
-                    aria-label="Fast mode"
-                  />
-                }
-              />
-            </section>
+              {/* Fast mode toggle */}
+              <section>
+                {/* K2: the icon moves out of the title and into the icon slot,
+                    which is what that slot is for — inline, it was pushing the
+                    title text off the alignment every other row shares. */}
+                <SettingRow
+                  variant="item"
+                  icon={<FastIcon className="w-3.5 h-3.5 text-yellow-500" />}
+                  title="Fast mode"
+                  description="Same model, faster output streaming"
+                  control={
+                    // Was a fifth hand-rolled toggle geometry (32x16) with a
+                    // hardcoded green-600 on-state. One geometry now, and the
+                    // on-state is the theme's accent (changes 15/16). It already
+                    // had role="switch" but no accessible name.
+                    <Toggle
+                      checked={fast}
+                      onChange={handleFastToggle}
+                      aria-label="Fast mode"
+                    />
+                  }
+                />
+              </section>
+            </>)}
           </div>
         )}
       </Dialog>
