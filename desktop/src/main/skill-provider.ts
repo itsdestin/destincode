@@ -299,6 +299,13 @@ export class LocalSkillProvider implements SkillProvider {
       sourceRef: marketplaceEntry.sourceRef || '',
       sourceSubdir: marketplaceEntry.sourceSubdir,
       sourceMarketplace: marketplaceEntry.sourceMarketplace,
+      // Marketplace overhaul: pin to the commit the catalog scanned — and ONLY
+      // that. Deliberately no `?? sourceSha` fallback: that field is a stale
+      // snapshot from whenever the registry's sync job last ran (236 of the 302
+      // live entries carry one), so falling back to it would freeze those
+      // plugins at an old version forever and make Update a no-op that claims
+      // success. No catalog block → today's behaviour (install latest).
+      sourceCommit: marketplaceEntry.catalog?.sourceCommit,
       description: marketplaceEntry.description,
       author: marketplaceEntry.author,
       // WHY: this was never wired through, which left installFromLocal's
@@ -321,6 +328,10 @@ export class LocalSkillProvider implements SkillProvider {
         source: 'marketplace',
         installedAt: new Date().toISOString(),
         removable: true,
+        // The sha the installer actually checked out (absent unless the catalog
+        // pinned one). This is the installed half of the marketplace's commit
+        // comparison — without it that check has no data and stays silent.
+        ...(result.status === 'installed' && result.commit ? { commit: result.commit } : {}),
         components: [{
           type: 'plugin',
           // New install location under our Claude Code marketplace root —
@@ -379,6 +390,9 @@ export class LocalSkillProvider implements SkillProvider {
       sourceRef: marketplaceEntry.sourceRef || '',
       sourceSubdir: marketplaceEntry.sourceSubdir,
       sourceMarketplace: marketplaceEntry.sourceMarketplace,
+      // Same pin as install() — see the comment there for why there is no
+      // `?? sourceSha` fallback.
+      sourceCommit: marketplaceEntry.catalog?.sourceCommit,
       description: marketplaceEntry.description,
       author: marketplaceEntry.author,
       // Decomposition v3 §9.5: pass through postInstall + recommends so
@@ -432,7 +446,14 @@ export class LocalSkillProvider implements SkillProvider {
       // plugin.json, so the renderer's "Update available" compare (package
       // record vs index) stays in one number space.
       const newVersion = readPluginVersion(installDir) ?? entry.version;
-      this.configStore.updatePackageVersion(id, newVersion || '1.0.0');
+      // Record the new commit ONLY when installPlugin actually re-cloned
+      // ('installed'). On 'already_installed' it touched no files, so writing the
+      // catalog's newer sha here would clear the update badge for code that never
+      // changed. (Known gap: for url / git-subdir sources 'already_installed' is
+      // the normal outcome, so those updates still do nothing on disk — that is a
+      // pre-existing bug tracked separately, not something this line introduces.)
+      const landedCommit = result.status === 'installed' ? result.commit : undefined;
+      this.configStore.updatePackageVersion(id, newVersion || '1.0.0', landedCommit);
       this.installedCache = null;
       this.onCacheInvalidated?.();
 

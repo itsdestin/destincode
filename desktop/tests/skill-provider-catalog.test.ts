@@ -41,6 +41,10 @@ const inst = vi.hoisted(() => ({
 }));
 vi.mock('../src/main/plugin-installer', () => inst);
 vi.mock('../src/main/logger', () => ({ log: vi.fn() }));
+// install() reconciles hooks and MCP servers afterwards; neither is under test
+// here and both would write into ~/.claude.
+vi.mock('../src/main/hook-reconciler', () => ({ reconcileHooks: vi.fn() }));
+vi.mock('../src/main/mcp-reconciler', () => ({ reconcileMcp: vi.fn(async () => {}) }));
 
 import { LocalSkillProvider } from '../src/main/skill-provider';
 
@@ -140,5 +144,46 @@ describe('fetchIndex — catalog first, index.json fallback', () => {
     fetchMock.mockRejectedValue(new Error('offline'));
     const entries = await p.listMarketplace();
     expect(entries[0].id).toBe('superpowers');
+  });
+});
+
+
+describe('install — the catalog commit is passed down and recorded', () => {
+  const FULL_SHA = 'e91a6c0ffffffffffffffffffffffffffffffff';
+
+  beforeEach(() => {
+    fs.rmSync(CACHE_DIR, { recursive: true, force: true });
+    vi.clearAllMocks();
+    fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  /** A provider whose config store lives entirely in memory. */
+  function makeInstallProvider(rows: any[]) {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ generated_at: 1, entries: rows }), { status: 200 }));
+    const config: any = { version: 2, favorites: [], chips: [], overrides: {}, privateSkills: [], packages: {} };
+    const p = makeProvider();
+    vi.spyOn(p.configStore, 'load').mockImplementation(() => config);
+    vi.spyOn(p.configStore as any, 'save').mockImplementation(() => {});
+    return p;
+  }
+
+  it('passes catalog.sourceCommit to the installer and stores the sha it landed on', async () => {
+    inst.installPlugin.mockResolvedValue({ status: 'installed', commit: FULL_SHA });
+    const p = makeInstallProvider([CATALOG_ROW]);
+    await p.install('superpowers');
+    expect(inst.installPlugin.mock.calls[0][0]).toMatchObject({ sourceCommit: 'e91a6c0' });
+    expect(p.configStore.getPackage('superpowers')?.commit).toBe(FULL_SHA);
+  });
+
+  it('sends no commit — and records none — for a row with no catalog block', async () => {
+    // The `?? sourceSha` regression guard, one level up from the installer: an
+    // entry carrying only the registry's stale sourceSha must still install latest.
+    inst.installPlugin.mockResolvedValue({ status: 'installed' });
+    const p = makeInstallProvider([{ ...INDEX_ROW, sourceSha: 'stale123' }]);
+    await p.install('superpowers');
+    expect(inst.installPlugin.mock.calls[0][0].sourceCommit).toBeUndefined();
+    expect(p.configStore.getPackage('superpowers')?.commit).toBeUndefined();
   });
 });

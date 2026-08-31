@@ -278,11 +278,18 @@ export class SkillConfigStore {
 
   // Phase 3b: update just the version field after a successful update.
   // Does NOT touch components, config, or other metadata.
-  updatePackageVersion(id: string, newVersion: string): void {
+  // Marketplace overhaul Task 17: `commit` moves with it, but ONLY when the
+  // caller actually replaced the files on disk. Recording a new commit for an
+  // update that changed nothing would clear the "update available" badge while
+  // the old code is still installed — the same silent lie the local-source
+  // upgrade path was fixed for. Omitting the argument leaves the stored commit
+  // untouched rather than erasing it.
+  updatePackageVersion(id: string, newVersion: string, commit?: string): void {
     const config = this.load();
     const pkg = config.packages?.[id];
     if (!pkg) return;
     pkg.version = newVersion;
+    if (commit) pkg.commit = commit;
     this.save();
   }
 

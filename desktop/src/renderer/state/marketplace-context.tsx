@@ -359,20 +359,26 @@ export function MarketplaceProvider({ children }: { children: React.ReactNode })
   //   • an entry with no version is recorded as '1.0.0' (the `|| '1.0.0'`
   //     fallbacks in skill-provider.ts), so it can be flagged spuriously;
   //   • an author who changes files without bumping the version is invisible.
-  // TODO(marketplace overhaul Task 17 — commit pinning): once the installer
-  // records the commit it actually checked out (`PackageInfo.commit`) and the
-  // catalog publishes `catalog.sourceCommit`, add that comparison ALONGSIDE
-  // this one — "either differs" means an update is available. Keep the two
-  // separate: the version is what an author bumps deliberately, the commit is
-  // what actually changed. A package with no recorded commit (anything
-  // installed before Task 17) must contribute nothing, so old installs never
-  // grow a spurious badge. Do NOT replace the version compare with it.
+  // Two independent signals, OR'd — "either differs" means there is something
+  // new to fetch (marketplace overhaul, Tasks 1 + 17):
+  //   • the VERSION is what an author bumps deliberately;
+  //   • the COMMIT is what actually changed in the repo. Half the catalog
+  //     mirrors projects whose authors never touch the version, so without this
+  //     their updates were invisible.
+  // Kept separate on purpose, and the commit check only ever ADDS a badge:
+  //   • no commit recorded on the package (every install made before Task 17)
+  //     contributes nothing, so an old library never lights up all at once;
+  //   • no commit listed by the catalog (a Worker outage falls back to
+  //     index.json, which has no catalog block) contributes nothing either,
+  //     rather than reading as "downgraded".
   const updateAvailable = useMemo<Record<string, boolean>>(() => {
     const result: Record<string, boolean> = {};
     for (const entry of skillEntries) {
       const pkg = packages[entry.id];
       if (!pkg) continue; // not installed via marketplace
-      if (isNewerVersion(pkg.version, entry.version)) {
+      const listedCommit = entry.catalog?.sourceCommit;
+      const commitMoved = !!pkg.commit && !!listedCommit && pkg.commit !== listedCommit;
+      if (isNewerVersion(pkg.version, entry.version) || commitMoved) {
         result[entry.id] = true;
       }
     }

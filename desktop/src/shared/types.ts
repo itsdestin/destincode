@@ -939,6 +939,12 @@ export interface PackageInfo {
   installedAt: string;
   removable: boolean;
   components: PackageComponent[];
+  // Marketplace overhaul Task 17: the exact upstream commit this install landed
+  // on, recorded only when the catalog listed one (`catalog.sourceCommit`).
+  // The marketplace Update check compares it against the catalog's current value,
+  // alongside the version compare. Absent on every pre-Task-17 install, which is
+  // why the compare must treat "no commit recorded" as "nothing to say".
+  commit?: string;
   // Decomposition v3 §9.8: cross-device sync can surface a package that's
   // present in config but not yet on disk (e.g., Android pulled a desktop
   // config but hasn't installed the package yet). "pending" UIs can show an
