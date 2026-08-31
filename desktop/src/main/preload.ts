@@ -1287,6 +1287,15 @@ contextBridge.exposeInMainWorld('claude', {
   fs: {
     readHead: (filePath: string, maxBytes?: number) => ipcRenderer.invoke('fs:read-head', filePath, maxBytes),
   },
+  // Games arcade scores (spec §6.1). Positional args like every other namespace
+  // here. Scores cross as raw NUMBERS — how a game WORDS its score ("31 pipes")
+  // comes from game-registry.ts in the renderer, so adding a game never touches
+  // this file, main, or the Worker.
+  arcade: {
+    status: () => ipcRenderer.invoke('arcade:status'),
+    leaderboard: (game: string) => ipcRenderer.invoke('arcade:leaderboard', game),
+    submitScore: (game: string, score: number) => ipcRenderer.invoke('arcade:submit-score', game, score),
+  },
   permissions: {
     list: () => ipcRenderer.invoke('permissions:list'),
     remove: (slug: string, rule: unknown) => ipcRenderer.invoke('permissions:remove', slug, rule),

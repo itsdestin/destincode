@@ -6,6 +6,9 @@ import { clampDrawerWidth, applyGameWidthVar } from '../../state/drawer-width';
 
 interface Props {
   connection: GameConnection;
+  /** Chess's own PartyKit client (spec §3.1). Same interface, its own room —
+   *  passed straight through to the shell, which picks by the open game's id. */
+  chessConnection: GameConnection;
   incognito?: boolean;
   onToggleIncognito?: () => void;
 }
@@ -15,7 +18,7 @@ interface Props {
 // <ArcadeShell>, which routes between the picker and whichever game is open
 // (spec §4). This file is now just the pane's outer shell: the surface, and
 // the resize handle that goes with it (§4.3).
-export default function GamePanel({ connection, incognito, onToggleIncognito }: Props) {
+export default function GamePanel({ connection, chessConnection, incognito, onToggleIncognito }: Props) {
   const { gamePaneWidth, setGamePaneWidth, resetGamePaneWidth } = useTheme();
   const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
   const dragRaf = useRef(0);
@@ -73,7 +76,7 @@ export default function GamePanel({ connection, incognito, onToggleIncognito }: 
         onPointerCancel={onHandlePointerUp}
         onDoubleClick={resetGamePaneWidth}
       />
-      <ArcadeShell connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} />
+      <ArcadeShell connection={connection} chessConnection={chessConnection} incognito={incognito} onToggleIncognito={onToggleIncognito} />
     </div>
   );
 }

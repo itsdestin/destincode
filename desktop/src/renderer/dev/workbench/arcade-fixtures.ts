@@ -1,9 +1,15 @@
-// Workbench fixture data for the arcade shell (spec §4.1, §6.1, §6.5, §6.6).
+// Workbench fixture data for the arcade's score channels (spec §6.1, §6.5, §6.6).
 //
-// STEP 1 ONLY. These back the `arcade.*` channels registered in mock-only.ts —
-// there is no real backend yet, and the whole point of Step 1 is to settle the
-// shell's shape before one is built. When the Worker endpoints land, these
-// become the fixture the workbench keeps using and the MOCK_ONLY rows come off.
+// These are the WIRE shapes, not display shapes: raw numbers, snake_case, and
+// an ApiResult envelope, exactly as `arcade:status` / `arcade:leaderboard`
+// answer in the real app. That is the whole point — the workbench must exercise
+// the same mapping code the shipped app runs (`components/game/arcade-api.ts`),
+// or it proves nothing about the screens it is used to review.
+//
+// Note what is NOT here any more: who is online. Presence is a socket fact and
+// arrives through the mocked `social.onPresenceEvent`, the same path the real
+// app uses. It used to be baked into a status fixture, which meant the picker's
+// "Jake is online" line was reviewed against something no server ever said.
 //
 // The scenarios exist because the states that are hard to get right are the
 // ones you never see by accident: a board with only you on it, a service that
@@ -11,90 +17,102 @@
 
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
 
-export interface ArcadeStatusFixture {
-  bestScore?: string;
-  friendsOnline?: string[];
-  unavailable?: string;
+/** The one thing the real channel returns per game: a raw best. */
+export interface GameScoreRowFixture {
+  best: number;
+  best_at: number;
+  runs: number;
 }
 
-export interface LeaderboardRowFixture {
-  accountId: string;
-  name: string;
+/** One ranked row, in the Worker's own vocabulary. */
+export interface BoardEntryFixture {
+  id: string;
+  display_name: string;
   handle: string | null;
-  score: string;
-  isYou: boolean;
+  avatar_url: string | null;
+  best_score: number;
+  best_at: number;
+  rank: number;
+  is_you: boolean;
 }
 
-/** `default` — the ordinary case: you have played both solo games, one friend
- *  is online, everything is up. */
-const DEFAULT_STATUS: Record<string, ArcadeStatusFixture> = {
-  'flappy': { bestScore: '31 pipes' },
-  'twenty-forty-eight': { bestScore: '12,480' },
-  'connect-four': { friendsOnline: [JAKE_USERNAME] },
-  'chess': { friendsOnline: [JAKE_USERNAME] },
+type Ok<T> = { ok: true; value: T };
+
+// Fixed timestamps, not Date.now(): a screenshot diff must not change because
+// the clock moved between two review runs.
+const T = 1_756_600_000;
+
+const DEFAULT_BESTS: Record<string, GameScoreRowFixture> = {
+  'flappy': { best: 31, best_at: T, runs: 47 },
+  'twenty-forty-eight': { best: 12_480, best_at: T, runs: 12 },
 };
 
-/** `empty` — a brand-new install. Nothing played, nobody online. This is the
- *  state the picker MUST still read as inviting (§6.5): two of the four tiles
- *  are playable right now and the screen has to make that obvious. */
-const EMPTY_STATUS: Record<string, ArcadeStatusFixture> = {
-  'flappy': {},
-  'twenty-forty-eight': {},
-  'connect-four': { friendsOnline: [] },
-  'chess': { friendsOnline: [] },
-};
+/** `empty` — a brand-new install. Nothing played. This is the state the picker
+ *  MUST still read as inviting (§6.5): two of the four tiles are playable right
+ *  now and the screen has to make that obvious. */
+const NO_BESTS: Record<string, GameScoreRowFixture> = {};
 
-/** `refused` — the degraded case (§6.6). The versus service is unreachable and
- *  says so in the user's words; the solo games are untouched, which is the
- *  whole argument of §4.2 applied to an outage. */
-const DEGRADED_STATUS: Record<string, ArcadeStatusFixture> = {
-  'flappy': { bestScore: '31 pipes' },
-  'twenty-forty-eight': { bestScore: '12,480' },
-  'connect-four': { unavailable: "Can't reach the game server" },
-  'chess': { unavailable: "Can't reach the game server" },
-};
+const you = (score: number, rank: number): BoardEntryFixture => ({
+  id: 'you', display_name: 'You', handle: 'destin', avatar_url: null,
+  best_score: score, best_at: T, rank, is_you: true,
+});
 
-const YOU = { accountId: 'you', name: 'You', handle: 'destin', isYou: true };
-
-const POPULATED_BOARD: Record<string, LeaderboardRowFixture[]> = {
+const POPULATED: Record<string, BoardEntryFixture[]> = {
   'flappy': [
-    { accountId: 'mira', name: 'Mira', handle: 'mira', score: '58 pipes', isYou: false },
-    { ...YOU, score: '31 pipes' },
-    { accountId: JAKE_ID, name: JAKE_USERNAME, handle: 'jake', score: '19 pipes', isYou: false },
+    { id: 'mira', display_name: 'Mira', handle: 'mira', avatar_url: null, best_score: 58, best_at: T, rank: 1, is_you: false },
+    you(31, 2),
+    { id: JAKE_ID, display_name: JAKE_USERNAME, handle: 'jake', avatar_url: null, best_score: 19, best_at: T, rank: 3, is_you: false },
   ],
   'twenty-forty-eight': [
-    { ...YOU, score: '12,480' },
-    { accountId: JAKE_ID, name: JAKE_USERNAME, handle: 'jake', score: '9,216', isYou: false },
+    you(12_480, 1),
+    { id: JAKE_ID, display_name: JAKE_USERNAME, handle: 'jake', avatar_url: null, best_score: 9_216, best_at: T, rank: 2, is_you: false },
   ],
 };
 
 /** The state §6.5 calls the most common one early on: you, alone. It is a REAL
  *  ranked row (#1 of 1, which is true) rather than a "no data" panel — the
  *  screen has to read as an invitation, not a failure. */
-const ALONE_BOARD: Record<string, LeaderboardRowFixture[]> = {
-  'flappy': [{ ...YOU, score: '31 pipes' }],
-  'twenty-forty-eight': [{ ...YOU, score: '12,480' }],
+const ALONE: Record<string, BoardEntryFixture[]> = {
+  'flappy': [you(31, 1)],
+  'twenty-forty-eight': [you(12_480, 1)],
 };
 
 export type ArcadeScenario = 'default' | 'empty' | 'alone' | 'degraded';
 
-export function arcadeStatusFor(scenario: ArcadeScenario): Record<string, ArcadeStatusFixture> {
-  if (scenario === 'empty') return EMPTY_STATUS;
-  if (scenario === 'degraded') return DEGRADED_STATUS;
-  return DEFAULT_STATUS;
+/** True when the scenario is the one where the versus service is down. The mock
+ *  shim reads this to push a real `error` presence event, so the picker's
+ *  "can't reach the game server" line comes from the SAME reducer path a real
+ *  outage takes rather than from a hardcoded fixture string. */
+export function arcadeVersusIsDown(scenario: ArcadeScenario): boolean {
+  return scenario === 'degraded';
+}
+
+export function arcadeStatusFor(
+  scenario: ArcadeScenario,
+): Ok<Record<string, GameScoreRowFixture>> {
+  // Solo bests are UNTOUCHED by the degraded scenario on purpose: §4.2 says an
+  // outage in the versus service must not take the solo games with it.
+  return { ok: true, value: scenario === 'empty' ? NO_BESTS : DEFAULT_BESTS };
 }
 
 export function arcadeBoardFor(
   scenario: ArcadeScenario,
   gameId: string,
-): { rows: LeaderboardRowFixture[]; staleNote?: string } {
-  if (scenario === 'empty') return { rows: [] };
-  if (scenario === 'alone') return { rows: ALONE_BOARD[gameId] ?? [] };
-  if (scenario === 'degraded') {
-    // Degraded does NOT clear the board — it labels it. A leaderboard that
-    // empties itself when the network blips teaches the player their scores
-    // were lost, which is both alarming and untrue.
-    return { rows: POPULATED_BOARD[gameId] ?? [], staleNote: 'Last updated a few minutes ago' };
-  }
-  return { rows: POPULATED_BOARD[gameId] ?? [] };
+): Ok<{ board: { game: string; you: BoardEntryFixture | null; entries: BoardEntryFixture[] }; cachedAt: number | null }> {
+  const entries =
+    scenario === 'empty' ? []
+    : scenario === 'alone' ? (ALONE[gameId] ?? [])
+    : (POPULATED[gameId] ?? []);
+  // Degraded does NOT clear the board — it labels it. A leaderboard that
+  // empties itself when the network blips teaches the player their scores were
+  // lost, which is both alarming and untrue. Four minutes back so the note
+  // renders its plural form.
+  const cachedAt = scenario === 'degraded' ? Date.now() - 4 * 60_000 : null;
+  return {
+    ok: true,
+    value: {
+      board: { game: gameId, you: entries.find((e) => e.is_you) ?? null, entries },
+      cachedAt,
+    },
+  };
 }

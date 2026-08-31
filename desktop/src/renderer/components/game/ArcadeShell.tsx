@@ -5,21 +5,20 @@
 // It owns NO game rules and imports no game logic — the four games reach it
 // only through `game-registry.ts`, which is the point of the slot (§3).
 //
-// STEP 1 SCOPE. Flappy and 2048 render their leaderboard (the Step 1
-// deliverable for a solo game); Chess renders a fixed position at its proposed
-// default width so sizing and the two-player contrast can be judged; Connect 4
-// keeps its real challenge-a-friend flow, rethemed. The playfields and the
-// state split land in Step 2 — this file should not need to change for them.
+// The arcade's DATA is not here — `arcade-api.ts` owns the pure mapping from
+// what the server said to what a screen renders, so those states can be tested
+// without mounting anything. This file only decides which screen is showing.
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useGameState, useGameDispatch } from '../../state/game-context';
 import { useAccount } from '../../state/account-context';
 import { useTheme } from '../../state/theme-context';
 import { GameConnection } from '../../state/game-types';
 import { GAMES, type GameDefinition } from './game-registry';
 import { readAllBests, recordRun } from './local-best';
-import ArcadePicker, { type ArcadeStatus } from './ArcadePicker';
+import ArcadePicker from './ArcadePicker';
 import Leaderboard, { type LeaderboardRow } from './Leaderboard';
+import { arcadeApi, buildStatuses, mergeBests, serverBests, staleNote, toRows } from './arcade-api';
 import ChessBoard, { type PieceTreatment } from './ChessBoard';
 import GameLobby from './GameLobby';
 import ConnectFourBoard from './ConnectFourBoard';
@@ -29,45 +28,63 @@ import { Button, LoadingState } from '../ui';
 
 interface Props {
   connection: GameConnection;
+  /** Chess brings its OWN PartyKit client and its own room (§3.1) — it reaches
+   *  the shell through the same GameConnection interface, so this file is the
+   *  only place that has to know there is more than one. */
+  chessConnection: GameConnection;
   incognito?: boolean;
   onToggleIncognito?: () => void;
 }
 
-/** The arcade's own data. Served by the `arcade.*` channels, which are
- *  registered in mock-only.ts as deliberately unbuilt — Step 2 replaces the
- *  fake with real Worker endpoints and this hook does not change. */
-function useArcadeData(gameId: string | null) {
-  const [statuses, setStatuses] = useState<Record<string, ArcadeStatus> | null>(null);
+/** The arcade's server data: your bests across every solo game, and one game's
+ *  friends board. Both come back through `window.claude.arcade`, which main
+ *  serves from the account-gated Worker endpoints.
+ *
+ *  NOTHING HERE CAN FAIL LOUDLY. Signed out, offline, or on a surface with no
+ *  arcade bridge at all, every path resolves to "we have nothing to add to what
+ *  this computer already knows" — an empty result, never an error screen. That
+ *  is §4.2 taken literally: the leaderboard being down must never look like the
+ *  game being down. */
+function useArcadeData(game: GameDefinition | null, signedIn: boolean) {
+  /** Server bests keyed by game id. `null` while we have not answered yet,
+   *  which is a DIFFERENT screen from "you have never played". */
+  const [server, setServer] = useState<Record<string, number> | null>(null);
   const [board, setBoard] = useState<{ rows: LeaderboardRow[]; staleNote?: string } | null>(null);
 
+  // Re-runs on sign-in: without `signedIn` in the deps, signing in would not
+  // pull down the bests you set on another device until the app restarted.
   useEffect(() => {
     let live = true;
-    const api = (window.claude as unknown as { arcade?: { status: () => Promise<Record<string, ArcadeStatus>> } }).arcade;
-    // No arcade backend outside the workbench yet. Resolving to an empty map
-    // rather than throwing means the picker still renders — every tile just
-    // falls back to its quiet "not played yet" / "no friends online" line,
-    // which is honest rather than broken.
-    if (!api) { setStatuses({}); return; }
-    void api.status().then((v) => { if (live) setStatuses(v); });
+    const api = arcadeApi();
+    if (!api) { setServer({}); return; }
+    void api.status()
+      .then((r) => { if (live) setServer(r.ok ? serverBests(r.value) : {}); })
+      .catch(() => { if (live) setServer({}); });
     return () => { live = false; };
-  }, []);
+  }, [signedIn]);
 
   useEffect(() => {
-    if (!gameId) { setBoard(null); return; }
+    if (!game || game.kind !== 'solo') { setBoard(null); return; }
     let live = true;
-    const api = (window.claude as unknown as {
-      arcade?: { leaderboard: (id: string) => Promise<{ rows: LeaderboardRow[]; staleNote?: string }> };
-    }).arcade;
+    const api = arcadeApi();
     if (!api) { setBoard({ rows: [] }); return; }
     setBoard(null);
-    void api.leaderboard(gameId).then((v) => { if (live) setBoard(v); });
+    void api.leaderboard(game.id)
+      .then((r) => {
+        if (!live) return;
+        // A remembered board arrives labelled with WHEN, never why (§6.6).
+        setBoard(r.ok
+          ? { rows: toRows(r.value.board, game), staleNote: staleNote(r.value.cachedAt) }
+          : { rows: [] });
+      })
+      .catch(() => { if (live) setBoard({ rows: [] }); });
     return () => { live = false; };
-  }, [gameId]);
+  }, [game, signedIn]);
 
-  return { statuses, board };
+  return { server, board };
 }
 
-export default function ArcadeShell({ connection, incognito, onToggleIncognito }: Props) {
+export default function ArcadeShell({ connection, chessConnection, incognito, onToggleIncognito }: Props) {
   const state = useGameState();
   const dispatch = useGameDispatch();
   const { signedIn, startSignIn } = useAccount();
@@ -83,7 +100,14 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
   );
   const { applyGameDefaultWidth } = useTheme();
 
-  const bestOf = (id: string) => localBest[id];
+  const { server, board } = useArcadeData(openGame?.kind === 'solo' ? openGame : null, !!signedIn);
+
+  /** ONE best per game for every screen in this file — the picker tile, the
+   *  leaderboard's "your best" line, and the number the game itself shows while
+   *  you play. They used to read from different places, which is how a run you
+   *  had just finished could appear on one screen and not the next. */
+  const bests = useMemo(() => mergeBests(server ?? {}, localBest), [server, localBest]);
+  const bestOf = (id: string) => bests[id];
 
   const endRun = (score: number) => {
     // DELIBERATELY DOES NOT STOP PLAYING. The first version did, and it yanked
@@ -95,12 +119,22 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
     // Written to disk, not just to state: closing the panel used to forget it.
     const best = recordRun(openGame.id, score);
     setLocalBest((b) => ({ ...b, [openGame.id]: best }));
-    const api = (window.claude as unknown as {
-      arcade?: { submitScore?: (gameId: string, score: number) => Promise<unknown> };
-    }).arcade;
     // Signed out, or the board unreachable, the run still counted locally —
-    // §4.2/§6.6: the leaderboard being down never costs you the game.
-    void api?.submitScore?.(openGame.id, score);
+    // §4.2/§6.6: the leaderboard being down never costs you the game. Nothing
+    // downstream of this awaits it, and a rejection is swallowed on purpose:
+    // the end-of-run screen is already on the player's screen by now.
+    void arcadeApi()?.submitScore?.(openGame.id, score)
+      .then((r) => {
+        // The server may hold a HIGHER best than this computer — you played on
+        // your phone. Take it now rather than waiting for the next app start.
+        if (!r.ok || typeof r.value.best !== 'number') return;
+        const fromServer = r.value.best;
+        setLocalBest((b) => {
+          const mine = b[openGame.id];
+          return mine !== undefined && mine >= fromServer ? b : { ...b, [openGame.id]: fromServer };
+        });
+      })
+      .catch(() => { /* publishing a score is best-effort by design */ });
   };
 
   // §4.3: a game opens at ITS default width the first time — chess wants 520px
@@ -114,7 +148,6 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
     // that has been sitting frozen since you left.
     setPlaying(false);
   }, [openGame, applyGameDefaultWidth]);
-  const { statuses, board } = useArcadeData(openGame?.kind === 'solo' ? openGame.id : null);
 
   // A challenge arriving while the picker is open must land on the game it is
   // FOR — otherwise Accept drops the player into the wrong board. Until the
@@ -132,9 +165,35 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
 
   const inPlay = state.screen === 'playing' || state.screen === 'game-over';
 
+  // Which client is live. Leaving has to reach the RIGHT room — calling Connect
+  // 4's leaveGame while a chess game is open would leave the player seated at a
+  // board nobody is watching.
+  const activeConnection = openGame?.id === 'chess' ? chessConnection : connection;
+
+  /** The picker's per-tile facts. `null` only while the first server answer is
+   *  outstanding — after that a tile always has something true to say.
+   *
+   *  Who is online comes from the LIVE lobby presence in the reducer, not from
+   *  an HTTP call: it is a socket fact, and an endpoint's answer would be stale
+   *  within seconds. You are filtered out of your own list — "You are online"
+   *  is not a reason to start a game. */
+  const statuses = useMemo(() => {
+    if (server === null) return null;
+    return buildStatuses({
+      bests,
+      onlineNames: state.onlineUsers
+        .filter((u) => u.name !== state.username)
+        .map((u) => u.name),
+      // Only a REPORTED failure marks versus unavailable. Using "not connected
+      // yet" would flash "Can't reach the game server" on every launch during
+      // the second before the lobby socket opens.
+      versusUnavailable: state.partyError ? "Can't reach the game server" : undefined,
+    });
+  }, [server, bests, state.onlineUsers, state.username, state.partyError]);
+
   const leave = () => {
     if (state.screen !== 'lobby' && state.screen !== 'setup') {
-      connection.leaveGame();
+      activeConnection.leaveGame();
       dispatch({ type: 'RETURN_TO_LOBBY' });
     }
     setOpenGame(null);
@@ -163,7 +222,7 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
             ? <LoadingState what="games" />
             : (
               <ArcadePicker
-                statuses={mergeLocalBests(statuses, localBest)}
+                statuses={statuses}
                 onPick={setOpenGame}
                 signedIn={!!signedIn}
                 onSignIn={() => { void startSignIn(); }}
@@ -212,8 +271,8 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
                   unpublishedBest={
                     board.rows.some((r) => r.isYou)
                       ? undefined
-                      : localBest[openGame.id] !== undefined
-                        ? openGame.scoring?.format(localBest[openGame.id]!)
+                      : bests[openGame.id] !== undefined
+                        ? openGame.scoring?.format(bests[openGame.id]!)
                         : null
                   }
                   onSignIn={signedIn ? undefined : () => { void startSignIn(); }}
@@ -225,7 +284,20 @@ export default function ArcadeShell({ connection, incognito, onToggleIncognito }
         )}
 
         {openGame?.id === 'chess' && (
-          <ChessBoard treatment={chessTreatment()} legalMoves={['e5', 'd4', 'c4']} selected="f3" />
+          inPlay ? (
+            <div className="relative flex flex-col flex-1 min-h-0">
+              <ChessBoard connection={chessConnection} treatment={chessTreatment()} />
+              <GameChat connection={chessConnection} />
+              {state.screen === 'game-over' && <GameOverlay connection={chessConnection} />}
+            </div>
+          ) : (
+            <GameLobby
+              connection={chessConnection}
+              incognito={incognito}
+              onToggleIncognito={onToggleIncognito}
+              gameId={openGame.id}
+            />
+          )
         )}
 
         {openGame?.id === 'connect-four' && (
@@ -253,20 +325,6 @@ function chessTreatment(): PieceTreatment {
   return v === 'disc' || v === 'fill' ? v : 'outline';
 }
 
-/** Overlay your own local bests onto whatever the server reported, so a card
- *  shows the run you just finished even when there is no board to publish to. */
-function mergeLocalBests(
-  statuses: Record<string, ArcadeStatus>,
-  localBest: Record<string, number>,
-): Record<string, ArcadeStatus> {
-  const out: Record<string, ArcadeStatus> = { ...statuses };
-  for (const game of GAMES) {
-    const mine = localBest[game.id];
-    if (mine === undefined || !game.scoring) continue;
-    out[game.id] = { ...out[game.id], bestScore: game.scoring.format(mine) };
-  }
-  return out;
-}
 
 function ArcadeHeader({ title, onBack, onClose }: { title: string; onBack?: () => void; onClose: () => void }) {
   return (

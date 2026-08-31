@@ -2,6 +2,9 @@ import http from 'http';
 import zlib from 'zlib';
 import { listProjectsIndex } from './artifacts/projects-index';
 import { readFileHead } from './fs-read-head';
+// Games arcade scores — remote browsers share the desktop's operations and
+// its stale-board cache (main/arcade-handlers.ts).
+import { getArcadeOps } from './arcade-handlers';
 // Shared cap so a local folder's description (set via a remote browser client)
 // can't drift from the synced registry's limit — same constant project-registry.ts
 // and ipc-handlers.ts use.
@@ -2408,6 +2411,27 @@ export class RemoteServer {
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: String(err?.message ?? err) });
         }
+        break;
+      }
+
+      // --- Games arcade scores (spec §6.1) ---
+      // The SAME operations the Electron IPC path runs, including the shared
+      // stale-board cache — a remote browser must never see a different
+      // leaderboard from the desktop window sitting beside it.
+      case 'arcade:status':
+      case 'arcade:leaderboard':
+      case 'arcade:submit-score': {
+        const ops = getArcadeOps();
+        if (!ops) {
+          // Registration never ran (minimal boot). General but non-committal —
+          // we do not guess a cause we have not verified.
+          this.respond(client.ws, type, id, { ok: false, status: 0, message: 'Game scores are unavailable on this host.' });
+          break;
+        }
+        this.respond(client.ws, type, id,
+          type === 'arcade:status' ? await ops.status()
+          : type === 'arcade:leaderboard' ? await ops.leaderboard(payload?.game)
+          : await ops.submitScore(payload?.game, payload?.score));
         break;
       }
 

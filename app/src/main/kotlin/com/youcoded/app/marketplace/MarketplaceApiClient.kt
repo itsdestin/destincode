@@ -404,4 +404,40 @@ class MarketplaceApiClient(
             try { ApiResult.Ok(JSONArray(raw)) } catch (_: Exception) { ApiResult.Err(code, "malformed response") }
         } else ApiResult.Err(code, extractMessage(raw, code))
     }
+
+    // ── Games arcade (spec §6.1) ─ mirrors the three desktop client methods in
+    //    marketplace-api-client.ts (gameScores / gameBoard / submitGameScore).
+    //    All three are auth'd and return a JSON OBJECT, so plain request() serves
+    //    them ─ no requestRaw()/JSONArray branch is needed here.
+    //
+    //    Scores cross this boundary as RAW NUMBERS. How a game WORDS a score
+    //    ("31 pipes", "12,480") lives in that game's entry in the renderer's
+    //    game-registry.ts, so adding a game never touches this file. ──
+
+    /** GET /games/scores ─ my own best in every solo game I have played, keyed by
+     *  game id: { "flappy": { best, best_at, runs } }. `{}` when nothing has been
+     *  played, which is a legitimate empty result and not an error. */
+    suspend fun gameScores(): ApiResult<JSONObject> {
+        val (code, body) = request("/games/scores", method = "GET", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** GET /games/scores/:game ─ one game's friends leaderboard,
+     *  { game, you, entries }. URL-encoded like the other path params above. */
+    suspend fun gameBoard(game: String): ApiResult<JSONObject> {
+        val (code, body) = request("/games/scores/${URLEncoder.encode(game, "UTF-8")}", method = "GET", auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
+
+    /** POST /games/scores ─ publish a finished run. Returns
+     *  { ok, best, best_at, runs, is_best }; `is_best` is the one fact the
+     *  end-of-run screen cannot work out for itself. */
+    suspend fun submitGameScore(game: String, score: Int): ApiResult<JSONObject> {
+        val payload = JSONObject().apply {
+            put("game", game)
+            put("score", score)
+        }
+        val (code, body) = request("/games/scores", method = "POST", body = payload, auth = true)
+        return if (code in 200..299) ApiResult.Ok(body) else errFromResponse(code, body)
+    }
 }

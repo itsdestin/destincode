@@ -24,18 +24,12 @@
 // on all five surfaces (2026-08-28). Same rule, same reason as the rows above:
 // the fake in mock-shim.ts stays so the tool gallery can show every card state
 // without a real process — only the "no real backend" claim goes.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  // Games arcade Step 1 (docs/active/specs/2026-08-30-games-arcade-design.md).
-  // The picker's deciding fact and the solo leaderboard are being designed
-  // BEFORE the Worker endpoints that will serve them (§6.1) — which is exactly
-  // what this registry is for. When the D1 table and its routes land, these two
-  // rows come off and the fakes in mock-shim.ts stay so the workbench can still
-  // show the you-alone and stale states without a live board.
-  { channel: 'arcade.status', feature: 'Games arcade — per-game deciding fact in the picker (§4.1)' },
-  { channel: 'arcade.leaderboard', feature: 'Games arcade — solo friend leaderboard (§6.1)' },
-  // The Worker side of this one EXISTS (wecoded-marketplace, feat/games-arcade-scores)
-  // — what is missing is the renderer→main→Worker path. Registered so the
-  // dangling `arcade.submitScore?.()` call in ArcadeShell shows up on this
-  // to-do list instead of silently doing nothing forever.
-  { channel: 'arcade.submitScore', feature: 'Games arcade — publish a finished run to the board (§6.1)' },
-];
+// The three games-arcade rows (`arcade.status`, `arcade.leaderboard`,
+// `arcade.submitScore`) came off when their real backend landed: the Worker's
+// /games/scores routes, main/arcade-handlers.ts, and all five surfaces. Exactly
+// the lifecycle this registry is for — the UI was designed and reviewed against
+// a fake, the fake told us what to build, and the fakes in mock-shim.ts stay so
+// the workbench can still show the you-alone, empty and stale-board states
+// without a live leaderboard. `no MOCK_ONLY entry has since gained a real
+// channel` in workbench-mock-contract.test.ts is what forces this cleanup.
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];

@@ -1,18 +1,9 @@
-// Chess board (spec §5.3, §5.5) — Step 1 renders a fixed position so the two
-// questions the deck has to answer can actually be looked at:
+// Chess board (spec §5.3, §5.5) — now playable.
 //
-//   1. SIZING. At the shipped 400px pane the squares are ~50px. This renders
-//      at the proposed 520px default so the difference is visible, not argued.
-//   2. TWO-PLAYER CONTRAST. This is the open question §5.5 refuses to settle
-//      by analogy: chat tells you from the assistant with fill AND position,
-//      but a board has no position cue — both players' pieces sit in the same
-//      grid. So: your pieces are accent, theirs are neutral, and the squares
-//      are two shades of the SAME surface family so they never compete with
-//      the pieces for attention.
+// The VISUAL language was signed off in Step 1 (deck step G-8) and is unchanged
+// here: two shades of one surface family for the squares, and the two players
+// told apart by SHAPE (solid pieces vs hollow ones), not only by shade.
 //
-// Move input, legality and the PartyKit room are Step 2. Nothing here knows a
-// rule; the position is a literal.
-
 // MEASURED, Step 1 capture: fill alone DOES NOT separate the players on a
 // board. The first pass used one solid glyph set with `accent` for you and
 // `fg-muted` for them, reasoning from §5.5 that chat proves fill is enough.
@@ -22,17 +13,41 @@
 // (right-aligned vs left); a board has no such cue.
 //
 // DECIDED (Destin, deck step G-8, 2026-08-30): 'outline' — the chess
-// convention. Your pieces are solid, your opponent's are hollow, so the two
-// sides differ in SHAPE as well as shade and stay distinct on the themes whose
-// accent is itself a grey (which is all four built-ins).
-//
-// The two rejected options are kept behind the parameter, not deleted, because
-// this rule now governs every two-player game we add and the alternatives are
-// the evidence for why:
-//   'disc'  your piece sits on a filled accent disc — the strongest separation,
+// convention. The two rejected treatments stay behind the parameter, not
+// deleted, because this rule now governs every two-player game we add:
+//   'disc'  your piece sits on a filled accent disc — strongest separation,
 //           rejected as too busy (16 filled circles at the opening position).
-//   'fill'  the original colour-only pass — REJECTED, and the reason this step
-//           existed: in the dark theme both sides render as one light grey.
+//   'fill'  the original colour-only pass — REJECTED, see above.
+//
+// WHAT'S NEW IN STEP 2: move input. Click your piece to pick it up, click a dot
+// to move. Legality comes entirely from chess.js via `game/chess.ts` — nothing
+// in this file knows a rule, which is deliberate (§5.3: a chess player finds an
+// illegal-move bug in one game).
+//
+// FIXES THE OPEN ITEM FROM THE DECK (step S-2, "the picked-up square is too
+// faint — the legal-move dots read as causeless"). A single 25%-accent wash was
+// the whole selection cue. It now carries THREE stacked cues, because the
+// wash alone is the one that disappears on a light theme:
+//   1. a full-strength accent ring around the square (a hard edge, not a tint),
+//   2. a stronger accent wash inside it, and
+//   3. the piece itself lifts — it scales up, so the square you picked up
+//      reads as picked up rather than merely tinted.
+
+import { useEffect, useMemo, useState } from 'react';
+import { useGameState, useGameDispatch } from '../../state/game-context';
+import { GameConnection } from '../../state/game-types';
+import {
+  colorForSeat,
+  isPromotion,
+  legalTargets,
+  readPosition,
+  startingPlay,
+  type ChessPlay,
+  type PlacedPiece,
+  type PromotionPiece,
+} from '../../game/chess';
+import { Button, StatusStrip } from '../ui';
+
 const SOLID: Record<string, string> = {
   k: '♚', q: '♛', r: '♜', b: '♝', n: '♞', p: '♟',
 };
@@ -40,98 +55,225 @@ const OUTLINE: Record<string, string> = {
   k: '♔', q: '♕', r: '♖', b: '♗', n: '♘', p: '♙',
 };
 
+const PIECE_NAMES: Record<string, string> = {
+  k: 'king', q: 'queen', r: 'rook', b: 'bishop', n: 'knight', p: 'pawn',
+};
+
 export type PieceTreatment = 'disc' | 'outline' | 'fill';
 
-/** Ruy Lopez, a few moves in — a real position, so the board isn't a
- *  suspiciously tidy starting row. Lowercase = theirs, uppercase = yours. */
-const POSITION: (string | null)[][] = [
-  ['r', null, 'b', 'q', 'k', 'b', null, 'r'],
-  ['p', 'p', 'p', 'p', null, 'p', 'p', 'p'],
-  [null, null, 'n', null, null, 'n', null, null],
-  [null, 'B', null, null, 'p', null, null, null],
-  [null, null, null, null, 'P', null, null, null],
-  [null, null, null, null, null, 'N', null, null],
-  ['P', 'P', 'P', 'P', null, 'P', 'P', 'P'],
-  ['R', 'N', 'B', 'Q', 'K', null, null, 'R'],
-];
+const FILES = 'abcdefgh';
+const RANKS = '87654321';
 
 interface Props {
+  connection: GameConnection;
   /** How the two players' pieces are told apart. Settled: 'outline'. The other
    *  two stay reachable so the decision can be re-examined, never as a user
    *  setting — one rule per app, or the games stop teaching each other. */
   treatment?: PieceTreatment;
-  /** Squares the player could move to — accent wash, not a second fill (§5.3). */
-  legalMoves?: string[];
-  /** Square under threat — the one place --destructive appears on a board. */
-  inCheck?: string;
-  /** Square the player has picked up. */
-  selected?: string;
 }
 
-const FILES = 'abcdefgh';
-const squareName = (r: number, c: number) => `${FILES[c]}${8 - r}`;
+export default function ChessBoard({ connection, treatment = 'outline' }: Props) {
+  const state = useGameState();
+  const dispatch = useGameDispatch();
 
-export default function ChessBoard({ treatment = 'outline', legalMoves = [], inCheck, selected }: Props) {
+  // The state split (§3.1): the shell holds only your SEAT, whose turn it is,
+  // and the outcome. Chess's own position lives in `state.play`, which the
+  // shell treats as opaque — this narrowing is the one place that knows the
+  // shape, and it is inside chess's own component where it belongs.
+  const play = (state.play ?? startingPlay()) as ChessPlay;
+
+  const mySeat = state.seat ?? 0;
+  const myColor = colorForSeat(mySeat);
+  const pieces = useMemo(() => readPosition(play.fen), [play.fen]);
+
+  const [selected, setSelected] = useState<string | null>(null);
+  /** A pawn move that needs a piece chosen before it can be sent. */
+  const [promoting, setPromoting] = useState<{ from: string; to: string } | null>(null);
+
+  const isMyTurn = state.seat !== null && state.turnSeat === state.seat;
+  const isPlaying = state.screen === 'playing';
+  const canMove = isMyTurn && isPlaying && !state.opponentDisconnected && !play.over;
+
+  // Whenever the position changes — our move landed, or theirs arrived — the
+  // picked-up square is stale. Clearing it here rather than at every call site
+  // is what stops a stale selection painting dots on the new position.
+  useEffect(() => {
+    setSelected(null);
+    setPromoting(null);
+  }, [play.fen]);
+
+  const targets = useMemo(
+    () => (selected && canMove ? legalTargets(play.fen, selected) : []),
+    [selected, canMove, play.fen],
+  );
+
+  const send = (from: string, to: string, promotion?: PromotionPiece) => {
+    connection.makeMove(promotion ? { from, to, promotion } : { from, to });
+    setSelected(null);
+    setPromoting(null);
+  };
+
+  const onSquare = (square: string) => {
+    if (!canMove) return;
+
+    // Completing a move: the square is one of the dots.
+    if (selected && targets.includes(square)) {
+      // A promoting pawn must name what it becomes — chess.js rejects the move
+      // without it rather than assuming a queen, so we have to ask.
+      if (isPromotion(play.fen, selected, square)) {
+        setPromoting({ from: selected, to: square });
+        return;
+      }
+      send(selected, square);
+      return;
+    }
+
+    // Picking a piece up, or swapping to a different one of yours.
+    const piece = pieces[square];
+    if (piece && piece.color === myColor) {
+      setSelected(square === selected ? null : square);
+      return;
+    }
+
+    // Anything else — an empty square, an enemy piece that isn't a legal
+    // capture — puts the piece back down. Nothing illegal is ever sent.
+    setSelected(null);
+  };
+
+  // Your own colour sits at the bottom, the way a board does in front of you.
+  const ranks = myColor === 'w' ? RANKS : [...RANKS].reverse().join('');
+  const files = myColor === 'w' ? FILES : [...FILES].reverse().join('');
+
   return (
-    // Centred in whatever height is left, for the same reason the Connect 4
-    // board now fills its width: a fixed block pinned to the top of a tall pane
-    // reads as abandoned rather than placed. In Step 2 the game chat takes the
-    // lower half here as it does for Connect 4, and this becomes top-aligned —
-    // which is why `justify-center` sits on the wrapper and not the board.
-    <div className="p-3 flex-1 min-h-0 flex flex-col justify-center">
-      {/* aspect-square + w-full: the board takes the pane's width and stays
-          square at ANY pane width, which is what makes §4.3's per-game default
-          a real lever rather than a number in a config. */}
-      <div className="w-full aspect-square grid grid-cols-8 grid-rows-8 rounded-md overflow-hidden border border-edge">
-        {POSITION.map((row, r) =>
-          row.map((piece, c) => {
-            const name = squareName(r, c);
-            const dark = (r + c) % 2 === 1;
-            const isLegal = legalMoves.includes(name);
-            const isSelected = selected === name;
-            const isCheck = inCheck === name;
-            const yours = piece != null && piece === piece.toUpperCase();
+    <div className="p-3 flex flex-col gap-2 shrink-0">
+      {/* Same primitive Connect 4 uses for the same situation — "what is this
+          doing right now, plus the one action that resolves it". */}
+      {state.opponentDisconnected && (
+        <StatusStrip
+          tone="busy"
+          detail="They have a moment to come back before the game is called."
+          action={
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => { connection.leaveGame(); dispatch({ type: 'RETURN_TO_LOBBY' }); }}
+            >
+              Leave
+            </Button>
+          }
+        >
+          {state.opponent ?? 'Your opponent'} dropped out — waiting for them to reconnect
+        </StatusStrip>
+      )}
 
-            return (
-              <div
-                key={name}
-                className={[
-                  'relative flex items-center justify-center select-none',
-                  // Two shades of one surface family (§5.5) — NOT two colours.
-                  // `well` is the deepest cut and `inset` sits one step up, so
-                  // the checker pattern reads without either square competing
-                  // with a piece for attention.
-                  // Two shades one step apart were nearly identical in dark
-                  // (#1C1C1C vs #222222). The accent wash gives the dark
-                  // square a tint that survives every theme without
-                  // introducing a colour the theme does not own.
-                  dark ? 'bg-well' : 'bg-inset',
-                  dark ? '' : 'bg-accent/[0.07]',
-                ].join(' ')}
-              >
-                {/* Highlights are WASHES over the square, never a third square
-                    colour — so they stack on either shade without inventing a
-                    fourth surface. */}
-                {isSelected && <span className="absolute inset-0 bg-accent/25" aria-hidden="true" />}
-                {isLegal && !piece && (
-                  <span className="absolute w-[22%] h-[22%] rounded-full bg-accent/45" aria-hidden="true" />
-                )}
-                {isLegal && piece && (
-                  <span className="absolute inset-0 ring-2 ring-inset ring-accent/55" aria-hidden="true" />
-                )}
-                {isCheck && <span className="absolute inset-0 bg-destructive/30" aria-hidden="true" />}
+      <StatusLine play={play} canMove={canMove} isPlaying={isPlaying} opponent={state.opponent} />
 
-                {piece && <Piece code={piece} yours={yours} treatment={treatment} />}
-              </div>
-            );
-          }),
+      <div className="relative">
+        {/* aspect-square + w-full: the board takes the pane's width and stays
+            square at ANY pane width, which is what makes §4.3's per-game
+            default a real lever rather than a number in a config. */}
+        <div className="w-full aspect-square grid grid-cols-8 grid-rows-8 rounded-md overflow-hidden border border-edge">
+          {[...ranks].map((rank, r) =>
+            [...files].map((file, c) => {
+              const name = `${file}${rank}`;
+              const piece = pieces[name];
+              // Light/dark alternates by the SQUARE's real coordinates, so
+              // flipping the board for black doesn't recolour it.
+              const dark = (FILES.indexOf(file) + Number(rank)) % 2 === 0;
+              const isSelected = selected === name;
+              const isTarget = targets.includes(name);
+              const isCheck = play.checkSquare === name;
+              const isLast = play.lastMove?.from === name || play.lastMove?.to === name;
+              const mine = piece?.color === myColor;
+              const interactive = canMove && ((mine ?? false) || isTarget);
+
+              return (
+                <button
+                  key={name}
+                  type="button"
+                  // A real button, so the board is playable from the keyboard
+                  // (§10). Only the squares you could actually act on take a
+                  // tab stop — 64 stops would bury the rest of the pane.
+                  tabIndex={interactive ? 0 : -1}
+                  aria-label={squareLabel(name, piece, isTarget, isSelected)}
+                  aria-pressed={isSelected}
+                  onClick={() => onSquare(name)}
+                  className={[
+                    'relative flex items-center justify-center select-none p-0 border-0',
+                    // Two shades of one surface family (§5.5) — NOT two colours.
+                    // `well` is the deepest cut and `inset` sits one step up, so
+                    // the checker pattern reads without either square competing
+                    // with a piece for attention. Two shades one step apart were
+                    // nearly identical in dark (#1C1C1C vs #222222); the accent
+                    // wash gives the dark square a tint that survives every
+                    // theme without introducing a colour the theme does not own.
+                    dark ? 'bg-well' : 'bg-inset bg-accent/[0.07]',
+                    interactive ? 'cursor-pointer' : 'cursor-default',
+                  ].join(' ')}
+                >
+                  {/* Highlights are WASHES over the square, never a third square
+                      colour — so they stack on either shade without inventing a
+                      fourth surface. */}
+                  {isLast && !isSelected && (
+                    <span className="absolute inset-0 bg-accent/20" aria-hidden="true" />
+                  )}
+                  {isCheck && <span className="absolute inset-0 bg-destructive/30" aria-hidden="true" />}
+
+                  {/* THE PICKED-UP SQUARE (deck step S-2). Ring first, wash
+                      second: the ring is a hard edge at full accent strength,
+                      which is the cue that survives a light theme where a 25%
+                      wash all but vanished. */}
+                  {isSelected && (
+                    <>
+                      <span className="absolute inset-0 bg-accent/35" aria-hidden="true" />
+                      <span className="absolute inset-0 ring-2 ring-inset ring-accent" aria-hidden="true" />
+                    </>
+                  )}
+
+                  {isTarget && !piece && (
+                    <span className="absolute w-[24%] h-[24%] rounded-full bg-accent/60" aria-hidden="true" />
+                  )}
+                  {isTarget && piece && (
+                    <span className="absolute inset-0 ring-2 ring-inset ring-accent/70" aria-hidden="true" />
+                  )}
+
+                  {piece && (
+                    <Piece
+                      piece={piece}
+                      yours={piece.color === myColor}
+                      treatment={treatment}
+                      lifted={isSelected}
+                    />
+                  )}
+
+                  {/* Coordinates, in the two margins a real board prints them.
+                      Cheap, and it is how a player says "knight to f3" out loud
+                      to the person they are playing. */}
+                  {c === 0 && (
+                    <span className="absolute top-0 left-0.5 text-3xs leading-none pt-0.5 text-fg-faint" aria-hidden="true">{rank}</span>
+                  )}
+                  {r === 7 && (
+                    <span className="absolute bottom-0 right-0.5 text-3xs leading-none pb-0.5 text-fg-faint" aria-hidden="true">{file}</span>
+                  )}
+                </button>
+              );
+            }),
+          )}
+        </div>
+
+        {promoting && (
+          <PromotionPicker
+            onPick={(p) => send(promoting.from, promoting.to, p)}
+            onCancel={() => setPromoting(null)}
+            treatment={treatment}
+          />
         )}
       </div>
 
-      {/* Plain-word legend. The board's colour rule is not self-evident the
-          first time you see it, and one line is cheaper than a player
-          discovering it by moving the wrong piece. */}
-      <div className="flex items-center gap-4 pt-2">
+      {/* Plain-word legend. The board's rule is not self-evident the first time
+          you see it, and one line is cheaper than a player discovering it by
+          moving the wrong piece. */}
+      <div className="flex items-center gap-4">
         <LegendDot className="bg-accent" label="You" />
         <LegendDot className={treatment === 'outline' ? 'bg-fg-dim' : 'bg-fg-muted'} label="Opponent" />
       </div>
@@ -139,10 +281,97 @@ export default function ChessBoard({ treatment = 'outline', legalMoves = [], inC
   );
 }
 
-/** One piece, in whichever treatment is being trialled. */
-function Piece({ code, yours, treatment }: { code: string; yours: boolean; treatment: PieceTreatment }) {
-  const key = code.toLowerCase();
-  const size = { fontSize: 'min(6.2vw, 32px)' };
+/** Whose move it is, or how the game ended — in words, not a colour. */
+function StatusLine({
+  play, canMove, isPlaying, opponent,
+}: { play: ChessPlay; canMove: boolean; isPlaying: boolean; opponent: string | null }) {
+  const them = opponent ?? 'Opponent';
+  let text = '';
+  if (play.over) {
+    text = END_TEXT[play.over.reason];
+  } else if (isPlaying) {
+    const check = play.checkSquare ? 'Check — ' : '';
+    text = `${check}${canMove ? 'your turn' : `${them}'s turn`}`;
+  }
+
+  return (
+    <div className="flex items-center justify-between text-xs">
+      <div className="flex items-center gap-1.5">
+        <span className="w-3 h-3 rounded-full bg-accent" />
+        <span className="text-fg-dim">You</span>
+      </div>
+      <div className={`text-xs font-medium px-2 py-0.5 rounded-full first-letter:uppercase ${
+        canMove ? 'bg-inset/50 text-fg-2' : 'bg-inset text-fg-muted'
+      }`}>
+        {text}
+      </div>
+      <div className="flex items-center gap-1.5">
+        <span className="text-fg-dim">{them}</span>
+        <span className="w-3 h-3 rounded-full bg-fg-muted" />
+      </div>
+    </div>
+  );
+}
+
+/** Why the game stopped, said plainly. "Draw" alone tells a player nothing
+ *  about what just happened to them. */
+const END_TEXT: Record<string, string> = {
+  'checkmate': 'Checkmate',
+  'stalemate': 'Stalemate — draw',
+  'insufficient-material': 'Draw — not enough pieces to mate',
+  'threefold-repetition': 'Draw — same position three times',
+  'fifty-move': 'Draw — fifty moves without a capture',
+};
+
+/** The pawn reached the far rank. It cannot move until you say what it becomes,
+ *  so this is a blocking choice rather than a silent default to a queen —
+ *  under-promoting to a knight is a real move people make. */
+function PromotionPicker({
+  onPick, onCancel, treatment,
+}: { onPick: (p: PromotionPiece) => void; onCancel: () => void; treatment: PieceTreatment }) {
+  // Always the SOLID set here: these are YOUR pieces, and yours are solid in
+  // every treatment. `treatment` is still taken so the disc trial can restyle
+  // this card without a second signature change.
+  const glyphs = treatment === 'disc' ? SOLID : SOLID;
+  return (
+    <div className="absolute inset-0 flex items-center justify-center bg-canvas/70 rounded-md">
+      <div className="flex flex-col items-center gap-2 px-4 py-3 rounded-lg bg-panel border border-edge shadow-lg">
+        <span className="text-xs text-fg-2">Promote to</span>
+        <div className="flex gap-1">
+          {(['q', 'r', 'b', 'n'] as const).map((p) => (
+            <button
+              key={p}
+              type="button"
+              aria-label={`Promote to ${PIECE_NAMES[p]}`}
+              onClick={() => onPick(p)}
+              className="w-10 h-10 flex items-center justify-center rounded-md bg-inset hover:bg-accent/20 border border-edge-dim text-fg text-xl leading-none transition-colors"
+            >
+              {glyphs[p]}
+            </button>
+          ))}
+        </div>
+        {/* Ghost, not a second primary — G-4 allows one primary per view and
+            the four piece buttons already are the decision. */}
+        <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
+/** One piece, in whichever treatment is being trialled.
+ *
+ *  Drawn as SVG text in a 100×100 viewBox rather than a font-size in px or vw:
+ *  the pane is user-resizable (§4.3), so the glyph has to scale with the square
+ *  it sits in. The viewBox does that for free — the old `min(6.2vw, 32px)`
+ *  scaled with the WINDOW, which is the wrong thing entirely once the pane can
+ *  be dragged. */
+function Piece({
+  piece, yours, treatment, lifted,
+}: { piece: PlacedPiece; yours: boolean; treatment: PieceTreatment; lifted: boolean }) {
+  const key = piece.type;
+  // The lift is the third selection cue (deck step S-2): a picked-up piece
+  // visibly comes off the board instead of only sitting on a tinted square.
+  const size = lifted ? 'w-[92%] h-[92%]' : 'w-[78%] h-[78%]';
 
   if (treatment === 'disc' && yours) {
     // The strongest separation available without inventing a colour: your piece
@@ -150,8 +379,8 @@ function Piece({ code, yours, treatment }: { code: string; yours: boolean; treat
     // do. `on-accent` is computed per theme to be legible on that accent
     // (theme-validator.ts), so this cannot go grey-on-grey in any pack.
     return (
-      <span className="relative flex items-center justify-center w-[76%] h-[76%] rounded-full bg-accent">
-        <span className="leading-none text-on-accent" style={size}>{SOLID[key]}</span>
+      <span className="relative flex items-center justify-center w-[80%] h-[80%] rounded-full bg-accent">
+        <Glyph char={SOLID[key]!} className="text-on-accent w-[78%] h-[78%]" />
       </span>
     );
   }
@@ -159,16 +388,46 @@ function Piece({ code, yours, treatment }: { code: string; yours: boolean; treat
     // The chess convention: the two sets differ in SHAPE, not only in colour,
     // so they stay distinct even where a theme's accent is itself a grey.
     return (
-      <span className={`relative leading-none ${yours ? 'text-fg' : 'text-fg-dim'}`} style={size}>
-        {yours ? SOLID[key] : OUTLINE[key]}
-      </span>
+      <Glyph
+        char={(yours ? SOLID[key] : OUTLINE[key])!}
+        className={`${yours ? 'text-fg' : 'text-fg-dim'} ${size} transition-all`}
+      />
     );
   }
   return (
-    <span className={`relative leading-none ${yours ? 'text-accent' : 'text-fg-muted'}`} style={size}>
-      {SOLID[key]}
-    </span>
+    <Glyph
+      char={SOLID[key]!}
+      className={`${yours ? 'text-accent' : 'text-fg-muted'} ${size} transition-all`}
+    />
   );
+}
+
+function Glyph({ char, className }: { char: string; className: string }) {
+  return (
+    <svg viewBox="0 0 100 100" className={`relative pointer-events-none ${className}`} aria-hidden="true">
+      <text
+        x="50"
+        y="54"
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontSize="88"
+        fill="currentColor"
+      >
+        {char}
+      </text>
+    </svg>
+  );
+}
+
+function squareLabel(
+  square: string,
+  piece: PlacedPiece | undefined,
+  isTarget: boolean,
+  isSelected: boolean,
+): string {
+  const what = piece ? `${piece.color === 'w' ? 'white' : 'black'} ${PIECE_NAMES[piece.type]}` : 'empty';
+  const suffix = isSelected ? ', selected' : isTarget ? ', legal move' : '';
+  return `${square}, ${what}${suffix}`;
 }
 
 function LegendDot({ className, label }: { className: string; label: string }) {

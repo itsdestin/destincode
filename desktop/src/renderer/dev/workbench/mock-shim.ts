@@ -22,7 +22,7 @@ import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns }
 // Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
-import { arcadeStatusFor, arcadeBoardFor, type ArcadeScenario } from './arcade-fixtures';
+import { arcadeStatusFor, arcadeBoardFor, arcadeVersusIsDown, type ArcadeScenario } from './arcade-fixtures';
 import { buildCatalog } from './fixtures/marketplace/catalog';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
@@ -518,6 +518,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   const activeScenario = typeof location === 'undefined'
     ? 'default'
     : new URLSearchParams(location.search).get('scenario') ?? 'default';
+
+  // `?arcade=<state>` overrides the mapping. WHY it needs its own switch: the
+  // app's `empty` scenario has NO SESSIONS, so the header — and with it the
+  // games button — never renders, making the brand-new-arcade state
+  // unreachable through the app scenario alone (measured: the capture missed
+  // in all six themes with MISSING "[title='Games']").
+  const arcadeOverride = typeof location === 'undefined'
+    ? null
+    : new URLSearchParams(location.search).get('arcade');
+  const arcadeScenario: ArcadeScenario =
+    (arcadeOverride === 'empty' || arcadeOverride === 'alone'
+      || arcadeOverride === 'degraded' || arcadeOverride === 'default')
+      ? arcadeOverride
+      : activeScenario === 'empty' ? 'empty'
+      : activeScenario === 'stress' ? 'alone'
+      : activeScenario === 'refused' ? 'degraded'
+      : 'default';
 
   // Subscriber sets, one per real event the renderer listens for. These are the
   // channels the UI actually re-fetches on — see the WHY on the emits below.
@@ -1160,6 +1177,14 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       setTimeout(() => {
         if (!presenceLive) return; // disconnected again before this fired
         presenceListener?.({ type: 'connected' });
+        // §6.6's degraded case, taken through the REAL path: an `error` frame
+        // is what a genuine outage sends, so the picker's "can't reach the game
+        // server" line comes from the reducer rather than from a fixture that
+        // no server would ever have produced. Solo tiles are untouched (§4.2).
+        if (arcadeVersusIsDown(arcadeScenario)) {
+          presenceListener?.({ type: 'error', message: "Can't reach the game server" });
+          return;
+        }
         presenceListener?.({
           type: 'presence',
           users: [{ id: JAKE_FRIEND.id, display_name: JAKE_FRIEND.display_name, handle: JAKE_FRIEND.handle, status: 'idle' }],
@@ -1577,29 +1602,15 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   //   stress       -> you, alone on the board (the §6.5 invitation case)
   //   refused      -> versus service unreachable, solo untouched (§6.6)
   //
-  // `?arcade=<state>` overrides the mapping. WHY it needs its own switch: the
-  // app's `empty` scenario has NO SESSIONS, so the header — and with it the
-  // games button — never renders, making the brand-new-arcade state
-  // unreachable through the app scenario alone (measured: the capture missed
-  // in all six themes with MISSING "[title='Games']").
-  const arcadeOverride = typeof location === 'undefined'
-    ? null
-    : new URLSearchParams(location.search).get('arcade');
-  const arcadeScenario: ArcadeScenario =
-    (arcadeOverride === 'empty' || arcadeOverride === 'alone'
-      || arcadeOverride === 'degraded' || arcadeOverride === 'default')
-      ? arcadeOverride
-      : activeScenario === 'empty' ? 'empty'
-      : activeScenario === 'stress' ? 'alone'
-      : activeScenario === 'refused' ? 'degraded'
-      : 'default';
   const arcade = {
     status: async () => arcadeStatusFor(arcadeScenario),
     leaderboard: async (gameId: string) => arcadeBoardFor(arcadeScenario, gameId),
-    // Accepts and drops it. The workbench has no board to write to, and the
-    // renderer already keeps the run locally — this exists so the call path is
-    // exercised rather than short-circuited by optional chaining.
-    submitScore: async (_gameId: string, _score: number) => ({ ok: true }),
+    // Answers in the REAL channel's shape (ApiResult around the Worker's reply)
+    // so the renderer's "the server knows a higher best than this computer"
+    // branch is exercised here rather than only in production. `best` echoes
+    // the run: the workbench has no board to compare against.
+    submitScore: async (_gameId: string, score: number) =>
+      ({ ok: true as const, value: { ok: true as const, best: score, best_at: Math.floor(Date.now() / 1000), runs: 1, is_best: true } }),
   };
 
   return {

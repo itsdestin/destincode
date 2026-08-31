@@ -66,6 +66,21 @@ class SessionService : Service() {
     // Matches the sessionOwnership field above, which uses ConcurrentHashMap for the same reason.
     private val rawByteJobs = ConcurrentHashMap<String, Job>()
 
+    /**
+     * The last friends leaderboard we successfully fetched, per game id, with the
+     * clock time we fetched it. Desktop parity: the boardCache in
+     * desktop/src/main/arcade-handlers.ts.
+     *
+     * WHY keep it at all: if the network blips, showing an EMPTY leaderboard
+     * teaches the player their scores were lost — alarming and untrue. Serving
+     * the remembered board with `cachedAt` set lets the UI label it as out of
+     * date instead. WHY memory and not disk: a board that survived an app
+     * restart would be stale in a way the user could not explain to themselves.
+     * ConcurrentHashMap for the same reason as rawByteJobs above —
+     * handleBridgeMessage runs on Dispatchers.IO.
+     */
+    private val arcadeBoardCache = ConcurrentHashMap<String, Pair<JSONObject, Long>>()
+
     // Concurrency guard: prevent two concurrent dev:install-workspace ops from
     // cloning/pulling the workspace simultaneously (e.g. double-tap the button).
     @Volatile private var devInstallInFlight: Boolean = false
@@ -161,6 +176,19 @@ class SessionService : Service() {
         put("display_name", user.displayName ?: JSONObject.NULL)
         put("handle",       user.handle ?: JSONObject.NULL)
     }
+
+    /**
+     * The value shape arcade:leaderboard returns: the board itself plus
+     * `cachedAt`, which is set ONLY when this is a remembered copy served
+     * because the live fetch failed. Desktop parity: BoardResult in
+     * arcade-handlers.ts. The renderer writes the staleness wording — this
+     * layer only reports the fact.
+     */
+    private fun arcadeBoardResultJson(board: JSONObject, cachedAt: Long?): JSONObject =
+        JSONObject().apply {
+            put("board", board)
+            put("cachedAt", cachedAt ?: JSONObject.NULL)
+        }
 
     /**
      * Write a text file into the public Downloads collection via MediaStore
@@ -2659,6 +2687,10 @@ class SessionService : Service() {
                 // Drop the presence socket so we don't linger online after the
                 // local token is cleared (desktop parity: notifySignedOut).
                 presenceClient.setDesired(false)
+                // And forget the remembered friends leaderboards — the next person
+                // to sign in on this device must never be shown the last one's
+                // friends (desktop parity: clearArcadeCache).
+                arcadeBoardCache.clear()
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, true) }
             }
 
@@ -2710,6 +2742,8 @@ class SessionService : Service() {
                     marketplaceAuthStore.signOut()
                     // Drop the presence socket on account deletion too (desktop parity).
                     presenceClient.setDesired(false)
+                    // Forget the remembered friends leaderboards too (desktop parity).
+                    arcadeBoardCache.clear()
                 }
                 // Fix: a 401 also means the session is dead (already deleted / expired) —
                 // clear locally so the UI flips to signed-out rather than looping on a
@@ -2934,6 +2968,78 @@ class SessionService : Service() {
                 clearSessionOn401(result)
                 // value shape: bare array of BlockRow
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            // ── Games arcade (spec §6.1, §6.6) ───────────────────────────────────
+            // Mirrors desktop/src/main/arcade-handlers.ts channel for channel. The
+            // channel strings are byte-identical to the ones in preload.ts,
+            // remote-shim.ts and remote-server.ts — drift silently breaks Android
+            // only, and the games panel would quietly show "no board".
+            //
+            // Scores cross this boundary as RAW NUMBERS; how a game words a score
+            // lives in the renderer's game-registry.ts.
+
+            "arcade:status" -> {
+                // No payload. Every solo game I have played, keyed by game id:
+                // { "flappy": { best, best_at, runs } }. Signed out this is
+                // { ok:false, status:401 } and the renderer falls back to the
+                // bests saved on this device — playing offline never costs a score.
+                val result = marketplaceApiClient.gameScores()
+                clearSessionOn401(result)
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, result.toJson { v -> v }) }
+            }
+
+            "arcade:leaderboard" -> {
+                // payload: { game }
+                val game = msg.payload.optString("game", "")
+                val result = marketplaceApiClient.gameBoard(game)
+                clearSessionOn401(result)
+                val response: JSONObject = when (result) {
+                    is ApiResult.Ok -> {
+                        arcadeBoardCache[game] = Pair(result.value, System.currentTimeMillis())
+                        ApiResult.Ok(arcadeBoardResultJson(result.value, null)).toJson { v -> v }
+                    }
+                    is ApiResult.Err ->
+                        // A 401 is NOT an outage — it means signed out, and there is
+                        // genuinely no friends board to show. Serving a remembered one
+                        // would show a signed-out user other people's names, so the
+                        // entry is dropped and the error passed through.
+                        if (result.status == 401) {
+                            arcadeBoardCache.remove(game)
+                            result.toJson()
+                        } else {
+                            // Any other failure (network down, Worker 5xx): degrade to
+                            // the last board we held, labelled with when we got it.
+                            // The leaderboard being down must never look like the GAME
+                            // being down. With nothing remembered, report the real error.
+                            val cached = arcadeBoardCache[game]
+                            if (cached != null) {
+                                ApiResult.Ok(arcadeBoardResultJson(cached.first, cached.second)).toJson { v -> v }
+                            } else {
+                                result.toJson()
+                            }
+                        }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
+            }
+
+            "arcade:submit-score" -> {
+                // payload: { game, score }
+                val game = msg.payload.optString("game", "")
+                // A missing score is a malformed frame, not a run worth zero —
+                // optInt's default would publish a fake 0 and could not be told
+                // apart from a real one. Report it as-is rather than guessing.
+                // (An empty/unknown `game` IS sent on: the Worker answers with the
+                // exact list of games it accepts, which beats a guess made here.)
+                val response: JSONObject = if (!msg.payload.has("score")) {
+                    JSONObject().put("ok", false).put("status", 0).put("message", "missing score")
+                } else {
+                    val result = marketplaceApiClient.submitGameScore(game, msg.payload.optInt("score"))
+                    clearSessionOn401(result)
+                    // value shape: { ok, best, best_at, runs, is_best }
+                    result.toJson { v -> v }
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, response) }
             }
 
             // ── Presence socket (Task 6) ─────────────────────────────────────────

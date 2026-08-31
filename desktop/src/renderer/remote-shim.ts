@@ -1648,6 +1648,13 @@ export function installShim(): void {
     fs: {
       readHead: (filePath: string, maxBytes?: number) => invoke('fs:read-head', { filePath, maxBytes }),
     },
+    // Games arcade scores (spec §6.1). Object payload (this transport's
+    // convention) — remote-server.ts reads payload.game / payload.score.
+    arcade: {
+      status: () => invoke('arcade:status'),
+      leaderboard: (game: string) => invoke('arcade:leaderboard', { game }),
+      submitScore: (game: string, score: number) => invoke('arcade:submit-score', { game, score }),
+    },
     permissions: {
       list: () => invoke('permissions:list'),
       remove: (slug: string, rule: unknown) => invoke('permissions:remove', { slug, rule }),

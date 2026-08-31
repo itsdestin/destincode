@@ -17,6 +17,9 @@ import { wrap, makeClearSessionOn401 } from "./handler-utils";
 // keeps social-handlers → this module a pure type edge; the value edge here is
 // one-way (this → social-handlers) so there's no runtime import cycle.
 import { notifySignedOut } from "./social-handlers";
+// Sign-out must also forget any remembered games leaderboard, or the next
+// person to sign in on this machine could be served the previous one's friends.
+import { clearArcadeCache } from "./arcade-handlers";
 import { reconcileInstalls, type InstalledSkillSource } from "./install-reconcile";
 
 /** Shape returned by `marketplace:thumb` — the caller's new vote AND the plugin's
@@ -179,6 +182,7 @@ export function registerMarketplaceApiHandlers(
     try { await client.logout(); } catch { /* offline sign-out is fine */ }
     store.signOut();
     notifySignedOut(); // drop the presence socket so we don't linger online
+    clearArcadeCache(); // and forget the cached friends leaderboard
   });
 
   // Update the account display name, then mirror the new value into the stored
@@ -211,6 +215,7 @@ export function registerMarketplaceApiHandlers(
       await client.deleteAccount();
       store.signOut();
       notifySignedOut(); // drop the presence socket on account deletion too
+      clearArcadeCache(); // and forget the cached friends leaderboard
     }).then(clearSessionOn401)
   );
 

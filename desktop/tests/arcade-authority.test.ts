@@ -72,7 +72,7 @@ describe('the state split (§3.1)', () => {
   // file may narrow it: the game whose state it is. If a shell file starts
   // reaching in, the split has quietly collapsed back into the one shared pot
   // it took the largest piece of work in the project to get out of.
-  const MAY_READ_PLAY = new Set(['ConnectFourBoard.tsx']);
+  const MAY_READ_PLAY = new Set(['ConnectFourBoard.tsx', 'ChessBoard.tsx']);
 
   it('only a game\'s own board narrows state.play', () => {
     const offenders = gameFiles()
@@ -189,5 +189,46 @@ describe('theming (§5.5)', () => {
     // And the allowlist must really exempt a sanctioned one, or the guard is
     // just banning everything and passing by luck.
     expect(sanctionedStatusColours().has('green-400')).toBe(true);
+  });
+});
+
+describe('the score boundary (§6.1)', () => {
+  // Scores cross every boundary as raw NUMBERS. "31 pipes" and "12,480" are a
+  // particular GAME's words and live in game-registry.ts. If main or the wire
+  // ever learned them, adding a game would mean touching the main process, the
+  // five IPC surfaces and the Worker — which is the coupling this whole design
+  // exists to avoid.
+  const MAIN = join(RENDERER, '..', 'main');
+  const GAME_WORDS = [...GAMES.map((g) => g.id), 'pipes', 'toLocaleString'];
+
+  it('no main-process file speaks a game\'s vocabulary', () => {
+    const files = readdirSync(MAIN)
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.test.ts'))
+      .map((f) => join(MAIN, f));
+    expect(files.length).toBeGreaterThanOrEqual(20);
+    const offenders: string[] = [];
+    for (const f of files) {
+      const src = stripComments(readFileSync(f, 'utf8'));
+      for (const w of GAME_WORDS) {
+        if (src.includes(w)) offenders.push(`${f.split('/').pop()}: ${w}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('the game-word list actually matches a known positive', () => {
+    // A guard whose pattern matches nothing reads green forever. The registry
+    // itself MUST trip this list, or the check above proves nothing.
+    const registry = readStripped(join(GAME_DIR, 'game-registry.ts'));
+    expect(GAME_WORDS.some((w) => registry.includes(w))).toBe(true);
+  });
+
+  it('the arcade handler formats nothing and decides no ranking', () => {
+    const src = readStripped(join(MAIN, 'arcade-handlers.ts'));
+    // Ranking is the Worker's, once, so every player sees one board; sorting
+    // here would give each client its own opinion of who is winning.
+    for (const banned of ['.sort(', 'rank', 'format(']) {
+      expect(src.includes(banned), `arcade-handlers.ts must not ${banned}`).toBe(false);
+    }
   });
 });
