@@ -68,8 +68,13 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
-      <div className="w-16 h-16 rounded-full bg-red-900/30 flex items-center justify-center">
-        <span className="text-2xl">!</span>
+      {/* G-2 (§5.5): was `bg-red-900/30`, a raw Tailwind colour identical in
+          every theme. `--destructive` is the token for exactly this, and it is
+          derived per theme so the disc stays legible on light packs too.
+          Design rule 6 also says errors are not red BOXES — this is a mark, and
+          it stays a mark. */}
+      <div className="w-16 h-16 rounded-full bg-destructive/20 flex items-center justify-center">
+        <span className="text-2xl text-destructive-fg" aria-hidden="true">!</span>
       </div>
       <p className="text-sm text-destructive-fg text-center">{state.partyError}</p>
       <p className="text-xs text-fg-muted text-center max-w-xs">{hint}</p>
@@ -84,7 +89,11 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
         {retryCount >= 2 && (
           <button
             onClick={() => window.location.reload()}
-            className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+            // G-2: `amber` is not in the app's token set, and this is not a
+            // status indicator (the one documented exception) — it is a
+            // secondary action inside an error screen, so it uses the same
+            // quiet foreground every other secondary action here does.
+            className="text-xs text-fg-2 hover:text-fg transition-colors"
             title="Hard reload the renderer — drops all in-memory state"
           >
             Reload app

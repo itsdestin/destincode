@@ -24,4 +24,13 @@
 // on all five surfaces (2026-08-28). Same rule, same reason as the rows above:
 // the fake in mock-shim.ts stays so the tool gallery can show every card state
 // without a real process — only the "no real backend" claim goes.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
+  // Games arcade Step 1 (docs/active/specs/2026-08-30-games-arcade-design.md).
+  // The picker's deciding fact and the solo leaderboard are being designed
+  // BEFORE the Worker endpoints that will serve them (§6.1) — which is exactly
+  // what this registry is for. When the D1 table and its routes land, these two
+  // rows come off and the fakes in mock-shim.ts stay so the workbench can still
+  // show the you-alone and stale states without a live board.
+  { channel: 'arcade.status', feature: 'Games arcade — per-game deciding fact in the picker (§4.1)' },
+  { channel: 'arcade.leaderboard', feature: 'Games arcade — solo friend leaderboard (§6.1)' },
+];

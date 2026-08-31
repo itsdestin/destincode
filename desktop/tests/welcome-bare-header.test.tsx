@@ -4,7 +4,7 @@
 // wears the app's BARE frame — the same header bar as a session, holding only
 // what works without a session: the Settings gear, the Projects button and the
 // window controls. Nothing session-scoped (session strip, chat/terminal
-// toggle, Session Files, Connect 4, the ||| overflow menu) may appear there.
+// toggle, Session Files, Games, the ||| overflow menu) may appear there.
 //
 // The gear must be byte-identical to the session header's, so it lives in ONE
 // component in HeaderBar.tsx — the source assertion below fails if a second
@@ -58,7 +58,9 @@ describe('BareHeaderBar (welcome screen frame)', () => {
     expect(screen.queryByLabelText('Chat')).toBeNull();
     expect(screen.queryByLabelText('Terminal')).toBeNull();
     expect(screen.queryByTitle('Session Files')).toBeNull();
-    expect(screen.queryByTitle('Connect 4')).toBeNull();
+    // Renamed from 'Connect 4' with the arcade (§4.1) — the button now opens a
+    // four-game pane, so it names the pane.
+    expect(screen.queryByTitle('Games')).toBeNull();
     expect(screen.queryByLabelText('Open menu')).toBeNull();
   });
 

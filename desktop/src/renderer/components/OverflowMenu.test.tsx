@@ -2,7 +2,7 @@
 //
 // Pins the reachability guarantee this component exists to provide. The bug it
 // replaces: the gamepad button was `hidden sm:block` and TOGGLE_PANEL had
-// exactly ONE caller in the entire renderer, so below 640px Connect 4 was
+// exactly ONE caller in the entire renderer, so below 640px Games was
 // unreachable — an incoming challenge could never be answered on a phone.
 // Any future change that drops a row from this menu without adding another
 // entry point for it should fail here.
@@ -50,7 +50,8 @@ describe('OverflowMenu', () => {
     expect(labels.some((l) => l.includes('Settings'))).toBe(true);
     expect(labels.some((l) => l.includes('Projects'))).toBe(true);
     // The reachability regression this file guards.
-    expect(labels.some((l) => l.includes('Connect 4'))).toBe(true);
+    // Renamed with the arcade (§4.1): the row opens a four-game pane now.
+    expect(labels.some((l) => l.includes('Games'))).toBe(true);
     // Joined the menu when the toggle took over the right cluster.
     expect(labels.some((l) => l.includes('Session Files'))).toBe(true);
   });
@@ -78,7 +79,7 @@ describe('OverflowMenu', () => {
     const onToggleGamePanel = vi.fn();
     renderMenu({ onToggleGamePanel });
     openMenu();
-    fireEvent.click(screen.getByText(/Connect 4/).closest('button')!);
+    fireEvent.click(screen.getByText(/Games/).closest('button')!);
     expect(onToggleGamePanel).toHaveBeenCalledTimes(1);
   });
 

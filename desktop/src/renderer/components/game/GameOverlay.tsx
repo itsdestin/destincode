@@ -24,7 +24,10 @@ export default function GameOverlay({ connection }: Props) {
   if (winner && winner !== 'draw') {
     if (winner === myColor) {
       headline = 'You Win!';
-      headlineClass = winner === 'red' ? 'text-red-400' : 'text-yellow-400';
+      // Retheme (§5.4): was `text-red-400`/`text-yellow-400`, picked to match
+      // whichever disc you were playing. Now the winner's headline is the
+      // accent for the same reason your discs are — it is YOUR result.
+      headlineClass = 'text-accent';
     } else {
       headline = 'You Lose!';
       headlineClass = 'text-fg-dim';

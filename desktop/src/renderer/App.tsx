@@ -2880,12 +2880,15 @@ function AppInner() {
         className="flex-1 flex flex-col overflow-hidden relative"
         hidden={activeView === 'marketplace' || activeView === 'library'}
         // --right-pane-width drives BOTH the framed-shell drawer-pane width and
-        // the chrome-glass cutout offset (both descend from here). The game pane
-        // stays fixed at 400px; the artifact drawer's width is user-resizable
-        // (youcoded#105) via --drawer-width on <html> — referencing the var here
-        // (instead of a px literal) means mid-drag App re-renders rewrite the
-        // SAME string and can't snap the width back while the user is dragging.
-        style={{ ['--right-pane-width' as any]: gameState.panelOpen ? '400px' : 'var(--drawer-width, 480px)' }}
+        // the chrome-glass cutout offset (both descend from here). BOTH right
+        // panes are user-resizable and each remembers its OWN width — the games
+        // pane via --game-pane-width (spec §4.3, was a fixed 400px) and the
+        // artifact drawer via --drawer-width (youcoded#105), both set on <html>
+        // by ThemeProvider. Two vars, not one, so dragging a game board wider
+        // never moves the document drawer. Referencing the vars here (instead of
+        // a px literal) means mid-drag App re-renders rewrite the SAME string and
+        // can't snap the width back while the user is dragging.
+        style={{ ['--right-pane-width' as any]: gameState.panelOpen ? 'var(--game-pane-width, 420px)' : 'var(--drawer-width, 480px)' }}
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>

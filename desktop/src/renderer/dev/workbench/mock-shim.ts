@@ -21,6 +21,7 @@ import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns }
 // Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
+import { arcadeStatusFor, arcadeBoardFor, type ArcadeScenario } from './arcade-fixtures';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
 // states (partial-view banner, handoff) against the fake backend.
@@ -112,6 +113,10 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
+  // Games arcade Step 1 — NO real backend yet; both are declared in
+  // mock-only.ts so the contract test knows they are deliberately unbuilt
+  // rather than a fake quietly standing in for something real.
+  'arcade.status', 'arcade.leaderboard',
   // Multiplayer games (Task 7c) — friends graph + presence socket. Real
   // backend (social-handlers.ts / preload.ts), hand-written here so Connect
   // Four has a scripted friend ("Jake") instead of sitting on "Connecting…"
@@ -1557,9 +1562,39 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     getPackages: async () => (marketplaceEmpty ? {} : JSON.parse(JSON.stringify(INSTALLED_PACKAGES))),
   };
 
+  // Games arcade (Step 1). Maps the workbench's own scenario switch onto the
+  // arcade's four interesting states, so every state that is hard to reach by
+  // accident — a board with only you on it, a service that is down, a player
+  // who has never played — is one toolbar click away:
+  //   default      -> played both, Jake online, everything up
+  //   empty        -> brand-new install: nothing played, nobody online
+  //   stress       -> you, alone on the board (the §6.5 invitation case)
+  //   refused      -> versus service unreachable, solo untouched (§6.6)
+  //
+  // `?arcade=<state>` overrides the mapping. WHY it needs its own switch: the
+  // app's `empty` scenario has NO SESSIONS, so the header — and with it the
+  // games button — never renders, making the brand-new-arcade state
+  // unreachable through the app scenario alone (measured: the capture missed
+  // in all six themes with MISSING "[title='Games']").
+  const arcadeOverride = typeof location === 'undefined'
+    ? null
+    : new URLSearchParams(location.search).get('arcade');
+  const arcadeScenario: ArcadeScenario =
+    (arcadeOverride === 'empty' || arcadeOverride === 'alone'
+      || arcadeOverride === 'degraded' || arcadeOverride === 'default')
+      ? arcadeOverride
+      : activeScenario === 'empty' ? 'empty'
+      : activeScenario === 'stress' ? 'alone'
+      : activeScenario === 'refused' ? 'degraded'
+      : 'default';
+  const arcade = {
+    status: async () => arcadeStatusFor(arcadeScenario),
+    leaderboard: async (gameId: string) => arcadeBoardFor(arcadeScenario, gameId),
+  };
+
   return {
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs,
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade,
   } as unknown as Record<string, Record<string, unknown>>;
 }
