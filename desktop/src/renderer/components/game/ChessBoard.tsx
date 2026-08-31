@@ -72,6 +72,54 @@ interface Props {
   treatment?: PieceTreatment;
 }
 
+/** How the board's two square shades are made.
+ *
+ *  OPEN QUESTION for Destin (decision D-13). Measured square-to-square contrast
+ *  on the shipped board is 1.05-1.40 across the six themes, where a physical
+ *  board sits nearer 2.5-3 — so the checker pattern is close to invisible in
+ *  Dark and Meadow Mist. `?board=` renders each candidate against the same
+ *  position for a review deck. WORKBENCH-ONLY, exactly like `?chess=`: never a
+ *  user setting, and `today` stays the default until he picks.
+ *
+ *  Why an OVERLAY and not two background classes: two `bg-*` utilities on one
+ *  element do not blend, one wins. The shipped board says
+ *  `bg-inset bg-accent/[0.07]` and renders as flat `--inset` — measured
+ *  #D7D7D7 in light and #222222 in dark, the raw tokens. The intended wash has
+ *  never rendered, which is the whole reason the contrast is where it is. */
+export type BoardShading = 'today' | 'soft' | 'contrast' | 'wood';
+
+function boardShading(): BoardShading {
+  if (typeof location === 'undefined') return 'today';
+  const v = new URLSearchParams(location.search).get('board');
+  return v === 'soft' || v === 'contrast' || v === 'wood' ? v : 'today';
+}
+
+/** The dark square's extra layer. `null` for `today`, which keeps the two raw
+ *  surface tokens it ships with.
+ *
+ *  `--fg` and `--accent` are used as the MIX SOURCE rather than a fixed black
+ *  or white, so the step lands in the right direction in every theme without
+ *  the board knowing whether it is light or dark: `--fg` always contrasts
+ *  strongly with its own surface, including in a community theme nobody has
+ *  seen yet. That is the argument for `contrast` over the alternatives — it
+ *  cannot be defeated by a theme we did not test. */
+function boardShadeStyle(shading: BoardShading): { background: string } | null {
+  switch (shading) {
+    // Neutral, gentle. Reads as a board without competing with the pieces.
+    case 'soft':     return { background: 'color-mix(in srgb, var(--fg) 22%, transparent)' };
+    // Neutral, full strength — the ratio a physical board has.
+    case 'contrast': return { background: 'color-mix(in srgb, var(--fg) 36%, transparent)' };
+    // The theme's own colour, with a guaranteed floor. Creme goes brown and
+    // midnight goes blue, the way a real board is two woods rather than two
+    // greys — but the accent is blended toward `--fg` first, because MEASURED:
+    // pure accent at 34% collapses to 1.40 on halftone-dimension and 1.44 on
+    // meadow-mist, whose accents sit close to their own surfaces. Colour alone
+    // cannot be trusted across themes nobody has reviewed yet.
+    case 'wood':     return { background: 'color-mix(in srgb, color-mix(in srgb, var(--accent) 60%, var(--fg)) 38%, transparent)' };
+    default:         return null;
+  }
+}
+
 export default function ChessBoard({ connection, treatment = 'outline' }: Props) {
   const state = useGameState();
   const dispatch = useGameDispatch();
@@ -85,6 +133,9 @@ export default function ChessBoard({ connection, treatment = 'outline' }: Props)
   const mySeat = state.seat ?? 0;
   const myColor = colorForSeat(mySeat);
   const pieces = useMemo(() => readPosition(play.fen), [play.fen]);
+  // Workbench-only while decision D-13 is open; `today` in every shipped build.
+  const shading = boardShading();
+  const shadeStyle = boardShadeStyle(shading);
 
   const [selected, setSelected] = useState<string | null>(null);
   /** A pawn move that needs a piece chosen before it can be sent. */
@@ -200,17 +251,22 @@ export default function ChessBoard({ connection, treatment = 'outline' }: Props)
                   onClick={() => onSquare(name)}
                   className={[
                     'relative flex items-center justify-center select-none p-0 border-0',
-                    // Two shades of one surface family (§5.5) — NOT two colours.
-                    // `well` is the deepest cut and `inset` sits one step up, so
-                    // the checker pattern reads without either square competing
-                    // with a piece for attention. Two shades one step apart were
-                    // nearly identical in dark (#1C1C1C vs #222222); the accent
-                    // wash gives the dark square a tint that survives every
-                    // theme without introducing a colour the theme does not own.
-                    dark ? 'bg-well' : 'bg-inset bg-accent/[0.07]',
+                    // The board's base surface. The two square shades are made
+                    // by the OVERLAY below, not by two background classes —
+                    // see boardOverlay().
+                    shading === 'today' ? (dark ? 'bg-well' : 'bg-inset') : 'bg-inset',
                     interactive ? 'cursor-pointer' : 'cursor-default',
                   ].join(' ')}
                 >
+                  {/* The dark square's shade. A real overlay layer, because two
+                      `bg-*` utilities on one element DO NOT BLEND — one simply
+                      wins. That is why the old `bg-inset bg-accent/[0.07]` light
+                      square rendered as flat `--inset` and the board's two
+                      shades were the raw tokens, one ladder rung apart. */}
+                  {dark && shadeStyle && (
+                    <span className="absolute inset-0" style={shadeStyle} aria-hidden="true" />
+                  )}
+
                   {/* Highlights are WASHES over the square, never a third square
                       colour — so they stack on either shade without inventing a
                       fourth surface. */}
@@ -250,10 +306,10 @@ export default function ChessBoard({ connection, treatment = 'outline' }: Props)
                       Cheap, and it is how a player says "knight to f3" out loud
                       to the person they are playing. */}
                   {c === 0 && (
-                    <span className="absolute top-0 left-0.5 text-3xs leading-none pt-0.5 text-fg-faint" aria-hidden="true">{rank}</span>
+                    <span className="absolute top-0 left-0.5 text-3xs leading-none pt-0.5 text-fg-muted" aria-hidden="true">{rank}</span>
                   )}
                   {r === 7 && (
-                    <span className="absolute bottom-0 right-0.5 text-3xs leading-none pb-0.5 text-fg-faint" aria-hidden="true">{file}</span>
+                    <span className="absolute bottom-0 right-0.5 text-3xs leading-none pb-0.5 text-fg-muted" aria-hidden="true">{file}</span>
                   )}
                 </button>
               );
