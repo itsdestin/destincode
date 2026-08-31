@@ -231,6 +231,48 @@
   --status-bypass: #9F1239;
 }
 
+/* ─── Provider brand colours for COMMUNITY themes ───────────────────────────
+   The four blocks above key off `data-theme="<slug>"`, so they only ever match
+   the four built-in themes. A community theme's slug matches none of them, so
+   until now every community theme silently inherited the LIGHT values above —
+   including the dark ones. Measured 2026-08-31: all seven community themes
+   failed 4.5:1 on the model chip, and the three dark ones sat at 2.25–2.38:1
+   (dark green on near-black).
+
+   theme-engine sets `data-theme-mode` from the manifest's required `dark`
+   boolean, so these two blocks catch EVERY theme — built-in and community,
+   including ones not written yet. Placed after the four slug blocks so that at
+   equal specificity (0,1,0) source order lets these win; the built-in themes
+   resolve to the same values they already had, so nothing shifts for them.
+   ─────────────────────────────────────────────────────────────────────────── */
+[data-theme-mode="light"] {
+  --brand-claude:     #C2410C;
+  --brand-openai:     #047857;
+  --brand-google:     #1D4ED8;
+  --brand-qwen:       #6D28D9;
+  --brand-grok:       var(--fg-2);
+  --brand-kimi:       #0E7490;
+  --brand-deepseek:   #1D4ED8;
+  --brand-meta:       #0064E0;
+  --brand-mistral:    #C2410C;
+  --brand-cohere:     #9F1239;
+  --brand-perplexity: #0F766E;
+}
+
+[data-theme-mode="dark"] {
+  --brand-claude:     #FB923C;
+  --brand-openai:     #10A37F;
+  --brand-google:     #60A5FA;
+  --brand-qwen:       #A78BFA;
+  --brand-grok:       var(--fg-2);
+  --brand-kimi:       #22D3EE;
+  --brand-deepseek:   #60A5FA;
+  --brand-meta:       #38BDF8;
+  --brand-mistral:    #FB923C;
+  --brand-cohere:     #F59E0B;
+  --brand-perplexity: #2DD4BF;
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Tailwind @theme — maps CSS variables to utility classes
    Usage: bg-canvas, text-fg, border-edge, etc.

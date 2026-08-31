@@ -13,6 +13,8 @@ import { formatBubbleTime } from '../utils/format-time';
 import { useTheme } from '../state/theme-context';
 import { useExpandAllToggle, getInitialExpanded } from '../hooks/useExpandAllToggle';
 import { isPlaceholderModelId } from '../../shared/model-ids';
+import { resolveModelBrand } from './provider-brand';
+import { ProviderIcon } from './ProviderIcon';
 
 interface Props {
   turn: AssistantTurn;
@@ -119,7 +121,19 @@ function TurnMetadataStrip({ turn }: { turn: AssistantTurn }) {
           (session limit, out of credits, /login), not a model — printing it
           raw here showed the user a fake model name. Nothing replaces it: the
           turn genuinely ran on no model. */}
-      {turn.model && !isPlaceholderModelId(turn.model) && <span>{turn.model}</span>}
+      {turn.model && !isPlaceholderModelId(turn.model) && (() => {
+        // The mark only; the id stays raw and mono. This strip exists to show
+        // the EXACT transcript values, so prettifying the id here would defeat
+        // its purpose — the mark just makes the company scannable when a long
+        // conversation switched models partway through.
+        const b = resolveModelBrand(turn.model);
+        return (
+          <span className="inline-flex items-center gap-1">
+            {b?.icon && <span style={{ color: b.color }} className="inline-flex"><ProviderIcon icon={b.icon} size={10} /></span>}
+            <span>{turn.model}</span>
+          </span>
+        );
+      })()}
       {u && (
         <>
           <span>in {u.inputTokens.toLocaleString()}</span>
