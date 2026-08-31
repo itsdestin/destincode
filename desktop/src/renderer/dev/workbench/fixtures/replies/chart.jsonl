@@ -1,0 +1,7 @@
+{"type": "assistant_text", "text": "Reading the spreadsheet.", "delay": 400}
+{"type": "tool_use", "id": "c1", "name": "Read", "input": {"file_path": "Q3-sales.xlsx"}, "delay": 350}
+{"type": "tool_result", "tool_use_id": "c1", "content": "5 regions x 3 months, 15 rows", "delay": 900}
+{"type": "tool_use", "id": "c2", "name": "Write", "input": {"file_path": "Q3-sales.html"}, "delay": 500}
+{"type": "tool_result", "tool_use_id": "c2", "content": "Created Q3-sales.html", "delay": 1000}
+{"type": "assistant_text", "text": "Done — Q3-sales.html, a bar chart by region. It's in your files, and you can edit it right here.", "delay": 350}
+{"type": "turn_complete", "delay": 300}
