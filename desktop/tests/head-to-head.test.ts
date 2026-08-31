@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { recordLabel, recordSentence, recordsByOpponent } from '../src/renderer/components/game/head-to-head';
+import { recordAria, recordLabel, recordSentence, recordsByOpponent } from '../src/renderer/components/game/head-to-head';
 import type { HeadToHead } from '../src/renderer/state/marketplace-api-client';
 
 // Wording a head-to-head record (games spec §6.2). The stakes are higher than
@@ -13,8 +13,11 @@ const rec = (over: Partial<HeadToHead> = {}): HeadToHead => ({
 });
 
 describe('recordLabel — the terse form', () => {
-  it('puts YOUR wins first', () => {
-    expect(recordLabel(rec({ wins: 4, losses: 2 }))).toBe('4–2');
+  it('labels each number, so it cannot be read backwards', () => {
+    // Destin's call (deck H-1). "4–2" relies on knowing YOUR number comes
+    // first, and read the wrong way round it is still a plausible record — so
+    // nothing tips the reader off. The letters ARE the labels.
+    expect(recordLabel(rec({ wins: 4, losses: 2 }))).toBe('4W - 2L');
   });
 
   it('is not symmetric — reversing the record reverses the label', () => {
@@ -22,24 +25,33 @@ describe('recordLabel — the terse form', () => {
     // function has stopped distinguishing winner from loser.
     expect(recordLabel(rec({ wins: 4, losses: 2 })))
       .not.toBe(recordLabel(rec({ wins: 2, losses: 4 })));
-    expect(recordLabel(rec({ wins: 2, losses: 4 }))).toBe('2–4');
+    expect(recordLabel(rec({ wins: 2, losses: 4 }))).toBe('2W - 4L');
   });
 
   it('mentions draws only when there are some', () => {
-    expect(recordLabel(rec({ draws: 0 }))).toBe('4–2');
-    expect(recordLabel(rec({ draws: 1 }))).toBe('4–2, 1 draw');
-    expect(recordLabel(rec({ draws: 3 }))).toBe('4–2, 3 draws');
+    expect(recordLabel(rec({ draws: 0 }))).toBe('4W - 2L');
+    expect(recordLabel(rec({ draws: 1 }))).toBe('4W - 2L - 1D');
+    expect(recordLabel(rec({ draws: 3 }))).toBe('4W - 2L - 3D');
   });
 
   it('handles a first-ever result without reading as an error', () => {
-    expect(recordLabel(rec({ wins: 1, losses: 0, draws: 0 }))).toBe('1–0');
-    expect(recordLabel(rec({ wins: 0, losses: 1, draws: 0 }))).toBe('0–1');
+    expect(recordLabel(rec({ wins: 1, losses: 0, draws: 0 }))).toBe('1W - 0L');
+    expect(recordLabel(rec({ wins: 0, losses: 1, draws: 0 }))).toBe('0W - 1L');
+  });
+});
+
+describe('recordAria — the same record, spoken', () => {
+  it('spells it out, because "4W - 2L" is read as letters', () => {
+    expect(recordAria(rec({ wins: 4, losses: 2 }))).toBe('4 wins, 2 losses');
   });
 
-  it('uses an en dash, not a hyphen', () => {
-    // A hyphen at 2xs reads as a range or a minus sign.
-    expect(recordLabel(rec())).toContain('–');
-    expect(recordLabel(rec())).not.toContain('-');
+  it('gets the singulars right', () => {
+    expect(recordAria(rec({ wins: 1, losses: 1, draws: 1 }))).toBe('1 win, 1 loss, 1 draw');
+    expect(recordAria(rec({ wins: 0, losses: 2, draws: 2 }))).toBe('0 wins, 2 losses, 2 draws');
+  });
+
+  it('leaves draws out when there are none', () => {
+    expect(recordAria(rec({ draws: 0 }))).not.toContain('draw');
   });
 });
 

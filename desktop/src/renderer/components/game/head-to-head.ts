@@ -16,13 +16,25 @@
 
 import type { HeadToHead } from '../../state/marketplace-api-client';
 
-/** The terse form, for a list row where space is short: "4–2", or "4–2, 1 draw"
- *  when there have been draws. En dash, not a hyphen — it is a score, and the
- *  hyphen reads as a range or a minus sign at small sizes. */
+/** The terse form for a list row: "4W - 2L", plus "- 1D" when there have been
+ *  draws.
+ *
+ *  DESTIN'S CALL (deck `head-to-head`, step H-1). The first pass was "4–2",
+ *  which is the convention but relies on the reader knowing that YOUR number
+ *  comes first — and if you read it the wrong way round it is still a perfectly
+ *  plausible record, so nothing tips you off. The letters remove the guess:
+ *  they are not notation to learn, they are the labels themselves. */
 export function recordLabel(r: HeadToHead): string {
-  const base = `${r.wins}–${r.losses}`;
-  if (r.draws === 0) return base;
-  return `${base}, ${r.draws} draw${r.draws === 1 ? '' : 's'}`;
+  const base = `${r.wins}W - ${r.losses}L`;
+  return r.draws === 0 ? base : `${base} - ${r.draws}D`;
+}
+
+/** The same record, spelled out for a screen reader, where "4W - 2L" would be
+ *  read as letters rather than as a score. */
+export function recordAria(r: HeadToHead): string {
+  const parts = [`${r.wins} win${r.wins === 1 ? '' : 's'}`, `${r.losses} loss${r.losses === 1 ? '' : 'es'}`];
+  if (r.draws > 0) parts.push(`${r.draws} draw${r.draws === 1 ? '' : 's'}`);
+  return parts.join(', ');
 }
 
 /** The sentence form, for the end of a match, where there is room to say what

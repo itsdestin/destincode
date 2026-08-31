@@ -4,9 +4,9 @@ import { useAccount } from '../../state/account-context';
 import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
 import { mergeFriends, statusLabel } from './friends-data';
-import { Button, InputGroup } from '../ui';
+import { Badge, Button, InputGroup } from '../ui';
 import type { FriendRow, HeadToHead, RequestsPayload } from '../../state/marketplace-api-client';
-import { recordLabel, recordsByOpponent } from './head-to-head';
+import { recordAria, recordLabel, recordsByOpponent } from './head-to-head';
 // Task 7c, workbench-only auto-play — see the effect below and
 // dev/workbench/fake-party.ts. isWorkbenchAutoplay() is false in every
 // shipped build (it checks for a global only install-mock.ts ever sets).
@@ -544,9 +544,9 @@ function FriendsScreen({ connection, incognito, onToggleIncognito, gameId }: Pro
                       you have never finished a game against, which is most
                       people most of the time, so it must not leave a gap. */}
                   {records.has(row.id) && (
-                    <span className="text-2xs text-fg-muted shrink-0 tabular-nums">
+                    <Badge label={recordAria(records.get(row.id)!)}>
                       {recordLabel(records.get(row.id)!)}
-                    </span>
+                    </Badge>
                   )}
                   {/* Challenge only when the friend is actually online (has a live
                       presence entry). row.id is the account id challengePlayer wants. */}
