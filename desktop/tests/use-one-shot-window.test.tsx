@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
+import { useLayoutEffect } from 'react';
 import { useOneShotWindow } from '../src/renderer/hooks/use-one-shot-window';
 
 describe('useOneShotWindow', () => {
@@ -21,6 +22,21 @@ describe('useOneShotWindow', () => {
     });
     rerender({ k: 'session-b' });
     expect(result.current).toBe(true);
+  });
+
+  it('is open in the FIRST COMMITTED render after the change — no flash frame', () => {
+    // The first version set `open` from useEffect, which runs after the browser
+    // has painted the new state once: one frame of the incoming conversation
+    // fully visible, THEN a fade-in from invisible. A layout effect sees only
+    // committed renders, so this is the sequence the browser can paint.
+    const committed: boolean[] = [];
+    const { rerender } = renderHook(({ k }) => {
+      const open = useOneShotWindow(k);
+      useLayoutEffect(() => { committed.push(open); });
+      return open;
+    }, { initialProps: { k: 'a' } });
+    rerender({ k: 'b' });
+    expect(committed).toEqual([false, true]);
   });
 
   it('closes itself after the window', () => {
