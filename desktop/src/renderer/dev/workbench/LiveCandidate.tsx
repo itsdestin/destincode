@@ -149,16 +149,23 @@ export function LiveCandidate() {
   const { surface, candidate } = found;
   // Nothing else on the page: no header, no label, no border. The deck draws the
   // caption beside the pane; the pane is only the thing being judged.
-  return (
-    // p-3: the design sits on a field of canvas rather than flush against the pane's edge.
-    // Flush, a rounded panel's corners are sliced by the pane's square boundary and every
-    // corner shows a notch (Destin, 2026-09-01) — and its own border doubles up with the
-    // pane's. CompareView has always padded for the same reason. The padding is inside the
-    // measured wrapper, so the pane sizes itself to include it.
+  //
+  // p-3: the design sits on a field of canvas rather than flush against the pane's edge.
+  // Flush, a rounded panel's corners are sliced by the pane's square boundary and every
+  // corner shows a notch (Destin, 2026-09-01) — and its own border doubles up with the
+  // pane's. CompareView has always padded for the same reason. The padding is inside the
+  // measured wrapper, so the pane sizes itself to include it.
+  const pane = (
     <div ref={wrap} className="inline-block bg-canvas text-fg p-3">
       <CandidateBoundary label={`${surface.id} · ${candidate.id}`}>
         <Frame frame={surface.frame} width={surface.paneWidth ?? PANE_WIDTH}>{candidate.render()}</Frame>
       </CandidateBoundary>
     </div>
   );
+  // Embedded, the wrapper must shrink-wrap its content — its size IS what the deck sizes the
+  // pane to. Opened on its own it is a whole browser window, and a 380px design pinned to the
+  // top-left corner of a 2560px tab looks abandoned rather than presented (Destin, 2026-09-01),
+  // so centre it there. Centring only when NOT embedded keeps the measurement honest.
+  if (window.parent !== window) return pane;
+  return <div className="min-h-screen w-full bg-canvas flex items-center justify-center p-6">{pane}</div>;
 }
