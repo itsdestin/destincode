@@ -68,6 +68,16 @@ fun upsertProject(claudeDir: String, project: CentralIndexProject) {
 
 /**
  * Remove the project with [projectId] from the index.
+ *
+ * WHY this stays although no production Kotlin code calls it yet (ROADMAP L235,
+ * re-justified 2026-09-01): this file is a 1:1 port of desktop's central-index.ts,
+ * whose `removeProject` is LIVE — it backs the `artifacts:delete-project` IPC
+ * channel (desktop ipc-handlers.ts). Android answers that same channel with a
+ * `not-implemented-on-mobile` stub in SessionService.kt until mobile Project View
+ * (v2) lands; when that stub is filled in, this is the function it calls. Pruning
+ * it would force the v2 work to re-port it and would leave the Kotlin module
+ * missing one of the four operations the header lists. `ArtifactStoreTest.kt`
+ * pins its behaviour so the port cannot silently rot in the meantime.
  */
 fun removeProject(claudeDir: String, projectId: String) {
     val idx = readIndex(claudeDir)
