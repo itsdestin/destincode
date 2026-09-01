@@ -34,13 +34,31 @@ export function useChromeGeometry(): ChromeRect[] {
     // unmasked while React is still scheduling the first observer callback.
     measure();
 
+    // Perf: `window.resize` is NOT frame-batched. On Wayland the compositor
+    // emits a configure per frame during a drag-resize, and each one ran a full
+    // getBoundingClientRect sweep + setState — forcing layout and a React render
+    // in the exact window where the compositor is waiting for our new-size
+    // frame, which shows up as content lagging behind the window edge.
+    // Coalesce to one measure per frame.
+    let rafId: number | null = null;
+    const measureOnFrame = () => {
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        measure();
+      });
+    };
+
+    // ResizeObserver stays direct — the browser already delivers its callbacks
+    // at most once per frame, so throttling it would only add a frame of lag.
     const observer = new ResizeObserver(measure);
     elements.forEach((el) => observer.observe(el));
-    window.addEventListener('resize', measure);
+    window.addEventListener('resize', measureOnFrame);
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       observer.disconnect();
-      window.removeEventListener('resize', measure);
+      window.removeEventListener('resize', measureOnFrame);
     };
   }, []);
 
