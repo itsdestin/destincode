@@ -6,6 +6,7 @@ import { computeOnAccent } from '../themes/theme-validator';
 import SettingsExplainer, { type ExplainerSection } from './SettingsExplainer';
 import type { LoadedTheme } from '../themes/theme-types';
 import { themePreviewSrc } from '../themes/builtin/previews';
+import { TERMINAL_WALLPAPER_OPACITY_FLOOR } from '../themes/theme-engine';
 import { useEscClose } from '../hooks/use-esc-close';
 import { Button, Select, Toggle, SettingRow } from './ui';
 
@@ -560,10 +561,19 @@ function ThemeEditView({ theme, reducedEffects, setGlassOverride, onPublishTheme
               </p>
             )}
             <div className="space-y-3">
+              {/* Fix (ROADMAP L18): this slider only renders under a wallpaper or
+                  gradient (canTuneTerminalOpacity), and there the engine raises
+                  any `terminal-opacity` below TERMINAL_WALLPAPER_OPACITY_FLOOR
+                  to the floor (P-20.2, computeTerminalSurface). A 30% minimum
+                  let the user drag through 50 percentage points of nothing —
+                  the terminal did not change and the label lied about it. The
+                  minimum is the floor, and the shown value is the EFFECTIVE
+                  one (a pack that stored 0.6 reads "80%", which is what it
+                  actually paints). Flat themes have no slider at all. */}
               <GlassSlider
                 label="Terminal Opacity"
-                min={0.3} max={1} step={0.02}
-                value={theme.background?.['terminal-opacity'] ?? 0.6}
+                min={TERMINAL_WALLPAPER_OPACITY_FLOOR} max={1} step={0.02}
+                value={Math.max(TERMINAL_WALLPAPER_OPACITY_FLOOR, theme.background?.['terminal-opacity'] ?? 0.6)}
                 onChange={v => setGlassField('terminal-opacity', v)}
                 format={v => `${Math.round(v * 100)}%`}
               />
