@@ -9,7 +9,7 @@ const comment = vi.fn();
 const refresh = vi.fn();
 const applyThumbs = vi.fn();
 
-vi.mock('../src/renderer/state/account-context', () => ({ useAccount: () => ({ signedIn: true }) }));
+vi.mock('../src/renderer/state/account-context', () => ({ useAccount: () => ({ signedIn: true, user: { id: 'github:1', login: 'me', avatar_url: '' } }) }));
 vi.mock('../src/renderer/state/marketplace-stats-context', () => ({
   useMarketplaceStats: () => ({
     plugins: { p1: { installs: 3, review_count: 0, rating: 0, thumbs_up: 9, thumbs_down: 1 } },
@@ -21,16 +21,34 @@ vi.mock('../src/renderer/state/marketplace-stats-context', () => ({
 }));
 // NOT a blank stub: a blank stub can never catch a thread that fails to re-read.
 // Record the props so the tests can assert refreshKey actually moved.
-const commentListProps: Array<{ refreshKey?: number }> = [];
+const commentListProps: Array<{ refreshKey?: number; held?: Array<{ id: string; text: string }> }> = [];
 vi.mock('../src/renderer/components/marketplace/CommentList', () => ({
-  default: (p: { refreshKey?: number }) => { commentListProps.push(p); return <div data-testid="comments" />; },
+  default: (p: { refreshKey?: number; held?: Array<{ id: string; text: string }> }) => { commentListProps.push(p); return <div data-testid="comments" />; },
 }));
 vi.mock('../src/renderer/components/marketplace/SignInPromptModal', () => ({ default: () => null }));
+
+// Node 22 defines its own `localStorage` global (undefined without
+// --localstorage-file), which shadows jsdom's — same Map-backed stub as
+// handle-prompt.test.tsx so the held-comment record has somewhere to live.
+{
+  const m = new Map<string, string>();
+  const stub = {
+    get length() { return m.size; },
+    clear: () => m.clear(),
+    getItem: (k: string) => m.get(k) ?? null,
+    key: (i: number) => [...m.keys()][i] ?? null,
+    removeItem: (k: string) => { m.delete(k); },
+    setItem: (k: string, v: string) => { m.set(k, String(v)); },
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true, writable: true });
+  if ((globalThis as any).window) (globalThis as any).window.localStorage = stub;
+}
 
 import FeedbackSection, { thumbsLabel, ThumbsSummary } from '../src/renderer/components/marketplace/FeedbackSection';
 
 beforeEach(() => {
   commentListProps.length = 0;
+  localStorage.clear();
   myThumb.mockReset().mockResolvedValue({ ok: true, value: { vote: null, thumbs_up: 9, thumbs_down: 1 } });
   thumb.mockReset().mockResolvedValue({ ok: true, value: { vote: 'up', thumbs_up: 10, thumbs_down: 1 } });
   comment.mockReset().mockResolvedValue({ ok: true, value: { id: 'c1', hidden: false } });
@@ -134,6 +152,29 @@ describe('FeedbackSection', () => {
     // A hidden comment is never returned by the public list, so without this the
     // user posts, the box clears, and nothing appears — indistinguishable from a bug.
     await waitFor(() => expect(screen.getByText(/held for review/i)).toBeTruthy());
+  });
+
+  it('keeps a held comment in the thread, and still has it after the page is reopened', async () => {
+    comment.mockResolvedValueOnce({ ok: true, value: { id: 'c2', hidden: true } });
+    const first = render(<FeedbackSection pluginId="p1" installed />);
+    fireEvent.change(screen.getByLabelText('Write a comment'), { target: { value: 'spicy' } });
+    fireEvent.click(screen.getByRole('button', { name: /post comment/i }));
+    // The thread is handed the held comment, so it appears in place — the
+    // toast is not the last the author sees of it.
+    await waitFor(() => expect(commentListProps.at(-1)?.held?.map((c) => c.text)).toEqual(['spicy']));
+    first.unmount();
+    commentListProps.length = 0;
+
+    // A fresh mount (reopening the page, relaunching the app) reads it back
+    // from this device's record — the public list will never return it.
+    render(<FeedbackSection pluginId="p1" installed />);
+    await waitFor(() => expect(commentListProps.at(-1)?.held?.map((c) => c.id)).toEqual(['c2']));
+    // …but only for THIS plugin.
+    cleanup();
+    commentListProps.length = 0;
+    render(<FeedbackSection pluginId="p2" installed />);
+    await waitFor(() => expect(commentListProps.length).toBeGreaterThan(0));
+    expect(commentListProps.at(-1)?.held ?? []).toEqual([]);
   });
 
   it('says so when posting a comment fails, and keeps the draft', async () => {

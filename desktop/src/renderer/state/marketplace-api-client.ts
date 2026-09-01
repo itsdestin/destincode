@@ -174,7 +174,10 @@ export interface MarketplaceApiClient {
   // ── Marketplace overhaul (2026-08-27) — thumbs + comments. Both auth'd; thumbs
   //    additionally require a prior install (same rule as ratings today, so
   //    strangers can't game the number). ──
-  listComments(pluginId: string, signal?: AbortSignal): Promise<{ comments: CommentEntry[] }>;
+  /** `total` is the full visible count; the list itself is capped at the 50
+   *  most recent. Optional because the Worker and the app deploy separately —
+   *  an older Worker sends only `comments`, and the app must not break on it. */
+  listComments(pluginId: string, signal?: AbortSignal): Promise<{ comments: CommentEntry[]; total?: number }>;
   postComment(input: { plugin_id: string; text: string }): Promise<{ ok: true; id: string; hidden: boolean }>;
   /** Reconcile: report EVERY plugin the client currently has, in one call.
    *  Idempotent server-side and never moves `installed_at`. */
@@ -337,7 +340,7 @@ export function createMarketplaceApiClient(opts: {
     listRatings: (plugin_id, signal?) =>
       request<ListRatingsResponse>(`/ratings/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
     listComments: (plugin_id, signal?) =>
-      request<{ comments: CommentEntry[] }>(`/comments/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
+      request<{ comments: CommentEntry[]; total?: number }>(`/comments/${encodeURIComponent(plugin_id)}`, { method: "GET", signal }),
     postInstalls: (plugin_ids) =>
       request<{ ok: true; recorded: number }>("/installs", { method: "POST", body: JSON.stringify({ plugin_ids }), auth: true }),
     postComment: (input) =>

@@ -17,7 +17,7 @@
 //   - React auto-escapes text content so comment text is XSS-safe as written
 //   - AbortController cancels the in-flight fetch on unmount or refreshKey change
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   createMarketplaceApiClient,
   MARKETPLACE_API_HOST,
@@ -40,11 +40,11 @@ function relativeDate(unixSec: number): { text: string; title: string } {
   return { text, title: d.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' }) };
 }
 
-function CommentRow({ c, pluginId }: { c: CommentEntry; pluginId: string }) {
+function CommentRow({ c, pluginId, held = false }: { c: CommentEntry; pluginId: string; held?: boolean }) {
   const [avatarFailed, setAvatarFailed] = React.useState(false);
   const when = relativeDate(c.created_at);
   return (
-    <div className="flex flex-col gap-1 py-3 border-b border-edge-dim last:border-0" data-comment>
+    <div className={`flex flex-col gap-1 py-3 border-b border-edge-dim last:border-0${held ? ' opacity-80' : ''}`} data-comment data-held={held || undefined}>
       <div className="flex items-center gap-2">
         {c.user_avatar_url && !avatarFailed ? (
           <img src={c.user_avatar_url} alt={c.user_login} onError={() => setAvatarFailed(true)} className="w-6 h-6 rounded-full shrink-0 object-cover" />
@@ -54,6 +54,10 @@ function CommentRow({ c, pluginId }: { c: CommentEntry; pluginId: string }) {
           </span>
         )}
         <span className="text-xs font-medium text-fg">{c.user_login}</span>
+        {/* The author's own held comment. Said in the row, not only in the
+            post-time toast, because the toast is gone the moment the page is
+            reopened — and a comment that silently vanished reads as "deleted". */}
+        {held && <span className="text-2xs text-fg-muted">Held for review · only you can see it</span>}
         <span className="ml-auto text-2xs text-fg-muted shrink-0" title={when.title}>{when.text}</span>
       </div>
       <p className="text-sm text-fg-2 leading-relaxed whitespace-pre-wrap pl-8">{c.text}</p>
@@ -65,25 +69,47 @@ interface CommentListProps {
   pluginId: string;
   /** Bump to re-fetch (e.g. after the user posts). */
   refreshKey?: number;
+  /** The caller's OWN comments the Worker is holding for review — never in the
+   *  public list, so they are drawn from this device's record instead
+   *  (state/held-comments.ts). Rendered first, marked as held. */
+  held?: CommentEntry[];
+  /** Fired with the ids of held comments that the public list now contains —
+   *  the caller forgets them so they are not shown twice. */
+  onHeldListed?: (ids: string[]) => void;
 }
 
 type FetchState =
   | { status: 'loading' }
   | { status: 'empty' }
-  | { status: 'loaded'; comments: CommentEntry[] }
+  | { status: 'loaded'; comments: CommentEntry[]; total?: number }
   | { status: 'error' };
 
-export default function CommentList({ pluginId, refreshKey = 0 }: CommentListProps) {
+export default function CommentList({ pluginId, refreshKey = 0, held = [], onHeldListed }: CommentListProps) {
   const [state, setState] = useState<FetchState>({ status: 'loading' });
+
+  // A held comment that the public list now carries (approved, or never held
+  // on the server's side) is shown ONCE, from the list. The caller is told so
+  // it can drop its local copy.
+  const listedIds = useMemo(
+    () => new Set(state.status === 'loaded' ? state.comments.map((c) => c.id) : []),
+    [state],
+  );
+  const heldToShow = held.filter((c) => !listedIds.has(c.id));
+  useEffect(() => {
+    if (!onHeldListed) return;
+    const dup = held.filter((c) => listedIds.has(c.id)).map((c) => c.id);
+    if (dup.length > 0) onHeldListed(dup);
+  }, [held, listedIds, onHeldListed]);
+  const heldRows = heldToShow.map((c) => <CommentRow key={c.id} c={c} pluginId={pluginId} held />);
 
   useEffect(() => {
     setState({ status: 'loading' });
     const controller = new AbortController();
     let cancelled = false;
     apiClient.listComments(pluginId, controller.signal)
-      .then(({ comments }) => {
+      .then(({ comments, total }) => {
         if (cancelled) return;
-        setState(comments.length === 0 ? { status: 'empty' } : { status: 'loaded', comments });
+        setState(comments.length === 0 ? { status: 'empty' } : { status: 'loaded', comments, total });
       })
       .catch((err: unknown) => {
         if (cancelled || (err instanceof Error && err.name === 'AbortError')) return;
@@ -95,11 +121,25 @@ export default function CommentList({ pluginId, refreshKey = 0 }: CommentListPro
   return (
     <div>
       {state.status === 'loading' && <LoadingState variant="inline" what="comments" />}
-      {state.status === 'empty' && <EmptyState variant="inline" message="No comments yet — ask a question or say how it went." />}
+      {/* "No comments yet" would be a lie above the author's own held comment. */}
+      {state.status === 'empty' && heldRows.length === 0 && <EmptyState variant="inline" message="No comments yet — ask a question or say how it went." />}
+      {state.status === 'empty' && heldRows.length > 0 && <div>{heldRows}</div>}
       {state.status === 'error' && <p className="text-xs text-destructive-fg">Couldn't load comments.</p>}
       {state.status === 'loaded' && (
         <div>
+          {heldRows}
           {state.comments.map((c) => <CommentRow key={c.id} c={c} pluginId={pluginId} />)}
+          {/* The Worker caps the list at the 50 most recent and, since 2026-09-01,
+              sends the full count beside it. Before that a busy thread simply
+              stopped at 50 with nothing marking the cut, so a reader could not
+              tell "50 comments" from "more than I can see". Only rendered when
+              the count is actually larger — an older Worker sends no `total`,
+              and a thread that fits needs no caption. */}
+          {typeof state.total === 'number' && state.total > state.comments.length && (
+            <p className="pt-3 text-xs text-fg-muted" data-comments-cut>
+              Showing the {state.comments.length} most recent of {state.total.toLocaleString()} comments.
+            </p>
+          )}
         </div>
       )}
     </div>

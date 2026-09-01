@@ -60,6 +60,35 @@ function migrateV1toV2(config: any): UserSkillConfig {
   return config as UserSkillConfig;
 }
 
+// Favourite ids that never named anything and were only ever written by a
+// registry mistake. `curated-defaults.json` once listed `theme-builder`; the
+// real id is `wecoded-themes-plugin` (`theme-builder` is a skill INSIDE it,
+// keyed `wecoded-themes-plugin:theme-builder`). First-run seeding wrote the
+// bare string straight into `favorites[]`, where it resolves to nothing — an
+// invisible favourite that survives every launch. The registry is fixed; this
+// is the one-time cleanup of profiles that already carry it.
+const DEAD_FAVORITE_IDS = ['theme-builder'];
+
+/** Drop a dead favourite from an existing profile. Returns true when something
+ *  was removed, so the caller can persist exactly once and never rewrite a
+ *  clean file (idempotent: a second load finds nothing to do).
+ *
+ *  Deliberately narrow: only the listed ids, only from `favorites`, and NOT
+ *  when the id is something the user actually has — a package or a private
+ *  skill by that name is theirs, not the registry's typo. */
+function pruneDeadFavorites(config: UserSkillConfig): boolean {
+  if (!Array.isArray(config.favorites)) return false;
+  const owned = new Set<string>([
+    ...Object.keys(config.packages ?? {}),
+    ...(config.privateSkills ?? []).map((s) => s?.id).filter((id): id is string => typeof id === 'string'),
+  ]);
+  const dead = DEAD_FAVORITE_IDS.filter((id) => !owned.has(id));
+  const kept = config.favorites.filter((f) => !dead.includes(f));
+  if (kept.length === config.favorites.length) return false;
+  config.favorites = kept;
+  return true;
+}
+
 export class SkillConfigStore {
   private config: UserSkillConfig | null = null;
 
@@ -84,6 +113,8 @@ export class SkillConfigStore {
       // break (plan §9.1). The packages map is now authoritative; hook-,
       // integration-, and mcp-reconciler populate runtime state from
       // filesystem manifests on launch instead of a one-time migration.
+
+      if (pruneDeadFavorites(this.config)) this.save();
 
       return this.config;
     } catch (err) {
