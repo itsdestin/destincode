@@ -37,6 +37,27 @@ describe('migrateRelativeExternals', () => {
     expect(res.sidecar.artifacts[0]).toMatchObject({
       id: 'art_A', path: 'flappy-bird/play.html', kind: 'internal', absolutePath: null,
     });
+    // ROADMAP L598: the audit trail the caller logs — what it was, what it
+    // became, and that it was the relative shape (not a cross-OS remap).
+    expect(res.reclassifiedFrom).toEqual([
+      { from: 'flappy-bird/play.html', to: 'flappy-bird/play.html', merged: false, wasAbsolute: false },
+    ]);
+  });
+
+  it('flags a cross-OS remap of an ABSOLUTE path as the shape to check by eye (ROADMAP L598)', () => {
+    // A Windows-recorded path re-homed on Linux by its project-root segment:
+    // correct today, but the classifier shape most likely to misfire, so the
+    // trail marks it and the log counts it separately.
+    const res = migrateRelativeExternals(sidecar([
+      rec({ id: 'art_W', path: 'notes.md', kind: 'external', absolutePath: 'C:\\Users\\destin\\youcoded-dev\\docs\\notes.md' }),
+    ]), ROOT);
+    if (res.reclassified === 1) {
+      expect(res.reclassifiedFrom[0]).toMatchObject({ to: 'docs/notes.md', wasAbsolute: true });
+    } else {
+      // The classifier left it external — then the trail must be empty too;
+      // a count and a list that disagree would make the log lie.
+      expect(res.reclassifiedFrom).toEqual([]);
+    }
   });
 
   it('remaps a cross-device Windows path that contains the project-root segment', () => {

@@ -377,8 +377,17 @@ describe('runSidecarMigration', () => {
   it('repairs relative externals and is a no-op on the second call', async () => {
     await writeSidecar(projectRoot, null, legacy() as any);
 
+    // ROADMAP L598: a repair that rewrites artifact history must announce
+    // exactly what it rewrote and where the backup is — it is the only
+    // detector for a repair that over-reclassifies.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const first = await runSidecarMigration(projectRoot);
     expect(first).toMatchObject({ migrated: true, reclassified: 1, merged: 0 });
+    const said = warn.mock.calls.map((c) => c.join(' ')).join('\n');
+    warn.mockRestore();
+    expect(said).toContain('1 record(s) reclassified');
+    expect(said).toContain('flappy-bird/play.html -> flappy-bird/play.html');
+    expect(said).toContain('.pre-migration.bak');
 
     const after = await readSidecar(projectRoot) as ProjectSidecar;
     expect(after.artifacts[0]).toMatchObject({

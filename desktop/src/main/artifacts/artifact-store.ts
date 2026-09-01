@@ -567,6 +567,23 @@ export async function runSidecarMigration(
       const { committed } = await writeSidecar(projectRoot, current.updatedAt, next);
       if (committed) {
         migrationChecked.add(key);
+        // ROADMAP L598: say WHAT was rewritten, every time. Nothing else
+        // detects a repair that over-reclassifies — the symptom is unfamiliar
+        // entries in Project View, not an error — so the main log carries the
+        // count, each from→to (capped), how many were the cross-OS-remap
+        // shape (the one worth eyeballing), and the backup to restore from.
+        const LIST_CAP = 20;
+        const remapped = result.reclassifiedFrom.filter((r) => r.wasAbsolute).length;
+        const listed = result.reclassifiedFrom.slice(0, LIST_CAP)
+          .map((r) => `    ${r.from} -> ${r.to}${r.merged ? ' (merged into existing record)' : ''}${r.wasAbsolute ? ' [cross-OS remap]' : ''}`)
+          .join('\n');
+        const more = result.reclassifiedFrom.length > LIST_CAP ? `\n    … and ${result.reclassifiedFrom.length - LIST_CAP} more` : '';
+        console.warn(
+          `[artifact-store] sidecar repair in ${projectRoot}: ${result.reclassified} record(s) reclassified external -> internal`
+          + ` (${result.merged} merged into an existing record, ${remapped} re-homed from an ABSOLUTE path — check those by eye).`
+          + ` They now show in Project View. If any of them were never in this project, restore ${sidecarPath}.pre-migration.bak.\n`
+          + listed + more,
+        );
         return { migrated: true, reclassified: result.reclassified, merged: result.merged };
       }
     }
