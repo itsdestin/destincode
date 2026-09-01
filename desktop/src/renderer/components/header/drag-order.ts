@@ -89,3 +89,36 @@ export function neighbourOffsets(
   }
   return out;
 }
+
+/** How far the DRAGGED pill must move to sit in the slot it is heading for.
+ *
+ *  WHY this exists rather than just following the cursor: Chrome can put the
+ *  tab in hand exactly under the pointer because every tab is the same width,
+ *  so the gap that opens is always tab-width and the tab always fits it. Our
+ *  pills are not uniform — the active one is ~179px and the rest are 24px dots.
+ *  Measured 2026-08-31: dragging the active pill past three dots opened its gap
+ *  at +78px while the cursor carried the pill to +166px, so it floated ~90px
+ *  clear of its own hole and overlapped the dots to its right. Positioning it
+ *  by slot keeps the row coherent at any mix of widths. */
+export function draggedSlotOffset(
+  rects: readonly PillRect[],
+  draggedId: string,
+  overId: string | null,
+  gap: number = PILL_GAP,
+): number {
+  if (overId === null || overId === draggedId) return 0;
+  const from = rects.findIndex(r => r.id === draggedId);
+  const to = rects.findIndex(r => r.id === overId);
+  if (from === -1 || to === -1) return 0;
+
+  // The dragged pill steps over each crossed neighbour by that NEIGHBOUR's
+  // width — the mirror of neighbourOffsets, which steps each of them over by
+  // the dragged pill's width. Together the row's total width is unchanged.
+  let shift = 0;
+  if (to > from) {
+    for (let i = from + 1; i <= to; i++) shift += rects[i].right - rects[i].left + gap;
+  } else {
+    for (let i = to; i < from; i++) shift -= rects[i].right - rects[i].left + gap;
+  }
+  return shift;
+}

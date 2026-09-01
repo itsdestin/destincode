@@ -1787,6 +1787,32 @@ pre.yc-code code {
   --dur-hover: 150ms;
   --dur-reveal: 200ms;
   --dur-switch: 240ms;
+}
+
+/* ── Motion alternatives for review (2026-08-31) ──────────────────────────────
+   `data-motion` on <html> swaps the vocabulary so treatments can be compared in
+   the running app without a rebuild — the workbench sets it from `?motion=`.
+   Destin's note on the default: "much too bouncy/aggressive". Both alternatives
+   drop the overshoot; they differ in how long they take.
+   The winner's values move into :root above and these two blocks are DELETED —
+   they are a review scaffold, not a feature. */
+
+/* A — calm: no overshoot, eases to a stop. Slower than snappy, never springs. */
+[data-motion="calm"] {
+  --ease-bounce: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-hover: 130ms;
+  --dur-reveal: 180ms;
+  --dur-switch: 200ms;
+}
+
+/* B — crisp: no overshoot, gets out of the way fast. Nearly instant, still not a cut. */
+[data-motion="crisp"] {
+  --ease-bounce: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-hover: 90ms;
+  --dur-reveal: 120ms;
+  --dur-switch: 140ms;
   /* Bottom chrome height INCLUDING the soft keyboard. The chrome-glass cutout
      polygon is anchored to the bottom of the layout viewport, which does not
      shrink when the keyboard opens (interactive-widget=resizes-visual) — so a

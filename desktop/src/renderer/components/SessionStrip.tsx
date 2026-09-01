@@ -9,7 +9,7 @@ import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLast
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
-import { nearestPillId, reorderIndices, neighbourOffsets, type PillRect } from './header/drag-order';
+import { nearestPillId, reorderIndices, neighbourOffsets, draggedSlotOffset, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useFrozenPack } from './header/use-frozen-pack';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -846,20 +846,16 @@ export default function SessionStrip({
     ? neighbourOffsets(pillRectsRef.current, dragId, overId)
     : EMPTY_OFFSETS;
 
-  const draggedShift = (() => {
-    if (!dragging || !dragId || !dragPos || !dragOrigin.current) return 0;
-    const bar = pillBarRef.current;
-    const self = pillRectsRef.current.find(r => r.id === dragId);
-    const raw = dragPos.x - dragOrigin.current.x;
-    if (!bar || !self) return raw;
-    // Clamp so the pill rides the strip instead of leaving it. `self` comes
-    // from the geometry FROZEN at pointer-down: measuring it live would include
-    // the translateX being computed right here, so the clamp would chase its
-    // own output and drift. Vertical is tear-off only and is handled in
-    // handlePointerMove — never here.
-    const barRect = bar.getBoundingClientRect();
-    return Math.max(barRect.left - self.left, Math.min(raw, barRect.right - self.right));
-  })();
+  // The pill in hand sits in the slot it is heading for, NOT under the cursor.
+  // Chrome can put the tab under the pointer because every tab is one width;
+  // our pills are a ~179px active pill among 24px dots, so cursor-following put
+  // the pill ~90px clear of its own gap and overlapping its neighbours
+  // (measured 2026-08-31 — see draggedSlotOffset's comment). Slot positioning
+  // is coherent at any mix of widths, and the short transform transition below
+  // is what makes it read as movement rather than teleporting.
+  const draggedShift = dragging && dragId
+    ? draggedSlotOffset(pillRectsRef.current, dragId, overId)
+    : 0;
 
   return (
     <>
@@ -922,7 +918,7 @@ export default function SessionStrip({
                     // The pill in hand tracks the cursor 1:1 — a transition on
                     // transform here would make it lag behind the pointer.
                     // Only the lift is animated.
-                    ? 'opacity var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out)'
+                    ? 'transform var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out)'
                     // `transform` gets the drag curve while a drag is in flight
                     // (neighbours stepping aside) and the settle curve when it
                     // ends (neighbours returning to zero). NOT --ease-bounce:
@@ -932,6 +928,11 @@ export default function SessionStrip({
                   // Three mutually exclusive transform states: the pill in
                   // hand (follows the cursor, lifted), a neighbour stepping
                   // aside, or a plain hover.
+                  // The 3px focus outline (globals.css) used to be masked by
+                  // the dragged pill's `opacity-30`. With the pill at full
+                  // opacity it reads as a bright ring around the thing you are
+                  // dragging, which is what it looked like in review.
+                  outline: isBeingDragged ? 'none' : undefined,
                   transform: isBeingDragged
                     ? `translateX(${draggedShift}px) scale(1.05)`
                     : dragOffsets.has(s.id)
@@ -964,7 +965,13 @@ export default function SessionStrip({
                     never clutters a collapsed dot-only pill. */}
                 {s.provider === 'native' && showName && (
                   <span
-                    className="shrink-0 text-4xs px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap"
+                    className="min-w-0 overflow-hidden text-4xs px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap"
+                    // The session NAME is the thing worth reading; this badge
+                    // is context. It was `shrink-0`, so a tight pill squeezed
+                    // the name to an ellipsis while "YouCoded · Coder" kept its
+                    // full width. A large flex-shrink makes the badge give up
+                    // its space first and disappear before the name is touched.
+                    style={{ flexShrink: 100 }}
                     title="YouCoded native session"
                   >
                     {`YouCoded · ${s.harnessId === 'coder' ? 'Coder' : 'Assistant'}`}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { nearestPillId, reorderIndices, neighbourOffsets, PILL_GAP } from '../src/renderer/components/header/drag-order';
+import { nearestPillId, reorderIndices, neighbourOffsets, draggedSlotOffset, PILL_GAP } from '../src/renderer/components/header/drag-order';
 import { packSessions } from '../src/renderer/components/header/pack-sessions';
 
 // Three 100px pills with a 2px gap: a=[0,100] b=[102,202] c=[204,304]
@@ -106,5 +106,41 @@ describe('the index spaces the strip used to mix', () => {
     // What the strip does now: both ends resolved against the full list, by id.
     expect(reorderIndices(sessions.map(s => s.id), 's5', visible[0]))
       .toEqual({ from: canonicalIdx, to: 0 });
+  });
+});
+
+describe('draggedSlotOffset', () => {
+  // Non-uniform widths are the whole point: a wide active pill among dots.
+  const mixed = [
+    { id: 'wide', left: 0, right: 179 },   // the active pill
+    { id: 'd1', left: 181, right: 205 },
+    { id: 'd2', left: 207, right: 231 },
+    { id: 'd3', left: 233, right: 257 },
+  ];
+
+  it('moves the dragged pill by the widths it crosses, not by the cursor', () => {
+    // Three 24px dots + three 2px gaps = 78. The cursor may be anywhere; the
+    // pill belongs at 78, which is exactly where neighbourOffsets opened the gap.
+    expect(draggedSlotOffset(mixed, 'wide', 'd3', 2)).toBe(78);
+  });
+
+  it('is the exact inverse of the hole its neighbours open', () => {
+    // The row's total width must not change: the space the three dots vacate on
+    // the right equals the space the wide pill vacates on the left.
+    const offs = neighbourOffsets(mixed, 'wide', 'd3', 2);
+    const dotShift = offs.get('d1')!;                    // -(179 + 2)
+    expect(dotShift).toBe(-181);
+    const wide = mixed[0].right - mixed[0].left + 2;     // 181
+    const crossed = 3 * (24 + 2);                        // 78
+    expect(draggedSlotOffset(mixed, 'wide', 'd3', 2)).toBe(crossed);
+    expect(-dotShift).toBe(wide);
+  });
+
+  it('goes negative when dragging left', () => {
+    expect(draggedSlotOffset(mixed, 'd3', 'wide', 2)).toBe(-(181 + 26 + 26));
+  });
+
+  it('is zero with no target', () => {
+    expect(draggedSlotOffset(mixed, 'wide', null, 2)).toBe(0);
   });
 });

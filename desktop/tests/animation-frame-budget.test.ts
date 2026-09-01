@@ -320,6 +320,17 @@ describe('motion vocabulary', () => {
     expect(strip).not.toMatch(/\boverIdx\b/);
   });
 
+  it('keeps the review-only motion presets out of :root', () => {
+    // [data-motion="calm"|"crisp"] are a REVIEW SCAFFOLD: they let the running
+    // app swap motion treatments from a URL param so alternatives can be felt
+    // rather than watched. They must stay override-only — the app's real values
+    // live in :root, so deleting the two blocks restores the shipped behaviour.
+    for (const preset of ['calm', 'crisp']) {
+      expect(globals).toMatch(new RegExp(`\\[data-motion="${preset}"\\]`));
+    }
+    expect(globals).not.toMatch(/:root\s*\{[^}]*data-motion/);
+  });
+
   it('leaves no hand-written curve in SessionStrip', () => {
     // Five distinct curves accumulated in the renderer, three of them the same
     // overshoot with drifted numbers (1.56 / 1.5 / 1.62), because each was

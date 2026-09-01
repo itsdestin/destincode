@@ -23,6 +23,15 @@ performance.mark('yc:modules-evaluated');
 const storedTheme = localStorage.getItem('youcoded-theme') || 'midnight';
 document.documentElement.setAttribute('data-theme', storedTheme);
 
+// Review scaffold (2026-08-31): `?motion=calm|crisp` swaps the motion
+// vocabulary so alternatives can be compared in the running app without a
+// rebuild. See the [data-motion] blocks in globals.css. DEV-ONLY in effect —
+// nothing in the product sets this param — and it goes away with those blocks.
+{
+  const m = new URLSearchParams(location.search).get('motion');
+  if (m === 'calm' || m === 'crisp') document.documentElement.setAttribute('data-motion', m);
+}
+
 // Mark buddy windows on <html> SYNCHRONOUSLY (before first paint) so the
 // buddy.css transparency overrides (color-scheme: normal, bg transparent)
 // take effect immediately. If we waited for BuddyMascotApp's useEffect to
