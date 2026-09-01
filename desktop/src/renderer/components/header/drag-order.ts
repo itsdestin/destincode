@@ -44,6 +44,28 @@ export interface PillRect {
 
 const width = (r: PillRect) => r.right - r.left;
 
+/** A pill's SETTLED width — what it will be once its label transition ends. */
+export interface PillSize { id: string; width: number }
+
+/** Where each pill will sit once the row has settled, laid out from `originLeft`
+ *  with `gap` between them. This is the geometry a drag is judged against —
+ *  never the DOM's, because on a select-on-press the row is still reshaping
+ *  (the old active pill collapsing, the new one opening) when the drag starts,
+ *  and a hit-test against a moving row chases its own output. */
+export function layoutRects(
+  sizes: readonly PillSize[],
+  originLeft: number,
+  gap: number = PILL_GAP,
+): PillRect[] {
+  const out: PillRect[] = [];
+  let left = originLeft;
+  for (const s of sizes) {
+    out.push({ id: s.id, left, right: left + s.width });
+    left += s.width + gap;
+  }
+  return out;
+}
+
 /** The centre x the dragged pill would have at each position k in the row
  *  (k = 0 … rects.length − 1), with the other pills keeping their order. */
 export function slotCentres(
@@ -74,7 +96,18 @@ export function nearestSlotId(
   gap: number = PILL_GAP,
 ): string | null {
   const centres = slotCentres(rects, draggedId, gap);
-  if (centres.length === 0) return null;
+  if (centres.length === 0) {
+    // The pill in hand is not in the row — a drag from the All Sessions menu
+    // onto the strip. It has no slot of its own, so the target is simply the
+    // strip pill whose centre is nearest the cursor.
+    let best: string | null = null;
+    let bestDist = Infinity;
+    for (const r of rects) {
+      const d = Math.abs(draggedCentreX - (r.left + r.right) / 2);
+      if (d < bestDist) { bestDist = d; best = r.id; }
+    }
+    return best;
+  }
   let best = 0;
   for (let k = 1; k < centres.length; k++) {
     if (Math.abs(draggedCentreX - centres[k]) < Math.abs(draggedCentreX - centres[best])) best = k;
@@ -83,14 +116,14 @@ export function nearestSlotId(
   return best === from ? null : rects[best].id;
 }
 
-/** How far the pill in hand may travel from where it was picked up: it rides
- *  the strip, never past the first pill's left edge or the last pill's right. */
-export function clampDragDx(rects: readonly PillRect[], draggedId: string, dx: number): number {
-  const dragged = rects.find(r => r.id === draggedId);
-  if (!dragged || rects.length === 0) return 0;
-  const min = rects[0].left - dragged.left;
-  const max = rects[rects.length - 1].right - dragged.right;
-  return Math.min(max, Math.max(min, dx));
+/** Where the pill in hand may be drawn: it rides the strip, never past the
+ *  first pill's left edge or the last pill's right. `left` is the wanted left
+ *  edge in client px, `width` the pill's settled width. */
+export function clampFloatLeft(rects: readonly PillRect[], left: number, width: number): number {
+  if (rects.length === 0) return left;
+  const min = rects[0].left;
+  const max = rects[rects.length - 1].right - width;
+  return Math.min(max, Math.max(min, left));
 }
 
 /** Canonical from/to for `onReorderSessions`, which splices into the full

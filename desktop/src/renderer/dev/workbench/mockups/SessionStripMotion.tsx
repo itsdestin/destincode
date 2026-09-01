@@ -23,6 +23,7 @@ import type { SessionStatusColor } from '../../../components/StatusDot';
 
 type Motion = 'crisp' | 'soft';
 type Arrival = 'fade' | 'cut';
+type Select = 'press' | 'press-dot' | 'release';
 
 interface DemoSession {
   id: string; name: string; cwd: string; permissionMode: string;
@@ -77,7 +78,7 @@ function Pane({ session, active }: { session: DemoSession; active: boolean }) {
   );
 }
 
-export function SessionStripMotionDemo({ motion, arrival }: { motion?: Motion; arrival?: Arrival }) {
+export function SessionStripMotionDemo({ motion, arrival, select }: { motion?: Motion; arrival?: Arrival; select?: Select }) {
   const [sessions, setSessions] = useState(SESSIONS);
   const [activeId, setActiveId] = useState(SESSIONS[0].id);
   // SessionStrip calls useArtifact() at its top level (the All Sessions menu's
@@ -87,7 +88,7 @@ export function SessionStripMotionDemo({ motion, arrival }: { motion?: Motion; a
   const statuses = useMemo(() => new Map(sessions.map((s) => [s.id, s.status])), [sessions]);
 
   return (
-    <div data-motion={motion} data-arrival={arrival} className="flex flex-col gap-2">
+    <div data-motion={motion} data-arrival={arrival} data-select={select} className="flex flex-col gap-2">
       {/* The header row: the strip's PARENT is what the packer reads its width
           budget from, so it sits in a flex-1 wrapper exactly as in HeaderBar. */}
       <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel px-2 py-1">

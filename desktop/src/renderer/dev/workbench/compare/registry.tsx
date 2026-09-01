@@ -4380,6 +4380,30 @@ const ALL_SURFACES: CompareSurface[] = [
           },
         ],
       },
+      {
+        n: 2,
+        basis: 'Destin, 2026-09-01, on R1: "I want this to work a little more like chrome, where the new session is selected right when I click the new session pill and begin to drag … the old session would collapse to status dot and new session would expand right as drag begins." Three answers to WHEN the switch happens; the pill in hand now floats over the row so the row can reshape underneath it in all three.',
+        candidates: [
+          {
+            id: 'press',
+            label: 'Switch on press',
+            note: 'The session switches the instant you press, like a Chrome tab: the old name collapses, the pressed one opens, the conversation changes underneath. If you go on to drag, you drag the open name.',
+            render: () => <SessionStripMotionDemo select="press" />,
+          },
+          {
+            id: 'press-dot',
+            label: 'Switch on press, name on drop',
+            note: 'Switches on press too, but the pill in hand stays a dot while you drag; its name opens where you let go. Less moving under the cursor.',
+            render: () => <SessionStripMotionDemo select="press-dot" />,
+          },
+          {
+            id: 'release',
+            label: 'Switch on release',
+            note: 'Nothing changes until you let go: the row keeps its shape through the drag, then the dropped pill becomes the active one. What round 1 had.',
+            render: () => <SessionStripMotionDemo select="release" />,
+          },
+        ],
+      },
     ],
   },
   {

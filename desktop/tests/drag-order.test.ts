@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  nearestSlotId, slotCentres, clampDragDx, reorderIndices, neighbourOffsets, PILL_GAP,
+  nearestSlotId, slotCentres, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets, PILL_GAP,
 } from '../src/renderer/components/header/drag-order';
 import { packSessions } from '../src/renderer/components/header/pack-sessions';
 
@@ -61,15 +61,32 @@ describe('nearestSlotId', () => {
   });
 });
 
-describe('clampDragDx', () => {
-  it('lets the pill travel from the first pill\'s left edge to the last pill\'s right edge', () => {
-    expect(clampDragDx(rects, 'b', -500)).toBe(-102);
-    expect(clampDragDx(rects, 'b', 500)).toBe(102);
-    expect(clampDragDx(rects, 'b', 30)).toBe(30);
+describe('layoutRects', () => {
+  it('lays settled widths out from an origin with the gap between them', () => {
+    // This is the geometry a drag is judged against — the row it is settling
+    // INTO, not the DOM mid-animation (a select-on-press reshapes the row
+    // while the drag starts).
+    expect(layoutRects([{ id: 'a', width: 100 }, { id: 'b', width: 24 }, { id: 'c', width: 24 }], 10, 2))
+      .toEqual([
+        { id: 'a', left: 10, right: 110 },
+        { id: 'b', left: 112, right: 136 },
+        { id: 'c', left: 138, right: 162 },
+      ]);
   });
+});
 
-  it('pins an unknown id in place', () => {
-    expect(clampDragDx(rects, 'zz', 40)).toBe(0);
+describe('clampFloatLeft', () => {
+  it('keeps the pill in hand between the first pill\'s left edge and the last pill\'s right edge', () => {
+    expect(clampFloatLeft(rects, -500, 100)).toBe(0);
+    expect(clampFloatLeft(rects, 500, 100)).toBe(204);
+    expect(clampFloatLeft(rects, 130, 100)).toBe(130);
+  });
+});
+
+describe('nearestSlotId for a pill that is not in the row', () => {
+  it('falls back to the strip pill nearest the cursor (a drag from the All Sessions menu)', () => {
+    expect(nearestSlotId(rects, 'from-menu', 150, 2)).toBe('b');
+    expect(nearestSlotId(rects, 'from-menu', 290, 2)).toBe('c');
   });
 });
 

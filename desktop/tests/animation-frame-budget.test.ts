@@ -317,29 +317,44 @@ describe('motion vocabulary', () => {
     expect(globals).toMatch(/\[data-reduced-effects\] \.session-pill__badge--arriving/);
   });
 
-  it('has no floating ghost and no insertion line', () => {
+  it('draws the pill in hand as a TWIN of the real pill, never a ghost or an insertion line', () => {
     // Chrome's model: the pill itself moves and the neighbours step aside, so
-    // the gap IS the indicator. A ghost plus a line pointing at a gap that
-    // does not exist is what this replaced.
+    // the gap IS the indicator. The 2026-09-01 shape: the in-flow pill keeps
+    // its slot invisibly (still animating its own width, so the row can
+    // reshape on a select-on-press) and a twin — the SAME markup and styles —
+    // floats at the cursor. The old ghost was a dimmed copy with its own
+    // label/colour state and a separate insertion line.
     const strip = read('components', 'SessionStrip.tsx');
     expect(strip).not.toMatch(/ghostTarget/);
     expect(strip).not.toMatch(/dragLabel|dragColor/);
+    expect(strip).not.toMatch(/opacity-30 scale-95/);
+    expect(strip).toMatch(/visibility: isBeingDragged \? 'hidden'/);
+    expect(strip).toMatch(/\{pillBody\}[\s\S]*\{pillBody\}/);            // the same body, twice
+    expect(strip).toMatch(/pointerEvents: 'none'/);
+    // The twin carries no data attributes: everything that walks the row by
+    // [data-session-id] must find exactly one node per session.
+    const twinStart = strip.indexOf('isBeingDragged && dragLeft !== null && (');
+    const twin = strip.slice(twinStart, strip.indexOf('{pillBody}', twinStart));
+    expect(twin).not.toMatch(/data-session/);
   });
 
-  it('keeps the pill in hand under the cursor, with no transition on its transform', () => {
+  it('keeps the pill in hand under the cursor, with no transition on its position', () => {
     // The review cut positioned the dragged pill by its SLOT with a 150ms ease
     // on transform: it hopped 26px per slot while the cursor travelled 130px,
-    // and trailed the pointer like a rubber band. The pill follows the cursor
-    // 1:1 (clamped to the strip); the SLOT is decided by nearest-slot, not the
-    // pill's drawn position.
+    // and trailed the pointer like a rubber band. The twin follows the cursor
+    // 1:1 (clamped to the row); the SLOT is decided by nearest-slot against
+    // SYNTHETIC settled geometry, not the pill's drawn position.
     const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/clampDragDx\(/);
+    expect(strip).toMatch(/clampFloatLeft\(/);
+    expect(strip).toMatch(/layoutRects\(/);
     expect(strip).toMatch(/nearestSlotId\(/);
     expect(strip).toMatch(/neighbourOffsets\(/);
-    expect(strip).not.toMatch(/draggedSlotOffset|nearestPillId/);
-    // The dragged pill's transition list must not name transform.
-    const held = strip.match(/transition: isBeingDragged\s*\?\s*'([^']+)'/)?.[1] ?? 'MISSING';
-    expect(held).not.toMatch(/transform/);
+    expect(strip).not.toMatch(/draggedSlotOffset|nearestPillId|clampDragDx/);
+    // The twin's transition list must not name its position.
+    const twinStart = strip.indexOf('isBeingDragged && dragLeft !== null && (');
+    const twin = strip.slice(twinStart, strip.indexOf('{pillBody}', twinStart));
+    expect(twin).toMatch(/transition: 'box-shadow/);
+    expect(twin).not.toMatch(/transition: '[^']*(left|transform)/);
   });
 
   it('keeps the hover peek open through pointer-down and the drag', () => {

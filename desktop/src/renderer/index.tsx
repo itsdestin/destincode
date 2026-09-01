@@ -53,6 +53,10 @@ document.documentElement.setAttribute('data-theme', storedTheme);
   if (m === 'crisp' || m === 'soft') document.documentElement.setAttribute('data-motion', m);
   const a = q.get('arrival');
   if (a === 'fade' || a === 'cut') document.documentElement.setAttribute('data-arrival', a);
+  // `?select=press|press-dot|release`: WHEN a press on a session pill selects
+  // it (SessionStrip's readSelectOn). Same scaffold, same fate.
+  const sel = q.get('select');
+  if (sel === 'press' || sel === 'press-dot' || sel === 'release') document.documentElement.setAttribute('data-select', sel);
 }
 
 // Mark buddy windows on <html> SYNCHRONOUSLY (before first paint) so the
