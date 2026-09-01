@@ -37,12 +37,21 @@ export function SkipPermissionsInfoTooltip() {
         Flipping it on tells Claude to stop asking. It will edit files, run commands, and use the internet on its own, without checking with you first.
       </p>
 
-      <p className="text-xs font-semibold text-fg mt-2.5 mb-1.5">A few things stay protected</p>
+      {/* Fix (ROADMAP L205): this section used to promise that even with the
+          toggle on, Claude would "still stop and ask" before touching the
+          project's save history, the terminal's startup files or its own
+          settings — and pointed at Settings → Advanced to switch those off.
+          Measured false against the real CLI (v2.1.226, 2026-08-09,
+          docs/active/investigations/2026-08-09-native-skip-permissions.md):
+          under --dangerously-skip-permissions it read a .env, wrote outside
+          the working directory, wrote .git/config and wrote to $HOME with no
+          prompt for any. The ONE thing it still refuses is a delete command
+          aimed at the project folder itself (or a system folder). The copy now
+          says exactly that and nothing more — a safety net that is not there
+          must not be advertised (docs/error-message-standards.md). */}
+      <p className="text-xs font-semibold text-fg mt-2.5 mb-1.5">What still gets stopped</p>
       <p>
-        Even with the toggle on, Claude will still stop and ask before doing the really risky stuff — things that could scramble your project's save history, change how your computer's terminal starts up, or rewrite Claude's own settings. You'll still see a prompt for those.
-      </p>
-      <p>
-        If you want to turn those extra protections off too, you can do it under <span className="text-fg">Settings → Defaults → Skip Permissions → Advanced</span>. They're left on by default because they're the last line of defense against a serious mistake.
+        Almost nothing. The one thing Claude still refuses is a command that would delete your whole project folder (or a system folder). Everything else goes through without asking — including reading private files, changing files outside your project, and editing your project's saved history or Claude's own settings.
       </p>
 
       {/* Was a raw text-[#DD4444] hex. Same change-17 reasoning as the
