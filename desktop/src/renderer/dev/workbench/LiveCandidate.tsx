@@ -150,7 +150,12 @@ export function LiveCandidate() {
   // Nothing else on the page: no header, no label, no border. The deck draws the
   // caption beside the pane; the pane is only the thing being judged.
   return (
-    <div ref={wrap} className="inline-block bg-canvas text-fg">
+    // p-3: the design sits on a field of canvas rather than flush against the pane's edge.
+    // Flush, a rounded panel's corners are sliced by the pane's square boundary and every
+    // corner shows a notch (Destin, 2026-09-01) — and its own border doubles up with the
+    // pane's. CompareView has always padded for the same reason. The padding is inside the
+    // measured wrapper, so the pane sizes itself to include it.
+    <div ref={wrap} className="inline-block bg-canvas text-fg p-3">
       <CandidateBoundary label={`${surface.id} · ${candidate.id}`}>
         <Frame frame={surface.frame} width={surface.paneWidth ?? PANE_WIDTH}>{candidate.render()}</Frame>
       </CandidateBoundary>
