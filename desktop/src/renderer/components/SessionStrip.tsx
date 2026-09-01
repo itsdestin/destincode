@@ -31,6 +31,12 @@ const EMPTY_OFFSETS: ReadonlyMap<string, number> = new Map();
  *  after it (--dur-hover) with a little slack — see the badge below. */
 const EXPAND_WINDOW_MS = 360;
 
+/** A collapsed pill (dot only): px-1.5 (12) + dot (10) + border (2) + the
+ *  gap-1 (4) that sits between the dot and its zero-width label. Measured
+ *  2026-09-01 at 28px; the packer had budgeted 24 since it was written, so a
+ *  row of N dots was under-reserved by 4N px and the active name got squeezed. */
+const COLLAPSED_PILL_PX = 28;
+
 /** WHEN a press on a pill selects its session — review scaffold (2026-09-01).
  *  Read from the nearest `[data-select]` ancestor (the workbench sets it on
  *  <html> from `?select=`; a live review pane sets it on its wrapper):
@@ -333,9 +339,6 @@ export default function SessionStrip({
   // its full name while in hand, and a px offset would leave the cursor at its
   // far left edge; a fraction keeps it under the same part of the pill.
   const grabFrac = useRef(0.5);
-  // The bar's left edge at pointer-down — dragLeft is bar-local so the pill in
-  // hand can be positioned absolutely inside the bar.
-  const barLeftRef = useRef(0);
   // The pack the row is settling INTO for this drag, computed at pointer-down
   // (with the pressed session as active when the mode selects on press). Read
   // in place of the live pack for the whole drag so a resize cannot repack
@@ -345,8 +348,13 @@ export default function SessionStrip({
   // The settle glide after a drop (see the layout effect below). `settleRef`
   // is armed in the same batch as the reorder; `settle` is the two-phase FLIP
   // state that drives the pill's transform on the renders after it.
-  const settleRef = useRef<{ id: string; left: number } | null>(null);
-  const [settle, setSettle] = useState<{ id: string; delta: number; phase: 'hold' | 'glide' } | null>(null);
+  // Keyed by session id: where EVERY pill was drawn at the instant of the drop
+  // (the held pill via its twin), so that every pill — not only the held one —
+  // glides from where it was to where the reorder puts it. The neighbours step
+  // aside by a computed width during the drag; the real width differs by a few
+  // px, and without them in the settle they all hop that much at the drop.
+  const settleRef = useRef<{ heldId: string; lefts: Map<string, number> } | null>(null);
+  const [settle, setSettle] = useState<{ heldId: string; deltas: Map<string, number>; phase: 'hold' | 'glide' } | null>(null);
   // True for the one render in which the DOM order changes after a drop.
   // Neighbours' transforms drop to zero in that same render, and their DOM
   // position moves by exactly the amount the transform was — so their
@@ -557,7 +565,7 @@ export default function SessionStrip({
   const measurementsOf = useCallback((): SessionMeasurement[] => sessions.map(s => ({
     id: s.id,
     expandedWidth: metrics.get(s.id)?.expandedWidth ?? 120,
-    collapsedWidth: 24, // dot (10) + horizontal padding (12) + border (2)
+    collapsedWidth: COLLAPSED_PILL_PX,
   })), [sessions, metrics]);
 
   const handleEnter = useCallback((id: string) => {
@@ -645,7 +653,6 @@ export default function SessionStrip({
 
     if (barEl) {
       const barRect = barEl.getBoundingClientRect();
-      barLeftRef.current = barRect.left;
       const budget = barEl.parentElement?.clientWidth ?? barEl.clientWidth;
       const target = packSessions({
         sessions: measurementsOf(), activeId: activeForDrag, budget, gap: PILL_GAP, triggerWidth: 24,
@@ -656,9 +663,9 @@ export default function SessionStrip({
       // it (capped at the budget, where the active pill ellipsises instead),
       // else a dot. In press-dot the pill in hand stays a dot until the drop.
       const widthOf = (id: string) => {
-        if (id === sessionId && mode === 'press-dot') return 24;
-        if (!target.expanded.has(id)) return 24;
-        return Math.min(metrics.get(id)?.expandedWidth ?? 120, Math.max(24, budget - 24 - PILL_GAP));
+        if (id === sessionId && mode === 'press-dot') return COLLAPSED_PILL_PX;
+        if (!target.expanded.has(id)) return COLLAPSED_PILL_PX;
+        return Math.min(metrics.get(id)?.expandedWidth ?? 120, Math.max(COLLAPSED_PILL_PX, budget - 24 - PILL_GAP));
       };
       // The row starts where the first pill starts today (the bar's padding).
       const first = barEl.querySelector<HTMLElement>('[data-session-id]');
@@ -730,7 +737,11 @@ export default function SessionStrip({
     const floatLeft = held
       ? clampFloatLeft(pillRectsRef.current, e.clientX - grabFrac.current * heldWidth, heldWidth)
       : null;
-    if (floatLeft !== null) setDragLeft(floatLeft - barLeftRef.current);
+    // Bar-local against the bar's left edge NOW, not at press: the header
+    // re-centres the strip as the row reshapes after a select-on-press, so the
+    // bar itself slides a few px during the drag. Measured against the press
+    // position the twin drifted with it, out from under the cursor.
+    if (floatLeft !== null && pillBarRef.current) setDragLeft(floatLeft - pillBarRef.current.getBoundingClientRect().left);
 
     // Chrome-style live tear-off. Once the pill has been dragged past the
     // header (cursor Y below the strip's bottom by >= 60px, or outside the
@@ -800,7 +811,16 @@ export default function SessionStrip({
     const wasLiveDetached = liveDetachedWindowId.current !== null;
     // Where the pill in hand is DRAWN at this instant — the settle glide after
     // the drop starts from here, not from the pill's origin.
-    const visualLeft = dragLeft !== null ? barLeftRef.current + dragLeft : null;
+    // Read off the DOM, not reconstructed: the twin is where the user sees the
+    // pill, and the neighbours' rects INCLUDE their step-aside transforms.
+    const snapshot = new Map<string, number>();
+    if (wasDragging && pillBarRef.current) {
+      for (const el of Array.from(pillBarRef.current.querySelectorAll<HTMLElement>('[data-session-id]'))) {
+        snapshot.set(el.dataset.sessionId!, el.getBoundingClientRect().left);
+      }
+      const twin = pillBarRef.current.querySelector<HTMLElement>(':scope > div[aria-hidden]');
+      if (twin && releasedDragId !== null) snapshot.set(releasedDragId, twin.getBoundingClientRect().left);
+    }
 
     dragOrigin.current = null;
     isDragging.current = false;
@@ -858,7 +878,7 @@ export default function SessionStrip({
         const move = reorderIndices(sessions.map(x => x.id), releasedDragId, releasedOverId);
         if (move) onReorderSessions(move.from, move.to);
       }
-      if (visualLeft !== null) settleRef.current = { id: releasedSession.id, left: visualLeft };
+      if (snapshot.size > 0) settleRef.current = { heldId: releasedSession.id, lefts: snapshot };
       setReorderQuiet(true);
       // The drop selects the pill, so its name stays open as the active label;
       // the peek state that kept it open through the drag is done.
@@ -909,7 +929,7 @@ export default function SessionStrip({
     };
 
     resolveAndRoute();
-  }, [dragId, overId, dragLeft, onReorderSessions, sessions, onSelectSession]);
+  }, [dragId, overId, onReorderSessions, sessions, onSelectSession]);
 
   const handleClick = useCallback((id: string) => {
     if (suppressClick.current) return;
@@ -936,16 +956,21 @@ export default function SessionStrip({
     const armed = settleRef.current;
     if (armed !== null) {
       settleRef.current = null;
-      const el = pillElement(armed.id);
-      const delta = el ? armed.left - el.getBoundingClientRect().left : 0;
-      // The read above also forced layout of render A, so the neighbours'
+      const deltas = new Map<string, number>();
+      for (const [id, wasLeft] of armed.lefts) {
+        const el = pillElement(id);
+        if (!el) continue;
+        const delta = wasLeft - el.getBoundingClientRect().left;
+        if (Math.abs(delta) >= 0.5) deltas.set(id, delta);
+      }
+      // The reads above also forced layout of render A, so the neighbours'
       // "no transition" render has been computed and can now be restored.
       setReorderQuiet(false);
-      if (Math.abs(delta) >= 0.5) setSettle({ id: armed.id, delta, phase: 'hold' });
+      if (deltas.size > 0) setSettle({ heldId: armed.heldId, deltas, phase: 'hold' });
       return;
     }
     if (settle?.phase === 'hold') {
-      const el = pillElement(settle.id);
+      const el = pillElement(settle.heldId);
       if (el) void el.getBoundingClientRect();
       setSettle({ ...settle, phase: 'glide' });
     }
@@ -1176,7 +1201,7 @@ export default function SessionStrip({
                   // (so the row reshapes on a select-on-press), hence the
                   // ordinary transition list, not 'none'.
                   visibility: isBeingDragged ? 'hidden' : undefined,
-                  transition: (reorderQuiet || settle?.id === s.id && settle.phase === 'hold')
+                  transition: (reorderQuiet || settle?.deltas.has(s.id) && settle.phase === 'hold')
                       // The render in which the DOM order changes, and the
                       // 'hold' render of the settle: nothing may animate, see
                       // the layout effect above.
@@ -1184,24 +1209,29 @@ export default function SessionStrip({
                       // `transform` gets the settle curve when a drop is gliding
                       // home and the decelerate curve for neighbours stepping
                       // aside. Never an overshoot: a release must not spring.
-                      : `transform var(--dur-hover) ${settle?.id === s.id ? 'var(--ease-settle)' : 'var(--ease-out)'}, border-color var(--dur-hover) var(--ease-out), background-color var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out)`,
+                      : `transform var(--dur-hover) ${settle?.deltas.has(s.id) ? 'var(--ease-settle)' : 'var(--ease-out)'}, border-color var(--dur-hover) var(--ease-out), background-color var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out)`,
                   // Four mutually exclusive transform states: the pill in hand
                   // (under the cursor), a dropped pill gliding home, a neighbour
                   // stepping aside, or a plain hover.
                   transform: isBeingDragged
                     ? undefined
-                    : settle?.id === s.id
-                      ? `translateX(${settle.phase === 'hold' ? settle.delta : 0}px)`
+                    : settle?.deltas.has(s.id)
+                      ? `translateX(${settle.phase === 'hold' ? settle.deltas.get(s.id) : 0}px)`
                       : dragOffsets.has(s.id)
                         ? `translateX(${dragOffsets.get(s.id)}px)`
                         : (isHovered && !isActive) ? 'scale(1.02)' : undefined,
                   // The 3px focus outline (globals.css) reads as a bright ring
                   // around the thing you are dragging. Suppressed in hand.
-                  zIndex: settle?.id === s.id ? 10 : undefined,
-                  boxShadow: (!forceSingle && isActive) ? GLOW_SHADOW[color] : undefined,
+                  zIndex: settle?.heldId === s.id ? 10 : undefined,
+                  // The dropped pill keeps the twin's lift while it glides home,
+                  // then the shadow eases into the active glow — no pop at the
+                  // handoff from twin to real pill.
+                  boxShadow: settle?.heldId === s.id
+                    ? '0 8px 20px rgba(0,0,0,0.35)'
+                    : (!forceSingle && isActive) ? GLOW_SHADOW[color] : undefined,
                   cursor: 'default',
                 }}
-                onTransitionEnd={settle?.id === s.id ? () => setSettle(null) : undefined}
+                onTransitionEnd={settle?.heldId === s.id ? () => setSettle(null) : undefined}
                 title={s.name}
               >
                 {pillBody}
