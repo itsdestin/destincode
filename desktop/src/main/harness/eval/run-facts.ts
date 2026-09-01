@@ -73,6 +73,12 @@ export function collectRunFacts(run: CaseRun, minToolCalls: number = MIN_TOOL_CA
   };
 }
 
+/** Four decimals below a cent (a short case on a cheap model bills fractions
+ *  of a cent, and "$0.00" would read as free), two above. */
+function formatBilled(usd: number): string {
+  return usd !== 0 && Math.abs(usd) < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`;
+}
+
 function duration(ms: number): string {
   const total = Math.round(ms / 1000);
   return `${Math.floor(total / 60)}m${String(total % 60).padStart(2, '0')}s`;
@@ -120,7 +126,12 @@ export function renderRunFacts(facts: RunFacts): string {
   lines.push(
     `**Run facts:** ${ending} · ${m.toolCalls} tool calls · ${m.asks} asks · ` +
     `${m.stepGates} step gates · ${m.thinkingEvents} thinking events · ` +
-    `${m.outputTokens.toLocaleString()} output tokens · ${duration(m.wallClockMs)}`,
+    `${m.outputTokens.toLocaleString()} output tokens · ${duration(m.wallClockMs)}` +
+    // ROADMAP L161: the provider's own bill for this cell, when it reported
+    // one. Printed here, on the line every report and console summary already
+    // carries, so a round's real spend is read off the run — not off a
+    // hand-copied average. Absent means "the provider told us nothing".
+    (m.providerCostUsd === undefined ? '' : ` · provider billed ${formatBilled(m.providerCostUsd)}`),
     '',
     `**Tools actually used:** ${m.toolsUsed.length ? m.toolsUsed.join(', ') : 'none'}`,
   );

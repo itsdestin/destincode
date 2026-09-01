@@ -11,9 +11,6 @@ import {
   MEASURED_CASE_TOKENS,
   FALLBACK_INPUT_TOKENS,
   FALLBACK_OUTPUT_TOKENS,
-  MEASURED_ROSTER_SPEND_USD,
-  MEASURED_ROSTER_SPEND_ROUNDS,
-  MEASURED_ROSTER_SPEND_TOTAL_USD,
   TRUNCATED_SAMPLES,
   type Price,
 } from '../src/main/harness/eval/estimate';
@@ -238,15 +235,6 @@ describe('the measured token tables', () => {
     expect(sample.why).toMatch(/\S/);
   });
 
-  it('records the calibration anchor as an average, with the billed total it came from', () => {
-    // Fix pass 1 (2026-08-12 review, IMPORTANT 2): $3.46 is 10.38 / 3 rounds, not
-    // one measured round. Pinning the relationship stops a future edit from
-    // quietly turning the mean back into "what one round cost".
-    expect(MEASURED_ROSTER_SPEND_ROUNDS).toBe(3);
-    expect(MEASURED_ROSTER_SPEND_USD)
-      .toBeCloseTo(MEASURED_ROSTER_SPEND_TOTAL_USD / MEASURED_ROSTER_SPEND_ROUNDS, 2);
-  });
-
   it('keeps input well above output, which is what makes input the dominant cost', () => {
     // The reason this module prices both sides instead of output alone: an
     // agentic loop re-sends its whole history every step. If a future edit ever
@@ -254,13 +242,6 @@ describe('the measured token tables', () => {
     for (const [label, input] of Object.entries(MEASURED_INPUT_TOKENS)) {
       expect(input).toBeGreaterThan(MEASURED_OUTPUT_TOKENS[label]);
     }
-  });
-
-  it('records the billed calibration anchor as a positive figure', () => {
-    // Not used in the maths — it is the one number that came from OpenRouter's
-    // own biller rather than from token counting, and the CLI prints it so an
-    // estimate that lands nowhere near it is visibly suspect.
-    expect(MEASURED_ROSTER_SPEND_USD).toBeGreaterThan(0);
   });
 });
 

@@ -6,6 +6,7 @@
 // live app data (.claude/rules/live-app-safety.md). One env var, one endpoint.
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { ModelFactory } from '../harness-session';
+import { openRouterCostExtractor } from '../pricing';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 
@@ -25,6 +26,15 @@ export function makeOpenRouterFactory(apiKey: string, modelId: string): ModelFac
     name: 'openrouter',
     baseURL: OPENROUTER_BASE_URL,
     apiKey,
+    // Fix (ROADMAP L161): read OpenRouter's own per-request `usage.cost` off
+    // the wire, exactly as the app's OpenRouter branch does
+    // (provider-registry.ts). HarnessSession sums it per turn into
+    // `usage.providerCostUsd` on turn-complete, and run-case.ts sums THAT into
+    // `metrics.providerCostUsd` — so every finished cell reports what the
+    // biller actually charged, instead of the hand-copied roster average
+    // (MEASURED_ROSTER_SPEND_USD, now retired) that could not say which way
+    // the estimate erred.
+    metadataExtractor: openRouterCostExtractor,
   });
   // The binding argument is ignored: the runner pins one model per session, and
   // accepting a binding here would let a roster typo silently run a different one.
