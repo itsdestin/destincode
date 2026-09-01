@@ -90,16 +90,21 @@ export function LiveCandidate() {
   );
   const wrap = React.useRef<HTMLDivElement>(null);
 
-  // ── the pane reports its own height ────────────────────────────────────────
-  // WHY measured rather than declared: the deck cannot know how tall a candidate
-  // is (it lives in another repo), and a candidate taller than its box would be
-  // cut off with nothing to say so. `candidate` rides along so a deck showing
-  // four panes can tell them apart if it ever needs to.
+  // ── the pane reports its own SIZE ──────────────────────────────────────────
+  // WHY measured rather than declared: both numbers live in the registry, in the
+  // OTHER repository, so a deck spec naming them is guessing — and a guess that is
+  // too small clips the design silently. (Measured 2026-08-31: close-prompt-body
+  // is 380 and permissions-mode-control is 420, so a single deck-level width
+  // cannot be right for a review that shows both.) The pane knows exactly, so it
+  // says. `candidate` rides along so a deck showing four panes can tell them apart.
   React.useEffect(() => {
     const el = wrap.current;
     if (!el || window.parent === window) return;
     const report = () => window.parent.postMessage(
-      { type: 'youcoded:pane-height', height: Math.ceil(el.getBoundingClientRect().height), candidate: q.get('candidate') },
+      { type: 'youcoded:pane-height',
+        height: Math.ceil(el.getBoundingClientRect().height),
+        width: Math.ceil(el.getBoundingClientRect().width),
+        candidate: q.get('candidate') },
       // '*' is correct here and carries no secret: the height of a design mock-up
       // is not information, and the deck's port is not knowable at build time.
       '*',
