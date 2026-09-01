@@ -5,12 +5,21 @@
 // require sign-in only. The star widget and the review modal are gone.
 //
 // Copy rule (G-19): "Helpful 92%" then a muted "402 votes" — never "92% (402)".
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccount } from '../../state/account-context';
 import { useMarketplaceStats } from '../../state/marketplace-stats-context';
+import { forgetHeldComments, readHeldComments, rememberHeldComment, type HeldComment } from '../../state/held-comments';
+import type { CommentEntry } from '../../state/marketplace-api-client';
 import { Button, Textarea } from '../ui';
 import CommentList from './CommentList';
 import SignInPromptModal from './SignInPromptModal';
+
+/** This device's localStorage, or null where it is unavailable (some WebView
+ *  privacy modes throw on the accessor itself). Without it a held comment is
+ *  remembered for this mount only — the old behaviour, never a broken page. */
+function heldStorage(): Storage | null {
+  try { return typeof localStorage !== 'undefined' ? localStorage : null; } catch { return null; }
+}
 
 function ThumbIcon({ down = false }: { down?: boolean }) {
   return (
@@ -86,6 +95,13 @@ export default function FeedbackSection({ pluginId, installed }: { pluginId: str
   const [commentNote, setCommentNote] = useState<{ kind: 'held' | 'error'; text: string } | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [signIn, setSignIn] = useState<null | 'vote' | 'comment'>(null);
+  // The account's own comments the Worker is holding for review, for THIS
+  // plugin. The public list never returns them, so they come from this
+  // device's record (state/held-comments.ts) and are shown in the thread
+  // marked as held — otherwise the "held for review" toast is the last the
+  // author ever sees of what they wrote.
+  const [held, setHeld] = useState<HeldComment[]>([]);
+  const userId = auth.signedIn ? auth.user?.id ?? null : null;
 
   const s = stats.plugins[pluginId];
   const up = localTotals?.up ?? s?.thumbs_up ?? 0;
@@ -121,6 +137,31 @@ export default function FeedbackSection({ pluginId, installed }: { pluginId: str
 
   // Reset per-plugin UI state when the page switches plugins.
   useEffect(() => { setLocalTotals(null); setVoteError(null); setCommentNote(null); }, [pluginId]);
+
+  // Held comments belong to (account, plugin): signing out or switching pages
+  // swaps the list, and a signed-out reader never sees anyone's held comments.
+  useEffect(() => {
+    const storage = heldStorage();
+    setHeld(userId && storage ? readHeldComments(storage, userId, pluginId) : []);
+  }, [userId, pluginId]);
+
+  // Rows for CommentList: the author is this account, so its name and avatar
+  // are ours to fill in — the Worker never returned the row at all.
+  const heldRows = useMemo<CommentEntry[]>(() => held.map((c) => ({
+    id: c.id,
+    user_id: userId ?? '',
+    user_login: auth.user?.display_name || auth.user?.login || 'You',
+    user_avatar_url: auth.user?.avatar_url ?? '',
+    text: c.text,
+    created_at: c.created_at,
+  })), [held, userId, auth.user]);
+
+  // The public list now carries one of these ids (approved since) — drop the
+  // local copy so it is not shown twice.
+  const onHeldListed = useCallback((ids: string[]) => {
+    const storage = heldStorage();
+    setHeld((prev) => userId && storage ? forgetHeldComments(storage, userId, pluginId, ids) : prev.filter((c) => !ids.includes(c.id)));
+  }, [userId, pluginId]);
 
   // Through window.claude.marketplaceApi because the sign-in token lives in the
   // MAIN process (same path as theme likes). A renderer-side HTTP client cannot
@@ -183,6 +224,14 @@ export default function FeedbackSection({ pluginId, installed }: { pluginId: str
         // indistinguishable from a bug.
         if (r.value.hidden) {
           setCommentNote({ kind: 'held', text: "Posted. It's held for review." });
+          // …and keep it in the thread, marked as held, so reopening the page
+          // still shows what was written. The POST response carries no
+          // timestamp, so the moment it returned stands in for one.
+          const entry: HeldComment = { id: r.value.id, text, created_at: Math.floor(Date.now() / 1000) };
+          const storage = heldStorage();
+          setHeld((prev) => userId && storage
+            ? rememberHeldComment(storage, userId, pluginId, entry)
+            : [entry, ...prev.filter((c) => c.id !== entry.id)]);
         }
       })
       .catch(() => setCommentNote({ kind: 'error', text: "Couldn't post your comment. Try again." }))
@@ -229,7 +278,7 @@ export default function FeedbackSection({ pluginId, installed }: { pluginId: str
         </div>
       </div>
 
-      <CommentList pluginId={pluginId} refreshKey={refresh} />
+      <CommentList pluginId={pluginId} refreshKey={refresh} held={heldRows} onHeldListed={onHeldListed} />
 
       {/* Composer — anyone signed in can ask a question or report how it went;
           you do NOT need to have installed it to ask. */}
