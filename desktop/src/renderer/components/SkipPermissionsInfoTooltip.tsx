@@ -51,7 +51,7 @@ export function SkipPermissionsInfoTooltip() {
           must not be advertised (docs/error-message-standards.md). */}
       <p className="text-xs font-semibold text-fg mt-2.5 mb-1.5">What still gets stopped</p>
       <p>
-        Almost nothing. The one thing Claude still refuses is a command that would delete your whole project folder (or a system folder). Everything else goes through without asking — including reading private files, changing files outside your project, and editing your project's saved history or Claude's own settings.
+        Almost nothing. The only refusal we have measured is a command that would delete your whole project folder or a system folder. Everything else we tested went through without asking — reading private files, changing files outside your project, and editing your project's saved history or Claude's own settings.
       </p>
 
       {/* Was a raw text-[#DD4444] hex. Same change-17 reasoning as the
