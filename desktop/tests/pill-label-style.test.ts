@@ -26,8 +26,39 @@ describe('pillLabelStyle', () => {
   it('animates on the vocabulary, not two different curves', () => {
     const s = pillLabelStyle({ ...base, showName: true });
     expect(s.transition).toBe(
-      'width var(--dur-reveal) var(--ease-bounce), opacity var(--dur-hover) var(--ease-bounce)',
+      'width var(--dur-reveal) var(--ease-out), opacity var(--dur-hover) var(--ease-out)',
     );
+  });
+
+  it('does NOT cap a pill the packer chose to expand', () => {
+    // RC1 (2026-08-31, measured): the 120px cap is the HOVER reveal budget —
+    // a peek at a name you are pointing at. It was applied to every non-active
+    // pill, so a pill the packer had measured full room for still clipped its
+    // name at exactly 120px while its runtime badge kept 96px beside it.
+    const s = pillLabelStyle({ ...base, showName: true, packExpanded: true });
+    expect(s.width).toBe('calc-size(max-content, size)');
+  });
+
+  it('still caps a pill that is only showing its name because of hover', () => {
+    const s = pillLabelStyle({ ...base, showName: true });
+    expect(s.width).toBe(`calc-size(max-content, min(size, ${HOVER_CAP_PX}px))`);
+  });
+
+  it('never animates width on an overshoot curve', () => {
+    // RC3 (2026-08-31, measured): width is a LAYOUT property — every sibling
+    // re-lays-out on every frame of it. An overshoot curve therefore sends the
+    // whole row past its destination and back: one click moved the active pill
+    // 202.5 -> 261.9 -> 251.3 and every pill right of it 515.5 -> 583.4 -> 578.4.
+    // Overshoot belongs on transform, which moves nothing but itself.
+    for (const input of [
+      { ...base, showName: true },
+      { ...base, showName: true, isActive: true },
+      { ...base, showName: true, isActive: true, packExpanded: true, animateExpand: true },
+    ]) {
+      const t = pillLabelStyle(input).transition ?? '';
+      const widthPart = t.split(',').find(p => p.trim().startsWith('width')) ?? '';
+      expect(widthPart).not.toContain('--ease-bounce');
+    }
   });
 
   it('kills the transition for a pack-expanded pill (repack churn)', () => {
@@ -44,6 +75,6 @@ describe('pillLabelStyle', () => {
     const s = pillLabelStyle({
       ...base, showName: true, isActive: true, packExpanded: true, animateExpand: true,
     });
-    expect(s.transition).toContain('width var(--dur-reveal) var(--ease-bounce)');
+    expect(s.transition).toContain('width var(--dur-reveal) var(--ease-out)');
   });
 });

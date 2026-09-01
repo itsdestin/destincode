@@ -320,6 +320,22 @@ describe('motion vocabulary', () => {
     expect(strip).not.toMatch(/\boverIdx\b/);
   });
 
+  it('shows the runtime badge only on a properly expanded pill', () => {
+    // 2026-08-31: on a hover PEEK the pill rendered a 120px-capped name next to
+    // a ~96px "YouCoded · Coder" badge, so the badge took most of the peek. The
+    // name is the thing being peeked at; the badge waits until the packer has
+    // actually reserved room for the pill.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/showName && !hoverPeek && runtimeBadgeLabel\(/);
+  });
+
+  it('measures the badge when deciding what fits', () => {
+    // The packer measured the name only, so every native pill was ~96px wider
+    // than it believed and its name ellipsised beside a full-width badge.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/expandedWidth: measureExpandedWidth\(s\.name, runtimeBadgeLabel\(/);
+  });
+
   it('keeps the review-only motion presets out of :root', () => {
     // [data-motion="calm"|"crisp"] are a REVIEW SCAFFOLD: they let the running
     // app swap motion treatments from a URL param so alternatives can be felt

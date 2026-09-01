@@ -16,9 +16,16 @@
 // per pill, and the grid item needs `min-width: 0` or 0fr clamps to min-content).
 import type React from 'react';
 
-/** How wide a NON-active pill's name may get on hover. The active pill is
- *  uncapped: it flex-shrinks and ellipsises only when the strip itself runs
- *  out of room, which is what makes the active session's name worth showing. */
+/** How wide a name may get when it is showing ONLY because you are pointing at
+ *  it. A hover is a peek, and a very long name should not shove the row around
+ *  under the cursor.
+ *
+ *  It is NOT a cap on pills the packer chose to expand: the packer measures the
+ *  room a full name needs before expanding anything, so capping there clipped a
+ *  name the strip had already made space for (measured 2026-08-31: a
+ *  pack-expanded name clipped at exactly 120px with 137px of text, while its
+ *  runtime badge kept 96px beside it). The active pill is likewise uncapped —
+ *  it shrinks and ellipsises only when the strip itself runs out of room. */
 export const HOVER_CAP_PX = 120;
 
 export interface LabelStyleInput {
@@ -31,17 +38,27 @@ export interface LabelStyleInput {
   animateExpand: boolean;
 }
 
+// WIDTH IS NEVER ANIMATED ON AN OVERSHOOT CURVE. Width is a layout property:
+// every sibling in the strip re-lays-out on every frame of it, so an overshoot
+// sends the whole row past its destination and back. Measured 2026-08-31 on one
+// session switch: the pill went 202.5 -> 261.9 -> 251.3 and every pill to its
+// right slid 515.5 -> 583.4 -> 578.4. Overshoot belongs on `transform`, which
+// moves nothing but itself. Guard: pill-label-style.test.ts → "never animates
+// width on an overshoot curve".
 const REVEAL_TRANSITION =
-  'width var(--dur-reveal) var(--ease-bounce), opacity var(--dur-hover) var(--ease-bounce)';
+  'width var(--dur-reveal) var(--ease-out), opacity var(--dur-hover) var(--ease-out)';
 
 export function pillLabelStyle(input: LabelStyleInput): React.CSSProperties {
   const { showName, isActive, packExpanded, animateExpand } = input;
 
+  // Capped only when the name is a HOVER PEEK — i.e. neither the active pill
+  // nor one the packer measured room for. See HOVER_CAP_PX.
+  const hoverPeek = !isActive && !packExpanded;
   const width = !showName
     ? '0px'
-    : isActive
-      ? 'calc-size(max-content, size)'
-      : `calc-size(max-content, min(size, ${HOVER_CAP_PX}px))`;
+    : hoverPeek
+      ? `calc-size(max-content, min(size, ${HOVER_CAP_PX}px))`
+      : 'calc-size(max-content, size)';
 
   // `none` suppresses repack churn — without it every pill slides whenever the
   // packer reruns. But packSessions guarantees the active pill is ALWAYS

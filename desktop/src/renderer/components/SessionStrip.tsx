@@ -9,6 +9,7 @@ import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLast
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
+import { runtimeBadgeLabel, expandedPillWidth } from './header/pill-metrics';
 import { nearestPillId, reorderIndices, neighbourOffsets, draggedSlotOffset, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useFrozenPack } from './header/use-frozen-pack';
@@ -779,16 +780,21 @@ export default function SessionStrip({
     measureCanvasRef.current = document.createElement('canvas');
   }
 
-  const measureExpandedWidth = useCallback((name: string): number => {
+  // Fix (2026-08-31): this used to measure the NAME only, so for every native
+  // session it under-reserved by the width of the "YouCoded · Coder" badge the
+  // pill also renders (~96px measured). The packer then expanded pills the
+  // strip had no room for and the name ellipsised beside a full-width badge.
+  // The arithmetic lives in header/pill-metrics.ts, which the badge renders
+  // from too, so the two cannot drift apart again.
+  const measureExpandedWidth = useCallback((name: string, badgeLabel: string | null): number => {
     const canvas = measureCanvasRef.current;
     if (!canvas) return 120; // fallback
     const ctx = canvas.getContext('2d');
     if (!ctx) return 120;
-    // Match the pill's label styling: text-xs = 12px, medium weight.
-    ctx.font = '500 12px system-ui, -apple-system, sans-serif';
-    const textWidth = ctx.measureText(name).width;
-    // Pill chrome: 6px left pad + dot (10) + 4px gap + text + 6px right pad + 2px border.
-    return Math.ceil(textWidth + 28);
+    return expandedPillWidth(name, badgeLabel, (text, font) => {
+      ctx.font = font;
+      return ctx.measureText(text).width;
+    });
   }, []);
 
   const repack = useCallback(() => {
@@ -801,7 +807,7 @@ export default function SessionStrip({
     const budget = bar.parentElement?.clientWidth ?? bar.clientWidth;
     const measurements: SessionMeasurement[] = sessions.map(s => ({
       id: s.id,
-      expandedWidth: measureExpandedWidth(s.name),
+      expandedWidth: measureExpandedWidth(s.name, runtimeBadgeLabel(s.provider, s.harnessId)),
       collapsedWidth: 24, // dot (10) + horizontal padding (12) + border (2)
     }));
     const result = packSessions({
@@ -879,6 +885,12 @@ export default function SessionStrip({
             ? isActive
             : displayPack.expanded.has(s.id) || isHovered || isActive;
           const isBeingDragged = dragId === s.id && isDragging.current;
+          // A HOVER PEEK: the name is showing only because the cursor is on it.
+          // The packer reserved no room for this pill, so the name is capped
+          // (pill-label-style.ts) — and the runtime badge is suppressed below,
+          // because 96px of "YouCoded · Coder" inside a 120px peek leaves
+          // almost nothing for the thing you are actually peeking at.
+          const hoverPeek = !isActive && !displayPack.expanded.has(s.id);
 
           return (
             <React.Fragment key={s.id}>
@@ -963,18 +975,17 @@ export default function SessionStrip({
                 {/* Native-runtime badge — marks a YouCoded harness session and
                     which preset it runs as. Only when the name is showing so it
                     never clutters a collapsed dot-only pill. */}
-                {s.provider === 'native' && showName && (
+                {showName && !hoverPeek && runtimeBadgeLabel(s.provider, s.harnessId) !== null && (
                   <span
+                    // The session NAME is what is worth reading; this badge is
+                    // context. `flexShrink: 100` makes the badge give up its
+                    // space first if the pill is ever squeezed, so the name is
+                    // the last thing to lose room rather than the first.
                     className="min-w-0 overflow-hidden text-4xs px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap"
-                    // The session NAME is the thing worth reading; this badge
-                    // is context. It was `shrink-0`, so a tight pill squeezed
-                    // the name to an ellipsis while "YouCoded · Coder" kept its
-                    // full width. A large flex-shrink makes the badge give up
-                    // its space first and disappear before the name is touched.
                     style={{ flexShrink: 100 }}
                     title="YouCoded native session"
                   >
-                    {`YouCoded · ${s.harnessId === 'coder' ? 'Coder' : 'Assistant'}`}
+                    {runtimeBadgeLabel(s.provider, s.harnessId)}
                   </span>
                 )}
                 {/* Active indicator bar — removed (dot is sufficient) */}
