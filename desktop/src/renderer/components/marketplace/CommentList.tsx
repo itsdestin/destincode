@@ -70,7 +70,7 @@ interface CommentListProps {
 type FetchState =
   | { status: 'loading' }
   | { status: 'empty' }
-  | { status: 'loaded'; comments: CommentEntry[] }
+  | { status: 'loaded'; comments: CommentEntry[]; total?: number }
   | { status: 'error' };
 
 export default function CommentList({ pluginId, refreshKey = 0 }: CommentListProps) {
@@ -81,9 +81,9 @@ export default function CommentList({ pluginId, refreshKey = 0 }: CommentListPro
     const controller = new AbortController();
     let cancelled = false;
     apiClient.listComments(pluginId, controller.signal)
-      .then(({ comments }) => {
+      .then(({ comments, total }) => {
         if (cancelled) return;
-        setState(comments.length === 0 ? { status: 'empty' } : { status: 'loaded', comments });
+        setState(comments.length === 0 ? { status: 'empty' } : { status: 'loaded', comments, total });
       })
       .catch((err: unknown) => {
         if (cancelled || (err instanceof Error && err.name === 'AbortError')) return;
@@ -100,6 +100,17 @@ export default function CommentList({ pluginId, refreshKey = 0 }: CommentListPro
       {state.status === 'loaded' && (
         <div>
           {state.comments.map((c) => <CommentRow key={c.id} c={c} pluginId={pluginId} />)}
+          {/* The Worker caps the list at the 50 most recent and, since 2026-09-01,
+              sends the full count beside it. Before that a busy thread simply
+              stopped at 50 with nothing marking the cut, so a reader could not
+              tell "50 comments" from "more than I can see". Only rendered when
+              the count is actually larger — an older Worker sends no `total`,
+              and a thread that fits needs no caption. */}
+          {typeof state.total === 'number' && state.total > state.comments.length && (
+            <p className="pt-3 text-xs text-fg-muted" data-comments-cut>
+              Showing the {state.comments.length} most recent of {state.total.toLocaleString()} comments.
+            </p>
+          )}
         </div>
       )}
     </div>

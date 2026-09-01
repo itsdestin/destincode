@@ -12,7 +12,7 @@
 //
 // Routes with NO real backend yet (the backend to-do once the design is
 // approved — the Worker equivalent of mock-only.ts):
-//   GET  /comments/:plugin_id   → { comments: [...] }
+//   GET  /comments/:plugin_id   → { comments: [...], total }
 //   POST /comments              → { id }
 //   POST /thumbs                → { ok: true }
 //   GET  /stats                 → plugins[id] gains thumbs_up / thumbs_down
@@ -45,7 +45,11 @@ export function installWorkerApiMock(): void {
     if (path.startsWith('/ratings/') && method === 'GET') return json({ ratings: [] });
     if (path.startsWith('/comments/') && method === 'GET') {
       const id = decodeURIComponent(path.slice('/comments/'.length));
-      return json({ comments: comments[id] ?? [] });
+      // `total` mirrors the Worker (2026-09-01): the full visible count beside
+      // the 50-row page, so the "showing the 50 most recent of N" line can be
+      // exercised here by seeding a fixture with more than 50 rows.
+      const list = comments[id] ?? [];
+      return json({ comments: list.slice(0, 50), total: list.length });
     }
     if (path === '/comments' && method === 'POST') {
       const body = JSON.parse(String(init?.body ?? '{}')) as { plugin_id: string; text: string };
