@@ -100,9 +100,23 @@ describe('Dialog shell', () => {
     }
   });
 
+  // jsdom's CSSOM re-serializes math functions on the way in — since jsdom 30,
+  // `min(476px, calc(100vh - 6rem))` reads back as `min(476px, -6rem + 100vh)`
+  // (jsdom 29 echoed the source text). Comparing the panel's style to the raw
+  // constant therefore pins jsdom's spelling, not the Dialog's behaviour. So:
+  // round-trip the constant through the SAME CSSOM and compare against that.
+  // The non-empty check keeps this honest — if a future jsdom silently drops
+  // the value (jsdom 29 did exactly that for `height`), '' === '' must not pass.
+  function cssSerialized(prop: 'height' | 'maxHeight', value: string): string {
+    const probe = document.createElement('div');
+    probe.style[prop] = value;
+    expect(probe.style[prop], `jsdom dropped ${prop}: ${value}`).not.toBe('');
+    return probe.style[prop];
+  }
+
   it('applies the cap for its own size and hugs content by default', () => {
     render(<Dialog open onClose={() => {}} title="X" size="prompt">body</Dialog>);
-    expect(panel().style.maxHeight).toBe(DIALOG_MAX_HEIGHTS.prompt);
+    expect(panel().style.maxHeight).toBe(cssSerialized('maxHeight', DIALOG_MAX_HEIGHTS.prompt));
     expect(panel().getAttribute('style')).not.toContain(`; height:`);
   });
 
@@ -110,11 +124,8 @@ describe('Dialog shell', () => {
     // Appearance and Remote Access swap between an index and a detail view and
     // would otherwise resize under the cursor. "Always maximum" is the honest
     // version of the invented pixel height they used to set.
-    // Read the style ATTRIBUTE, not .style.height: jsdom's cssstyle has a strict
-    // parser for `height` that drops min()/calc() values, though it accepts the
-    // same string for `max-height`. The attribute is what actually ships.
     render(<Dialog open onClose={() => {}} title="X" fill>body</Dialog>);
-    expect(panel().getAttribute('style')).toContain(`height: ${DIALOG_MAX_HEIGHTS.panel}`);
+    expect(panel().style.height).toBe(cssSerialized('height', DIALOG_MAX_HEIGHTS.panel));
   });
 });
 

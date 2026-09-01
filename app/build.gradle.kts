@@ -1,6 +1,7 @@
 import java.util.Properties
 import java.io.FileInputStream
 import org.gradle.internal.os.OperatingSystem
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -113,10 +114,6 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     testOptions {
         // JVM unit tests run against a stubbed android.jar whose methods throw
         // "Method ... not mocked" by default. MarketplaceFetcher.fetchIndex() calls
@@ -126,6 +123,17 @@ android {
         // false) instead of throwing. It does not affect org.json, which comes from the
         // real `org.json:json` test dependency below, not from android.jar.
         unitTests.isReturnDefaultValues = true
+    }
+}
+
+// Kotlin JVM target. This used to be `android { kotlinOptions { jvmTarget = "17" } }`,
+// which Kotlin 2.4 removed from the Gradle plugin (deprecated since 2.0), so the
+// build script stopped compiling on the dependabot bump. `compilerOptions` is the
+// replacement DSL; it lives at the top level, not inside `android {}`. Keep this
+// in step with compileOptions.sourceCompatibility/targetCompatibility above.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -227,7 +235,7 @@ dependencies {
     implementation("com.github.luben:zstd-jni:1.5.7-11")
 
     // Markdown parsing for chat view
-    implementation("org.commonmark:commonmark:0.29.0")
+    implementation("org.commonmark:commonmark:0.30.0")
 
     // WebSocket server for React UI bridge
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
