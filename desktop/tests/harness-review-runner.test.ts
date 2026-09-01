@@ -217,6 +217,19 @@ describe('renderRunFacts', () => {
   it('has no warning blockquote for a clean run', () => {
     expect(renderRunFacts(collectRunFacts(baseRun())).startsWith('> ')).toBe(false);
   });
+
+  // ROADMAP L161: the biller's own figure replaces the hand-copied roster
+  // average. It is printed only when the run carries one — a run where the
+  // provider reported nothing must not read as free.
+  it('prints what the provider billed when the run carries it, and nothing when it does not', () => {
+    const billed = renderRunFacts(collectRunFacts(baseRun({
+      metrics: { ...BASE_METRICS, providerCostUsd: 0.2731 },
+    })));
+    expect(billed).toContain('provider billed $0.27');
+    const silent = renderRunFacts(collectRunFacts(baseRun()));
+    expect(silent).not.toContain('provider billed');
+    expect(silent).not.toContain('$0');
+  });
 });
 
 describe('appendReview', () => {

@@ -171,6 +171,10 @@ for (const entry of roster) {
       `${m.thinkingEvents} thinking · ${Math.floor(secs / 60)}m${String(secs % 60).padStart(2, '0')}s`,
     );
     console.log(`  tools: ${m.toolsUsed.join(' ') || 'none'}`);
+    // ROADMAP L161: what OpenRouter itself billed for this run, when every turn
+    // reported it — the per-model, per-round figure the old hand-copied roster
+    // average could never give.
+    if (m.providerCostUsd !== undefined) console.log(`  provider billed: $${m.providerCostUsd.toFixed(4)}`);
     // Independent of outcome: a wrap-up turn that itself failed still reports
     // outcome 'wrapped-up' (see run-case.ts's outcome comment), so a reader
     // branching only on outcome would miss a real provider failure here.

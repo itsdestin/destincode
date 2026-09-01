@@ -22,6 +22,23 @@ export interface MigrationResult {
   sidecar: ProjectSidecar;
   reclassified: number;
   merged: number;
+  /** ROADMAP L598: one entry per reclassified record — the `absolutePath` it
+   *  HAD and the root-relative `path` it became, plus whether it was folded
+   *  into an existing internal record. This is the audit trail the caller
+   *  logs: a repair that silently over-reclassifies shows up as phantom
+   *  in-project files, not as an error, so the only way to notice one is to
+   *  be able to read what got rewritten. `wasAbsolute` flags the cross-OS
+   *  remap shape (an absolute path re-homed by its project-root segment),
+   *  which is the shape most likely to misfire and worth checking by eye. */
+  reclassifiedFrom: { from: string; to: string; merged: boolean; wasAbsolute: boolean }[];
+}
+
+/** Drive letter, UNC/POSIX leading separator — the shapes an `absolutePath`
+ *  was contractually supposed to have. Anything else is the legacy relative
+ *  record this migration exists for. Pure string test; no `path` module here
+ *  (this file must stay platform-free). */
+function looksAbsolute(p: string): boolean {
+  return /^(?:[A-Za-z]:[\\/]|[\\/])/.test(p);
 }
 
 /** ULIDs sort lexicographically by creation time, so the smaller id is older. */
@@ -62,6 +79,7 @@ export function migrateRelativeExternals(
 ): MigrationResult {
   let reclassified = 0;
   let merged = 0;
+  const reclassifiedFrom: MigrationResult['reclassifiedFrom'] = [];
 
   // Internal records indexed by path — the collision targets. 10 of the 18 real
   // relative-external records land on one of these, so a plain field rewrite
@@ -107,6 +125,7 @@ export function migrateRelativeExternals(
       else out.splice(idx, 1, mergedRec);
       byPath.set(resolved.path, mergedRec);
       merged++;
+      reclassifiedFrom.push({ from: a.absolutePath, to: resolved.path, merged: true, wasAbsolute: looksAbsolute(a.absolutePath) });
     } else {
       // BOTH fields must change: `path` holds the basename for externals but the
       // root-relative path for internals. Changing one without the other yields
@@ -116,8 +135,9 @@ export function migrateRelativeExternals(
       };
       out.push(converted);
       byPath.set(resolved.path, converted);
+      reclassifiedFrom.push({ from: a.absolutePath, to: resolved.path, merged: false, wasAbsolute: looksAbsolute(a.absolutePath) });
     }
   }
 
-  return { sidecar: { ...sidecar, artifacts: out }, reclassified, merged };
+  return { sidecar: { ...sidecar, artifacts: out }, reclassified, merged, reclassifiedFrom };
 }

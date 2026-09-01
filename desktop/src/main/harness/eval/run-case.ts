@@ -32,6 +32,14 @@ export interface CaseMetrics {
   thinkingEvents: number;
   inputTokens: number;
   outputTokens: number;
+  /** USD the PROVIDER ITSELF billed for this run — OpenRouter's `usage.cost`,
+   *  read off the wire by openRouterCostExtractor (openrouter-factory.ts) and
+   *  summed here across every turn-complete. Present ONLY when every turn
+   *  carried one; a run where any turn reported nothing is `undefined`, never
+   *  a partial sum and never 0 (same rule as shared/types.ts's
+   *  providerCostUsd). This is the figure the retired MEASURED_ROSTER_SPEND_USD
+   *  anchor stood in for: per cell, per round, from the biller. */
+  providerCostUsd?: number;
   /** One per turn-complete, in order. A budget-triggered wrap-up has two (the
    *  testing turn's 'max_steps', then the wrap-up turn's own finish reason);
    *  a timeout-triggered one usually has one, since interrupt() ends the
@@ -424,6 +432,11 @@ export async function runCase(opts: RunCaseOpts): Promise<CaseRun> {
   let thinkingEvents = 0;
   let inputTokens = 0;
   let outputTokens = 0;
+  // Provider-billed cost (ROADMAP L161). Two counters so a turn that reported
+  // no cost makes the whole figure absent rather than silently short.
+  let turnsCompleted = 0;
+  let turnsWithProviderCost = 0;
+  let providerCostUsd = 0;
   const stopReasons: string[] = [];
   const toolsUsed = new Set<string>();
 
@@ -669,6 +682,12 @@ export async function runCase(opts: RunCaseOpts): Promise<CaseRun> {
       if (e.data.stopReason) stopReasons.push(e.data.stopReason);
       inputTokens += e.data.usage?.inputTokens ?? 0;
       outputTokens += e.data.usage?.outputTokens ?? 0;
+      turnsCompleted++;
+      const billed = e.data.usage?.providerCostUsd;
+      if (typeof billed === 'number' && Number.isFinite(billed)) {
+        turnsWithProviderCost++;
+        providerCostUsd += billed;
+      }
     }
   });
 
@@ -902,6 +921,10 @@ export async function runCase(opts: RunCaseOpts): Promise<CaseRun> {
       metrics: {
         wallClockMs: Date.now() - startedAt,
         toolCalls, asks, stepGates, thinkingEvents, inputTokens, outputTokens,
+        // Absent unless EVERY turn reported a figure — see CaseMetrics.
+        ...(turnsCompleted > 0 && turnsWithProviderCost === turnsCompleted
+          ? { providerCostUsd }
+          : {}),
         stopReasons,
         toolsUsed: [...toolsUsed].sort(),
         // Only calls at or above REPEAT_REPORT_FLOOR — a run with zero

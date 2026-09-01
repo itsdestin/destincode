@@ -156,12 +156,6 @@ async function importGraders() {
     // The judge's share of the bill, which the per-cell figure does not include
     // (fix pass 1, 2026-08-12 review, IMPORTANT 1).
     judgeCostLines: estimate.judgeCostLines,
-    MEASURED_ROSTER_SPEND_USD: estimate.MEASURED_ROSTER_SPEND_USD,
-    // Both halves of the anchor, so the CLI can print WHAT WAS BILLED and OVER
-    // HOW MANY ROUNDS rather than only the derived per-round average — see
-    // printEstimate (fix pass 1, 2026-08-12 review, IMPORTANT 2).
-    MEASURED_ROSTER_SPEND_ROUNDS: estimate.MEASURED_ROSTER_SPEND_ROUNDS,
-    MEASURED_ROSTER_SPEND_TOTAL_USD: estimate.MEASURED_ROSTER_SPEND_TOTAL_USD,
     judgeRun: judge.judgeRun,
     renderReport: report.renderReport,
     collectRunFacts: runFacts.collectRunFacts,
@@ -1193,7 +1187,6 @@ async function fetchPrices(roster, parsePriceCatalog, judgeModelId) {
  */
 function printEstimate(estimate, cells, {
   fetchError, formatUsd, judgeCostLines, judgeModelId, judgePrice,
-  MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
 }) {
   console.log('\nEstimated cost');
   const width = Math.max(...estimate.perCell.map((c) => c.cellId.length), 4);
@@ -1243,17 +1236,15 @@ function printEstimate(estimate, cells, {
   // above names exactly which rows are still the battery-shaped guess.
   console.log('\n  Basis: rows not listed above (as unpriced/unmeasured/battery-priced) are priced from a measurement of');
   console.log('  that exact case on that exact model. A model that loops on a real run costs more than any of this.');
-  // Fix pass 1 (2026-08-12 review, IMPORTANT 2): the caveat is printed HERE, next
-  // to the number, not only in the comment where the constant is defined. The
-  // line used to read "one whole roster of eight battery runs was actually billed
-  // $3.46", which is not what the source says: $10.38 covered THREE rounds and
-  // $3.46 is their mean. Nobody recorded the rounds separately, so whether this
-  // estimator reads high or low against a single round is genuinely unknown —
-  // and the operator reading this line is the person who needs to know that.
-  console.log(`  Calibration: three whole-roster rounds were billed ${formatUsd(MEASURED_ROSTER_SPEND_TOTAL_USD)} between them`);
-  console.log(`  (${formatUsd(MEASURED_ROSTER_SPEND_USD)} a round on AVERAGE, ${MEASURED_ROSTER_SPEND_ROUNDS} rounds, 2026-08-11). The per-round figures were never`);
-  console.log('  recorded, so treat that as a rough anchor: whether this estimate errs high or low against any');
-  console.log('  ONE round has not been measured. Use --max-spend if the number matters.');
+  // ROADMAP L161: the hand-copied "$3.46 a round on average" calibration line
+  // that used to print here is gone. It was the mean of three rounds nobody
+  // recorded separately, so it could not say whether this estimate reads high
+  // or low. Every finished cell now carries OpenRouter's own bill for it
+  // (`metrics.providerCostUsd`, on the report's "Run facts" line), which is
+  // the comparison that CAN answer that — per model, per round.
+  console.log('  Calibration: each finished cell reports what OpenRouter itself billed for it ("provider billed"');
+  console.log('  on its Run facts line in the report). Compare that against the row above to see which way this');
+  console.log('  estimate errs. Use --max-spend if the number matters.');
 }
 
 /**
@@ -1571,14 +1562,12 @@ async function main(argv) {
   // from a public catalog endpoint, so this path needs no credential at all.
   const {
     roster, estimateCells, parsePriceCatalog, formatUsd, judgeCostLines,
-    MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
   } = await loadGraders();
   const judgeModelId = plan.judge ?? null;
   const { prices, judgePrice, error: fetchError } = await fetchPrices(roster, parsePriceCatalog, judgeModelId);
   const estimate = estimateCells(cells, prices);
   printEstimate(estimate, cells, {
     fetchError, formatUsd, judgeCostLines, judgeModelId, judgePrice,
-    MEASURED_ROSTER_SPEND_USD, MEASURED_ROSTER_SPEND_ROUNDS, MEASURED_ROSTER_SPEND_TOTAL_USD,
   });
 
   if (dryRun) {

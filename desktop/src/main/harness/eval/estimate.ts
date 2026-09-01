@@ -199,37 +199,14 @@ export const TRUNCATED_SAMPLES: Record<string, { inputTokens: number; outputToke
   },
 };
 
-/** The AVERAGE whole-roster spend across THREE rounds, not one measured round:
- *  OpenRouter's own `/api/v1/key` usage counter recorded $10.38 for rounds 6-8
- *  (`.claude/rules/harness-review-runner.md`, "$10.38 for rounds 6-8, ~$3.46 a
- *  roster"), and 10.38 / 3 = 3.46.
- *
- *  Exported as a rough CALIBRATION ANCHOR, not as an input to the maths: it is
- *  the one figure here that came from the biller rather than from token
- *  counting, so an estimate for eight battery cells landing an order of
- *  magnitude away from it means the token table or the catalog prices are wrong.
- *
- *  WHAT IT DOES NOT ESTABLISH (fix pass 1, 2026-08-12 review, IMPORTANT 2). This
- *  comment used to say "$4.82 estimated vs $3.46 billed — 39% HIGH, the safe
- *  direction". That comparison does not hold up: the token tables come from ONE
- *  round (2026-08-11) and this figure is the MEAN of three. If 2026-08-11 was the
- *  expensive round of the three, the same arithmetic could be showing the
- *  estimate reading LOW. The per-round figures were never recorded separately, so
- *  the direction of the error is UNMEASURED and no directional claim is made
- *  here or in what the CLI prints. Establishing one means recording
- *  `/api/v1/key` usage before and after a single roster round.
- *
- *  The size of the gap is likewise unexplained. Prompt caching is one candidate
- *  (an agentic loop re-sends its history every step, and OpenRouter lists cache
- *  reads far below fresh input) but nothing here measured whether these runs hit
- *  a cache, so it is named as a candidate and not as the cause. */
-export const MEASURED_ROSTER_SPEND_USD = 3.46;
-
-/** The raw billed figure and the number of rounds it covers, so a reader never
- *  has to trust that the division above was done right — and so the CLI can
- *  print the caveat next to the number instead of only next to its definition. */
-export const MEASURED_ROSTER_SPEND_ROUNDS = 3;
-export const MEASURED_ROSTER_SPEND_TOTAL_USD = 10.38;
+// The hand-copied calibration anchor that used to live here
+// (MEASURED_ROSTER_SPEND_USD = 3.46, the mean of three rounds billed $10.38
+// between them, 2026-08-11) is RETIRED (ROADMAP L161). It could not say which
+// way this estimate errs, because the rounds were never recorded separately.
+// The evaluator now reads OpenRouter's own per-request cost off the wire
+// (openrouter-factory.ts → metrics.providerCostUsd, printed on every cell's
+// "Run facts" line), so a roster round reports the biller's figure per model,
+// per round — compare THAT against the rows this module prints.
 
 /** Token counts used for a model with no measurement at all — the worst row of
  *  each measured table.
@@ -391,9 +368,9 @@ export function estimateCells(
  * (Grok 4.5 doubles above a 200k-token prompt). Neither is modelled here.
  *
  * Fix pass 1 (2026-08-12 review, IMPORTANT 2): this paragraph used to assert
- * "this harness sends no cached prefixes", while MEASURED_ROSTER_SPEND_USD's
- * comment simultaneously explained the whole estimate-vs-billed gap AS prompt
- * caching. Both cannot be true, and NEITHER was measured — so both assertions
+ * "this harness sends no cached prefixes", while the (since retired) roster
+ * spend anchor's comment simultaneously explained the whole estimate-vs-billed
+ * gap AS prompt caching. Both cannot be true, and NEITHER was measured — so both assertions
  * are gone rather than one of them being picked. What is actually known: cache
  * rates are not modelled, so if these runs DO hit a provider cache the estimate
  * reads high, and if they do not it is unaffected. The override threshold is

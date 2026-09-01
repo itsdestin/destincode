@@ -41,6 +41,20 @@ export function sendChatMessage(
   ptyText: string,
   filePaths?: string[],
 ): void;
+// Fix (ROADMAP L732): a caller holding the provider in a VARIABLE (typed
+// `'claude' | 'native' | undefined`, e.g. `session.provider` read off state)
+// matched neither literal overload above — TypeScript resolves overloads one
+// at a time and never unions them — so `sendChatMessage(session.provider, …)`
+// was a type error and every such caller had to narrow or cast first. This
+// widest signature accepts the union and returns the honest union; the two
+// literal overloads still win for literal arguments, so InputBar's `'native'`
+// call keeps its plain `Promise<NativeSendResult>`.
+export function sendChatMessage(
+  provider: 'claude' | 'native' | undefined,
+  sessionId: string,
+  ptyText: string,
+  filePaths?: string[],
+): Promise<NativeSendResult> | void;
 export function sendChatMessage(
   provider: 'claude' | 'native' | undefined,
   sessionId: string,
