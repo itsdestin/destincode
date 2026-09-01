@@ -66,6 +66,11 @@ import {
   type PermissionModeDef,
 } from './permission-modes';
 import type { CompareSurface } from './types';
+// session-strip-motion / session-switch-arrival: the REAL SessionStrip in a
+// demo host, so its motion is felt rather than watched. The candidates differ
+// only in the data-motion / data-arrival attribute the host sets — the review
+// scaffold in globals.css — never in code.
+import { SessionStripMotionDemo } from '../mockups/SessionStripMotion';
 // The REAL derivation the shipping card will use — a candidate that hardcoded
 // its options would be comparing wording against something that cannot happen.
 import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
@@ -4344,6 +4349,73 @@ function PresentRefTable() {
 
 const ALL_SURFACES: CompareSurface[] = [
   {
+    id: 'session-strip-motion',
+    label: 'Session strip — motion',
+    question: 'How fast, and on what curve, should a click open a name, a hover peek it, and a drag move a pill?',
+    frame: 'canvas',
+    // The strip needs room for one open name, one peek and a row of dots.
+    paneWidth: 520,
+    rounds: [
+      {
+        n: 1,
+        basis: 'Rebuilt 2026-09-01 after Destin rejected the first cut as "much too bouncy/aggressive". No candidate overshoots; they differ only in speed and curve. The mechanics (peek stays open through a click, the pill rides under the cursor, release glides) are the same in all three.',
+        candidates: [
+          {
+            id: 'settled',
+            label: 'Settled',
+            note: 'Decelerates fast and stops dead: 150ms hover, 200ms name reveal. The :root values — what ships if nothing is picked.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'crisp',
+            label: 'Crisp',
+            note: 'Same curve, a third quicker: 100ms hover, 140ms reveal. Nearly instant, still not a cut.',
+            render: () => <SessionStripMotionDemo motion="crisp" />,
+          },
+          {
+            id: 'soft',
+            label: 'Soft',
+            note: 'A plain ease and a little longer: 180ms hover, 260ms reveal. Calmer; the row can be seen moving.',
+            render: () => <SessionStripMotionDemo motion="soft" />,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'session-switch-arrival',
+    label: 'Session switch — the conversation arrives',
+    question: 'When you switch sessions, how does the incoming conversation appear?',
+    frame: 'canvas',
+    paneWidth: 520,
+    rounds: [
+      {
+        n: 1,
+        basis: 'Spec §4.2: one animated element, never per-bubble; the outgoing conversation is never animated. Three arrivals on the Settled strip.',
+        candidates: [
+          {
+            id: 'lift',
+            label: 'Fade and lift',
+            note: 'The conversation fades in while rising 6px, over 240ms. The :root values.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'fade',
+            label: 'Fade only',
+            note: 'The same 240ms fade with no movement. Quieter; nothing in the transcript shifts.',
+            render: () => <SessionStripMotionDemo arrival="fade" />,
+          },
+          {
+            id: 'cut',
+            label: 'Cut',
+            note: 'No animation — the conversation is simply there, the way Chrome switches a tab.',
+            render: () => <SessionStripMotionDemo arrival="cut" />,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: 'close-prompt-body',
     label: 'Close session — body',
     question: 'How should the collapsed tags/note summary and Mark complete sit together?',
@@ -5130,7 +5202,7 @@ const ALL_SURFACES: CompareSurface[] = [
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'chatsearch-present';
+const ACTIVE_FIRST = 'session-strip-motion';
 
 export const COMPARE_SURFACES: CompareSurface[] = [
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),
