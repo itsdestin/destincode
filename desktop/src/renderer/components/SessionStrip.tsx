@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect, useLayoutEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { SessionStatusColor, STATUS_LABEL } from './StatusDot';
 import { Button, Toggle } from './ui';
@@ -9,8 +9,8 @@ import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLast
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
-import { runtimeBadgeLabel, expandedPillWidth } from './header/pill-metrics';
-import { nearestPillId, reorderIndices, neighbourOffsets, draggedSlotOffset, type PillRect } from './header/drag-order';
+import { runtimeBadgeLabel, pillMetrics, FALLBACK_FONTS, type PillMetrics, type PillFonts } from './header/pill-metrics';
+import { nearestSlotId, clampDragDx, reorderIndices, neighbourOffsets, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useFrozenPack } from './header/use-frozen-pack';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -26,6 +26,11 @@ import type { TagRecord } from '../../shared/tags';
 // Stable empty map for the non-dragging render, so a new Map is not allocated
 // on every frame the strip re-renders.
 const EMPTY_OFFSETS: ReadonlyMap<string, number> = new Map();
+
+/** How long the pill-label transitions stay switched on after a session
+ *  switch. Covers the name reveal (--dur-reveal) plus the badge that opens
+ *  after it (--dur-hover) with a little slack — see the badge below. */
+const EXPAND_WINDOW_MS = 360;
 
 interface SessionEntry {
   id: string;
@@ -304,7 +309,24 @@ export default function SessionStrip({
   // the boundaries, and the dragged pill's travel clamp (computed from its own
   // rect) drifts.
   const pillRectsRef = useRef<PillRect[]>([]);
-  const [dragPos, setDragPos] = useState<{ x: number; y: number } | null>(null);
+  // How far the pill in hand has travelled from where it was picked up, in CSS
+  // px, clamped to the strip. Null when nothing is in hand. Only X: the pill
+  // rides the strip line; downward motion is tear-off (below), never a Y offset.
+  const [dragDx, setDragDx] = useState<number | null>(null);
+  // Cursor X at pointer-down — dragDx is measured from here, so the pill stays
+  // exactly as far under the cursor as it was when grabbed.
+  const grabX = useRef(0);
+  // The settle glide after a drop (see the layout effect below). `settleRef`
+  // is armed in the same batch as the reorder; `settle` is the two-phase FLIP
+  // state that drives the pill's transform on the renders after it.
+  const settleRef = useRef<{ id: string; left: number } | null>(null);
+  const [settle, setSettle] = useState<{ id: string; delta: number; phase: 'hold' | 'glide' } | null>(null);
+  // True for the one render in which the DOM order changes after a drop.
+  // Neighbours' transforms drop to zero in that same render, and their DOM
+  // position moves by exactly the amount the transform was — so their
+  // transition must be OFF for it, or they would visibly jump and then glide
+  // back to where they already were.
+  const [reorderQuiet, setReorderQuiet] = useState(false);
   // Track whether pointer moved enough to distinguish drag from click
   const dragOrigin = useRef<{ x: number; y: number } | null>(null);
   const isDragging = useRef(false);
@@ -468,6 +490,13 @@ export default function SessionStrip({
   }, []);
 
   const handleLeave = useCallback(() => {
+    // Widths freeze for the duration of a drag — and that includes the pill in
+    // hand. A fast drag leaves the pill's own box (mouseleave fires), and
+    // letting its peek collapse mid-drag would shrink the thing under the
+    // cursor by the width its neighbours had already stepped aside for. That
+    // was the ~150px void Destin photographed on 2026-09-01: the geometry was
+    // frozen at peek width, the pill was not. Hover is released at drop.
+    if (dragIdRef.current !== null) return;
     leaveTimer.current = setTimeout(() => setHoveredId(null), 80);
   }, []);
 
@@ -515,8 +544,13 @@ export default function SessionStrip({
     if (!s) return;
     // Capture label + color eagerly so pointermove can start immediately
     setDragId(s.id);
-    // Any standing hover would keep that pill wide for the whole drag.
-    setHoveredId(null);
+    grabX.current = e.clientX;
+    // Hover is deliberately NOT cleared here. Clearing it collapsed the peek
+    // you had open to a dot on mouse-down, and the click then re-expanded the
+    // same pill as the active one: open → shut → open, on every click of a dot
+    // ("clicking is weird and jumpy", Destin 2026-09-01). The peek simply stays
+    // open and becomes the active label. Whatever the row looked like when you
+    // pressed down is what it looks like until you let go.
 
     // Freeze the strip's geometry for the whole drag — see pillRectsRef.
     const barEl = pillBarRef.current;
@@ -580,7 +614,10 @@ export default function SessionStrip({
       (window as any).claude?.detach?.dragStarted?.({ sessionId: draggedSession.id });
     }
 
-    setDragPos({ x: e.clientX, y: e.clientY });
+    // The pill in hand tracks the cursor 1:1 along the strip — no transition,
+    // no slot snapping, clamped so it cannot leave the row of pills.
+    const dx = clampDragDx(pillRectsRef.current, dragId, e.clientX - grabX.current);
+    setDragDx(dx);
 
     // Chrome-style live tear-off. Once the pill has been dragged past the
     // header (cursor Y below the strip's bottom by >= 60px, or outside the
@@ -620,7 +657,7 @@ export default function SessionStrip({
             // and fires pointerup when the user releases.
             setDragId(null);
             setOverId(null);
-            setDragPos(null);
+            setDragDx(null);
           }).catch(() => {
             liveDetachPending.current = false;
           });
@@ -629,11 +666,14 @@ export default function SessionStrip({
       }
     }
 
-    // Hit-test by horizontal distance only, against the geometry frozen at
-    // pointer-down. Y is ignored on purpose: the pickup range is the full
-    // height of the window, so a slightly-low drag still reorders.
+    // Which slot is the pill heading for? The one its CENTRE is nearest to,
+    // computed from the geometry frozen at pointer-down (drag-order.ts). Y is
+    // ignored on purpose: the pickup range is the full height of the window,
+    // so a slightly-low drag still reorders.
     if (!bar) return;
-    setOverId(nearestPillId(pillRectsRef.current, e.clientX, dragId));
+    const held = pillRectsRef.current.find(r => r.id === dragId);
+    const centre = held ? (held.left + held.right) / 2 + dx : e.clientX;
+    setOverId(nearestSlotId(pillRectsRef.current, dragId, centre));
   }, [dragId]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
@@ -644,17 +684,27 @@ export default function SessionStrip({
       ? sessions.find(x => x.id === releasedDragId) ?? null
       : null;
     const wasLiveDetached = liveDetachedWindowId.current !== null;
+    // Where the pill in hand is DRAWN at this instant — the settle glide after
+    // the drop starts from here, not from the pill's origin.
+    const heldRect = releasedDragId !== null ? pillRectsRef.current.find(r => r.id === releasedDragId) : undefined;
+    const visualLeft = heldRect && dragDx !== null ? heldRect.left + dragDx : null;
 
-    // Reset all local drag state immediately so the UI snaps back cleanly.
-    // We do the cross-window resolution async below using the captured values.
-    setDragId(null);
-    setOverId(null);
-    setDragPos(null);
     dragOrigin.current = null;
     isDragging.current = false;
     liveDetachedWindowId.current = null;
     liveDetachPending.current = false;
     setTimeout(() => { suppressClick.current = false; }, 0);
+
+    // The drag VISUALS are not cleared here. They hold, frozen, until the drop
+    // is resolved — the release below is batched into the same render as the
+    // reorder, so the pill never springs back to its origin and then jumps to
+    // its new slot (what the first version did while it waited on the
+    // cross-window drop resolution).
+    const releaseVisuals = () => {
+      setDragId(null);
+      setOverId(null);
+      setDragDx(null);
+    };
 
     // Always notify main that the drag ended — even when live-detach already
     // cleared dragId (so releasedSession is null). Main relies on this to
@@ -665,7 +715,7 @@ export default function SessionStrip({
 
     // Chrome-style live tear-off already spawned the new window and handed off
     // ownership mid-drag — nothing to resolve on release.
-    if (wasLiveDetached) return;
+    if (wasLiveDetached) { releaseVisuals(); return; }
 
     // Pointer capture is set on the strip container (not the pill button) so
     // that capture survives live tear-off ownership transfer. Side-effect: the
@@ -673,6 +723,7 @@ export default function SessionStrip({
     // (click requires the same physical target for both down and up). Handle
     // session selection here for the no-drag case instead of relying on onClick.
     if (!wasDragging) {
+      releaseVisuals();
       if (releasedSession) {
         suppressClick.current = true; // guard against onClick double-fire
         onSelectSession(releasedSession.id);
@@ -680,7 +731,32 @@ export default function SessionStrip({
       return;
     }
 
-    if (!releasedSession) return;
+    if (!releasedSession) { releaseVisuals(); return; }
+
+    // A local drop: the reorder, the release of the drag visuals and the
+    // arming of the settle glide all land in ONE render (React batches every
+    // update in a tick, inside a promise callback too). So the DOM order
+    // changes in the same commit the transforms drop — the neighbours are
+    // already exactly where they were drawn, and only the pill in hand has
+    // anywhere left to go.
+    const commitLocal = () => {
+      // Both ends resolved against the FULL session list — see drag-order.ts.
+      if (releasedOverId !== null && onReorderSessions && releasedDragId !== null) {
+        const move = reorderIndices(sessions.map(x => x.id), releasedDragId, releasedOverId);
+        if (move) onReorderSessions(move.from, move.to);
+      }
+      if (visualLeft !== null) settleRef.current = { id: releasedSession.id, left: visualLeft };
+      setReorderQuiet(true);
+      // The drop selects the pill, so its name stays open as the active label;
+      // the peek state that kept it open through the drag is done.
+      setHoveredId(null);
+      releaseVisuals();
+      onSelectSession(releasedSession.id);
+    };
+
+    // If detach IPC isn't available (remote-shim / Android), fall back to
+    // the legacy local-only behavior.
+    if (!det?.dropResolve) { commitLocal(); return; }
 
     // Resolve drop across all peer windows: main hit-tests [data-session-strip]
     // in each window against the current cursor. If a hit, re-dock there;
@@ -691,6 +767,8 @@ export default function SessionStrip({
     const outsideOwnWindow =
       clientX < 0 || clientY < 0 ||
       clientX > window.innerWidth || clientY > window.innerHeight;
+    const screenX = (e as any).screenX ?? (window.screenX + clientX);
+    const screenY = (e as any).screenY ?? (window.screenY + clientY);
 
     const resolveAndRoute = async () => {
       let resolved: { targetWindowId: number | null } = { targetWindowId: null };
@@ -700,7 +778,9 @@ export default function SessionStrip({
       const target = resolved?.targetWindowId;
 
       if (target != null && target !== myId) {
-        // Dropped on a peer window's strip → re-dock
+        // Dropped on a peer window's strip → re-dock. The pill leaves this
+        // window; nothing here to settle.
+        releaseVisuals();
         det?.dragDropped?.({ sessionId: releasedSession.id, targetWindowId: target, insertIndex: 0 });
         return;
       }
@@ -708,39 +788,62 @@ export default function SessionStrip({
       // this would empty the source window (matches the live-tear-off rule:
       // can't tear off a window's only session).
       if (outsideOwnWindow && sessions.length > 1) {
-        const screenX = (e as any).screenX ?? (window.screenX + clientX);
-        const screenY = (e as any).screenY ?? (window.screenY + clientY);
+        releaseVisuals();
         det?.detachStart?.({ sessionId: releasedSession.id, screenX, screenY });
         return;
       }
-      // Local drop → reorder within this window's strip (existing behavior)
-      // Both ends resolved against the FULL session list — see drag-order.ts.
-      if (releasedOverId !== null && onReorderSessions && releasedDragId !== null) {
-        const move = reorderIndices(sessions.map(x => x.id), releasedDragId, releasedOverId);
-        if (move) onReorderSessions(move.from, move.to);
-      }
-      onSelectSession(releasedSession.id);
+      commitLocal();
     };
 
-    // If detach IPC isn't available (remote-shim / Android), fall back to
-    // the legacy local-only behavior.
-    if (!det?.dropResolve) {
-      // Both ends resolved against the FULL session list — see drag-order.ts.
-      if (releasedOverId !== null && onReorderSessions && releasedDragId !== null) {
-        const move = reorderIndices(sessions.map(x => x.id), releasedDragId, releasedOverId);
-        if (move) onReorderSessions(move.from, move.to);
-      }
-      onSelectSession(releasedSession.id);
-      return;
-    }
-
     resolveAndRoute();
-  }, [dragId, overId, onReorderSessions, sessions, onSelectSession]);
+  }, [dragId, overId, dragDx, onReorderSessions, sessions, onSelectSession]);
 
   const handleClick = useCallback((id: string) => {
     if (suppressClick.current) return;
     onSelectSession(id);
   }, [onSelectSession]);
+
+  const pillElement = (id: string) =>
+    pillBarRef.current?.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(id)}"]`) ?? null;
+
+  // The settle glide after a drop — a FLIP in two renders, all before paint.
+  //
+  // Render A (the drop's own render): the DOM order has changed and every
+  // transform has dropped, so the released pill is drawn IN its new slot. Not
+  // painted yet. This effect measures where that slot is, and the difference
+  // from where the pill was released is `delta`.
+  // Render B ('hold'): the pill is put back at its release position with
+  // `translateX(delta)` and NO transition, and the forced layout read below
+  // makes the browser compute that style.
+  // Render C ('glide'): the transform goes to zero on the settle curve — the
+  // browser sees delta → 0 with a transition and animates it. Chrome's
+  // release: the tab is already where it is going; it just has a little way
+  // left to travel.
+  useLayoutEffect(() => {
+    const armed = settleRef.current;
+    if (armed !== null) {
+      settleRef.current = null;
+      const el = pillElement(armed.id);
+      const delta = el ? armed.left - el.getBoundingClientRect().left : 0;
+      // The read above also forced layout of render A, so the neighbours'
+      // "no transition" render has been computed and can now be restored.
+      setReorderQuiet(false);
+      if (Math.abs(delta) >= 0.5) setSettle({ id: armed.id, delta, phase: 'hold' });
+      return;
+    }
+    if (settle?.phase === 'hold') {
+      const el = pillElement(settle.id);
+      if (el) void el.getBoundingClientRect();
+      setSettle({ ...settle, phase: 'glide' });
+    }
+  });
+  // Belt and braces: transitionend does not fire for an element that was
+  // re-rendered out of its transition, so the glide state also times out.
+  useEffect(() => {
+    if (settle?.phase !== 'glide') return;
+    const t = setTimeout(() => setSettle(null), 400);
+    return () => clearTimeout(t);
+  }, [settle]);
 
   // --- Space-aware packing ---
   // We measure each pill's expanded width offscreen using a hidden canvas
@@ -757,7 +860,10 @@ export default function SessionStrip({
   // clicked. Open a short window on a change of active session id, during which
   // that `none` is overridden. Nothing else opens it, so repack churn stays as
   // still as it is today.
-  const expandArmed = useOneShotWindow(activeSessionId);
+  // 360ms, not the hook's default: the badge opens AFTER the name's reveal
+  // (--dur-reveal + --dur-hover = 350ms) and must still be inside the window
+  // when it finishes, or the window closing would cut it to a jump.
+  const expandArmed = useOneShotWindow(activeSessionId, EXPAND_WINDOW_MS);
 
   // Everything below reads the FROZEN pack. `pack` is the live one; only the
   // measuring effect writes it. See header/use-frozen-pack.ts.
@@ -780,22 +886,47 @@ export default function SessionStrip({
     measureCanvasRef.current = document.createElement('canvas');
   }
 
-  // Fix (2026-08-31): this used to measure the NAME only, so for every native
-  // session it under-reserved by the width of the "YouCoded · Coder" badge the
-  // pill also renders (~96px measured). The packer then expanded pills the
-  // strip had no room for and the name ellipsised beside a full-width badge.
-  // The arithmetic lives in header/pill-metrics.ts, which the badge renders
-  // from too, so the two cannot drift apart again.
-  const measureExpandedWidth = useCallback((name: string, badgeLabel: string | null): number => {
-    const canvas = measureCanvasRef.current;
-    if (!canvas) return 120; // fallback
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return 120;
-    return expandedPillWidth(name, badgeLabel, (text, font) => {
+  // One measurement per session, shared by the packer (how much room a pill
+  // needs), the label (how wide its box opens to) and the badge (how wide it
+  // opens to, after the name). Fix (2026-08-31): the packer used to measure
+  // the NAME only, so for every native session it under-reserved by the width
+  // of the "YouCoded · Coder" badge (~96px) the pill also renders; the name
+  // then ellipsised beside a full-width badge. The arithmetic lives in
+  // header/pill-metrics.ts, which the badge renders from too, so the three
+  // cannot drift apart.
+  //
+  // The fonts are read off the REAL rendered label, not assumed: the UI font is
+  // a monospace, and a system-font canvas measured it ~15% narrow. Read after
+  // every commit (one getComputedStyle), stored only when it changes, so a theme
+  // that swaps the font re-measures and everything else costs a string compare.
+  const [fonts, setFonts] = useState<PillFonts>(FALLBACK_FONTS);
+  useLayoutEffect(() => {
+    const bar = pillBarRef.current;
+    const nameEl = bar?.querySelector('.session-pill__name');
+    if (!nameEl) return;
+    const name = getComputedStyle(nameEl).font;
+    if (!name) return;
+    const badgeEl = bar?.querySelector('.session-pill__badge');
+    // No badge on screen: the badge font is the name font at text-4xs.
+    const badgeSize = getComputedStyle(document.documentElement).getPropertyValue('--text-4xs').trim() || '9px';
+    const badge = badgeEl
+      ? getComputedStyle(badgeEl).font
+      : name.replace(/\d+(\.\d+)?px/, badgeSize).replace(/^500 /, '400 ');
+    if (name !== fonts.name || badge !== fonts.badge) setFonts({ name, badge });
+  });
+  const metrics = useMemo(() => {
+    const out = new Map<string, PillMetrics>();
+    const ctx = measureCanvasRef.current?.getContext('2d') ?? null;
+    const measure = (text: string, font: string) => {
+      if (!ctx) return text.length * 7; // no canvas (tests): a rough monospace guess
       ctx.font = font;
       return ctx.measureText(text).width;
-    });
-  }, []);
+    };
+    for (const s of sessions) {
+      out.set(s.id, pillMetrics(s.name, runtimeBadgeLabel(s.provider, s.harnessId), measure, fonts));
+    }
+    return out;
+  }, [sessions, fonts]);
 
   const repack = useCallback(() => {
     const bar = pillBarRef.current;
@@ -807,7 +938,7 @@ export default function SessionStrip({
     const budget = bar.parentElement?.clientWidth ?? bar.clientWidth;
     const measurements: SessionMeasurement[] = sessions.map(s => ({
       id: s.id,
-      expandedWidth: measureExpandedWidth(s.name, runtimeBadgeLabel(s.provider, s.harnessId)),
+      expandedWidth: metrics.get(s.id)?.expandedWidth ?? 120,
       collapsedWidth: 24, // dot (10) + horizontal padding (12) + border (2)
     }));
     const result = packSessions({
@@ -818,7 +949,7 @@ export default function SessionStrip({
       triggerWidth: 24, // ▾ button is w-5 + ml-1
     });
     setPack(result);
-  }, [sessions, activeSessionId, measureExpandedWidth]);
+  }, [sessions, activeSessionId, metrics]);
 
   // Pack on mount, on session-list change, and on any container resize.
   useLayoutEffect(() => { repack(); }, [repack]);
@@ -842,26 +973,15 @@ export default function SessionStrip({
 
   if (sessions.length === 0) return null;
 
-  const dragging = dragId !== null && isDragging.current && dragPos !== null;
+  const dragging = dragId !== null && isDragging.current && dragDx !== null;
 
-  // Chrome's model: the dragged pill IS the thing that moves, clamped to the
-  // strip, and every pill between its origin and its target steps aside by one
-  // pill-width so the gap it will land in is already open. On release there is
-  // nothing to jump to — it is already there.
+  // Chrome's model: the dragged pill IS the thing that moves — under the cursor,
+  // clamped to the strip — and every pill between its origin and its target
+  // steps aside by one pill-width so the gap it will land in is already open.
+  // On release there is nothing to jump to: it glides the last few px home.
   const dragOffsets = dragging && dragId
     ? neighbourOffsets(pillRectsRef.current, dragId, overId)
     : EMPTY_OFFSETS;
-
-  // The pill in hand sits in the slot it is heading for, NOT under the cursor.
-  // Chrome can put the tab under the pointer because every tab is one width;
-  // our pills are a ~179px active pill among 24px dots, so cursor-following put
-  // the pill ~90px clear of its own gap and overlapping its neighbours
-  // (measured 2026-08-31 — see draggedSlotOffset's comment). Slot positioning
-  // is coherent at any mix of widths, and the short transform transition below
-  // is what makes it read as movement rather than teleporting.
-  const draggedShift = dragging && dragId
-    ? draggedSlotOffset(pillRectsRef.current, dragId, overId)
-    : 0;
 
   return (
     <>
@@ -922,67 +1042,83 @@ export default function SessionStrip({
                   // Explicit property list, not `all`: `all` animates every
                   // animatable property that changes, including layout ones, and
                   // each animating property is presented at the panel's full
-                  // refresh rate. Only these change on hover/active. Same springy
-                  // curve, so visually identical. box-shadow is in the list
-                  // because the active pill's glow is set right below from
-                  // GLOW_SHADOW — without it the glow would snap on.
+                  // refresh rate. Only these change on hover/active/drag.
+                  // box-shadow is in the list because the active pill's glow is
+                  // set right below from GLOW_SHADOW — without it the glow would
+                  // snap on.
                   transition: isBeingDragged
-                    // The pill in hand tracks the cursor 1:1 — a transition on
-                    // transform here would make it lag behind the pointer.
-                    // Only the lift is animated.
-                    ? 'transform var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out)'
-                    // `transform` gets the drag curve while a drag is in flight
-                    // (neighbours stepping aside) and the settle curve when it
-                    // ends (neighbours returning to zero). NOT --ease-bounce:
-                    // that would make a release overshoot. The hover feel is
-                    // carried by the scale(1.02) itself, not by the curve.
-                    : `transform var(--dur-hover) ${dragging ? 'var(--ease-out)' : 'var(--ease-settle)'}, border-color var(--dur-hover) var(--ease-bounce), background-color var(--dur-hover) var(--ease-bounce), box-shadow var(--dur-hover) var(--ease-bounce), opacity var(--dur-hover) var(--ease-bounce)`,
-                  // Three mutually exclusive transform states: the pill in
-                  // hand (follows the cursor, lifted), a neighbour stepping
-                  // aside, or a plain hover.
-                  // The 3px focus outline (globals.css) used to be masked by
-                  // the dragged pill's `opacity-30`. With the pill at full
-                  // opacity it reads as a bright ring around the thing you are
-                  // dragging, which is what it looked like in review.
-                  outline: isBeingDragged ? 'none' : undefined,
+                    // The pill in hand tracks the cursor 1:1. NO transition on
+                    // transform here — a 150ms ease on it made the pill trail
+                    // the pointer like it was on a rubber band.
+                    ? 'box-shadow var(--dur-hover) var(--ease-out)'
+                    : (reorderQuiet || settle?.id === s.id && settle.phase === 'hold')
+                      // The render in which the DOM order changes, and the
+                      // 'hold' render of the settle: nothing may animate, see
+                      // the layout effect above.
+                      ? 'none'
+                      // `transform` gets the settle curve when a drop is gliding
+                      // home and the decelerate curve for neighbours stepping
+                      // aside. Never an overshoot: a release must not spring.
+                      : `transform var(--dur-hover) ${settle?.id === s.id ? 'var(--ease-settle)' : 'var(--ease-out)'}, border-color var(--dur-hover) var(--ease-out), background-color var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out)`,
+                  // Four mutually exclusive transform states: the pill in hand
+                  // (under the cursor), a dropped pill gliding home, a neighbour
+                  // stepping aside, or a plain hover.
                   transform: isBeingDragged
-                    ? `translateX(${draggedShift}px) scale(1.05)`
-                    : dragOffsets.has(s.id)
-                      ? `translateX(${dragOffsets.get(s.id)}px)`
-                      : (isHovered && !isActive) ? 'scale(1.02)' : undefined,
-                  zIndex: isBeingDragged ? 10 : undefined,
+                    ? `translateX(${dragDx}px)`
+                    : settle?.id === s.id
+                      ? `translateX(${settle.phase === 'hold' ? settle.delta : 0}px)`
+                      : dragOffsets.has(s.id)
+                        ? `translateX(${dragOffsets.get(s.id)}px)`
+                        : (isHovered && !isActive) ? 'scale(1.02)' : undefined,
+                  // The 3px focus outline (globals.css) reads as a bright ring
+                  // around the thing you are dragging. Suppressed in hand.
+                  outline: isBeingDragged ? 'none' : undefined,
+                  zIndex: isBeingDragged || settle?.id === s.id ? 10 : undefined,
                   boxShadow: isBeingDragged
                     ? '0 8px 20px rgba(0,0,0,0.35)'
                     : ((!forceSingle && isActive) ? GLOW_SHADOW[color] : undefined),
                   cursor: 'default',
                 }}
+                onTransitionEnd={settle?.id === s.id ? () => setSettle(null) : undefined}
                 title={s.name}
               >
                 <SessionDot color={color} isActive={isActive} />
                 <span
-                  className={`text-xs font-medium text-fg-2 whitespace-nowrap overflow-hidden text-ellipsis ${isActive ? 'min-w-0' : ''}`}
+                  className={`session-pill__label text-xs font-medium text-fg-2 ${isActive ? 'min-w-0' : ''}`}
                   style={pillLabelStyle({
                     showName,
                     isActive,
                     packExpanded: displayPack.expanded.has(s.id),
-                    // Only the pill that just became active is allowed through
-                    // the repack-churn kill-switch.
-                    animateExpand: expandArmed && isActive,
+                    // The repack-churn kill-switch is lifted for every pill
+                    // during the switch window: the new active pill opens and
+                    // the old one closes in the same motion.
+                    animateExpand: expandArmed,
+                    nameWidth: metrics.get(s.id)?.nameWidth ?? 0,
                   })}
                 >
-                  {s.name}
+                  {/* Laid out once at full width; the box above clips and fades
+                      it. See .session-pill__name in globals.css. */}
+                  <span className="session-pill__name">{s.name}</span>
                 </span>
                 {/* Native-runtime badge — marks a YouCoded harness session and
                     which preset it runs as. Only when the name is showing so it
-                    never clutters a collapsed dot-only pill. */}
+                    never clutters a collapsed dot-only pill, and never on a
+                    hover peek (96px of "YouCoded · Coder" inside a 120px peek
+                    leaves almost nothing for the thing you are peeking at). */}
                 {showName && !hoverPeek && runtimeBadgeLabel(s.provider, s.harnessId) !== null && (
                   <span
                     // The session NAME is what is worth reading; this badge is
-                    // context. `flexShrink: 100` makes the badge give up its
-                    // space first if the pill is ever squeezed, so the name is
-                    // the last thing to lose room rather than the first.
-                    className="min-w-0 overflow-hidden text-4xs px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap"
-                    style={{ flexShrink: 100 }}
+                    // context. It opens only after the name has finished
+                    // revealing (.session-pill__badge--arriving, inside the
+                    // switch window), and `flexShrink: 100` makes it give up
+                    // its space first if the pill is ever squeezed, so the
+                    // name is the last thing to lose room rather than the first.
+                    className={`session-pill__badge min-w-0 overflow-hidden text-4xs px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap${expandArmed && isActive ? ' session-pill__badge--arriving' : ''}`}
+                    style={{
+                      flexShrink: 100,
+                      // Where badge-in ends: the badge's own measured box.
+                      ['--badge-w' as string]: `${Math.ceil(metrics.get(s.id)?.badgeWidth ?? 96)}px`,
+                    }}
                     title="YouCoded native session"
                   >
                     {runtimeBadgeLabel(s.provider, s.harnessId)}

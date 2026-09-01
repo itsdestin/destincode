@@ -1,63 +1,62 @@
 import { describe, it, expect } from 'vitest';
-import { pillLabelStyle, HOVER_CAP_PX } from '../src/renderer/components/header/pill-label-style';
+import {
+  pillLabelStyle, labelTargetWidth, HOVER_CAP_PX, LABEL_TAIL_PX, LABEL_SLACK_PX,
+} from '../src/renderer/components/header/pill-label-style';
 
-const base = { showName: false, isActive: false, packExpanded: false, animateExpand: false };
+const base = { showName: false, isActive: false, packExpanded: false, animateExpand: false, nameWidth: 80 };
 
 describe('pillLabelStyle', () => {
-  it('collapses to zero width when the name is hidden', () => {
+  it('collapses to zero when the name is hidden', () => {
     const s = pillLabelStyle(base);
-    expect(s.width).toBe('0px');
+    expect(s.maxWidth).toBe('0px');
     expect(s.opacity).toBe(0);
   });
 
-  it('reveals a non-active pill to its OWN width, capped', () => {
-    // The 2026-08-31 bug: the old code animated to a flat 120px, so a short
-    // name reached full size early and then sat still while the transition
-    // kept running. calc-size() interpolates to the label's real width.
+  it('opens a hover peek to the name\'s OWN width plus its fade tail', () => {
+    // Every name used to open the same fixed distance, so a short one finished
+    // early and then sat still while the animation kept going.
     const s = pillLabelStyle({ ...base, showName: true });
-    expect(s.width).toBe(`calc-size(max-content, min(size, ${HOVER_CAP_PX}px))`);
+    expect(s.maxWidth).toBe(`${80 + LABEL_TAIL_PX + LABEL_SLACK_PX}px`);
+    expect(s.opacity).toBe(1);
   });
 
-  it('reveals the active pill uncapped so it can hold a long name', () => {
-    const s = pillLabelStyle({ ...base, showName: true, isActive: true });
-    expect(s.width).toBe('calc-size(max-content, size)');
+  it('caps a hover peek, because a peek must not shove the row around', () => {
+    expect(labelTargetWidth({ isActive: false, packExpanded: false, nameWidth: 300 })).toBe(HOVER_CAP_PX);
   });
 
-  it('animates on the vocabulary, not two different curves', () => {
+  it('does NOT cap the active pill or one the packer chose to expand', () => {
+    // The packer measured the room a full name needs before expanding it.
+    expect(labelTargetWidth({ isActive: true, packExpanded: false, nameWidth: 300 })).toBe(300 + LABEL_TAIL_PX + LABEL_SLACK_PX);
+    expect(labelTargetWidth({ isActive: false, packExpanded: true, nameWidth: 300 })).toBe(300 + LABEL_TAIL_PX + LABEL_SLACK_PX);
+  });
+
+  it('always hands the browser a NUMBER at both ends', () => {
+    // The original snap: `maxWidth: undefined` on exactly the pill that had
+    // just become active, so there was nothing to interpolate towards.
+    for (const isActive of [true, false]) {
+      for (const packExpanded of [true, false]) {
+        const s = pillLabelStyle({ ...base, showName: true, isActive, packExpanded });
+        expect(s.maxWidth).toMatch(/^\d+px$/);
+      }
+    }
+    expect(pillLabelStyle({ ...base, nameWidth: 80.4, showName: true }).maxWidth).toBe(`${81 + LABEL_TAIL_PX + LABEL_SLACK_PX}px`);
+  });
+
+  it('animates on the vocabulary, one curve for both properties', () => {
     const s = pillLabelStyle({ ...base, showName: true });
     expect(s.transition).toBe(
-      'width var(--dur-reveal) var(--ease-out), opacity var(--dur-hover) var(--ease-out)',
+      'max-width var(--dur-reveal) var(--ease-out), opacity var(--dur-hover) var(--ease-out)',
     );
   });
 
-  it('does NOT cap a pill the packer chose to expand', () => {
-    // RC1 (2026-08-31, measured): the 120px cap is the HOVER reveal budget —
-    // a peek at a name you are pointing at. It was applied to every non-active
-    // pill, so a pill the packer had measured full room for still clipped its
-    // name at exactly 120px while its runtime badge kept 96px beside it.
-    const s = pillLabelStyle({ ...base, showName: true, packExpanded: true });
-    expect(s.width).toBe('calc-size(max-content, size)');
-  });
-
-  it('still caps a pill that is only showing its name because of hover', () => {
-    const s = pillLabelStyle({ ...base, showName: true });
-    expect(s.width).toBe(`calc-size(max-content, min(size, ${HOVER_CAP_PX}px))`);
-  });
-
   it('never animates width on an overshoot curve', () => {
-    // RC3 (2026-08-31, measured): width is a LAYOUT property — every sibling
-    // re-lays-out on every frame of it. An overshoot curve therefore sends the
-    // whole row past its destination and back: one click moved the active pill
-    // 202.5 -> 261.9 -> 251.3 and every pill right of it 515.5 -> 583.4 -> 578.4.
-    // Overshoot belongs on transform, which moves nothing but itself.
-    for (const input of [
-      { ...base, showName: true },
-      { ...base, showName: true, isActive: true },
-      { ...base, showName: true, isActive: true, packExpanded: true, animateExpand: true },
-    ]) {
-      const t = pillLabelStyle(input).transition ?? '';
-      const widthPart = t.split(',').find(p => p.trim().startsWith('width')) ?? '';
-      expect(widthPart).not.toContain('--ease-bounce');
+    // max-width is a layout property: every sibling re-lays-out on every frame
+    // of it, so an overshoot sends the whole row past its destination and back.
+    for (const packExpanded of [true, false]) {
+      const t = String(pillLabelStyle({ ...base, showName: true, packExpanded, animateExpand: true }).transition);
+      const widthPart = t.split(',').find(p => p.trim().startsWith('max-width')) ?? '';
+      expect(widthPart).not.toMatch(/bounce|spring/);
+      expect(widthPart).toMatch(/--ease-out/);
     }
   });
 
@@ -69,12 +68,10 @@ describe('pillLabelStyle', () => {
   });
 
   it('overrides that kill-switch inside the armed window after a click', () => {
-    // packSessions guarantees the ACTIVE pill is always pack-expanded, so
-    // without this override the transition is off for exactly the pill the
-    // user just clicked — cause #2 of the snap.
-    const s = pillLabelStyle({
-      ...base, showName: true, isActive: true, packExpanded: true, animateExpand: true,
-    });
-    expect(s.transition).toContain('width var(--dur-reveal) var(--ease-out)');
+    // packSessions guarantees the active pill is ALWAYS pack-expanded, so
+    // without this the one pill the user just clicked would be the one pill
+    // that never animates.
+    const s = pillLabelStyle({ ...base, showName: true, isActive: true, packExpanded: true, animateExpand: true });
+    expect(s.transition).not.toBe('none');
   });
 });

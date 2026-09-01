@@ -237,10 +237,16 @@ describe('perpetual animations are frame-budgeted', () => {
 describe('motion vocabulary', () => {
   const globals = read('styles', 'globals.css');
 
-  it('defines three curves, reusing values the app already had', () => {
-    expect(globals).toMatch(/--ease-bounce:\s*cubic-bezier\(0\.34,\s*1\.56,\s*0\.64,\s*1\)/);
+  it('defines two curves that only ever decelerate — no overshoot anywhere', () => {
+    // The first cut put a spring curve on the pill; Destin's verdict was "much
+    // too bouncy/aggressive". Both remaining curves have every control point
+    // inside [0, 1], which is what "never overshoots" means for a cubic-bezier.
     expect(globals).toMatch(/--ease-out:\s*cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
     expect(globals).toMatch(/--ease-settle:\s*cubic-bezier\(0\.28,\s*0\.84,\s*0\.42,\s*1\)/);
+    expect(globals).not.toMatch(/--ease-bounce/);
+    for (const m of globals.matchAll(/--ease-[a-z]+:\s*cubic-bezier\(([^)]+)\)/g)) {
+      for (const n of m[1].split(',').map(Number)) expect(n).toBeLessThanOrEqual(1);
+    }
   });
 
   it('defines three durations matching the design guide', () => {
@@ -254,16 +260,39 @@ describe('motion vocabulary', () => {
     // theme that redefines only colours would otherwise drop the app's motion.
     //
     // WHY sliced this way: an earlier draft of this test cut the file at
-    // Tailwind's `@theme` (:281) and asserted the tokens were not above it.
-    // EVERY palette block is above it (`[data-theme="light"], :root` is at :14),
-    // so that assertion was true no matter where the tokens landed — including
-    // inside a palette block further down, which is the one thing it claimed
-    // to prevent. Assert the real shape instead: present in a bare `:root`,
-    // absent from every themed block.
-    expect(globals).toMatch(/(^|\n):root \{[^}]*--ease-bounce/);
+    // Tailwind's `@theme` and asserted the tokens were not above it. EVERY
+    // palette block is above it, so that assertion was true no matter where
+    // the tokens landed. Assert the real shape instead: present in a bare
+    // `:root`, absent from every themed block.
+    expect(globals).toMatch(/(^|\n):root \{[^}]*--ease-out/);
     for (const block of globals.split(/\[data-theme=/).slice(1)) {
-      expect(block.slice(0, block.indexOf('}'))).not.toMatch(/--ease-bounce|--dur-hover/);
+      expect(block.slice(0, block.indexOf('}'))).not.toMatch(/--ease-out|--dur-hover/);
     }
+  });
+
+  it('keeps the rest of :root intact beside the tokens', () => {
+    // 2026-09-01: the review presets had been pasted INSIDE :root, so
+    // `[data-motion="crisp"]` swallowed --bottom-chrome-total and the drawer
+    // width for every page that was not under review. The tokens and these
+    // two app-wide variables must share one :root block.
+    const root = globals.match(/(^|\n):root \{[^}]*\}/)?.[0] ?? '';
+    expect(root).toMatch(/--dur-switch/);
+    expect(root).toMatch(/--bottom-chrome-total:/);
+    expect(root).toMatch(/--frame-edge:/);
+  });
+
+  it('keeps the review-only motion presets out of :root', () => {
+    // [data-motion] / [data-arrival] are a REVIEW SCAFFOLD: they let the
+    // running app swap motion treatments so alternatives can be felt rather
+    // than watched. They must stay override-only — the app's real values live
+    // in :root, so deleting the blocks restores the shipped behaviour.
+    for (const preset of ['crisp', 'soft']) {
+      expect(globals).toMatch(new RegExp(`\\[data-motion="${preset}"\\]`));
+    }
+    for (const preset of ['fade', 'cut']) {
+      expect(globals).toMatch(new RegExp(`\\[data-arrival="${preset}"\\]`));
+    }
+    expect(globals).not.toMatch(/:root\s*\{[^}]*data-motion/);
   });
 
   it('animates the incoming conversation, never the outgoing one', () => {
@@ -279,30 +308,51 @@ describe('motion vocabulary', () => {
     // Perpetual animation is the thing this file exists to prevent. One run.
     expect(globals).toMatch(/\.switch-arrival\s*\{[^}]*animation:[^;]*switch-arrival/);
     expect(globals).not.toMatch(/\.switch-arrival\s*\{[^}]*infinite/);
+    expect(globals).not.toMatch(/badge-in[^;]*infinite/);
   });
 
   it('gates the arrival animation on reduced motion AND Reduce Visual Effects', () => {
     expect(globals).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\.switch-arrival[^}]*\}/);
     expect(globals).toMatch(/\[data-reduced-effects\] \.switch-arrival/);
+    expect(globals).toMatch(/\[data-reduced-effects\] \.session-pill__badge--arriving/);
   });
 
   it('has no floating ghost and no insertion line', () => {
     // Chrome's model: the pill itself moves and the neighbours step aside, so
     // the gap IS the indicator. A ghost plus a line pointing at a gap that
     // does not exist is what this replaced.
-    //
-    // Only `ghostTarget` is asserted, not the JSX comment headings the old
-    // draft also checked: read() strips block comments, so `Floating drag
-    // ghost` was never in the string being searched and those assertions
-    // passed before the code was written.
     const strip = read('components', 'SessionStrip.tsx');
     expect(strip).not.toMatch(/ghostTarget/);
     expect(strip).not.toMatch(/dragLabel|dragColor/);
   });
 
-  it('positions the real pill and its neighbours from drag state', () => {
+  it('keeps the pill in hand under the cursor, with no transition on its transform', () => {
+    // The review cut positioned the dragged pill by its SLOT with a 150ms ease
+    // on transform: it hopped 26px per slot while the cursor travelled 130px,
+    // and trailed the pointer like a rubber band. The pill follows the cursor
+    // 1:1 (clamped to the strip); the SLOT is decided by nearest-slot, not the
+    // pill's drawn position.
     const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/clampDragDx\(/);
+    expect(strip).toMatch(/nearestSlotId\(/);
     expect(strip).toMatch(/neighbourOffsets\(/);
+    expect(strip).not.toMatch(/draggedSlotOffset|nearestPillId/);
+    // The dragged pill's transition list must not name transform.
+    const held = strip.match(/transition: isBeingDragged\s*\?\s*'([^']+)'/)?.[1] ?? 'MISSING';
+    expect(held).not.toMatch(/transform/);
+  });
+
+  it('keeps the hover peek open through pointer-down and the drag', () => {
+    // Clearing hover on mouse-down collapsed the peek to a dot and the click
+    // re-expanded it as the active pill: open → shut → open on every click of
+    // a dot. And a peek collapsing mid-drag shrank the pill under the cursor
+    // while its neighbours had already stepped aside for its peek width — the
+    // ~150px void of 2026-09-01. Hover is released at the drop, not before.
+    const strip = read('components', 'SessionStrip.tsx');
+    const down = strip.slice(strip.indexOf('const handlePointerDown'), strip.indexOf('const handlePointerMove'));
+    expect(down).not.toMatch(/setHoveredId\(null\)/);
+    const leave = strip.slice(strip.indexOf('const handleLeave'), strip.indexOf('const handleMenuToggle'));
+    expect(leave).toMatch(/dragIdRef\.current !== null\) return/);
   });
 
   it('keys drag state by session id, never by index', () => {
@@ -320,31 +370,39 @@ describe('motion vocabulary', () => {
     expect(strip).not.toMatch(/\boverIdx\b/);
   });
 
-  it('shows the runtime badge only on a properly expanded pill', () => {
+  it('shows the runtime badge only on a properly expanded pill, after the name', () => {
     // 2026-08-31: on a hover PEEK the pill rendered a 120px-capped name next to
-    // a ~96px "YouCoded · Coder" badge, so the badge took most of the peek. The
-    // name is the thing being peeked at; the badge waits until the packer has
-    // actually reserved room for the pill.
+    // a ~96px "YouCoded · Coder" badge, so the badge took most of the peek. And
+    // on a switch the badge sat at full width while the name was still opening,
+    // so the name read as truncated for the whole reveal. The name is the thing
+    // being read; the badge waits for it.
     const strip = read('components', 'SessionStrip.tsx');
     expect(strip).toMatch(/showName && !hoverPeek && runtimeBadgeLabel\(/);
+    expect(strip).toMatch(/session-pill__badge--arriving/);
+    expect(globals).toMatch(/\.session-pill__badge--arriving\s*\{[^}]*var\(--dur-reveal\)/);   // the delay
   });
 
   it('measures the badge when deciding what fits', () => {
     // The packer measured the name only, so every native pill was ~96px wider
     // than it believed and its name ellipsised beside a full-width badge.
     const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/expandedWidth: measureExpandedWidth\(s\.name, runtimeBadgeLabel\(/);
+    expect(strip).toMatch(/pillMetrics\(s\.name, runtimeBadgeLabel\(/);
+    expect(strip).toMatch(/expandedWidth: metrics\.get\(s\.id\)/);
   });
 
-  it('keeps the review-only motion presets out of :root', () => {
-    // [data-motion="calm"|"crisp"] are a REVIEW SCAFFOLD: they let the running
-    // app swap motion treatments from a URL param so alternatives can be felt
-    // rather than watched. They must stay override-only — the app's real values
-    // live in :root, so deleting the two blocks restores the shipped behaviour.
-    for (const preset of ['calm', 'crisp']) {
-      expect(globals).toMatch(new RegExp(`\\[data-motion="${preset}"\\]`));
-    }
-    expect(globals).not.toMatch(/:root\s*\{[^}]*data-motion/);
+  it('lays the name out once and fades what does not fit', () => {
+    // The label box clips; the name inside is max-content so it never
+    // re-ellipsises mid-animation ("theme …", "theme cont…", "theme contra…").
+    // The 12px tail is LABEL_TAIL_PX: the mask stop, the name's padding and the
+    // module constant must agree or the fade lands on the last letter.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/className="session-pill__name"/);
+    expect(strip).not.toMatch(/text-ellipsis \$\{isActive/);
+    const label = read('components/header', 'pill-label-style.ts');
+    const tail = Number(label.match(/LABEL_TAIL_PX = (\d+)/)?.[1]);
+    expect(tail).toBeGreaterThan(0);
+    expect(globals).toMatch(new RegExp(`\\.session-pill__label\\s*\\{[^}]*calc\\(100% - ${tail}px\\)`));
+    expect(globals).toMatch(new RegExp(`\\.session-pill__name\\s*\\{[^}]*width: max-content;[^}]*padding-right: ${tail}px`));
   });
 
   it('leaves no hand-written curve in SessionStrip', () => {

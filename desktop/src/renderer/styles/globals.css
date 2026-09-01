@@ -862,7 +862,9 @@ body[data-mode="buddy-chat"] #theme-bg {
    taken it out of the layout tree, and Chrome does not animate the page you
    are leaving either. */
 @keyframes switch-arrival {
-  from { opacity: 0; transform: translateY(6px); }
+  /* The two custom properties are the review axis for this animation
+     ([data-arrival] below): how far it lifts, and whether it fades at all. */
+  from { opacity: var(--switch-from-opacity, 0); transform: translateY(var(--switch-lift, 6px)); }
   to   { opacity: 1; transform: none; }
 }
 
@@ -877,6 +879,45 @@ body[data-mode="buddy-chat"] #theme-bg {
 /* Reduce Visual Effects — the app's own toggle, set on <html> by
    theme-engine.ts. Honoured alongside the OS preference, never instead of it. */
 [data-reduced-effects] .switch-arrival { animation: none; }
+
+/* ── Session pill label (2026-09-01) ─────────────────────────────────────────
+   The label is a clipping box whose max-width animates (pill-label-style.ts);
+   the name inside is laid out ONCE at its full width so it never re-wraps or
+   re-ellipsises mid-animation. Whatever does not fit fades out over the last
+   LABEL_TAIL_PX, the way Chrome fades a tab title — a squeezed active pill and
+   a pill mid-reveal are the same treatment at two moments. The 12px here is
+   LABEL_TAIL_PX in pill-label-style.ts; the test pins them together. */
+.session-pill__label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent);
+}
+.session-pill__name {
+  display: block;
+  width: max-content;
+  padding-right: 12px;
+  white-space: nowrap;
+}
+
+/* The runtime badge opens AFTER the name has finished revealing, so the name
+   is never squeezed beside a full-width badge while it is still growing
+   (Destin, 2026-08-31: "prioritize showing the name over the youcoded/coder
+   labels"). --badge-w is set inline from the same measurement the packer
+   budgets with. Applied only inside the armed switch window (SessionStrip), so
+   a repack or a cold start never plays it. */
+@keyframes badge-in {
+  from { max-width: 0; opacity: 0; }
+  to   { max-width: var(--badge-w); opacity: 1; }
+}
+.session-pill__badge--arriving {
+  animation: badge-in var(--dur-hover) var(--ease-out) var(--dur-reveal) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-pill__badge--arriving { animation: none; }
+}
+[data-reduced-effects] .session-pill__badge--arriving { animation: none; }
 
 /* Perf: frame-budget the perpetual Tailwind animations with steps() timing.
    On a high-refresh display, ANY smoothly-animating element makes Chromium
@@ -1767,11 +1808,12 @@ pre.yc-code code {
 :root {
   --frame-edge: 10px;
   --frame-corner: 12px;
-  /* ── Motion vocabulary (2026-08-31) ────────────────────────────────
-     Three curves and three durations, so related motion in the session
+  /* ── Motion vocabulary (2026-08-31, values settled 2026-09-01) ─────
+     Two curves and three durations, so related motion in the session
      strip and on session switch reads as one decision instead of six.
-     All three curve VALUES already existed inline elsewhere in the app —
-     this is a rename, not a new look.
+     NO OVERSHOOT ANYWHERE: the first cut used a spring curve on the pill
+     and Destin's verdict was "much too bouncy/aggressive". Both curves
+     only ever decelerate.
 
      Deliberately in this theme-independent :root block, NOT in the
      `[data-theme=...]` palette blocks above: a community theme that only
@@ -1781,38 +1823,11 @@ pre.yc-code code {
      hover-in, a session switch). Anything that animates perpetually keeps
      steps() timing — see the frame-budget note at the top of this file and
      tests/animation-frame-budget.test.ts. */
-  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);  /* overshoot — pill expand, hover */
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);         /* decelerate — neighbours sliding */
-  --ease-settle: cubic-bezier(0.28, 0.84, 0.42, 1);  /* gentle stop — drag release */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);         /* decelerate fast — reveal, hover, neighbours */
+  --ease-settle: cubic-bezier(0.28, 0.84, 0.42, 1);  /* gentle stop — a released pill gliding home */
   --dur-hover: 150ms;
   --dur-reveal: 200ms;
   --dur-switch: 240ms;
-}
-
-/* ── Motion alternatives for review (2026-08-31) ──────────────────────────────
-   `data-motion` on <html> swaps the vocabulary so treatments can be compared in
-   the running app without a rebuild — the workbench sets it from `?motion=`.
-   Destin's note on the default: "much too bouncy/aggressive". Both alternatives
-   drop the overshoot; they differ in how long they take.
-   The winner's values move into :root above and these two blocks are DELETED —
-   they are a review scaffold, not a feature. */
-
-/* A — calm: no overshoot, eases to a stop. Slower than snappy, never springs. */
-[data-motion="calm"] {
-  --ease-bounce: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --ease-out: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --dur-hover: 130ms;
-  --dur-reveal: 180ms;
-  --dur-switch: 200ms;
-}
-
-/* B — crisp: no overshoot, gets out of the way fast. Nearly instant, still not a cut. */
-[data-motion="crisp"] {
-  --ease-bounce: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --dur-hover: 90ms;
-  --dur-reveal: 120ms;
-  --dur-switch: 140ms;
   /* Bottom chrome height INCLUDING the soft keyboard. The chrome-glass cutout
      polygon is anchored to the bottom of the layout viewport, which does not
      shrink when the keyboard opens (interactive-widget=resizes-visual) — so a
@@ -1833,6 +1848,39 @@ pre.yc-code code {
      it when the artifact drawer is the active right pane. */
   --right-pane-width: 480px;
 }
+
+/* ── Motion alternatives for review (2026-09-01) ──────────────────────────────
+   `data-motion` / `data-arrival` on an ancestor swap the vocabulary so the
+   treatments can be FELT side by side in the live review deck (each pane's
+   wrapper sets one). Custom properties inherit, so a wrapper is enough — nothing
+   in the product sets these; the workbench also honours `?motion=` on <html>.
+   The winner's values move into :root above and these blocks are DELETED —
+   they are a review scaffold, not a feature. The default (no attribute) is
+   "settled": the :root values.
+
+   These blocks MUST sit outside :root. The first version of this scaffold was
+   pasted inside it, and `[data-motion="crisp"]` swallowed --bottom-chrome-total
+   and the drawer width for every page that was not under review. */
+
+/* crisp: same curves, gets out of the way fast. Nearly instant, still not a cut. */
+[data-motion="crisp"] {
+  --dur-hover: 100ms;
+  --dur-reveal: 140ms;
+  --dur-switch: 160ms;
+}
+
+/* soft: a plain ease and a little longer. Slower, calmer, never springs. */
+[data-motion="soft"] {
+  --ease-out: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-settle: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --dur-hover: 180ms;
+  --dur-reveal: 260ms;
+  --dur-switch: 300ms;
+}
+
+/* How the incoming conversation arrives on a session switch. Default: fade + 6px lift. */
+[data-arrival="fade"] { --switch-lift: 0px; }
+[data-arrival="cut"] { --dur-switch: 0ms; }
 
 /* ─── Single chrome-glass surface ─────────────────────────────────────
    ONE element provides the chrome surface (panel color, plus backdrop

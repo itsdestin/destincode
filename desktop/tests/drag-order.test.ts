@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { nearestPillId, reorderIndices, neighbourOffsets, draggedSlotOffset, PILL_GAP } from '../src/renderer/components/header/drag-order';
+import {
+  nearestSlotId, slotCentres, clampDragDx, reorderIndices, neighbourOffsets, PILL_GAP,
+} from '../src/renderer/components/header/drag-order';
 import { packSessions } from '../src/renderer/components/header/pack-sessions';
 
 // Three 100px pills with a 2px gap: a=[0,100] b=[102,202] c=[204,304]
@@ -9,19 +11,65 @@ const rects = [
   { id: 'c', left: 204, right: 304 },
 ];
 
-describe('nearestPillId', () => {
-  it('picks the pill whose centre is closest to the cursor', () => {
-    expect(nearestPillId(rects, 250, 'a')).toBe('c');
-    expect(nearestPillId(rects, 150, 'a')).toBe('b');
+// Non-uniform widths are the whole point: a wide active pill among dots.
+const mixed = [
+  { id: 'wide', left: 0, right: 179 },   // the active pill
+  { id: 'd1', left: 181, right: 205 },
+  { id: 'd2', left: 207, right: 231 },
+  { id: 'd3', left: 233, right: 257 },
+];
+
+describe('slotCentres', () => {
+  it('is where the dragged pill would sit at each position, others keeping their order', () => {
+    // a (100 wide) at position 0, 1, 2 among b and c.
+    expect(slotCentres(rects, 'a', 2)).toEqual([50, 152, 254]);
   });
 
-  it('never picks the pill being dragged', () => {
-    // Cursor is dead on b's centre, but b is the one in hand.
-    expect(nearestPillId(rects, 152, 'b')).not.toBe('b');
+  it('handles mixed widths — the dots flow under a wide pill one at a time', () => {
+    // wide (179) at each of four positions among three 24px dots.
+    expect(slotCentres(mixed, 'wide', 2)).toEqual([89.5, 115.5, 141.5, 167.5]);
   });
 
-  it('returns null when the dragged pill is the only one', () => {
-    expect(nearestPillId([rects[0]], 50, 'a')).toBeNull();
+  it('is empty when the dragged id is not in the row (a drag from the menu)', () => {
+    expect(slotCentres(rects, 'zz', 2)).toEqual([]);
+  });
+});
+
+describe('nearestSlotId', () => {
+  it('names the pill whose slot the dragged centre is nearest to', () => {
+    expect(nearestSlotId(rects, 'a', 250, 2)).toBe('c');
+    expect(nearestSlotId(rects, 'a', 140, 2)).toBe('b');
+  });
+
+  it('is null while the pill is nearest its own slot', () => {
+    expect(nearestSlotId(rects, 'a', 60, 2)).toBeNull();
+    expect(nearestSlotId(rects, 'b', 152, 2)).toBeNull();
+  });
+
+  it('keeps a wide pill within half a dot of its hole (the 2026-09-01 drag void)', () => {
+    // The old nearest-NEIGHBOUR test needed the cursor at a dot's centre before
+    // that dot stepped aside, so a 179px pill overlapped three dots before its
+    // gap opened. Now the gap follows the pill's centre: 13px past the first
+    // slot centre it is already heading for d1's slot.
+    expect(nearestSlotId(mixed, 'wide', 89.5 + 12, 2)).toBeNull();
+    expect(nearestSlotId(mixed, 'wide', 89.5 + 14, 2)).toBe('d1');
+    expect(nearestSlotId(mixed, 'wide', 167.5, 2)).toBe('d3');
+  });
+
+  it('is null when the dragged pill is the only one', () => {
+    expect(nearestSlotId([rects[0]], 'a', 50, 2)).toBeNull();
+  });
+});
+
+describe('clampDragDx', () => {
+  it('lets the pill travel from the first pill\'s left edge to the last pill\'s right edge', () => {
+    expect(clampDragDx(rects, 'b', -500)).toBe(-102);
+    expect(clampDragDx(rects, 'b', 500)).toBe(102);
+    expect(clampDragDx(rects, 'b', 30)).toBe(30);
+  });
+
+  it('pins an unknown id in place', () => {
+    expect(clampDragDx(rects, 'zz', 40)).toBe(0);
   });
 });
 
@@ -66,6 +114,17 @@ describe('neighbourOffsets', () => {
   it('moves nothing when the target is the dragged pill itself', () => {
     expect(neighbourOffsets(rects, 'b', 'b', 2).size).toBe(0);
   });
+
+  it('opens a hole exactly the size of the slot the pill is heading for', () => {
+    // The row's total width must not change: the three dots vacate on the
+    // right (each steps over by the wide pill's 179 + gap) what the wide pill
+    // vacates on the left, and the slot it is heading for — three dots plus
+    // gaps to the right of its origin — is where slotCentres says it sits.
+    const offs = neighbourOffsets(mixed, 'wide', 'd3', 2);
+    expect(offs.get('d1')).toBe(-181);
+    expect(offs.get('d3')).toBe(-181);
+    expect(slotCentres(mixed, 'wide', 2)[3]).toBe(89.5 + 3 * 26);
+  });
 });
 
 describe('the index spaces the strip used to mix', () => {
@@ -106,41 +165,5 @@ describe('the index spaces the strip used to mix', () => {
     // What the strip does now: both ends resolved against the full list, by id.
     expect(reorderIndices(sessions.map(s => s.id), 's5', visible[0]))
       .toEqual({ from: canonicalIdx, to: 0 });
-  });
-});
-
-describe('draggedSlotOffset', () => {
-  // Non-uniform widths are the whole point: a wide active pill among dots.
-  const mixed = [
-    { id: 'wide', left: 0, right: 179 },   // the active pill
-    { id: 'd1', left: 181, right: 205 },
-    { id: 'd2', left: 207, right: 231 },
-    { id: 'd3', left: 233, right: 257 },
-  ];
-
-  it('moves the dragged pill by the widths it crosses, not by the cursor', () => {
-    // Three 24px dots + three 2px gaps = 78. The cursor may be anywhere; the
-    // pill belongs at 78, which is exactly where neighbourOffsets opened the gap.
-    expect(draggedSlotOffset(mixed, 'wide', 'd3', 2)).toBe(78);
-  });
-
-  it('is the exact inverse of the hole its neighbours open', () => {
-    // The row's total width must not change: the space the three dots vacate on
-    // the right equals the space the wide pill vacates on the left.
-    const offs = neighbourOffsets(mixed, 'wide', 'd3', 2);
-    const dotShift = offs.get('d1')!;                    // -(179 + 2)
-    expect(dotShift).toBe(-181);
-    const wide = mixed[0].right - mixed[0].left + 2;     // 181
-    const crossed = 3 * (24 + 2);                        // 78
-    expect(draggedSlotOffset(mixed, 'wide', 'd3', 2)).toBe(crossed);
-    expect(-dotShift).toBe(wide);
-  });
-
-  it('goes negative when dragging left', () => {
-    expect(draggedSlotOffset(mixed, 'd3', 'wide', 2)).toBe(-(181 + 26 + 26));
-  });
-
-  it('is zero with no target', () => {
-    expect(draggedSlotOffset(mixed, 'wide', null, 2)).toBe(0);
   });
 });
