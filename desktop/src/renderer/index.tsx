@@ -19,6 +19,25 @@ import { Button, TextInput } from './components/ui';
 // `modulesEvaluated - documentStart`, using performance.timeOrigin.
 performance.mark('yc:modules-evaluated');
 
+// A live-candidate pane (?mode=workbench&child=1&view=live) is addressed purely by URL: the
+// review deck embeds it from another origin and so cannot reach this origin's localStorage to
+// set a theme. Seeding the stored value HERE — above the anti-FOUC read below, which IS the
+// first paint, and which reads the same key ThemeProvider's initialiser reads
+// (state/theme-context.tsx: STORAGE_KEY / activeSlug) — is what makes a pane arrive already
+// wearing its theme instead of flashing the previous one on every step of a review.
+//
+// WHY not teach the theme system to read ?theme=: that file is the app's real theming on every
+// surface, and the remote web UI has real URLs, so a query-string override there would reach
+// far outside this dev-only tool. Scoped to this exact three-parameter address instead.
+// (The write persists on this origin, so the last theme a pane used becomes the default for a
+// plain ?mode=workbench tab on the same port. Dev-only, and the deck always passes a theme.)
+const __liveQuery = new URLSearchParams(location.search);
+const __liveTheme = __liveQuery.get('theme');
+if (__liveTheme && __liveQuery.get('mode') === 'workbench'
+    && __liveQuery.get('child') === '1' && __liveQuery.get('view') === 'live') {
+  try { localStorage.setItem('youcoded-theme', __liveTheme); } catch { /* private mode */ }
+}
+
 // Apply theme before React mounts to prevent FOUC (flash of unstyled content)
 const storedTheme = localStorage.getItem('youcoded-theme') || 'midnight';
 document.documentElement.setAttribute('data-theme', storedTheme);
@@ -276,6 +295,20 @@ if ((import.meta.env.DEV || import.meta.env.VITE_WORKBENCH === '1') && __buddyMo
           import('./state/chat-context'),
         ]);
         __mount.render(<ThemeProvider><ChatProvider><CompareView /></ChatProvider></ThemeProvider>);
+        return;
+      }
+      // ONE candidate from the compare registry, alone and chrome-free — what a review
+      // deck embeds as a live pane (?view=live&surface=…&round=…&candidate=…), and with no
+      // ?surface an index of every candidate there is. Both providers for the same reason
+      // view=compare documents: a candidate may borrow a real chat component and would
+      // crash outside ChatProvider.
+      if (__view === 'live') {
+        const [{ LiveCandidate }, { ThemeProvider }, { ChatProvider }] = await Promise.all([
+          import('./dev/workbench/LiveCandidate'),
+          import('./state/theme-context'),
+          import('./state/chat-context'),
+        ]);
+        __mount.render(<ThemeProvider><ChatProvider><LiveCandidate /></ChatProvider></ThemeProvider>);
         return;
       }
       // Attachment-chip page (dev/workbench/mockups/AttachmentChips.tsx) — the

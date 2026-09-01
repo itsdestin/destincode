@@ -20,7 +20,8 @@
 import React from 'react';
 import { Select } from '../../components/ui/Select';
 import { COMPARE_SURFACES } from './compare/registry';
-import type { CompareFrame, CompareSurface } from './compare/types';
+import { Frame, PANE_WIDTH } from './compare/Frame';
+import type { CompareSurface } from './compare/types';
 
 // Pick history lives in localStorage so a reload — which HMR does constantly —
 // doesn't lose the thread. Shape: { [surfaceId]: { [roundNumber]: candidateId } }
@@ -32,26 +33,6 @@ function readPicks(): Picks {
 }
 function writePicks(p: Picks) {
   try { localStorage.setItem(PICKS_KEY, JSON.stringify(p)); } catch { /* private mode */ }
-}
-
-/** Mounts a candidate in the context its real counterpart would have. Judging a
- *  card against the wrong background is how a design looks right here and wrong
- *  in the app. */
-function Frame({ frame, width, children }: {
-  frame: CompareFrame; width?: number; children: React.ReactNode;
-}) {
-  const style = width ? { width } : undefined;
-  if (frame === 'panel') {
-    // `.layer-surface` is the floating-surface treatment (panel fill, border,
-    // shadow, wallpaper glass) — the same thing a Dialog gets. Rendering the
-    // real Dialog here would not work: it is fixed-position, so all three
-    // candidates would stack in the centre of the screen.
-    return <div className="layer-surface overflow-hidden" style={style}>{children}</div>;
-  }
-  if (frame === 'inset') {
-    return <div className="rounded-lg border border-edge-dim bg-inset overflow-hidden" style={style}>{children}</div>;
-  }
-  return <div style={style}>{children}</div>;
 }
 
 export function CompareView() {
@@ -177,7 +158,7 @@ export function CompareView() {
           {round.candidates.map((c, i) => {
             const chosen = pickedThisRound === c.id;
             return (
-              <div key={c.id} className="flex flex-col gap-2" style={{ width: surface.paneWidth ?? 360 }}>
+              <div key={c.id} className="flex flex-col gap-2" style={{ width: surface.paneWidth ?? PANE_WIDTH }}>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xs font-medium text-fg-muted">{String.fromCharCode(65 + i)}</span>
                   <span className="text-xs text-fg flex-1 min-w-0 truncate">{c.label}</span>
