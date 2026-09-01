@@ -7,6 +7,10 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import java.io.File
+// Kotlin 2.4 made kotlin.io.createTempDir() a compile ERROR (it was deprecated
+// for creating world-readable temp dirs); this is the replacement the stdlib
+// points at, and what PluginInstallerUpgradeTest already uses.
+import kotlin.io.path.createTempDirectory
 
 /**
  * Regression coverage for the Android-only "uninstalling a plugin wipes every
@@ -52,7 +56,7 @@ class SkillConfigStoreChipsTest {
     private fun store() = SkillConfigStore(tmpHome).apply { load() }
 
     @Before
-    fun setUp() { tmpHome = createTempDir(prefix = "youcoded-chips-") }
+    fun setUp() { tmpHome = createTempDirectory(prefix = "youcoded-chips-").toFile() }
 
     @After
     fun tearDown() { tmpHome.deleteRecursively() }

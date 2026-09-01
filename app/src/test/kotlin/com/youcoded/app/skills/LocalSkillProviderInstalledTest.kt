@@ -10,6 +10,10 @@ import org.mockito.Mockito.mock
 import org.mockito.Mockito.`when`
 import java.io.ByteArrayInputStream
 import java.io.File
+// Kotlin 2.4 made kotlin.io.createTempDir() a compile ERROR (it was deprecated
+// for creating world-readable temp dirs); this is the replacement the stdlib
+// points at, and what PluginInstallerUpgradeTest already uses.
+import kotlin.io.path.createTempDirectory
 
 /**
  * Tests LocalSkillProvider.getInstalled() backfill behavior — specifically the
@@ -30,7 +34,7 @@ class LocalSkillProviderInstalledTest {
 
     @Before
     fun setUp() {
-        tmpHome = createTempDir(prefix = "youcoded-localprov-")
+        tmpHome = createTempDirectory(prefix = "youcoded-localprov-").toFile()
         context = mock(Context::class.java)
         val assets = mock(AssetManager::class.java)
         `when`(context.assets).thenReturn(assets)
