@@ -112,6 +112,15 @@ export type ButtonProps = CommonProps & SizeProps;
  */
 const CONFLICT_GROUPS: readonly RegExp[] = [
   /^rounded(-|$)/,
+  // Fix (ROADMAP L173): DISPLAY. Tailwind v4 emits `.hidden` BEFORE
+  // `.inline-flex`, so `<Button className="hidden sm:inline-flex">` never hid —
+  // the base `inline-flex` won at every width and the phone-width "Esc · Back
+  // to chat" hint rendered anyway (Marketplace header, 2026-08-27). With the
+  // group, a caller's display token REPLACES the base one; `sm:inline-flex`
+  // is variant-prefixed, never matches, and is kept — it re-applies at ≥640px
+  // from its own (later) media-query rule. Anchored so `flex-1`/`grid-cols-*`
+  // stay sizing tokens, not display ones.
+  /^(hidden|block|inline-block|inline|flex|inline-flex|grid|inline-grid|contents)$/,
   // Font SIZE only — must not swallow text-on-accent / text-fg-2 (colors).
   /^text-(4xs|3xs|2xs|xs|sm|base|lg|xl)$/,
   // Fix: split padding into per-axis groups. The old single /^p[xytrbl]?-/

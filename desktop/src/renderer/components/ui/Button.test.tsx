@@ -88,3 +88,23 @@ describe('disabled is never a fill (UI audit 2026-08-25, P-12 decision)', () => 
     expect(classes).not.toMatch(/\bdisabled:bg-/);
   });
 });
+
+describe('display conflict group (ROADMAP L173)', () => {
+  // Tailwind resolves competing utilities by CSS source order, and v4 emits
+  // `.hidden` before `.inline-flex` — so without a display group the base
+  // `inline-flex` beat every caller's `hidden` and "hidden sm:inline-flex"
+  // buttons rendered at phone width too (LibraryScreen / ProjectView exits).
+  it('a caller hidden replaces the base inline-flex and keeps the sm: variant', () => {
+    const t = tokens(buttonClasses('ghost', 'md', 'hidden sm:inline-flex text-sm'));
+    expect(t).toContain('hidden');
+    expect(t).not.toContain('inline-flex');
+    expect(t).toContain('sm:inline-flex');
+  });
+
+  it('a caller flex replaces inline-flex; flex-1 does not (it is a sizing token)', () => {
+    expect(tokens(buttonClasses('primary', 'md', 'flex'))).not.toContain('inline-flex');
+    const t = tokens(buttonClasses('primary', 'md', 'flex-1'));
+    expect(t).toContain('inline-flex');
+    expect(t).toContain('flex-1');
+  });
+});
