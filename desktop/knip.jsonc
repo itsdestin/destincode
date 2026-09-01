@@ -6,14 +6,14 @@
   // JSONC (not .json) specifically so the ignore rationale below can live next
   // to the ignores. Every entry here is a VERIFIED false positive, not a
   // silenced real finding.
-  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "$schema": "https://unpkg.com/knip@6/schema.json",
 
+  // main.ts, renderer/index.tsx and vite.config.ts are NOT listed: knip 6's
+  // vite/electron plugins derive them from package.json + vite.config.ts and
+  // flag a hand-written copy as a redundant entry pattern.
   "entry": [
-    "src/main/main.ts",
     "src/main/preload.ts",
     "src/main/pty-worker.js",
-    "src/renderer/index.tsx",
-    "vite.config.ts",
     "scripts/*.js",
     "src/**/*.test.ts",
     "src/**/*.test.tsx",
@@ -28,17 +28,36 @@
     "test-engine/**/*.mjs"
   ],
 
-  "project": ["src/**/*.{ts,tsx}"],
-  // The old `src/renderer/dev/fixtures/**` ignore is gone: those fixtures moved
-  // under dev/workbench/ and are DELIBERATELY left unignored. Workbench fixture
-  // modules are ordinary imports, so knip catching an unused one is the point —
-  // it is what flagged a models.ts that existed only "for symmetry".
-  "ignore": ["dist/**"],
+  // .css is in `project` so knip follows CSS `@import "tailwindcss"` etc. —
+  // knip 6 hints that a compiled extension left out of `project` means those
+  // imports are silently not followed. Nothing is reported for CSS files today;
+  // it is what lets tailwindcss be seen as a real dependency (below).
+  "project": ["src/**/*.{ts,tsx,css}"],
+  // No `ignore` block: the old `dist/**` entry is redundant (knip 6 never scans
+  // build output that isn't under `project`, and hints to remove it), and the
+  // older `src/renderer/dev/fixtures/**` ignore is gone on purpose — workbench
+  // fixture modules are ordinary imports, so knip catching an unused one is the
+  // point; it is what flagged a models.ts that existed only "for symmetry".
+
+  // OS-level tools the main process shells out to. knip 6 started reading the
+  // command name out of child_process execFile/spawn calls and reports any
+  // that no dependency provides ("unlisted binary"). None of these is, or could
+  // be, an npm package — each is VERIFIED below — so they are listed here and
+  // the `binaries` category stays at its default (error), so a NEW unlisted
+  // binary still fails CI.
+  "ignoreBinaries": [
+    // Linux socket-stats tool, engine-supervisor.ts: which process holds the port.
+    "ss",
+    // Windows process lister, sync-service.ts: is this sync PID still alive.
+    "tasklist",
+    // The Drive/cloud sync transport, sync-service.ts — users install it themselves.
+    "rclone"
+  ],
 
   "ignoreDependencies": [
-    // Peer of @tailwindcss/postcss, wired through postcss.config.js rather
-    // than imported. Removing it breaks the CSS build with no import to trace.
-    "tailwindcss",
+    // tailwindcss is NOT listed any more: with .css in `project`, knip resolves
+    // the `@import "tailwindcss"` in the stylesheet itself and hints that the
+    // old ignore is redundant.
     // Spawned as a subprocess by scripts/run-dev.js:52
     // (`spawn(npx, ['wait-on', viteUrl])`), so no static import exists.
     "wait-on",
@@ -50,11 +69,14 @@
   // Gate on the categories that are CLEAN today, so CI ratchets (nothing new
   // rots in) without demanding a big-bang cleanup first. The noisy-but-real
   // categories report as warnings and are tracked in ROADMAP instead:
-  //   - types (262): dominated by src/shared/types.ts, a deliberate shared
-  //     type surface consumed structurally. Erroring here would be wrong.
-  //   - exports (10) / unlisted (4): real findings, but deleting an export or
-  //     re-pinning a transitive dep is a reviewed change, not a lint autofix.
+  //   - types (172 under knip 6; 379 under knip 5): dominated by
+  //     components/ui/index.ts and src/shared/types.ts, deliberate shared type
+  //     surfaces consumed structurally. Erroring here would be wrong.
+  //   - exports (77): real findings, but deleting an export or re-pinning a
+  //     transitive dep is a reviewed change, not a lint autofix.
   // Tighten these to "error" as each category is driven to zero.
+  // `classMembers` is not listed: knip 6 dropped that issue type (it relied on
+  // a TypeScript API that goes away in TS 6), and an unknown key only warns.
   "rules": {
     "files": "error",
     "unresolved": "error",
@@ -63,7 +85,6 @@
     "unlisted": "warn",
     "exports": "warn",
     "types": "warn",
-    "enumMembers": "warn",
-    "classMembers": "warn"
+    "enumMembers": "warn"
   }
 }
