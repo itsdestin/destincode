@@ -22,6 +22,7 @@ import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns }
 // Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
+import { arcadeStatusFor, arcadeBoardFor, arcadeRecordsFor, arcadeVersusIsDown, type ArcadeScenario } from './arcade-fixtures';
 import { buildCatalog } from './fixtures/marketplace/catalog';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
@@ -114,6 +115,10 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
+  // Games arcade Step 1 — NO real backend yet; both are declared in
+  // mock-only.ts so the contract test knows they are deliberately unbuilt
+  // rather than a fake quietly standing in for something real.
+  'arcade.status', 'arcade.leaderboard', 'arcade.submitScore',
   // Multiplayer games (Task 7c) — friends graph + presence socket. Real
   // backend (social-handlers.ts / preload.ts), hand-written here so Connect
   // Four has a scripted friend ("Jake") instead of sitting on "Connecting…"
@@ -513,6 +518,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   const activeScenario = typeof location === 'undefined'
     ? 'default'
     : new URLSearchParams(location.search).get('scenario') ?? 'default';
+
+  // `?arcade=<state>` overrides the mapping. WHY it needs its own switch: the
+  // app's `empty` scenario has NO SESSIONS, so the header — and with it the
+  // games button — never renders, making the brand-new-arcade state
+  // unreachable through the app scenario alone (measured: the capture missed
+  // in all six themes with MISSING "[title='Games']").
+  const arcadeOverride = typeof location === 'undefined'
+    ? null
+    : new URLSearchParams(location.search).get('arcade');
+  const arcadeScenario: ArcadeScenario =
+    (arcadeOverride === 'empty' || arcadeOverride === 'alone'
+      || arcadeOverride === 'degraded' || arcadeOverride === 'default')
+      ? arcadeOverride
+      : activeScenario === 'empty' ? 'empty'
+      : activeScenario === 'stress' ? 'alone'
+      : activeScenario === 'refused' ? 'degraded'
+      : 'default';
 
   // Subscriber sets, one per real event the renderer listens for. These are the
   // channels the UI actually re-fetches on — see the WHY on the emits below.
@@ -1155,6 +1177,14 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       setTimeout(() => {
         if (!presenceLive) return; // disconnected again before this fired
         presenceListener?.({ type: 'connected' });
+        // §6.6's degraded case, taken through the REAL path: an `error` frame
+        // is what a genuine outage sends, so the picker's "can't reach the game
+        // server" line comes from the reducer rather than from a fixture that
+        // no server would ever have produced. Solo tiles are untouched (§4.2).
+        if (arcadeVersusIsDown(arcadeScenario)) {
+          presenceListener?.({ type: 'error', message: "Can't reach the game server" });
+          return;
+        }
         presenceListener?.({
           type: 'presence',
           users: [{ id: JAKE_FRIEND.id, display_name: JAKE_FRIEND.display_name, handle: JAKE_FRIEND.handle, status: 'idle' }],
@@ -1174,7 +1204,34 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // click-through handshake with a bot. A real challenge send still needs
     // to resolve `ok` so `usePresence.challengePlayer` doesn't synthesize a
     // CHALLENGE_FAILED for a button a developer clicks while poking around.
-    presenceSend: async () => ({ ok: true }),
+    presenceSend: async (msg?: { type?: string; game?: string; opponent?: string; outcome?: string }) => {
+      // A reported match settles (games §6.2). The real server holds the report
+      // until BOTH players send a matching one, then pushes the agreed record
+      // to each of them; here there is only one player, so the echo stands in
+      // for the opponent agreeing. It goes back through the SAME presence
+      // listener a real settlement uses, so the workbench exercises the actual
+      // reducer path rather than a shortcut.
+      //
+      // The tick of delay is load-bearing for review: the record legitimately
+      // arrives a moment AFTER the result card, and a screenshot taken before
+      // it lands is a state real players will also see.
+      if (msg?.type === 'game-result' && msg.game) {
+        const before = arcadeRecordsFor(arcadeScenario, msg.game).value[0];
+        const bump = msg.outcome === 'win' ? 'wins' : msg.outcome === 'loss' ? 'losses' : 'draws';
+        setTimeout(() => {
+          presenceListener?.({
+            type: 'game-record',
+            game: msg.game!,
+            opponent: msg.opponent,
+            source: 'attested',
+            record: before
+              ? { ...before, [bump]: (before[bump as 'wins'] ?? 0) + 1 }
+              : { opponent_id: msg.opponent, game: msg.game, wins: 0, losses: 0, draws: 0, last_played_at: 0, [bump]: 1 },
+          });
+        }, 300);
+      }
+      return { ok: true };
+    },
     onPresenceEvent: (cb) => {
       presenceListener = cb;
       return () => { if (presenceListener === cb) presenceListener = null; };
@@ -1563,6 +1620,27 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     getPackages: async () => (marketplaceEmpty ? {} : JSON.parse(JSON.stringify(INSTALLED_PACKAGES))),
   };
 
+  // Games arcade (Step 1). Maps the workbench's own scenario switch onto the
+  // arcade's four interesting states, so every state that is hard to reach by
+  // accident — a board with only you on it, a service that is down, a player
+  // who has never played — is one toolbar click away:
+  //   default      -> played both, Jake online, everything up
+  //   empty        -> brand-new install: nothing played, nobody online
+  //   stress       -> you, alone on the board (the §6.5 invitation case)
+  //   refused      -> versus service unreachable, solo untouched (§6.6)
+  //
+  const arcade = {
+    status: async () => arcadeStatusFor(arcadeScenario),
+    leaderboard: async (gameId: string) => arcadeBoardFor(arcadeScenario, gameId),
+    // Answers in the REAL channel's shape (ApiResult around the Worker's reply)
+    // so the renderer's "the server knows a higher best than this computer"
+    // branch is exercised here rather than only in production. `best` echoes
+    // the run: the workbench has no board to compare against.
+    records: async (game?: string) => arcadeRecordsFor(arcadeScenario, game),
+    submitScore: async (_gameId: string, score: number) =>
+      ({ ok: true as const, value: { ok: true as const, best: score, best_at: Math.floor(Date.now() / 1000), runs: 1, is_best: true } }),
+  };
+
   return {
     // Marketplace feedback (overhaul §1.7). PARTIAL on purpose: only these three
     // are hand-written; `install`, `rate`, `deleteRating`, `likeTheme` and
@@ -1594,6 +1672,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs,
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade,
   } as unknown as Record<string, Record<string, unknown>>;
 }

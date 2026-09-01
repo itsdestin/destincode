@@ -109,7 +109,9 @@ export default function OverflowMenu({
     },
     {
       key: 'games',
-      label: challengePending ? 'Connect 4 — challenge!' : 'Connect 4',
+      // §4.1: names the pane, not one of its four games. Matches HeaderBar's
+      // button title so the phone and desktop entry points read the same.
+      label: challengePending ? 'Games — challenge!' : 'Games',
       onClick: choose(onToggleGamePanel),
       active: gamePanelOpen,
       dot: challengePending ? 'bg-orange-400' : gameConnected ? 'bg-green-400' : null,

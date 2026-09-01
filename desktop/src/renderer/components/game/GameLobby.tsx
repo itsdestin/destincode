@@ -4,8 +4,9 @@ import { useAccount } from '../../state/account-context';
 import BrailleSpinner from '../BrailleSpinner';
 import { GameConnection } from '../../state/game-types';
 import { mergeFriends, statusLabel } from './friends-data';
-import { Button, InputGroup } from '../ui';
-import type { FriendRow, RequestsPayload } from '../../state/marketplace-api-client';
+import { Badge, Button, InputGroup } from '../ui';
+import type { FriendRow, HeadToHead, RequestsPayload } from '../../state/marketplace-api-client';
+import { recordAria, recordLabel, recordsByOpponent } from './head-to-head';
 // Task 7c, workbench-only auto-play — see the effect below and
 // dev/workbench/fake-party.ts. isWorkbenchAutoplay() is false in every
 // shipped build (it checks for a global only install-mock.ts ever sets).
@@ -21,6 +22,10 @@ interface Props {
   connection: GameConnection;
   incognito?: boolean;
   onToggleIncognito?: () => void;
+  /** WHICH game this lobby is challenging people to. The arcade shell passes
+   *  the game the user opened; before the split every challenge was hardcoded
+   *  to Connect 4 (§3.1 item 3). */
+  gameId: string;
 }
 
 // Classify the lobby error so the hint matches the actual cause.
@@ -68,8 +73,13 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center gap-4 px-4 py-8">
-      <div className="w-16 h-16 rounded-full bg-red-900/30 flex items-center justify-center">
-        <span className="text-2xl">!</span>
+      {/* G-2 (§5.5): was `bg-red-900/30`, a raw Tailwind colour identical in
+          every theme. `--destructive` is the token for exactly this, and it is
+          derived per theme so the disc stays legible on light packs too.
+          Design rule 6 also says errors are not red BOXES — this is a mark, and
+          it stays a mark. */}
+      <div className="w-16 h-16 rounded-full bg-destructive/20 flex items-center justify-center">
+        <span className="text-2xl text-destructive-fg" aria-hidden="true">!</span>
       </div>
       <p className="text-sm text-destructive-fg text-center">{state.partyError}</p>
       <p className="text-xs text-fg-muted text-center max-w-xs">{hint}</p>
@@ -84,7 +94,11 @@ function ErrorScreen({ connection }: { connection: GameConnection }) {
         {retryCount >= 2 && (
           <button
             onClick={() => window.location.reload()}
-            className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+            // G-2: `amber` is not in the app's token set, and this is not a
+            // status indicator (the one documented exception) — it is a
+            // secondary action inside an error screen, so it uses the same
+            // quiet foreground every other secondary action here does.
+            className="text-xs text-fg-2 hover:text-fg transition-colors"
             title="Hard reload the renderer — drops all in-memory state"
           >
             Reload app
@@ -213,7 +227,7 @@ function FriendRowMenu({ onUnfriend, onBlock, pending }: { onUnfriend: () => voi
 // requests, and challenge buttons gated to online friends. Presence relays only
 // ONLINE FRIENDS, so onlineUsers is merged onto the server friends list to light
 // up "Online" / "In game" and the Challenge button.
-function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
+function FriendsScreen({ connection, incognito, onToggleIncognito, gameId }: Props) {
   const state = useGameState();
   const dispatch = useGameDispatch();
   // Review fix: self-exclusion keys on the ACCOUNT ID (ids-not-names principle) —
@@ -224,6 +238,11 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
 
   const [friends, setFriends] = useState<FriendRow[] | null>(null);
   const [requests, setRequests] = useState<RequestsPayload | null>(null);
+  /** Head-to-head records for THIS game, keyed by opponent (§6.2). Empty until
+   *  the fetch lands, and empty forever if it fails — a row simply shows no
+   *  number, which is the honest state. A record is a fact about another
+   *  person, so it is better absent than approximate. */
+  const [records, setRecords] = useState<Map<string, HeadToHead>>(new Map());
   const [addHandle, setAddHandle] = useState('');
   // Add-friend inline feedback: plain sentence + tone (ok=green, else red).
   const [addFeedback, setAddFeedback] = useState<{ text: string; ok: boolean } | null>(null);
@@ -240,13 +259,20 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
 
   // Fetch both lists in parallel; called on mount and after every mutation.
   const refresh = useCallback(async () => {
-    const [fr, rq] = await Promise.all([
+    const arcade = (window.claude as { arcade?: { records?: (g?: string) => Promise<ApiResult<HeadToHead[]>> } }).arcade;
+    const [fr, rq, rec] = await Promise.all([
       window.claude.social.listFriends(),
       window.claude.social.listRequests(),
+      // Narrowed to this game: winning at Connect 4 says nothing about who is
+      // better at chess, so one number per (person, game) and never a total.
+      // Optional-chained because a surface with no arcade bridge still has a
+      // perfectly good lobby — it just shows no records.
+      arcade?.records?.(gameId) ?? Promise.resolve(null),
     ]);
     if (fr.ok) setFriends(fr.value);
     if (rq.ok) setRequests(rq.value);
-  }, []);
+    if (rec?.ok) setRecords(recordsByOpponent(rec.value, gameId));
+  }, [gameId]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
@@ -388,7 +414,10 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
               size="md"
               onClick={() => {
                 connection.respondToChallenge(state.challengeFrom!.id, true);
-                connection.joinGame(state.challengeCode!);
+                // Join the game you were actually challenged to. The reducer
+                // now keeps it; it used to be dropped, so Accept always opened
+                // Connect 4 whatever the challenge said (§3.1 item 3).
+                connection.joinGame(state.challengeCode!, state.challengeGame ?? gameId);
                 dispatch({ type: 'CLEAR_CHALLENGE' });
               }}
               className="flex-1"
@@ -510,6 +539,15 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                     {row.name}
                     {row.handle && <span className="text-fg-muted ml-1">@{row.handle}</span>}
                   </span>
+                  {/* Your record against this person AT THIS GAME — the fact
+                      that decides who you want to play next. Absent for anyone
+                      you have never finished a game against, which is most
+                      people most of the time, so it must not leave a gap. */}
+                  {records.has(row.id) && (
+                    <Badge label={recordAria(records.get(row.id)!)}>
+                      {recordLabel(records.get(row.id)!)}
+                    </Badge>
+                  )}
                   {/* Challenge only when the friend is actually online (has a live
                       presence entry). row.id is the account id challengePlayer wants. */}
                   {row.online && (
@@ -524,7 +562,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => connection.challengePlayer(row.id)}
+                      onClick={() => connection.challengePlayer(row.id, gameId)}
                       className="shrink-0"
                     >
                       Challenge
@@ -584,7 +622,7 @@ function FriendsScreen({ connection, incognito, onToggleIncognito }: Props) {
   );
 }
 
-function JoiningScreen({ connection }: Props) {
+function JoiningScreen({ connection }: { connection: GameConnection }) {
   const dispatch = useGameDispatch();
   const [timedOut, setTimedOut] = useState(false);
 
@@ -620,7 +658,7 @@ function JoiningScreen({ connection }: Props) {
   );
 }
 
-function WaitingScreen({ connection }: Props) {
+function WaitingScreen({ connection }: { connection: GameConnection }) {
   const dispatch = useGameDispatch();
 
   // The only way here is challenging a friend, so the old share-this-room-code
@@ -680,7 +718,7 @@ function SignInScreen() {
   );
 }
 
-export default function GameLobby({ connection, incognito, onToggleIncognito }: Props) {
+export default function GameLobby({ connection, incognito, onToggleIncognito, gameId }: Props) {
   const state = useGameState();
   const { signedIn } = useAccount();
 
@@ -695,7 +733,7 @@ export default function GameLobby({ connection, incognito, onToggleIncognito }: 
   useEffect(() => {
     if (incognito || !isWorkbenchAutoplay()) return;
     if (state.connected && state.screen === 'lobby') {
-      connection.challengePlayer(JAKE_ID);
+      connection.challengePlayer(JAKE_ID, gameId);
     }
   }, [state.connected, state.screen, incognito, connection]);
 
@@ -718,5 +756,5 @@ export default function GameLobby({ connection, incognito, onToggleIncognito }: 
       </div>
     );
   }
-  return <FriendsScreen connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} />;
+  return <FriendsScreen connection={connection} incognito={incognito} onToggleIncognito={onToggleIncognito} gameId={gameId} />;
 }

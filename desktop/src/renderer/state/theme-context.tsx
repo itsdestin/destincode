@@ -9,7 +9,8 @@ import { applyThemeToDom, applyThemeFont, buildBackgroundStyle, buildPatternStyl
 import type { ThemeDefinition, LoadedTheme } from '../themes/theme-types';
 import { resolveAllAssetPaths } from '../themes/theme-asset-resolver';
 import { buildDefaultIconSvg, rasterizeSvgToPngDataUrl } from '../themes/theme-default-icon';
-import { clampDrawerWidth, applyDrawerWidthVar, DRAWER_WIDTH_KEY, DEFAULT_DRAWER_WIDTH } from './drawer-width';
+import { clampDrawerWidth, applyDrawerWidthVar, DRAWER_WIDTH_KEY, DEFAULT_DRAWER_WIDTH,
+         applyGameWidthVar, GAME_WIDTH_KEY, DEFAULT_GAME_WIDTH, gameWidthForOpen } from './drawer-width';
 
 // Built-in themes imported as JSON (Vite handles JSON imports natively)
 import lightJson from '../themes/builtin/light.json';
@@ -96,6 +97,19 @@ interface ThemeContextValue {
   setDrawerWidth: (px: number) => void;
   /** Double-click-the-handle reset: back to 480 and forget the stored pref. */
   resetDrawerWidth: () => void;
+  /** Games-pane width in px (spec §4.3). SEPARATE from drawerWidth on purpose —
+   *  resizing the chess board must not move the user's document drawer. */
+  gamePaneWidth: number;
+  setGamePaneWidth: (px: number) => void;
+  /** Double-click-the-handle reset: forget the stored pref, which also hands
+   *  control back to the per-game defaults. */
+  resetGamePaneWidth: () => void;
+  /** Open a game at ITS default width — but only while the user has never
+   *  resized the pane. Once they have, their width wins forever. Does not
+   *  persist: a default the user didn't choose must not masquerade as one.
+   *  Call site (arcade shell, when a game opens):
+   *    useEffect(() => { if (openGame) applyGameDefaultWidth(openGame.defaultPaneWidth); }, [openGame]); */
+  applyGameDefaultWidth: (px: number) => void;
   allThemes: LoadedTheme[];
   activeTheme: LoadedTheme;
   bgStyle: Record<string, string> | null;
@@ -119,6 +133,8 @@ const ThemeContext = createContext<ThemeContextValue>({
   showDeletedArtifacts: false, setShowDeletedArtifacts: () => {},
   contextDisplay: 'percent', setContextDisplay: () => {},
   drawerWidth: DEFAULT_DRAWER_WIDTH, setDrawerWidth: () => {}, resetDrawerWidth: () => {},
+  gamePaneWidth: DEFAULT_GAME_WIDTH, setGamePaneWidth: () => {}, resetGamePaneWidth: () => {},
+  applyGameDefaultWidth: () => {},
   allThemes: BUILTIN_THEMES, activeTheme: BUILTIN_THEMES[0], bgStyle: null, patternStyle: null,
   setGlassOverride: () => {},
   reloadUserThemes: async () => {},
@@ -184,8 +200,51 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     try { localStorage.removeItem(DRAWER_WIDTH_KEY); } catch {}
   };
 
+  // Games-pane width (spec §4.3). Deliberately a SECOND, independent width on
+  // the same clamp — sharing the drawer's would make resizing a game board
+  // silently resize the artifact drawer too. Same load/clamp/persist shape as
+  // above; the ONLY difference is what "no stored value" means (see below).
+  const [gamePaneWidth, setGamePaneWidthState] = useState(() =>
+    clampDrawerWidth(parseInt(getStored(GAME_WIDTH_KEY, String(DEFAULT_GAME_WIDTH)), 10), window.innerWidth));
+
+  const setGamePaneWidth = (px: number) => {
+    const clamped = clampDrawerWidth(px, window.innerWidth);
+    setGamePaneWidthState(clamped);
+    // Writing the key is ALSO how "the user has resized this pane" is recorded —
+    // from here on, per-game defaults stop overriding their choice.
+    try { localStorage.setItem(GAME_WIDTH_KEY, String(clamped)); } catch {}
+  };
+
+  const resetGamePaneWidth = () => {
+    setGamePaneWidthState(DEFAULT_GAME_WIDTH);
+    // Removing the key restores per-game defaults, not just the 420 fallback.
+    try { localStorage.removeItem(GAME_WIDTH_KEY); } catch {}
+  };
+
+  // Per-game default (spec §4.3). Call this when a game opens, with that game's
+  // registry `defaultPaneWidth`. gameWidthForOpen is the whole rule: it hands
+  // back the user's own width the moment they have resized the pane even once,
+  // and the game's default until then. Deliberately does NOT persist and does
+  // NOT write the key — a width the user never chose must not start
+  // masquerading as one, and the NEXT game's default has to still apply.
+  //
+  // useCallback WITH AN EMPTY DEP LIST IS LOAD-BEARING, not a micro-optimization.
+  // The arcade shell runs this in an effect keyed on the game that is open, so
+  // this function's identity is part of that effect's trigger. Recreated per
+  // render, it changed every time gamePaneWidth changed — i.e. every time the
+  // user finished dragging the pane — which re-fired the effect and tore down
+  // the run in progress: drag the pane wider mid-Flappy and the game vanished.
+  // It closes over nothing that can go stale (the setter is stable, the width
+  // arrives through the functional update, and the clamp reads window at call
+  // time), so an empty dep list is also correct on its own terms.
+  const applyGameDefaultWidth = useCallback((px: number) => {
+    setGamePaneWidthState((current) =>
+      clampDrawerWidth(gameWidthForOpen(px, current), window.innerWidth));
+  }, []);
+
   // Keep the <html> var in sync with the committed value…
   useEffect(() => { applyDrawerWidthVar(drawerWidth); }, [drawerWidth]);
+  useEffect(() => { applyGameWidthVar(gamePaneWidth); }, [gamePaneWidth]);
 
   // …and re-clamp when the window shrinks (debounced via rAF; resize storms
   // are cheap no-ops when the clamp doesn't change the value).
@@ -195,6 +254,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         setDrawerWidthState((w) => clampDrawerWidth(w, window.innerWidth));
+        setGamePaneWidthState((w) => clampDrawerWidth(w, window.innerWidth));
       });
     };
     window.addEventListener('resize', onResize);
@@ -596,6 +656,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     showDeletedArtifacts, setShowDeletedArtifacts,
     contextDisplay, setContextDisplay,
     drawerWidth, setDrawerWidth, resetDrawerWidth,
+    gamePaneWidth, setGamePaneWidth, resetGamePaneWidth, applyGameDefaultWidth,
     allThemes, activeTheme, bgStyle, patternStyle,
     setGlassOverride, reloadUserThemes,
   }), [activeSlug, setTheme, cycleTheme, cycleList, setCycleList, font,
@@ -603,10 +664,10 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
        showTurnMetadata, setShowTurnMetadata,
        showDeletedArtifacts, setShowDeletedArtifacts,
        contextDisplay, setContextDisplay,
-       // drawerWidth is the only new dep — the two setters are recreated per
+       // drawerWidth/gamePaneWidth are the only width deps — the setters are recreated per
        // render but close over nothing stale (clamp reads window at call time),
        // so listing them would defeat the memo for no correctness gain.
-       drawerWidth,
+       drawerWidth, gamePaneWidth,
        allThemes, activeTheme, bgStyle, patternStyle, setGlassOverride, reloadUserThemes]);
 
   return (

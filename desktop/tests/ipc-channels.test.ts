@@ -1349,3 +1349,61 @@ describe('marketplace Worker host parity (desktop ↔ Android)', () => {
     expect(kt![1]).toBe(ts![1]);
   });
 });
+
+// Five-surface parity for the games arcade's scores (spec §6.1). Android runs
+// the SAME React UI, so a channel missing there does not fail loudly — the
+// leaderboard silently degrades to "no board", which looks identical to having
+// no friends. That is exactly the kind of drift a parity test exists to catch.
+//
+// The main-process surface is `arcade-handlers.ts`, not `ipc-handlers.ts`, the
+// same way `social:*` lives in `social-handlers.ts`: every call needs the
+// account bearer token, so it sits beside the other token-bound namespaces.
+describe('arcade:* channel parity', () => {
+  const TYPES = ['arcade:status', 'arcade:leaderboard', 'arcade:submit-score', 'arcade:records'];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+
+  it('registered in arcade-handlers.ts', () => {
+    const src = read('src', 'main', 'arcade-handlers.ts');
+    for (const t of TYPES) expect(src, `${t} missing from arcade-handlers.ts`).toContain(`"${t}"`);
+  });
+
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`'${t}'`);
+  });
+
+  it('has a REAL Android handler arm, not a not-implemented stub', () => {
+    const kt = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+        'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'),
+      'utf8',
+    );
+    // `"channel" ->` is the arm marker. A channel listed in the shared
+    // not-implemented fall-through would appear WITHOUT the arrow, which is
+    // what this distinguishes — Android has a real HTTP client for this API,
+    // so a stub here would be a silently worse product, not a platform limit.
+    for (const t of TYPES) expect(kt, `${t} has no real arm in SessionService.kt`).toContain(`"${t}" ->`);
+  });
+
+  it('the shim sends an OBJECT payload, never bare positional args', () => {
+    // Kotlin reads msg.payload.optString(...) — a bare arg arrives as nothing.
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of TYPES) {
+      const call = src.match(new RegExp(`invoke\\('${t}'(,\\s*([^)]*))?\\)`));
+      expect(call, `no invoke('${t}', ...) found in remote-shim.ts`).toBeTruthy();
+      const arg = (call![2] ?? '').trim();
+      expect(arg === '' || arg.startsWith('{'),
+        `invoke('${t}') must pass an object literal or nothing, got: ${arg}`).toBe(true);
+    }
+  });
+});

@@ -64,6 +64,7 @@ import { createAuthStore } from './marketplace-auth-store';
 import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { reconcileInstalls } from './install-reconcile';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
+import { registerArcadeHandlers } from './arcade-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
 import { BuddyOverlayManager, OVERLAY_TITLE } from './buddy-overlay-manager';
@@ -1597,9 +1598,12 @@ void app.whenReady().then(async () => {
   // remoteServer let the presence relay (Task 6) reach every local window and
   // any connected remote browser.
   registerSocialHandlers(marketplaceAuthStore, windowRegistry, remoteServer);
-  // Named "accounts", not "auth-store": this window covers four registrations —
-  // createAuthStore, registerMarketplaceApiHandlers, remoteServer.setAccountStore
-  // and registerSocialHandlers — not just the store.
+  // Games arcade scores (spec §6.1). Same token-bound store; its own module for
+  // the same reason social has one — the account file stays about auth.
+  registerArcadeHandlers(marketplaceAuthStore);
+  // Named "accounts", not "auth-store": this window covers five registrations —
+  // createAuthStore, registerMarketplaceApiHandlers, remoteServer.setAccountStore,
+  // registerSocialHandlers and registerArcadeHandlers — not just the store.
   perfMark('main:chore:accounts:done');
 
   perfMark('main:create-window:start');

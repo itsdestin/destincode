@@ -40,6 +40,7 @@ import { usePromptDetector } from './hooks/usePromptDetector';
 import { useVisualViewport } from './hooks/useVisualViewport';
 import { usePresence } from './hooks/usePresence';
 import { usePartyGame } from './hooks/usePartyGame';
+import { useChessGame } from './hooks/useChessGame';
 import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
 import { useSessionAttention } from './hooks/useSessionAttention';
@@ -744,6 +745,11 @@ function AppInner() {
   // actions the retired PartyKit lobby hook used. Same public API shape.
   const lobby = usePresence(lobbyLeader);
   const game = usePartyGame(lobby.updateStatus, lobby.challengePlayer);
+  // Chess brings its own PartyKit client and its own room (spec §3.1) — a chess
+  // move is not a column number, so it cannot ride Connect 4's hook. Both hooks
+  // stay mounted for the life of the app; only the one whose game is actually
+  // open ever opens a socket, so this costs nothing when you are not playing.
+  const chess = useChessGame(lobby.updateStatus, lobby.challengePlayer);
 
   // createGame is gone from GameConnection (2026-07-09): the manual room-code
   // UI was removed — challenges are the only game entry. joinGame stays (an
@@ -758,6 +764,19 @@ function AppInner() {
     respondToChallenge: lobby.respondToChallenge,
     reconnectLobby: lobby.reconnect,
   }), [game.joinGame, game.makeMove, game.sendChat, game.requestRematch, game.leaveGame, game.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
+
+  // Same interface, different game. The arcade shell picks between them by the
+  // id of the game that is open — every other consumer sees one shape.
+  const chessConnection = useMemo(() => ({
+    joinGame: chess.joinGame,
+    makeMove: chess.makeMove,
+    sendChat: chess.sendChat,
+    requestRematch: chess.requestRematch,
+    leaveGame: chess.leaveGame,
+    challengePlayer: chess.challengePlayer,
+    respondToChallenge: lobby.respondToChallenge,
+    reconnectLobby: lobby.reconnect,
+  }), [chess.joinGame, chess.makeMove, chess.sendChat, chess.requestRematch, chess.leaveGame, chess.challengePlayer, lobby.respondToChallenge, lobby.reconnect]);
 
   // Tranche 1: sessionStatuses now derives from the cached selector — AppInner
   // re-renders only when a triple changes, not on every dispatch (see
@@ -2850,7 +2869,7 @@ function AppInner() {
   // is a cheap view remount, not a reconnect.
   const activeGamePane = gameState.panelOpen ? (
     <ErrorBoundary name="Game">
-      <GamePanel connection={gameConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
+      <GamePanel connection={gameConnection} chessConnection={chessConnection} incognito={lobby.incognito} onToggleIncognito={lobby.toggleIncognito} />
     </ErrorBoundary>
   ) : null;
 
@@ -2880,12 +2899,15 @@ function AppInner() {
         className="flex-1 flex flex-col overflow-hidden relative"
         hidden={activeView === 'marketplace' || activeView === 'library'}
         // --right-pane-width drives BOTH the framed-shell drawer-pane width and
-        // the chrome-glass cutout offset (both descend from here). The game pane
-        // stays fixed at 400px; the artifact drawer's width is user-resizable
-        // (youcoded#105) via --drawer-width on <html> — referencing the var here
-        // (instead of a px literal) means mid-drag App re-renders rewrite the
-        // SAME string and can't snap the width back while the user is dragging.
-        style={{ ['--right-pane-width' as any]: gameState.panelOpen ? '400px' : 'var(--drawer-width, 480px)' }}
+        // the chrome-glass cutout offset (both descend from here). BOTH right
+        // panes are user-resizable and each remembers its OWN width — the games
+        // pane via --game-pane-width (spec §4.3, was a fixed 400px) and the
+        // artifact drawer via --drawer-width (youcoded#105), both set on <html>
+        // by ThemeProvider. Two vars, not one, so dragging a game board wider
+        // never moves the document drawer. Referencing the vars here (instead of
+        // a px literal) means mid-drag App re-renders rewrite the SAME string and
+        // can't snap the width back while the user is dragging.
+        style={{ ['--right-pane-width' as any]: gameState.panelOpen ? 'var(--game-pane-width, 420px)' : 'var(--drawer-width, 480px)' }}
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>

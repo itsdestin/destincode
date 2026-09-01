@@ -561,7 +561,10 @@ export default function HeaderBar({
             style={challengePending && !gamePanelOpen ? {
               animation: 'challenge-pulse 2.5s steps(8) infinite',
             } : undefined}
-            title={challengePending ? 'Incoming challenge!' : 'Connect 4'}
+            // §4.1: the pane holds four games now, so the button names the
+            // pane, not the game. "Games" also matches the accessibility rule
+            // that a control's name says where it goes.
+            title={challengePending ? 'Incoming challenge!' : 'Games'}
           >
             <GamepadIcon className="w-4 h-4" />
           {gameConnected && (

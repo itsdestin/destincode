@@ -24,4 +24,12 @@
 // on all five surfaces (2026-08-28). Same rule, same reason as the rows above:
 // the fake in mock-shim.ts stays so the tool gallery can show every card state
 // without a real process — only the "no real backend" claim goes.
+// The three games-arcade rows (`arcade.status`, `arcade.leaderboard`,
+// `arcade.submitScore`) came off when their real backend landed: the Worker's
+// /games/scores routes, main/arcade-handlers.ts, and all five surfaces. Exactly
+// the lifecycle this registry is for — the UI was designed and reviewed against
+// a fake, the fake told us what to build, and the fakes in mock-shim.ts stay so
+// the workbench can still show the you-alone, empty and stale-board states
+// without a live leaderboard. `no MOCK_ONLY entry has since gained a real
+// channel` in workbench-mock-contract.test.ts is what forces this cleanup.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];

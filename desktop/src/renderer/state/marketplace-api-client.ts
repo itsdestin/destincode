@@ -96,6 +96,48 @@ export interface FriendRow extends SocialUserCard {
   last_seen_at: number | null;
   created_at: number; // friendship row timestamp (friends-since), NOT account age
 }
+// ── Games arcade (spec §6.1) — snake_case wire shapes from GET/POST /games/* ──
+// Scores cross the wire as RAW NUMBERS. How a game WORDS its score ("31 pipes",
+// "12,480") comes from that game's own entry in game-registry.ts, so the Worker
+// never has to learn a game's vocabulary and adding a game needs no deploy.
+/** My own best in one game. `GET /games/scores` returns these keyed by game id,
+ *  containing only games I have actually played. */
+export interface GameScoreRow {
+  best: number;
+  best_at: number;   // unix seconds, when the best was set
+  runs: number;
+}
+/** One row of a friends leaderboard. `rank` is computed by the Worker so every
+ *  client agrees on the tie rule (earliest to reach the score wins it). */
+export interface GameBoardEntry extends SocialUserCard {
+  best_score: number;
+  best_at: number;
+  rank: number;
+  is_you: boolean;
+}
+/** `you` is called out separately from `entries` so "you, alone" and "you have
+ *  no score yet" are distinguishable without the client scanning the list. */
+export interface GameBoard {
+  game: string;
+  you: GameBoardEntry | null;
+  entries: GameBoardEntry[];
+}
+/** My record against ONE opponent in ONE game, from my point of view — so
+ *  `wins` is MY wins. `GET /games/records` returns a bare array of these.
+ *
+ *  Records deliberately SURVIVE an unfriend: the Worker reports what actually
+ *  happened, and the client paints a row only for people currently on the
+ *  friends list. So a caller must join this to its own friends list rather than
+ *  assume every `opponent_id` here is someone to display. */
+export interface HeadToHead {
+  opponent_id: string;
+  game: string;
+  wins: number;
+  losses: number;
+  draws: number;
+  last_played_at: number; // unix seconds, the most recent settled match
+}
+
 // GET /social/requests returns this object (both directions), NOT a bare array.
 export interface RequestsPayload {
   incoming: Array<{ id: string; from: SocialUserCard; created_at: number }>;
@@ -174,6 +216,20 @@ export interface MarketplaceApiClient {
   listBlocks(): Promise<BlockRow[]>;
   /** Full account data export (GET /auth/export) — one large JSON object. */
   exportData(): Promise<unknown>;
+
+  // ── Games arcade (spec §6.1). All auth'd: both boards are friends-only, so
+  //    there is deliberately no public read. ──
+  /** Every solo game I have played, keyed by game id. `{}` if I've played none. */
+  gameScores(): Promise<Record<string, GameScoreRow>>;
+  /** One game's friends leaderboard, ranked, including me. */
+  gameBoard(game: string): Promise<GameBoard>;
+  /** Publish a finished run. Keeps the best, counts the run either way;
+   *  `is_best` is the one fact the end-of-run screen can't work out itself. */
+  submitGameScore(game: string, score: number): Promise<{ ok: true; best: number; best_at: number; runs: number; is_best: boolean }>;
+  /** Every head-to-head record I hold, one row per (opponent, game). Optionally
+   *  narrowed to a single game. Read once and joined to the friends list, so a
+   *  friend row can show "7-2 at chess" without a call per friend. */
+  gameRecords(game?: string): Promise<HeadToHead[]>;
 }
 
 export function createMarketplaceApiClient(opts: {
@@ -329,5 +385,28 @@ export function createMarketplaceApiClient(opts: {
       request<BlockRow[]>("/social/blocks", { method: "GET", auth: true }),
     exportData: () =>
       request<unknown>("/auth/export", { method: "GET", auth: true }),
+
+    // ── Games arcade (spec §6.1). Game ids are URL-encoded like every other
+    //    path param here; the Worker rejects an id that isn't a known solo game
+    //    rather than inventing an empty board for it. ──
+    gameScores: () =>
+      request<Record<string, GameScoreRow>>("/games/scores", { method: "GET", auth: true }),
+    gameBoard: (game) =>
+      request<GameBoard>(`/games/scores/${encodeURIComponent(game)}`, { method: "GET", auth: true }),
+    submitGameScore: (game, score) =>
+      request<{ ok: true; best: number; best_at: number; runs: number; is_best: boolean }>("/games/scores", {
+        method: "POST",
+        body: JSON.stringify({ game, score }),
+        auth: true,
+      }),
+    // `game` is a QUERY param here, not a path segment — the Worker filters the
+    // flat array server-side. Omitted entirely when absent so the URL stays
+    // `/games/records`, never `/games/records?game=` (which would filter to the
+    // empty-string game and always return nothing).
+    gameRecords: (game) =>
+      request<HeadToHead[]>(
+        game ? `/games/records?game=${encodeURIComponent(game)}` : "/games/records",
+        { method: "GET", auth: true },
+      ),
   };
 }

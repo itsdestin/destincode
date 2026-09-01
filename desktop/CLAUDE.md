@@ -80,27 +80,44 @@ YouCoded includes a built-in remote access server that serves the UI to any web 
 - **Key files:** `src/main/remote-server.ts`, `src/main/remote-config.ts`, `src/renderer/remote-shim.ts`
 - **The remote UI is the same React app** — `remote-shim.ts` replaces Electron IPC with WebSocket. No React components are changed.
 
-## Multiplayer Games
+## Multiplayer Games — the arcade
 
-YouCoded includes a multiplayer game system (currently Connect 4) powered by PartyKit (Cloudflare Durable Objects).
+Four games in the side pane (spec archived at
+`youcoded-dev/docs/archive/specs/2026-08-30-games-arcade-design.md`, shipped
+2026-08-31): **Connect 4** and **chess** are versus over the network; **Flappy**
+and **2048** are solo and never touch the network to be playable.
 
-- **Server:** `partykit/` — separate deployable project with per-game room classes
-  - `LobbyRoom` (`src/lobby-room.ts`) — global presence, online users, challenge relay
-  - `ConnectFourRoom` (`src/connect-four-room.ts`) — two-player message relay for a game session
-  - Deploy: `cd partykit && npx partykit deploy`
-  - Dev: `cd partykit && npx partykit dev` (localhost:1999)
-- **Client hooks:**
-  - `usePartyLobby` (`src/renderer/hooks/usePartyLobby.ts`) — connects to LobbyRoom on app launch, handles presence + challenges
-  - `usePartyGame` (`src/renderer/hooks/usePartyGame.ts`) — connects to a game room during gameplay, handles moves/chat/rematch
-- **Connection wrapper:** `src/renderer/game/party-client.ts` — typed wrapper around `partysocket`, host configured via `PARTYKIT_HOST`
-- **Game logic:** `src/renderer/game/connect-four.ts` — pure functions (`dropPiece`, `checkWin`, `checkDraw`), runs client-side only
-- **State:** `src/renderer/state/game-types.ts` — `GameState`, `GameAction`, `GameConnection` interface
-- **Persistent stats:** Planned via PartyKit server-side storage (not yet implemented)
-- **Favorites:** Local file `~/.claude/youcoded-favorites.json`, read/written via IPC (`favorites:get`, `favorites:set`)
-- **Identity:** GitHub username via `gh auth token` IPC
-- **Spec:** `docs/superpowers/specs/2026-03-27-partykit-game-backend-design.md`
-
-Adding a new game requires: a new room class in `partykit/src/`, new client game logic, and new UI components. The lobby and favorites system are game-agnostic.
+- **Adding a game is a renderer-only change.** Register it in
+  `src/renderer/components/game/game-registry.ts`; the shell, the IPC surface and
+  the Worker learn nothing new. Scores cross every boundary as RAW NUMBERS —
+  "31 pipes" and "12,480" are the registry's words. Guarded by
+  `tests/arcade-authority.test.ts`.
+- **PartyKit server:** `partykit/` — `connectfour` → `src/connect-four-room.ts`,
+  `chess` → `src/chess-room.ts`. Both are **relays that know no rules**; each
+  client re-validates every incoming move (chess.js lives in the renderer, not in
+  the party). Those two are the ONLY parties any client connects to
+  (`party: 'connectfour'` / `party: 'chess'`).
+  - `src/lobby-room.ts` is still `main` in `partykit.json` but **nothing in the
+    app connects to it** — presence and challenges moved to the marketplace
+    Worker's presence Durable Object. Treat it as legacy, not as the lobby.
+  - Deploy: `cd partykit && npx partykit deploy` · Dev: `npx partykit dev` (:1999)
+- **Presence, challenges and head-to-head:** `src/renderer/hooks/usePresence.ts`
+  against the Worker's `presence-room.ts` DO. (`usePartyLobby.ts` is deleted.)
+  A match becomes a permanent record only when BOTH players report and agree —
+  the client never asserts a result alone.
+- **Client hooks:** `usePartyGame.ts` (Connect 4), `useChessGame.ts` (chess),
+  `useMatchReport.ts` (sends this client's half of a result).
+- **Scores and records:** the marketplace Worker, not PartyKit storage — D1
+  tables from `worker/migrations/0007_games.sql`, reached over `arcade:*` IPC
+  (`src/main/arcade-handlers.ts`, five surfaces). Solo bests also persist locally
+  (`components/game/local-best.ts`) so playing signed-out or offline still counts.
+- **State:** `src/renderer/state/game-types.ts` / `game-reducer.ts`. `state.play`
+  is the open game's OWN state and is opaque to the shell — only that game's board
+  may narrow it. `matchIdOf()` lives in game-types because BOTH ends of the record
+  round trip need the identical string.
+- **Identity:** the account display name (accounts, spec §3) — NOT the GitHub
+  username. Display names are not unique, so records are keyed by account id.
+- **Favorites:** `~/.claude/youcoded-favorites.json` via `favorites:get`/`:set`.
 
 ## Theming & Appearance
 

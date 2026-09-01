@@ -63,6 +63,27 @@ export function defaultPickColumn(board: Board, botPlayer: number, humanPlayer: 
   return winningMove(botPlayer) ?? winningMove(humanPlayer) ?? legalCols[Math.floor(Math.random() * legalCols.length)]!;
 }
 
+/** `?bot=passive` — an opponent that never blocks and never wins: it always
+ *  drops into the rightmost legal column.
+ *
+ *  WHY IT EXISTS: the default bot picks randomly when it has no immediate win
+ *  or block, so no fixed sequence of clicks can reliably finish a game. That
+ *  made the END of a match — the result card, and now the head-to-head record
+ *  on it — impossible for the review rig to reach, which meant those states
+ *  could only ever be reviewed by hand. With this, four clicks in one column
+ *  wins every time. Workbench-only, read from the URL, never a shipped setting. */
+export function passivePickColumn(board: Board): number {
+  for (let c = board.length - 1; c >= 0; c--) if (board[c]!.some((cell) => cell === 0)) return c;
+  return 0;
+}
+
+export function workbenchBotPicker(): BotPicker | undefined {
+  if (typeof location === 'undefined') return undefined;
+  return new URLSearchParams(location.search).get('bot') === 'passive'
+    ? passivePickColumn
+    : undefined;
+}
+
 export interface FakeMessage {
   type: string;
   [key: string]: unknown;
@@ -167,7 +188,7 @@ export class FakePartySocket implements PartySocketLike {
   private openTimer: ReturnType<typeof setTimeout> | null;
 
   constructor(_options: FakePartySocketOptions, serverOverride?: FakeConnectFourServer) {
-    this.server = serverOverride ?? new FakeConnectFourServer();
+    this.server = serverOverride ?? new FakeConnectFourServer({ pickColumn: workbenchBotPicker() });
     this.openTimer = setTimeout(() => {
       this.openTimer = null;
       this.readyState = WS_OPEN;
@@ -213,7 +234,15 @@ export class FakePartySocket implements PartySocketLike {
 export function isWorkbenchAutoplay(): boolean {
   if (typeof window === 'undefined' || !(window as any).__workbenchStore) return false;
   if (typeof location === 'undefined') return false;
+  const q = new URLSearchParams(location.search);
+  // `?autoplay=0` OPTS OUT. Autoplay exists so the landing-page film has a live
+  // board within a second of opening the panel — but it fires the moment
+  // presence connects, which made the LOBBY (the friend list, the Challenge
+  // buttons, and now each friend's head-to-head record) unreachable in the
+  // workbench for any signed-in session. A surface nobody can screenshot is a
+  // surface nobody reviews.
+  if (q.get('autoplay') === '0') return false;
   // Same switch mock-shim.ts's `account` fake uses (`?signedIn=1`) — keeps a
   // signed-out workbench byte-for-byte identical to before this task.
-  return new URLSearchParams(location.search).get('signedIn') === '1';
+  return q.get('signedIn') === '1';
 }

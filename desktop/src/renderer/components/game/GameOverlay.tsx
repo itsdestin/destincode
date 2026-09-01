@@ -2,6 +2,7 @@ import { useGameState, useGameDispatch } from '../../state/game-context';
 import { GameConnection } from '../../state/game-types';
 import { OverlayPanel } from '../overlays/Overlay';
 import { Button } from '../ui';
+import { recordSentence } from './head-to-head';
 
 interface Props {
   connection: GameConnection;
@@ -16,15 +17,22 @@ export default function GameOverlay({ connection }: Props) {
   const state = useGameState();
   const dispatch = useGameDispatch();
 
-  const { winner, myColor } = state;
+  // The split (§3.1): the shell records an OUTCOME, not a winning colour, so
+  // this reads the same for chess, Connect 4 and anything after them.
+  const { outcome, seat } = state;
+  const youWon = outcome != null && 'winnerSeat' in outcome && outcome.winnerSeat === seat;
+  const draw = outcome != null && 'draw' in outcome;
 
   let headline = 'Draw!';
   let headlineClass = 'text-fg';
 
-  if (winner && winner !== 'draw') {
-    if (winner === myColor) {
+  if (outcome && !draw) {
+    if (youWon) {
       headline = 'You Win!';
-      headlineClass = winner === 'red' ? 'text-red-400' : 'text-yellow-400';
+      // Retheme (§5.4): was `text-red-400`/`text-yellow-400`, picked to match
+      // whichever disc you were playing. Now the winner's headline is the
+      // accent for the same reason your discs are — it is YOUR result.
+      headlineClass = 'text-accent';
     } else {
       headline = 'You Lose!';
       headlineClass = 'text-fg-dim';
@@ -39,9 +47,21 @@ export default function GameOverlay({ connection }: Props) {
       >
         <div className="flex flex-col items-center gap-1">
           <span className={`text-3xl font-black ${headlineClass}`}>{headline}</span>
-          {winner && winner !== 'draw' && (
+          {outcome && !draw && (
             <span className="text-xs text-fg-muted">
-              {winner === myColor ? 'Congratulations!' : 'Better luck next time'}
+              {youWon ? 'Congratulations!' : 'Better luck next time'}
+            </span>
+          )}
+          {/* The running record, once the SERVER has settled it (§6.2). It is
+              absent until both players have independently reported the same
+              result, so this line appears a moment after the headline — and
+              never at all if the two disagree. Showing a provisional number
+              here and correcting it later would be worse than showing none:
+              this is a fact about someone else, and it should appear once,
+              already true. */}
+          {state.record && (
+            <span className="text-xs text-fg-2 pt-1">
+              {recordSentence(state.record, state.opponent)}
             </span>
           )}
         </div>

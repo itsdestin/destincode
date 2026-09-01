@@ -13,6 +13,9 @@
 export { Button, buttonClasses, FOCUS_RING } from './Button';
 export type { ButtonProps, ButtonVariant, ButtonSize } from './Button';
 
+export { Badge } from './Badge';
+export type { BadgeProps } from './Badge';
+
 export { CloseButton } from './CloseButton';
 export type { CloseButtonProps } from './CloseButton';
 
