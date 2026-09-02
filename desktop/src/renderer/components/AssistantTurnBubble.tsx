@@ -5,7 +5,7 @@ import { assistantName } from '../utils/assistant-name';
 import { hasNestedAsk } from '../utils/specialist-cards';
 import MarkdownContent from './MarkdownContent';
 import { SessionRefsEnabled } from './session-refs-context';
-import ToolCard from './ToolCard';
+import ToolCard, { StackedSkillsCard } from './ToolCard';
 import { DeliverablesCard, isSentFilesTool, SENT_FILES_TOOL } from './DeliverablesCard';
 import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
@@ -589,9 +589,14 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                   upstream so this is the only place they render. */}
               {isLastBubble && turnSkills.length > 0 && (
                 <div className="mt-1 space-y-0.5">
-                  {turnSkills.map((skill) => (
-                    <ToolCard key={skill.toolUseId} tool={skill} sessionId={sessionId} />
-                  ))}
+                  {/* Two or more skills stack into ONE card ("Invoked 2 skills:
+                      brainstorming and writing-plans") rather than a card per
+                      invocation — Destin, 2026-09-02 (deck B-7). */}
+                  {turnSkills.length === 1 ? (
+                    <ToolCard key={turnSkills[0].toolUseId} tool={turnSkills[0]} sessionId={sessionId} />
+                  ) : (
+                    <StackedSkillsCard skills={turnSkills} />
+                  )}
                 </div>
               )}
               {/* Opt-in metadata strip. Renders once per turn (last bubble only) and

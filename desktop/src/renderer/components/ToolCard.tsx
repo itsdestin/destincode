@@ -80,6 +80,60 @@ export function taskDisplay(
   return { label: label + bg, detail: desc ? `↳ ${desc}` : '' };
 }
 
+/** The skill's name as English: the plugin namespace is stripped
+ *  ("superpowers:brainstorming" → "brainstorming") so a card reads as a word,
+ *  not a technical id. Shared by the single Skill card and StackedSkillsCard. */
+export function skillBareName(input: Record<string, unknown>): string {
+  // Fix: a non-string skill crashed .includes() — optional chaining doesn't
+  // guard objects (they're not nullish). Non-string args rendered as
+  // "[object Object]".
+  const skill = asString(input.skill);
+  return skill.includes(':') ? skill.split(':').slice(-1)[0] : skill;
+}
+
+/** "a and b" / "a, b and c" — with a repeat collapsed to "a ×2", the way a
+ *  tool group summarises "Read, Grep ×2". */
+function joinSkillNames(names: string[]): string {
+  const counts = new Map<string, number>();
+  for (const n of names) counts.set(n, (counts.get(n) ?? 0) + 1);
+  const parts = [...counts.entries()].map(([n, c]) => (c > 1 ? `${n} \u00d7${c}` : n));
+  if (parts.length <= 1) return parts.join('');
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+/**
+ * One card for SEVERAL skill invocations in a turn: "Invoked 2 skills:
+ * brainstorming and writing-plans" (Destin, 2026-09-02 bubble-grouping deck,
+ * B-7: "instead of one card above another, a single card that concatenates").
+ * Same dashed, non-interactive shell as the single Skill card — it is an
+ * annotation, not an expandable card. Status is the stack's: a failed skill
+ * shows the fail glyph, one still launching shows the spinner, else the note.
+ * Rendered by AssistantTurnBubble's trailing skill row when a turn invoked
+ * two or more skills; a single skill keeps its own card.
+ */
+export function StackedSkillsCard({ skills }: { skills: ToolCallState[] }) {
+  const names = skills.map((t) => skillBareName(t.input) || 'skill');
+  const anyFailed = skills.some((t) => t.status === 'failed');
+  const anyRunning = skills.some((t) => t.status === 'running' || t.status === 'awaiting-approval');
+  return (
+    <div className="border border-dashed border-edge-dim/60 rounded-lg overflow-hidden" data-testid="stacked-skills">
+      <div className="w-full flex items-center gap-1.5 px-3 py-1.5 text-left">
+        {anyRunning ? (
+          <BrailleSpinner size="sm" />
+        ) : anyFailed ? (
+          <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        ) : (
+          <NoteIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
+        )}
+        <span aria-hidden="true" className="w-px h-3.5 bg-edge shrink-0" />
+        <span className="text-xs font-medium text-fg-2">
+          Invoked {skills.length} skills: {joinSkillNames(names)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function friendlyToolDisplay(
   tool: ToolCallState,
   ctx?: { taskTargetTitle?: string; taskTargetRunning?: boolean },
@@ -269,13 +323,10 @@ export function friendlyToolDisplay(
       // Fix: a non-string skill crashed .includes() — optional chaining doesn't
       // guard objects (they're not nullish). Non-string args rendered as
       // "[object Object]".
-      const skill = asString(input.skill);
       const args = asString(input.args);
-      // Strip the plugin namespace ("superpowers:brainstorming" -> "brainstorming")
-      // so the label reads as English, not as a technical id. Past tense matches
-      // the post-launch state — by the time the card renders, the skill has
-      // already been invoked.
-      const bareName = skill.includes(':') ? skill.split(':').slice(-1)[0] : skill;
+      // Past tense matches the post-launch state — by the time the card
+      // renders, the skill has already been invoked.
+      const bareName = skillBareName(input);
       return {
         label: bareName ? `Invoked skill: ${bareName}` : 'Invoked skill',
         detail: args ? `↳ ${args}` : '',

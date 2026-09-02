@@ -121,6 +121,9 @@ function signature(events: Ev[]): string[] {
       // The trailing skill row is `.mt-1.space-y-0.5` with cards as direct
       // children; the tools wrapper is a bare `.mt-1` (no space-y).
       for (const s of b.querySelectorAll(':scope > .mt-1.space-y-0\\.5 > [data-tool]')) tokens.push(`S:${s.getAttribute('data-tool')}`);
+      // Two or more skills render as ONE stacked card; the signature carries its text.
+      const stacked = b.querySelector('[data-testid=stacked-skills]');
+      if (stacked) tokens.push(`S:[${stacked.textContent}]`);
       const f = b.querySelector('[role=status]');
       if (f) tokens.push(`F:${f.textContent}`);
       out.push(tokens.join(' '));
@@ -283,6 +286,39 @@ describe('bubble grouping — hidden tools must not leave hollow bubbles', () =>
       ['done'],
     ]);
     expect(sig).toEqual(['T {Read} S:Skill']);
+  });
+
+  it('two skills in one turn stack into a single card at the end', () => {
+    const sig = signature([
+      ['user', 'design it, then plan it'],
+      ['text', 'Starting with the design pass.'],
+      ['tool', 'a', 'Skill', { skill: 'superpowers:brainstorming' }], ['result', 'a'],
+      ['text', 'Two questions first.'],
+      ['tool', 'b', 'Read'], ['result', 'b'],
+      ['text', 'Writing the plan now.'],
+      ['tool', 'c', 'Skill', { skill: 'superpowers:writing-plans' }], ['result', 'c'],
+      ['tool', 'd', 'Write'], ['result', 'd'],
+      ['done'],
+    ]);
+    expect(sig).toEqual(['T', 'T {Read}', 'T {Write} S:[Invoked 2 skills: brainstorming and writing-plans]']);
+  });
+
+  it('three skills read "a, b and c"; a repeat collapses to "×2"', () => {
+    const three = signature([
+      ['user', 'go'],
+      ['tool', 'a', 'Skill', { skill: 'audit' }], ['result', 'a'],
+      ['tool', 'b', 'Skill', { skill: 'superpowers:brainstorming' }], ['result', 'b'],
+      ['tool', 'c', 'Skill', { skill: 'ui-mockup' }], ['result', 'c'],
+      ['text', 'Done.'], ['done'],
+    ]);
+    expect(three).toEqual(['T S:[Invoked 3 skills: audit, brainstorming and ui-mockup]']);
+    const repeat = signature([
+      ['user', 'go'],
+      ['tool', 'a', 'Skill', { skill: 'audit' }], ['result', 'a'],
+      ['tool', 'b', 'Skill', { skill: 'audit' }], ['result', 'b'],
+      ['text', 'Done.'], ['done'],
+    ]);
+    expect(repeat).toEqual(['T S:[Invoked 2 skills: audit ×2]']);
   });
 
   it('a skill-only turn still shows its skill row', () => {
