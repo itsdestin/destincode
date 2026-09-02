@@ -66,7 +66,7 @@ export function createArcadeOps(store: MarketplaceAuthStore): ArcadeOps {
     host: MARKETPLACE_API_HOST,
     getToken: () => store.getToken(),
   });
-  const clearSessionOn401 = makeClearSessionOn401(store);
+  const clearSessionOn401 = makeClearSessionOn401(store, "arcade");
 
   /** A board we successfully fetched, kept so an outage degrades to a LABELLED
    *  stale board instead of an empty screen (§6.6). A leaderboard that empties

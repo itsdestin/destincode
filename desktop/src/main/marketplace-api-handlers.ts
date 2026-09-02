@@ -82,7 +82,7 @@ export function registerMarketplaceApiHandlers(
 
   // Shared 401-reaction (see handler-utils.ts for the full WHY): a dead session
   // server-side clears the local token so the UI flips to signed-out.
-  const clearSessionOn401 = makeClearSessionOn401(store);
+  const clearSessionOn401 = makeClearSessionOn401(store, "marketplace");
 
   // ── Auth: device-code flow ────────────────────────────────────────────────
   // Renderer calls authStart to receive a user_code + auth_url. Main process

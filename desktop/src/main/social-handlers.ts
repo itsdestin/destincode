@@ -151,7 +151,7 @@ export function registerSocialHandlers(
 
   // Shared 401-reaction (see handler-utils.ts for the full WHY): a dead session
   // server-side clears the local token so the UI flips to signed-out.
-  const clearSessionOn401 = makeClearSessionOn401(store);
+  const clearSessionOn401 = makeClearSessionOn401(store, "social");
 
   // All handlers return ApiResult<T> so the renderer preserves HTTP status across
   // the contextBridge (structuredClone drops MarketplaceApiError.status). The
