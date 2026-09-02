@@ -3,7 +3,7 @@ import { join, dirname, extname } from 'path';
 import { ProjectSidecar } from '../../shared/artifacts/types';
 import { newArtifactId, newVersionId } from '../../shared/artifacts/ulid';
 import { SIDECAR_SCHEMA_VERSION } from '../../shared/artifacts/types';
-import { casWrite } from './cas-write';
+import { casWrite, CAS_REPLACE_ANY, type CasExpectation } from './cas-write';
 import { migrateRelativeExternals } from '../../shared/artifacts/migrate-relative-externals';
 import { canonicalize } from '../../shared/artifacts/canonicalize';
 import { isAbsoluteRecorded } from './write-authorization';
@@ -184,8 +184,10 @@ export function extractUpdatedAt(json: string): string | undefined {
  * Unparseable input (hand-edited sidecar) falls through untouched rather than
  * throwing; the CAS check itself still rejects the write.
  */
-function bumpPastExpected(candidate: string, expected: string | null): string {
-  if (expected === null) return candidate;
+function bumpPastExpected(candidate: string, expected: CasExpectation): string {
+  // Nothing to out-rank: with no prior token on disk (null) or a deliberate
+  // replacement of an unreadable one (CAS_REPLACE_ANY), the candidate stands.
+  if (expected === null || expected === CAS_REPLACE_ANY) return candidate;
   const expMs = Date.parse(expected);
   const candMs = Date.parse(candidate);
   if (Number.isNaN(expMs) || Number.isNaN(candMs)) return candidate;
@@ -195,7 +197,7 @@ function bumpPastExpected(candidate: string, expected: string | null): string {
 
 export async function writeSidecar(
   projectRoot: string,
-  expectedUpdatedAt: string | null,
+  expectedUpdatedAt: CasExpectation,
   next: ProjectSidecar
 ): Promise<{ committed: boolean }> {
   const path = join(projectRoot, SIDECAR_RELATIVE);
@@ -216,7 +218,14 @@ export async function writeSidecar(
     json,
     // 2026-08-27: was `(raw) => JSON.parse(raw).updatedAt` — a full parse of a
     // 6.4 MB file to read one timestamp, on every write. See extractUpdatedAt.
-    expectedUpdatedAt === null ? undefined : extractUpdatedAt
+    //
+    // ROADMAP L696: this used to pass `undefined` whenever expected was null,
+    // which turned OFF casWrite's check entirely and is where the lost create
+    // actually happened — not in cas-write.ts as the roadmap entry says. The
+    // extractor now goes in unconditionally; casWrite decides what to do with
+    // it, and for a null expectation it does a cheap existence check that never
+    // reads the file at all.
+    extractUpdatedAt
   );
   // The object we just wrote IS the on-disk state — hand it to every reader
   // that follows (LIST_SESSION fires after every tracked write) for free.
@@ -347,7 +356,7 @@ export async function appendVersionsDirect(
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     const current = await readSidecar(projectRoot);
     let sidecar: ProjectSidecar;
-    let expectedUpdatedAt: string | null;
+    let expectedUpdatedAt: CasExpectation;
     if (current === null || 'corrupted' in current) {
       const now = new Date().toISOString();
       sidecar = {
@@ -360,7 +369,13 @@ export async function appendVersionsDirect(
         manualExcludes: [],
         manualIncludes: [],
       };
-      expectedUpdatedAt = null;
+      // ROADMAP L696: the two reasons we are here are NOT the same write.
+      // `current === null` means no sidecar exists, so the write must be
+      // refused if one appeared while we were building this page-one — that is
+      // the lost-record race. `'corrupted' in current` means a file IS there
+      // and is unreadable, and replacing it is the whole point of this branch,
+      // so it says so explicitly instead of borrowing the create path's null.
+      expectedUpdatedAt = current === null ? null : CAS_REPLACE_ANY;
     } else {
       sidecar = current;
       expectedUpdatedAt = sidecar.updatedAt;
@@ -425,7 +440,11 @@ export async function appendVersionsDirect(
     // Every input was a duplicate of something already on disk: no write, no
     // updatedAt bump — a re-opened conversation must leave the sidecar
     // byte-identical (that is the whole point of the dedupe).
-    if (!changed && expectedUpdatedAt !== null) return results;
+    // ROADMAP L696: "we did not just build this sidecar from nothing". A
+    // CAS_REPLACE_ANY expectation is a REBUILD over a corrupt file, which must
+    // still be written even when every input deduped — otherwise the corrupt
+    // file survives.
+    if (!changed && typeof expectedUpdatedAt === 'string') return results;
 
     sidecar.updatedAt = new Date().toISOString();
     const result = await writeSidecar(projectRoot, expectedUpdatedAt, sidecar);

@@ -6,6 +6,31 @@ export interface CasResult {
   actualUpdatedAt: string | null;
 }
 
+/**
+ * ROADMAP L696. `expectedUpdatedAt: null` used to carry TWO meanings at one
+ * call site — "no sidecar exists, I am creating one" and "the sidecar exists
+ * but is unreadable, replace it" — and the only behaviour available to both was
+ * "write, no matter what is there". So two first-ever artifact writes in a
+ * project that landed concurrently each found nothing, each wrote a fresh
+ * page-one, and the second silently overwrote the first. Both reported
+ * `committed: true`; one artifact record was lost with no error.
+ *
+ * Splitting the two meanings is the fix. `null` now means what it reads as —
+ * the file must NOT exist — and deliberately replacing something broken has to
+ * say so with this sentinel. That direction matters: a caller that forgets to
+ * pass anything gets the SAFE behaviour (a refused write it can retry), not the
+ * clobber.
+ */
+export const CAS_REPLACE_ANY = Symbol('cas-replace-any');
+
+/**
+ * What a writer expects to find on disk:
+ *   a string          — this exact `updatedAt`, or the write is refused
+ *   null              — nothing at all; the write is refused if a file appeared
+ *   CAS_REPLACE_ANY   — whatever is there, replace it (corruption recovery)
+ */
+export type CasExpectation = string | null | typeof CAS_REPLACE_ANY;
+
 const LOCK_RETRY_MS = 10;
 const LOCK_MAX_WAIT_MS = 3000;
 const LOCK_STALE_MS = 30_000;
@@ -23,9 +48,9 @@ const LOCK_STALE_MS = 30_000;
  * stale-lock heuristic (>30s old) handles crashed processes.
  *
  * @param target Absolute target path
- * @param expectedUpdatedAt The updatedAt value the caller read at the start
- *                          of its mutation. Pass null for "file does not exist
- *                          yet" (creation).
+ * @param expectedUpdatedAt What the caller expects to find — see CasExpectation.
+ *                          `null` REQUIRES the file to be absent (creation);
+ *                          pass CAS_REPLACE_ANY to overwrite regardless.
  * @param content New file contents
  * @param extractUpdatedAt Function to pull updatedAt out of a JSON string.
  *                        Optional — when undefined, CAS check is skipped
@@ -195,7 +220,7 @@ async function readComparand(
 
 export async function casWrite(
   target: string,
-  expectedUpdatedAt: string | null,
+  expectedUpdatedAt: CasExpectation,
   content: string,
   extractUpdatedAt?: (json: string) => string | undefined
 ): Promise<CasResult> {
@@ -207,8 +232,22 @@ export async function casWrite(
   }
 
   try {
-    // CAS check inside the lock — safe from races now
-    if (extractUpdatedAt) {
+    // ROADMAP L696: the EXISTENCE half, and it needs no extractor — a creating
+    // writer has nothing to compare against, only "is anything there". Checked
+    // inside the lock, so a file appearing between this stat and the rename
+    // below is not possible.
+    if (expectedUpdatedAt === null) {
+      try {
+        await fs.stat(target);
+        // Something is there and we expected nothing: the caller read an empty
+        // project, someone else created the file, and writing now would drop
+        // their record. Refuse; the caller re-reads and merges on its retry.
+        return { committed: false, actualUpdatedAt: null };
+      } catch (e: any) {
+        if (e.code !== 'ENOENT') throw e;
+      }
+    } else if (extractUpdatedAt && expectedUpdatedAt !== CAS_REPLACE_ANY) {
+      // CAS check inside the lock — safe from races now
       try {
         const actual = await readComparand(target, extractUpdatedAt);
         if (actual !== expectedUpdatedAt) {
@@ -216,9 +255,9 @@ export async function casWrite(
         }
       } catch (e: any) {
         if (e.code !== 'ENOENT') throw e;
-        if (expectedUpdatedAt !== null) {
-          return { committed: false, actualUpdatedAt: null };
-        }
+        // Expected a specific token; the file is gone. Refuse — whatever this
+        // writer was amending no longer exists.
+        return { committed: false, actualUpdatedAt: null };
       }
     }
 
