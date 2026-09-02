@@ -4353,8 +4353,9 @@ const ALL_SURFACES: CompareSurface[] = [
     label: 'Session strip — motion',
     question: 'How fast, and on what curve, should a click open a name, a hover peek it, and a drag move a pill?',
     frame: 'canvas',
-    // The strip needs room for one open name, one peek and a row of dots.
-    paneWidth: 460,
+    // FLUID: the strip is a wide, short thing that lives across the whole
+    // header. Judged at the width the page can give it, panes stacked.
+    paneWidth: { min: 460, max: 1400 },
     rounds: [
       {
         n: 1,
@@ -4411,7 +4412,7 @@ const ALL_SURFACES: CompareSurface[] = [
     label: 'Session switch — the conversation arrives',
     question: 'When you switch sessions, how does the incoming conversation appear?',
     frame: 'canvas',
-    paneWidth: 460,
+    paneWidth: { min: 460, max: 1400 },
     rounds: [
       {
         n: 1,

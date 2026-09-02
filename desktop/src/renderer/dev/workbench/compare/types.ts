@@ -50,8 +50,15 @@ export interface CompareSurface {
   /** One line: what question is this comparison answering? */
   question: string;
   frame: CompareFrame;
-  /** Fixed pane width in px. Some surfaces only read correctly at their real
-   *  width (a 448px dialog, a 288px popover); the panes never stretch past it. */
-  paneWidth?: number;
+  /** Pane width in px. A NUMBER is fixed: some surfaces only read correctly
+   *  at their real width (a 448px dialog, a 288px popover) and never stretch.
+   *  A RANGE is fluid: a wide, short surface (the session strip, a header row)
+   *  is judged at the width the page can give it — the review deck hands each
+   *  pane the widest width its row allows, between `min` and `max`, and stacks
+   *  panes rather than shrinking them (Destin, 2026-09-01: the strip at a third
+   *  of its width, cut off both sides, was "not the best for comparing a long
+   *  horizontal item"). The workbench's own compare tab shows fluid panes at
+   *  `min`. */
+  paneWidth?: number | { min: number; max: number };
   rounds: Round[];
 }

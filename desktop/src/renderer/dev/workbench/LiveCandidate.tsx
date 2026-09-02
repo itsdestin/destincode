@@ -19,7 +19,7 @@
 import React from 'react';
 import { COMPARE_SURFACES } from './compare/registry';
 import { CandidateBoundary } from './compare/CandidateBoundary';
-import { Frame, PANE_WIDTH } from './compare/Frame';
+import { Frame, paneWidthRange } from './compare/Frame';
 import { findCandidate } from './compare/lookup';
 
 /** Origins allowed to drive this pane. The deck is served on a loopback port
@@ -90,6 +90,19 @@ export function LiveCandidate() {
   );
   const wrap = React.useRef<HTMLDivElement>(null);
 
+  // ── how wide the design is drawn ───────────────────────────────────────────
+  // A fixed surface is its number. A FLUID surface starts at its `min` and is
+  // then told its width by the deck (`youcoded:pane-width`), which knows the
+  // page: it gives each pane the widest width its row allows inside [min, max]
+  // and stacks panes rather than shrinking them. The pane never decides this
+  // itself — it cannot see the page it sits in.
+  const range = React.useMemo(
+    () => paneWidthRange(found.ok ? found.surface.paneWidth : undefined),
+    [found],
+  );
+  const [askedWidth, setAskedWidth] = React.useState<number | null>(null);
+  const width = askedWidth === null ? range.min : Math.max(range.min, Math.min(range.max, askedWidth));
+
   // ── the pane reports its own SIZE ──────────────────────────────────────────
   // WHY measured rather than declared: both numbers live in the registry, in the
   // OTHER repository, so a deck spec naming them is guessing — and a guess that is
@@ -104,6 +117,10 @@ export function LiveCandidate() {
       { type: 'youcoded:pane-height',
         height: Math.ceil(el.getBoundingClientRect().height),
         width: Math.ceil(el.getBoundingClientRect().width),
+        // The range, so the deck can fit a fluid pane to its row. Equal for a
+        // fixed surface — the deck then has nothing to decide.
+        minWidth: range.min,
+        maxWidth: range.max,
         candidate: q.get('candidate') },
       // '*' is correct here and carries no secret: the height of a design mock-up
       // is not information, and the deck's port is not knowable at build time.
@@ -113,7 +130,19 @@ export function LiveCandidate() {
     const ro = new ResizeObserver(report);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [found]);   // eslint-disable-line react-hooks/exhaustive-deps
+  }, [found, range]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── the deck sets a fluid pane's width by message ──────────────────────────
+  React.useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (!LOOPBACK.test(e.origin)) return;
+      const d = e.data as { type?: string; width?: number } | null;
+      if (!d || d.type !== 'youcoded:pane-width' || typeof d.width !== 'number' || !(d.width > 0)) return;
+      setAskedWidth(d.width);
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
 
   // ── the deck changes theme by message, never by reloading us ───────────────
   React.useEffect(() => {
@@ -158,7 +187,7 @@ export function LiveCandidate() {
   const pane = (
     <div ref={wrap} className="inline-block bg-canvas text-fg p-3">
       <CandidateBoundary label={`${surface.id} · ${candidate.id}`}>
-        <Frame frame={surface.frame} width={surface.paneWidth ?? PANE_WIDTH}>{candidate.render()}</Frame>
+        <Frame frame={surface.frame} width={width}>{candidate.render()}</Frame>
       </CandidateBoundary>
     </div>
   );

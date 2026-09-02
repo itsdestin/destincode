@@ -41,6 +41,15 @@ const SESSIONS: DemoSession[] = [
   { id: 'm-4', name: 'notes', cwd: '/w/notes', permissionMode: 'normal', provider: 'claude', status: 'gray' },
   { id: 'm-5', name: 'roadmap restructure', cwd: '/w/youcoded-dev', permissionMode: 'normal', provider: 'claude', status: 'red' },
   { id: 'm-6', name: 'landing copy', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', status: 'gray' },
+  // Enough that the row overflows into dots even at the widest pane the deck
+  // gives it (1400px): with only six, every name fit and there was nothing
+  // left to hover or drag (seen 2026-09-01 the moment panes went full-width).
+  { id: 'm-7', name: 'gemini flash test', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'native', harnessId: 'coder', status: 'gray' },
+  { id: 'm-8', name: 'claude via openrouter', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'native', harnessId: 'assistant', status: 'amber' },
+  { id: 'm-9', name: 'grok-3 reasoning test', cwd: '/w/marketplace', permissionMode: 'normal', provider: 'native', harnessId: 'coder', status: 'gray' },
+  { id: 'm-10', name: 'perf cycle 4', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', status: 'green' },
+  { id: 'm-11', name: 'arcade leaderboards', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', status: 'gray' },
+  { id: 'm-12', name: 'deepseek r1 reasoning', cwd: '/w/marketplace', permissionMode: 'normal', provider: 'native', harnessId: 'coder', status: 'blue' },
 ];
 
 const LINES: Record<string, string[]> = {
@@ -50,6 +59,12 @@ const LINES: Record<string, string[]> = {
   'm-4': ['Three things to bring up Thursday.', 'Added the fourth from the call.'],
   'm-5': ['Per-area files, claim anchors, a roadmap-check tool.', 'Draft is at docs/active/specs — waiting on the taxonomy.'],
   'm-6': ['Cut "does real work" from the hero.', 'Leads with the concrete difference now, in nine words.'],
+  'm-7': ['Flash returned the tool call as prose.', 'Switched the schema to strict; it calls the tool now.'],
+  'm-8': ['The chip said Connected while every turn 401d.', 'The chip now asks OpenRouter before it says so.'],
+  'm-9': ['Reasoning traces were landing in the reply.', 'They stay in the thinking block.'],
+  'm-10': ['Baseline captured on the 12,100-message transcript.', 'Prepend is anchored; scroll cost is flat.'],
+  'm-11': ['Head-to-head records read 4W - 2L now.', 'Badge is in the picker.'],
+  'm-12': ['R1 stalls after the first tool result.', 'Reproduced; it is the stop sequence.'],
 };
 
 function reorder<T>(list: T[], from: number, to: number): T[] {
