@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import react from '@vitejs/plugin-react';
@@ -50,9 +51,35 @@ import react from '@vitejs/plugin-react';
 const TEST_HOME = path.join(os.tmpdir(), `youcoded-vitest-home-${process.pid}`);
 process.env.YOUCODED_TEST_HOME = TEST_HOME;
 
+// Where `node_modules` REALLY is. In a worktree it is usually a hardlink farm
+// (`cp -al`) and this equals the path below it; if someone symlinks it to the
+// main checkout instead, this is the main checkout's path — outside this
+// project root.
+//
+// WHY THAT MATTERS (fixed 2026-09-02): Vite resolves through the symlink to the
+// real path, then its dev-server file guard denies anything outside the project
+// root. The only imports that go through that guard are Vite-transformed asset
+// URLs — `highlight.js/styles/github-dark.css?inline`, which theme-context.tsx
+// imports — so the failure is not "cannot find module" but
+// `Denied ID .../github-dark.css?inline`, thrown at MODULE LOAD. Measured in a
+// symlinked worktree on this tree: 60 of 84 related test files failed to load,
+// 0 test assertions failed, and the summary read "60 failed" with no hint that
+// the cause was the checkout's plumbing rather than the diff. Naming the real
+// directory here makes the guard allow it.
+//
+// This does NOT make a symlinked node_modules safe — `npm ci` and Gradle's
+// bundleWebUi still follow it and empty the SHARED copy (workspace CLAUDE.md).
+// `cp -al` remains the convention; scripts/verify.sh says so out loud when it
+// sees a symlink. This only stops the test runner from lying about why it failed.
+const NODE_MODULES = path.join(__dirname, 'node_modules');
+const NODE_MODULES_REAL = fs.existsSync(NODE_MODULES)
+  ? fs.realpathSync(NODE_MODULES)
+  : NODE_MODULES;
+
 export default defineConfig({
   // Fix: include the React plugin so TSX test files (JSX transform) compile correctly
   plugins: [react()],
+  server: { fs: { allow: [__dirname, NODE_MODULES_REAL] } },
   test: {
     include: ['tests/**/*.{test,spec}.{ts,tsx}', 'src/**/*.{test,spec}.{ts,tsx}'],
     globalSetup: ['tests/global-setup.ts'],

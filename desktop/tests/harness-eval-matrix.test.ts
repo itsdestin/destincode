@@ -325,6 +325,7 @@ describe('cellFilename', () => {
       model: veryLongField,
       buildId: veryLongField,
       dist: '.',
+      // eslint-disable-next-line no-loss-of-precision -- deliberately past 2^53: the point is a worst-case-length repeat field, and String() of the rounded value is the same 18 digits.
       repeat: 999999999999999999,
     };
     const filename = cellFilename(cell);

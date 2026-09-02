@@ -140,8 +140,13 @@ describe('FeedbackSection', () => {
     fireEvent.change(screen.getByLabelText('Write a comment'), { target: { value: 'Does it work offline?' } });
     fireEvent.click(screen.getByRole('button', { name: /post comment/i }));
     await waitFor(() => expect(comment).toHaveBeenCalledWith({ plugin_id: 'p1', text: 'Does it work offline?' }));
-    const keys = commentListProps.map((p) => p.refreshKey);
-    await waitFor(() => expect(keys.at(-1)).not.toBe(keys[0]));
+    // Read commentListProps INSIDE the waitFor. This used to snapshot the array
+    // into `keys` first and then wait on the snapshot, which can never change —
+    // so the wait was really "was the re-render already in by the time we got
+    // here", and under eight concurrent full suites (2026-09-02) it was not:
+    // both ends of a one-element array, `expected +0 not to be +0`.
+    const firstKey = commentListProps[0]?.refreshKey;
+    await waitFor(() => expect(commentListProps.at(-1)?.refreshKey).not.toBe(firstKey));
   });
 
   it('says a held comment is held, instead of letting it vanish', async () => {

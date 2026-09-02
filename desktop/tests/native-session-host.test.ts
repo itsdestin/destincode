@@ -2407,7 +2407,11 @@ describe('NativeSessionHost', () => {
       const events: any[] = [];
       childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
       const turn = childSession(h, childId).send('go');   // slow (delayedFactory) turn
-      await new Promise((r) => setTimeout(r, 20));
+      // Wait for the turn to be genuinely in flight instead of guessing 20ms —
+      // the same substitution youcoded#363 made for the steer test in this file.
+      // On a loaded machine 20ms was not enough and the assertion below failed as
+      // though the interrupt/quiesce/steer logic were broken.
+      await waitForTurnInFlight(h, childId);
       h.interrupt('root-1');
       await turn;                                         // settles — no hang
       expect(events.some((e) => e.type === 'user-interrupt')).toBe(true);
@@ -2443,7 +2447,10 @@ describe('NativeSessionHost', () => {
       childSession(h, childId).on('transcript-event', (e: any) => events.push(e));
       const turn = childSession(h, childId).send('go'); // slow (delayedFactory) turn
 
-      await new Promise((r) => setTimeout(r, 20));
+      // In flight for real, not 20ms of hope: if the turn had not started, the
+      // interrupt below could not have reached it either way and the assertion
+      // that it was NOT interrupted would pass for the wrong reason.
+      await waitForTurnInFlight(h, childId);
       h.interrupt('root-1'); // Stop button — must NOT reach the background child
 
       // The child was never told to stop, and it's still live.
@@ -2487,7 +2494,11 @@ describe('NativeSessionHost', () => {
       });
 
       const turn = childSession(h, childId).send('go'); // slow (delayedFactory) turn, genuinely still running
-      await new Promise((r) => setTimeout(r, 20));
+      // Wait for the turn to be genuinely in flight instead of guessing 20ms —
+      // the same substitution youcoded#363 made for the steer test in this file.
+      // On a loaded machine 20ms was not enough and the assertion below failed as
+      // though the interrupt/quiesce/steer logic were broken.
+      await waitForTurnInFlight(h, childId);
 
       await h.quiesce('root-1'); // NOT interrupt() — the takeover/teardown path this pin guards
       await turn; // settles — quiesce's own cascade aborts it, never leaves it hanging
@@ -2584,9 +2595,14 @@ describe('NativeSessionHost', () => {
       expect(result.status).toBe('ok'); // the interrupt call itself still succeeds — only the ledger write is guarded
 
       // The ledger write is fire-and-forget — poll for it, then assert it
-      // never actually clobbered the completed row.
-      await new Promise((r) => setTimeout(r, 30));
-      const rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+      // never actually clobbered the completed row. (The comment said "poll"
+      // and the code slept 30ms; a slow machine reached the assertion before
+      // the guarded write had run at all, which passes for the wrong reason.)
+      let rec: any;
+      await vi.waitFor(() => {
+        rec = (h as any).ledger.listFor(root, 'root-1').find((r: any) => r.childId === childId);
+        expect(rec).toBeTruthy();
+      });
       expect(rec?.status).toBe('completed');
       const claimed = await (h as any).ledger.claimUndelivered(root, 'root-1');
       expect(claimed?.childId).toBe(childId);
@@ -3563,7 +3579,11 @@ describe('NativeSessionHost', () => {
       const session = childSession(h, childId);
       const postSteerSpy = vi.spyOn(session, 'postSteer');
       const turn = session.send('go');
-      await new Promise((r) => setTimeout(r, 20));
+      // Wait for the turn to be genuinely in flight instead of guessing 20ms —
+      // the same substitution youcoded#363 made for the steer test in this file.
+      // On a loaded machine 20ms was not enough and the assertion below failed as
+      // though the interrupt/quiesce/steer logic were broken.
+      await waitForTurnInFlight(h, childId);
 
       const longText = 'x'.repeat(SPECIALIST_NOTE_MAX_CHARS + 500);
       const result = h.steerSpecialist('root-1', childId, longText, 'assistant');
@@ -3611,7 +3631,11 @@ describe('NativeSessionHost', () => {
         status: 'running', startedAt: Date.now(), delivered: false, owner: OWNER, missedSteers: [],
       });
       const turn = childSession(h, childId).send('go');
-      await new Promise((r) => setTimeout(r, 20));
+      // Wait for the turn to be genuinely in flight instead of guessing 20ms —
+      // the same substitution youcoded#363 made for the steer test in this file.
+      // On a loaded machine 20ms was not enough and the assertion below failed as
+      // though the interrupt/quiesce/steer logic were broken.
+      await waitForTurnInFlight(h, childId);
 
       const shortText = 'focus on auth.ts instead';
       const result = h.steerSpecialist('root-1', childId, shortText, 'assistant');

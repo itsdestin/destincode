@@ -54,6 +54,7 @@ function call(
   isError = false,
 ): TranscriptEvent[] {
   const id = `call${(callSeq += 1)}`;
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- `use` here builds a tool-USE transcript event; it is not React's use() hook.
   return [use(toolName, toolInput, id), res(toolName, toolResult, isError, id)];
 }
 
