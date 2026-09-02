@@ -8,6 +8,7 @@
 import type { MarketplaceAuthStore } from "./marketplace-auth-store";
 import { MarketplaceApiError } from "../renderer/state/marketplace-api-client";
 import type { ApiResult } from "./marketplace-api-handlers";
+import { log } from "./logger";
 
 // WHY: Custom Error fields (MarketplaceApiError.status) are dropped by
 // structuredClone across the contextBridge. Returning a plain object preserves
@@ -31,9 +32,51 @@ export async function wrap<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
 // to signed-out and offers a fresh sign-in. This only REACTS to a 401 that
 // already happened — it never proactively validates. Returned as a closure so
 // each handler module binds it to its own auth store once at registration.
-export function makeClearSessionOn401(store: MarketplaceAuthStore) {
+//
+// IT MUST NOT BE SILENT. Until now it was: no toast, no renderer event beyond
+// the sign-in state flipping, and no log line. The user is unhooked from their
+// account with zero feedback, presence drops with it, friends see them offline
+// forever, and they only find out by opening the friends panel — a symptom
+// indistinguishable from the separate presence-latch wedge. With nothing
+// written down, neither the user nor a later session could tell the two apart
+// after the fact.
+//
+// `surface` is bound once per handler module (social / marketplace / arcade)
+// rather than per call, because there are 3 registration sites and 19 call
+// sites, and the subsystem plus the server's own message is enough to tell
+// which one 401'd. The message is the SERVER'S, never a guess of ours
+// (docs/error-message-standards.md).
+//
+// Only logged when a session actually existed: several calls can 401 in one
+// burst, and signOut() is idempotent, so this would otherwise write one line
+// per in-flight request for a single sign-out event.
+//
+// STILL MISSING, deliberately: the user-facing notice. Part 4 of
+// docs/active/specs/2026-08-11-presence-self-healing-design.md asks for a log
+// line AND a notice; the notice needs a surface and copy decision on an auth
+// screen. This half makes the event diagnosable; it does not yet make it
+// visible.
+const MAX_LOGGED_SERVER_MESSAGE = 200;
+
+export function makeClearSessionOn401(store: MarketplaceAuthStore, surface: string) {
   return <T>(result: ApiResult<T>): ApiResult<T> => {
-    if (!result.ok && result.status === 401) store.signOut();
+    if (!result.ok && result.status === 401) {
+      const hadSession = store.getToken() !== null;
+      store.signOut();
+      if (hadSession) {
+        log('WARN', 'Auth', 'account session cleared — a call came back 401', {
+          surface,
+          // CAPPED because this is the 401 RESPONSE BODY, verbatim and
+          // server-controlled: marketplace-api-client falls back to the raw
+          // text when the body is not JSON, so a proxy or captive portal
+          // answering with an HTML page would write that whole page here. The
+          // log keeps only its last 500 lines, so one such entry can evict
+          // every useful line around it. 200 characters is more than any real
+          // server message and cannot cost more than one line.
+          serverMessage: result.message.slice(0, MAX_LOGGED_SERVER_MESSAGE),
+        });
+      }
+    }
     return result;
   };
 }
