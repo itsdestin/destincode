@@ -129,6 +129,37 @@ export function loadFixture(
           uuid: `${name}-txt-${actions.length}`,
           text: parsed.text,
           timestamp: FIXTURE_T0 + actions.length * 1000,
+          // Native runtime streams per-delta with a partId (same id → merge
+          // into the open segment). Omit it for Claude Code's whole-block
+          // shape. Bubble-grouping fixtures (fixtures/bubbles/) need the
+          // native shape to reproduce the newline-chunk splitting bug.
+          ...(typeof parsed.partId === 'string' ? { partId: parsed.partId } : {}),
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'assistant_reasoning' && typeof parsed.text === 'string') {
+        // The model's chain of thought (native runtime) — the collapsed
+        // "Show reasoning" disclosure at the top of a bubble.
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_ASSISTANT_REASONING',
+          sessionId,
+          uuid: `${name}-rsn-${actions.length}`,
+          text: parsed.text,
+          timestamp: FIXTURE_T0 + actions.length * 1000,
+          ...(typeof parsed.partId === 'string' ? { partId: parsed.partId } : {}),
+        };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'interrupt') {
+        // The user pressed Stop. Mirrors App.tsx's 'user-interrupt' dispatch:
+        // the open turn gets stopReason 'interrupted' (the "Interrupted."
+        // footer) and in-flight tools fail with 'Turn interrupted'.
+        const action: ChatAction = {
+          type: 'TRANSCRIPT_INTERRUPT',
+          sessionId,
+          uuid: `${name}-int-${actions.length}`,
+          timestamp: FIXTURE_T0 + actions.length * 1000,
+          kind: 'plain',
         };
         state = chatReducer(state, action);
         actions.push(action);

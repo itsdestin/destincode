@@ -24,6 +24,15 @@ const convos = import.meta.glob('./fixtures/conversations/*.jsonl', {
   query: '?raw', import: 'default', eager: true,
 }) as Record<string, string>;
 
+// Bubble-grouping scenarios (2026-09-02): short native-shaped conversations,
+// one per grouping case, each replayed INTO wb-2 in place of `native` when the
+// page is opened with `?seed=bubbles-<name>`. Kept out of the conversations
+// glob so the default workbench (and every existing review plan) is untouched.
+// @ts-ignore TS1343 — Vite rewrites import.meta.glob statically at build time.
+const bubbleConvos = import.meta.glob('./fixtures/bubbles/*.jsonl', {
+  query: '?raw', import: 'default', eager: true,
+}) as Record<string, string>;
+
 /** Session ids must match the seeded SessionInfo rows (fixtures/sessions.ts) so
  *  each timeline lands on the session the strip is showing. A fixture with no
  *  mapping is skipped rather than dispatched into a session that does not exist. */
@@ -109,14 +118,32 @@ export function buildHydratePayload(): SerializedChatState {
 
   // Sorted so the merge order is deterministic — import.meta.glob's key order is
   // not guaranteed, and a fixture's actions must not interleave with another's.
-  for (const [path, raw] of Object.entries(convos).sort(([a], [b]) => a.localeCompare(b))) {
-    const name = path.split('/').pop()!.replace('.jsonl', '');
-    const sessionId = SESSION_FOR[name];
+  // `?seed=bubbles-<name>` swaps wb-2's conversation for one bubble-grouping
+  // scenario (see bubbleConvos above). Everything else loads as usual.
+  const seed = seedRequested();
+  const bubbleName = seed?.startsWith('bubbles-') ? seed.slice('bubbles-'.length) : null;
+  const sources: Array<[name: string, raw: string, sessionId: string | undefined]> = Object.entries(convos)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([path, raw]) => {
+      const name = path.split('/').pop()!.replace('.jsonl', '');
+      return [name, raw, SESSION_FOR[name]];
+    });
+  if (bubbleName) {
+    const raw = bubbleConvos[`./fixtures/bubbles/${bubbleName}.jsonl`];
+    if (raw) {
+      const i = sources.findIndex(([name]) => name === 'native');
+      sources.splice(i >= 0 ? i : sources.length, i >= 0 ? 1 : 0, [`bubbles-${bubbleName}`, raw, 'wb-2']);
+    } else {
+      console.warn(`[workbench] no bubble-grouping fixture named "${bubbleName}"`);
+    }
+  }
+
+  for (const [name, raw, sessionId] of sources) {
     // `?seed=none` (site scenario): leave the embed's conversation EMPTY so a
     // filmed loop starts with the user's first message. Every landing-page loop
     // used to open on the same "plan my week" thread, which had nothing to do
     // with what the loop then showed (Destin, 2026-08-28 loop review).
-    if (name === 'site' && seedRequested() === 'none') continue;
+    if (name === 'site' && seed === 'none') continue;
     if (!sessionId) {
       console.warn(`[workbench] conversation fixture "${name}" has no session mapping — skipped`);
       continue;
