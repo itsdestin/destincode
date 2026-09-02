@@ -93,7 +93,7 @@ LEAKED; a leak detector that cannot fail is not a detector.
 
 **`review-harness.mjs` still has the original bug.** It is otherwise superseded — it now
 imports its runner logic from `dist/main/harness/eval/`. Retiring it is an open decision
-(ROADMAP → Bugs).
+(workspace `docs/roadmap/dev-workspace.md`, status `decision`).
 
 ## Grading
 
