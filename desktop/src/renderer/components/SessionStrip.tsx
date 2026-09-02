@@ -27,9 +27,29 @@ import type { TagRecord } from '../../shared/tags';
 const EMPTY_OFFSETS: ReadonlyMap<string, number> = new Map();
 
 /** How long the pill-label transitions stay switched on after a session
- *  switch. Covers the name reveal (--dur-reveal) plus the badge that opens
- *  after it (--dur-hover) with a little slack — see the badge below. */
-const EXPAND_WINDOW_MS = 360;
+ *  switch, if the stylesheet cannot be read: the name reveal plus the badge
+ *  that opens after it, with slack. The live value is read off the strip's
+ *  computed `--dur-reveal` / `--dur-hover` (see motionWindowMs) — a fixed
+ *  360ms was tuned to the first vocabulary and cut the badge's opening short
+ *  once "Soft" (260ms + 180ms) was picked: the window closed mid-animation and
+ *  the badge popped to full size. Destin called the result "jank".*/
+const EXPAND_WINDOW_FALLBACK_MS = 520;
+const EXPAND_WINDOW_SLACK_MS = 80;
+
+/** The reveal + badge time the current vocabulary needs, read off an element
+ *  that inherits the tokens. `ms` or `s`; anything unreadable → the fallback. */
+function motionWindowMs(el: Element | null): number {
+  if (!el) return EXPAND_WINDOW_FALLBACK_MS;
+  const cs = getComputedStyle(el);
+  const read = (name: string) => {
+    const v = cs.getPropertyValue(name).trim();
+    const n = parseFloat(v);
+    if (!Number.isFinite(n)) return NaN;
+    return v.endsWith('ms') ? n : v.endsWith('s') ? n * 1000 : n;
+  };
+  const total = read('--dur-reveal') + read('--dur-hover');
+  return Number.isFinite(total) && total > 0 ? Math.round(total + EXPAND_WINDOW_SLACK_MS) : EXPAND_WINDOW_FALLBACK_MS;
+}
 
 /** A collapsed pill (dot only): px-1.5 (12) + dot (10) + border (2) + the
  *  gap-1 (4) that sits between the dot and its zero-width label. Measured
@@ -37,21 +57,6 @@ const EXPAND_WINDOW_MS = 360;
  *  row of N dots was under-reserved by 4N px and the active name got squeezed. */
 const COLLAPSED_PILL_PX = 28;
 
-/** WHEN a press on a pill selects its session — review scaffold (2026-09-01).
- *  Read from the nearest `[data-select]` ancestor (the workbench sets it on
- *  <html> from `?select=`; a live review pane sets it on its wrapper):
- *    press      — the session switches the instant you press, as a Chrome tab
- *                 does: the old name collapses, the new one opens, and if you
- *                 go on to drag, you drag the open name.
- *    press-dot  — switches on press too, but the pill in hand stays a dot
- *                 until you let go; the name opens on the drop.
- *    release    — switches when you let go (the pre-2026-09-01 behaviour).
- *  The winner becomes the only behaviour and this reader goes away. */
-type SelectOn = 'press' | 'press-dot' | 'release';
-function readSelectOn(from: Element | null): SelectOn {
-  const v = from?.closest('[data-select]')?.getAttribute('data-select');
-  return v === 'press-dot' || v === 'release' ? v : 'press';
-}
 
 interface SessionEntry {
   id: string;
@@ -344,7 +349,13 @@ export default function SessionStrip({
   // in place of the live pack for the whole drag so a resize cannot repack
   // under the cursor, and so the synthetic geometry and the rendered row agree.
   const frozenPackRef = useRef<PackResult | null>(null);
-  const [dragMode, setDragMode] = useState<SelectOn>('press');
+  // The bar's left edge at pointer-down. The synthetic geometry is laid out
+  // from where the row's first pill sat at press — but after a select-on-press
+  // the header re-centres the strip as the row reshapes (measured 2026-09-02:
+  // ~40px over 260ms), so the bar, and every pill in it, slides. Positions
+  // RELATIVE to the bar stay right; the drag reads the geometry shifted by
+  // however far the bar has moved since press.
+  const barLeftAtPress = useRef(0);
   // Mirror of overId for the move handler: the next slot depends on the
   // current one (the yield line is crossed early forward and late back), and
   // the handler must read it at event time, not the value it closed over.
@@ -650,18 +661,19 @@ export default function SessionStrip({
     // open and becomes the active label.
 
     const barEl = pillBarRef.current;
-    const mode = inStrip ? readSelectOn(barEl) : 'release';
-    setDragMode(mode);
-    // Chrome selects a tab the instant you press it. In these modes so do we —
-    // which reshapes the row (the old name collapses, the pressed one opens)
-    // while a drag may be starting on it. That is why the geometry below is
-    // SYNTHETIC: the row the drag is judged against is the one it is settling
-    // into, not the one mid-animation under the cursor.
-    const selectsNow = inStrip && mode !== 'release' && sessionId !== activeSessionId;
+    // Chrome selects a tab the instant you press it, and so does the strip
+    // (Destin picked "switch on press" over press-with-name-on-drop and
+    // switch-on-release, 2026-09-02). That reshapes the row — the old name
+    // collapses, the pressed one opens — while a drag may be starting on it,
+    // which is why the geometry below is SYNTHETIC: the row the drag is judged
+    // against is the one it is settling into, not the one mid-animation under
+    // the cursor. Menu rows never select on press.
+    const selectsNow = inStrip && sessionId !== activeSessionId;
     const activeForDrag = selectsNow ? sessionId : activeSessionId;
 
     if (barEl) {
       const barRect = barEl.getBoundingClientRect();
+      barLeftAtPress.current = barRect.left;
       const budget = barEl.parentElement?.clientWidth ?? barEl.clientWidth;
       const target = packSessions({
         sessions: measurementsOf(), activeId: activeForDrag, budget, gap: PILL_GAP, triggerWidth: 24,
@@ -670,9 +682,8 @@ export default function SessionStrip({
       const visible = sessions.filter(x => target.expanded.has(x.id) || target.collapsed.includes(x.id));
       // A pill's settled width: its full measured width if the packer expands
       // it (capped at the budget, where the active pill ellipsises instead),
-      // else a dot. In press-dot the pill in hand stays a dot until the drop.
+      // else a dot.
       const widthOf = (id: string) => {
-        if (id === sessionId && mode === 'press-dot') return COLLAPSED_PILL_PX;
         if (!target.expanded.has(id)) return COLLAPSED_PILL_PX;
         return Math.min(metrics.get(id)?.expandedWidth ?? 120, Math.max(COLLAPSED_PILL_PX, budget - 24 - PILL_GAP));
       };
@@ -741,16 +752,21 @@ export default function SessionStrip({
     // The pill in hand floats over the row, tracking the cursor 1:1 — no
     // transition, no slot snapping — clamped so it cannot leave the row of
     // pills. Its settled width comes from the synthetic geometry.
-    const held = pillRectsRef.current.find(r => r.id === dragId);
+    // The geometry, shifted by however far the bar has slid since press (see
+    // barLeftAtPress) — so the yield lines are where the dots ARE, not where
+    // they were before the header re-centred the strip.
+    const barLeftNow = pillBarRef.current ? pillBarRef.current.getBoundingClientRect().left : barLeftAtPress.current;
+    const shift = barLeftNow - barLeftAtPress.current;
+    const rects = shift === 0
+      ? pillRectsRef.current
+      : pillRectsRef.current.map(r => ({ id: r.id, left: r.left + shift, right: r.right + shift }));
+    const held = rects.find(r => r.id === dragId);
     const heldWidth = held ? held.right - held.left : 0;
     const floatLeft = held
-      ? clampFloatLeft(pillRectsRef.current, e.clientX - grabFrac.current * heldWidth, heldWidth)
+      ? clampFloatLeft(rects, e.clientX - grabFrac.current * heldWidth, heldWidth)
       : null;
-    // Bar-local against the bar's left edge NOW, not at press: the header
-    // re-centres the strip as the row reshapes after a select-on-press, so the
-    // bar itself slides a few px during the drag. Measured against the press
-    // position the twin drifted with it, out from under the cursor.
-    if (floatLeft !== null && pillBarRef.current) setDragLeft(floatLeft - pillBarRef.current.getBoundingClientRect().left);
+    // Bar-local against the bar's left edge NOW, for the same reason.
+    if (floatLeft !== null) setDragLeft(floatLeft - barLeftNow);
 
     // Chrome-style live tear-off. Once the pill has been dragged past the
     // header (cursor Y below the strip's bottom by >= 60px, or outside the
@@ -813,7 +829,7 @@ export default function SessionStrip({
     else if (tv.dir <= 0 && e.clientX < tv.extreme) { tv.dir = -1; tv.extreme = e.clientX; }
     else if (tv.dir > 0 && e.clientX < tv.extreme - DRAG_TUNE.deadband) { tv.dir = -1; tv.extreme = e.clientX; }
     else if (tv.dir < 0 && e.clientX > tv.extreme + DRAG_TUNE.deadband) { tv.dir = 1; tv.extreme = e.clientX; }
-    const next = nextSlotId(pillRectsRef.current, dragId, overIdRef.current, centre, tv.dir);
+    const next = nextSlotId(rects, dragId, overIdRef.current, centre, tv.dir);
     if (next !== overIdRef.current) { overIdRef.current = next; setOverId(next); }
   }, [dragId]);
 
@@ -1037,18 +1053,21 @@ export default function SessionStrip({
   // clicked. Open a short window on a change of active session id, during which
   // that `none` is overridden. Nothing else opens it, so repack churn stays as
   // still as it is today.
-  // 360ms, not the hook's default: the badge opens AFTER the name's reveal
-  // (--dur-reveal + --dur-hover = 350ms) and must still be inside the window
-  // when it finishes, or the window closing would cut it to a jump.
-  // Also armed when a drag starts and ends: in press-dot the pill in hand
-  // closes its name at pickup and opens it on the drop, both inside the
-  // repack-churn kill-switch's territory.
-  const expandArmed = useOneShotWindow(`${activeSessionId}:${dragLeft !== null}`, EXPAND_WINDOW_MS);
+  // The window is as long as the vocabulary needs (name reveal + the badge
+  // that opens after it), read off the stylesheet — see motionWindowMs. Also
+  // armed when a drag starts and ends, so a label that opens or closes at
+  // pickup or drop is inside the repack-churn kill-switch's exception.
+  const [windowMs, setWindowMs] = useState(EXPAND_WINDOW_FALLBACK_MS);
+  useLayoutEffect(() => {
+    const ms = motionWindowMs(pillBarRef.current);
+    if (ms !== windowMs) setWindowMs(ms);
+  });
+  const expandArmed = useOneShotWindow(`${activeSessionId}:${dragLeft !== null}`, windowMs);
   // The badge's opening is armed by the SWITCH alone. A drop reorders the row,
   // and React re-inserts the moved pill's node, which restarts any CSS
   // animation on it — so if the arriving class were still on the badge at the
   // drop, it would open a second time. Keyed on the drag too, it always was.
-  const badgeArmed = useOneShotWindow(activeSessionId, EXPAND_WINDOW_MS);
+  const badgeArmed = useOneShotWindow(activeSessionId, windowMs);
 
   // Everything below reads the pack the drag was packed against (frozen at
   // pointer-down) while a pill is held; `pack` is the live one otherwise.
@@ -1144,11 +1163,9 @@ export default function SessionStrip({
           const isActive = s.id === activeSessionId;
           const isHovered = hoveredId === s.id;
           const isBeingDragged = dragId === s.id && isDragging.current;
-          // press-dot: the pill you are holding stays a dot from press to drop.
-          const heldAsDot = dragId === s.id && dragMode === 'press-dot';
           const showName = forceSingle
             ? isActive
-            : !heldAsDot && (displayPack.expanded.has(s.id) || isHovered || isActive);
+            : displayPack.expanded.has(s.id) || isHovered || isActive;
           // A HOVER PEEK: the name is showing only because the cursor is on it.
           // The packer reserved no room for this pill, so the name is capped
           // (pill-label-style.ts) — and the runtime badge is suppressed below,
@@ -1248,7 +1265,7 @@ export default function SessionStrip({
                       // `transform` gets the settle curve when a drop is gliding
                       // home and the decelerate curve for neighbours stepping
                       // aside. Never an overshoot: a release must not spring.
-                      : `transform var(--dur-hover) ${settle?.deltas.has(s.id) ? 'var(--ease-settle)' : 'var(--ease-out)'}, border-color var(--dur-hover) var(--ease-out), background-color var(--dur-hover) var(--ease-out), box-shadow var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out)`,
+                      : `transform var(--dur-hover) ${settle?.deltas.has(s.id) ? 'var(--ease-settle)' : 'var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
                   // Four mutually exclusive transform states: the pill in hand
                   // (under the cursor), a dropped pill gliding home, a neighbour
                   // stepping aside, or a plain hover.
@@ -1294,7 +1311,7 @@ export default function SessionStrip({
                     zIndex: 10,
                     pointerEvents: 'none',
                     boxShadow: '0 8px 20px rgba(0,0,0,0.35)',
-                    transition: 'box-shadow var(--dur-hover) var(--ease-out)',
+                    transition: 'box-shadow var(--dur-hover) var(--ease-reveal)',
                   }}
                 >
                   {pillBody}

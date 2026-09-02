@@ -42,21 +42,14 @@ if (__liveTheme && __liveQuery.get('mode') === 'workbench'
 const storedTheme = localStorage.getItem('youcoded-theme') || 'midnight';
 document.documentElement.setAttribute('data-theme', storedTheme);
 
-// Review scaffold (2026-08-31): `?motion=crisp|soft` and `?arrival=fade|cut`
-// swap the motion vocabulary so alternatives can be compared in the running
-// app without a rebuild. See the [data-motion] / [data-arrival] blocks in
-// globals.css. DEV-ONLY in effect — nothing in the product sets these params —
-// and it goes away with those blocks.
+// Review scaffold (2026-09-02): `?arrival=spring|grow|slide` swaps how the
+// incoming conversation arrives on a session switch, so alternatives can be
+// compared in the running app without a rebuild. See the [data-arrival]
+// blocks in globals.css. DEV-ONLY in effect — nothing in the product sets this
+// param — and it goes away with those blocks.
 {
-  const q = new URLSearchParams(location.search);
-  const m = q.get('motion');
-  if (m === 'crisp' || m === 'soft') document.documentElement.setAttribute('data-motion', m);
-  const a = q.get('arrival');
-  if (a === 'fade' || a === 'cut') document.documentElement.setAttribute('data-arrival', a);
-  // `?select=press|press-dot|release`: WHEN a press on a session pill selects
-  // it (SessionStrip's readSelectOn). Same scaffold, same fate.
-  const sel = q.get('select');
-  if (sel === 'press' || sel === 'press-dot' || sel === 'release') document.documentElement.setAttribute('data-select', sel);
+  const a = new URLSearchParams(location.search).get('arrival');
+  if (a === 'spring' || a === 'grow' || a === 'slide') document.documentElement.setAttribute('data-arrival', a);
 }
 
 // Mark buddy windows on <html> SYNCHRONOUSLY (before first paint) so the

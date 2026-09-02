@@ -62,7 +62,7 @@ export interface LabelStyleInput {
 // 251.3 and every pill to its right slid with it. Guard: pill-label-style.test.ts
 // → "never animates width on an overshoot curve".
 const REVEAL_TRANSITION =
-  'max-width var(--dur-reveal) var(--ease-out), opacity var(--dur-hover) var(--ease-out)';
+  'max-width var(--dur-reveal) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)';
 
 /** The pixel width the label box opens to for this pill. Exported so the
  *  badge can wait for exactly this reveal (SessionStrip) and tests can pin it. */

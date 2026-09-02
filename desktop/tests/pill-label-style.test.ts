@@ -45,7 +45,7 @@ describe('pillLabelStyle', () => {
   it('animates on the vocabulary, one curve for both properties', () => {
     const s = pillLabelStyle({ ...base, showName: true });
     expect(s.transition).toBe(
-      'max-width var(--dur-reveal) var(--ease-out), opacity var(--dur-hover) var(--ease-out)',
+      'max-width var(--dur-reveal) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)',
     );
   });
 
@@ -56,7 +56,7 @@ describe('pillLabelStyle', () => {
       const t = String(pillLabelStyle({ ...base, showName: true, packExpanded, animateExpand: true }).transition);
       const widthPart = t.split(',').find(p => p.trim().startsWith('max-width')) ?? '';
       expect(widthPart).not.toMatch(/bounce|spring/);
-      expect(widthPart).toMatch(/--ease-out/);
+      expect(widthPart).toMatch(/--ease-reveal/);
     }
   });
 

@@ -237,22 +237,44 @@ describe('perpetual animations are frame-budgeted', () => {
 describe('motion vocabulary', () => {
   const globals = read('styles', 'globals.css');
 
-  it('defines two curves that only ever decelerate — no overshoot anywhere', () => {
+  it('defines three curves, none of which overshoots', () => {
     // The first cut put a spring curve on the pill; Destin's verdict was "much
-    // too bouncy/aggressive". Both remaining curves have every control point
-    // inside [0, 1], which is what "never overshoots" means for a cubic-bezier.
+    // too bouncy/aggressive". Every --ease-* control point sits inside [0, 1],
+    // which is what "never overshoots" means for a cubic-bezier. (The switch
+    // ARRIVAL may overshoot — it is on the transform of one element — and its
+    // curve is deliberately not an --ease-* token: see [data-arrival].)
+    expect(globals).toMatch(/--ease-reveal:\s*cubic-bezier\(0\.25,\s*0\.1,\s*0\.25,\s*1\)/);
     expect(globals).toMatch(/--ease-out:\s*cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
-    expect(globals).toMatch(/--ease-settle:\s*cubic-bezier\(0\.28,\s*0\.84,\s*0\.42,\s*1\)/);
+    expect(globals).toMatch(/--ease-settle:/);
     expect(globals).not.toMatch(/--ease-bounce/);
     for (const m of globals.matchAll(/--ease-[a-z]+:\s*cubic-bezier\(([^)]+)\)/g)) {
       for (const n of m[1].split(',').map(Number)) expect(n).toBeLessThanOrEqual(1);
     }
   });
 
-  it('defines three durations matching the design guide', () => {
-    expect(globals).toMatch(/--dur-hover:\s*150ms/);
-    expect(globals).toMatch(/--dur-reveal:\s*200ms/);
-    expect(globals).toMatch(/--dur-switch:\s*240ms/);
+  it('defines three durations — Soft, as picked on 2026-09-02', () => {
+    expect(globals).toMatch(/--dur-hover:\s*180ms/);
+    expect(globals).toMatch(/--dur-reveal:\s*260ms/);
+    expect(globals).toMatch(/--dur-switch:\s*300ms/);
+  });
+
+  it('arms the label window from the stylesheet, not a number tuned to an older vocabulary', () => {
+    // A fixed 360ms closed before Soft's badge (260 + 180ms) had finished
+    // opening, and the badge popped to full size — "jank".
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/motionWindowMs\(/);
+    expect(strip).toMatch(/getPropertyValue\(name\)/);
+    expect(strip).not.toMatch(/useOneShotWindow\([^)]*,\s*\d+\)/);   // no literal duration at a call site
+  });
+
+  it('leads with the fast curve where a pill must get out of the way, and reveals on the plain one', () => {
+    // A gentle start on the step-aside left the dragged pill over a dot that
+    // had not moved yet; a fast start on a name reveal reads as a snap.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/transform var\(--dur-hover\) \$\{settle\?\.deltas\.has\(s\.id\) \? 'var\(--ease-settle\)' : 'var\(--ease-out\)'\}/);
+    const label = read('components/header', 'pill-label-style.ts');
+    expect(label).toMatch(/max-width var\(--dur-reveal\) var\(--ease-reveal\)/);
+    expect(globals).toMatch(/\.session-pill__badge--arriving\s*\{[^}]*var\(--ease-reveal\)/);
   });
 
   it('puts them in the theme-independent :root block', () => {
@@ -281,18 +303,20 @@ describe('motion vocabulary', () => {
     expect(root).toMatch(/--frame-edge:/);
   });
 
-  it('keeps the review-only motion presets out of :root', () => {
-    // [data-motion] / [data-arrival] are a REVIEW SCAFFOLD: they let the
-    // running app swap motion treatments so alternatives can be felt rather
-    // than watched. They must stay override-only — the app's real values live
-    // in :root, so deleting the blocks restores the shipped behaviour.
-    for (const preset of ['crisp', 'soft']) {
-      expect(globals).toMatch(new RegExp(`\\[data-motion="${preset}"\\]`));
-    }
-    for (const preset of ['fade', 'cut']) {
+  it('keeps the review-only arrival presets out of :root, and has no motion presets left', () => {
+    // [data-arrival] is a REVIEW SCAFFOLD: it lets the running app swap the
+    // switch arrival so alternatives can be felt rather than watched. It must
+    // stay override-only — the real values are the keyframes' defaults, so
+    // deleting the blocks restores the shipped behaviour. The speed presets
+    // ([data-motion]) and the select-on modes ([data-select]) were picked on
+    // 2026-09-02 and are gone.
+    for (const preset of ['spring', 'grow', 'slide']) {
       expect(globals).toMatch(new RegExp(`\\[data-arrival="${preset}"\\]`));
     }
-    expect(globals).not.toMatch(/:root\s*\{[^}]*data-motion/);
+    expect(globals).not.toMatch(/data-motion/);
+    expect(globals).not.toMatch(/:root\s*\{[^}]*data-arrival/);
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).not.toMatch(/\[data-select\]|press-dot|readSelectOn/);   // data-select-portal is the Select menu's, unrelated
   });
 
   it('animates the incoming conversation, never the outgoing one', () => {

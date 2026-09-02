@@ -9,9 +9,11 @@
 // it uses the same `useOneShotWindow` + `.switch-arrival` pair ChatView uses,
 // keyed the same way (on the pane being the active session), so what arrives
 // here is what arrives in the app. What IS new is only the arrangement, and
-// the `data-motion` / `data-arrival` attributes on the wrapper, which are the
-// review scaffold in globals.css — the candidates in compare/registry.tsx
-// differ in nothing else.
+// the `data-arrival` attribute on the wrapper, which is the review scaffold in
+// globals.css — the candidates in compare/registry.tsx differ in nothing else.
+// (Rounds 1–2 of session-strip-motion once took `motion` and `select` props the
+// same way; Destin picked Soft and Press on 2026-09-02 and those became the
+// only behaviour, so the props went — the old rounds now render what shipped.)
 //
 // Dev-only, like the rest of dev/.
 import React, { useMemo, useReducer, useState } from 'react';
@@ -21,9 +23,7 @@ import { artifactReducer, initialArtifactState } from '../../../state/artifact-t
 import { useOneShotWindow } from '../../../hooks/use-one-shot-window';
 import type { SessionStatusColor } from '../../../components/StatusDot';
 
-type Motion = 'crisp' | 'soft';
-type Arrival = 'fade' | 'cut';
-type Select = 'press' | 'press-dot' | 'release';
+type Arrival = 'spring' | 'grow' | 'slide';
 
 interface DemoSession {
   id: string; name: string; cwd: string; permissionMode: string;
@@ -93,7 +93,7 @@ function Pane({ session, active }: { session: DemoSession; active: boolean }) {
   );
 }
 
-export function SessionStripMotionDemo({ motion, arrival, select }: { motion?: Motion; arrival?: Arrival; select?: Select }) {
+export function SessionStripMotionDemo({ arrival }: { arrival?: Arrival }) {
   const [sessions, setSessions] = useState(SESSIONS);
   const [activeId, setActiveId] = useState(SESSIONS[0].id);
   // SessionStrip calls useArtifact() at its top level (the All Sessions menu's
@@ -103,7 +103,7 @@ export function SessionStripMotionDemo({ motion, arrival, select }: { motion?: M
   const statuses = useMemo(() => new Map(sessions.map((s) => [s.id, s.status])), [sessions]);
 
   return (
-    <div data-motion={motion} data-arrival={arrival} data-select={select} className="flex flex-col gap-2">
+    <div data-arrival={arrival} className="flex flex-col gap-2">
       {/* The header row: the strip's PARENT is what the packer reads its width
           budget from, so it sits in a flex-1 wrapper exactly as in HeaderBar. */}
       <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel px-2 py-1">
