@@ -10,7 +10,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Button, Dialog, TextInput, Toggle, LoadingState, SettingRow } from './ui';
+import { Button, Dialog, FieldError, TextInput, Toggle, LoadingState, SettingRow } from './ui';
 import type { SyncWarning } from '../../main/sync-state';
 import { deriveSettingsRowState, type SyncDisplayState } from '../state/sync-display-state';
 import { createPortal } from 'react-dom';
@@ -1818,7 +1818,7 @@ function DevicesTab({ devices, onRename, onRemove, syncInProgress, lastSyncByDev
             {/* Why the remove didn't take. Never invents a cause: the handler's own
                 reason when it gave one, otherwise non-committal. */}
             {removeNote?.id === d.id && (
-              <p className="text-3xs text-destructive-fg mt-1">{removeNote.text}</p>
+              <FieldError as="p" className="mt-1">{removeNote.text}</FieldError>
             )}
           </li>
         );

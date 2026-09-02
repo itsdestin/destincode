@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { Button, CloseButton, TextInput, Toggle, Radio, RadioGroup, Callout } from './ui';
+import { Button, CloseButton, FieldError, TextInput, Toggle, Radio, RadioGroup, Callout } from './ui';
 import { isAndroid as checkIsAndroid } from '../platform';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -846,9 +846,9 @@ function GhInstallHelp({ onRecheck }: { onRecheck: () => void }) {
       )}
 
       {installError && (
-        <div className="text-3xs text-destructive-fg">
+        <FieldError as="div">
           Couldn't install it automatically: {installError}
-        </div>
+        </FieldError>
       )}
 
       {/* Manual instructions: only after an automated attempt failed (or on a

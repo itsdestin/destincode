@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Button } from './ui';
+import { Button, FieldError } from './ui';
 import ConnectGithubModal from './ConnectGithubModal';
 
 // Connected-accounts sub-page INSIDE the Account popup (Destin feedback,
@@ -128,7 +128,7 @@ export function ConnectedAccountsBody({ status, refresh }: {
           </div>
         )}
 
-        {error && <p className="text-2xs text-destructive-fg">{error}</p>}
+        {error && <FieldError as="p" size="2xs">{error}</FieldError>}
       </div>
 
       {showConnect && (

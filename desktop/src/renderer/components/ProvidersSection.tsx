@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Button, InputGroup, Select, TextInput, Toggle } from './ui';
+import { Button, FieldError, InputGroup, Select, TextInput, Toggle } from './ui';
 import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/provider-types';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
@@ -165,11 +165,11 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
               still renders, and Retry re-runs list(). */}
           {listError && (
             <div className="flex items-center gap-2 px-1">
-              <p className="text-2xs text-destructive-fg flex-1">
+              <FieldError as="p" size="2xs" className="flex-1">
                 {visibleRows.length === 0
                   ? `Couldn't load providers — ${listError}`
                   : `Couldn't refresh — ${listError}`}
-              </p>
+              </FieldError>
               <Button variant="secondary" size="sm" onClick={() => void refresh()} className="shrink-0">
                 Retry
               </Button>
@@ -478,7 +478,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
         />
       </div>
 
-      {error && <p className="text-3xs text-destructive-fg">{error}</p>}
+      {error && <FieldError as="p">{error}</FieldError>}
 
       <div className="flex gap-2 pt-1">
         <Button variant="secondary" onClick={onCancel} className="flex-1 py-2">
