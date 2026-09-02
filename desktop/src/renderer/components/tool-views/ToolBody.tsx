@@ -29,6 +29,7 @@ import { useSpecialistRunByChild, useSpecialistDefinition } from '../../hooks/us
 import { hasNestedAsk } from '../../utils/specialist-cards';
 import { SpecialistActions } from '../specialists/SpecialistActions';
 import { RunStatusLine } from '../specialists/RunStatusLine';
+import { CLAUDE_CODE_LINK_TOOL, SEND_USER_LINK_TOOL } from '../../../shared/send-user-link';
 
 // Parsed views for expanded tool cards. One dispatcher + inline view functions;
 // splitting per-file only becomes worthwhile if a single view grows past ~80
@@ -1187,11 +1188,14 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         return <WebFetchView tool={tool} />;
       case 'WebSearch':
         return <WebSearchView tool={tool} />;
-      // SendUserFile normally renders as the in-bubble DeliverablesCard (pulled
-      // out of its tool group by AssistantTurnBubble). This case covers the
-      // places that still render a bare ToolCard for it — the tool gallery,
-      // the buddy window's strip — so it never falls to the raw JSON view.
+      // SendUserFile/SendUserLink normally render as the in-bubble
+      // DeliverablesCard (pulled out of their tool group by
+      // AssistantTurnBubble). This case covers the places that still render a
+      // bare ToolCard for them — the tool gallery, the buddy window's strip —
+      // so they never fall to the raw JSON view.
       case 'SendUserFile':
+      case SEND_USER_LINK_TOOL:
+      case CLAUDE_CODE_LINK_TOOL:
         return <DeliverablesCard tools={[tool]} sessionId={sessionId ?? ''} />;
       default: {
         // MCP PowerShell is shell-like — reuse ShellView. Other MCP tools fall

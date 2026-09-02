@@ -19,6 +19,7 @@ vi.mock('../src/renderer/components/MarkdownContent', () => ({
 
 import AssistantTurnBubble from '../src/renderer/components/AssistantTurnBubble';
 import ToolCard, { friendlyToolDisplay } from '../src/renderer/components/ToolCard';
+import { CLAUDE_CODE_LINK_TOOL } from '../src/shared/send-user-link';
 
 (window as any).matchMedia = (query: string) => ({ matches: false, media: query, addEventListener: () => {}, removeEventListener: () => {} });
 (globalThis as any).ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
@@ -109,6 +110,37 @@ describe('fallback surfaces', () => {
     // garbage input is not worth a rule.
     expect(friendlyToolDisplay({ toolName: 'SendUserFile', input: { files: 'not-an-array' } } as any).label)
       .toBe('Sent files');
+  });
+
+  it('friendlyToolDisplay: SendUserLink shows the host, never the raw id', () => {
+    expect(friendlyToolDisplay({ toolName: 'SendUserLink', input: { links: [{ url: 'https://example.com', label: 'The Site' }] } } as any))
+      .toEqual({ label: 'Sent a link', detail: '↳ example.com' });
+    expect(friendlyToolDisplay({ toolName: 'SendUserLink', input: { links: [{ url: 'http://localhost:5173' }, { url: 'http://192.168.1.5:8000' }] } } as any))
+      .toEqual({ label: 'Sent 2 links', detail: '↳ localhost:5173, 192.168.1.5:8000' });
+    expect(friendlyToolDisplay({ toolName: 'SendUserLink', input: { links: 'not-an-array' } } as any).label)
+      .toBe('Sent links');
+  });
+
+  it('friendlyToolDisplay: the Claude Code MCP link tool reads identically', () => {
+    // Without an explicit case it would fall to the generic MCP label
+    // ("Youcoded: Senduserlink"), which names the plumbing, not the deliverable.
+    expect(friendlyToolDisplay({ toolName: CLAUDE_CODE_LINK_TOOL, input: { links: [{ url: 'https://example.com' }] } } as any))
+      .toEqual({ label: 'Sent a link', detail: '↳ example.com' });
+  });
+
+  it('a bare Claude Code MCP link ToolCard expands to the card, not the raw JSON view', () => {
+    const mcpTool: any = {
+      toolUseId: 'm1', toolName: CLAUDE_CODE_LINK_TOOL,
+      input: { links: [{ url: 'https://example.com', label: 'The Site' }] }, status: 'complete',
+    };
+    render(
+      <ChatProvider>
+        <ToolCard tool={mcpTool} sessionId="s" />
+      </ChatProvider>,
+    );
+    fireEvent.click(screen.getByTestId('tool-card-chevron'));
+    expect(screen.getByTestId('deliverables-card')).toBeInTheDocument();
+    expect(screen.queryByText(/"links"/)).toBeNull();
   });
 
   it('a bare SendUserFile ToolCard expands to the card, not the raw JSON view', () => {

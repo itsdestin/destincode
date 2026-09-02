@@ -6,7 +6,8 @@ import { hasNestedAsk } from '../utils/specialist-cards';
 import MarkdownContent from './MarkdownContent';
 import { SessionRefsEnabled } from './session-refs-context';
 import ToolCard, { StackedSkillsCard } from './ToolCard';
-import { DeliverablesCard, isSentFilesTool, SENT_FILES_TOOL } from './DeliverablesCard';
+import { DeliverablesCard, isSentFilesTool, isSentLinksTool, SENT_FILES_TOOL } from './DeliverablesCard';
+import { isSendUserLinkToolName } from '../../shared/send-user-link';
 import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
@@ -211,9 +212,9 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
   );
 }
 
-// Walks ONE bubble's tool groups and returns its SendUserFile calls in
-// invocation order. The card renders inside the bubble — last, after the tool
-// cards — so the hoist is per bubble, unlike Skills (per turn).
+// Walks ONE bubble's tool groups and returns its SendUserFile/SendUserLink
+// calls in invocation order. The card renders inside the bubble — last, after
+// the tool cards — so the hoist is per bubble, unlike Skills (per turn).
 // View-layer reorder only; reducer state untouched.
 function collectBubbleSentFiles(
   bubble: VisualBubble,
@@ -226,7 +227,7 @@ function collectBubbleSentFiles(
     if (!group) continue;
     for (const id of group.toolIds) {
       const t = toolCalls.get(id);
-      if (isSentFilesTool(t)) out.push(t);
+      if (isSentFilesTool(t) || isSentLinksTool(t)) out.push(t);
     }
   }
   return out;
@@ -345,7 +346,9 @@ function bubblePaintsSomething(
       const t = toolCalls.get(id);
       // Name comparison, not isSentFilesTool(): that type predicate narrows
       // `t` to never on its false branch, which tsc rejects at the next line.
-      if (!t || t.toolName === 'Skill' || t.toolName === SENT_FILES_TOOL) continue;
+      // A link delivery counts like a file: a bubble whose ONLY content is a
+      // link must still paint (it's a deliverable, not a no-op turn).
+      if (!t || t.toolName === 'Skill' || t.toolName === SENT_FILES_TOOL || isSendUserLinkToolName(t.toolName)) continue;
       if (t.status !== 'awaiting-approval') return true;
     }
   }
@@ -666,9 +669,10 @@ function ToolGroupInline({
     // standalone row outside any group via AssistantTurnBubble (see
     // collectTurnSkills + the trailing-skills div on the last bubble).
     // View-layer reorder; reducer state untouched.
-    // SendUserFile is ALSO pulled out: it renders as the DeliverablesCard at the
-    // end of the bubble, after the tool cards (collectBubbleSentFiles).
-    .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill' && !isSentFilesTool(t));
+    // SendUserFile/SendUserLink are ALSO pulled out: they render as the
+    // DeliverablesCard at the end of the bubble, after the tool cards
+    // (collectBubbleSentFiles).
+    .filter((t): t is ToolCallState => t !== undefined && t.toolName !== 'Skill' && !isSentFilesTool(t) && !isSentLinksTool(t));
 
   if (tools.length === 0) return null;
 

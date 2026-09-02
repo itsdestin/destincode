@@ -146,7 +146,17 @@ class PtyBridge(
         val dangerousFlag = if (dangerousMode) " --dangerously-skip-permissions" else ""
         val resumeFlag = if (resumeSessionId != null) " --resume $resumeSessionId" else ""
         val modelFlag = if (model != null) " --model $model" else ""
-        val launchCmd = "exec /system/bin/linker64 ${nodePath.absolutePath} ${wrapperPath.absolutePath} ${claudePath.absolutePath}$dangerousFlag$resumeFlag$modelFlag"
+        // Give this session YouCoded's SendUserLink tool — Claude Code has no
+        // link deliverable of its own (ClaudeCodeMcp.kt / claude-code-mcp.ts).
+        // Deployed next to the wrapper, from the same shared asset the desktop
+        // embeds, and attached per session: nothing lands in ~/.claude.json.
+        val mcpFlags = ClaudeCodeMcp.deploy(
+            mobileDir,
+            context.assets.open(ClaudeCodeMcp.SERVER_FILE).bufferedReader().readText(),
+            "/system/bin/linker64",
+            nodePath.absolutePath,
+        )
+        val launchCmd = "exec /system/bin/linker64 ${nodePath.absolutePath} ${wrapperPath.absolutePath} ${claudePath.absolutePath}$dangerousFlag$resumeFlag$modelFlag$mcpFlags"
 
         File(bootstrap.homeDir, "tmp").mkdirs()
 

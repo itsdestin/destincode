@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'os';
+import fs from 'fs';
+import path from 'path';
 import { SessionManager } from '../src/main/session-manager';
 
 const tmpDir = os.tmpdir();
@@ -90,6 +92,30 @@ describe('SessionManager', () => {
     const spawnMsg = mockWorker.send.mock.calls[0][0];
     expect(spawnMsg.type).toBe('spawn');
     expect(spawnMsg.args).toContain('--dangerously-skip-permissions');
+  });
+
+  // Claude Code has no link deliverable of its own; the app attaches one per
+  // session (claude-code-mcp.ts). These two flags are the whole mechanism —
+  // if they stop being passed, the link tile silently never appears in a
+  // Claude Code session and nothing else fails.
+  it('attaches the SendUserLink MCP server to every Claude Code session', () => {
+    manager.createSession({ name: 'mcp', cwd: tmpDir, skipPermissions: false });
+    const args: string[] = mockWorker.send.mock.calls[0][0].args;
+
+    const configIdx = args.indexOf('--mcp-config');
+    expect(configIdx).toBeGreaterThanOrEqual(0);
+    const configPath = args[configIdx + 1];
+    // A FILE path (node-pty re-joins these into one command line on Windows,
+    // where inline JSON would not survive), inside the app's OWN data dir —
+    // never ~/.claude.json, which no code path can un-write.
+    expect(configPath.startsWith(path.join(tmpDir, 'claude-code-mcp'))).toBe(true);
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    expect(Object.keys(config.mcpServers)).toEqual(['youcoded']);
+    expect(fs.existsSync(config.mcpServers.youcoded.args[0])).toBe(true);
+
+    // Pre-approved, so handing the user a link never raises a permission prompt.
+    expect(args).toContain('--allowedTools');
+    expect(args[args.indexOf('--allowedTools') + 1]).toBe('mcp__youcoded__SendUserLink');
   });
 
   it('emits pty-output when worker sends data', () => {

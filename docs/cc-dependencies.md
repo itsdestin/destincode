@@ -153,6 +153,12 @@ Update this table when you re-run snapshots after a CC version bump. Anything th
 - **Depends on:** `claude` CLI accepting the flags YouCoded passes at launch (notably `--resume <session-id>` and any default flags in the launch command)
 - **Break symptom:** Session resume breaks; PTY spawns fail; new sessions launch in unexpected state.
 
+### `--mcp-config` / `--allowedTools` (the SendUserLink tool in CC sessions)
+- **Files:** `desktop/src/main/claude-code-mcp.ts`, `desktop/src/main/session-manager.ts`, `app/src/main/.../runtime/ClaudeCodeMcp.kt`, `app/src/main/.../runtime/PtyBridge.kt`, `app/src/main/assets/send-user-link-mcp.js`
+- **Depends on:** three CC behaviours. (1) `--mcp-config <file>` loads extra MCP servers for that session, ADDITIVELY — no `--strict-mcp-config` is passed, so the user's own servers still load. (2) `--allowedTools mcp__youcoded__SendUserLink` pre-approves that one tool without restricting any other. (3) CC names an MCP tool `mcp__{server}__{tool}` — the renderer matches that exact composed string to draw a link tile. Also: the server is a hand-rolled JSON-RPC 2.0 stdio server, so it depends on MCP stdio staying newline-delimited JSON (it answers `initialize`, `ping`, `tools/list`, `tools/call`, and echoes back the client's `protocolVersion`).
+- **Break symptom:** Renaming or removing either flag makes every Claude Code session fail to launch (an unknown CLI option is fatal). A change to the `mcp__server__tool` naming, or a protocol-version negotiation CC will not accept, is silent instead: links keep arriving as plain text in the reply and the Deliverables card simply never appears.
+- **Verified 2026-09-02** against the installed CLI: `claude -p … --mcp-config ./mcp-config.json --allowedTools mcp__youcoded__SendUserLink` called the tool and returned its exact text, with no permission prompt.
+
 ### npm package entry-point layout (Android)
 - **Files:** `app/src/main/.../runtime/Bootstrap.kt` (`isFullySetup`, `installClaudeCode`, `selfTest`), `app/src/main/.../runtime/PtyBridge.kt` (launch command)
 - **Depends on:** `npm install -g @anthropic-ai/claude-code` producing a JS entry at `lib/node_modules/@anthropic-ai/claude-code/cli.js`, launchable via `linker64 node claude-wrapper.js cli.js`. Claude Code is currently pinned to **2.1.112** — the last release with this layout. Bumping the pin requires migrating Android to the native-binary distribution (2.1.113+).

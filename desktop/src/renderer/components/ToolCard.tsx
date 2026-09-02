@@ -22,6 +22,7 @@ import { fullAutoStopCopy } from './permissions/deny-list-copy';
 import { PERMISSION_DISPLAY } from './StatusBar';
 // Same parser ToolBody uses to pick the card body, so header and body agree.
 import { describeChatsearchCall, COPY } from '../../shared/chatsearch-refs';
+import { CLAUDE_CODE_LINK_TOOL, SEND_USER_LINK_TOOL } from '../../shared/send-user-link';
 
 // --- Helpers for friendly display ---
 
@@ -211,6 +212,24 @@ export function friendlyToolDisplay(
         // Fix: a non-array `files` (malformed input) used to read "Sent 0 files".
         label: files.length === 1 ? 'Sent a file' : files.length ? `Sent ${files.length} files` : 'Sent files',
         detail: names.length ? `↳ ${names.join(', ')}` : '',
+      };
+    }
+
+    // Both spellings of a link delivery — the native tool and the Claude Code
+    // MCP tool (shared/send-user-link.ts). Listed as explicit cases so neither
+    // falls through to the generic `mcp__server__action` label below.
+    case CLAUDE_CODE_LINK_TOOL:
+    case SEND_USER_LINK_TOOL: {
+      // Links handed to the user — same fallback-label treatment as
+      // SendUserFile above (the chat renders these as DeliverablesCard tiles).
+      const raw = input.links;
+      const links = Array.isArray(raw)
+        ? raw.map((l) => (l && typeof l === 'object' && typeof (l as Record<string, unknown>).url === 'string' ? ((l as Record<string, unknown>).url as string) : '')).filter(Boolean)
+        : [];
+      const labels = links.map((u) => { try { return new URL(u).host; } catch { return u; } });
+      return {
+        label: links.length === 1 ? 'Sent a link' : links.length ? `Sent ${links.length} links` : 'Sent links',
+        detail: labels.length ? `↳ ${labels.join(', ')}` : '',
       };
     }
 

@@ -1,0 +1,2 @@
+{"type":"tool_use","id":"toolu_01SendLinkMcp","name":"mcp__youcoded__SendUserLink","input":{"links":[{"url":"http://localhost:4321","label":"Preview build"},{"url":"https://youcoded.app/docs/getting-started"}],"caption":"Same card from a Claude Code session — the tool arrives over MCP."}}
+{"tool_use_id":"toolu_01SendLinkMcp","type":"tool_result","content":"Sent 2 links to the user.","is_error":false}

@@ -139,6 +139,10 @@ const BOUNDS_EXEMPT: Record<string, string> = {
   // one-line-confirmation shape as Write/Edit; it names files, it never
   // returns their contents.
   SendUserFile: 'returns a one-line confirmation or a per-path error list; never file or process output',
+  // text is `Sent N link(s) to the user.` or a per-URL error list — same
+  // one-line-confirmation shape as SendUserFile; it names URLs, it never
+  // returns their contents.
+  SendUserLink: 'returns a one-line confirmation or a per-URL error list; never HTML or page content',
   // The brief also exempted Skill here ("returns catalog text already bounded
   // by the injection budget"). That description belongs to a DIFFERENT code
   // path: native-session-host.ts's invokeSkill() (the /skill-name slash
