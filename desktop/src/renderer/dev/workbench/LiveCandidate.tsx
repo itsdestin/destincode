@@ -101,7 +101,14 @@ export function LiveCandidate() {
     [found],
   );
   const [askedWidth, setAskedWidth] = React.useState<number | null>(null);
-  const width = askedWidth === null ? range.min : Math.max(range.min, Math.min(range.max, askedWidth));
+  // The deck sizes the WHOLE pane — the wrapper below, padding included — and
+  // reports/asks in those terms. The design inside is that minus the padding.
+  // (The first cut applied the asked width to the design itself, so the pane
+  // overflowed its frame by the padding and the right edge was cut off.)
+  const PANE_PAD = 2 * 12;   // p-3, both sides
+  const width = askedWidth === null
+    ? range.min
+    : Math.max(range.min, Math.min(range.max, askedWidth - PANE_PAD));
 
   // ── the pane reports its own SIZE ──────────────────────────────────────────
   // WHY measured rather than declared: both numbers live in the registry, in the
@@ -119,8 +126,8 @@ export function LiveCandidate() {
         width: Math.ceil(el.getBoundingClientRect().width),
         // The range, so the deck can fit a fluid pane to its row. Equal for a
         // fixed surface — the deck then has nothing to decide.
-        minWidth: range.min,
-        maxWidth: range.max,
+        minWidth: range.min + PANE_PAD,
+        maxWidth: range.max + PANE_PAD,
         candidate: q.get('candidate') },
       // '*' is correct here and carries no secret: the height of a design mock-up
       // is not information, and the deck's port is not knowable at build time.

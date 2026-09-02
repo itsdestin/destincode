@@ -107,7 +107,9 @@ export function SessionStripMotionDemo({ motion, arrival, select }: { motion?: M
       {/* The header row: the strip's PARENT is what the packer reads its width
           budget from, so it sits in a flex-1 wrapper exactly as in HeaderBar. */}
       <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel px-2 py-1">
-        <div className="flex-1 min-w-0 flex">
+        {/* Centred, as HeaderBar centres its cluster: the strip sits in the
+            middle of the header, not against its left edge. */}
+        <div className="flex-1 min-w-0 flex justify-center">
           <ArtifactProvider value={artifact}>
             <SessionStrip
               sessions={sessions}
