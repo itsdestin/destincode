@@ -6,7 +6,7 @@ import { hasNestedAsk } from '../utils/specialist-cards';
 import MarkdownContent from './MarkdownContent';
 import { SessionRefsEnabled } from './session-refs-context';
 import ToolCard from './ToolCard';
-import { DeliverablesCard, isSentFilesTool } from './DeliverablesCard';
+import { DeliverablesCard, isSentFilesTool, SENT_FILES_TOOL } from './DeliverablesCard';
 import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
@@ -344,6 +344,42 @@ export function splitIntoBubbles(turn: Pick<AssistantTurn, 'segments'>): VisualB
   return bubbles;
 }
 
+/**
+ * Would this bubble paint anything? A bubble earns its shell only if it will.
+ * Three kinds of tool card are rendered SOMEWHERE ELSE and so do not count:
+ * a Skill (floats to the last bubble's trailing row), a SendUserFile (the
+ * deliverables card — counted by the caller via `sentFiles`), and a tool
+ * awaiting approval (pinned at the bottom of the timeline). Mirrors the
+ * filters in ToolGroupInline — keep the two in step.
+ *
+ * Fix (2026-09-02, bubble grouping): a bubble whose only tool was awaiting
+ * approval, or whose only tool was the Skill that opens a "/skill" turn,
+ * rendered as a bare empty shell above the real reply. Pinned by
+ * tests/bubble-grouping-scenarios.test.tsx.
+ */
+function bubblePaintsSomething(
+  bubble: VisualBubble,
+  toolGroups: Map<string, ToolGroupState>,
+  toolCalls: Map<string, ToolCallState>,
+  sentFilesCount: number,
+): boolean {
+  if (bubble.plan || sentFilesCount > 0) return true;
+  if (bubble.text && bubble.text.content.trim() !== '') return true;
+  if (bubble.reasoning && bubble.reasoning.content.trim() !== '') return true;
+  for (const groupId of bubble.toolGroupIds) {
+    const group = toolGroups.get(groupId);
+    if (!group) continue;
+    for (const id of group.toolIds) {
+      const t = toolCalls.get(id);
+      // Name comparison, not isSentFilesTool(): that type predicate narrows
+      // `t` to never on its false branch, which tsc rejects at the next line.
+      if (!t || t.toolName === 'Skill' || t.toolName === SENT_FILES_TOOL) continue;
+      if (t.status !== 'awaiting-approval') return true;
+    }
+  }
+  return false;
+}
+
 // Walks the turn's tool-group segments and returns every Skill ToolCallState
 // in invocation order. Used by the bubble render to pull Skills OUT of their
 // groups (where ToolGroupInline now filters them) and render them as a
@@ -450,6 +486,20 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
     [segments, toolGroups, toolCalls],
   );
 
+  // Only bubbles that will paint something get a shell (see
+  // bubblePaintsSomething). The trailing skill row, the footer and the
+  // timestamp all live on the LAST shown bubble, so "last" is measured on
+  // this list, not on the raw split. A turn whose only content is its Skill
+  // card (a "/skill" turn before the reply streams) keeps its final shell so
+  // that row has a home.
+  const withFiles = bubbles.map((bubble) => ({
+    bubble,
+    sentFiles: collectBubbleSentFiles(bubble, toolGroups, toolCalls),
+  }));
+  let shown = withFiles.filter(({ bubble, sentFiles }) =>
+    bubblePaintsSomething(bubble, toolGroups, toolCalls, sentFiles.length));
+  if (shown.length === 0 && turnSkills.length > 0) shown = withFiles.slice(-1);
+
   // Empty-step recovery (spec 2026-08-21, decision 4): a fully-contentless
   // turn has ZERO bubbles, so the per-bubble stopReason footer below can never
   // fire — yet an abnormal stopReason on such a turn is exactly the signal
@@ -458,7 +508,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
   // with a normal/absent stopReason keep rendering nothing, byte-for-byte.
   // Deliberately NOT wrapped in the assistant-bubble shell: there is no
   // message here, and an empty bubble would imply one.
-  if (bubbles.length === 0) {
+  if (shown.length === 0) {
     if (!abnormalStopReason(turn.stopReason)) return null;
     return (
       <div className="flex justify-start px-4 py-0.5">
@@ -480,8 +530,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
 
   return (
     <>
-      {bubbles.map((bubble, i) => {
-        const sentFiles = collectBubbleSentFiles(bubble, toolGroups, toolCalls);
+      {shown.map(({ bubble, sentFiles }, i) => {
         const hasTools = bubble.toolGroupIds.length > 0;
         // A sent-files card counts as content: a bubble holding only that card
         // must get the prose padding, not the tight tools-only padding.
@@ -489,7 +538,7 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
         const hasReasoning = !!bubble.reasoning;
         const toolsOnly = hasTools && !hasContent && !hasReasoning;
         const reasoningOnly = hasReasoning && !hasContent && !hasTools;
-        const isLastBubble = i === bubbles.length - 1;
+        const isLastBubble = i === shown.length - 1;
         return (
           <div key={bubble.key} className="flex justify-start px-4 py-0.5">
             <div className={`assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : reasoningOnly ? 'py-2.5' : 'py-3.5'}`}>
