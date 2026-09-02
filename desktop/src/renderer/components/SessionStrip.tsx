@@ -10,7 +10,7 @@ import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
 import { runtimeBadgeLabel, pillMetrics, FALLBACK_FONTS, type PillMetrics, type PillFonts } from './header/pill-metrics';
-import { nearestSlotId, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets, type PillRect } from './header/drag-order';
+import { nextSlotId, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets, DRAG_TUNE, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
@@ -345,6 +345,14 @@ export default function SessionStrip({
   // under the cursor, and so the synthetic geometry and the rendered row agree.
   const frozenPackRef = useRef<PackResult | null>(null);
   const [dragMode, setDragMode] = useState<SelectOn>('press');
+  // Mirror of overId for the move handler: the next slot depends on the
+  // current one (the yield line is crossed early forward and late back), and
+  // the handler must read it at event time, not the value it closed over.
+  const overIdRef = useRef<string | null>(null);
+  // Which way the pill is travelling, with a dead-band (DRAG_TUNE.deadband):
+  // `extreme` is the furthest the cursor has gone in the current direction, and
+  // the direction flips only once the cursor has come back that far from it.
+  const travel = useRef<{ dir: -1 | 0 | 1; extreme: number }>({ dir: 0, extreme: 0 });
   // The settle glide after a drop (see the layout effect below). `settleRef`
   // is armed in the same batch as the reorder; `settle` is the two-phase FLIP
   // state that drives the pill's transform on the renders after it.
@@ -629,6 +637,7 @@ export default function SessionStrip({
     if (e.button !== 0) return;
     dragOrigin.current = { x: e.clientX, y: e.clientY };
     isDragging.current = false;
+    travel.current = { dir: 0, extreme: e.clientX };
 
     const s = sessions.find(x => x.id === sessionId);
     if (!s) return;
@@ -781,6 +790,7 @@ export default function SessionStrip({
             // and fires pointerup when the user releases.
             setDragId(null);
             setOverId(null);
+            overIdRef.current = null;
             setDragLeft(null);
           }).catch(() => {
             liveDetachPending.current = false;
@@ -796,9 +806,15 @@ export default function SessionStrip({
     // so a slightly-low drag still reorders.
     if (!bar) return;
     // A drag from the All Sessions menu has no float (it is not in the row);
-    // nearestSlotId then falls back to the pill nearest the cursor.
+    // nextSlotId then falls back to the pill nearest the cursor.
     const centre = floatLeft !== null ? floatLeft + heldWidth / 2 : e.clientX;
-    setOverId(nearestSlotId(pillRectsRef.current, dragId, centre));
+    const tv = travel.current;
+    if (tv.dir >= 0 && e.clientX > tv.extreme) { tv.dir = 1; tv.extreme = e.clientX; }
+    else if (tv.dir <= 0 && e.clientX < tv.extreme) { tv.dir = -1; tv.extreme = e.clientX; }
+    else if (tv.dir > 0 && e.clientX < tv.extreme - DRAG_TUNE.deadband) { tv.dir = -1; tv.extreme = e.clientX; }
+    else if (tv.dir < 0 && e.clientX > tv.extreme + DRAG_TUNE.deadband) { tv.dir = 1; tv.extreme = e.clientX; }
+    const next = nextSlotId(pillRectsRef.current, dragId, overIdRef.current, centre, tv.dir);
+    if (next !== overIdRef.current) { overIdRef.current = next; setOverId(next); }
   }, [dragId]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
@@ -836,6 +852,7 @@ export default function SessionStrip({
     const releaseVisuals = () => {
       setDragId(null);
       setOverId(null);
+      overIdRef.current = null;
       setDragLeft(null);
     };
 
@@ -975,6 +992,28 @@ export default function SessionStrip({
       setSettle({ ...settle, phase: 'glide' });
     }
   });
+  // The twin is a fresh element, so its label opens to full width the instant
+  // it mounts — while the in-flow box it stands in for is still mid-reveal
+  // after a select-on-press, and the dots beyond it have not been pushed yet.
+  // Measured 2026-09-01: the twin's leading edge sat 14px over the next dot
+  // for the first ~40ms of every drag started right after a press. So while a
+  // pill is in hand the twin's WIDTH follows the in-flow box's width, frame by
+  // frame, written straight to the DOM (no React churn for a 200ms settle).
+  useEffect(() => {
+    if (dragLeft === null || dragId === null) return;
+    const bar = pillBarRef.current;
+    if (!bar) return;
+    let raf = 0;
+    const tick = () => {
+      const real = pillElement(dragId);
+      const twin = bar.querySelector<HTMLElement>(':scope > div[aria-hidden]');
+      if (real && twin) twin.style.width = `${real.getBoundingClientRect().width}px`;
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [dragLeft !== null, dragId]);
+
   // Belt and braces: transitionend does not fire for an element that was
   // re-rendered out of its transition, so the glide state also times out.
   useEffect(() => {
@@ -1245,6 +1284,9 @@ export default function SessionStrip({
                   aria-hidden
                   className={`${pillClass} shrink-0 cursor-grabbing`}
                   style={{
+                    // Width is driven from the in-flow box by the rAF sync
+                    // above; the first frame gets the box's width from React.
+                    width: pillElement(s.id)?.getBoundingClientRect().width,
                     position: 'absolute',
                     left: dragLeft,
                     top: '50%',

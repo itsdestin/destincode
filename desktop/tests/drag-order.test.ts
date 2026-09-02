@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  nearestSlotId, slotCentres, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets, PILL_GAP,
+  nearestSlotId, nextSlotId, slotCentres, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets,
+  PILL_GAP, DRAG_TUNE,
 } from '../src/renderer/components/header/drag-order';
 import { packSessions } from '../src/renderer/components/header/pack-sessions';
 
@@ -72,6 +73,61 @@ describe('layoutRects', () => {
         { id: 'b', left: 112, right: 136 },
         { id: 'c', left: 138, right: 162 },
       ]);
+  });
+});
+
+describe('nextSlotId — the neighbour ahead yields early, in either direction', () => {
+  // wide (179) among three 28px dots: d1=[181,209] d2=[211,239] d3=[241,269]
+  const row = [
+    { id: 'wide', left: 0, right: 179 },
+    { id: 'd1', left: 181, right: 209 },
+    { id: 'd2', left: 211, right: 239 },
+    { id: 'd3', left: 241, right: 269 },
+  ];
+  const c0 = 89.5;                       // the wide pill's own slot centre
+
+  it('moving right, a dot yields `margin` px BEFORE the pill\'s edge reaches it', () => {
+    // The pill's right edge is at centre + 89.5; d1's left is 181. Contact is
+    // centre 91.5; the yield line is margin short of that.
+    const line = c0 + PILL_GAP - DRAG_TUNE.margin;   // 85.5
+    expect(nextSlotId(row, 'wide', null, line - 0.5, 1, 2)).toBeNull();
+    expect(nextSlotId(row, 'wide', null, line + 0.5, 1, 2)).toBe('d1');
+  });
+
+  it('moving left, the dot now ahead yields the same `margin` px before contact', () => {
+    // After passing d1 the pill is at position 1 and d1 sits at [0,28] on its
+    // left. Coming back, the pill's left edge (centre − 89.5) nears d1's right
+    // edge (28): contact at centre 117.5, the line is margin past that.
+    const over = nextSlotId(row, 'wide', null, c0 + 10, 1, 2);
+    expect(over).toBe('d1');
+    const line = c0 + 28 + DRAG_TUNE.margin;         // 123.5
+    expect(nextSlotId(row, 'wide', over, line + 0.5, -1, 2)).toBe('d1');
+    expect(nextSlotId(row, 'wide', over, line - 0.5, -1, 2)).toBeNull();
+  });
+
+  it('a WIDE neighbour yields at its centre minus `early`, not on contact', () => {
+    // dot (28) dragged right towards a 179px pill.
+    const r = [{ id: 'dot', left: 0, right: 28 }, { id: 'wide', left: 30, right: 209 }];
+    const c0 = 14;
+    const line = c0 + (179 + 2) / 2 - DRAG_TUNE.early;   // 84.5
+    expect(nextSlotId(r, 'dot', null, line - 0.5, 1, 2)).toBeNull();
+    expect(nextSlotId(r, 'dot', null, line + 0.5, 1, 2)).toBe('wide');
+  });
+
+  it('never touches the neighbour BEHIND — no flapping while the direction holds', () => {
+    // Just past d1 moving right: sitting still or creeping right never un-yields it.
+    const over = nextSlotId(row, 'wide', null, c0 + PILL_GAP - DRAG_TUNE.margin + 1, 1, 2);
+    expect(over).toBe('d1');
+    expect(nextSlotId(row, 'wide', over, c0 + 5, 1, 2)).toBe('d1');
+    expect(nextSlotId(row, 'wide', over, c0 + 5, 0, 2)).toBe('d1');
+  });
+
+  it('crosses several dots in one fast move', () => {
+    expect(nextSlotId(row, 'wide', null, c0 + 3 * 30, 1, 2)).toBe('d3');
+  });
+
+  it('falls back to nearest for a pill that is not in the row', () => {
+    expect(nextSlotId(rects, 'from-menu', null, 150, 1, 2)).toBe('b');
   });
 });
 

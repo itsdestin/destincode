@@ -347,7 +347,7 @@ describe('motion vocabulary', () => {
     const strip = read('components', 'SessionStrip.tsx');
     expect(strip).toMatch(/clampFloatLeft\(/);
     expect(strip).toMatch(/layoutRects\(/);
-    expect(strip).toMatch(/nearestSlotId\(/);
+    expect(strip).toMatch(/nextSlotId\(/);
     expect(strip).toMatch(/neighbourOffsets\(/);
     expect(strip).not.toMatch(/draggedSlotOffset|nearestPillId|clampDragDx/);
     // The twin's transition list must not name its position.

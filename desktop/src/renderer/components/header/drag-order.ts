@@ -116,6 +116,66 @@ export function nearestSlotId(
   return best === from ? null : rects[best].id;
 }
 
+/** How early a neighbour gets out of the way, in px.
+ *  - `margin`: the neighbour AHEAD of the pill (in the direction it is moving)
+ *    yields when the pill's leading edge comes within this of its near edge —
+ *    BEFORE contact, so the 150ms step-aside has a head start and the pill
+ *    never sits over a dot that has not moved yet (Destin, 2026-09-01: "so the
+ *    dragged pill doesn't overlap the dots before they move").
+ *  - `early`: for a WIDE neighbour the trigger is its centre minus this,
+ *    rather than its near edge — a dot must not send a 290px pill sliding
+ *    aside the moment it touches it, or the dot ends up drawn over the wide
+ *    pill's other half.
+ *  - `deadband`: how far the cursor must come back before the drag counts as
+ *    having REVERSED. The rules only ever move the neighbour ahead, so nothing
+ *    can flap while the direction holds; the dead-band is what keeps a shaky
+ *    hand at rest from counting as a reversal every other frame. */
+export const DRAG_TUNE = { margin: 6, early: 20, deadband: 4 };
+
+/** The slot the pill in hand is heading for, given the slot it is heading for
+ *  NOW and the direction it is moving. Only the neighbour AHEAD ever yields:
+ *  moving right, the one after the pill's slot steps left behind it as the
+ *  pill's leading edge nears it; moving left, the mirror. Nothing behind the
+ *  pill is touched, so the rule cannot oscillate while the direction holds —
+ *  a reversal simply makes the dot that was just passed the one ahead again,
+ *  and it steps back out of the way at the same early point. A drag from the
+ *  All Sessions menu (the pill is not in the row) falls back to nearest.
+ *  Returns the id of the pill occupying the target slot in `rects` order —
+ *  what neighbourOffsets takes — or null for the pill's own slot. */
+export function nextSlotId(
+  rects: readonly PillRect[],
+  draggedId: string,
+  currentOverId: string | null,
+  draggedCentreX: number,
+  direction: -1 | 0 | 1,
+  gap: number = PILL_GAP,
+  tune: { margin: number; early: number } = DRAG_TUNE,
+): string | null {
+  const centres = slotCentres(rects, draggedId, gap);
+  if (centres.length === 0) return nearestSlotId(rects, draggedId, draggedCentreX, gap);
+  const from = rects.findIndex(r => r.id === draggedId);
+  const others = rects.filter(r => r.id !== draggedId);
+  let ins = currentOverId === null ? -1 : rects.findIndex(r => r.id === currentOverId);
+  if (ins < 0) ins = from;
+  // With the pill at position k, neighbour k sits just to its right at
+  // centres[k] + w/2 + gap. Moving right it yields when the pill's leading edge
+  // is `margin` short of it — a pill-centre line independent of the pill's own
+  // width — but never before the neighbour's centre minus `early`.
+  const lineRight = (k: number) =>
+    centres[k] + Math.max(gap - tune.margin, (width(others[k]) + gap) / 2 - tune.early);
+  // With the pill at position k+1, neighbour k sits just to its LEFT, ending at
+  // centres[k] - w/2 + w_k. Moving left it yields when the pill's leading (left)
+  // edge is `margin` short of that end, never before its centre plus `early`.
+  const lineLeft = (k: number) =>
+    centres[k] + Math.min(width(others[k]) + tune.margin, width(others[k]) / 2 + tune.early);
+  if (direction > 0) {
+    while (ins < others.length && draggedCentreX > lineRight(ins)) ins++;
+  } else if (direction < 0) {
+    while (ins > 0 && draggedCentreX < lineLeft(ins - 1)) ins--;
+  }
+  return ins === from ? null : rects[ins].id;
+}
+
 /** Where the pill in hand may be drawn: it rides the strip, never past the
  *  first pill's left edge or the last pill's right. `left` is the wanted left
  *  edge in client px, `width` the pill's settled width. */
