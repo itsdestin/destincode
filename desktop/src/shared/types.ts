@@ -550,6 +550,15 @@ export interface SpecialistRunView {
   /** Mid-run steers sent to this hire, in order. Absent on a pre-1c record —
    *  the ledger reads that as []. */
   notes?: SpecialistNote[];
+  /** ROADMAP L259 — a monotonic stamp the reducer compares before applying an
+   *  update, so a stale push that arrives AFTER a newer one for the same run
+   *  cannot flip a finished card back to "running". Stamped by `toRunView`
+   *  (the single projection), NOT persisted in the ledger file: it orders the
+   *  pushes, it does not describe the run. OPTIONAL because a card replayed
+   *  from a pre-L259 build has none — a missing stamp on either side means
+   *  "cannot order these", and the reducer falls back to its old behaviour
+   *  rather than dropping the update. */
+  seq?: number;
 }
 
 /** Task 5 (plan 1c) — the push event `specialists:event` carries: one

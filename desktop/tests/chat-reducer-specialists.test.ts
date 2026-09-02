@@ -186,6 +186,102 @@ describe('SPECIALIST_RUN_CHANGED — note rows from run.notes', () => {
   });
 });
 
+describe('SPECIALIST_RUN_CHANGED — stale pushes cannot rewind a card (ROADMAP L259)', () => {
+  let state: ChatState;
+
+  beforeEach(() => {
+    state = seedTaskCard(initState());
+  });
+
+  function runOf(state: ChatState): SpecialistRunView {
+    return state.get(SESSION)!.toolCalls.get(TASK_ID)!.specialistRun!;
+  }
+
+  it('a straggler with a lower seq is dropped, not applied', () => {
+    // The bug: every push overwrote the WHOLE run record and the reducer
+    // applied whichever arrived LAST, so a replay-then-live race could revert
+    // a finished card to "running" with nothing later to correct it.
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ seq: 5, status: 'completed', endedAt: 2000, steps: 9 }),
+    });
+    expect(runOf(state).status).toBe('completed');
+
+    const settled = state;
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ seq: 4, status: 'running', steps: 3 }),
+    });
+    expect(state).toBe(settled);
+    expect(runOf(state).status).toBe('completed');
+  });
+
+  it('a re-send of the SAME seq is dropped too', () => {
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ seq: 5, status: 'completed', endedAt: 2000 }),
+    });
+    const settled = state;
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ seq: 5, status: 'running' }),
+    });
+    expect(state).toBe(settled);
+  });
+
+  it('a genuinely newer push still applies', () => {
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ seq: 1, status: 'running' }),
+    });
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ seq: 2, status: 'completed', endedAt: 2000 }),
+    });
+    expect(runOf(state).status).toBe('completed');
+  });
+
+  it('an unstamped push still applies — a card replayed from an older build must not freeze', () => {
+    // `seq` is optional on purpose. If either side has none the two cannot be
+    // ordered, and refusing the update would leave the card stuck forever.
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ status: 'running' }),
+    });
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ seq: 3, status: 'completed', endedAt: 2000 }),
+    });
+    expect(runOf(state).status).toBe('completed');
+
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ status: 'failed', endedAt: 3000 }),
+    });
+    expect(runOf(state).status).toBe('failed');
+  });
+
+  it('the delivery-cycle short-circuit still absorbs identical pushes that differ ONLY by seq', () => {
+    // One delivery cycle (claim / mark-attempted / confirm / release) rewrites
+    // the ledger four times and projects four views. They are byte-identical
+    // apart from the stamp, so the structural comparison must ignore it — or
+    // Task 11's short-circuit would never fire again and every cycle would
+    // push four new state objects through the tree.
+    state = dispatch(state, {
+      type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+      run: baseRun({ seq: 1, status: 'completed', endedAt: 2000 }),
+    });
+    const settled = state;
+    for (const seq of [2, 3, 4]) {
+      state = dispatch(state, {
+        type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION,
+        run: baseRun({ seq, status: 'completed', endedAt: 2000 }),
+      });
+    }
+    expect(state).toBe(settled);
+  });
+});
+
 describe('SPECIALIST_RUN_CHANGED — ask plumbing (pinning existing behavior)', () => {
   let state: ChatState;
 

@@ -596,8 +596,24 @@ export class DelegationLedger {
  *  Fields are picked explicitly rather than spread-then-delete so the
  *  omitted set is visible right here in the code, not hidden behind a
  *  runtime `delete`. */
+/**
+ * ROADMAP L259's monotonic stamp. A single module-level counter rather than a
+ * Map keyed by childId: ordering only ever has to be comparable WITHIN one
+ * record (the reducer compares an incoming view against the same card's
+ * current one), and a globally increasing number is trivially monotonic
+ * within every record — while a per-child Map would be a second unbounded
+ * structure to evict from, for no extra guarantee.
+ *
+ * NOT `Date.now()`: two projections inside one millisecond tie, and a tie
+ * reads as "not newer", which would drop a real update. Not persisted either
+ * — it resets to 0 on restart, which is correct, because the renderer's cards
+ * are rebuilt from replay at the same moment.
+ */
+let runViewSeq = 0;
+
 export function toRunView(rec: DelegationRecord): SpecialistRunView {
   return {
+    seq: ++runViewSeq,
     childId: rec.childId,
     parentToolCallId: rec.parentToolCallId,
     agentType: rec.agentType,

@@ -515,7 +515,11 @@ describe('DelegationLedger', () => {
 
     const view = toRunView(rec);
 
-    expect(view).toEqual({
+    // ROADMAP L259: `seq` is an ORDERING stamp, not part of the record — it is
+    // minted fresh on every projection, so this comparison asserts the field
+    // set minus that one, then checks the stamp separately below.
+    const { seq, ...projected } = view;
+    expect(projected).toEqual({
       childId: 'c1',
       parentToolCallId: 'tc-1',
       agentType: 'explorer',
@@ -530,6 +534,10 @@ describe('DelegationLedger', () => {
       model: { label: 'Sonnet 5', via: 'named', fallback: false },
       notes: [note],
     });
+    // Monotonic, and it advances on every projection — that is what lets the
+    // reducer tell a straggler from a real update.
+    expect(seq).toBeGreaterThan(0);
+    expect(toRunView(rec).seq!).toBeGreaterThan(seq!);
     // Delivery bookkeeping must not leak into the renderer's view.
     expect((view as unknown as Record<string, unknown>).delivered).toBeUndefined();
     expect((view as unknown as Record<string, unknown>).injectionAttempted).toBeUndefined();
