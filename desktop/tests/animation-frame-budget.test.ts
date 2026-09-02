@@ -242,7 +242,7 @@ describe('motion vocabulary', () => {
     // too bouncy/aggressive". Every --ease-* control point sits inside [0, 1],
     // which is what "never overshoots" means for a cubic-bezier. (The switch
     // ARRIVAL may overshoot — it is on the transform of one element — and its
-    // curve is deliberately not an --ease-* token: see [data-arrival].)
+    // curve is deliberately not an --ease-* token: see @keyframes switch-arrival.)
     expect(globals).toMatch(/--ease-reveal:\s*cubic-bezier\(0\.25,\s*0\.1,\s*0\.25,\s*1\)/);
     expect(globals).toMatch(/--ease-out:\s*cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
     expect(globals).toMatch(/--ease-settle:/);
@@ -252,29 +252,39 @@ describe('motion vocabulary', () => {
     }
   });
 
-  it('defines three durations — Soft, as picked on 2026-09-02', () => {
+  it('defines three durations — Soft (2026-09-02), with the Spring arrival\'s length', () => {
     expect(globals).toMatch(/--dur-hover:\s*180ms/);
     expect(globals).toMatch(/--dur-reveal:\s*260ms/);
-    expect(globals).toMatch(/--dur-switch:\s*300ms/);
+    expect(globals).toMatch(/--dur-switch:\s*380ms/);
   });
 
   it('arms the label window from the stylesheet, not a number tuned to an older vocabulary', () => {
-    // A fixed 360ms closed before Soft's badge (260 + 180ms) had finished
-    // opening, and the badge popped to full size — "jank".
+    // A fixed 360ms closed before Soft's reveal-then-badge had finished, and
+    // the badge popped to full size — "jank". The badge is gone; the rule stays.
     const strip = read('components', 'SessionStrip.tsx');
     expect(strip).toMatch(/motionWindowMs\(/);
     expect(strip).toMatch(/getPropertyValue\(name\)/);
     expect(strip).not.toMatch(/useOneShotWindow\([^)]*,\s*\d+\)/);   // no literal duration at a call site
   });
 
-  it('leads with the fast curve where a pill must get out of the way, and reveals on the plain one', () => {
-    // A gentle start on the step-aside left the dragged pill over a dot that
-    // had not moved yet; a fast start on a name reveal reads as a snap.
+  it('hops a dot aside for a dragged pill — never slides it — and reveals on the plain curve', () => {
+    // Sliding a dot on any curve leaves it visibly under the pill in hand for
+    // as long as it is moving (Destin, 2026-09-02: "dots still keep sliding
+    // under the selected pill"). So during a drag a neighbour's transform
+    // does not animate: it jumps, delayed by half the blink that hides it.
     const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/transform var\(--dur-hover\) \$\{settle\?\.deltas\.has\(s\.id\) \? 'var\(--ease-settle\)' : 'var\(--ease-out\)'\}/);
+    expect(strip).toMatch(/dragging \? '0s linear calc\(var\(--dur-hover\) \/ 2\)'/);
+    expect(strip).toMatch(/session-pill--hop-a/);
+    expect(strip).toMatch(/session-pill--hop-b/);
+    // The blink: invisible across the middle, where the jump lands.
+    for (const name of ['pill-hop-a', 'pill-hop-b']) {
+      const kf = globals.match(new RegExp(`@keyframes ${name} \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
+      expect(kf).toMatch(/25%\s*\{\s*opacity:\s*0/);
+      expect(kf).toMatch(/75%\s*\{\s*opacity:\s*0/);
+      expect(globals).toMatch(new RegExp(`\\.session-pill--${name.slice(5)} \\{ animation: ${name} var\\(--dur-hover\\) linear 1; \\}`));
+    }
     const label = read('components/header', 'pill-label-style.ts');
     expect(label).toMatch(/max-width var\(--dur-reveal\) var\(--ease-reveal\)/);
-    expect(globals).toMatch(/\.session-pill__badge--arriving\s*\{[^}]*var\(--ease-reveal\)/);
   });
 
   it('puts them in the theme-independent :root block', () => {
@@ -303,18 +313,15 @@ describe('motion vocabulary', () => {
     expect(root).toMatch(/--frame-edge:/);
   });
 
-  it('keeps the review-only arrival presets out of :root, and has no motion presets left', () => {
-    // [data-arrival] is a REVIEW SCAFFOLD: it lets the running app swap the
-    // switch arrival so alternatives can be felt rather than watched. It must
-    // stay override-only — the real values are the keyframes' defaults, so
-    // deleting the blocks restores the shipped behaviour. The speed presets
-    // ([data-motion]) and the select-on modes ([data-select]) were picked on
-    // 2026-09-02 and are gone.
-    for (const preset of ['spring', 'grow', 'slide']) {
-      expect(globals).toMatch(new RegExp(`\\[data-arrival="${preset}"\\]`));
-    }
-    expect(globals).not.toMatch(/data-motion/);
-    expect(globals).not.toMatch(/:root\s*\{[^}]*data-arrival/);
+  it('has no review scaffolds left — every round was picked on 2026-09-02', () => {
+    // The speed presets ([data-motion]), the select-on modes ([data-select])
+    // and the arrival alternatives ([data-arrival], plus the `?arrival=` param
+    // in index.tsx) were each picked and deleted; the winners are the plain
+    // values. Spring is the arrival: 14px lift on an overshooting curve.
+    expect(globals).not.toMatch(/data-motion|data-arrival|--switch-lift|--switch-ease/);
+    expect(read('.', 'index.tsx')).not.toMatch(/arrival/);
+    expect(globals).toMatch(/@keyframes switch-arrival \{[^}]*translateY\(14px\)/);
+    expect(globals).toMatch(/\.switch-arrival \{\s*animation: switch-arrival var\(--dur-switch\) cubic-bezier\(0\.34, 1\.56, 0\.64, 1\) 1;/);
     const strip = read('components', 'SessionStrip.tsx');
     expect(strip).not.toMatch(/\[data-select\]|press-dot|readSelectOn/);   // data-select-portal is the Select menu's, unrelated
   });
@@ -332,13 +339,13 @@ describe('motion vocabulary', () => {
     // Perpetual animation is the thing this file exists to prevent. One run.
     expect(globals).toMatch(/\.switch-arrival\s*\{[^}]*animation:[^;]*switch-arrival/);
     expect(globals).not.toMatch(/\.switch-arrival\s*\{[^}]*infinite/);
-    expect(globals).not.toMatch(/badge-in[^;]*infinite/);
+    expect(globals).not.toMatch(/pill-hop-[ab][^;]*infinite/);
   });
 
   it('gates the arrival animation on reduced motion AND Reduce Visual Effects', () => {
     expect(globals).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\.switch-arrival[^}]*\}/);
     expect(globals).toMatch(/\[data-reduced-effects\] \.switch-arrival/);
-    expect(globals).toMatch(/\[data-reduced-effects\] \.session-pill__badge--arriving/);
+    expect(globals).toMatch(/\[data-reduced-effects\] \.session-pill--hop-a/);
   });
 
   it('draws the pill in hand as a TWIN of the real pill, never a ghost or an insertion line', () => {
@@ -409,23 +416,20 @@ describe('motion vocabulary', () => {
     expect(strip).not.toMatch(/\boverIdx\b/);
   });
 
-  it('shows the runtime badge only on a properly expanded pill, after the name', () => {
-    // 2026-08-31: on a hover PEEK the pill rendered a 120px-capped name next to
-    // a ~96px "YouCoded · Coder" badge, so the badge took most of the peek. And
-    // on a switch the badge sat at full width while the name was still opening,
-    // so the name read as truncated for the whole reveal. The name is the thing
-    // being read; the badge waits for it.
+  it('puts nothing but the dot and the name on a pill — the runtime lives in the menu', () => {
+    // Until 2026-09-02 a native pill carried a "YouCoded · Coder" badge that
+    // opened after the name on every switch — a second motion to wait for, and
+    // ~96px the strip had no room for. Destin: "eliminate the 'youcoded -
+    // coder' tags in session names entirely. they still cause a bit of visual
+    // jank." Runtime and model now sit under the name in the All Sessions
+    // menu, with the brand mark the status bar's model chip uses.
     const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/showName && !hoverPeek && runtimeBadgeLabel\(/);
-    expect(strip).toMatch(/session-pill__badge--arriving/);
-    expect(globals).toMatch(/\.session-pill__badge--arriving\s*\{[^}]*var\(--dur-reveal\)/);   // the delay
-  });
-
-  it('measures the badge when deciding what fits', () => {
-    // The packer measured the name only, so every native pill was ~96px wider
-    // than it believed and its name ellipsised beside a full-width badge.
-    const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/pillMetrics\(s\.name, runtimeBadgeLabel\(/);
+    expect(strip).not.toMatch(/session-pill__badge|runtimeBadgeLabel|badgeArmed/);
+    expect(globals).not.toMatch(/session-pill__badge|badge-in/);
+    expect(strip).toMatch(/sessionRuntimeLabel\(s\)/);
+    expect(strip).toMatch(/<ProviderIcon icon=\{rt\.icon\}/);
+    // And the packer budgets exactly what the label box opens to.
+    expect(strip).toMatch(/pillMetrics\(s\.name, measure, font\)/);
     expect(strip).toMatch(/expandedWidth: metrics\.get\(s\.id\)/);
   });
 

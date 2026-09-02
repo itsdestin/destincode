@@ -9,7 +9,9 @@ import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLast
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
-import { runtimeBadgeLabel, pillMetrics, FALLBACK_FONTS, type PillMetrics, type PillFonts } from './header/pill-metrics';
+import { pillMetrics, NAME_FONT, type PillMetrics } from './header/pill-metrics';
+import { sessionRuntimeLabel } from './header/session-runtime-label';
+import { ProviderIcon } from './ProviderIcon';
 import { nextSlotId, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets, DRAG_TUNE, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useScrollFade } from '../hooks/useScrollFade';
@@ -27,17 +29,16 @@ import type { TagRecord } from '../../shared/tags';
 const EMPTY_OFFSETS: ReadonlyMap<string, number> = new Map();
 
 /** How long the pill-label transitions stay switched on after a session
- *  switch, if the stylesheet cannot be read: the name reveal plus the badge
- *  that opens after it, with slack. The live value is read off the strip's
- *  computed `--dur-reveal` / `--dur-hover` (see motionWindowMs) — a fixed
- *  360ms was tuned to the first vocabulary and cut the badge's opening short
- *  once "Soft" (260ms + 180ms) was picked: the window closed mid-animation and
- *  the badge popped to full size. Destin called the result "jank".*/
-const EXPAND_WINDOW_FALLBACK_MS = 520;
+ *  switch, if the stylesheet cannot be read: the name reveal, with slack. The
+ *  live value is read off the strip's computed `--dur-reveal` (see
+ *  motionWindowMs) — a fixed number tuned to one vocabulary closed
+ *  mid-animation once another was picked, and the label popped to full size.
+ *  Destin called the result "jank". */
+const EXPAND_WINDOW_FALLBACK_MS = 340;
 const EXPAND_WINDOW_SLACK_MS = 80;
 
-/** The reveal + badge time the current vocabulary needs, read off an element
- *  that inherits the tokens. `ms` or `s`; anything unreadable → the fallback. */
+/** The reveal time the current vocabulary needs, read off an element that
+ *  inherits the tokens. `ms` or `s`; anything unreadable → the fallback. */
 function motionWindowMs(el: Element | null): number {
   if (!el) return EXPAND_WINDOW_FALLBACK_MS;
   const cs = getComputedStyle(el);
@@ -47,8 +48,8 @@ function motionWindowMs(el: Element | null): number {
     if (!Number.isFinite(n)) return NaN;
     return v.endsWith('ms') ? n : v.endsWith('s') ? n * 1000 : n;
   };
-  const total = read('--dur-reveal') + read('--dur-hover');
-  return Number.isFinite(total) && total > 0 ? Math.round(total + EXPAND_WINDOW_SLACK_MS) : EXPAND_WINDOW_FALLBACK_MS;
+  const reveal = read('--dur-reveal');
+  return Number.isFinite(reveal) && reveal > 0 ? Math.round(reveal + EXPAND_WINDOW_SLACK_MS) : EXPAND_WINDOW_FALLBACK_MS;
 }
 
 /** A collapsed pill (dot only): px-1.5 (12) + dot (10) + border (2) + the
@@ -64,11 +65,15 @@ interface SessionEntry {
   cwd: string;
   permissionMode: string;
   // Which runtime backend this session runs — 'claude' (default) or 'native'.
-  // Drives the live-pill "YouCoded · <preset>" badge for native sessions.
+  // With harnessId and model, drives the "Claude Code · Sonnet" /
+  // "YouCoded Coder · DeepSeek R1" line under the name in the All Sessions
+  // menu (session-runtime-label.ts). Nothing on the pill itself.
   provider?: string;
   // Resolved native preset id ('assistant' | 'coder', post legacy-mapping).
   // Absent for Claude sessions.
   harnessId?: string;
+  // Model id the session runs on — a Claude alias or a native model id.
+  model?: string;
 }
 
 interface Props {
@@ -538,32 +543,19 @@ export default function SessionStrip({
   }
 
   // One measurement per session, shared by the packer (how much room a pill
-  // needs), the label (how wide its box opens to) and the badge (how wide it
-  // opens to, after the name). Fix (2026-08-31): the packer used to measure
-  // the NAME only, so for every native session it under-reserved by the width
-  // of the "YouCoded · Coder" badge (~96px) the pill also renders; the name
-  // then ellipsised beside a full-width badge. The arithmetic lives in
-  // header/pill-metrics.ts, which the badge renders from too, so the three
-  // cannot drift apart.
+  // needs) and the label (how wide its box opens to). The arithmetic lives in
+  // header/pill-metrics.ts so the two cannot drift apart.
   //
-  // The fonts are read off the REAL rendered label, not assumed: the UI font is
+  // The font is read off the REAL rendered label, not assumed: the UI font is
   // a monospace, and a system-font canvas measured it ~15% narrow. Read after
   // every commit (one getComputedStyle), stored only when it changes, so a theme
   // that swaps the font re-measures and everything else costs a string compare.
-  const [fonts, setFonts] = useState<PillFonts>(FALLBACK_FONTS);
+  const [font, setFont] = useState<string>(NAME_FONT);
   useLayoutEffect(() => {
-    const bar = pillBarRef.current;
-    const nameEl = bar?.querySelector('.session-pill__name');
+    const nameEl = pillBarRef.current?.querySelector('.session-pill__name');
     if (!nameEl) return;
     const name = getComputedStyle(nameEl).font;
-    if (!name) return;
-    const badgeEl = bar?.querySelector('.session-pill__badge');
-    // No badge on screen: the badge font is the name font at text-4xs.
-    const badgeSize = getComputedStyle(document.documentElement).getPropertyValue('--text-4xs').trim() || '9px';
-    const badge = badgeEl
-      ? getComputedStyle(badgeEl).font
-      : name.replace(/\d+(\.\d+)?px/, badgeSize).replace(/^500 /, '400 ');
-    if (name !== fonts.name || badge !== fonts.badge) setFonts({ name, badge });
+    if (name && name !== font) setFont(name);
   });
   const metrics = useMemo(() => {
     const out = new Map<string, PillMetrics>();
@@ -574,10 +566,10 @@ export default function SessionStrip({
       return ctx.measureText(text).width;
     };
     for (const s of sessions) {
-      out.set(s.id, pillMetrics(s.name, runtimeBadgeLabel(s.provider, s.harnessId), measure, fonts));
+      out.set(s.id, pillMetrics(s.name, measure, font));
     }
     return out;
-  }, [sessions, fonts]);
+  }, [sessions, font]);
 
   // What the packer is handed — shared by the repack below and by a press,
   // which packs the row it is about to become (see handlePointerDown).
@@ -1053,21 +1045,16 @@ export default function SessionStrip({
   // clicked. Open a short window on a change of active session id, during which
   // that `none` is overridden. Nothing else opens it, so repack churn stays as
   // still as it is today.
-  // The window is as long as the vocabulary needs (name reveal + the badge
-  // that opens after it), read off the stylesheet — see motionWindowMs. Also
-  // armed when a drag starts and ends, so a label that opens or closes at
-  // pickup or drop is inside the repack-churn kill-switch's exception.
+  // The window is as long as the vocabulary needs (the name reveal), read off
+  // the stylesheet — see motionWindowMs. Also armed when a drag starts and
+  // ends, so a label that opens or closes at pickup or drop is inside the
+  // repack-churn kill-switch's exception.
   const [windowMs, setWindowMs] = useState(EXPAND_WINDOW_FALLBACK_MS);
   useLayoutEffect(() => {
     const ms = motionWindowMs(pillBarRef.current);
     if (ms !== windowMs) setWindowMs(ms);
   });
   const expandArmed = useOneShotWindow(`${activeSessionId}:${dragLeft !== null}`, windowMs);
-  // The badge's opening is armed by the SWITCH alone. A drop reorders the row,
-  // and React re-inserts the moved pill's node, which restarts any CSS
-  // animation on it — so if the arriving class were still on the badge at the
-  // drop, it would open a second time. Keyed on the drag too, it always was.
-  const badgeArmed = useOneShotWindow(activeSessionId, windowMs);
 
   // Everything below reads the pack the drag was packed against (frozen at
   // pointer-down) while a pill is held; `pack` is the live one otherwise.
@@ -1123,8 +1110,6 @@ export default function SessionStrip({
     ? sessions.filter(s => s.id === activeSessionId)
     : sessions.filter(s => displayPack.expanded.has(s.id) || displayPack.collapsed.includes(s.id));
 
-  if (sessions.length === 0) return null;
-
   const dragging = dragId !== null && isDragging.current && dragLeft !== null;
 
   // Chrome's model: the pill in hand is the thing that moves — under the
@@ -1143,6 +1128,48 @@ export default function SessionStrip({
   const dragOffsets = dragging && dragId
     ? neighbourOffsets(pillRectsRef.current, dragId, overId)
     : EMPTY_OFFSETS;
+
+  // A neighbour HOPS aside rather than sliding (2026-09-02). Sliding it on the
+  // fast-deceleration curve still left it visibly passing under the pill in
+  // hand for a few frames (Destin, on the tuned build: "dots still keep
+  // sliding under the selected pill"), and no curve fixes that — the two are
+  // on the same pixels for as long as the dot is moving. So the dot blinks:
+  // it fades out where it is (gone within a quarter of the blink), its
+  // transform changes while it cannot be seen (a 0s transition delayed by
+  // half the blink), and it fades back in where it now belongs. Nothing is
+  // ever seen crossing the pill.
+  //
+  // Each CHANGE of a pill's offset (yield, or un-yield as the pointer comes
+  // back) bumps that pill's generation; the class alternates between two
+  // identical keyframe names on the parity, which is what restarts a CSS
+  // animation on an element that is already running one. Cleared when the
+  // drag ends, so the drop (the settle glide) and an ordinary repack never
+  // blink anything. Read in a memo, not an effect: the class must be in the
+  // same commit as the transform change it hides.
+  const hopRef = useRef<Map<string, { off: number; gen: number }>>(new Map());
+  const hopGen = useMemo(() => {
+    const prev = hopRef.current;
+    const next = new Map<string, { off: number; gen: number }>();
+    if (dragging) {
+      for (const s of sessions) {
+        const off = dragOffsets.get(s.id) ?? 0;
+        const p = prev.get(s.id);
+        // A pill unseen so far was at offset 0 (nothing has yielded before the
+        // drag starts). Measured 2026-09-02: the first yield of a drag happens
+        // on the very render the twin appears, so an entry seeded with the
+        // yielded offset would never blink for it — and the dots the pill was
+        // picked up over jumped in full view.
+        const was = p === undefined ? 0 : p.off;
+        next.set(s.id, { off, gen: p === undefined ? (off === was ? 0 : 1) : off === was ? p.gen : p.gen + 1 });
+      }
+    }
+    hopRef.current = next;
+    return next;
+  }, [dragging, dragOffsets, sessions]);
+
+  // After the hooks above: an early return before them would change the hook
+  // order between renders.
+  if (sessions.length === 0) return null;
 
   return (
     <>
@@ -1168,10 +1195,9 @@ export default function SessionStrip({
             : displayPack.expanded.has(s.id) || isHovered || isActive;
           // A HOVER PEEK: the name is showing only because the cursor is on it.
           // The packer reserved no room for this pill, so the name is capped
-          // (pill-label-style.ts) — and the runtime badge is suppressed below,
-          // because 96px of "YouCoded · Coder" inside a 120px peek leaves
-          // almost nothing for the thing you are actually peeking at.
+          // (pill-label-style.ts).
           const hoverPeek = !isActive && !displayPack.expanded.has(s.id);
+          const hop = hopGen.get(s.id);
 
           const pillClass = `
                   relative flex items-center gap-1 rounded-full px-1.5 py-px
@@ -1200,30 +1226,6 @@ export default function SessionStrip({
                       it. See .session-pill__name in globals.css. */}
                   <span className="session-pill__name">{s.name}</span>
                 </span>
-                {/* Native-runtime badge — marks a YouCoded harness session and
-                    which preset it runs as. Only when the name is showing so it
-                    never clutters a collapsed dot-only pill, and never on a
-                    hover peek (96px of "YouCoded · Coder" inside a 120px peek
-                    leaves almost nothing for the thing you are peeking at). */}
-                {showName && !hoverPeek && runtimeBadgeLabel(s.provider, s.harnessId) !== null && (
-                  <span
-                    // The session NAME is what is worth reading; this badge is
-                    // context. It opens only after the name has finished
-                    // revealing (.session-pill__badge--arriving, inside the
-                    // switch window), and `flexShrink: 100` makes it give up
-                    // its space first if the pill is ever squeezed, so the
-                    // name is the last thing to lose room rather than the first.
-                    className={`session-pill__badge min-w-0 overflow-hidden text-4xs px-1 py-0.5 rounded bg-inset text-fg-muted whitespace-nowrap${badgeArmed && isActive ? ' session-pill__badge--arriving' : ''}`}
-                    style={{
-                      flexShrink: 100,
-                      // Where badge-in ends: the badge's own measured box.
-                      ['--badge-w' as string]: `${Math.ceil(metrics.get(s.id)?.badgeWidth ?? 96)}px`,
-                    }}
-                    title="YouCoded native session"
-                  >
-                    {runtimeBadgeLabel(s.provider, s.harnessId)}
-                  </span>
-                )}
             </>
           );
 
@@ -1243,7 +1245,7 @@ export default function SessionStrip({
                 // decide inside, where pack state is read at event time.
                 onMouseEnter={() => handleEnter(s.id)}
                 onMouseLeave={handleLeave}
-                className={`${pillClass} ${isActive ? 'min-w-0 shrink' : 'shrink-0'} ${isBeingDragged ? 'cursor-grabbing' : ''}`}
+                className={`${pillClass} ${isActive ? 'min-w-0 shrink' : 'shrink-0'} ${isBeingDragged ? 'cursor-grabbing' : ''}${hop !== undefined && hop.gen > 0 ? (hop.gen % 2 ? ' session-pill--hop-a' : ' session-pill--hop-b') : ''}`}
                 style={{
                   // Explicit property list, not `all`: `all` animates every
                   // animatable property that changes, including layout ones, and
@@ -1263,9 +1265,12 @@ export default function SessionStrip({
                       // the layout effect above.
                       ? 'none'
                       // `transform` gets the settle curve when a drop is gliding
-                      // home and the decelerate curve for neighbours stepping
-                      // aside. Never an overshoot: a release must not spring.
-                      : `transform var(--dur-hover) ${settle?.deltas.has(s.id) ? 'var(--ease-settle)' : 'var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
+                      // home; during a drag a neighbour's transform does not
+                      // animate at all — it JUMPS, halfway through the blink
+                      // that hides it (see hopGen); a hover scales on the
+                      // decelerate curve. Never an overshoot: a release must
+                      // not spring.
+                      : `transform ${settle?.deltas.has(s.id) ? 'var(--dur-hover) var(--ease-settle)' : dragging ? '0s linear calc(var(--dur-hover) / 2)' : 'var(--dur-hover) var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
                   // Four mutually exclusive transform states: the pill in hand
                   // (under the cursor), a dropped pill gliding home, a neighbour
                   // stepping aside, or a plain hover.
@@ -1449,6 +1454,33 @@ export default function SessionStrip({
                             <FolderMark className="w-3 h-3 shrink-0 text-fg-faint" />
                             <span className="truncate">{s.cwd.replace(/\\/g, '/').split('/').pop()}</span>
                           </span>
+                          {/* What runs this session, and on what — "Claude Code ·
+                              Sonnet", "YouCoded Coder · DeepSeek R1" — with the
+                              brand mark the status bar's model chip uses. This
+                              replaced the pill's "YouCoded · Coder" badge on
+                              2026-09-02 (Destin: it "still cause[d] a bit of
+                              visual jank"); the row is read at rest and has the
+                              room. The mark carries the brand colour; the text
+                              stays muted like the folder beside it, so the row's
+                              second line reads as one line of metadata. Capped
+                              so a long local model name never pushes the folder
+                              out. */}
+                          {(() => {
+                            const rt = sessionRuntimeLabel(s);
+                            return (
+                              <span
+                                className="shrink-0 min-w-0 max-w-[55%] flex items-center gap-1 text-3xs text-fg-muted"
+                                title={rt.text}
+                              >
+                                {rt.icon && (
+                                  <span className="shrink-0 flex items-center" style={{ color: rt.color }}>
+                                    <ProviderIcon icon={rt.icon} size={10} />
+                                  </span>
+                                )}
+                                <span className="truncate">{rt.text}</span>
+                              </span>
+                            );
+                          })()}
                           <SessionTagMarks sessionId={s.id} byId={tagsById} />
                         </span>
                       </span>

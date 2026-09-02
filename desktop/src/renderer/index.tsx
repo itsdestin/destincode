@@ -42,16 +42,6 @@ if (__liveTheme && __liveQuery.get('mode') === 'workbench'
 const storedTheme = localStorage.getItem('youcoded-theme') || 'midnight';
 document.documentElement.setAttribute('data-theme', storedTheme);
 
-// Review scaffold (2026-09-02): `?arrival=spring|grow|slide` swaps how the
-// incoming conversation arrives on a session switch, so alternatives can be
-// compared in the running app without a rebuild. See the [data-arrival]
-// blocks in globals.css. DEV-ONLY in effect — nothing in the product sets this
-// param — and it goes away with those blocks.
-{
-  const a = new URLSearchParams(location.search).get('arrival');
-  if (a === 'spring' || a === 'grow' || a === 'slide') document.documentElement.setAttribute('data-arrival', a);
-}
-
 // Mark buddy windows on <html> SYNCHRONOUSLY (before first paint) so the
 // buddy.css transparency overrides (color-scheme: normal, bg transparent)
 // take effect immediately. If we waited for BuddyMascotApp's useEffect to

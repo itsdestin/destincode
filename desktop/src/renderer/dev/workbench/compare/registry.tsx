@@ -67,9 +67,10 @@ import {
 } from './permission-modes';
 import type { CompareSurface } from './types';
 // session-strip-motion / session-switch-arrival: the REAL SessionStrip in a
-// demo host, so its motion is felt rather than watched. The candidates differ
-// only in the data-motion / data-arrival attribute the host sets — the review
-// scaffold in globals.css — never in code.
+// demo host, so its motion is felt rather than watched. Every round has been
+// picked (2026-09-02) and each candidate now renders what shipped; they once
+// differed only in a data-motion / data-arrival attribute the host set — a
+// review scaffold in globals.css, since deleted — never in code.
 import { SessionStripMotionDemo } from '../mockups/SessionStripMotion';
 // The REAL derivation the shipping card will use — a candidate that hardcoded
 // its options would be comparing wording against something that cannot happen.
@@ -4412,7 +4413,19 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'soft-press',
             label: 'Soft + press, tuned',
-            note: 'What ships: switch on press, 180ms hover, 260ms reveal, the badge opening after the name, drag with dots yielding early.',
+            note: 'Switch on press, 180ms hover, 260ms reveal, a "YouCoded · Coder" badge opening after the name, drag with dots sliding aside early. Superseded by R4 (2026-09-02); renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 4,
+        basis: 'Destin, 2026-09-02, on R3: "eliminate the \'youcoded - coder\' tags in session names entirely. they still cause a bit of visual jank. we should instead have labels next to the project folder label in the session switcher dropdown … keep the model/brand icons used on other model surfaces. also dots still keep sliding under the selected pill." Two changes: the pill is its dot and its name, nothing else — the runtime and model moved under the name in the All Sessions menu ("Claude Code · Sonnet", "YouCoded Coder · Qwen3 Coder") with the brand mark the status bar chip uses; and a dot no longer slides aside for a dragged pill, it hops — fades out where it is, moves while invisible, fades in where it now belongs.',
+        candidates: [
+          {
+            id: 'soft-press-hop',
+            label: 'Soft + press, no tag, dots hop',
+            note: 'What ships. Open the All Sessions menu (the chevron) for the runtime · model line; drag a pill along the row to see the dots hop instead of slide.',
             render: () => <SessionStripMotionDemo />,
           },
         ],
@@ -4457,26 +4470,26 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'lift',
             label: 'Fade and lift',
-            note: 'The baseline: fades in while rising 6px on the plain ease, 300ms.',
+            note: 'Fades in while rising 6px on the plain ease, 300ms. NOT PICKED (2026-09-02); removed, renders what shipped.',
             render: () => <SessionStripMotionDemo />,
           },
           {
             id: 'spring',
             label: 'Spring up',
-            note: 'Rises 14px and overshoots a touch before settling, while fading in. 380ms.',
-            render: () => <SessionStripMotionDemo arrival="spring" />,
+            note: 'Rises 14px and overshoots a touch before settling, while fading in. 380ms. PICKED 2026-09-02 — now the only arrival.',
+            render: () => <SessionStripMotionDemo />,
           },
           {
             id: 'grow',
             label: 'Grow in',
-            note: 'Starts a hair smaller (96%) and springs to size while fading in. No lift. 360ms.',
-            render: () => <SessionStripMotionDemo arrival="grow" />,
+            note: 'Starts a hair smaller (96%) and springs to size while fading in. NOT PICKED (2026-09-02); removed, renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
           },
           {
             id: 'slide',
             label: 'Slide in',
-            note: 'Comes in from the right by 32px with a soft overshoot, like the next page of something. 360ms.',
-            render: () => <SessionStripMotionDemo arrival="slide" />,
+            note: 'Comes in from the right by 32px with a soft overshoot. NOT PICKED (2026-09-02); removed, renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
           },
         ],
       },

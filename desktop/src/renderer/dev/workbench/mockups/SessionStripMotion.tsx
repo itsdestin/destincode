@@ -8,12 +8,11 @@
 // Nothing here is redrawn. The strip is `SessionStrip` itself; the pane below
 // it uses the same `useOneShotWindow` + `.switch-arrival` pair ChatView uses,
 // keyed the same way (on the pane being the active session), so what arrives
-// here is what arrives in the app. What IS new is only the arrangement, and
-// the `data-arrival` attribute on the wrapper, which is the review scaffold in
-// globals.css — the candidates in compare/registry.tsx differ in nothing else.
-// (Rounds 1–2 of session-strip-motion once took `motion` and `select` props the
-// same way; Destin picked Soft and Press on 2026-09-02 and those became the
-// only behaviour, so the props went — the old rounds now render what shipped.)
+// here is what arrives in the app. What IS new is only the arrangement.
+// (The rounds in compare/registry.tsx once took `motion`, `select` and
+// `arrival` props that swapped review scaffolds in globals.css; Destin picked
+// Soft, Press and Spring on 2026-09-02 and those became the only behaviour, so
+// the props and the scaffolds went — every old round now renders what shipped.)
 //
 // Dev-only, like the rest of dev/.
 import React, { useMemo, useReducer, useState } from 'react';
@@ -23,33 +22,33 @@ import { artifactReducer, initialArtifactState } from '../../../state/artifact-t
 import { useOneShotWindow } from '../../../hooks/use-one-shot-window';
 import type { SessionStatusColor } from '../../../components/StatusDot';
 
-type Arrival = 'spring' | 'grow' | 'slide';
-
 interface DemoSession {
   id: string; name: string; cwd: string; permissionMode: string;
-  provider?: string; harnessId?: string; status: SessionStatusColor;
+  provider?: string; harnessId?: string; model?: string; status: SessionStatusColor;
 }
 
-// Names of three different lengths, two of them native (so the badge is in
-// play), enough dots to drag across. Mirrors fixtures/sessions.ts's shape; a
-// copy rather than an import because this list needs a status colour per row
-// and is reordered by the drag, which the fixture's sessions must not be.
+// Names of three different lengths, a mix of Claude Code and native sessions on
+// several brands (so the All Sessions menu's "runtime · model" line shows every
+// kind of mark), enough dots to drag across. Mirrors fixtures/sessions.ts's
+// shape; a copy rather than an import because this list needs a status colour
+// per row and is reordered by the drag, which the fixture's sessions must not be.
 const SESSIONS: DemoSession[] = [
-  { id: 'm-1', name: 'fix chat scroll stick', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', status: 'green' },
-  { id: 'm-2', name: 'theme contrast pass', cwd: '/w/themes', permissionMode: 'normal', provider: 'native', harnessId: 'coder', status: 'gray' },
-  { id: 'm-3', name: 'gpt-5.6 debug session', cwd: '/w/marketplace', permissionMode: 'normal', provider: 'native', harnessId: 'coder', status: 'blue' },
-  { id: 'm-4', name: 'notes', cwd: '/w/notes', permissionMode: 'normal', provider: 'claude', status: 'gray' },
-  { id: 'm-5', name: 'roadmap restructure', cwd: '/w/youcoded-dev', permissionMode: 'normal', provider: 'claude', status: 'red' },
-  { id: 'm-6', name: 'landing copy', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', status: 'gray' },
+  { id: 'm-1', name: 'fix chat scroll stick', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', model: 'sonnet', status: 'green' },
+  { id: 'm-2', name: 'theme contrast pass', cwd: '/w/themes', permissionMode: 'normal', provider: 'native', harnessId: 'coder', model: 'qwen/qwen3-coder', status: 'gray' },
+  { id: 'm-3', name: 'gpt-5.6 debug session', cwd: '/w/marketplace', permissionMode: 'normal', provider: 'native', harnessId: 'coder', model: 'openai/gpt-5.6', status: 'blue' },
+  { id: 'm-4', name: 'notes', cwd: '/w/notes', permissionMode: 'normal', provider: 'claude', model: 'haiku', status: 'gray' },
+  { id: 'm-5', name: 'roadmap restructure', cwd: '/w/youcoded-dev', permissionMode: 'normal', provider: 'claude', model: 'opus[1m]', status: 'red' },
+  { id: 'm-6', name: 'landing copy', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', model: 'fable', status: 'gray' },
   // Enough that the row overflows into dots even at the widest pane the deck
   // gives it (1400px): with only six, every name fit and there was nothing
   // left to hover or drag (seen 2026-09-01 the moment panes went full-width).
-  { id: 'm-7', name: 'gemini flash test', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'native', harnessId: 'coder', status: 'gray' },
-  { id: 'm-8', name: 'claude via openrouter', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'native', harnessId: 'assistant', status: 'amber' },
-  { id: 'm-9', name: 'grok-3 reasoning test', cwd: '/w/marketplace', permissionMode: 'normal', provider: 'native', harnessId: 'coder', status: 'gray' },
-  { id: 'm-10', name: 'perf cycle 4', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', status: 'green' },
+  { id: 'm-7', name: 'gemini flash test', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'native', harnessId: 'coder', model: 'google/gemini-2.5-flash', status: 'gray' },
+  { id: 'm-8', name: 'claude via openrouter', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'native', harnessId: 'assistant', model: 'anthropic/claude-sonnet-5', status: 'amber' },
+  { id: 'm-9', name: 'grok-3 reasoning test', cwd: '/w/marketplace', permissionMode: 'normal', provider: 'native', harnessId: 'coder', model: 'x-ai/grok-3', status: 'gray' },
+  { id: 'm-10', name: 'perf cycle 4', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', model: 'sonnet', status: 'green' },
   { id: 'm-11', name: 'arcade leaderboards', cwd: '/w/youcoded', permissionMode: 'normal', provider: 'claude', status: 'gray' },
-  { id: 'm-12', name: 'deepseek r1 reasoning', cwd: '/w/marketplace', permissionMode: 'normal', provider: 'native', harnessId: 'coder', status: 'blue' },
+  // A local weight file: the label strips the quantisation and split suffixes.
+  { id: 'm-12', name: 'deepseek r1 reasoning', cwd: '/w/marketplace', permissionMode: 'normal', provider: 'native', harnessId: 'assistant', model: 'DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf', status: 'blue' },
 ];
 
 const LINES: Record<string, string[]> = {
@@ -63,7 +62,7 @@ const LINES: Record<string, string[]> = {
   'm-8': ['The chip said Connected while every turn 401d.', 'The chip now asks OpenRouter before it says so.'],
   'm-9': ['Reasoning traces were landing in the reply.', 'They stay in the thinking block.'],
   'm-10': ['Baseline captured on the 12,100-message transcript.', 'Prepend is anchored; scroll cost is flat.'],
-  'm-11': ['Head-to-head records read 4W - 2L now.', 'Badge is in the picker.'],
+  'm-11': ['Head-to-head records read 4W - 2L now.', 'The ribbon is in the picker.'],
   'm-12': ['R1 stalls after the first tool result.', 'Reproduced; it is the stop sequence.'],
 };
 
@@ -93,7 +92,7 @@ function Pane({ session, active }: { session: DemoSession; active: boolean }) {
   );
 }
 
-export function SessionStripMotionDemo({ arrival }: { arrival?: Arrival }) {
+export function SessionStripMotionDemo() {
   const [sessions, setSessions] = useState(SESSIONS);
   const [activeId, setActiveId] = useState(SESSIONS[0].id);
   // SessionStrip calls useArtifact() at its top level (the All Sessions menu's
@@ -103,7 +102,7 @@ export function SessionStripMotionDemo({ arrival }: { arrival?: Arrival }) {
   const statuses = useMemo(() => new Map(sessions.map((s) => [s.id, s.status])), [sessions]);
 
   return (
-    <div data-arrival={arrival} className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
       {/* The header row: the strip's PARENT is what the packer reads its width
           budget from, so it sits in a flex-1 wrapper exactly as in HeaderBar. */}
       <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel px-2 py-1">
