@@ -447,6 +447,7 @@ describe('Task tool — per-cwd roster (Task 4, plan 1c)', () => {
   // Half (b) (the renderer suppressing Always-allow on a non-builtin hire) is
   // a DIFFERENT file's job (Task 10) — this test only proves half (a) by
   // driving the real decision-path matcher, never a string comparison.
+  // eslint-disable-next-line no-template-curly-in-string -- the title quotes the permission-subject FORMAT, not an interpolation.
   it('permissionSubject: a built-in hire is `${charter}:${workDir}` (unchanged — old grants still match); a file-defined hire is `${charter}:${workDir}:file:${id}` (a remembered read-write grant for the Worker does NOT cover it)', () => {
     const BUILTIN_WORKER = resolveRealSpecialist('worker')!; // source: 'builtin', charter: 'read-write'
     const FILE_WORKER: SpecialistDefinition = {

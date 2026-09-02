@@ -41,10 +41,9 @@ export default tseslint.config(
     ignores: ['dist/**', 'release/**'],
   },
   {
-    // Scoped to src/** to match tsconfig.json's `include`. tests/ is NOT linted
-    // because it is not in a TS project, so the type-aware rules below can't
-    // run there — see the note in scripts/verify.sh about tests/ being
-    // type-unchecked. Adding a tests tsconfig is the follow-up that unlocks it.
+    // Scoped to src/** to match tsconfig.json's `include`. The same rules run
+    // over tests/ in the block at the bottom of this file, minus the type-aware
+    // ones — see there for why.
     files: ['src/**/*.ts', 'src/**/*.tsx'],
     plugins: { '@typescript-eslint': tseslint.plugin, 'react-hooks': reactHooks },
     // The tree carries ~32 `eslint-disable` comments for rules this config
@@ -109,6 +108,56 @@ export default tseslint.config(
       parserOptions: { project: ['./tsconfig.json'], tsconfigRootDir: import.meta.dirname },
     },
     rules: { '@typescript-eslint/no-floating-promises': 'error' },
+  },
+  {
+    // ---- The test tree ------------------------------------------------------
+    // Until 2026-09-02 nothing linted tests/ at all: this config stopped at
+    // src/**, and the stated reason was that tests were not in a TS project.
+    // `tsconfig.tests.json` fixed the typecheck half; this block is the lint
+    // half, and it is worth having on its own — a test is code, and a test with
+    // a bug in it pins the wrong behaviour while reading as proof.
+    //
+    // WHY NO `parserOptions.project` HERE, deliberately: the type-aware rules
+    // (no-for-in-array, no-floating-promises, …) require every linted file to be
+    // inside the project, and tsconfig.tests.json currently EXCLUDES 57 files
+    // that still have type errors. Pointing this block at it would fail those 57
+    // with "not found in project" — a config error dressed up as a lint finding.
+    // The syntactic rules below need no project and catch the classes that
+    // actually bite in tests (a .filter callback with no return, a `==` on a
+    // number, a dead branch in a fixture builder). Add the type-aware set once
+    // the exclude list in tsconfig.tests.json is empty.
+    //
+    // Measured when this block was written: 5 errors across 4 files, every one a
+    // false positive on deliberate code, each now carrying a named
+    // eslint-disable with its reason. The gate ships at zero — same green-gate
+    // rule as the rest of this file.
+    files: ['tests/**/*.ts', 'tests/**/*.tsx'],
+    plugins: { '@typescript-eslint': tseslint.plugin, 'react-hooks': reactHooks },
+    // Same reasoning as the src/** block: the test tree carries disable comments
+    // for rules this config leaves off, and reporting them is noise.
+    linterOptions: { reportUnusedDisableDirectives: 'off' },
+    languageOptions: { parser: tseslint.parser },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'no-self-compare': 'error',
+      'no-constant-binary-expression': 'error',
+      'no-dupe-else-if': 'error',
+      'no-duplicate-case': 'error',
+      'no-unsafe-negation': 'error',
+      'no-unreachable-loop': 'error',
+      'no-compare-neg-zero': 'error',
+      'use-isnan': 'error',
+      'valid-typeof': 'error',
+      'no-loss-of-precision': 'error',
+      'array-callback-return': 'error',
+      'no-sparse-arrays': 'error',
+      'no-return-assign': 'error',
+      'no-fallthrough': 'error',
+      'default-case-last': 'error',
+      'no-template-curly-in-string': 'error',
+      'eqeqeq': ['error', 'always', { null: 'ignore' }],
+      'no-async-promise-executor': 'error',
+    },
   },
 );
 

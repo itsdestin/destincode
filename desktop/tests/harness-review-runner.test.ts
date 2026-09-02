@@ -44,6 +44,20 @@ const NOT_THE_DEADLINE_MS = 10 * 60_000;
 // once caught a real hang, and have three times been mistaken for logic bugs.
 const HEAVY_RUN_TIMEOUT_MS = 120_000;
 
+// FILE-WIDE, not per-test (2026-09-02). The budget above was applied by hand to
+// each heavy `it()`, and the note further down says "EVERY test below ... needs
+// an explicit `}, HEAVY_RUN_TIMEOUT_MS)`". Relying on every author to remember
+// that is what failed: `survives the max_steps gate up to STEP_GATE_ALLOWANCE`
+// sits ABOVE that note, drives (STEP_GATE_ALLOWANCE * BATTERY_STEP_BUDGET) tool
+// calls through a real HarnessSession, and had no budget at all — so it ran on
+// the suite-wide 30s. Measured 2026-09-02: with eight full suites running at
+// once it timed out at 30,000ms in 4 of 8 runs, and passed 11/11 when the suite
+// ran alone or 6-way concurrent. Setting it here covers every test in the file,
+// including ones nobody has written yet. The explicit `}, HEAVY_RUN_TIMEOUT_MS)`
+// arguments below are now redundant; they are left in place because they also
+// document, at the test, that it is one of the heavy ones.
+vi.setConfig({ testTimeout: HEAVY_RUN_TIMEOUT_MS, hookTimeout: HEAVY_RUN_TIMEOUT_MS });
+
 
 describe('makeOpenRouterFactory', () => {
   it('refuses to build without a key, naming the env var to set', () => {

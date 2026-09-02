@@ -57,7 +57,12 @@ describe('CommentList', () => {
     await waitFor(() => expect(screen.getByText('comment 0')).toBeTruthy());
     expect(screen.getAllByText('now public')).toHaveLength(1);
     expect(screen.queryByText(/held for review/i)).toBeNull();
-    expect(onHeldListed).toHaveBeenCalledWith(['h1']);
+    // waitFor, not a bare expect: onHeldListed fires from a passive EFFECT, one
+    // beat after the commit that puts 'comment 0' in the DOM. The wait above
+    // proves the render landed, which is NOT the same instant the effect ran —
+    // measured 2026-09-02, this line failed with "Number of calls: 0" once in
+    // eight concurrent full-suite runs and never when the suite ran alone.
+    await waitFor(() => expect(onHeldListed).toHaveBeenCalledWith(['h1']));
   });
 
   it('tolerates an older Worker that sends no total', async () => {

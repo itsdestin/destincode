@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -16,6 +16,25 @@ const DESKTOP = path.resolve(__dirname, '..');
 const COMPILED_PATHS = path.join(DESKTOP, 'dist/main/harness/eval/paths.js');
 const CLI = path.join(DESKTOP, 'test-engine/harness-eval.mjs');
 const requireCjs = createRequire(import.meta.url);
+
+// EVERY assertion in this file that is not pure parsing SPAWNS A REAL NODE
+// PROCESS — `runCliStubbed` and the bare `execFileSync` calls run
+// test-engine/harness-eval.mjs for real, and several tests spawn two. Process
+// startup and module loading scale with how busy the machine is, not with the
+// code under test, so a wall-clock per-test budget here is a machine-load
+// detector wearing a correctness test's clothes.
+//
+// Measured 2026-09-02 on this tree: the suite passed 11/11 runs alone, 6-way
+// concurrent, and 4-way pinned to 4 cores. With EIGHT full suites at once, this
+// file took 138s (vs ~17s alone) and `does not advertise models a --only run
+// will not touch` — which spawns two CLIs and has no explicit budget — timed out
+// at exactly 30,000ms in 3 of 8 runs. Most tests here already pass an explicit
+// `}, 60_000)`; that one did not, which is the whole bug. Setting the budget for
+// the file removes the requirement to remember.
+//
+// 120s is a HANG detector, not a performance assertion. Nothing in this file has
+// ever been caught by a timeout that was not simply a busy machine.
+vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
 
 /**
  * Every grader-side module the orchestrator loads from its OWN dist. If any is

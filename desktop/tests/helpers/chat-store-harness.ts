@@ -59,7 +59,10 @@ export function makeStoreWrapper(sessionIds: string[] = []): {
     return React.createElement(
       ChatProvider,
       null,
-      React.createElement(Capture, { handle, sessionIds }, children),
+      // `children` goes IN the props object, not as createElement's third
+      // argument: Capture declares it as a required prop, and the third-argument
+      // overload does not satisfy a required `children` in the props type.
+      React.createElement(Capture, { handle, sessionIds, children }),
     );
   }
   return { wrapper: Wrapper, store: handle };
