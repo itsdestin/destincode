@@ -26,7 +26,7 @@ Most features work on both platforms automatically because the UI is shared. Onl
 2. **Desktop side** (`youcoded/desktop/src/main/ipc-handlers.ts`): Add `ipcMain.handle(IPC.CHANNEL, handler)` for request-response, or `ipcMain.on()` for fire-and-forget
 3. **Android side** (`youcoded/app/.../runtime/SessionService.kt`): Add a `when` case in `handleBridgeMessage()` matching the same type string. Respond with `bridgeServer.respond(ws, msg.type, msg.id, payload)` if `msg.id` is present
 
-The message type string (e.g., `"skills:install"`) must be **identical across all three files**. `SessionService.handleBridgeMessage()` currently has ~136 message types.
+The message type string (e.g., `"skills:install"`) must be **identical across all three files**. `SessionService.handleBridgeMessage()` currently has ~200 `when` branches.
 
 ## Critical parity requirement
 
@@ -59,12 +59,12 @@ All popups, modals, drawers, and floating menus share a single set of theme-driv
 | L0 | Content | — | — | App chrome (chat, header, input, status) |
 | L1 | Drawer | 40 | 50 | SettingsPanel, CommandDrawer, ResumeBrowser |
 | L2 | Popup | 60 | 61 | PreferencesPopup, ModelPickerPopup, ShareSheet, ThemeShareSheet, SkillEditor, StatusBar WidgetConfigPopup, ShortcutsPopup |
-| L3 | Critical | 70 | 71 | Destructive confirmations (no instances yet) |
+| L3 | Critical | 70 | 71 | Destructive confirmations (DiscardConfirmDialog, DonateConfirm, ProjectView delete, ModelProvidersPopup, SyncPanel, ModelPickerPopup) |
 | L4 | System | 100 | 100 | Toasts, always-visible indicators |
 
-**Exception:** `SessionStrip` dropdown lives at `z-[9000]`. It's load-bearing — `.header-bar`'s `backdrop-filter` creates a stacking context that would trap lower z-index values. Don't "fix" it. `ProjectHero` and `OverflowMenu` also use `z-[9000]`; `ProjectView` sits one tier below at `z-[8000]`.
+**Exception:** `SessionStrip` dropdown lives at `z-[9000]`. It's load-bearing — `.header-bar`'s `backdrop-filter` creates a stacking context that would trap lower z-index values. Don't "fix" it. `OverflowMenu` also uses `z-[9000]`; `ProjectHero` moved to L4 and `ProjectView` is a `z-40` screen layer (the `z-[8000]` comment in App.tsx is stale).
 
-**Popover escape tier:** a floating menu/panel *spawned from* one of those z-9000 hosts must render above its host, or it lands behind it and is unclickable. Use the named `POPOVER_Z` constant (`= 9001`) from `components/overlays/Overlay.tsx` — never a hand-rolled `9001`. `FolderSwitcher`'s panel uses it directly; `Select` opts in via its `escapeHost` prop (used by the RuntimeBinding provider/model dropdowns inside the SessionStrip new-session form). Because these popovers portal to `document.body`, host menus' `contains()` outside-click checks can't see them — they're marked (`data-folder-switcher-portal` / `data-select-portal`) so the host (and sibling Selects) don't close on a mousedown that actually landed inside the popover.
+**Popover escape tier:** a floating menu/panel *spawned from* one of those z-9000 hosts must render above its host, or it lands behind it and is unclickable. Use the named `POPOVER_Z` constant (`= 9001`) from `components/overlays/Overlay.tsx` — never a hand-rolled `9001`. `FolderSwitcher`'s panel and `ModelPicker` (its filter menu at `POPOVER_Z + 1`) use it directly; `Select` offers an `escapeHost` prop for the same case (no production caller today, so RuntimeBinding's dropdowns inside the SessionStrip new-session form). Because these popovers portal to `document.body`, host menus' `contains()` outside-click checks can't see them — they're marked (`data-folder-switcher-portal` / `data-select-portal`) so the host (and sibling Selects) don't close on a mousedown that actually landed inside the popover.
 
 ### Primitives
 
@@ -84,8 +84,7 @@ For anchored popovers that don't need a scrim (dropdowns, context menus, info to
 Computed in `theme-engine.ts` from existing theme color tokens; no new manifest fields required:
 
 - `--scrim`, `--scrim-heavy` — theme-tinted backdrop (derived from `canvas`, not cold `bg-black/40`)
-- `--overlay-bg` — opaque `--panel` normally, semi-transparent `rgba(panel, 0.85)` under glassmorphism
-- `--overlay-blur` — `0px` normally, `16px` under glassmorphism, `0px` in reduced-effects mode
+- `--panels-opacity` / `--panels-blur` — emitted by `theme-engine.ts`; `.layer-surface` mixes `--panel` with `--panels-opacity` and blurs by `--panels-blur` (0 in reduced-effects mode). (`--overlay-bg`/`--overlay-blur` no longer exist; one stale comment in `globals.css` still names them.)
 - `--shadow-strength` — adapts to theme lightness (stronger on light themes)
 - `--destructive`, `--destructive-dim` — destructive-variant border/ring for L3
 

@@ -66,7 +66,7 @@ Guard: `desktop/tests/engine-auto-update.test.ts`.
 Exact router-mode arg list (no `-m`):
 ```
 --host 127.0.0.1 --port <ENGINE_PORT> --no-webui --jinja
---models-dir <cacheDir> --models-max 2 -c <contextSize>
+--models-dir <cacheDir> --models-max 2 -c <contextSize> --sleep-idle-seconds 300
 ```
 - **`--models-dir <cacheDir>` is LOAD-BEARING.** It is what makes the router
   DISCOVER manually-placed GGUFs and auto-load them by filename id. Verified
@@ -140,7 +140,7 @@ Observed b9992 shape:
 - **No `size` field** on `/models` rows — `sizeBytes` comes from the cache scan,
   merged in by id (the loading banner needs the model size).
 - **Per-model state polling (2026-07-14):** the supervisor polls `GET /models`
-  every ~1.5s while running and emits `models-changed` only on an (id→state)
+  every 1.5 s while running (400 ms while a load is in flight) and emits `models-changed` only on an (id→state)
   diff (llama-server has no push channel). `ipc-handlers` joins this with the
   session→model ref-count and pushes `native:model-state` per session → the
   ChatView unloaded/loading banner. Cheap localhost GET; timer is `.unref()`'d.
@@ -172,9 +172,10 @@ context window.
   request carrying `tools: [...]` + `tool_choice: 'auto'` returns a
   `choices[0].message.tool_calls[]` whose `function.arguments` is a **JSON string**
   (parse it, don't read it as an object) matching the tool's `parameters` schema.
-- **`parallel_tool_calls: false` pins serial-only tool use.** The harness executes
-  one tool at a time (transcript + permission flow assume a single in-flight tool),
-  so the request disables parallel calls rather than reconciling a fan-out.
+- **`parallel_tool_calls: false` pins serial-only tool use — when the caller asks for it.** The
+  harness passes `serialToolCalls` for the tiers that execute one tool at a time (transcript +
+  permission flow assume a single in-flight tool), and `provider-registry.ts` sets the flag only
+  then, rather than reconciling a fan-out.
 - **Never-force invariant:** with `tool_choice: 'auto'` a plain-text prompt must come
   back with NO `tool_calls` — the model answers in `message.content`. A build that
   force-calls a tool on ordinary text would break normal chat; the probe asserts
@@ -299,10 +300,10 @@ one Qwen3.8-Flash-Next download, three of which 500'd (2026-08-27).
 **Measured 2026-08-12** on the Linux dev box against a system-installed
 `llama-server` (`version: 9957 (c4ae9a88f8)`, i.e. build `b9957` — NOT the app's
 pinned `b9992`; this was the only binary available on this machine, so results
-are directionally useful but should be re-checked against `b9992` before being
+are directionally useful but should be re-checked against the current pin (`b10665`) before being
 treated as final). Server launched manually on an isolated port (8199, separate
 from the live app's engine on 9920) with the supervisor's exact router-mode arg
-list (`engine-supervisor.ts:285-306`), `-c 8192` (shrunk from the real default
+list (`engine-supervisor.ts:290-309`), `-c 8192` (shrunk from the real default
 32768 only to keep iteration fast on this box), against `Qwen3.5-2B-Q8_0`
 (the smallest model in `~/.cache/llama.cpp`). `desktop/test-engine/probe-parallel.mjs`
 fires N simultaneous short chat completions (`max_tokens: 24`) for N in {1, 2, 4}
@@ -333,7 +334,7 @@ process started and served normally. Numbers are consistent with Run 1 within
 noise, confirming the "auto" default and an explicit `--parallel 4` behave the
 same on this build/hardware (4 slots either way).
 
-**Decision:** `LOCAL_MAX_CONCURRENT_SPECIALISTS = 4` — at N=4, avg per-request
+**Decision:** `HOSTED_MAX_CONCURRENT_SPECIALISTS = 4` (`harness/specialists/limits.ts`) — at N=4, avg per-request
 latency (~939–1188 ms) is ≤ 2× the single-request baseline (~558–642 ms) in
 both runs (ratio ≈ 1.7–1.85×), the largest of the tested N values that clears
 that bar. N=2 batches cleanly (avg per-request latency actually *dropped*
