@@ -10,7 +10,7 @@ import {
   HISTORY_EXPAND_PROMPT_ID,
   abnormalStopReason,
 } from './chat-types';
-import { SubagentSegment, SpecialistNote, ToolCallState, ToolGroupState } from '../../shared/types';
+import { SubagentSegment, SpecialistNote, SpecialistRunView, ToolCallState, ToolGroupState } from '../../shared/types';
 import { pageEventToAction } from './transcript-page-actions';
 import { addTurnUsage, addSubagentUsage, addPatchLines, mergeTotals } from './session-totals';
 
@@ -71,6 +71,15 @@ function stableStringify(value: unknown): string {
   const obj = value as Record<string, unknown>;
   const keys = Object.keys(obj).sort();
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
+}
+
+/** The run view MINUS its ordering stamp. ROADMAP L259: `seq` changes on every
+ *  projection by design, so it must not take part in the "did anything
+ *  actually change" comparison that absorbs a delivery cycle's four
+ *  byte-identical pushes. */
+function withoutSeq(run: SpecialistRunView): Omit<SpecialistRunView, 'seq'> {
+  const { seq: _seq, ...rest } = run;
+  return rest;
 }
 
 /** A streamed chunk that is nothing but whitespace (or empty). */
@@ -616,12 +625,17 @@ function findSpecialistCard(
  *
  * Task 11 judgment call (kept over the plan's "drop every note segment and
  * rebuild wholesale from run.notes"): a rebuild has no way to tell a stale,
- * out-of-order run event from the latest one — SpecialistRunView carries no
- * sequence/version field — so a stale resend landing after a newer live
- * update (a plausible replay-then-live race; see the reducer test of the same
- * name) would silently DELETE a note row already on screen. Append-by-id can
- * only ever grow the list, so a resend with fewer notes can't regress one
- * already shown. Trade-off: a note removed or edited server-side would not be
+ * out-of-order run event from the latest one, so a stale resend landing after
+ * a newer live update (a plausible replay-then-live race; see the reducer test
+ * of the same name) would silently DELETE a note row already on screen.
+ * Append-by-id can only ever grow the list, so a resend with fewer notes can't
+ * regress one already shown.
+ *
+ * ROADMAP L259 has since given SpecialistRunView a monotonic `seq`, and the
+ * reducer now drops a straggler before it reaches here — so the rebuild is no
+ * longer structurally impossible. It stays append-by-id anyway: `seq` is
+ * absent on a card replayed from an older build, and append-by-id is safe
+ * with or without a stamp. Trade-off: a note removed or edited server-side would not be
  * reflected here — accepted, because SpecialistNote's own contract is an
  * append-only steer history (never mutated after being written).
  *
@@ -2276,7 +2290,28 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // and returning the SAME state object when nothing actually changed.
       // stableStringify (key-order-independent) is this file's existing
       // idiom for structural comparison — reused rather than adding a deps.
-      if (card.specialistRun && stableStringify(action.run) === stableStringify(card.specialistRun)) {
+      //
+      // ROADMAP L259: `seq` is bumped on EVERY projection, so it must be
+      // excluded from that structural comparison or the short-circuit above
+      // would never fire again. It is compared separately, just below.
+      if (card.specialistRun && stableStringify(withoutSeq(action.run)) === stableStringify(withoutSeq(card.specialistRun))) {
+        return state;
+      }
+      // ROADMAP L259: every push overwrites the WHOLE run record, and until
+      // now the reducer applied whichever arrived LAST — so a stale
+      // specialists:event landing after a newer one for the same run (a
+      // replay-then-live race, or a slow IPC hop) could revert a card that
+      // already read "completed" back to "running", with nothing later to
+      // correct it. `seq` is monotonic per projection, so an incoming view
+      // that is not strictly newer than what the card holds is a straggler.
+      // Both sides must carry a stamp: a card replayed from a build without
+      // one cannot be ordered, and refusing an update there would freeze it.
+      if (
+        card.specialistRun
+        && action.run.seq !== undefined
+        && card.specialistRun.seq !== undefined
+        && action.run.seq <= card.specialistRun.seq
+      ) {
         return state;
       }
       const toolCalls = new Map(session.toolCalls);

@@ -6,6 +6,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as fs from 'fs'; import * as os from 'os'; import * as path from 'path';
 import { NativeHome } from '../src/main/native-home';
 import { DelegationLedger, OWNER, isOwnerAlive, toRunView, type DelegationRecord } from '../src/main/harness/specialists/delegation-ledger';
+import { MISSED_STEERS_MAX_ENTRIES } from '../src/main/harness/specialists/delegation-ledger';
+import { SPECIALIST_NOTE_MAX_CHARS } from '../src/main/harness/specialists/limits';
 import type { SpecialistNote } from '../src/shared/types';
 
 let home: NativeHome; let ledger: DelegationLedger; let dir: string;
@@ -443,6 +445,53 @@ describe('DelegationLedger', () => {
     expect(rec?.notes).toEqual([note]);
   });
 
+  // ROADMAP L264: missedSteers was the last unbounded field in a file that is
+  // read-modify-written in full on every status-block read. Both bounds are
+  // applied INSIDE the mutate callback, so all three append paths get them.
+  describe('missedSteers is bounded (ROADMAP L264)', () => {
+    it('clamps each parked steer to the note cap, on every append path', async () => {
+      const long = 'x'.repeat(SPECIALIST_NOTE_MAX_CHARS + 500);
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1' }));
+
+      await ledger.appendMissedSteers(CWD, 'p1', 'c1', [long]);
+      await ledger.update(CWD, 'p1', 'c1', {}, [long]);
+      await ledger.updateIfRunning(CWD, 'p1', 'c1', {}, [long]);
+
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.missedSteers).toHaveLength(3);
+      for (const s of rec!.missedSteers) expect(s).toHaveLength(SPECIALIST_NOTE_MAX_CHARS);
+    });
+
+    it('keeps the most recent MISSED_STEERS_MAX_ENTRIES and drops the oldest', async () => {
+      await ledger.recordStart(CWD, 'p1', makeRecord({ childId: 'c1' }));
+      // One at a time, which is how the loop this guards against actually
+      // arrives — and proves the bound is re-applied on every append, not
+      // only when a single call oversteps it.
+      for (let i = 0; i < MISSED_STEERS_MAX_ENTRIES + 5; i++) {
+        await ledger.appendMissedSteers(CWD, 'p1', 'c1', [`steer-${i}`]);
+      }
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.missedSteers).toHaveLength(MISSED_STEERS_MAX_ENTRIES);
+      expect(rec?.missedSteers[0]).toBe('steer-5');
+      expect(rec?.missedSteers.at(-1)).toBe(`steer-${MISSED_STEERS_MAX_ENTRIES + 4}`);
+    });
+
+    it('leaves an oversized record already on disk readable, and shortens it on the next append', async () => {
+      // Clamped on write only — no FILE_VERSION bump, so a record written
+      // before this change must still load rather than being rejected.
+      await ledger.recordStart(CWD, 'p1', makeRecord({
+        childId: 'c1',
+        missedSteers: Array.from({ length: 60 }, (_, i) => `old-${i}`),
+      }));
+      expect(ledger.listFor(CWD, 'p1')[0].missedSteers).toHaveLength(60);
+
+      await ledger.appendMissedSteers(CWD, 'p1', 'c1', ['new']);
+      const rec = ledger.listFor(CWD, 'p1').find((r) => r.childId === 'c1');
+      expect(rec?.missedSteers).toHaveLength(MISSED_STEERS_MAX_ENTRIES);
+      expect(rec?.missedSteers.at(-1)).toBe('new');
+    });
+  });
+
   it('toRunView strips delivery bookkeeping and carries notes/model/steps/stale', () => {
     const note: SpecialistNote = { text: 'steer', from: 'user', at: 1 };
     const rec: DelegationRecord = makeRecord({
@@ -466,7 +515,11 @@ describe('DelegationLedger', () => {
 
     const view = toRunView(rec);
 
-    expect(view).toEqual({
+    // ROADMAP L259: `seq` is an ORDERING stamp, not part of the record — it is
+    // minted fresh on every projection, so this comparison asserts the field
+    // set minus that one, then checks the stamp separately below.
+    const { seq, ...projected } = view;
+    expect(projected).toEqual({
       childId: 'c1',
       parentToolCallId: 'tc-1',
       agentType: 'explorer',
@@ -481,6 +534,10 @@ describe('DelegationLedger', () => {
       model: { label: 'Sonnet 5', via: 'named', fallback: false },
       notes: [note],
     });
+    // Monotonic, and it advances on every projection — that is what lets the
+    // reducer tell a straggler from a real update.
+    expect(seq).toBeGreaterThan(0);
+    expect(toRunView(rec).seq!).toBeGreaterThan(seq!);
     // Delivery bookkeeping must not leak into the renderer's view.
     expect((view as unknown as Record<string, unknown>).delivered).toBeUndefined();
     expect((view as unknown as Record<string, unknown>).injectionAttempted).toBeUndefined();

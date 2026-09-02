@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, readdirSync, utimesSync, promises as fsp } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { casWrite } from '../../src/main/artifacts/cas-write';
+import { casWrite, CAS_REPLACE_ANY } from '../../src/main/artifacts/cas-write';
 
 describe('casWrite', () => {
   let dir: string;
@@ -148,5 +148,74 @@ describe('casWrite — head probe before whole-file read', () => {
     const result = await casWrite(target, 'stale', '{"updatedAt":"x"}', (json) => JSON.parse(json).updatedAt);
     expect(result.committed).toBe(false);
     expect(result.actualUpdatedAt).toBe('2026-05-05T00:00:00Z');
+  });
+
+  // ROADMAP L696. Two first-ever writes in a project each found no sidecar,
+  // each wrote a fresh page-one, and the second silently overwrote the first —
+  // both reporting committed: true, one record gone with no error.
+  describe('null expects ABSENCE, not "write regardless" (ROADMAP L696)', () => {
+    it('refuses the write when a file appeared after the caller read nothing', async () => {
+      const target = join(dir, 'race.json');
+      // The other writer got there first.
+      writeFileSync(target, '{"updatedAt":"2026-01-01T00:00:00Z","artifacts":["theirs"]}');
+
+      const result = await casWrite(target, null, '{"updatedAt":"2026-01-01T00:00:01Z","artifacts":["mine"]}', probe);
+
+      expect(result.committed).toBe(false);
+      // Their record survives — that is the whole point.
+      expect(readFileSync(target, 'utf8')).toContain('theirs');
+    });
+
+    it('still refuses when the existing file has no comparand at all', async () => {
+      // An unreadable/garbage file is still a file. Only CAS_REPLACE_ANY may
+      // overwrite one, and a creating writer is not that.
+      const target = join(dir, 'garbage.json');
+      writeFileSync(target, 'not json at all');
+      const result = await casWrite(target, null, '{"v":1}', probe);
+      expect(result.committed).toBe(false);
+      expect(readFileSync(target, 'utf8')).toBe('not json at all');
+    });
+
+    it('needs no extractor to do it — creation has nothing to compare', async () => {
+      const target = join(dir, 'noextract.json');
+      writeFileSync(target, '{"updatedAt":"2026-01-01T00:00:00Z"}');
+      expect((await casWrite(target, null, '{"v":1}')).committed).toBe(false);
+    });
+
+    it('still creates normally when nothing is there', async () => {
+      const target = join(dir, 'fresh.json');
+      expect((await casWrite(target, null, '{"v":1}', probe)).committed).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('{"v":1}');
+    });
+  });
+
+  describe('CAS_REPLACE_ANY overwrites deliberately (ROADMAP L696)', () => {
+    it('replaces a corrupt file the extractor cannot read', async () => {
+      const target = join(dir, 'corrupt.json');
+      writeFileSync(target, '{"updatedAt": trunc');
+      const result = await casWrite(target, CAS_REPLACE_ANY, '{"updatedAt":"2026-02-02T00:00:00Z"}', probe);
+      expect(result.committed).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('{"updatedAt":"2026-02-02T00:00:00Z"}');
+    });
+
+    it('replaces a perfectly readable file too — it is an explicit override, not a fallback', async () => {
+      const target = join(dir, 'fine.json');
+      writeFileSync(target, '{"updatedAt":"2026-01-01T00:00:00Z"}');
+      expect((await casWrite(target, CAS_REPLACE_ANY, '{"v":2}', probe)).committed).toBe(true);
+      expect(readFileSync(target, 'utf8')).toBe('{"v":2}');
+    });
+
+    it('creates the file when there is nothing to replace', async () => {
+      const target = join(dir, 'absent.json');
+      expect((await casWrite(target, CAS_REPLACE_ANY, '{"v":1}', probe)).committed).toBe(true);
+    });
+  });
+
+  it('a string expectation is refused when the file has vanished', async () => {
+    // Amending something that is no longer there must not silently re-create it.
+    const target = join(dir, 'gone.json');
+    const result = await casWrite(target, '2026-01-01T00:00:00Z', '{"v":1}', probe);
+    expect(result.committed).toBe(false);
+    expect(existsSync(target)).toBe(false);
   });
 });

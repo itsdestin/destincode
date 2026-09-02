@@ -1977,6 +1977,41 @@ describe('HarnessSession — empty final step recovery', () => {
     expect(cleared.map((e) => e.data.toolPreparing.toolCallId)).toEqual(['c1']);
   });
 
+  it('ROADMAP L241: an orphan preparing card is withdrawn on a step that ALSO ran a real tool', async () => {
+    // The mixed step: one call the model completed (c1, executes normally) and
+    // one it announced and then dropped (c2, tool-input-start with no
+    // completed tool-call). Before this fix the withdrawal only ran on the
+    // empty-step RETRY path, and endTurn's reaping only fires at turn end — so
+    // c2's "Preparing…" card spun beside c1's real card for the rest of the
+    // turn.
+    const read = fakeTool('Read', { schema: z.object({ file_path: z.string() }).strict(), onExecute: () => ({ text: 'contents' }) });
+    const model = scriptedModel([
+      stream(
+        ...toolInputChunks('c2', 'Write', '{"file_pa'),          // announced, never completed
+        toolCallChunk('c1', 'Read', { file_path: 'x.ts' }),      // the real one
+        finishChunk('tool-calls'),
+      ),
+      stream(...textChunks('a', 'done'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+
+    const cleared = events.filter((e) => e.type === 'assistant-thinking' && e.data.toolPreparing?.cleared);
+    expect(cleared.map((e) => e.data.toolPreparing.toolCallId)).toEqual(['c2']);
+
+    // …and the withdrawal lands BEFORE the real card goes up, so the two never
+    // share the screen.
+    const clearedAt = events.findIndex((e) => e.type === 'assistant-thinking' && e.data.toolPreparing?.cleared);
+    const useAt = events.findIndex((e) => e.type === 'tool-use');
+    expect(clearedAt).toBeGreaterThanOrEqual(0);
+    expect(clearedAt).toBeLessThan(useAt);
+
+    // The real call still ran — the withdrawal must not touch a completed call,
+    // whose card transitions in place under the same id.
+    expect(events.filter((e) => e.type === 'tool-result')).toHaveLength(1);
+  });
+
   it('G-1: BashOutput is exempt from the doom-loop window — nine identical polls raise no ask, the 9th hits the per-turn cap', async () => {
     const poll = fakeTool('BashOutput', { schema: z.object({ shell_id: z.string().optional() }).strict(), onExecute: () => ({ text: 'sh-1 · running · 1s\nline' }) });
     const calls = Array.from({ length: 9 }, (_, i) => stream(toolCallChunk(`c${i}`, 'BashOutput', { shell_id: 'sh-1' }), finishChunk('tool-calls')));

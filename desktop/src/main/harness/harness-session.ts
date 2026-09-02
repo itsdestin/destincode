@@ -874,6 +874,31 @@ export class HarnessSession extends EventEmitter {
     this.emit('transcript-event', event);
   }
 
+  /**
+   * Take down the "Preparing…" cards for calls the model announced and then
+   * never actually made (a malformed or truncated call). `pendingPreparing` is
+   * already the orphans-only set — a call that COMPLETED keeps its preparing
+   * entry, because the card transitions in place under the same id, so the
+   * filter that builds this list drops those.
+   *
+   * ROADMAP L241: both step-level withdrawal sites route through here rather
+   * than repeating the emit. They were one shape written once, and the second
+   * one was simply missing — the empty-step retry withdrew its orphans while a
+   * step that ALSO contained a real tool call did not, leaving a card spinning
+   * next to live ones until the turn ended. A shared method is what stops the
+   * next path from missing it too.
+   *
+   * No-op in the common case (the list is empty). Not needed where the TURN is
+   * ending — endTurn reaps everything still standing.
+   */
+  private withdrawOrphanedPreparing(orphans: StepResult['pendingPreparing']): void {
+    for (const prep of orphans) {
+      this.emitEvent('assistant-thinking', {
+        toolPreparing: { toolCallId: prep.toolCallId, toolName: prep.toolName, chars: prep.chars, cleared: true },
+      });
+    }
+  }
+
   /** Append any project rules / nested project instructions that the paths this
    *  step touched activate (M3 item 3).
    *
@@ -1971,11 +1996,7 @@ export class HarnessSession extends EventEmitter {
             // manual-Retry and stall-retry paths withdraw theirs; the
             // empty_response break below needs no withdrawal — the turn ends
             // there and endTurn reaps.)
-            for (const prep of step.pendingPreparing) {
-              this.emitEvent('assistant-thinking', {
-                toolPreparing: { toolCallId: prep.toolCallId, toolName: prep.toolName, chars: prep.chars, cleared: true },
-              });
-            }
+            this.withdrawOrphanedPreparing(step.pendingPreparing);
             // One structured log line so the silent retry is diagnosable from
             // ~/.claude/desktop.log (console.error reaches nobody in a packaged
             // build) — deliberately NOT a transcript event (emit surface frozen).
@@ -2011,6 +2032,15 @@ export class HarnessSession extends EventEmitter {
         // cards appear up front, results attach by toolUseId (CC's parallel-call
         // behavior). The frozen emit surface is untouched — same event types and
         // fields, only intra-step ordering changes.
+        // ROADMAP L241: a step can hold BOTH a real tool call and an
+        // announced-then-dropped one (a malformed second call). The empty-step
+        // retry above is the only place that used to withdraw an orphan, and
+        // endTurn's reaping only runs at turn end — so on this path the dead
+        // "Preparing…" card span beside real tool execution for the rest of the
+        // turn. Withdraw before the live cards go up, so the orphan never
+        // shares the screen with them.
+        this.withdrawOrphanedPreparing(step.pendingPreparing);
+
         for (const call of step.toolCalls) {
           this.emitEvent('tool-use', { toolUseId: call.toolCallId, toolName: call.toolName, toolInput: call.input });
         }

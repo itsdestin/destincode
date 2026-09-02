@@ -9,6 +9,55 @@ import kotlin.test.assertTrue
 
 class ArtifactStoreTest {
 
+    // ROADMAP L696 — the Android half of the same fix. `null` used to mean
+    // "write regardless" on the create path, so a second creator silently
+    // overwrote the first's record. It now means "the file must not exist".
+    @Test
+    fun aCreatingWriteIsRefusedWhenTheSidecarAlreadyExists() {
+        val projectRoot = Files.createTempDirectory("kt-as-race-").toFile()
+        try {
+            // Stand in for the other writer having won the race.
+            assertTrue(appendVersion(projectRoot.absolutePath, "p1", "test",
+                AppendVersionInput("theirs.md", "internal", null, "s1", "create", "agent")))
+
+            // A writer that read Missing BEFORE that landed still holds
+            // expectedUpdatedAt = null. Its write must be refused, not applied.
+            val fresh = ProjectSidecar(projectId = "p1", name = "test",
+                createdAt = "2026-01-01T00:00:00Z", updatedAt = "2026-01-01T00:00:00Z")
+            assertTrue(!writeSidecar(projectRoot.absolutePath, null, fresh),
+                "A null expectation must REQUIRE the file to be absent")
+
+            // Their record survives — that is the whole point.
+            val after = readSidecar(projectRoot.absolutePath)
+            assertTrue(after is ReadResult.Ok)
+            assertEquals(listOf("theirs.md"), (after as ReadResult.Ok).sidecar.artifacts.map { it.path })
+        } finally {
+            projectRoot.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun aCorruptSidecarIsStillReplaced() {
+        // The other half of splitting null: corruption recovery deliberately
+        // overwrites, so it must not be caught by the must-not-exist rule.
+        val projectRoot = Files.createTempDirectory("kt-as-corrupt-").toFile()
+        try {
+            val dir = java.io.File(projectRoot, ".youcoded")
+            dir.mkdirs()
+            java.io.File(dir, "artifacts.json").writeText("{ this is not json")
+
+            assertTrue(appendVersion(projectRoot.absolutePath, "p1", "test",
+                AppendVersionInput("a.md", "internal", null, "s1", "create", "agent")),
+                "corruption recovery must still commit")
+
+            val after = readSidecar(projectRoot.absolutePath)
+            assertTrue(after is ReadResult.Ok)
+            assertEquals(listOf("a.md"), (after as ReadResult.Ok).sidecar.artifacts.map { it.path })
+        } finally {
+            projectRoot.deleteRecursively()
+        }
+    }
+
     @Test
     fun roundTripsSidecar() {
         val projectRoot = Files.createTempDirectory("kt-as-").toFile()

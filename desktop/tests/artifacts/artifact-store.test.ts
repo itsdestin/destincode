@@ -124,6 +124,72 @@ describe('appendVersion', () => {
     expect(sidecar.artifacts).toHaveLength(3);
   });
 
+  // ROADMAP L696: the CREATION sibling of the same-millisecond ABA race below.
+  // The update path has been CAS-guarded since PR #198, but the create path
+  // was not: two writers that both found NO sidecar each built a fresh
+  // page-one and the second silently overwrote the first, both reporting
+  // committed: true. Window is narrow (it needs the first-ever two artifact
+  // writes in a project to land together) but the loss is invisible and
+  // permanent, so this loops.
+  it('two concurrent FIRST-EVER writes lose no record (ROADMAP L696)', async () => {
+    // THREE iterations, not the 60 its ABA sibling below needs. That one races a
+    // millisecond-resolution timestamp and only loses a record when both writes
+    // land in the same tick; this one is deterministic — both callers await
+    // readSidecar before either writes, so every iteration reproduces it
+    // (verified: it fails on iteration 1 with the guard removed). The extra
+    // iterations bought nothing and cost real filesystem churn — mkdtemp, two
+    // lock-guarded fsync'd writes and a recursive delete apiece — in a suite
+    // that runs in parallel with the FSEvents watcher tests that go red on the
+    // macOS CI leg under exactly that kind of load
+    // (docs/active/investigations/2026-09-01-sync-engine-debounce-macos-flake.md).
+    for (let i = 0; i < 3; i++) {
+      const root = mkdtempSync(join(tmpdir(), 'as-create-race-'));
+      try {
+        // No sidecar exists yet: both calls read null and both build page-one.
+        // appendVersionsDirect, not appendVersion — the latter coalesces
+        // same-process callers into one batch, so it cannot reach this race.
+        // A second YouCoded instance on the same project still can.
+        const [a, b] = await Promise.all([
+          appendVersionsDirect(root, sample.projectId, sample.name, [{
+            path: 'a.md', kind: 'internal', absolutePath: null,
+            sessionId: 's', type: 'create', author: 'agent',
+          }]),
+          appendVersionsDirect(root, sample.projectId, sample.name, [{
+            path: 'b.md', kind: 'internal', absolutePath: null,
+            sessionId: 's', type: 'create', author: 'agent',
+          }]),
+        ]);
+        expect(a[0].committed).toBe(true);
+        expect(b[0].committed).toBe(true);
+        const sidecar = await readSidecar(root) as ProjectSidecar;
+        expect(sidecar.artifacts.map((x) => x.path).sort()).toEqual(['a.md', 'b.md']);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('a corrupt sidecar is still replaced, not refused (ROADMAP L696)', async () => {
+    // The other half of splitting `null`: corruption recovery deliberately
+    // overwrites what is on disk, so it must NOT be caught by the new
+    // must-not-exist rule. Without CAS_REPLACE_ANY this write is refused and
+    // the user is stuck with a broken sidecar forever.
+    const root = mkdtempSync(join(tmpdir(), 'as-corrupt-'));
+    try {
+      mkdirSync(join(root, '.youcoded'), { recursive: true });
+      writeFileSync(join(root, '.youcoded', 'artifacts.json'), '{ this is not json');
+      const [r] = await appendVersionsDirect(root, sample.projectId, sample.name, [{
+        path: 'a.md', kind: 'internal', absolutePath: null,
+        sessionId: 's', type: 'create', author: 'agent',
+      }]);
+      expect(r.committed).toBe(true);
+      const sidecar = await readSidecar(root) as ProjectSidecar;
+      expect(sidecar.artifacts.map((x) => x.path)).toEqual(['a.md']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // Pins the same-millisecond CAS ABA fix. The single-shot case above only
   // caught it ~1 run in 3 (it needs both writes inside one millisecond), which
   // read as a flaky test for months; at 60 iterations the old code loses a

@@ -36,7 +36,10 @@ fun readIndex(claudeDir: String): CentralIndex {
 
 private fun writeIndex(claudeDir: String, index: CentralIndex) {
     // Best-effort write without CAS for v1 — index contention is rare.
-    // null expectedUpdatedAt + null extractor → skip CAS, only atomic write.
+    // ROADMAP L696: this write DOES mean "overwrite whatever is there", and
+    // since that change a bare null means the opposite ("the file must not
+    // exist"). Saying so explicitly is what keeps this an atomic-write-only
+    // path; without the flag every write after the first would be refused.
     val path = File(claudeDir, INDEX_FILE).absolutePath
     val json = index.toJson().toString(2)
     casWrite(
@@ -44,6 +47,7 @@ private fun writeIndex(claudeDir: String, index: CentralIndex) {
         expectedUpdatedAt = null,
         content           = json,
         extractUpdatedAt  = null,
+        replaceAny        = true,
     )
 }
 
