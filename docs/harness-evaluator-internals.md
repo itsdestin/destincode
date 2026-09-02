@@ -44,7 +44,8 @@ Two consequences: the fabrication check in `run-facts.ts` compares claims agains
 must be excluded from the tally, or a whole turn of denied calls pollutes the exact field
 that check treats as ground truth.
 
-Neither has a pinning test. Both are candidates.
+The `send()`-never-rejects half is pinned (`harness-session.test.ts` → "a factory/stream failure
+emits session-error (never a hang)"); the `tool-use`-before-`decide()` half is still a candidate.
 
 ## The wrap-up turn
 
@@ -132,14 +133,19 @@ had already been paid for.
 
 `estimate.ts` runs before anything is spent, and the run is capped by `--max-spend`, which
 is re-checked against OpenRouter's own billing between cells. Input dominates output
-roughly 44:1, because the whole conversation is resent every step.
+heavily because the whole conversation is resent every step — but the ratio is not stable
+(10× to 206× across the measured rows; `estimate.ts` refuses a single multiplier for that
+reason), so never price from one).
 
 **It is biased high on purpose, and you need to know by how much.** A cell is priced from
 the **MAX** of that case's measured samples, never the mean: under-predicting spends money
 the operator did not agree to, and a single agentic run's cost is not stable — Qwen 3.8 Max
 used 342,207 input tokens on one `config-investigation` run against a 189,087 mean across
 three. That deliberate bias costs about **2.2×**: the six-cell calibration plan estimates
-$3.29 against a real bill of $1.52 (~$0.25 a cell including its judge call).
+$3.29 against a real bill of $1.52 (~$0.25 a cell including its judge call). Since `ebc59c35`
+(2026-09-01) the evaluator also reads OpenRouter's own per-request cost into
+`metrics.providerCostUsd` and prints it per cell beside the estimate, so the gap is measured
+on every paid run rather than hand-copied from one calibration.
 
 It was **~8× high** until 2026-08-13, because the tables were keyed by model alone and every
 number in them came from whole-battery runs (40–63 tool calls) while the prose cases run

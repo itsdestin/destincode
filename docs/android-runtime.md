@@ -26,14 +26,14 @@ SELinux W^X bypass (Android 10+). Three layers, each with a distinct role:
 Use `$HOME/.cache/tmpdir` via `TMPDIR` and `CLAUDE_CODE_TMPDIR`. The specific path (`$HOME/.cache/tmpdir`, not `$HOME/tmp`) avoids Termux Node.js's compiled-in `/tmp` rewriting from double-applying.
 
 ### No glibc
-Bionic only. `native/execve-interceptor.c` is a research artifact, not deployed.
+Bionic only. The `native/execve-interceptor.c` research artifact was deleted in `e94154b3` (never deployed).
 
 ### Go binaries can't exec scripts in `~/.claude-mobile/`
-The `linker64-env.sh` bash wrappers only cover binaries YOU invoke from bash. They do NOT protect a Go binary's OWN `fork/exec` calls: Go issues a raw `SYS_execve` syscall that bypasses termux-exec's LD_PRELOAD intercept (the shim only patches libc `execve`). So any script under `~/.claude-mobile/*` (e.g. an `xdg-open`/`open` shim on PATH, or a helper script) exec'd by a Go child fails with `EACCES` at fork/exec. Hit in the wild by rclone's Google Drive OAuth auto-browser-open — fixed in youcoded `6469e058` (`authGdriveWithBrowserIntent` streams stderr and opens the URL via `PlatformBridge.openUrl` / `Intent.ACTION_VIEW`). Two safe paths for any future Go integration: (1) spawn the Go process FROM bash with the linker64 wrappers so only the Go binary itself runs, and (2) route any URL-open / native UI through `PlatformBridge` or a `CompletableDeferred` native-UI bridge — never a `~/.claude-mobile/` shim. Reference implementation: the rclone fix in `SessionService.kt`.
+The `linker64-env.sh` bash wrappers only cover binaries YOU invoke from bash. They do NOT protect a Go binary's OWN `fork/exec` calls: Go issues a raw `SYS_execve` syscall that bypasses termux-exec's LD_PRELOAD intercept (the shim only patches libc `execve`). So any script under `~/.claude-mobile/*` (e.g. an `xdg-open`/`open` shim on PATH, or a helper script) exec'd by a Go child fails with `EACCES` at fork/exec. Hit in the wild by rclone's Google Drive OAuth auto-browser-open — fixed in youcoded `6469e058` (`authGdriveWithBrowserIntent` streams stderr and opens the URL via `PlatformBridge.openUrl` / `Intent.ACTION_VIEW`). Two safe paths for any future Go integration: (1) spawn the Go process FROM bash with the linker64 wrappers so only the Go binary itself runs, and (2) route any URL-open / native UI through `PlatformBridge` or a `CompletableDeferred` native-UI bridge — never a `~/.claude-mobile/` shim. Reference implementation: the rclone fix, `authGdriveWithBrowserIntent` in `SyncService.kt` (called from `SessionService.kt`).
 
 ## Canonical sources
 
-- `claude-wrapper.js` — canonical at `app/src/main/assets/claude-wrapper.js`. Deployed at every PTY start (inline in `PtyBridge.start()` at `PtyBridge.kt:119-123` — reads the asset and writes it to `$HOME/.claude-mobile/claude-wrapper.js` before each launch). There is no separate `Bootstrap.deployWrapperJs()` method. **Edit the asset file directly.**
+- `claude-wrapper.js` — canonical at `app/src/main/assets/claude-wrapper.js`. Deployed at every PTY start (inline in `PtyBridge.start()` at `PtyBridge.kt:129-132` — reads the asset and writes it to `$HOME/.claude-mobile/claude-wrapper.js` before each launch). There is no separate `Bootstrap.deployWrapperJs()` method. **Edit the asset file directly.**
 
 ## Vendored Termux terminal-emulator
 
@@ -55,13 +55,13 @@ Terminal rendering on Android happens in xterm.js inside the WebView, not in a n
 
 Typing on touch flows through `InputBar` minimal-mode `<textarea>` → `sendInput(text + '\r')`, NOT through xterm's hidden textarea (which is suppressed by `disableStdin`). Special keys (Esc, Tab, Ctrl, ←/→, ↑/↓ scroll buttons) come from `TerminalToolbar` and `TerminalScrollButtons`.
 
-The `screenMode` enum, `viewModeRequest` collector, and `layoutInsets` SharedFlow in `SessionService.kt` still have producers but no Kotlin consumers (the deleted Compose block was their only consumer). They're left in place as a follow-up cleanup — pruning is safe but out of Tier 2 scope.
+The `layoutInsets` SharedFlow in `SessionService.kt` (declared ~:112, emitted ~:1634) still has a producer but no Kotlin consumer (the deleted Compose block was its only consumer); `screenMode` and `viewModeRequest` were removed 2026-07-22 (`ChatScreen.kt:17,21` records it). Pruning `layoutInsets` is safe but was left out of Tier 2 scope — tracked in the workspace `docs/roadmap/android-only.md`.
 
 ## Shared runtime environment
 
 Runtime fixes MUST work in both `PtyBridge` and `DirectShellBridge`. Both share:
-- `Bootstrap.buildRuntimeEnv()` (PtyBridge.kt:106, DirectShellBridge.kt:43)
-- `Bootstrap.deployBashEnv()` (PtyBridge.kt:131, DirectShellBridge.kt:49)
+- `Bootstrap.buildRuntimeEnv()` (PtyBridge.kt:115, DirectShellBridge.kt:43)
+- `Bootstrap.deployBashEnv()` (PtyBridge.kt:140, DirectShellBridge.kt:49)
 
 ## Reactivity
 
@@ -87,7 +87,7 @@ Used by: `dialog:open-file`, `dialog:open-folder`, `android:scan-qr`.
 | `app/.../bridge/LocalBridgeServer.kt` | WebSocket server on :9901, bridges React IPC to Kotlin |
 | `app/.../bridge/PlatformBridge.kt` | Android-native operations (file picker, clipboard, URLs) |
 | `app/.../runtime/Bootstrap.kt` | Package management, environment setup, shell function generation |
-| `app/.../runtime/SessionService.kt` | Main IPC dispatcher — handles ~136 bridge message types |
+| `app/.../runtime/SessionService.kt` | Main IPC dispatcher — ~200 `"ns:verb" ->` branches |
 | `app/.../runtime/PtyBridge.kt` | Claude Code terminal session (PTY + event bridge) |
 | `app/.../runtime/DirectShellBridge.kt` | Standalone bash shell session |
 | `app/.../runtime/ManagedSession.kt` | Session lifecycle, status, approval flow, prompt detection |
@@ -105,7 +105,7 @@ Used by: `dialog:open-file`, `dialog:open-folder`, `android:scan-qr`.
 ### Exec permissions & GitHub auth
 
 - **`~/.claude-mobile/exec-wrappers/*` must be chmod 0755, not 0700.** Java's default `File.setExecutable(true)` gives 0700 under Android's 0077 umask. Those wrappers are exec'd by subprocesses spawned from Go binaries (notably `gh` spawning `git` during `gh auth setup-git`). At 0700 the shebang interpretation path via `/system/bin/sh` fails with EACCES even though the child runs as the same app uid — shebang exec is stricter than a direct `linker64` invocation. Fix: `setReadable(true, false)` + `setExecutable(true, false)` in `Bootstrap.deployBashEnv()`. Wider perms stay inside the uid-isolated app sandbox (`/data/data/<pkg>/`) so nothing new is exposed. Don't "tighten" back to 0700.
-- **Git HTTPS auth uses `~/.netrc`, NOT `gh auth setup-git`.** Go's raw-syscall exec breaks `gh auth setup-git` on Android (it configures git's credential-helper subsystem, which re-spawns processes that can't traverse the exec-wrapper path). Instead the OAuth token from `~/.config/gh/hosts.yml` is mirrored into `~/.netrc` as `machine github.com login x-access-token password <token>` (mode 0600). libcurl reads `.netrc` natively, so `git push` over HTTPS needs no credential-helper exec. Two keepers: `Bootstrap.syncGhTokenToNetrc()` at session-start, and the `gh` bash wrapper's `_youcoded_sync_gh_netrc` post-hook after any `gh auth login/logout/refresh/token/switch`. Add any new gh-auth-changing command to the post-hook's case list. Do NOT reintroduce `gh auth setup-git` anywhere — it fails silently or with EACCES.
+- **Git HTTPS auth uses `~/.netrc`, NOT `gh auth setup-git`.** Go's raw-syscall exec breaks `gh auth setup-git` on Android (it configures git's credential-helper subsystem, which re-spawns processes that can't traverse the exec-wrapper path). Instead the OAuth token from `~/.config/gh/hosts.yml` is mirrored into `~/.netrc` as `machine github.com login x-access-token password <token>` (mode 0600). libcurl reads `.netrc` natively, so `git push` over HTTPS needs no credential-helper exec. Two keepers: `Bootstrap.syncGhTokenToNetrc()` during first-run `Bootstrap.setup()` (skipped on already-bootstrapped installs), and the `gh` bash wrapper's `_youcoded_sync_gh_netrc` post-hook after any `gh auth login/logout/refresh/token/switch`. Add any new gh-auth-changing command to the post-hook's case list. Do NOT reintroduce `gh auth setup-git` anywhere — it fails silently or with EACCES.
 - **`gh auth login --web` polling is flaky — retry once** if it dies with "error connecting to github.com". The device-flow long-poll Go HTTP call sometimes errors mid-poll on Android even when `curl` to github.com works (most likely Go's HTTP/2 client on Android's network stack, not YouCoded's runtime; ~1-of-3 success in the wild). Treat it as a known transient; don't paper over with a retry wrapper in `gh()` (would double-prompt with a new device code). If it worsens, consider `GODEBUG=http2client=0` to force HTTP/1.1 polling.
 
 ### Build-type parity (R8 minification)
@@ -116,4 +116,4 @@ Debug and release Android builds are NOT equivalent. The release flavor enables 
 - **Direct calls always; reflection only when unavoidable.** When unavoidable (third-party libs, generic IPC), add an explicit `-keep` rule in `app/proguard-rules.pro` for the targeted class/methods. Don't rely on `try { reflection } catch { fallback }` — silent fallbacks mask R8-induced failures.
 - **`Bootstrap` has a defensive `-keep` rule** so future code that re-introduces reflection against it can't silently break. Negligible APK cost for one class. Don't remove it without an audit confirming nothing reflects against `Bootstrap`.
 - **`./gradlew :app:assembleReleaseTest` is the parity check** — same R8/shrinker/proguard config as production release, signed with the debug keystore, installs side-by-side as `com.youcoded.app.releasetest` ("YouCoded ReleaseTest", bridge port 9961). Runs automatically on every push via `android-ci.yml` and on demand via `android-test-build.yml`. Run it locally before tagging if you've touched reflection, annotation processing, or any symbol-name-dependent code.
-- **Don't rely on the GitHub runner image for `node`.** Android workflows `setup-node@v4` explicitly so `bundleWebUi` (which shells to `npm` via `scripts/build-web-ui.sh`) doesn't depend on whatever ubuntu-latest ships.
+- **Don't rely on the GitHub runner image for `node`.** Android workflows `setup-node@v7` explicitly so `bundleWebUi` (which shells to `npm` via `scripts/build-web-ui.sh`) doesn't depend on whatever ubuntu-latest ships.
