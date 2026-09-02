@@ -47,6 +47,15 @@ fun casWrite(
     expectedUpdatedAt: String?,
     content:          String,
     extractUpdatedAt: ((String) -> String)? = null,
+    // ROADMAP L696 (mirror of the TS CAS_REPLACE_ANY sentinel). `null` used to
+    // carry TWO meanings — "nothing is there, I am creating" and "something is
+    // there but I mean to replace it" — and the only behaviour available to
+    // both was "write regardless", so two first-ever writes each wrote a fresh
+    // file and the second silently overwrote the first. `null` now REQUIRES
+    // the file to be absent; a writer that means to overwrite says so here.
+    // Default false so a caller that forgets gets the SAFE refusal, not the
+    // clobber.
+    replaceAny:       Boolean = false,
 ): CasResult {
     // Ensure parent directory exists (mirror of fs.mkdir(dirname(target), {recursive:true}))
     Files.createDirectories(target.parent)
@@ -80,8 +89,17 @@ fun casWrite(
     }
 
     try {
-        // CAS check inside the lock — safe from concurrent writes now
-        if (extractUpdatedAt != null) {
+        // ROADMAP L696: the EXISTENCE half, and it needs no extractor — a
+        // creating writer has nothing to compare against, only "is anything
+        // there". Inside the lock, so a file appearing between this check and
+        // the rename below is not possible.
+        if (expectedUpdatedAt == null && !replaceAny) {
+            if (Files.exists(target)) {
+                // Someone else created it while we were building ours. Refuse;
+                // the caller re-reads and merges on its retry.
+                return CasResult(committed = false, actualUpdatedAt = null)
+            }
+        } else if (extractUpdatedAt != null && !replaceAny) {
             try {
                 val onDisk = target.toFile().readText(Charsets.UTF_8)
                 val actual = extractUpdatedAt(onDisk)
@@ -89,15 +107,13 @@ fun casWrite(
                     return CasResult(committed = false, actualUpdatedAt = actual)
                 }
             } catch (e: java.io.FileNotFoundException) {
-                if (expectedUpdatedAt != null) {
-                    return CasResult(committed = false, actualUpdatedAt = null)
-                }
-                // expectedUpdatedAt == null means "create new" — proceed
+                // Reaching here means a SPECIFIC token was expected (the null
+                // case is handled by the branch above) and the file is gone —
+                // whatever this writer was amending no longer exists. Refuse.
+                return CasResult(committed = false, actualUpdatedAt = null)
             } catch (e: java.io.IOException) {
                 if (e.message?.contains("No such file") == true || !target.toFile().exists()) {
-                    if (expectedUpdatedAt != null) {
-                        return CasResult(committed = false, actualUpdatedAt = null)
-                    }
+                    return CasResult(committed = false, actualUpdatedAt = null)
                 } else throw e
             }
         }
@@ -132,9 +148,11 @@ fun casWrite(
     expectedUpdatedAt: String?,
     content:          String,
     extractUpdatedAt: ((String) -> String)? = null,
+    replaceAny:       Boolean = false,
 ): CasResult = casWrite(
     target           = File(target).toPath(),
     expectedUpdatedAt = expectedUpdatedAt,
     content          = content,
     extractUpdatedAt = extractUpdatedAt,
+    replaceAny       = replaceAny,
 )

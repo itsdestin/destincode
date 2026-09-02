@@ -134,6 +134,10 @@ fun writeSidecar(
     projectRoot:       String,
     expectedUpdatedAt: String?,
     next:              ProjectSidecar,
+    // ROADMAP L696: true only for the corruption-recovery path, which means to
+    // overwrite an unreadable sidecar. A plain creation leaves this false so
+    // casWrite refuses if a sidecar appeared underneath it.
+    replaceAny:        Boolean = false,
 ): Boolean {
     val path = File(projectRoot, SIDECAR_RELATIVE).absolutePath
     // Enforced here, not in callers, so every Android sidecar writer inherits
@@ -144,9 +148,13 @@ fun writeSidecar(
         target            = path,
         expectedUpdatedAt = expectedUpdatedAt,
         content           = json,
-        // Skip CAS extractor when expectedUpdatedAt is null (creation path)
+        // ROADMAP L696: the extractor goes in whenever there is a token to
+        // compare. It used to be dropped for a null expectation, which turned
+        // the whole check off — casWrite now decides, and for a null
+        // expectation it does a cheap existence check that reads nothing.
         extractUpdatedAt  = if (expectedUpdatedAt == null) null
                             else { raw -> JSONObject(raw).getString("updatedAt") },
+        replaceAny        = replaceAny,
     )
     return result.committed
 }
@@ -179,7 +187,11 @@ fun appendVersion(
     input:       AppendVersionInput,
 ): Boolean {
     for (attempt in 0 until MAX_RETRIES) {
-        val (sidecar, expectedUpdatedAt) = when (val current = readSidecar(projectRoot)) {
+        // ROADMAP L696: Missing and Corrupted are NOT the same write. Missing
+        // means create, and must be refused if a sidecar appeared while we
+        // built this one (the lost-record race). Corrupted means a file IS
+        // there and replacing it is the point, so it opts in explicitly.
+        val (sidecar, expectedUpdatedAt, replaceAny) = when (val current = readSidecar(projectRoot)) {
             is ReadResult.Missing, is ReadResult.Corrupted -> {
                 val now = Instant.now().toString()
                 val fresh = ProjectSidecar(
@@ -188,9 +200,9 @@ fun appendVersion(
                     createdAt = now,
                     updatedAt = now,
                 )
-                fresh to null  // expectedUpdatedAt == null → creation
+                Triple(fresh, null, current is ReadResult.Corrupted)
             }
-            is ReadResult.Ok -> current.sidecar to current.sidecar.updatedAt
+            is ReadResult.Ok -> Triple(current.sidecar, current.sidecar.updatedAt, false)
         }
 
         val existing = sidecar.artifacts.find { it.path == input.path && it.kind == input.kind }
@@ -235,7 +247,7 @@ fun appendVersion(
         }
         sidecar.updatedAt = now
 
-        if (writeSidecar(projectRoot, expectedUpdatedAt, sidecar)) return true
+        if (writeSidecar(projectRoot, expectedUpdatedAt, sidecar, replaceAny)) return true
 
         // CAS conflict — backoff mirrors TS: sleep(10 * (attempt + 1))
         if (attempt < MAX_RETRIES - 1) {
