@@ -151,10 +151,13 @@ describe('AssistantTurnBubble — Skill extraction', () => {
     expect(container.innerHTML).toContain('Invoked skill: brainstorming');
   });
 
-  it('stacks multiple Skills in invocation order at the end', () => {
+  it('stacks multiple Skills into ONE card, in invocation order, at the end', () => {
+    // Destin, 2026-09-02 (bubble-grouping deck B-7): two or more skills in a
+    // turn read as a single "Invoked 2 skills: one and two" card rather than
+    // one card per invocation. Still after every other tool.
     const turn = makeTurn({ groupIds: ['g1'] });
     const toolGroups = new Map<string, ToolGroupState>([
-      // Order: Skill, Bash, Skill — final render: Bash, Skill1, Skill2
+      // Order: Skill, Bash, Skill — final render: Bash, then the stacked card
       ['g1', { id: 'g1', toolIds: ['s1', 'b1', 's2'] }],
     ]);
     const toolCalls = new Map<string, ToolCallState>([
@@ -165,16 +168,15 @@ describe('AssistantTurnBubble — Skill extraction', () => {
 
     const { container } = renderTurn({ turn, toolGroups, toolCalls });
     const html = container.innerHTML;
-    // Full label phrasing makes the bare suffix unambiguous in the HTML.
-    const oneIdx = html.indexOf('Invoked skill: one');
-    const twoIdx = html.indexOf('Invoked skill: two');
+    const stackedIdx = html.indexOf('Invoked 2 skills: one and two');
     // 'ls -la /tmp' is distinctive — won't false-match on 'TooLs' etc.
     const bashIdx = html.indexOf('ls -la /tmp');
     expect(bashIdx).toBeGreaterThanOrEqual(0);
-    expect(oneIdx).toBeGreaterThanOrEqual(0);
-    expect(twoIdx).toBeGreaterThanOrEqual(0);
-    expect(bashIdx).toBeLessThan(oneIdx);
-    expect(oneIdx).toBeLessThan(twoIdx);
+    expect(stackedIdx).toBeGreaterThanOrEqual(0);
+    expect(bashIdx).toBeLessThan(stackedIdx);
+    // No per-invocation cards remain.
+    expect(html).not.toContain('Invoked skill: one');
+    expect(html).not.toContain('Invoked skill: two');
   });
 });
 

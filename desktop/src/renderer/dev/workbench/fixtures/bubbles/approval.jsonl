@@ -1,0 +1,3 @@
+{"type":"user_message","text":"clear out the old build folder"}
+{"type":"tool_use","id":"a1","name":"Bash","input":{"command":"rm -rf desktop/dist"}}
+{"type":"permission_request","tool_use_id":"a1","requestId":"req-a1","denyListed":true}

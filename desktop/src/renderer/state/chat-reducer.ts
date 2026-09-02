@@ -73,6 +73,28 @@ function stableStringify(value: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(',')}}`;
 }
 
+/** A streamed chunk that is nothing but whitespace (or empty). */
+function isBlankDelta(text: string): boolean {
+  return text.trim() === '';
+}
+
+/**
+ * True when a native delta with this partId would MERGE into the open turn's
+ * last segment (same type, same partId) rather than open a new segment. Reads
+ * the session without creating a turn — the caller uses it to decide whether a
+ * blank chunk has a paragraph to join (keep) or would stand alone (drop).
+ */
+function mergesIntoOpenSegment(
+  session: SessionChatState,
+  type: 'text' | 'reasoning',
+  partId: string | undefined,
+): boolean {
+  if (!partId || !session.currentTurnId) return false;
+  const turn = session.assistantTurns.get(session.currentTurnId);
+  const last = turn?.segments[turn.segments.length - 1];
+  return !!last && last.type === type && last.partId === partId;
+}
+
 /**
  * Returns the current assistant turn (or creates a new one).
  * All assistant text and tool groups within a single turn accumulate here.
@@ -408,6 +430,11 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
     const last = lastIdx >= 0 ? segments[lastIdx] : null;
     if (action.partId && last && last.type === 'text' && last.partId === action.partId) {
       segments[lastIdx] = { ...last, content: last.content + action.text };
+    } else if (isBlankDelta(action.text)) {
+      // Whitespace-only chunk with no open paragraph to join — same rule as
+      // the main timeline (see TRANSCRIPT_ASSISTANT_TEXT): it would render as
+      // an empty block on the specialist's card.
+      return state;
     } else {
       segments.push({
         type: 'text',
@@ -424,6 +451,8 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
     const last = lastIdx >= 0 ? segments[lastIdx] : null;
     if (action.partId && last && last.type === 'thinking' && last.partId === action.partId) {
       segments[lastIdx] = { ...last, content: last.content + action.text };
+    } else if (isBlankDelta(action.text)) {
+      return state; // as for text above
     } else {
       segments.push({
         type: 'thinking',
@@ -1253,6 +1282,25 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         ? new Set(session.seenUuids).add(action.uuid)
         : session.seenUuids;
 
+      // Fix (2026-09-02, bubble grouping): some models stream NEWLINE-ONLY text
+      // chunks between and after the tool calls they compose (DeepSeek V4 Flash
+      // over OpenRouter, seen live). Each one used to open a new text segment —
+      // and every text segment opens a bubble — so three tools in one step
+      // rendered as three bubbles, a bare empty bubble followed the last tool,
+      // and a stop pressed during the next step's "\n" put "Interrupted." in a
+      // bubble of its own. Whitespace that cannot join an open paragraph carries
+      // nothing, so it is dropped HERE, at the segment list every renderer
+      // (chat, buddy feed, remote) reads — not hidden downstream. Whitespace
+      // inside an open paragraph still merges: paragraph breaks must survive.
+      // Claude Code's watcher trims whole blocks, so this only fires on the
+      // native runtime and on replayed native history. Counted as activity
+      // (not output): nothing filled a bubble, so the thinking indicator stays.
+      // Pinned by tests/bubble-grouping-scenarios.test.tsx.
+      if (isBlankDelta(action.text) && !mergesIntoOpenSegment(session, 'text', action.partId)) {
+        next.set(action.sessionId, { ...session, seenUuids, lastActivityAt: Date.now() });
+        return next;
+      }
+
       const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
       const turn = assistantTurns.get(currentTurnId)!;
       // Native runtime: same-partId deltas merge into the last text segment
@@ -1306,6 +1354,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       if (action.parentAgentToolUseId) return applySubagentEvent(state, action);
       const session = next.get(action.sessionId);
       if (!session) return state;
+
+      // Same whitespace rule as TRANSCRIPT_ASSISTANT_TEXT above: a blank
+      // reasoning chunk that cannot join open reasoning would render as a
+      // "Show reasoning" toggle over nothing.
+      if (isBlankDelta(action.text) && !mergesIntoOpenSegment(session, 'reasoning', action.partId)) {
+        next.set(action.sessionId, { ...session, lastActivityAt: Date.now() });
+        return next;
+      }
 
       const { assistantTurns, timeline, currentTurnId } = getOrCreateTurn(session);
       const turn = assistantTurns.get(currentTurnId)!;
