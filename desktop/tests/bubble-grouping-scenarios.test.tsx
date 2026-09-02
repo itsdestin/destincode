@@ -14,6 +14,10 @@
 //   renders nothing) · {Tool Tool} (one tool group) · D (deliverables card) ·
 //   S:Name (trailing skill row) · F:<stop reason> (footer)
 // A signature makes a wrong grouping readable at a glance in the failure diff.
+//
+// THE RULE (Destin, 2026-09-02): a reasoning/tool step that produces no visible
+// text does not separate from the next step. A new bubble begins only after
+// the assistant has SPOKEN — reasoning → text → [split] → reasoning again.
 import '@testing-library/jest-dom/vitest';
 import React from 'react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -103,29 +107,27 @@ function signature(events: Ev[]): string[] {
     );
     const bubbles = [...container.querySelectorAll('.assistant-bubble')];
     for (const b of bubbles) {
+      // Walk the bubble's DIRECT children in order, so the signature reads in
+      // the order a user sees it (reasoning, tools, text, …).
       const tokens: string[] = [];
-      if (/(Show|Hide) reasoning/.test(b.textContent ?? "")) tokens.push("R");
-      for (const md of b.querySelectorAll('[data-md]')) {
-        // Reasoning renders through the same markdown component inside the
-        // `.mb-2` disclosure (expanded by broadcastExpandAll above); skip it.
-        if (md.closest('.mb-2')) continue;
-        tokens.push((md.textContent ?? '').trim() ? 'T' : 'T∅');
+      for (const child of b.children) {
+        if (child.matches('.mb-2') && /(Show|Hide) reasoning/.test(child.textContent ?? '')) { tokens.push('R'); continue; }
+        if (child.matches('[data-md]')) { tokens.push((child.textContent ?? '').trim() ? 'T' : 'T∅'); continue; }
+        // ToolGroupInline's root is `.my-0\.5`; the trailing skill row is `.mt-1.space-y-0.5`.
+        if (child.matches('.my-0\\.5')) {
+          const names = [...child.querySelectorAll('[data-tool]')].map((el) => el.getAttribute('data-tool'));
+          tokens.push(`{${names.join(' ')}}`);
+          continue;
+        }
+        if (child.matches('[data-deliverables]') || child.querySelector('[data-deliverables]')) { tokens.push('D'); continue; }
+        if (child.matches('.mt-1.space-y-0\\.5')) {
+          for (const t of child.querySelectorAll(':scope > [data-tool]')) tokens.push(`S:${t.getAttribute('data-tool')}`);
+          const stacked = child.querySelector('[data-testid=stacked-skills]');
+          if (stacked) tokens.push(`S:[${stacked.textContent}]`);
+          continue;
+        }
+        if (child.matches('[role=status]')) { tokens.push(`F:${child.textContent}`); continue; }
       }
-      // Each ToolGroupInline wraps its cards in `.my-0\.5`; the trailing skill
-      // row is `.mt-1` and holds standalone cards.
-      for (const g of b.querySelectorAll(':scope > div > .my-0\\.5')) {
-        const names = [...g.querySelectorAll('[data-tool]')].map((el) => el.getAttribute('data-tool'));
-        tokens.push(`{${names.join(' ')}}`);
-      }
-      if (b.querySelector('[data-deliverables]')) tokens.push('D');
-      // The trailing skill row is `.mt-1.space-y-0.5` with cards as direct
-      // children; the tools wrapper is a bare `.mt-1` (no space-y).
-      for (const s of b.querySelectorAll(':scope > .mt-1.space-y-0\\.5 > [data-tool]')) tokens.push(`S:${s.getAttribute('data-tool')}`);
-      // Two or more skills render as ONE stacked card; the signature carries its text.
-      const stacked = b.querySelector('[data-testid=stacked-skills]');
-      if (stacked) tokens.push(`S:[${stacked.textContent}]`);
-      const f = b.querySelector('[role=status]');
-      if (f) tokens.push(`F:${f.textContent}`);
       out.push(tokens.join(' '));
     }
     // A segment-less turn with an abnormal stop renders a footer row, no shell.
@@ -234,7 +236,39 @@ describe('bubble grouping — native runtime (per-delta streams)', () => {
       ['reason', 'step three', 'reasoning-0'], ['text', 'All done.', 'txt-0'],
       ['done'],
     ]);
-    expect(sig).toEqual(['R T {Bash}', 'R {Read}', 'R T']);
+    // Step two spoke nothing, so it stays with step three; the split comes
+    // only after "First." was said.
+    expect(sig).toEqual(['R T {Bash}', 'R {Read} R T']);
+  });
+
+  it('silent steps (reasoning + tool, no text) share one bubble until the assistant speaks', () => {
+    // Destin's 2026-09-02 screenshot: three bubbles of "Show reasoning" over
+    // one tool each, the last one reasoning alone with the timestamp.
+    const silent: Ev[] = [
+      ['user', 'sync everything'],
+      ['reason', 'Sync all the repos first.', 'reasoning-0'], ['prep', 'a', 'Bash'], ['tool', 'a', 'Bash'], ['result', 'a'],
+      ['reason', 'Now check the workspace itself.', 'reasoning-0'], ['prep', 'b', 'Bash'], ['tool', 'b', 'Bash'], ['result', 'b'],
+      ['reason', 'Everything is in sync; nothing to report.', 'reasoning-0'],
+    ];
+    expect(signature(silent)).toEqual(['R {Bash} R {Bash} R']);
+    // Then it speaks: the text joins that same bubble …
+    const spoke: Ev[] = [...silent, ['text', 'All synced.', 'txt-0']];
+    expect(signature(spoke)).toEqual(['R {Bash} R {Bash} R T']);
+    // … and only the NEXT reasoning opens a new one.
+    expect(signature([...spoke, ['reason', 'One more check.', 'reasoning-0'], ['prep', 'c', 'Read'], ['tool', 'c', 'Read'], ['result', 'c'], ['done']]))
+      .toEqual(['R {Bash} R {Bash} R T', 'R {Read}']);
+  });
+
+  it('tool cards keep the order the tools were CALLED, whatever order results arrive', () => {
+    const sig = signature([
+      ['user', 'go'],
+      ['text', 'Looking.', 'txt-0'],
+      ['prep', 'a', 'Read'], ['prep', 'b', 'Grep'], ['prep', 'c', 'Glob'],
+      ['tool', 'a', 'Read'], ['tool', 'b', 'Grep'], ['tool', 'c', 'Glob'],
+      ['result', 'c'], ['result', 'b'], ['result', 'a'],
+      ['done'],
+    ]);
+    expect(sig).toEqual(['T {Read Grep Glob}']);
   });
 
   it('a tool that starts with no reasoning or text joins the previous bubble', () => {

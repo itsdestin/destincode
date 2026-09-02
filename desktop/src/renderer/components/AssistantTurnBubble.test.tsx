@@ -349,7 +349,8 @@ describe('splitIntoBubbles — BUG A (tool group mis-attribution after interleav
     expect(bubbles).toHaveLength(2);
     expect(bubbles[0].toolGroupIds).toEqual(['A']);   // B must NOT land here
     expect(bubbles[1].toolGroupIds).toEqual(['B']);
-    expect(bubbles[1].reasoning?.content).toBe('thinking about B'); // reasoning attached to ITS tool's bubble, not trailing
+    // reasoning attached to ITS tool's bubble (first item, above the tool), not trailing
+    expect(bubbles[1].items[0]).toMatchObject({ kind: 'reasoning', content: 'thinking about B' });
   });
 
   it('a single interleave [text, reasoning, toolGroup] splits into 2 bubbles: text alone, then reasoning+tool together', () => {
@@ -367,9 +368,9 @@ describe('splitIntoBubbles — BUG A (tool group mis-attribution after interleav
     expect(bubbles).toHaveLength(2);
     expect(bubbles[0].text?.content).toBe('Let me look');
     expect(bubbles[0].toolGroupIds).toEqual([]);
-    expect(bubbles[0].reasoning).toBeUndefined();
+    expect(bubbles[0].items.some((it) => it.kind === 'reasoning')).toBe(false);
     expect(bubbles[1].toolGroupIds).toEqual(['A']);
-    expect(bubbles[1].reasoning?.content).toBe('thinking');
+    expect(bubbles[1].items[0]).toMatchObject({ kind: 'reasoning', content: 'thinking' });
   });
 });
 
