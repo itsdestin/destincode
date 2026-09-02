@@ -3,7 +3,7 @@
 // real node subprocess over stdio, exactly as Claude Code does. A unit test of
 // the source string would have proved nothing about whether the server starts,
 // frames its messages, or answers the handshake.
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -148,6 +148,18 @@ describe('the server speaks MCP over stdio', () => {
     server.stdin.write('this is not json\n');
     const res = await request('ping');
     expect(res.result).toEqual({});
-    expect(stderrText).toContain('unparseable line');
+    // WAIT for it. `request()` resolves on STDOUT; this asserts on STDERR, and
+    // they are separate pipes with independent buffering — so the server's
+    // parse-error write can still be in flight when the ping reply lands. The
+    // failure is `expected '' to contain …` (empty, not partial), it only
+    // shows under CI's parallel load, and it cost a red ubuntu leg on
+    // youcoded#386. The assertion itself is right and stays: an unparseable
+    // line must be survived AND reported.
+    // 5s to match request()'s own reply timeout above: latency here is
+    // microseconds, so a real regression should surface fast rather than
+    // costing waitFor's 15s default (measured: with the server's report
+    // removed, this fails — the wait tolerates arrival, it does not mask
+    // absence).
+    await vi.waitFor(() => expect(stderrText).toContain('unparseable line'), { timeout: 5000 });
   });
 });
