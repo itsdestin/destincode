@@ -115,7 +115,9 @@ export function loadFixture(
           sessionId,
           uuid: `${name}-end-${actions.length}`,
           timestamp: FIXTURE_T0 + actions.length * 1000,
-          stopReason: 'end_turn',
+          // `stopReason` lets a fixture end abnormally (max_tokens, refusal…)
+          // so the footer under the last bubble can be reviewed.
+          stopReason: typeof parsed.stopReason === 'string' ? parsed.stopReason : 'end_turn',
           model: null,
           anthropicRequestId: null,
           usage: null,
