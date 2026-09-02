@@ -6,7 +6,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
-import { Button, Dialog, InputGroup } from './ui';
+import { Button, Dialog, FieldError, InputGroup } from './ui';
 
 // Persisted "don't nag me again" flag. Set on skip (and on ESC, which is the
 // same as skip), never set when the user actually claims a handle.
@@ -128,7 +128,7 @@ function HandlePromptPopup({
             </Button>
           </InputGroup>
           {/* Plain words for status, never glyphs. */}
-          {error && <p className="text-3xs text-destructive-fg">{error}</p>}
+          {error && <FieldError as="p">{error}</FieldError>}
 
           <Button variant="secondary" onClick={skip} className="w-full py-2">
             Skip for now

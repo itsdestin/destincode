@@ -667,5 +667,28 @@ describe('state family', () => {
     expect(el.className).toContain('text-destructive');
     expect(el.className).toContain('text-3xs');
     expect(el.className).not.toContain('text-red-500');
+    expect(el.tagName).toBe('SPAN');
+  });
+
+  // The adoption sweep found the app split between two type steps and a mix of
+  // block/inline hosts, so the primitive takes both as PROPS. Neither could be a
+  // className pass-through: this component concatenates className onto its base,
+  // and Tailwind resolves competing utilities by CSS source order, so a caller's
+  // `text-2xs` would silently keep rendering at 3xs.
+  it('size="2xs" replaces the base step rather than piling on next to it', () => {
+    render(<FieldError size="2xs">Too short</FieldError>);
+    const el = screen.getByText('Too short');
+    expect(el.className).toContain('text-2xs');
+    expect(el.className).not.toContain('text-3xs');
+  });
+
+  it('as="p" renders a block host so vertical margin still lays out', () => {
+    // `mt-1` on an inline element does nothing; 21 of the swapped sites were
+    // <p> carrying exactly that kind of spacing class.
+    render(<FieldError as="p" className="mt-1">Nope</FieldError>);
+    const el = screen.getByText('Nope');
+    expect(el.tagName).toBe('P');
+    expect(el.className).toContain('mt-1');
+    expect(el.getAttribute('role')).toBe('alert');
   });
 });

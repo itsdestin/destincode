@@ -3,6 +3,7 @@ import {
   Button,
   EmptyState,
   ErrorState,
+  FieldError,
   FOCUS_RING,
   LoadingState,
   SettingRow,
@@ -697,7 +698,7 @@ function FolderCard({
                   </div>
                 </div>
               )}
-              {note && <p className="text-3xs text-destructive-fg mt-1">{note}</p>}
+              {note && <FieldError as="p" className="mt-1">{note}</FieldError>}
             </div>
           )}
         </div>
@@ -876,7 +877,7 @@ function RuleRow({
         </div>
       )}
 
-      {note && <p className="text-3xs text-destructive-fg mt-1 px-3">{note}</p>}
+      {note && <FieldError as="p" className="mt-1 px-3">{note}</FieldError>}
     </div>
   );
 }

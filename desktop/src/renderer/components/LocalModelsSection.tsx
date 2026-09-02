@@ -11,7 +11,7 @@
 // consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
-import { Button, InputGroup, ProgressBar, Callout, AnchorTip } from './ui';
+import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
@@ -292,7 +292,7 @@ function ModelBrowser({
             <div className="space-y-2">
               <p className="text-3xs font-medium text-fg-muted tracking-wider uppercase">More on Hugging Face</p>
               {hfState === 'loading' && <p className="text-2xs text-fg-muted px-1">Searching Hugging Face…</p>}
-              {hfState === 'error' && <p className="text-2xs text-destructive-fg px-1">Couldn't reach Hugging Face.</p>}
+              {hfState === 'error' && <FieldError as="p" size="2xs" className="px-1">Couldn't reach Hugging Face.</FieldError>}
               {hfState === 'idle' && hfFiltered.length === 0 && (
                 <p className="text-2xs text-fg-muted px-1">No other models found.</p>
               )}
@@ -417,7 +417,7 @@ function RepoCard({
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
-      {dlError && <p className="text-3xs text-destructive-fg mt-1">{dlError}</p>}
+      {dlError && <FieldError as="p" className="mt-1">{dlError}</FieldError>}
 
       {/* Expanded: the full quant list. */}
       {expanded && (
@@ -795,7 +795,7 @@ export function LocalModelRow({
             </div>
           </div>
         )}
-        {error && <p className="text-3xs text-destructive-fg mt-1">{error}</p>}
+        {error && <FieldError as="p" className="mt-1">{error}</FieldError>}
       </div>
     </div>
   );
@@ -835,7 +835,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
         )}
       </div>
       {dl && <DownloadProgressRow dl={dl} />}
-      {dlError && <p className="text-3xs text-destructive-fg mt-1">{dlError}</p>}
+      {dlError && <FieldError as="p" className="mt-1">{dlError}</FieldError>}
     </div>
   );
 }
@@ -913,7 +913,7 @@ function OtherLocalApps() {
                         <p className="text-3xs text-fg-muted mt-0.5">Added — manage it in Providers above.</p>
                       )}
                       {addError[hit.baseUrl] && (
-                        <p className="text-3xs text-destructive-fg mt-0.5">{addError[hit.baseUrl]}</p>
+                        <FieldError as="p" className="mt-0.5">{addError[hit.baseUrl]}</FieldError>
                       )}
                     </div>
                     {!isAdded && (
