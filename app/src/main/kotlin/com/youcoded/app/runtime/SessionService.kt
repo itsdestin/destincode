@@ -2125,6 +2125,25 @@ class SessionService : Service() {
                     }
                 }
             }
+            // Android's half of Electron's shell.openExternal. The React UI
+            // runs under file:// here, where window.open from a promise
+            // callback silently does nothing (see the sync:restore:browse-url
+            // comment below) — so a Deliverables link tile would be a dead
+            // button without this. Scheme-gated exactly like desktop's
+            // OPEN_EXTERNAL handler: http/https only, never file:, intent:,
+            // javascript:. The tap is always the user's own.
+            "shell:open-external" -> {
+                val url = msg.payload.optString("url", "")
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    try {
+                        val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        applicationContext.startActivity(intent)
+                    } catch (_: Exception) {}
+                }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, JSONObject()) }
+            }
+
             "sync:restore:browse-url" -> {
                 // Resolve a deep link into the remote backend for a given
                 // category (Drive folder, GitHub tree). UI shows a "browse remote"

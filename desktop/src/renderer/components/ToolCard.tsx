@@ -22,6 +22,7 @@ import { fullAutoStopCopy } from './permissions/deny-list-copy';
 import { PERMISSION_DISPLAY } from './StatusBar';
 // Same parser ToolBody uses to pick the card body, so header and body agree.
 import { describeChatsearchCall, COPY } from '../../shared/chatsearch-refs';
+import { CLAUDE_CODE_LINK_TOOL, SEND_USER_LINK_TOOL } from '../../shared/send-user-link';
 
 // --- Helpers for friendly display ---
 
@@ -214,7 +215,11 @@ export function friendlyToolDisplay(
       };
     }
 
-    case 'SendUserLink': {
+    // Both spellings of a link delivery — the native tool and the Claude Code
+    // MCP tool (shared/send-user-link.ts). Listed as explicit cases so neither
+    // falls through to the generic `mcp__server__action` label below.
+    case CLAUDE_CODE_LINK_TOOL:
+    case SEND_USER_LINK_TOOL: {
       // Links handed to the user — same fallback-label treatment as
       // SendUserFile above (the chat renders these as DeliverablesCard tiles).
       const raw = input.links;

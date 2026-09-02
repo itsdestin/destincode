@@ -136,6 +136,34 @@ describe('dev:* channel parity', () => {
 // carry identical type strings — drift would silently break sign-in / profile
 // on one platform. Also guards against any leftover marketplace:auth:* strings
 // (the pre-rename prefix) in the three desktop TS sources.
+// shell:open-external now has to work on THREE surfaces, not two. Desktop has
+// always had it; Android grew a handler when link deliverables (SendUserLink /
+// mcp__youcoded__SendUserLink) started drawing clickable tiles in the chat —
+// React runs under file:// there, so the shim's window.open fallback silently
+// does nothing and the tile would be a dead button.
+describe('shell:open-external channel parity', () => {
+  const readFrom = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('is declared in preload.ts and invoked by remote-shim.ts', () => {
+    expect(readFrom('src', 'main', 'preload.ts')).toContain("'shell:open-external'");
+    expect(readFrom('src', 'renderer', 'remote-shim.ts')).toContain("invoke('shell:open-external'");
+  });
+
+  it('is handled by SessionService.kt (Android)', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    expect(src).toContain('"shell:open-external" ->');
+  });
+
+  it('every surface gates on the SCHEME, http/https only', () => {
+    // The scheme check is the actual security boundary for a URL the model
+    // chose — the tile is only ever opened by a user click, but file:,
+    // intent: and javascript: must never reach an opener on any platform.
+    expect(readFrom('src', 'main', 'ipc-handlers.ts')).toMatch(/\^https\?:\\\/\\\//);
+    const kt = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    expect(kt).toContain('url.startsWith("http://") || url.startsWith("https://")');
+  });
+});
+
 describe('account:* channel parity', () => {
   const NEW_TYPES = [
     'account:start', 'account:poll', 'account:signed-in', 'account:user',

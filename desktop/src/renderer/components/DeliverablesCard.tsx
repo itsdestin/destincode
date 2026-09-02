@@ -40,16 +40,21 @@ import { useOpenFilepath } from '../hooks/useOpenFilepath';
 import { ArtifactThumbnail } from './ArtifactThumbnail';
 import { matchSessionArtifact } from './filepath-match';
 import { asString } from '../utils/tool-input';
+import { isSendUserLinkToolName } from '../../shared/send-user-link';
 
 export const SENT_FILES_TOOL = 'SendUserFile';
-export const SENT_LINKS_TOOL = 'SendUserLink';
 
 export function isSentFilesTool(tool: ToolCallState | undefined): tool is ToolCallState {
   return !!tool && tool.toolName === SENT_FILES_TOOL;
 }
 
+/** Link deliveries arrive under TWO names — `SendUserLink` from YouCoded's own
+ *  harness, `mcp__youcoded__SendUserLink` from the per-session MCP server the
+ *  app attaches to Claude Code sessions (main/claude-code-mcp.ts). Both draw
+ *  the same tile; isSendUserLinkToolName is the single matcher (and matches
+ *  exactly, never a wildcard — see shared/send-user-link.ts). */
 export function isSentLinksTool(tool: ToolCallState | undefined): tool is ToolCallState {
-  return !!tool && tool.toolName === SENT_LINKS_TOOL;
+  return !!tool && isSendUserLinkToolName(tool.toolName);
 }
 
 /** The `files` argument, tolerant of the model sending a single string. Tool
@@ -257,9 +262,21 @@ export function SentLinkTile({ link, status, error, narrow, compact = false }: {
   compact?: boolean;
 }) {
   const failed = status === 'failed';
-  // Label: the model's own label if given, else the URL itself (host + path is
-  // friendlier than the full scheme, but the full URL is the fallback).
-  const shown = link.label ?? link.url;
+  // Two lines, never the same text twice. With a label: label over the full
+  // URL. Without one: the host over the path, and no second line at all when
+  // there is no path (a bare `http://localhost:5173` reads as one clean line).
+  // An unparseable URL can still be shown — the tool refuses to send those, so
+  // the tile only ever sees one while the call is still in flight.
+  let title = link.label ?? link.url;
+  let sub = link.label ? link.url : '';
+  if (!link.label) {
+    try {
+      const u = new URL(link.url);
+      title = u.host;
+      const rest = (u.pathname === '/' ? '' : u.pathname) + u.search + u.hash;
+      sub = rest;
+    } catch { /* not parseable yet — fall back to the raw string above */ }
+  }
   return (
     <button
       type="button"
@@ -279,8 +296,8 @@ export function SentLinkTile({ link, status, error, narrow, compact = false }: {
       </div>
       <div className="flex items-center gap-2 px-2.5 py-2 min-w-0">
         <span className="flex-1 min-w-0">
-          <span className="block text-sm-tight font-semibold text-fg truncate">{shown}</span>
-          <span className="block text-2xs font-mono text-fg-muted truncate">{link.url}</span>
+          <span className="block text-sm-tight font-semibold text-fg truncate">{title}</span>
+          {sub && <span className="block text-2xs font-mono text-fg-muted truncate">{sub}</span>}
         </span>
         <span className={`shrink-0 inline-flex items-center gap-1 text-2xs font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md transition-colors ${compact ? 'p-1 self-start' : 'px-2 py-1'}`} aria-label="Open">
           {!compact && 'Open'}
@@ -402,13 +419,17 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
 
   // Two entry kinds: file tiles (path) and link tiles (link). Both derive from
-  // the same tools array — sendFilePaths for SendUserFile, sentLinks for
-  // SendUserLink — and merge in call order into ONE strip.
+  // the same tools array — sentFilePaths for SendUserFile, sentLinks for
+  // SendUserLink — and merge into ONE strip in CALL order: one pass over the
+  // tools, not files-then-links, or a link sent before a file would still be
+  // drawn after it.
+  // The index rides in the key because the same path/URL can legitimately be
+  // sent twice in one call, and two identical React keys silently drop a tile.
   const entries = useMemo(
-    () => [
-      ...tools.flatMap((tool) => sentFilePaths(tool.input).map((path) => ({ kind: 'file' as const, path, status: tool.status, error: tool.error, key: `${tool.toolUseId}:${path}` }))),
-      ...tools.flatMap((tool) => sentLinks(tool.input).map((link) => ({ kind: 'link' as const, link, status: tool.status, error: tool.error, key: `${tool.toolUseId}:${link.url}` }))),
-    ],
+    () => tools.flatMap((tool) => [
+      ...sentFilePaths(tool.input).map((path, i) => ({ kind: 'file' as const, path, status: tool.status, error: tool.error, key: `${tool.toolUseId}:f${i}:${path}` })),
+      ...sentLinks(tool.input).map((link, i) => ({ kind: 'link' as const, link, status: tool.status, error: tool.error, key: `${tool.toolUseId}:l${i}:${link.url}` })),
+    ]),
     [tools],
   );
   // Failed calls list their reason under the strip, in the tool's own words —

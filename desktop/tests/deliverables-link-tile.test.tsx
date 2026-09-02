@@ -15,6 +15,7 @@ vi.mock('../src/renderer/components/ArtifactThumbnail', () => ({
 }));
 
 import { DeliverablesCard, sentLinks, isSentLinksTool } from '../src/renderer/components/DeliverablesCard';
+import { CLAUDE_CODE_LINK_TOOL } from '../src/shared/send-user-link';
 
 function setViewport(narrow = false) {
   (window as any).matchMedia = (query: string) => ({
@@ -39,10 +40,18 @@ describe('sentLinks parsing', () => {
     expect(sentLinks({ links: 'https://a.com' })).toEqual([]);
     expect(sentLinks({})).toEqual([]);
   });
-  it('isSentLinksTool matches only SendUserLink', () => {
+  it('isSentLinksTool matches the native tool AND the Claude Code MCP tool', () => {
     expect(isSentLinksTool({ toolName: 'SendUserLink', toolUseId: 'x', input: {}, status: 'complete' })).toBe(true);
+    expect(isSentLinksTool({ toolName: CLAUDE_CODE_LINK_TOOL, toolUseId: 'x', input: {}, status: 'complete' })).toBe(true);
     expect(isSentLinksTool({ toolName: 'SendUserFile', toolUseId: 'x', input: {}, status: 'complete' })).toBe(false);
     expect(isSentLinksTool(undefined)).toBe(false);
+  });
+
+  it('matches EXACTLY — another MCP server cannot squat the link tile', () => {
+    // Any marketplace server could name a tool SendUserLink; a wildcard match
+    // would let it draw official-looking, one-click-to-the-browser tiles.
+    expect(isSentLinksTool({ toolName: 'mcp__somebody-else__SendUserLink', toolUseId: 'x', input: {}, status: 'complete' })).toBe(false);
+    expect(isSentLinksTool({ toolName: 'mcp__youcoded__SendUserFile', toolUseId: 'x', input: {}, status: 'complete' })).toBe(false);
   });
 });
 
@@ -56,11 +65,35 @@ describe('DeliverablesCard with SendUserLink', () => {
     expect(screen.getByText('https://example.com')).toBeInTheDocument();
   });
 
-  it('uses the URL itself as the label when no label is given', () => {
+  it('with no label, shows the host over the path — never the same URL twice', () => {
+    render(<DeliverablesCard tools={[linkCall('t1', [{ url: 'https://example.com/docs/page?x=1' }])]} sessionId="s" />);
+    fireEvent.click(screen.getByText('Deliverables'));
+    expect(screen.getByText('example.com')).toBeInTheDocument();
+    expect(screen.getByText('/docs/page?x=1')).toBeInTheDocument();
+    expect(screen.queryByText('https://example.com/docs/page?x=1')).toBeNull();
+  });
+
+  it('with no label and no path, shows ONE clean line', () => {
     render(<DeliverablesCard tools={[linkCall('t1', [{ url: 'http://localhost:5173' }])]} sessionId="s" />);
     fireEvent.click(screen.getByText('Deliverables'));
-    // The url shows twice: as the label AND as the mono sub-line.
-    expect(screen.getAllByText('http://localhost:5173').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('localhost:5173')).toBeInTheDocument();
+    expect(screen.queryByText('http://localhost:5173')).toBeNull();
+    // The full URL still rides the tooltip, so nothing is actually hidden.
+    expect(screen.getByTestId('sent-link-tile')).toHaveAttribute('title', 'Open http://localhost:5173');
+  });
+
+  it('a Claude Code MCP link call draws the same tile and opens the same way', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined);
+    (window as any).claude = { shell: { openExternal } };
+    const mcpCall: ToolCallState = {
+      toolUseId: 'm1', toolName: CLAUDE_CODE_LINK_TOOL,
+      input: { links: [{ url: 'https://example.com', label: 'The Site' }] }, status: 'complete',
+    };
+    render(<DeliverablesCard tools={[mcpCall]} sessionId="s" />);
+    fireEvent.click(screen.getByText('Deliverables'));
+    expect(screen.getByText('The Site')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('sent-link-tile'));
+    expect(openExternal).toHaveBeenCalledWith('https://example.com');
   });
 
   it('clicking a link tile calls shell.openExternal with the URL', () => {
@@ -82,6 +115,24 @@ describe('DeliverablesCard with SendUserLink', () => {
     fireEvent.click(screen.getByTestId('sent-link-tile'));
     expect(openExternal).not.toHaveBeenCalled();
     expect(screen.getByText(/Invalid URL/)).toBeInTheDocument();
+  });
+
+  it('keeps CALL order across kinds — a link sent first is drawn first', () => {
+    const fileCall: ToolCallState = {
+      toolUseId: 'f1', toolName: 'SendUserFile', input: { files: ['/p/a.md'] }, status: 'complete',
+    };
+    render(<DeliverablesCard tools={[linkCall('l1', [{ url: 'https://a.com' }]), fileCall]} sessionId="s" />);
+    fireEvent.click(screen.getByText('Deliverables'));
+    const kinds = Array.from(screen.getByTestId('deliverables-strip').querySelectorAll('[data-testid$="-tile"]'))
+      .map((el) => el.getAttribute('data-testid'));
+    expect(kinds).toEqual(['sent-link-tile', 'sent-file-tile']);
+  });
+
+  it('draws a tile per link even when the same URL is sent twice in one call', () => {
+    // Two identical React keys silently drop one tile.
+    render(<DeliverablesCard tools={[linkCall('t1', [{ url: 'https://a.com' }, { url: 'https://a.com' }])]} sessionId="s" />);
+    fireEvent.click(screen.getByText('Deliverables'));
+    expect(screen.getAllByTestId('sent-link-tile')).toHaveLength(2);
   });
 
   it('merges file and link calls into one card, one strip', () => {

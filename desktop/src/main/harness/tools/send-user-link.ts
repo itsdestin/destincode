@@ -1,26 +1,30 @@
 // SendUserLink — the link-side mirror of SendUserFile (spec 2026-09-02,
 // slice A). Same shape and philosophy as send-user-file.ts: stateless, it
-// validates the URLs and reports; the RENDERER owns the Deliverables card and
-// the auto-open rule (renderer/state/deliverable-auto-open.ts). Enforcing a
-// one-open-per-reply rule here would need per-turn state plus a flag threaded
-// through the result event — exactly what deliverable-auto-open.ts already does
-// for files, and intentionally not duplicated here.
+// validates the URLs and reports; the RENDERER owns the Deliverables card.
+//
+// NOTHING here opens a link. deliverable-auto-open.ts (the display:"render"
+// rule) deliberately still matches SendUserFile only — a file opens in the
+// app's own side panel, while a link would launch an external browser, and
+// nobody has signed off on the model doing that unasked. `display` is accepted
+// and ignored until that decision is made.
 //
 // WHY a separate tool rather than a "links:" field on SendUserFile: the two
 // produce different TILES in the Deliverables card (a link has no artifact
 // preview and opens in the browser, never the artifact viewer), and a mixed
-// call would blur one card's status/error handling. One tool per deliverable
-// KIND keeps "is this a file tile or a link tile" a property of the tool name,
-// exactly like Claude Code's own send-file/URL split.
+// call would blur one card's status/error handling. Keeping "is this a file
+// tile or a link tile" a property of the TOOL NAME is also what lets the
+// renderer draw the same tile for the Claude Code MCP tool
+// (main/claude-code-mcp.ts), which carries the identical `links` input.
 import { z } from 'zod';
 import { defineTool } from './registry';
+import { SEND_USER_LINK_BASE_DESCRIPTION, SEND_USER_LINK_TOOL } from '../../../shared/send-user-link';
 
-export const SEND_USER_LINK_DESCRIPTION = [
-  'Send finished URLs to the user — a deployed page, a preview, a localhost dev server, an API — as a "Deliverables" card with links they can open in the browser.',
-  'Use it for links the user will want to visit, not for every URL mentioned in passing; do not re-send a link that has not changed.',
-  'Only http:// and https:// URLs are accepted (use an absolute URL — localhost and LAN IPs are fine, e.g. http://localhost:5173).',
-  'display: "render" asks to show ONE link immediately; only the first such request in a reply is honored. Everything else attaches to the card.',
-].join(' ');
+// One description, shared verbatim with the Claude Code MCP tool
+// (shared/send-user-link.ts) so the model behaves identically in both session
+// types. It deliberately says NOTHING about `display`: nothing opens a link
+// automatically yet, and a tool that describes behaviour it does not have
+// teaches the next session to assume the feature exists.
+export const SEND_USER_LINK_DESCRIPTION = SEND_USER_LINK_BASE_DESCRIPTION;
 
 /** Narrow an unknown catch value to an Error message without a blind cast —
  *  `new URL()` throws TypeError/URIError with a `message` we can surface, but
@@ -33,10 +37,10 @@ function messageOf(err: unknown): string {
 }
 
 export const SendUserLinkTool = defineTool({
-  name: 'SendUserLink',
+  name: SEND_USER_LINK_TOOL,
   description: SEND_USER_LINK_DESCRIPTION,
   // Compact form for small local models (same reasoning as SendUserFile's).
-  shortDescription: 'Hand finished URLs to the user as a Deliverables card. display: "render" shows one link now (first request per reply).',
+  shortDescription: 'Hand finished URLs to the user as a Deliverables card. http:// and https:// only; localhost and LAN IPs are fine.',
   inputSchema: z.object({
     links: z.array(z.object({
       url: z.string().describe('The full URL to open — http:// or https://. localhost and LAN IPs are allowed.'),
@@ -44,7 +48,7 @@ export const SendUserLinkTool = defineTool({
     })).min(1),
     caption: z.string().optional().describe('One line of context for the links.'),
     status: z.enum(['normal', 'proactive']).optional().describe('Accepted for parity with SendUserFile; ignored.'),
-    display: z.enum(['render', 'attach']).optional().describe('"render": show the first link immediately (first request per reply only). "attach" or omitted: just the card.'),
+    display: z.enum(['render', 'attach']).optional().describe('Accepted for parity with SendUserFile; ignored — a link is never opened for the user without their click.'),
   }).strict(), // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
   // Opens nothing — it names URLs the user should visit; the click is user-
   // initiated and goes through shell.openExternal's own scheme allowlist.

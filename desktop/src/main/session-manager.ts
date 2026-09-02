@@ -8,6 +8,7 @@ import { SessionInfo, SessionProvider } from '../shared/types';
 import type { ModelBinding } from '../shared/provider-types';
 import { EventEmitter } from 'events';
 import { log } from './logger';
+import { deployClaudeCodeLinkMcp } from './claude-code-mcp';
 
 // Optional — which may not be installed; fall back to bare command name
 let whichSync: ((cmd: string) => string) | null = null;
@@ -113,6 +114,14 @@ export class SessionManager extends EventEmitter {
     }
 
     const id = randomUUID();
+
+    // Always use system Node.js — Electron's binary can't load node-pty.
+    // Resolve via which() for Windows where Electron's PATH may differ.
+    // Resolved HERE, ahead of the args, because the SendUserLink MCP config
+    // below names this same interpreter for Claude Code to spawn the server with.
+    let nodePath = 'node';
+    try { if (whichSync) nodePath = whichSync('node'); } catch { /* use bare 'node' */ }
+
     // Build Claude CLI args.
     const args: string[] = [];
     if (opts.skipPermissions) {
@@ -123,6 +132,16 @@ export class SessionManager extends EventEmitter {
     }
     if (opts.model) {
       args.push('--model', opts.model);
+    }
+    // Give this session YouCoded's SendUserLink tool (claude-code-mcp.ts) —
+    // Claude Code has no link deliverable of its own. Best-effort: if the
+    // deploy throws (read-only userData, disk full) the session still starts,
+    // just without the link tool. Pushing a --mcp-config path that does not
+    // exist would instead be a hard startup failure for the whole session.
+    try {
+      args.push(...deployClaudeCodeLinkMcp(app.getPath('userData'), nodePath).args);
+    } catch (err) {
+      log('WARN', 'SessionManager', 'SendUserLink MCP deploy failed — this session starts without the link tool', { error: String(err) });
     }
 
     // Spawn a separate Node.js process for node-pty so it uses Node's
@@ -140,10 +159,6 @@ export class SessionManager extends EventEmitter {
         log('ERROR', 'SessionManager', 'Unpacked worker not found, using asar path', { path: unpackedPath });
       }
     }
-    // Always use system Node.js — Electron's binary can't load node-pty.
-    // Resolve via which() for Windows where Electron's PATH may differ.
-    let nodePath = 'node';
-    try { if (whichSync) nodePath = whichSync('node'); } catch { /* use bare 'node' */ }
     const worker = spawn(nodePath, [workerPath], {
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
       windowsHide: true,

@@ -6,7 +6,8 @@ import { hasNestedAsk } from '../utils/specialist-cards';
 import MarkdownContent from './MarkdownContent';
 import { SessionRefsEnabled } from './session-refs-context';
 import ToolCard, { StackedSkillsCard } from './ToolCard';
-import { DeliverablesCard, isSentFilesTool, isSentLinksTool, SENT_FILES_TOOL, SENT_LINKS_TOOL } from './DeliverablesCard';
+import { DeliverablesCard, isSentFilesTool, isSentLinksTool, SENT_FILES_TOOL } from './DeliverablesCard';
+import { isSendUserLinkToolName } from '../../shared/send-user-link';
 import { CheckIcon, FailIcon, ChevronIcon, QuestionIcon } from './Icons';
 import BrailleSpinner from './BrailleSpinner';
 import { formatBubbleTime } from '../utils/format-time';
@@ -373,9 +374,9 @@ function bubblePaintsSomething(
       const t = toolCalls.get(id);
       // Name comparison, not isSentFilesTool(): that type predicate narrows
       // `t` to never on its false branch, which tsc rejects at the next line.
-      // SendUserLink counts like a file: a bubble whose ONLY content is a link
-      // delivery must still paint (it's a deliverable, not a no-op turn).
-      if (!t || t.toolName === 'Skill' || t.toolName === SENT_FILES_TOOL || t.toolName === SENT_LINKS_TOOL) continue;
+      // A link delivery counts like a file: a bubble whose ONLY content is a
+      // link must still paint (it's a deliverable, not a no-op turn).
+      if (!t || t.toolName === 'Skill' || t.toolName === SENT_FILES_TOOL || isSendUserLinkToolName(t.toolName)) continue;
       if (t.status !== 'awaiting-approval') return true;
     }
   }

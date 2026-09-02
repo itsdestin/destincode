@@ -1072,7 +1072,22 @@ export function installShim(): void {
       openChangelog: async () => {
         window.open('https://github.com/itsdestin/youcoded/blob/master/CHANGELOG.md', '_blank');
       },
-      openExternal: async (url: string) => { window.open(url, '_blank'); },
+      // On the ANDROID host, go through the bridge: React runs under file://
+      // there, and window.open from a promise callback is a no-op (the same
+      // trap SessionService.kt's sync:restore:browse-url comment records) — a
+      // link tile in the Deliverables card would be a dead button. The bridge
+      // fires Intent.ACTION_VIEW, which always works. `targetUrl` means we are
+      // a REMOTE browser talking to a desktop server instead, where opening a
+      // tab is both possible and the right behaviour.
+      openExternal: async (url: string) => {
+        if (!targetUrl) {
+          try {
+            await invoke('shell:open-external', { url });
+            return;
+          } catch { /* fall through — an older host without the handler */ }
+        }
+        window.open(url, '_blank');
+      },
       // No-op on remote/Android — a browser can't reveal a file in the host's
       // file manager. The artifact panel hides the button on touch anyway.
       showItemInFolder: async () => {},
