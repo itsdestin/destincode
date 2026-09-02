@@ -111,6 +111,15 @@ describe('fallback surfaces', () => {
       .toBe('Sent files');
   });
 
+  it('friendlyToolDisplay: SendUserLink shows the host, never the raw id', () => {
+    expect(friendlyToolDisplay({ toolName: 'SendUserLink', input: { links: [{ url: 'https://example.com', label: 'The Site' }] } } as any))
+      .toEqual({ label: 'Sent a link', detail: '↳ example.com' });
+    expect(friendlyToolDisplay({ toolName: 'SendUserLink', input: { links: [{ url: 'http://localhost:5173' }, { url: 'http://192.168.1.5:8000' }] } } as any))
+      .toEqual({ label: 'Sent 2 links', detail: '↳ localhost:5173, 192.168.1.5:8000' });
+    expect(friendlyToolDisplay({ toolName: 'SendUserLink', input: { links: 'not-an-array' } } as any).label)
+      .toBe('Sent links');
+  });
+
   it('a bare SendUserFile ToolCard expands to the card, not the raw JSON view', () => {
     render(
       <ChatProvider>

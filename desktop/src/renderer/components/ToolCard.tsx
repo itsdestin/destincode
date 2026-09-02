@@ -214,6 +214,20 @@ export function friendlyToolDisplay(
       };
     }
 
+    case 'SendUserLink': {
+      // Links handed to the user — same fallback-label treatment as
+      // SendUserFile above (the chat renders these as DeliverablesCard tiles).
+      const raw = input.links;
+      const links = Array.isArray(raw)
+        ? raw.map((l) => (l && typeof l === 'object' && typeof (l as Record<string, unknown>).url === 'string' ? ((l as Record<string, unknown>).url as string) : '')).filter(Boolean)
+        : [];
+      const labels = links.map((u) => { try { return new URL(u).host; } catch { return u; } });
+      return {
+        label: links.length === 1 ? 'Sent a link' : links.length ? `Sent ${links.length} links` : 'Sent links',
+        detail: labels.length ? `↳ ${labels.join(', ')}` : '',
+      };
+    }
+
     case 'Write': {
       // Fix: a non-string file_path crashed basename().
       const fp = asString(input.file_path);

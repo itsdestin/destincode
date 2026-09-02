@@ -34,7 +34,7 @@ export interface HarnessManifest {
 
 export const NATIVE_TOOL_NAMES = [
   'Read', 'Write', 'Edit', 'Bash', 'BashOutput', 'KillShell', 'Glob', 'Grep',
-  'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'SendUserFile',
+  'WebFetch', 'WebSearch', 'TodoWrite', 'AskUserQuestion', 'SendUserFile', 'SendUserLink',
 ] as const;
 
 /** Tools attached at RUNTIME, per session, when conditions allow — deliberately

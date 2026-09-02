@@ -1187,11 +1187,13 @@ export default function ToolBody({ tool, sessionId }: { tool: ToolCallState; ses
         return <WebFetchView tool={tool} />;
       case 'WebSearch':
         return <WebSearchView tool={tool} />;
-      // SendUserFile normally renders as the in-bubble DeliverablesCard (pulled
-      // out of its tool group by AssistantTurnBubble). This case covers the
-      // places that still render a bare ToolCard for it — the tool gallery,
-      // the buddy window's strip — so it never falls to the raw JSON view.
+      // SendUserFile/SendUserLink normally render as the in-bubble
+      // DeliverablesCard (pulled out of their tool group by
+      // AssistantTurnBubble). This case covers the places that still render a
+      // bare ToolCard for them — the tool gallery, the buddy window's strip —
+      // so they never fall to the raw JSON view.
       case 'SendUserFile':
+      case 'SendUserLink':
         return <DeliverablesCard tools={[tool]} sessionId={sessionId ?? ''} />;
       default: {
         // MCP PowerShell is shell-like — reuse ShellView. Other MCP tools fall

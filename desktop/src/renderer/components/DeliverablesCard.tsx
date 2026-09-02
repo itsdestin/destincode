@@ -1,6 +1,9 @@
 // DeliverablesCard — the in-bubble card for files the assistant hands to the user
 // via the SendUserFile tool (Claude Code's built-in, mirrored by the native
-// harness under the same name — spec 2026-08-25).
+// harness under the same name — spec 2026-08-25), and links the assistant hands
+// to the user via the SendUserLink tool (spec 2026-09-02 — a link tile opens in
+// the system browser, never the artifact viewer, because a URL has no artifact
+// to preview).
 //
 // Layout decisions (Destin, 2026-08-25 — workbench compare rounds 1–2, pick
 // "D + scroll-aware fades + collapsible"):
@@ -39,9 +42,14 @@ import { matchSessionArtifact } from './filepath-match';
 import { asString } from '../utils/tool-input';
 
 export const SENT_FILES_TOOL = 'SendUserFile';
+export const SENT_LINKS_TOOL = 'SendUserLink';
 
 export function isSentFilesTool(tool: ToolCallState | undefined): tool is ToolCallState {
   return !!tool && tool.toolName === SENT_FILES_TOOL;
+}
+
+export function isSentLinksTool(tool: ToolCallState | undefined): tool is ToolCallState {
+  return !!tool && tool.toolName === SENT_LINKS_TOOL;
 }
 
 /** The `files` argument, tolerant of the model sending a single string. Tool
@@ -51,6 +59,38 @@ export function sentFilePaths(input: Record<string, unknown>): string[] {
   if (Array.isArray(raw)) return raw.filter((f): f is string => typeof f === 'string' && f.length > 0);
   const single = asString(raw) || asString(input.file) || asString(input.file_path);
   return single ? [single] : [];
+}
+
+export interface SentLink {
+  url: string;
+  label?: string;
+}
+
+/** The `links` argument: an array of `{url, label?}` objects. Tolerant like
+ *  sentFilePaths — a bare string url is accepted, a label is optional. */
+export function sentLinks(input: Record<string, unknown>): SentLink[] {
+  const raw = input.links;
+  if (!Array.isArray(raw)) return [];
+  const out: SentLink[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.length > 0) {
+      out.push({ url: item });
+    } else if (item && typeof item === 'object') {
+      const url = (item as Record<string, unknown>).url;
+      if (typeof url === 'string' && url.length > 0) {
+        const label = (item as Record<string, unknown>).label;
+        out.push({ url, label: typeof label === 'string' && label.length > 0 ? label : undefined });
+      }
+    }
+  }
+  return out;
+}
+
+/** Open a URL in the system browser (Electron: shell.openExternal; the
+ *  remote/Android shims map it the same way). Only called on a user click —
+ *  the model never triggers navigation itself. */
+export function openExternalUrl(url: string): void {
+  void (window.claude?.shell?.openExternal?.(url) ?? Promise.resolve());
 }
 
 function basename(fp: string): string {
@@ -194,6 +234,66 @@ export function SentFileTile({ path, sessionId, status, error, narrow, tileBg = 
   );
 }
 
+// A link glyph — a globe, distinct from the file/document glyph.
+function LinkGlyph({ className = 'w-3.5 h-3.5' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <line x1="2" y1="12" x2="22" y2="12" />
+      <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z" />
+    </svg>
+  );
+}
+
+/** A tile in the Deliverables card for a URL the assistant handed the user.
+ *  Unlike a file tile there is no artifact to preview: the whole tile is the
+ *  click target and opens the URL in the system browser. Opened ONLY on a user
+ *  click — the model never triggers navigation itself. */
+export function SentLinkTile({ link, status, error, narrow, compact = false }: {
+  link: SentLink;
+  status: ToolCallState['status'];
+  error?: string;
+  narrow: boolean;
+  compact?: boolean;
+}) {
+  const failed = status === 'failed';
+  // Label: the model's own label if given, else the URL itself (host + path is
+  // friendlier than the full scheme, but the full URL is the fallback).
+  const shown = link.label ?? link.url;
+  return (
+    <button
+      type="button"
+      onClick={() => { if (!failed) openExternalUrl(link.url); }}
+      title={failed ? (error ? `${link.url} — ${error}` : link.url) : `Open ${link.url}`}
+      data-link-url={link.url}
+      data-testid="sent-link-tile"
+      className={`group flex flex-col w-full min-w-0 text-left rounded-lg bg-inset border border-edge hover:border-fg-muted overflow-hidden transition-colors ${failed ? 'opacity-70' : ''}`}
+    >
+      <div className={`relative w-full ${narrow ? 'h-16' : 'h-28'} border-b border-edge bg-canvas flex items-center justify-center text-fg-dim`}>
+        <LinkGlyph className={narrow ? 'w-7 h-7' : 'w-10 h-10'} />
+        {failed && (
+          <div className="absolute inset-0 flex items-center justify-center bg-canvas/80 text-2xs font-semibold text-red-400">
+            Couldn’t send
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 px-2.5 py-2 min-w-0">
+        <span className="flex-1 min-w-0">
+          <span className="block text-sm-tight font-semibold text-fg truncate">{shown}</span>
+          <span className="block text-2xs font-mono text-fg-muted truncate">{link.url}</span>
+        </span>
+        <span className={`shrink-0 inline-flex items-center gap-1 text-2xs font-semibold text-fg-2 border border-edge group-hover:border-fg-muted rounded-md transition-colors ${compact ? 'p-1 self-start' : 'px-2 py-1'}`} aria-label="Open">
+          {!compact && 'Open'}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M7 7h10v10" />
+            <path d="M7 17 17 7" />
+          </svg>
+        </span>
+      </div>
+    </button>
+  );
+}
+
 // The document glyph FilepathToken draws, at header size.
 function FilesGlyph({ className = 'w-3.5 h-3.5' }: { className?: string }) {
   return (
@@ -228,8 +328,9 @@ function useEdgeOverflow(ref: React.RefObject<HTMLDivElement | null>, deps: unkn
 }
 
 interface Props {
-  /** Every SendUserFile call in this bubble, in invocation order. They merge
-   *  into ONE card: files concatenate, each keeps its own call's status. */
+  /** Every SendUserFile / SendUserLink call in this bubble, in invocation
+   *  order. They merge into ONE card: files AND links concatenate, each keeps
+   *  its own call's status. */
   tools: ToolCallState[];
   sessionId: string;
 }
@@ -300,8 +401,14 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
   }, [failedIdsKey]);
   useExpandAllToggle(() => setOpen(true), () => setOpen(false));
 
+  // Two entry kinds: file tiles (path) and link tiles (link). Both derive from
+  // the same tools array — sendFilePaths for SendUserFile, sentLinks for
+  // SendUserLink — and merge in call order into ONE strip.
   const entries = useMemo(
-    () => tools.flatMap((tool) => sentFilePaths(tool.input).map((path) => ({ path, status: tool.status, error: tool.error, key: `${tool.toolUseId}:${path}` }))),
+    () => [
+      ...tools.flatMap((tool) => sentFilePaths(tool.input).map((path) => ({ kind: 'file' as const, path, status: tool.status, error: tool.error, key: `${tool.toolUseId}:${path}` }))),
+      ...tools.flatMap((tool) => sentLinks(tool.input).map((link) => ({ kind: 'link' as const, link, status: tool.status, error: tool.error, key: `${tool.toolUseId}:${link.url}` }))),
+    ],
     [tools],
   );
   // Failed calls list their reason under the strip, in the tool's own words —
@@ -348,7 +455,11 @@ export function DeliverablesCard({ tools, sessionId }: Props) {
             <div ref={stripRef} className="flex gap-2 overflow-x-auto px-2 pb-2" data-testid="deliverables-strip">
               {entries.map((e) => (
                 <div key={e.key} className={`${narrow ? 'w-44' : 'w-56'} shrink-0`}>
-                  <SentFileTile path={e.path} sessionId={sessionId} status={e.status} error={e.error} narrow={narrow} tileBg="bg-inset" compact />
+                  {e.kind === 'file' ? (
+                    <SentFileTile path={e.path} sessionId={sessionId} status={e.status} error={e.error} narrow={narrow} tileBg="bg-inset" compact />
+                  ) : (
+                    <SentLinkTile link={e.link} status={e.status} error={e.error} narrow={narrow} compact />
+                  )}
                 </div>
               ))}
             </div>

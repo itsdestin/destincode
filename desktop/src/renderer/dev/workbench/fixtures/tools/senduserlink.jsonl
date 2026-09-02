@@ -1,0 +1,2 @@
+{"type":"tool_use","id":"toolu_01SendLink","name":"SendUserLink","input":{"links":[{"url":"http://localhost:5173","label":"Dev server"},{"url":"https://example.com","label":"The live site"}],"caption":"Local preview and the deployed page.","status":"normal"}}
+{"tool_use_id":"toolu_01SendLink","type":"tool_result","content":"Sent 2 links to the user.","is_error":false}

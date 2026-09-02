@@ -38,6 +38,11 @@ describe('decidePermission', () => {
       expect(decidePermission('SendUserFile', '', layers(mode))).toMatchObject({ action: 'allow', denyListed: false });
     }
   });
+  it('SendUserLink is allowed in every mode baseline — it only names URLs for the user to click', () => {
+    for (const mode of ['ask', 'auto-edit', 'full-auto'] as const) {
+      expect(decidePermission('SendUserLink', '', layers(mode))).toMatchObject({ action: 'allow', denyListed: false });
+    }
+  });
   it('an explicit remembered rule beats the deny-list (spec ruling #2)', () => {
     const d = decidePermission('Bash', 'git push origin master',
       layers('full-auto', [{ tool: 'Bash', pattern: 'git push*', action: 'allow' }]));

@@ -968,9 +968,12 @@ export function registerIpcHandlers(
     return getChangelog({ forceRefresh: !!opts.forceRefresh });
   });
 
-  // Open any URL in the default browser (allowlisted to https only)
+  // Open any URL in the default browser (allowlisted to http/https — the
+  // scheme is the boundary; any HOST is fine, because the model legitimately
+  // hands the user localhost/LAN dev-server links via SendUserLink and the
+  // user clicks them explicitly. Never file:, javascript:, etc.
   ipcMain.handle(IPC.OPEN_EXTERNAL, async (_event, url: string) => {
-    if (typeof url === 'string' && url.startsWith('https://')) {
+    if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
       await shell.openExternal(url);
     }
   });
