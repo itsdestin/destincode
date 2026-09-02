@@ -56,6 +56,8 @@ export async function wrap<T>(run: () => Promise<T>): Promise<ApiResult<T>> {
 // line AND a notice; the notice needs a surface and copy decision on an auth
 // screen. This half makes the event diagnosable; it does not yet make it
 // visible.
+const MAX_LOGGED_SERVER_MESSAGE = 200;
+
 export function makeClearSessionOn401(store: MarketplaceAuthStore, surface: string) {
   return <T>(result: ApiResult<T>): ApiResult<T> => {
     if (!result.ok && result.status === 401) {
@@ -64,7 +66,14 @@ export function makeClearSessionOn401(store: MarketplaceAuthStore, surface: stri
       if (hadSession) {
         log('WARN', 'Auth', 'account session cleared — a call came back 401', {
           surface,
-          serverMessage: result.message,
+          // CAPPED because this is the 401 RESPONSE BODY, verbatim and
+          // server-controlled: marketplace-api-client falls back to the raw
+          // text when the body is not JSON, so a proxy or captive portal
+          // answering with an HTML page would write that whole page here. The
+          // log keeps only its last 500 lines, so one such entry can evict
+          // every useful line around it. 200 characters is more than any real
+          // server message and cannot cost more than one line.
+          serverMessage: result.message.slice(0, MAX_LOGGED_SERVER_MESSAGE),
         });
       }
     }

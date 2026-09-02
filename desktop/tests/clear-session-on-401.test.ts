@@ -70,6 +70,21 @@ describe('makeClearSessionOn401', () => {
     expect(log).not.toHaveBeenCalled();
   });
 
+  it('caps the logged server message — it is an untrusted response BODY', () => {
+    // marketplace-api-client falls back to the raw response text when a 401
+    // body is not JSON, so a proxy or captive portal answering with an HTML
+    // page puts that whole page in `message`. The log keeps only its last 500
+    // lines; one unbounded entry evicts everything useful around it.
+    const store = fakeStore('tok');
+    const clear = makeClearSessionOn401(asStore(store), 'social');
+
+    clear({ ok: false, status: 401, message: '<html>' + 'x'.repeat(50_000) + '</html>' });
+
+    const extra = vi.mocked(log).mock.calls[0][3] as { serverMessage: string };
+    expect(extra.serverMessage.length).toBe(200);
+    expect(extra.serverMessage.startsWith('<html>')).toBe(true);
+  });
+
   it('passes a success through untouched', () => {
     const store = fakeStore('tok');
     const clear = makeClearSessionOn401(asStore(store), 'social');
