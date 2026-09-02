@@ -15,9 +15,12 @@
 //   S:Name (trailing skill row) · F:<stop reason> (footer)
 // A signature makes a wrong grouping readable at a glance in the failure diff.
 //
-// THE RULE (Destin, 2026-09-02): a reasoning/tool step that produces no visible
-// text does not separate from the next step. A new bubble begins only after
-// the assistant has SPOKEN — reasoning → text → [split] → reasoning again.
+// THE RULE (Destin, 2026-09-02): a bubble shows ONE reasoning section, ONE
+// message and ONE tool group, in that order. A reasoning/tool step that
+// produces no visible text does not separate from the next step — its thought
+// merges into the reasoning section, its tools into the group. A new bubble
+// begins only after the assistant has SPOKEN: reasoning → text → [split] →
+// reasoning again.
 import '@testing-library/jest-dom/vitest';
 import React from 'react';
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -42,7 +45,7 @@ vi.mock('../src/renderer/components/DeliverablesCard', async (orig) => ({
   DeliverablesCard: () => <div data-deliverables />,
 }));
 
-import AssistantTurnBubble from '../src/renderer/components/AssistantTurnBubble';
+import AssistantTurnBubble, { splitIntoBubbles } from '../src/renderer/components/AssistantTurnBubble';
 import { broadcastExpandAll } from '../src/renderer/hooks/useExpandAllToggle';
 
 (window as any).matchMedia = (query: string) => ({ matches: false, media: query, addEventListener: () => {}, removeEventListener: () => {} });
@@ -236,9 +239,10 @@ describe('bubble grouping — native runtime (per-delta streams)', () => {
       ['reason', 'step three', 'reasoning-0'], ['text', 'All done.', 'txt-0'],
       ['done'],
     ]);
-    // Step two spoke nothing, so it stays with step three; the split comes
+    // Step two spoke nothing, so it stays with step three (its thought merges
+    // into the reasoning section, its tool into the group); the split comes
     // only after "First." was said.
-    expect(sig).toEqual(['R T {Bash}', 'R {Read} R T']);
+    expect(sig).toEqual(['R T {Bash}', 'R T {Read}']);
   });
 
   it('silent steps (reasoning + tool, no text) share one bubble until the assistant speaks', () => {
@@ -250,13 +254,19 @@ describe('bubble grouping — native runtime (per-delta streams)', () => {
       ['reason', 'Now check the workspace itself.', 'reasoning-0'], ['prep', 'b', 'Bash'], ['tool', 'b', 'Bash'], ['result', 'b'],
       ['reason', 'Everything is in sync; nothing to report.', 'reasoning-0'],
     ];
-    expect(signature(silent)).toEqual(['R {Bash} R {Bash} R']);
-    // Then it speaks: the text joins that same bubble …
+    // One reasoning section (all three thoughts merged), one group of both tools.
+    expect(signature(silent)).toEqual(['R {Bash Bash}']);
+    // Then it speaks: the text joins that same bubble, between the two …
     const spoke: Ev[] = [...silent, ['text', 'All synced.', 'txt-0']];
-    expect(signature(spoke)).toEqual(['R {Bash} R {Bash} R T']);
+    expect(signature(spoke)).toEqual(['R T {Bash Bash}']);
     // … and only the NEXT reasoning opens a new one.
     expect(signature([...spoke, ['reason', 'One more check.', 'reasoning-0'], ['prep', 'c', 'Read'], ['tool', 'c', 'Read'], ['result', 'c'], ['done']]))
-      .toEqual(['R {Bash} R {Bash} R T', 'R {Read}']);
+      .toEqual(['R T {Bash Bash}', 'R {Read}']);
+    // The merged reasoning section carries every thought, in order.
+    const { turns } = replay(silent);
+    const merged = splitIntoBubbles(turns[0])[0].reasoning!.content;
+    expect(merged.indexOf('Sync all')).toBeLessThan(merged.indexOf('Now check'));
+    expect(merged.indexOf('Now check')).toBeLessThan(merged.indexOf('Everything is in sync'));
   });
 
   it('tool cards keep the order the tools were CALLED, whatever order results arrive', () => {

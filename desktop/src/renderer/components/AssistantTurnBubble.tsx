@@ -67,13 +67,11 @@ function stopReasonCopy(reason: string, provider: SessionProvider | undefined): 
 // dominate the chat view. Expanding reveals the full markdown body.
 // Used by AssistantTurnBubble when a VisualBubble carries reasoning content
 // (always streamed before its associated text bubble).
-function ReasoningSection({ content, afterTools = false }: { content: string; afterTools?: boolean }) {
+function ReasoningSection({ content }: { content: string }) {
   const [expanded, setExpanded] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
   return (
-    // A thought that follows a tool card (the next silent step) gets room
-    // above it so the toggle does not sit on the card's bottom edge.
-    <div className={afterTools ? 'mt-2.5 mb-2' : 'mb-2'}>
+    <div className="mb-2">
       <button
         onClick={() => setExpanded((v) => !v)}
         className="flex items-center gap-1 text-2xs text-fg-muted hover:text-fg-dim select-none"
@@ -238,35 +236,31 @@ function collectBubbleSentFiles(
  * Splits a turn's segments into visual bubbles.
  *
  * THE RULE (Destin, 2026-09-02): a bubble is everything the assistant did up
- * to and including the moment it SPOKE. Silent steps — reasoning, tool
- * calls, more reasoning — accumulate in one bubble, in stream order, until
- * visible text (or a plan) lands. Tool groups that directly follow that text
- * still attach to it. The NEXT reasoning or text after the assistant has
- * spoken opens a new bubble:  reasoning → text → [split] → reasoning again.
+ * to and including the moment it SPOKE, shown as exactly three things in a
+ * fixed order — ONE reasoning section, ONE message, ONE tool group. Silent
+ * steps (reasoning, tool calls, more reasoning) accumulate into the open
+ * bubble until visible text (or a plan) lands: their thoughts merge into the
+ * single reasoning section at the top, their tools into the single group at
+ * the bottom. Tool groups that directly follow the text join that group too.
+ * The NEXT reasoning or text after the assistant has spoken opens a new
+ * bubble:  reasoning → text → [split] → reasoning again.
  *
  * Before this, every reasoning segment opened a bubble, so a run of silent
  * tool steps read as a column of "Show reasoning / one tool" bubbles, with
  * the turn's closing thought in a bubble of its own. Claude Code turns are
  * unchanged: they carry no reasoning content, and text still splits text.
+ * Renderer-only: the transcript and the reducer's segments are untouched.
  */
 // Exported for test: AssistantTurnBubble.test.tsx pins the BUG A mis-attribution
 // fix directly against this pure function rather than through full component render.
-export type BubbleItem =
-  | { kind: 'reasoning'; content: string; messageId: string }
-  | { kind: 'text'; content: string; messageId: string }
-  | { kind: 'plan'; content: string; messageId: string; planFilePath?: string; allowedPrompts?: unknown }
-  | { kind: 'tools'; groupId: string };
-
 export interface VisualBubble {
   key: string;
-  /** What the bubble paints, in stream order. Consecutive reasoning segments
-   *  are joined into one item (double newline) so one disclosure covers a
-   *  thought that streamed in pieces. */
-  items: BubbleItem[];
-  /** The spoken part, once it has landed — at most one per bubble. */
+  /** Every reasoning segment of the bubble, joined by a blank line, keyed by
+   *  the first one's messageId. */
+  reasoning?: { content: string; messageId: string };
   text?: { content: string; messageId: string };
   plan?: { content: string; messageId: string; planFilePath?: string; allowedPrompts?: unknown };
-  /** Every tool group in the bubble, in order (before and after the text). */
+  /** Every tool group in the bubble, in call order. Rendered as ONE group. */
   toolGroupIds: string[];
 }
 
@@ -280,42 +274,34 @@ export function splitIntoBubbles(turn: Pick<AssistantTurn, 'segments'>): VisualB
   let current: VisualBubble | null = null;
   const spoken = () => !!(current && (current.text || current.plan));
   const open = (key: string): VisualBubble => {
-    current = { key, items: [], toolGroupIds: [] };
+    current = { key, toolGroupIds: [] };
     return current;
   };
 
   for (const seg of turn.segments) {
     if (seg.type === 'reasoning') {
       // Reasoning after the assistant has spoken → new bubble. Otherwise it
-      // joins the open bubble (a fresh disclosure above the next tool, or
-      // appended to the previous thought when nothing sat between them).
+      // merges into the open bubble's single reasoning section.
       if (spoken()) { bubbles.push(current!); current = null; }
       const bubble = current ?? open(`reasoning-${seg.messageId}`);
-      const last = bubble.items[bubble.items.length - 1];
-      if (last && last.kind === 'reasoning') {
-        bubble.items[bubble.items.length - 1] = { ...last, content: `${last.content}\n\n${seg.content}` };
-      } else {
-        bubble.items.push({ kind: 'reasoning', content: seg.content, messageId: seg.messageId });
-      }
+      bubble.reasoning = bubble.reasoning
+        ? { ...bubble.reasoning, content: `${bubble.reasoning.content}\n\n${seg.content}` }
+        : { content: seg.content, messageId: seg.messageId };
     } else if (seg.type === 'text') {
       // A second stretch of speech is its own bubble (Claude Code's
       // text / tool / text shape keeps one bubble per text block).
       if (spoken()) { bubbles.push(current!); current = null; }
       const bubble = current ?? open(seg.messageId);
       bubble.text = { content: seg.content, messageId: seg.messageId };
-      bubble.items.push({ kind: 'text', content: seg.content, messageId: seg.messageId });
     } else if (seg.type === 'plan') {
       // A plan counts as speech; the following ExitPlanMode group attaches below.
       if (spoken()) { bubbles.push(current!); current = null; }
       const bubble = current ?? open(seg.messageId);
-      const plan = { content: seg.content, messageId: seg.messageId, planFilePath: seg.planFilePath, allowedPrompts: seg.allowedPrompts };
-      bubble.plan = plan;
-      bubble.items.push({ kind: 'plan', ...plan });
+      bubble.plan = { content: seg.content, messageId: seg.messageId, planFilePath: seg.planFilePath, allowedPrompts: seg.allowedPrompts };
     } else if (seg.type === 'tool-group') {
       // A tool never splits: it belongs to whatever the assistant was doing —
       // the silent step before it, or the sentence it just said.
       const bubble = current ?? open(`tools-${seg.groupId}`);
-      bubble.items.push({ kind: 'tools', groupId: seg.groupId });
       bubble.toolGroupIds.push(seg.groupId);
     } else {
       // A segment type this bundle does not know about. The remote browser and
@@ -351,7 +337,7 @@ function bubblePaintsSomething(
 ): boolean {
   if (bubble.plan || sentFilesCount > 0) return true;
   if (bubble.text && bubble.text.content.trim() !== '') return true;
-  if (bubble.items.some((it) => it.kind === 'reasoning' && it.content.trim() !== '')) return true;
+  if (bubble.reasoning && bubble.reasoning.content.trim() !== '') return true;
   for (const groupId of bubble.toolGroupIds) {
     const group = toolGroups.get(groupId);
     if (!group) continue;
@@ -521,59 +507,46 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
         // A sent-files card counts as content: a bubble holding only that card
         // must get the prose padding, not the tight tools-only padding.
         const hasContent = !!(bubble.text || bubble.plan || sentFiles.length);
-        const hasReasoning = bubble.items.some((it) => it.kind === 'reasoning');
+        const hasReasoning = !!bubble.reasoning;
         const toolsOnly = hasTools && !hasContent && !hasReasoning;
         const reasoningOnly = hasReasoning && !hasContent && !hasTools;
         const isLastBubble = i === shown.length - 1;
         return (
           <div key={bubble.key} className="flex justify-start px-4 py-0.5">
             <div className={`assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : reasoningOnly ? 'py-2.5' : 'py-3.5'}`}>
-              {/* The bubble's items in STREAM order: a silent step's reasoning
-                  sits directly above the tool it led to, and the sentence the
-                  assistant finally said comes after the steps that produced it. */}
-              {bubble.items.map((item, j) => {
-                const prev = j > 0 ? bubble.items[j - 1].kind : null;
-                const afterText = prev === 'text';
-                switch (item.kind) {
-                  case 'reasoning':
-                    return <ReasoningSection key={item.messageId} content={item.content} afterTools={prev === 'tools'} />;
-                  case 'text':
-                    // Pass sessionId so MarkdownContent can render inline FilepathToken chips
-                    // for detected file paths in this session's artifact set.
-                    // SessionRefsEnabled: this is the ONE place a `conversations`
-                    // fence becomes a reference block with live Preview/Resume rows.
-                    // Everywhere else MarkdownContent renders (a previewed past
-                    // conversation, an artifact) it stays plain text — ids from
-                    // another device would resolve to a block of dead rows.
-                    return (
-                      <SessionRefsEnabled.Provider key={item.messageId} value={true}>
-                        <MarkdownContent content={item.content} sessionId={sessionId} />
-                      </SessionRefsEnabled.Provider>
-                    );
-                  case 'plan':
-                    return (
-                      <PlanBubbleContent
-                        key={item.messageId}
-                        content={item.content}
-                        planFilePath={item.planFilePath}
-                        allowedPrompts={item.allowedPrompts}
-                      />
-                    );
-                  case 'tools':
-                    return (
-                      <ToolGroupInline
-                        key={item.groupId}
-                        groupId={item.groupId}
-                        toolGroups={toolGroups}
-                        toolCalls={toolCalls}
-                        sessionId={sessionId}
-                        afterText={afterText}
-                      />
-                    );
-                  default:
-                    return null;
-                }
-              })}
+              {/* Fixed order, one of each (Destin, 2026-09-02): the reasoning
+                  section, the message, the tool group. */}
+              {bubble.reasoning && (
+                <ReasoningSection content={bubble.reasoning.content} />
+              )}
+              {bubble.text && (
+                // Pass sessionId so MarkdownContent can render inline FilepathToken chips
+                // for detected file paths in this session's artifact set.
+                // SessionRefsEnabled: this is the ONE place a `conversations`
+                // fence becomes a reference block with live Preview/Resume rows.
+                // Everywhere else MarkdownContent renders (a previewed past
+                // conversation, an artifact) it stays plain text — ids from
+                // another device would resolve to a block of dead rows.
+                <SessionRefsEnabled.Provider value={true}>
+                  <MarkdownContent content={bubble.text.content} sessionId={sessionId} />
+                </SessionRefsEnabled.Provider>
+              )}
+              {bubble.plan && (
+                <PlanBubbleContent
+                  content={bubble.plan.content}
+                  planFilePath={bubble.plan.planFilePath}
+                  allowedPrompts={bubble.plan.allowedPrompts}
+                />
+              )}
+              {hasTools && (
+                <ToolGroupInline
+                  groupIds={bubble.toolGroupIds}
+                  toolGroups={toolGroups}
+                  toolCalls={toolCalls}
+                  sessionId={sessionId}
+                  afterText={!!bubble.text}
+                />
+              )}
               {/* Sent-files card: LAST in the bubble, after the tool cards
                   (Destin 2026-08-25). Its calls were filtered out of the groups
                   above, so this is the only place they render. */}
@@ -667,25 +640,27 @@ function PlanBubbleContent({
   );
 }
 
-/** Renders a tool group inline within the assistant bubble. */
+/** Renders a bubble's tool groups inline as ONE group, in call order: a
+ *  bubble shows a single tool group (Destin, 2026-09-02), however many silent
+ *  steps fed it. */
 function ToolGroupInline({
-  groupId,
+  groupIds,
   toolGroups,
   toolCalls,
   sessionId,
   afterText = false,
 }: {
-  groupId: string;
+  groupIds: string[];
   toolGroups: Map<string, ToolGroupState>;
   toolCalls: Map<string, ToolCallState>;
   sessionId: string;
   /** A group right after the spoken text gets a little more room above it. */
   afterText?: boolean;
 }) {
-  const group = toolGroups.get(groupId);
-  if (!group || group.toolIds.length === 0) return null;
+  const toolIds = groupIds.flatMap((gid) => toolGroups.get(gid)?.toolIds ?? []);
+  if (toolIds.length === 0) return null;
 
-  const tools = group.toolIds
+  const tools = toolIds
     .map((id) => toolCalls.get(id))
     // Skip undefined AND skip Skill tools — Skills render as a trailing
     // standalone row outside any group via AssistantTurnBubble (see
