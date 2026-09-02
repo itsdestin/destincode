@@ -934,6 +934,15 @@ body[data-mode="buddy-chat"] #theme-bg {
 [data-reduced-effects] .session-pill--hop-a,
 [data-reduced-effects] .session-pill--hop-b { animation: none; }
 
+/* REVIEW SCAFFOLD (2026-09-02, round 4): with a DOT in hand every yield is one
+   dot-width, so a plain slide is Chrome's swap and may read better than the
+   blink. `data-yield="slide"` on a wrapper turns the hop back into a slide on
+   the fast-deceleration curve; nothing in the product sets it. The loser is
+   deleted after the pick — outside :root, like every scaffold before it. */
+[data-yield="slide"] { --pill-yield: var(--dur-hover) var(--ease-out); }
+[data-yield="slide"] .session-pill--hop-a,
+[data-yield="slide"] .session-pill--hop-b { animation: none; }
+
 /* Perf: frame-budget the perpetual Tailwind animations with steps() timing.
    On a high-refresh display, ANY smoothly-animating element makes Chromium
    produce and present a frame at the full refresh rate — measured 2026-07-30 on

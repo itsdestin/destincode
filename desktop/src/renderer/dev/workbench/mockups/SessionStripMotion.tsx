@@ -92,7 +92,9 @@ function Pane({ session, active }: { session: DemoSession; active: boolean }) {
   );
 }
 
-export function SessionStripMotionDemo() {
+/** `yield` is the round-4 review scaffold (`[data-yield]` in globals.css):
+ *  how a neighbouring dot makes room for the dot in hand. Goes with the pick. */
+export function SessionStripMotionDemo({ yieldAs }: { yieldAs?: 'slide' } = {}) {
   const [sessions, setSessions] = useState(SESSIONS);
   const [activeId, setActiveId] = useState(SESSIONS[0].id);
   // SessionStrip calls useArtifact() at its top level (the All Sessions menu's
@@ -102,7 +104,7 @@ export function SessionStripMotionDemo() {
   const statuses = useMemo(() => new Map(sessions.map((s) => [s.id, s.status])), [sessions]);
 
   return (
-    <div className="flex flex-col gap-2">
+    <div data-yield={yieldAs} className="flex flex-col gap-2">
       {/* The header row: the strip's PARENT is what the packer reads its width
           budget from, so it sits in a flex-1 wrapper exactly as in HeaderBar. */}
       <div className="flex items-center gap-2 rounded-lg border border-edge bg-panel px-2 py-1">

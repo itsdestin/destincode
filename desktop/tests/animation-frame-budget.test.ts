@@ -273,7 +273,7 @@ describe('motion vocabulary', () => {
     // under the selected pill"). So during a drag a neighbour's transform
     // does not animate: it jumps, delayed by half the blink that hides it.
     const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/dragging \? '0s linear calc\(var\(--dur-hover\) \/ 2\)'/);
+    expect(strip).toMatch(/dragging \? 'var\(--pill-yield, 0s linear calc\(var\(--dur-hover\) \/ 2\)\)'/);
     expect(strip).toMatch(/session-pill--hop-a/);
     expect(strip).toMatch(/session-pill--hop-b/);
     // The blink: invisible across the middle, where the jump lands.
@@ -313,11 +313,13 @@ describe('motion vocabulary', () => {
     expect(root).toMatch(/--frame-edge:/);
   });
 
-  it('has no review scaffolds left — every round was picked on 2026-09-02', () => {
+  it('has no review scaffolds left but the round-4 yield one — every earlier round was picked on 2026-09-02', () => {
     // The speed presets ([data-motion]), the select-on modes ([data-select])
     // and the arrival alternatives ([data-arrival], plus the `?arrival=` param
     // in index.tsx) were each picked and deleted; the winners are the plain
     // values. Spring is the arrival: 14px lift on an overshooting curve.
+    // `[data-yield]` (slide vs hop, with a dot in hand) is the one open pick.
+    expect(globals).toMatch(/\[data-yield="slide"\] \{ --pill-yield:/);
     expect(globals).not.toMatch(/data-motion|data-arrival|--switch-lift|--switch-ease/);
     expect(read('.', 'index.tsx')).not.toMatch(/arrival/);
     expect(globals).toMatch(/@keyframes switch-arrival \{[^}]*translateY\(14px\)/);
@@ -414,6 +416,15 @@ describe('motion vocabulary', () => {
     expect(strip).toMatch(/data-session-idx=\{idx\}/);
     expect(strip).not.toMatch(/\bdragIdx\b/);
     expect(strip).not.toMatch(/\boverIdx\b/);
+  });
+
+  it('holds a DOT while dragging — the name closes at pickup and opens at the drop', () => {
+    // An open name in hand among dots meant every dot crossed the whole pill
+    // to make room; no treatment of that crossing read right (Destin, R3:
+    // "still feels janky"). With a dot in hand each yield is one dot-width.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/if \(id === sessionId\) return COLLAPSED_PILL_PX;/);
+    expect(strip).toMatch(/: !isBeingDragged && \(displayPack\.expanded\.has\(s\.id\) \|\| isHovered \|\| isActive\)/);
   });
 
   it('puts nothing but the dot and the name on a pill — the runtime lives in the menu', () => {

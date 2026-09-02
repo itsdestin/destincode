@@ -231,3 +231,39 @@ export function neighbourOffsets(
   }
   return out;
 }
+
+/** An x in the row AS DRAWN (each pill at its `now` left, transforms taken
+ *  out) mapped to the same place in the row as it will SETTLE — piecewise
+ *  linear between pill left edges, a plain shift beyond the ends. The yield
+ *  lines (nextSlotId) are defined on settled geometry; this is how a cursor
+ *  over a row that is still settling is asked the same question.
+ *
+ *  WHY (2026-09-02): pressing a dot collapses the old name and re-centres the
+ *  strip, so the row slides ~150px under a stationary cursor over 260ms — and
+ *  a drag usually starts inside that window. Judged against settled geometry
+ *  alone, the pill in hand was "already" seven slots along, and seven dots
+ *  yielded at once, far ahead of anything visible. Mapping the cursor through
+ *  where the dots ARE makes a dot yield when the pill visibly reaches it. */
+export function mapToSettled(
+  now: readonly PillRect[],
+  settled: readonly PillRect[],
+  x: number,
+): number {
+  const settledLeft = new Map(settled.map((r) => [r.id, r.left]));
+  const pairs = now
+    .filter((r) => settledLeft.has(r.id))
+    .map((r) => ({ from: r.left, to: settledLeft.get(r.id)! }))
+    .sort((a, b) => a.from - b.from);
+  if (pairs.length === 0) return x;
+  if (x <= pairs[0].from) return x + (pairs[0].to - pairs[0].from);
+  const last = pairs[pairs.length - 1];
+  if (x >= last.from) return x + (last.to - last.from);
+  for (let k = 0; k + 1 < pairs.length; k++) {
+    const a = pairs[k], b = pairs[k + 1];
+    if (x >= a.from && x <= b.from) {
+      const t = b.from === a.from ? 0 : (x - a.from) / (b.from - a.from);
+      return a.to + t * (b.to - a.to);
+    }
+  }
+  return x;
+}

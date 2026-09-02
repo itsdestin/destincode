@@ -4425,7 +4425,25 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'soft-press-hop',
             label: 'Soft + press, no tag, dots hop',
-            note: 'What ships. Open the All Sessions menu (the chevron) for the runtime · model line; drag a pill along the row to see the dots hop instead of slide.',
+            note: 'The open name stayed in hand and each dot hopped the whole pill\'s width. Destin, 2026-09-02: "this is better, but the interaction between the selected moving pill and the other dots/sessions still feels janky." Superseded by R5; renders what ships.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 5,
+        basis: 'The jank was structural, not a tuning problem: an open name (~180px) in hand among 28px dots meant every dot had to cross the whole pill to get out of its way, and no treatment of that crossing (a slide, then a blink) looked right. Chrome never has this problem because every tab it lets you drag is the same width as its neighbours. So now the pill in hand IS a dot: the name closes the moment the pointer moves far enough to be a drag (a plain click still opens it on press, unchanged), every neighbour moves exactly one dot-width, and the name opens again where the dot is dropped. One question left: how a dot makes that one-dot-width move.',
+        candidates: [
+          {
+            id: 'dot-slide',
+            label: 'Dot in hand · dots slide',
+            note: 'A yielding dot slides its one dot-width on the fast-deceleration curve — Chrome\'s swap between two things of one size.',
+            render: () => <SessionStripMotionDemo yieldAs="slide" />,
+          },
+          {
+            id: 'dot-hop',
+            label: 'Dot in hand · dots hop',
+            note: 'A yielding dot blinks across instead: fades out, moves while invisible, fades in one dot-width over.',
             render: () => <SessionStripMotionDemo />,
           },
         ],

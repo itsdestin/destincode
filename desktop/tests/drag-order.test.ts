@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   nearestSlotId, nextSlotId, slotCentres, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets,
-  PILL_GAP, DRAG_TUNE,
+  mapToSettled, PILL_GAP, DRAG_TUNE,
 } from '../src/renderer/components/header/drag-order';
 import { packSessions } from '../src/renderer/components/header/pack-sessions';
 
@@ -238,5 +238,40 @@ describe('the index spaces the strip used to mix', () => {
     // What the strip does now: both ends resolved against the full list, by id.
     expect(reorderIndices(sessions.map(s => s.id), 's5', visible[0]))
       .toEqual({ from: canonicalIdx, to: 0 });
+  });
+});
+
+describe('mapToSettled — a cursor over a row that is still settling, asked the settled question', () => {
+  // As drawn: the old name has not collapsed yet, so everything after `a` is
+  // 100px further right than it will settle.
+  const now = [
+    { id: 'a', left: 0, right: 128 },
+    { id: 'b', left: 132, right: 160 },
+    { id: 'c', left: 164, right: 192 },
+  ];
+  const settled = [
+    { id: 'a', left: 0, right: 28 },
+    { id: 'b', left: 32, right: 60 },
+    { id: 'c', left: 64, right: 92 },
+  ];
+
+  it('maps a pill\'s drawn left edge to its settled left edge', () => {
+    expect(mapToSettled(now, settled, 132)).toBe(32);
+    expect(mapToSettled(now, settled, 164)).toBe(64);
+  });
+
+  it('interpolates between edges and shifts beyond the ends', () => {
+    expect(mapToSettled(now, settled, 148)).toBe(48);   // halfway b→c
+    expect(mapToSettled(now, settled, 66)).toBe(16);    // halfway a→b: 0..132 → 0..32
+    expect(mapToSettled(now, settled, 200)).toBe(100);  // past c: same shift as c
+    expect(mapToSettled(now, settled, -10)).toBe(-10);  // before a: a does not move
+  });
+
+  it('is the identity once the row has settled', () => {
+    expect(mapToSettled(settled, settled, 47)).toBe(47);
+  });
+
+  it('ignores a drawn pill the settled row does not know', () => {
+    expect(mapToSettled([...now, { id: 'z', left: 300, right: 328 }], settled, 148)).toBe(48);
   });
 });

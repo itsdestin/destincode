@@ -12,7 +12,7 @@ import { pillLabelStyle } from './header/pill-label-style';
 import { pillMetrics, NAME_FONT, type PillMetrics } from './header/pill-metrics';
 import { sessionRuntimeLabel } from './header/session-runtime-label';
 import { ProviderIcon } from './ProviderIcon';
-import { nextSlotId, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets, DRAG_TUNE, type PillRect } from './header/drag-order';
+import { nextSlotId, clampFloatLeft, layoutRects, reorderIndices, neighbourOffsets, mapToSettled, DRAG_TUNE, type PillRect } from './header/drag-order';
 import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { useArtifact } from '../state/ArtifactContext';
@@ -349,6 +349,8 @@ export default function SessionStrip({
   // its full name while in hand, and a px offset would leave the cursor at its
   // far left edge; a fraction keeps it under the same part of the pill.
   const grabFrac = useRef(0.5);
+  // The cursor's last x, for the rAF loop that re-anchors a shrinking twin.
+  const cursorXRef = useRef(0);
   // The pack the row is settling INTO for this drag, computed at pointer-down
   // (with the pressed session as active when the mode selects on press). Read
   // in place of the live pack for the whole drag so a resize cannot repack
@@ -674,8 +676,18 @@ export default function SessionStrip({
       const visible = sessions.filter(x => target.expanded.has(x.id) || target.collapsed.includes(x.id));
       // A pill's settled width: its full measured width if the packer expands
       // it (capped at the budget, where the active pill ellipsises instead),
-      // else a dot.
+      // else a dot. THE PILL IN HAND IS A DOT (2026-09-02): the moment a drag
+      // starts its name closes, so in the row's eyes it is 28px wide and every
+      // neighbour only ever has to move one dot-width to make room — Chrome's
+      // swap, between things of one size. With the open name in hand (~180px)
+      // each dot had to cross the whole pill to get out of its way, and no
+      // treatment of that crossing — a slide, then a blink — stopped it
+      // reading as jank (Destin, R3: "the interaction between the selected
+      // moving pill and the other dots/sessions still feels janky"). A plain
+      // click is untouched: the name opens on press as before, and closes
+      // only when the pointer actually moves far enough to be a drag.
       const widthOf = (id: string) => {
+        if (id === sessionId) return COLLAPSED_PILL_PX;
         if (!target.expanded.has(id)) return COLLAPSED_PILL_PX;
         return Math.min(metrics.get(id)?.expandedWidth ?? 120, Math.max(COLLAPSED_PILL_PX, budget - 24 - PILL_GAP));
       };
@@ -683,11 +695,6 @@ export default function SessionStrip({
       const first = barEl.querySelector<HTMLElement>('[data-session-id]');
       const originLeft = first ? first.getBoundingClientRect().left : barRect.left + 6;
       pillRectsRef.current = layoutRects(visible.map(x => ({ id: x.id, width: widthOf(x.id) })), originLeft, PILL_GAP);
-    }
-    const pressed = (e.target as HTMLElement).closest<HTMLElement>('[data-session-id]');
-    if (pressed) {
-      const r = pressed.getBoundingClientRect();
-      grabFrac.current = r.width > 0 ? Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) : 0.5;
     }
     if (selectsNow) onSelectSession(sessionId);
 
@@ -734,6 +741,19 @@ export default function SessionStrip({
       if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
       isDragging.current = true;
       suppressClick.current = true;
+      // The grab point is taken NOW, not at the press: between the two the
+      // row has slid under the stationary cursor (the old name collapsing,
+      // the strip re-centring), and a fraction measured at the press would
+      // draw the twin up to ~150px from the box it stands in for. Measured
+      // against the box as it is, the twin appears exactly on it; and as the
+      // box shrinks to a dot the twin shrinks around the cursor.
+      const bar0 = pillBarRef.current;
+      const held0 = bar0?.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(dragId)}"]`);
+      if (held0) {
+        const r = held0.getBoundingClientRect();
+        grabFrac.current = r.width > 0 ? Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) : 0.5;
+      }
+      // (no snapshot needed: the row is read as drawn on every move, below)
       // Tell main this is a real drag — it starts the cross-window cursor
       // ticker so peer windows can highlight their strip as a drop target.
       const draggedSession = sessions.find(x => x.id === dragId);
@@ -747,15 +767,23 @@ export default function SessionStrip({
     // The geometry, shifted by however far the bar has slid since press (see
     // barLeftAtPress) — so the yield lines are where the dots ARE, not where
     // they were before the header re-centred the strip.
+    cursorXRef.current = e.clientX;
     const barLeftNow = pillBarRef.current ? pillBarRef.current.getBoundingClientRect().left : barLeftAtPress.current;
     const shift = barLeftNow - barLeftAtPress.current;
-    const rects = shift === 0
+    const settled = shift === 0
       ? pillRectsRef.current
       : pillRectsRef.current.map(r => ({ id: r.id, left: r.left + shift, right: r.right + shift }));
+    const rects = settled;
     const held = rects.find(r => r.id === dragId);
+    // The settled width of the pill in hand — a dot. The twin is still
+    // shrinking towards that for the first --dur-reveal of a drag, so it is
+    // placed by its CURRENT width (the cursor stays at the same fraction of
+    // it) while the slot is judged by the dot it is becoming.
     const heldWidth = held ? held.right - held.left : 0;
+    const heldEl = pillBarRef.current?.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(dragId)}"]`);
+    const widthNow = heldEl ? heldEl.getBoundingClientRect().width || heldWidth : heldWidth;
     const floatLeft = held
-      ? clampFloatLeft(rects, e.clientX - grabFrac.current * heldWidth, heldWidth)
+      ? clampFloatLeft(rects, e.clientX - grabFrac.current * widthNow, widthNow)
       : null;
     // Bar-local against the bar's left edge NOW, for the same reason.
     if (floatLeft !== null) setDragLeft(floatLeft - barLeftNow);
@@ -815,7 +843,23 @@ export default function SessionStrip({
     if (!bar) return;
     // A drag from the All Sessions menu has no float (it is not in the row);
     // nextSlotId then falls back to the pill nearest the cursor.
-    const centre = floatLeft !== null ? floatLeft + heldWidth / 2 : e.clientX;
+    // The dot's centre — then mapped from the row AS DRAWN to the row as it
+    // will settle (mapToSettled): for the first --dur-reveal of a drag the
+    // row is still sliding under the cursor from the select-on-press, and a
+    // dot must yield when the pill visibly reaches it, not when it would have
+    // in the settled layout. Each pill's drawn left has its in-flight
+    // transform (a yield, the hop's delayed jump) taken back out.
+    const centreDrawn = floatLeft !== null ? e.clientX - grabFrac.current * heldWidth + heldWidth / 2 : e.clientX;
+    const drawn: PillRect[] = [];
+    bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
+      const id = el.dataset.sessionId;
+      if (!id) return;
+      const r = el.getBoundingClientRect();
+      const m = /matrix\(([^)]+)\)/.exec(getComputedStyle(el).transform);
+      const tx = m ? Number(m[1].split(',')[4]) || 0 : 0;
+      drawn.push({ id, left: r.left - tx, right: r.right - tx });
+    });
+    const centre = floatLeft !== null ? mapToSettled(drawn, rects, centreDrawn) : centreDrawn;
     const tv = travel.current;
     if (tv.dir >= 0 && e.clientX > tv.extreme) { tv.dir = 1; tv.extreme = e.clientX; }
     else if (tv.dir <= 0 && e.clientX < tv.extreme) { tv.dir = -1; tv.extreme = e.clientX; }
@@ -1015,7 +1059,14 @@ export default function SessionStrip({
     const tick = () => {
       const real = pillElement(dragId);
       const twin = bar.querySelector<HTMLElement>(':scope > div[aria-hidden]');
-      if (real && twin) twin.style.width = `${real.getBoundingClientRect().width}px`;
+      if (real && twin) {
+        const w = real.getBoundingClientRect().width;
+        twin.style.width = `${w}px`;
+        // And its LEFT: the cursor stays at the same fraction of a shrinking
+        // twin, so both edges close in on the cursor rather than the right
+        // edge sweeping left across the dots ahead.
+        twin.style.left = `${cursorXRef.current - grabFrac.current * w - bar.getBoundingClientRect().left}px`;
+      }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
@@ -1190,9 +1241,13 @@ export default function SessionStrip({
           const isActive = s.id === activeSessionId;
           const isHovered = hoveredId === s.id;
           const isBeingDragged = dragId === s.id && isDragging.current;
+          // The pill in hand is a dot: its name closes at pickup (the twin's
+          // width follows the in-flow box, so the thing under the cursor
+          // shrinks with it) and opens again where it is dropped — the arming
+          // window covers both ends of a drag. See widthOf in handlePointerDown.
           const showName = forceSingle
             ? isActive
-            : displayPack.expanded.has(s.id) || isHovered || isActive;
+            : !isBeingDragged && (displayPack.expanded.has(s.id) || isHovered || isActive);
           // A HOVER PEEK: the name is showing only because the cursor is on it.
           // The packer reserved no room for this pill, so the name is capped
           // (pill-label-style.ts).
@@ -1267,10 +1322,11 @@ export default function SessionStrip({
                       // `transform` gets the settle curve when a drop is gliding
                       // home; during a drag a neighbour's transform does not
                       // animate at all — it JUMPS, halfway through the blink
-                      // that hides it (see hopGen); a hover scales on the
-                      // decelerate curve. Never an overshoot: a release must
-                      // not spring.
-                      : `transform ${settle?.deltas.has(s.id) ? 'var(--dur-hover) var(--ease-settle)' : dragging ? '0s linear calc(var(--dur-hover) / 2)' : 'var(--dur-hover) var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
+                      // that hides it (see hopGen) — unless the review scaffold
+                      // `[data-yield="slide"]` sets --pill-yield, which makes it
+                      // a plain slide instead; a hover scales on the decelerate
+                      // curve. Never an overshoot: a release must not spring.
+                      : `transform ${settle?.deltas.has(s.id) ? 'var(--dur-hover) var(--ease-settle)' : dragging ? 'var(--pill-yield, 0s linear calc(var(--dur-hover) / 2))' : 'var(--dur-hover) var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
                   // Four mutually exclusive transform states: the pill in hand
                   // (under the cursor), a dropped pill gliding home, a neighbour
                   // stepping aside, or a plain hover.
