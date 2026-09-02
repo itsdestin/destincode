@@ -30,6 +30,7 @@ import type { NativeHome } from '../../native-home';
 // takes the FROZEN native-store slug like every other file under sessions/,
 // never the CC-mirroring one (slug-encoding.ts).
 import { nativeStoreSlug } from '../../slug-encoding';
+import { SPECIALIST_NOTE_MAX_CHARS } from './limits';
 import type { SpecialistNote, SpecialistRunView } from '../../../shared/types';
 
 export type OwnerStamp = { pid: number; instanceId: string };
@@ -106,6 +107,37 @@ export interface DelegationRecord {
 // of it) expensive. The full text always survives elsewhere: the child's own
 // JSONL transcript, and (Task 4) a spill file at reportPath.
 export const RAW_REPORT_CAP_CHARS = 64_000;
+
+// ROADMAP L264. `missedSteers` was the one unbounded field left in this file.
+// The 2,000-char note cap only clamps the RECORDED copy of a DELIVERED steer
+// (native-session-host's steerFromUser path); a steer that arrives too late to
+// deliver is parked here instead, at full length, in the same read-modify-write
+// file RAW_REPORT_CAP_CHARS exists to keep cheap. A model steering a child that
+// isn't live, in a loop, is the failure mode: every attempt appends, nothing
+// drains, and every later status-block read re-parses the lot.
+//
+// Two bounds, because one steer being long and there being many steers are
+// different problems: each entry is clamped to the same cap a delivered note
+// gets, and the array keeps its most recent MISSED_STEERS_MAX_ENTRIES.
+//
+// WHY dropping the OLDEST is safe here: parked steers are drained and delivered
+// on the child's next turn (takeMissedSteers), so in normal use this array
+// holds one or two entries and never reaches the cap. Reaching 50 means nothing
+// has drained across 50 attempts — the child is not coming back — so the
+// entries being dropped were never going to be delivered either. The most
+// recent ones are kept because they are the ones the user still means.
+//
+// Clamped ON WRITE only. Oversized records already on disk stay readable and
+// are shortened the next time they are appended to, so no FILE_VERSION bump.
+export const MISSED_STEERS_MAX_ENTRIES = 50;
+
+/** Applies both `missedSteers` bounds. Called from INSIDE every mutate callback
+ *  (never by a caller before it takes the lock) so the commutative-append
+ *  guarantee documented on appendMissedSteers still holds. */
+function boundMissedSteers(existing: string[], added: string[]): string[] {
+  return [...existing, ...added.map((s) => s.slice(0, SPECIALIST_NOTE_MAX_CHARS))]
+    .slice(-MISSED_STEERS_MAX_ENTRIES);
+}
 
 const FILE_VERSION = 1 as const;
 interface LedgerFile { v: 1; delegations: DelegationRecord[] }
@@ -228,7 +260,7 @@ export class DelegationLedger {
         delegations: data.delegations.map((d) => {
           if (d.childId !== childId) return d;
           const merged = { ...d, ...cappedPatch };
-          return appendSteers.length > 0 ? { ...merged, missedSteers: [...d.missedSteers, ...appendSteers] } : merged;
+          return appendSteers.length > 0 ? { ...merged, missedSteers: boundMissedSteers(d.missedSteers, appendSteers) } : merged;
         }),
       };
     });
@@ -275,7 +307,7 @@ export class DelegationLedger {
         delegations: data.delegations.map((d) => {
           if (d.childId !== childId) return d;
           const patched = d.status === 'running' ? { ...d, ...patch } : d;
-          return appendSteers.length > 0 ? { ...patched, missedSteers: [...d.missedSteers, ...appendSteers] } : patched;
+          return appendSteers.length > 0 ? { ...patched, missedSteers: boundMissedSteers(d.missedSteers, appendSteers) } : patched;
         }),
       };
     });
@@ -314,7 +346,7 @@ export class DelegationLedger {
         v: FILE_VERSION,
         delegations: data.delegations.map((d) => {
           if (d.childId !== childId) return d;
-          const withSteers = { ...d, missedSteers: [...d.missedSteers, ...steers] };
+          const withSteers = { ...d, missedSteers: boundMissedSteers(d.missedSteers, steers) };
           return note ? { ...withSteers, notes: [...(d.notes ?? []), note] } : withSteers;
         }),
       };
