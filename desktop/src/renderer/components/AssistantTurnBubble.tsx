@@ -234,21 +234,33 @@ function collectBubbleSentFiles(
 
 /**
  * Splits a turn's segments into visual bubbles.
- * Each bubble = one text segment + the tool-group segments that follow it.
- * Leading tool-groups (before any text) get their own tools-only bubble.
+ *
+ * THE RULE (Destin, 2026-09-02): a bubble is everything the assistant did up
+ * to and including the moment it SPOKE, shown as exactly three things in a
+ * fixed order — ONE reasoning section, ONE message, ONE tool group. Silent
+ * steps (reasoning, tool calls, more reasoning) accumulate into the open
+ * bubble until visible text (or a plan) lands: their thoughts merge into the
+ * single reasoning section at the top, their tools into the single group at
+ * the bottom. Tool groups that directly follow the text join that group too.
+ * The NEXT reasoning or text after the assistant has spoken opens a new
+ * bubble:  reasoning → text → [split] → reasoning again.
+ *
+ * Before this, every reasoning segment opened a bubble, so a run of silent
+ * tool steps read as a column of "Show reasoning / one tool" bubbles, with
+ * the turn's closing thought in a bubble of its own. Claude Code turns are
+ * unchanged: they carry no reasoning content, and text still splits text.
+ * Renderer-only: the transcript and the reducer's segments are untouched.
  */
 // Exported for test: AssistantTurnBubble.test.tsx pins the BUG A mis-attribution
 // fix directly against this pure function rather than through full component render.
 export interface VisualBubble {
   key: string;
-  // Reasoning segments accumulated since the last text/plan/tool-group are
-  // attached to the next bubble as a collapsible disclosure (joined by
-  // double-newline if there were multiple). When a turn ends with reasoning
-  // and no following text (still streaming, or model never produced output),
-  // a reasoning-only bubble is emitted so the user still sees activity.
+  /** Every reasoning segment of the bubble, joined by a blank line, keyed by
+   *  the first one's messageId. */
   reasoning?: { content: string; messageId: string };
   text?: { content: string; messageId: string };
   plan?: { content: string; messageId: string; planFilePath?: string; allowedPrompts?: unknown };
+  /** Every tool group in the bubble, in call order. Rendered as ONE group. */
   toolGroupIds: string[];
 }
 
@@ -260,67 +272,37 @@ export interface VisualBubble {
 export function splitIntoBubbles(turn: Pick<AssistantTurn, 'segments'>): VisualBubble[] {
   const bubbles: VisualBubble[] = [];
   let current: VisualBubble | null = null;
-  // Buffer of reasoning content seen since the last bubble boundary.
-  // Drained into the next bubble's `reasoning` field, or flushed as a
-  // standalone reasoning bubble if the turn ends with reasoning unattached.
-  let pendingReasoning: { content: string; messageId: string } | null = null;
+  const spoken = () => !!(current && (current.text || current.plan));
+  const open = (key: string): VisualBubble => {
+    current = { key, toolGroupIds: [] };
+    return current;
+  };
 
   for (const seg of turn.segments) {
     if (seg.type === 'reasoning') {
-      // Stash; will attach to the next text/plan/tool bubble.
-      if (pendingReasoning) {
-        pendingReasoning = {
-          content: `${pendingReasoning.content}\n\n${seg.content}`,
-          messageId: pendingReasoning.messageId,
-        };
-      } else {
-        pendingReasoning = { content: seg.content, messageId: seg.messageId };
-      }
+      // Reasoning after the assistant has spoken → new bubble. Otherwise it
+      // merges into the open bubble's single reasoning section.
+      if (spoken()) { bubbles.push(current!); current = null; }
+      const bubble = current ?? open(`reasoning-${seg.messageId}`);
+      bubble.reasoning = bubble.reasoning
+        ? { ...bubble.reasoning, content: `${bubble.reasoning.content}\n\n${seg.content}` }
+        : { content: seg.content, messageId: seg.messageId };
     } else if (seg.type === 'text') {
-      if (current) bubbles.push(current);
-      current = {
-        key: seg.messageId,
-        reasoning: pendingReasoning ?? undefined,
-        text: { content: seg.content, messageId: seg.messageId },
-        toolGroupIds: [],
-      };
-      pendingReasoning = null;
+      // A second stretch of speech is its own bubble (Claude Code's
+      // text / tool / text shape keeps one bubble per text block).
+      if (spoken()) { bubbles.push(current!); current = null; }
+      const bubble = current ?? open(seg.messageId);
+      bubble.text = { content: seg.content, messageId: seg.messageId };
     } else if (seg.type === 'plan') {
-      // Plan bubble: its own distinct bubble, rendered differently from text.
-      // The following ExitPlanMode tool-group naturally attaches below.
-      if (current) bubbles.push(current);
-      current = {
-        key: seg.messageId,
-        reasoning: pendingReasoning ?? undefined,
-        plan: {
-          content: seg.content,
-          messageId: seg.messageId,
-          planFilePath: seg.planFilePath,
-          allowedPrompts: seg.allowedPrompts,
-        },
-        toolGroupIds: [],
-      };
-      pendingReasoning = null;
+      // A plan counts as speech; the following ExitPlanMode group attaches below.
+      if (spoken()) { bubbles.push(current!); current = null; }
+      const bubble = current ?? open(seg.messageId);
+      bubble.plan = { content: seg.content, messageId: seg.messageId, planFilePath: seg.planFilePath, allowedPrompts: seg.allowedPrompts };
     } else if (seg.type === 'tool-group') {
-      // Tool-group segment. Fix (M1 BUG A): the native harness streams
-      // reasoning live but batches tool-use events after each step's stream,
-      // so a multi-step turn interleaves as [text₁, toolGroupA, reasoning₂,
-      // toolGroupB]. A tool group must start a NEW bubble not only when no
-      // bubble is open, but also when reasoning has streamed since the open
-      // bubble began — otherwise this tool group gets appended to the PRIOR
-      // (unrelated) bubble and its reasoning strands into a trailing
-      // reasoning-only bubble. This was the exact dogfood bug: tool cards
-      // attaching to the wrong chat bubble.
-      if (!current || pendingReasoning) {
-        if (current) bubbles.push(current);
-        current = {
-          key: `tools-${seg.groupId}`,
-          reasoning: pendingReasoning ?? undefined,
-          toolGroupIds: [],
-        };
-        pendingReasoning = null;
-      }
-      current.toolGroupIds.push(seg.groupId);
+      // A tool never splits: it belongs to whatever the assistant was doing —
+      // the silent step before it, or the sentence it just said.
+      const bubble = current ?? open(`tools-${seg.groupId}`);
+      bubble.toolGroupIds.push(seg.groupId);
     } else {
       // A segment type this bundle does not know about. The remote browser and
       // the Android WebView load a bundle that can be OLDER than the host that
@@ -331,16 +313,6 @@ export function splitIntoBubbles(turn: Pick<AssistantTurn, 'segments'>): VisualB
     }
   }
   if (current) bubbles.push(current);
-  // Trailing reasoning with no text after it — the model is mid-stream or
-  // produced reasoning only. Emit a reasoning-only bubble so the user sees
-  // it and can expand to read the chain of thought.
-  if (pendingReasoning) {
-    bubbles.push({
-      key: `reasoning-${pendingReasoning.messageId}`,
-      reasoning: pendingReasoning,
-      toolGroupIds: [],
-    });
-  }
   return bubbles;
 }
 
@@ -542,6 +514,8 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
         return (
           <div key={bubble.key} className="flex justify-start px-4 py-0.5">
             <div className={`assistant-bubble max-w-[85%] break-words rounded-2xl rounded-bl-sm bg-inset text-sm text-fg px-5 ${toolsOnly ? 'py-2.5' : hasTools ? 'pt-4 pb-3' : reasoningOnly ? 'py-2.5' : 'py-3.5'}`}>
+              {/* Fixed order, one of each (Destin, 2026-09-02): the reasoning
+                  section, the message, the tool group. */}
               {bubble.reasoning && (
                 <ReasoningSection content={bubble.reasoning.content} />
               )}
@@ -565,17 +539,13 @@ export default React.memo(function AssistantTurnBubble({ turn, toolGroups, toolC
                 />
               )}
               {hasTools && (
-                <div className={bubble.text ? 'mt-1' : ''}>
-                  {bubble.toolGroupIds.map((groupId) => (
-                    <ToolGroupInline
-                      key={groupId}
-                      groupId={groupId}
-                      toolGroups={toolGroups}
-                      toolCalls={toolCalls}
-                      sessionId={sessionId}
-                    />
-                  ))}
-                </div>
+                <ToolGroupInline
+                  groupIds={bubble.toolGroupIds}
+                  toolGroups={toolGroups}
+                  toolCalls={toolCalls}
+                  sessionId={sessionId}
+                  afterText={!!bubble.text}
+                />
               )}
               {/* Sent-files card: LAST in the bubble, after the tool cards
                   (Destin 2026-08-25). Its calls were filtered out of the groups
@@ -670,22 +640,27 @@ function PlanBubbleContent({
   );
 }
 
-/** Renders a tool group inline within the assistant bubble. */
+/** Renders a bubble's tool groups inline as ONE group, in call order: a
+ *  bubble shows a single tool group (Destin, 2026-09-02), however many silent
+ *  steps fed it. */
 function ToolGroupInline({
-  groupId,
+  groupIds,
   toolGroups,
   toolCalls,
   sessionId,
+  afterText = false,
 }: {
-  groupId: string;
+  groupIds: string[];
   toolGroups: Map<string, ToolGroupState>;
   toolCalls: Map<string, ToolCallState>;
   sessionId: string;
+  /** A group right after the spoken text gets a little more room above it. */
+  afterText?: boolean;
 }) {
-  const group = toolGroups.get(groupId);
-  if (!group || group.toolIds.length === 0) return null;
+  const toolIds = groupIds.flatMap((gid) => toolGroups.get(gid)?.toolIds ?? []);
+  if (toolIds.length === 0) return null;
 
-  const tools = group.toolIds
+  const tools = toolIds
     .map((id) => toolCalls.get(id))
     // Skip undefined AND skip Skill tools — Skills render as a trailing
     // standalone row outside any group via AssistantTurnBubble (see
@@ -704,7 +679,7 @@ function ToolGroupInline({
   if (restTools.length === 0) return null;
 
   return (
-    <div className="my-0.5 space-y-0.5">
+    <div className={`my-0.5 space-y-0.5 ${afterText ? 'mt-1.5' : ''}`}>
       {restTools.length === 1 ? (
         <ToolCard tool={restTools[0]} sessionId={sessionId} />
       ) : (
