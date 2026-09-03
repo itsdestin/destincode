@@ -24,7 +24,7 @@ import type { CentralIndexProject, ArtifactRecord } from '../../../shared/artifa
 import type { PastSession } from '../../../shared/types';
 import type { ContextFile, ContextGroup, ContextScope } from '../../../shared/project-context-types';
 import type { FileTypeGroup } from '../../../shared/artifacts/categorization';
-import type { FileSortKey } from './tabs/FilesTab';
+import type { FileSortKey, FileViewMode } from './tabs/FilesTab';
 
 // Enriched session shape returned by project:list-conversations (preview only —
 // see project-conversations.ts for why there's no message count).
@@ -70,6 +70,15 @@ interface HeroRepo { webUrl?: string; owner?: string; name?: string }
 // The search + sliders glyphs live in SearchFilterPill, shared with the drawer.
 // CloseButton is the shared screen-exit affordance (UI tranche 4, change 27).
 import { ChatIcon, FolderIcon, DocIcon } from './icons';
+
+// Files-tab view preference (thumbnail grid vs. compact list). One value for the
+// whole app, on this device — see the state comment in ProjectView.
+const FILE_VIEW_KEY = 'youcoded.projectView.fileView';
+function readStoredFileView(): FileViewMode {
+  try {
+    return localStorage.getItem(FILE_VIEW_KEY) === 'list' ? 'list' : 'grid';
+  } catch { return 'grid'; } // storage blocked (some Android WebView configs)
+}
 import { Button, Checkbox, CloseButton, SearchFilterPill } from '../ui';
 import { ImportFileDialog } from './ImportFileDialog';
 
@@ -164,6 +173,16 @@ export function ProjectView(props: ProjectViewProps) {
   // Multi-select type filter; EMPTY set = all types (Destin, 2026-07-23).
   const [types, setTypes] = useState<ReadonlySet<FileTypeGroup>>(() => new Set());
   const [fileSort, setFileSort] = useState<FileSortKey>('name');
+  // Grid vs. list for the Files tab. Remembered app-wide, NOT per project
+  // (design deck 2026-09-03, Q-4a): one answer to "what view am I in" is
+  // predictable; a view that changes as you switch projects reads as a glitch.
+  // localStorage, like the other small per-device UI preferences (ModelPicker
+  // favourites, the context intro banner) — reads and writes are wrapped
+  // because some Android WebView configurations throw on access.
+  const [fileView, setFileView] = useState<FileViewMode>(readStoredFileView);
+  useEffect(() => {
+    try { localStorage.setItem(FILE_VIEW_KEY, fileView); } catch { /* storage blocked */ }
+  }, [fileView]);
   // Filter popover (behind the sliders icon in the search pill). Click-outside
   // is handled HERE with a wrapper ref that contains both the trigger and the
   // popover — putting it inside the popover would race the trigger's own click
@@ -882,7 +901,7 @@ export function ProjectView(props: ProjectViewProps) {
               not clamp itself to the viewport and scroll internally. */}
           <div className="flex-1 overflow-hidden min-h-0 w-full max-w-[1100px] mx-auto max-sm:flex-none max-sm:overflow-visible">
             {activeProject && tab === 'files' && (
-              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} refreshKey={refreshKey} onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} onCurrentDirChange={setCurrentRelDir} />
+              <FilesTab project={activeProject} search={artifactSearch} types={types} sortBy={fileSort} view={fileView} onViewChange={setFileView} refreshKey={refreshKey} onMutated={() => setCountsKey((k) => k + 1)} onClearSearch={() => setArtifactSearch('')} onCurrentDirChange={setCurrentRelDir} />
             )}
             {activeProject && tab === 'conversations' && (
               <ConversationsTab conversations={conversations} onOpenPreview={setPreviewSession} />

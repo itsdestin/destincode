@@ -220,3 +220,25 @@ export function FileKindIcon({ kind, size = 15 }: { kind: FileKind; size?: numbe
     default: return <DocIcon size={size} />;
   }
 }
+
+// View-switch glyphs for the Files tab toolbar (grid of thumbnails vs. compact
+// list). Lucide's `layout-grid` and `list` — the two shapes people already read
+// as "pictures" and "rows" from every file manager they've used, so the pair
+// needs no label.
+export function GridViewIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
+
+export function ListViewIcon({ size = 15, strokeWidth = 2 }: IconProps) {
+  return (
+    <svg {...base(size, strokeWidth)}>
+      <path d="M8 6h13" /><path d="M8 12h13" /><path d="M8 18h13" />
+      <path d="M3 6h.01" /><path d="M3 12h.01" /><path d="M3 18h.01" />
+    </svg>
+  );
+}
