@@ -72,7 +72,8 @@ class PresenceClient(
         // after desired flipped to false while it was queued.
         if (!desired || ws != null) return
         val req = Request.Builder()
-            .url("wss://wecoded-marketplace-api.destinj101.workers.dev/social/presence")
+            // WHY: Moved to its own domain so Cloudflare's cache and rate limiter apply; the old workers.dev address still answers for older app versions.
+            .url("wss://api.youcoded.ai/social/presence")
             .header("Authorization", "Bearer $token")
             .build()
         ws = http.newWebSocket(req, object : WebSocketListener() {

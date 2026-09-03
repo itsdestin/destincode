@@ -44,6 +44,10 @@ import com.youcoded.app.skills.PluginInstaller
 import com.youcoded.app.util.forEachKey
 import com.youcoded.app.social.PresenceClient
 
+// The analytics Worker base URL, spelled once for the three AnalyticsService call sites below.
+// WHY: Moved to its own domain so Cloudflare's cache and rate limiter apply; the old workers.dev address still answers for older app versions.
+private const val ANALYTICS_API_BASE = "https://api.youcoded.ai"
+
 class SessionService : Service() {
     private val binder = LocalBinder()
     val sessionRegistry = SessionRegistry()
@@ -300,7 +304,7 @@ class SessionService : Service() {
         Thread {
             try {
                 AnalyticsService(
-                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    apiBase = ANALYTICS_API_BASE,
                     // $HOME is set by Bootstrap to the Termux home dir, but onCreate
                     // runs BEFORE initBootstrap, so fall back to filesDir.parent
                     // (Android internal files root) or filesDir itself.
@@ -3375,7 +3379,7 @@ class SessionService : Service() {
             // is cheap and avoids wiring a long-lived singleton through initBootstrap).
             "analytics:get-opt-in" -> {
                 val svc = AnalyticsService(
-                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    apiBase = ANALYTICS_API_BASE,
                     homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
                     appVersion = BuildConfig.VERSION_NAME,
                     machineIdReader = {
@@ -3388,7 +3392,7 @@ class SessionService : Service() {
             "analytics:set-opt-in" -> {
                 val enabled = msg.payload.optBoolean("enabled", true)
                 val svc = AnalyticsService(
-                    apiBase = "https://wecoded-marketplace-api.destinj101.workers.dev",
+                    apiBase = ANALYTICS_API_BASE,
                     homeDir = File(System.getenv("HOME") ?: filesDir.parent ?: filesDir.absolutePath),
                     appVersion = BuildConfig.VERSION_NAME,
                     machineIdReader = {
