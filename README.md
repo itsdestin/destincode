@@ -119,6 +119,8 @@ Contributions welcome — bug fixes, features, documentation, testing on differe
 3. Make your changes
 4. Submit a pull request
 
+Commits need a sign-off line (`git commit -s`) — see [CONTRIBUTING.md](./CONTRIBUTING.md) for the how and why.
+
 ## Related Projects
 
 - [YouCoded Core](https://github.com/itsdestin/youcoded-core) — Legacy bundled plugin (safety hooks + setup skills), currently being phased out

@@ -21,6 +21,11 @@ interface AboutPopupProps {
   channel?: string;
 }
 
+// Canonical homes of the two policy documents (TERMS.md §11 names this URL as
+// the always-current copy). Also linked from the landing-page footer.
+const PRIVACY_POLICY_URL = 'https://github.com/itsdestin/youcoded/blob/master/PRIVACY.md';
+const TERMS_OF_SERVICE_URL = 'https://github.com/itsdestin/youcoded/blob/master/TERMS.md';
+
 const DESKTOP_LIBS: { lib: string; license: string; source: string }[] = [
   { lib: 'Electron', license: 'MIT', source: 'github.com/electron/electron' },
   { lib: 'React', license: 'MIT', source: 'github.com/facebook/react' },
@@ -205,6 +210,32 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
                 </div>
               ))}
             </div>
+          </section>
+
+          {/* Policies — one row, two links. Google Play and Apple require a
+              reachable privacy policy, and before this row nothing in the app
+              pointed at PRIVACY.md or TERMS.md at all. Opened through
+              window.claude.shell.openExternal like every other outbound link in
+              settings (ModelProvidersPopup, StatusBar); on Android the shim routes
+              it to an ACTION_VIEW intent, so the same code serves both platforms. */}
+          <section className="space-y-1.5">
+            <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Policies</h3>
+            <p className="text-2xs text-fg-dim leading-relaxed flex flex-wrap gap-x-4">
+              <button
+                type="button"
+                className="text-link hover:text-link-hover underline"
+                onClick={() => void window.claude.shell.openExternal(PRIVACY_POLICY_URL)}
+              >
+                Privacy policy
+              </button>
+              <button
+                type="button"
+                className="text-link hover:text-link-hover underline"
+                onClick={() => void window.claude.shell.openExternal(TERMS_OF_SERVICE_URL)}
+              >
+                Terms of service
+              </button>
+            </p>
           </section>
       </Dialog>
     </>,

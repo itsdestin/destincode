@@ -1,6 +1,6 @@
 # YouCoded Terms of Service
 
-**Effective date:** May 5, 2026
+**Effective date:** September 3, 2026
 
 YouCoded ("YouCoded," "the app," "we," "our") is an independent, community-built project maintained by an individual developer in Arizona, United States. It is not a company. It is not affiliated with Anthropic. It is offered free of charge, on a hobbyist basis.
 
@@ -23,7 +23,15 @@ Nothing in these Terms reduces or replaces the rights granted to you by those op
 
 ---
 
-## 2. Services we host
+## 2. Eligibility
+
+YouCoded is not directed at children under 13, and you must be at least 13 years old to use the Services. If you are under the age of majority where you live (18 in most places), you may use the Services only with the permission of a parent or legal guardian who agrees to these Terms on your behalf.
+
+We do not knowingly collect personal data from children under 13 — see [PRIVACY.md](./PRIVACY.md). If you believe a child under 13 is using the Services, please contact us and we'll work with you to handle it.
+
+---
+
+## 3. Services we host
 
 YouCoded operates a few small backend services that the app talks to:
 
@@ -36,7 +44,7 @@ These services are provided on a best-effort basis. We may modify, throttle, sus
 
 ---
 
-## 3. Acceptable use
+## 4. Acceptable use
 
 When using the Services, you agree **not** to:
 
@@ -54,12 +62,12 @@ We reserve the right to remove content, revoke marketplace publish privileges, o
 
 ---
 
-## 4. User content (marketplace and themes)
+## 5. User content (marketplace and themes)
 
 When you submit a plugin to `wecoded-marketplace` or a theme to `wecoded-themes` (each, **"User Content"**), you represent and warrant that:
 
 1. You created the User Content yourself, or you have the right to submit it under the terms in this section.
-2. The User Content does not infringe any third party's rights, contain malware, violate any law, or fall foul of Section 3 above.
+2. The User Content does not infringe any third party's rights, contain malware, violate any law, or fall foul of Section 4 above.
 3. You are not subject to any agreement or restriction that would prevent you from submitting the User Content.
 
 **License you grant to YouCoded and to users of the Services:** you grant a perpetual, worldwide, non-exclusive, royalty-free, irrevocable license to use, copy, modify, host, distribute, sublicense, and create derivative works of your User Content for the purpose of operating and distributing the Services and the open-source projects associated with them. The licensed terms attached to the registry repositories themselves (Apache 2.0 — see each repository's LICENSE) define the terms downstream users receive your contribution under.
@@ -70,7 +78,7 @@ When you submit a plugin to `wecoded-marketplace` or a theme to `wecoded-themes`
 
 ---
 
-## 5. Reporting infringement and abuse (DMCA & similar)
+## 6. Reporting infringement and abuse (DMCA & similar)
 
 If you believe content in the marketplace, theme registry, or any other part of the Services infringes your copyright or other rights, please send a notice to:
 
@@ -85,7 +93,7 @@ This Section is the YouCoded process for handling infringement claims. It is off
 
 ---
 
-## 6. Third-party content and services
+## 7. Third-party content and services
 
 The Services interoperate with third-party software and services — Anthropic's Claude and Claude Code, GitHub, Cloudflare, Termux, Google Drive, and others. **We are not responsible** for those services. Their availability, behavior, and terms are governed by them, not by us. Disruptions in third-party services may affect the Services, and your use of those services is governed by the corresponding third party's terms and privacy policy.
 
@@ -93,7 +101,7 @@ References to third-party trademarks (Anthropic, Claude, Claude Code, GitHub, Te
 
 ---
 
-## 7. Disclaimer of warranty
+## 8. Disclaimer of warranty
 
 THE SERVICES AND ALL SOFTWARE DISTRIBUTED UNDER THE YOUCODED NAME ARE PROVIDED **"AS IS"** AND **"AS AVAILABLE,"** WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, ACCURACY, OR THAT THE SERVICES WILL BE UNINTERRUPTED, ERROR-FREE, OR SECURE.
 
@@ -103,7 +111,7 @@ YOU USE THE SERVICES AT YOUR OWN RISK.
 
 ---
 
-## 8. Limitation of liability
+## 9. Limitation of liability
 
 TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT WILL YOUCODED, ITS MAINTAINER, OR ITS CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, GOODWILL, USE, DATA, OR OTHER INTANGIBLE LOSSES, ARISING FROM OR RELATING TO YOUR USE OF — OR INABILITY TO USE — THE SERVICES, EVEN IF WE HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
@@ -113,7 +121,7 @@ Some jurisdictions do not allow the exclusion or limitation of certain warrantie
 
 ---
 
-## 9. Indemnification
+## 10. Indemnification
 
 You agree to indemnify, defend, and hold harmless YouCoded, its maintainer, and its contributors from any claim, demand, loss, or damage — including reasonable attorney's fees — arising from (a) User Content you submit, (b) your violation of these Terms, or (c) your violation of any third party's rights through your use of the Services.
 
@@ -121,31 +129,31 @@ We reserve the right to assume the exclusive defense and control of any matter o
 
 ---
 
-## 10. Termination
+## 11. Termination
 
-You may stop using the Services at any time. We may suspend or terminate your access to the Services (in whole or in part) at any time if we believe you have violated these Terms or if continued provision creates risk for the project or other users. Sections 4 (license you grant), 5 (takedown), 7 (warranty disclaimer), 8 (limitation of liability), 9 (indemnification), 11 (modifications), 13 (governing law), 14 (disputes), and 15 (general) survive termination.
+You may stop using the Services at any time. We may suspend or terminate your access to the Services (in whole or in part) at any time if we believe you have violated these Terms or if continued provision creates risk for the project or other users. Sections 5 (license you grant), 6 (takedown), 8 (warranty disclaimer), 9 (limitation of liability), 10 (indemnification), 12 (modifications), 14 (governing law), 15 (disputes), and 16 (general) survive termination.
 
 ---
 
-## 11. Modifications to these Terms
+## 12. Modifications to these Terms
 
 We may update these Terms from time to time. When we do, we'll change the **Effective date** at the top and push the new file to the YouCoded repository. The current version always lives at `https://github.com/itsdestin/youcoded/blob/master/TERMS.md`. Material changes will be flagged in the in-app announcement system where practical. Your continued use of the Services after changes take effect constitutes acceptance of the new Terms.
 
 ---
 
-## 12. No agency, employment, or partnership
+## 13. No agency, employment, or partnership
 
 Nothing in these Terms creates an employment relationship, partnership, joint venture, agency, or fiduciary relationship between you and YouCoded. Contributors to the open-source repositories are independent contributors, not agents or employees.
 
 ---
 
-## 13. Governing law
+## 14. Governing law
 
 These Terms are governed by the laws of the **State of Arizona, United States**, without regard to its conflict-of-laws rules. The United Nations Convention on Contracts for the International Sale of Goods does not apply.
 
 ---
 
-## 14. Disputes
+## 15. Disputes
 
 We hope it never comes to this, but: any dispute arising out of or relating to these Terms or the Services shall be resolved exclusively in the **state or federal courts located in Maricopa County, Arizona**, and you consent to personal jurisdiction in those courts. To the extent permitted by applicable law, you and YouCoded each waive the right to a jury trial and the right to participate in class actions related to the Services — claims must be brought individually.
 
@@ -153,7 +161,7 @@ If you are a consumer in a jurisdiction that grants you a non-waivable right to 
 
 ---
 
-## 15. General
+## 16. General
 
 - **Severability.** If any part of these Terms is found unenforceable, the remainder stays in effect, and the unenforceable part is replaced by the closest enforceable equivalent that reflects the original intent.
 - **No waiver.** Our failure to enforce any right under these Terms is not a waiver of that right.
@@ -162,7 +170,7 @@ If you are a consumer in a jurisdiction that grants you a non-waivable right to 
 
 ---
 
-## 16. Contact
+## 17. Contact
 
 - **Email:** destinj101@gmail.com
 - **Source:** https://github.com/itsdestin/youcoded
