@@ -74,7 +74,10 @@ It's designed for students, professionals, and anyone who uses AI regularly — 
 
 ## Requirements
 
-- A [Claude Pro or Max plan](https://claude.ai/) (sign in with your Claude account)
+- A way to run a model — any ONE of:
+  - A [Claude Pro or Max plan](https://claude.ai/) (sign in with your Claude account)
+  - An [OpenRouter](https://openrouter.ai/) account, for hundreds of models billed per use
+  - A local model running on your own machine, which costs nothing
 - Android: Android 9+ (arm64)
 - Desktop: Windows 10+, macOS 11+, or Linux (x64)
 
