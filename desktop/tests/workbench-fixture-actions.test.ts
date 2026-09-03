@@ -163,6 +163,39 @@ describe('shipped fixtures replay', () => {
   });
 });
 
+// The promo's reply fixtures (2026-09-03: briefing.jsonl, sheet.jsonl,
+// flappy-task.jsonl, and the other files under fixtures/replies/) were the
+// first fixtures nothing tested — the plan claimed the `all` list above
+// covered every .jsonl under fixtures/replies/, but it only ever globbed
+// 'tools' and 'conversations'. This block runs the same "parses" and "known
+// kinds" checks the shipped fixtures get, kept separate from `all` above
+// because replies files are turn-only scripts (no 1:1 dispatched-action
+// count is defined for them the way it is for `conversations`).
+describe('reply fixtures', () => {
+  const replies = fixtureFiles('replies');
+
+  it('finds the fixtures (a glob that matches nothing would pass vacuously)', () => {
+    expect(replies.length).toBeGreaterThanOrEqual(10);
+  });
+
+  it.each(replies)('$name parses with no error', ({ name, raw }) => {
+    expect(loadFixture(name, raw).error).toBeUndefined();
+  });
+
+  it.each(replies)('$name uses only line kinds the loader handles', ({ raw }) => {
+    const unknown = raw.split('\n')
+      .map((l) => l.trim()).filter(Boolean)
+      .map((l) => JSON.parse(l).type)
+      .filter((t) => !KNOWN_KINDS.has(t));
+    expect(unknown).toEqual([]);
+  });
+
+  it.each(replies)('$name produces a non-empty timeline', ({ name, raw }) => {
+    const r = loadFixture(name, raw);
+    expect(r.blocks.length + r.actions.length).toBeGreaterThan(0);
+  });
+});
+
 // The hydrate payload is what App.tsx:1465 actually receives, so a payload that
 // deserializes into empty timelines means "the workbench shows no conversation"
 // — with no error anywhere. Guard the round-trip, not just the actions.

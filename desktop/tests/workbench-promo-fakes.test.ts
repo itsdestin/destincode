@@ -15,7 +15,10 @@ async function shim(search = '') {
 
 async function rows(base64: string): Promise<string[][]> {
   const wb = new Workbook();
-  await wb.xlsx.load(Buffer.from(base64, 'base64'));
+  // Fix: Node's Buffer.from(...) is typed Buffer<ArrayBuffer>, which exceljs's
+  // declared xlsx.load(Buffer) signature rejects under tsconfig.tests.json's
+  // stricter Node types (same mismatch XlsxView.tsx works around with `.buffer as any`).
+  await wb.xlsx.load(Buffer.from(base64, 'base64') as unknown as Parameters<typeof wb.xlsx.load>[0]);
   const ws = wb.worksheets[0];
   const out: string[][] = [];
   ws.eachRow((r) => out.push((r.values as unknown[]).slice(1).map((v) => String(v ?? ''))));
