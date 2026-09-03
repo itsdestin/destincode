@@ -127,10 +127,6 @@ Contributions welcome — bug fixes, features, documentation, testing on differe
 
 ## License
 
-YouCoded is dual-licensed to reflect the distinct obligations of its two distributions:
+YouCoded is **MIT** — desktop, Android, shared UI, scripts, and docs. See the root [LICENSE](LICENSE); copies also live at [desktop/LICENSE](desktop/LICENSE) and [app/LICENSE](app/LICENSE).
 
-- **Desktop application** (`desktop/`): **MIT** — see [desktop/LICENSE](desktop/LICENSE).
-- **Android application** (`app/`): **GPLv3** — see [app/LICENSE](app/LICENSE). Android is GPLv3 because it links against Termux terminal components, which are GPLv3.
-- **Shared source, build scripts, and docs**: **MIT** — see the root [LICENSE](LICENSE) for the full explanation of how the dual license works.
-
-The React UI that powers both platforms is MIT-licensed at the source level. When it is aggregated into the Android APK alongside Termux, GPLv3 governs the resulting Android distribution as a whole; the underlying source, as offered in this repository, retains its MIT license (GPLv3 Section 5, aggregation).
+One exception: `terminal-emulator-vendored/` is a vendored copy of Termux's terminal-emulator library (Apache License 2.0, upstream Termux / jackpal). Its [LICENSE](terminal-emulator-vendored/LICENSE) and [NOTICE](terminal-emulator-vendored/NOTICE) stay with it, and Apache 2.0 requires the NOTICE to accompany redistributions of the Android app.

@@ -222,11 +222,18 @@ dependencies {
     // terminal-view library is no longer referenced. Vendored module stays
     // because it owns the PTY fork + JNI waitpid loop + RawByteListener.
     //
-    // LICENSE NOTE: terminal-emulator-vendored is GPLv3 (Termux's original
-    // license is preserved in the vendor drop). Linking it into the Android
-    // APK is why the Android application is distributed under GPLv3 (see
-    // app/LICENSE). The desktop Electron app has no such dependency and
-    // remains MIT-licensed.
+    // LICENSE NOTE: terminal-emulator-vendored is Apache License 2.0 (the
+    // vendor drop preserves Termux's LICENSE and NOTICE for that library).
+    // The Android app itself is MIT, like the rest of the repo (see
+    // app/LICENSE). Apache 2.0 only asks that the NOTICE file travel with
+    // redistributions.
+    //
+    // WHY this changed (2026-09): the earlier "GPLv3" label here rested on a
+    // wrong reading of Termux's license. Termux's LICENSE.md says the
+    // termux-app repo is GPLv3 *except* the terminal-emulator and
+    // terminal-view libraries, which it carves out as Apache 2.0. Nothing
+    // else in this APK is copyleft, so the Android app was never obliged to
+    // be GPLv3 and has been relicensed to MIT.
     implementation(project(":terminal-emulator-vendored"))
 
     // Apache Commons Compress for extracting .deb packages (ar + tar + xz + zstd)
