@@ -27,7 +27,9 @@ const BUILT_INS: ProviderConfig[] = [
 ];
 const BUILT_IN_IDS = new Set(BUILT_INS.map((b) => b.id));
 // OpenRouter asks apps to identify themselves (provider-dependencies.md entry).
-const OPENROUTER_HEADERS = { 'HTTP-Referer': 'https://youcoded.app', 'X-Title': 'YouCoded' };
+// OpenRouter shows these on its app leaderboard. youcoded.ai is the real domain
+// (bought 2026-09-03); the earlier youcoded.app placeholder was never ours.
+const OPENROUTER_HEADERS = { 'HTTP-Referer': 'https://youcoded.ai', 'X-Title': 'YouCoded' };
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 // Connection probes should fail fast, not hang the Providers panel.
 const TEST_TIMEOUT_MS = 10_000;
