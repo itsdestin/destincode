@@ -102,6 +102,11 @@ export class SpaceSyncEngine {
     // pre-existing file and silently NOT emitted — so callers that write right
     // after addSpace() (and the engine tests) would never trigger a sync. The
     // 'error' path resolves too so a watch failure can't hang startup.
+    //
+    // NOTE: 'ready' is NOT sufficient on macOS, which is why the reconcile
+    // below exists. chokidar bottoms out in fs.watch, and fs.watch returns
+    // before the OS-level watch is armed there — 'ready' can fire while changes
+    // are still being dropped. See the reconcile comment after registration.
     await new Promise<void>(resolve => {
       watcher.once('ready', () => resolve());
       watcher.once('error', () => resolve());
@@ -117,6 +122,16 @@ export class SpaceSyncEngine {
     // Node EventEmitter throws. 'all' does NOT receive error events.
     watcher.on('error', (e: any) => this.onEvent({ type: 'error', spaceId: space.id, message: String(e?.message ?? e) }));
     this.states.set(space.id, st);
+    // Close the macOS arming window with one scheduled sync. On macOS fs.watch
+    // returns BEFORE the OS watch is armed (libuv hands it to a CoreFoundation
+    // run loop on another thread), so a file written in that window is never
+    // reported — not late, never — and would sit unsynced until the next
+    // unrelated change. Measured with scripts/diag/fswatch-probe.mjs on a
+    // 3-core macOS CI runner under load: 4 of 200 immediate writes lost, 0 of
+    // 200 on Linux. There is no "armed" event to wait for, so instead of trying
+    // to observe arming we sync once regardless; a real change during the
+    // debounce coalesces into the same run rather than adding one.
+    this.schedule(st);
   }
 
   private schedule(st: SpaceState): void {

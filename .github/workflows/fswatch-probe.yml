@@ -48,17 +48,15 @@ jobs:
               | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(`missed ${j.totalMissed}/${j.totalTrials}`)})' || true
           done
 
-      - name: Reproduce the real test failure under CPU contention
+      - name: Both suites, 15x each, under CPU contention (baseline was 4/15 red)
         run: |
           npm ci --silent
-          node -e 'const{spawn}=require("child_process");for(let i=0;i<6;i++)spawn(process.execPath,["-e","const e=Date.now()+240000;while(Date.now()<e){Math.sqrt(Math.random())}"],{stdio:"ignore",detached:true}).unref()'
-          fails=0
-          for i in $(seq 1 15); do
-            if npx vitest run tests/git/git-watcher.test.ts > /tmp/run.$i.txt 2>&1; then
-              echo "run $i: pass"
-            else
-              fails=$((fails+1)); echo "run $i: FAIL"; grep -E "AssertionError|FAIL " /tmp/run.$i.txt | head -3
-            fi
+          node -e 'const{spawn}=require("child_process");for(let i=0;i<6;i++)spawn(process.execPath,["-e","const e=Date.now()+600000;while(Date.now()<e){Math.sqrt(Math.random())}"],{stdio:"ignore",detached:true}).unref()'
+          for suite in tests/git/git-watcher.test.ts tests/sync-spaces-engine.test.ts; do
+            fails=0
+            for i in $(seq 1 15); do
+              npx vitest run "$suite" > /tmp/r.txt 2>&1 || { fails=$((fails+1)); grep -E "AssertionError" /tmp/r.txt | head -2; }
+            done
+            echo "$suite -> FAILURES: $fails / 15"
           done
-          echo "TOTAL FAILURES: $fails / 15"
-          pkill -f 'Math.sqrt' || true
+          pgrep -f 'Math.sqrt' | xargs -r kill
