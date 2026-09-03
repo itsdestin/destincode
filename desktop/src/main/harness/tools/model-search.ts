@@ -6,10 +6,12 @@
 import { z } from 'zod';
 import { defineTool } from './registry';
 import type { ToolContext } from './types';
+import { matchesQuery } from '../../../shared/text-match';
 
 const inputSchema = z.object({
   query: z.string().describe(
-    'Substring to match against model ids and display names (case-insensitive). '
+    'Words to match against model ids and display names (case-insensitive, any order, '
+    + 'punctuation-insensitive — "gpt 5.6" finds "gpt-5.6"). '
     + 'Use this to find the exact id of a specific model the user asked for — not for routine delegation.',
   ),
 }).strict(); // .strict(): an unknown parameter is an error the model can fix, never silently dropped (ledger D-2)
@@ -48,10 +50,9 @@ export const ModelSearchTool = defineTool<z.infer<typeof inputSchema>>({
     const catalog = models ? await models.catalog() : null;
     if (!catalog) return { text: NO_CATALOG_TEXT, isError: true };
 
-    const q = query.toLowerCase();
-    const matches = catalog.filter(
-      (m) => m.id.toLowerCase().includes(q) || m.label.toLowerCase().includes(q),
-    );
+    // Word-by-word, punctuation-insensitive — a model spelled "gpt-5.6" has to
+    // be findable by the query "gpt 5.6", which a plain substring test missed.
+    const matches = catalog.filter((m) => matchesQuery(query, m.id, m.label));
     // Sorted by PROMPT price ascending (pricing.in) — a model with no listed
     // pricing sorts last rather than first, so an unpriced row never crowds
     // out real cheap-to-expensive ordering.

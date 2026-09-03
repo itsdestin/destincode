@@ -30,6 +30,7 @@ import type { PortableModelRef } from '../../../shared/types';
 // state; build real features, no interim 'not available yet' shims".
 
 import { CLAUDE_ALIASES, type ClaudeAlias } from '../../../shared/model-ids';
+import { matchesQuery } from '../../../shared/text-match';
 import { resolveModelBrand, type ProviderIconKey } from '../provider-brand';
 import { ProviderIcon } from '../ProviderIcon';
 
@@ -373,7 +374,8 @@ export default function ModelPicker({
     return pool.filter((e) => {
       if (localOnly && !e.local) return false;
       if (sources.size && !sources.has(e.sourceId)) return false;
-      if (q && !e.label.toLowerCase().includes(q) && !e.sourceLabel.toLowerCase().includes(q)) return false;
+      // Word-by-word, punctuation-insensitive: "gpt 5.6" has to find "GPT-5.6".
+      if (!matchesQuery(q, e.label, e.sourceLabel)) return false;
       return true;
     });
   }, [entries, favorites, searching, localOnly, sources, q]);
@@ -556,7 +558,7 @@ export default function ModelPicker({
                       not favouritable (there is no model id to star yet). */}
                   {searching && freeformProviders
                     .filter((p) => !sources.size || sources.has(p.id))
-                    .filter((p) => p.label.toLowerCase().includes(q) || !rows.length)
+                    .filter((p) => matchesQuery(q, p.label) || !rows.length)
                     .map((p) => (
                       <div key={p.id} className="px-4 py-1.5">
                         {freeformFor === p.id ? (
