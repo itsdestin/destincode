@@ -33,7 +33,7 @@ import { fileTypeGroup } from '../../shared/artifacts/categorization';
 import type { FileTypeGroup } from '../../shared/artifacts/categorization';
 import { getPlatform } from '../platform';
 import { formatRelativeTime } from '../utils/format-time';
-import { Button, CloseButton, EmptyState, SearchFilterPill } from './ui';
+import { Button, CloseButton, EmptyState, FieldError, SearchFilterPill } from './ui';
 import { FileFilterPopover } from './project-view/FileFilterPopover';
 import { useResolvedConversations } from '../hooks/useResolvedConversations';
 import { useTagRegistry } from '../hooks/useTagRegistry';
@@ -858,9 +858,9 @@ export function SessionDrawer({ sessionId, projectRoot, projectId, projectName, 
             </span>
             {/* Inline failure note — keeps the field open so the user can correct it. */}
             {renameError && (
-              <span className="absolute left-1 top-full mt-1 text-2xs text-destructive-fg whitespace-nowrap z-10">
+              <FieldError size="2xs" className="absolute left-1 top-full mt-1 whitespace-nowrap z-10">
                 {renameError}
-              </span>
+              </FieldError>
             )}
           </div>
         ) : (

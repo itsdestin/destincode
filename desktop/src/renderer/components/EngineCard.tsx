@@ -5,7 +5,7 @@
 // so the card reads as part of the section. As of change 25 the surface IS that
 // row surface (bg-inset/50, borderless), not a lookalike.
 import { useEffect, useState } from 'react';
-import { Button, TextInput } from './ui';
+import { Button, FieldError, TextInput } from './ui';
 
 interface EngineStatusView {
   installed: boolean;
@@ -149,7 +149,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
       {busy && (progress?.kind === 'verify' || progress?.kind === 'unpack') && (
         <p className="mt-2 text-3xs text-fg-dim">{progress.kind === 'verify' ? 'Verifying download…' : 'Unpacking…'}</p>
       )}
-      {error && <p className="mt-2 text-3xs text-destructive-fg">{error}</p>}
+      {error && <FieldError as="p" className="mt-2">{error}</FieldError>}
       {/* Say WHY the button is there. "A newer engine is available" alone tells a
           non-developer nothing about whether they need it. */}
       {updateAvailable && !busy && (

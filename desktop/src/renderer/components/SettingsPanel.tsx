@@ -31,7 +31,7 @@ import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
-import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow, Callout, StatusStrip, ErrorState } from './ui';
+import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow, Callout, StatusStrip, ErrorState, FieldError } from './ui';
 
 // Both are Vite `define` substitutions, so they're constants at module scope.
 // The typeof guard covers paths where the define isn't applied (unit tests).
@@ -1216,7 +1216,7 @@ function RemoteButton({
                           (port already bound, permission denied). Show the real
                           reason here — the toggle has already snapped back off. */}
                       {enableError && (
-                        <p className="text-2xs text-destructive-fg pb-2">{enableError}</p>
+                        <FieldError as="p" size="2xs" className="pb-2">{enableError}</FieldError>
                       )}
 
                       <div className="py-2">

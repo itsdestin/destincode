@@ -164,13 +164,30 @@ export function ErrorState(props: ErrorStateProps) {
 export type FieldErrorProps = {
   children: React.ReactNode;
   className?: string;
+  /** Type step. The app has always used both: 19 of the 25 hand-rolled copies
+   *  this primitive replaced were `text-3xs`, 6 were `text-2xs`. It is a PROP
+   *  rather than something a caller passes through `className` because this
+   *  component CONCATENATES className onto the base — and Tailwind resolves two
+   *  competing utilities by CSS SOURCE ORDER, not by the order they appear in
+   *  the attribute, so `className="text-2xs"` would silently keep rendering at
+   *  3xs (the same trap that made Button's pills render as rectangles). */
+  size?: '3xs' | '2xs';
+  /** Element to render. Default `span` (inline) matches how the primitive
+   *  shipped. Pass `p`/`div` where the line is a BLOCK under a field: vertical
+   *  margin and padding (`mt-1`, `pb-2`) do not lay out on an inline element,
+   *  so a `<p className="mt-1 …">` swapped to a bare span would silently lose
+   *  its gap wherever the parent is not a flex/grid container. */
+  as?: 'span' | 'p' | 'div';
 };
 
 /** Field-level errors stay short lines under the input — not cards. */
-export function FieldError({ children, className = '' }: FieldErrorProps) {
+export function FieldError({ children, className = '', size = '3xs', as: Tag = 'span' }: FieldErrorProps) {
+  // Literal class strings, not `text-${size}` — Tailwind scans source text for
+  // whole class names and never sees an interpolated one.
+  const sizeClass = size === '2xs' ? 'text-2xs' : 'text-3xs';
   return (
-    <span className={`text-3xs text-destructive-fg ${className}`.trim()} role="alert">
+    <Tag className={`${sizeClass} text-destructive-fg ${className}`.trim()} role="alert">
       {children}
-    </span>
+    </Tag>
   );
 }

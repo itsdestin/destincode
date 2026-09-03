@@ -4,7 +4,7 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { useAccount } from '../state/account-context';
 import type { MarketplaceUser } from '../../main/marketplace-auth-store';
 import type { BlockRow } from '../state/marketplace-api-client';
-import { Button, Dialog, InputGroup, SettingRow, Callout } from './ui';
+import { Button, Dialog, FieldError, InputGroup, SettingRow, Callout } from './ui';
 import { ConnectedAccountsBody } from './ConnectedAccounts';
 
 // Settings → Account section. One self-contained row-button + popup, mounted in
@@ -272,7 +272,7 @@ function SignedOutBody({
       <p className="text-3xs text-fg-muted leading-relaxed">
         Uses your GitHub profile to sign in — GitHub only shares your public info.
       </p>
-      {signInError && <p className="text-3xs text-destructive-fg">{signInError}</p>}
+      {signInError && <FieldError as="p">{signInError}</FieldError>}
     </div>
   );
 }
@@ -435,7 +435,7 @@ function SignedInBody({
                   {unblockingId === b.id ? 'Unblocking…' : 'Unblock'}
                 </Button>
               </div>
-              {unblockErrors[b.id] && <p className="text-3xs text-destructive-fg">{unblockErrors[b.id]}</p>}
+              {unblockErrors[b.id] && <FieldError as="p">{unblockErrors[b.id]}</FieldError>}
             </div>
           ))}
         </section>
@@ -484,7 +484,7 @@ function SignedInBody({
           Downloads a file containing everything YouCoded's server stores about your account.
         </p>
         {exportSavedPath && <p className="text-3xs text-fg-muted">Saved to {exportSavedPath}</p>}
-        {exportError && <p className="text-3xs text-destructive-fg">{exportError}</p>}
+        {exportError && <FieldError as="p">{exportError}</FieldError>}
       </section>
     </>
   ) : (
@@ -634,7 +634,7 @@ function EditAccountBody({
             {nameSaving ? 'Saving…' : 'Save'}
           </Button>
         </InputGroup>
-        {nameError && <p className="text-3xs text-destructive-fg">{nameError}</p>}
+        {nameError && <FieldError as="p">{nameError}</FieldError>}
         {nameSaved && !nameError && <p className="text-3xs text-fg-muted">Saved</p>}
       </section>
 
@@ -708,7 +708,7 @@ function EditAccountBody({
         )}
 
         {/* Plain words for status, never glyphs. */}
-        {handleError && <p className="text-3xs text-destructive-fg">{handleError}</p>}
+        {handleError && <FieldError as="p">{handleError}</FieldError>}
         {handleSaved && !handleError && <p className="text-3xs text-fg-muted">Saved</p>}
       </section>
 
@@ -782,7 +782,7 @@ function EditAccountBody({
                 {deleting ? 'Deleting…' : 'Delete my account'}
               </Button>
             </div>
-            {deleteError && <p className="text-3xs text-destructive-fg">{deleteError}</p>}
+            {deleteError && <FieldError as="p">{deleteError}</FieldError>}
           </div>
         )}
       </section>
