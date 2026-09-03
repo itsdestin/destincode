@@ -4497,7 +4497,19 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'name-flow-6',
             label: 'Flow · the swap and the sizing land in one frame',
-            note: 'What ships. Hunt for a spot: rock the pill back and forth over a dot and watch the dot — it should never blink or double. Let go mid-swap: the dot behind the pill grows back as the pill settles, nothing pops.',
+            note: 'Superseded by R11 (2026-09-03); renders what ships. The drag visuals hung on a ref that pointerup flipped before the drop was committed: a hand that lifts while moving saw the pill snap home and then jump to its slot.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 11,
+        basis: 'Destin, 2026-09-03, on R10: "its STILL jumping around the switcher on release. you\'re missing something here. try harder and evaluate more thoroughly until it\'s a smooth release under all conditions." So: a randomised sweep (scripts/ui-review/drag-fuzz.mjs) — 20-24 drags in a row on one page, mouse and touch, at his screen\'s 1.5x scale with the frame-rate cap lifted, hand-like paths, grabs anywhere, wobble, releases mid-motion, drags begun inside the press reflow, hands that keep moving — scored per release on contact, size continuity, reversal, anything-else-moving and blink. It found what no probe had: the twin and the step-aside were rendered off the isDragging REF, which pointerup flips at once while the drop is committed after an IPC round trip — the last pointermove\'s own render landed in that gap whenever the hand lifted while still moving (a touchpad, a finger always does), unmounted the twin and snapped the pill to its ORIGIN, and the commit then jumped everything to the new order (116px on touch). Five more behind it: dots were given a FLIP glide at the drop (a covered dot popped to full size under the settling pill and slid 128px); yields were judged from a centre placed with the settled width while the twin was still opening (dots yielded 60px early); the post-drop peek lock lifted after 8px, so a resting hand still opened a peek half a second later; the old active pill, still closing, was flowed as a dot (a 77px ghost of its name); a tap leaves a sticky hover under the finger, so a dot opened its peek and stayed 56px wide through the next drag. All fixed; the deck pane now runs with the workbench\'s fake IPC latency at 0, as the app does. After: 96 of 96 randomised releases clean on every check.',
+        candidates: [
+          {
+            id: 'name-flow-7',
+            label: 'Flow · release holds until the drop lands',
+            note: 'What ships. Let go the way you actually do — mid-motion, on the touchpad, on the screen with a finger. The pill goes only where it is: no snap home, no second jump.',
             render: () => <SessionStripMotionDemo />,
           },
         ],

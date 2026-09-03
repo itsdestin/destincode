@@ -316,7 +316,28 @@ export default function SessionStrip({
   // Used by the FolderSwitcher "Manage projects…" footer to open Project View.
   const { dispatch: artifactDispatch } = useArtifact();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  // THE DRAG VISUALS ARE STATE, NOT THE isDragging REF (2026-09-03, R10). The
+  // twin, the neighbours' step-aside and the hidden in-flow box used to read
+  // `isDragging.current` at render time — a ref that pointerup flips to false
+  // at once, while the drop itself is committed later (after dropResolve, an
+  // IPC round trip; 150ms in the workbench). Any render landing in that gap —
+  // and the last pointermove's own render does, whenever the hand lifts
+  // while still moving, which is how a touchpad or finger always lifts —
+  // unmounted the twin and drew the pill back at its ORIGIN with the
+  // neighbours still stepped aside; then the commit jumped everything to the
+  // new order. Fuzzed 2026-09-03: a 116px snap back on touch, a 7px snap
+  // forward-and-back on a drop in place. A still hand that pauses before
+  // letting go never hit it, which is why ten rounds of probes did not
+  // either. `dragActive` is set with the first real move and cleared only by
+  // releaseVisuals, in the same render as the reorder.
+  const [dragActive, setDragActive] = useState(false);
   const hoveredRef = useRef<string | null>(null);
+  // What the last pointer was. A finger gets no hover peek: after a tap the
+  // browser reports a mouse "hover" at the tap point that never leaves, so
+  // 150ms later the dot under the finger opened its name and kept it open
+  // through the next drag as a 56px wide neighbour the pill could overlap
+  // (fuzzed 2026-09-03 with touch input; the Z13 is a touchscreen).
+  const lastPointerType = useRef<string>('mouse');
   hoveredRef.current = hoveredId;
   const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -647,15 +668,18 @@ export default function SessionStrip({
     collapsedWidth: COLLAPSED_PILL_PX,
   })), [sessions, metrics]);
 
-  // No hover peek right after a drop, until the hand has moved (2026-09-03):
-  // the dropped pill glides back to its slot and out from under the cursor,
-  // which then sits on the neighbouring dot — and that dot's peek opened, the
+  // No hover peek after a drop until the cursor LEAVES the strip or presses
+  // again (2026-09-03): the dropped pill settles out from under the cursor,
+  // which then rests on a neighbouring dot — and that dot's peek opened, the
   // row widened and re-centred, all inside the drop's own settle. Destin: "it
-  // still bugs out a bit when the chip is released." Released by 8px of
-  // pointer travel (a real intent to hover) or the cursor leaving the strip.
+  // still bugs out a bit when the chip is released." It was released by 8px
+  // of pointer travel; a hand keeps moving after it lets go, so the peek
+  // still opened half a second after most drops (fuzzed, R10). The dwell
+  // (PEEK_DWELL_MS) is the other guard; this one is the intent to leave.
   const hoverLock = useRef<{ x: number } | null>(null);
   const handleEnter = useCallback((id: string) => {
     if (hoverLock.current !== null) return;
+    if (lastPointerType.current === 'touch') return;   // see lastPointerType
     // A pack-expanded pill already shows its name — there is nothing to
     // reveal, and setting hoveredId would only cost a render.
     if (packRef.current.expanded.has(id)) return;
@@ -723,6 +747,16 @@ export default function SessionStrip({
   const handlePointerDown = useCallback((e: React.PointerEvent, sessionId: string, inStrip = false) => {
     // Only primary button
     if (e.button !== 0) return;
+    lastPointerType.current = e.pointerType || 'mouse';
+    // Another pill's peek closes NOW, before the drag geometry is frozen below:
+    // the packer counts that pill as a dot, but it is drawn 56px wide while its
+    // peek is open, and a drag judged against the dot-sized row ran the pill
+    // in hand 19px over it (fuzzed 2026-09-03). The pressed pill's own peek
+    // stays, as before — it becomes the active label.
+    if (hoveredRef.current !== null && hoveredRef.current !== sessionId) {
+      if (enterTimer.current) { clearTimeout(enterTimer.current); enterTimer.current = null; }
+      setHoveredId(null);
+    }
     dragOrigin.current = { x: e.clientX, y: e.clientY };
     isDragging.current = false;
     travel.current = { dir: 0, extreme: e.clientX };
@@ -794,7 +828,7 @@ export default function SessionStrip({
   }, [sessions, sessionStatuses, activeSessionId, onSelectSession, metrics, measurementsOf]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (hoverLock.current !== null && Math.abs(e.clientX - hoverLock.current.x) > 8) hoverLock.current = null;
+    if (e.pointerType) lastPointerType.current = e.pointerType;
     // Live tear-off continuation — runs even after we've cleared dragId so the
     // detached window keeps following the cursor. Must be checked BEFORE the
     // dragId null-guard below.
@@ -817,6 +851,7 @@ export default function SessionStrip({
       const dy = e.clientY - dragOrigin.current.y;
       if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
       isDragging.current = true;
+      setDragActive(true);   // see dragActive
       suppressClick.current = true;
       dragStartX.current = e.clientX;   // see dragStartX
       // Tell main this is a real drag — it starts the cross-window cursor
@@ -896,6 +931,7 @@ export default function SessionStrip({
             setOverId(null);
             overIdRef.current = null;
             setDragLeft(null);
+            setDragActive(false);
           }).catch(() => {
             liveDetachPending.current = false;
           });
@@ -922,7 +958,23 @@ export default function SessionStrip({
     // to a dot's width, which mapped the pill's centre that far back and
     // fired the yield a dot late (R7, 2026-09-03: the centre rule fired at
     // the far edge — the whole drop travel it was meant to remove).
-    const centreDrawn = floatLeft !== null ? floatLeft + heldWidth / 2 : e.clientX;
+    // The pill's drawn width is the twin's CURRENT width (widthNow), which is
+    // still opening for the first --dur-reveal of a drag begun on a cold press.
+    // The yield rule is about the pill's LEADING EDGE reaching a dot's centre,
+    // so it is the visible leading edge that is mapped, and the settled-width
+    // centre is derived from it — judging by a centre placed with the settled
+    // width put the pill's edge up to half its width ahead of where it was
+    // drawn, and two dots yielded before the pill visibly reached them
+    // (fuzzed 2026-09-03: a 60px glide on release to a slot the pill had never
+    // been near).
+    const tv = travel.current;
+    if (tv.dir >= 0 && e.clientX > tv.extreme) { tv.dir = 1; tv.extreme = e.clientX; }
+    else if (tv.dir <= 0 && e.clientX < tv.extreme) { tv.dir = -1; tv.extreme = e.clientX; }
+    else if (tv.dir > 0 && e.clientX < tv.extreme - DRAG_TUNE.deadband) { tv.dir = -1; tv.extreme = e.clientX; }
+    else if (tv.dir < 0 && e.clientX > tv.extreme + DRAG_TUNE.deadband) { tv.dir = 1; tv.extreme = e.clientX; }
+    const leadDrawn = floatLeft !== null
+      ? (tv.dir < 0 ? floatLeft : tv.dir > 0 ? floatLeft + widthNow : floatLeft + widthNow / 2)
+      : e.clientX;
     const drawn: PillRect[] = [];
     bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
       const id = el.dataset.sessionId;
@@ -938,17 +990,14 @@ export default function SessionStrip({
       // zero-width point inside the pill's footprint made it FADE in after
       // its jump instead of appearing whole (seen 2026-09-03 at pickup).
       if (floatLeft !== null && id !== dragId && dotIdsRef.current.has(id)
-          && r.width >= 1 && el.style.getPropertyValue('--flow') === ''
+          && r.width >= 1 && el.offsetWidth <= COLLAPSED_PILL_PX + 1 && el.style.getPropertyValue('--flow') === ''
           && r.right > floatLeft - VEIL_PX && r.left < floatLeft + widthNow + VEIL_PX) {
         veiledRef.current.add(id);
       }
     });
-    const centre = floatLeft !== null ? mapToSettled(drawn, rects, centreDrawn) : centreDrawn;
-    const tv = travel.current;
-    if (tv.dir >= 0 && e.clientX > tv.extreme) { tv.dir = 1; tv.extreme = e.clientX; }
-    else if (tv.dir <= 0 && e.clientX < tv.extreme) { tv.dir = -1; tv.extreme = e.clientX; }
-    else if (tv.dir > 0 && e.clientX < tv.extreme - DRAG_TUNE.deadband) { tv.dir = -1; tv.extreme = e.clientX; }
-    else if (tv.dir < 0 && e.clientX > tv.extreme + DRAG_TUNE.deadband) { tv.dir = 1; tv.extreme = e.clientX; }
+    const centre = floatLeft !== null
+      ? mapToSettled(drawn, rects, leadDrawn) + (tv.dir < 0 ? heldWidth / 2 : tv.dir > 0 ? -heldWidth / 2 : 0)
+      : leadDrawn;
     const next = nextSlotId(rects, dragId, overIdRef.current, centre, tv.dir);
     if (next !== overIdRef.current) { overIdRef.current = next; setOverId(next); }
   }, [dragId]);
@@ -991,6 +1040,7 @@ export default function SessionStrip({
       setOverId(null);
       overIdRef.current = null;
       setDragLeft(null);
+      setDragActive(false);   // see dragActive
     };
 
     // Always notify main that the drag ended — even when live-detach already
@@ -1112,6 +1162,13 @@ export default function SessionStrip({
       settleRef.current = null;
       const deltas = new Map<string, number>();
       for (const [id, wasLeft] of armed.lefts) {
+        // A DOT never glides: its two images (box + ghost, the flow) are already
+        // where the eye sees them, and after the reorder its box is simply at
+        // whichever of the two spots the order put it — the flow's layout effect
+        // re-sizes both in this same frame. Holding a dot at its old rect and
+        // gliding it (the FLIP below) drew a dot the pill had been over at FULL
+        // size under the settling pill, then slid it 128px (fuzzed 2026-09-03).
+        if (dotIdsRef.current.has(id)) continue;
         const el = pillElement(id);
         if (!el) continue;
         const delta = wasLeft - el.getBoundingClientRect().left;
@@ -1164,6 +1221,11 @@ export default function SessionStrip({
       const off = dragOffsetsRef.current.get(id) ?? 0;
       const left = el.offsetLeft + off;
       const w = el.offsetWidth;
+      // Only a dot-SIZED pill flows. The pack calls the old active pill a dot
+      // the moment another is pressed, but it is still 190px wide and closing
+      // for --dur-reveal; shaping it drew a 77px ghost of its NAME beside it
+      // (fuzzed 2026-09-03, a cold press followed by an immediate drag).
+      if (w > COLLAPSED_PILL_PX + 1) { el.style.removeProperty('--flow'); el.style.removeProperty('--flow-origin'); return; }
       const at = scaleAt(left, w);
       if (at === null || at.k >= 1) {
         el.style.removeProperty('--flow');
@@ -1257,7 +1319,9 @@ export default function SessionStrip({
           const r = el.getBoundingClientRect();
           // Same exemption as in handlePointerMove: the flow's dots are its own.
           const flowing = r.width < 1 || el.style.getPropertyValue('--flow') !== '';
-          const near = !flowing && r.right > t.left - VEIL_PX && r.left < t.right + VEIL_PX;
+          // A pill still closing to a dot is a wide neighbour, not a dot (see flow).
+          const wide = el.offsetWidth > COLLAPSED_PILL_PX + 1;
+          const near = !flowing && !wide && r.right > t.left - VEIL_PX && r.left < t.right + VEIL_PX;
           const veiled = veiledRef.current.has(id);
           if (near && !veiled) { veiledRef.current.add(id); el.classList.add('session-pill--veiled'); }
           else if (!near && veiled) { veiledRef.current.delete(id); el.classList.remove('session-pill--veiled'); }
@@ -1382,7 +1446,7 @@ export default function SessionStrip({
     ? sessions.filter(s => s.id === activeSessionId)
     : sessions.filter(s => displayPack.expanded.has(s.id) || displayPack.collapsed.includes(s.id));
 
-  const dragging = dragId !== null && isDragging.current && dragLeft !== null;
+  const dragging = dragId !== null && dragActive && dragLeft !== null;   // state, never the ref — see dragActive
 
   // Chrome's model: the pill in hand is the thing that moves — under the
   // cursor, clamped to the strip — and every pill between its origin and its
@@ -1495,7 +1559,7 @@ export default function SessionStrip({
           const color = sessionStatuses?.get(s.id) || 'gray';
           const isActive = s.id === activeSessionId;
           const isHovered = hoveredId === s.id;
-          const isBeingDragged = dragId === s.id && isDragging.current;
+          const isBeingDragged = dragId === s.id && dragActive;   // see dragActive
           const showName = forceSingle
             ? isActive
             : displayPack.expanded.has(s.id) || isHovered || isActive;
@@ -1716,7 +1780,7 @@ export default function SessionStrip({
               <div className="py-1">
               {sessions.map((s, idx) => {
                 const color = sessionStatuses?.get(s.id) || 'gray';
-                const isBeingDragged = dragId === s.id && isDragging.current;
+                const isBeingDragged = dragId === s.id && dragActive;   // see dragActive
                 return (
                   <div
                     key={s.id}

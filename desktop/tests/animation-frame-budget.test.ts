@@ -410,7 +410,11 @@ describe('motion vocabulary', () => {
     // ~150px void of 2026-09-01. Hover is released at the drop, not before.
     const strip = read('components', 'SessionStrip.tsx');
     const down = strip.slice(strip.indexOf('const handlePointerDown'), strip.indexOf('const handlePointerMove'));
-    expect(down).not.toMatch(/setHoveredId\(null\)/);
+    // The ONE clear on pointer-down is ANOTHER pill's peek (R10): the pressed
+    // pill's own stays open. Guarded, so a press on the peeked pill itself
+    // still never shuts it.
+    expect(down.match(/setHoveredId\(null\)/g)?.length).toBe(1);
+    expect(down).toMatch(/hoveredRef\.current !== sessionId\) \{[\s\S]{0,160}setHoveredId\(null\);/);
     const leave = strip.slice(strip.indexOf('const handleLeave'), strip.indexOf('const handleMenuToggle'));
     expect(leave).toMatch(/dragIdRef\.current !== null\) return/);
   });
@@ -508,6 +512,44 @@ describe('motion vocabulary', () => {
     // `steps()` is the frame budget and is required, and the assertions at the
     // top of this file pin the two `steps()` sites in this same file.
     expect(read('components', 'SessionStrip.tsx')).not.toMatch(/cubic-bezier\(/);
+  });
+
+  it('holds the drag visuals as STATE until the drop is committed — never the isDragging ref', () => {
+    // 2026-09-03 (R10, fuzzed): pointerup flips the ref at once while the drop is
+    // committed after an IPC round trip; the last pointermove's render landed in
+    // between whenever the hand lifted while still moving (a touchpad, a finger),
+    // unmounted the twin and snapped the pill to its origin — then the commit
+    // jumped everything to the new order. "jumping around the switcher on release".
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/const \[dragActive, setDragActive\] = useState\(false\);/);
+    expect(strip).toMatch(/const dragging = dragId !== null && dragActive && dragLeft !== null;/);
+    expect(strip.match(/const isBeingDragged = dragId === s\.id && dragActive;/g)?.length).toBe(2);
+    // The ref is read only inside handlers, never in render.
+    const renderStart = strip.indexOf('const dragging = dragId !== null');
+    expect(strip.slice(renderStart)).not.toMatch(/isDragging\.current/);
+    // Cleared in the same render as the reorder — releaseVisuals — and by the live tear-off.
+    expect(strip).toMatch(/const releaseVisuals = \(\) => \{[\s\S]{0,200}setDragActive\(false\);/);
+  });
+
+  it('never glides a dot at the drop — the flow owns its two images; yields judge the visible edge', () => {
+    // Fuzzed 2026-09-03: a dot the pill was over at release was held at its old
+    // rect at FULL size under the settling pill, then slid 128px (the FLIP is
+    // for wide pills); and a twin still opening after a cold press had its
+    // centre placed with the settled width, so dots yielded 60px early.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/for \(const \[id, wasLeft\] of armed\.lefts\) \{[\s\S]{0,600}if \(dotIdsRef\.current\.has\(id\)\) continue;/);
+    expect(strip).toMatch(/const leadDrawn = floatLeft !== null\n\s+\? \(tv\.dir < 0 \? floatLeft : tv\.dir > 0 \? floatLeft \+ widthNow : floatLeft \+ widthNow \/ 2\)/);
+    expect(strip).toMatch(/mapToSettled\(drawn, rects, leadDrawn\) \+ \(tv\.dir < 0 \? heldWidth \/ 2 : tv\.dir > 0 \? -heldWidth \/ 2 : 0\)/);
+    // Only a dot-SIZED pill flows or is veiled: the old active pill is "collapsed"
+    // in the pack the moment another is pressed, but still 190px wide and closing.
+    expect(strip).toMatch(/if \(w > COLLAPSED_PILL_PX \+ 1\) \{ el\.style\.removeProperty\('--flow'\);/);
+    expect(strip).toMatch(/const wide = el\.offsetWidth > COLLAPSED_PILL_PX \+ 1;/);
+    // After a drop the peek lock lifts on leaving the strip or pressing — never by 8px of travel.
+    expect(strip).not.toMatch(/hoverLock\.current\.x\) > 8/);
+    // A finger never gets a peek (a tap leaves a sticky "hover" under it), and pressing
+    // one pill closes another pill's peek before the drag geometry freezes.
+    expect(strip).toMatch(/if \(lastPointerType\.current === 'touch'\) return;/);
+    expect(strip).toMatch(/if \(hoveredRef\.current !== null && hoveredRef\.current !== sessionId\) \{[\s\S]{0,200}setHoveredId\(null\);/);
   });
 
   it('opens a hover peek only after the hand rests on the dot — never in passing', () => {
