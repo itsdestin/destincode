@@ -119,22 +119,22 @@ export function nearestSlotId(
 /** How early a neighbour gets out of the way, in px.
  *  - `margin`: the neighbour AHEAD of the pill (in the direction it is moving)
  *    yields when the pill's leading edge is this far short of its near edge.
- *    NEGATIVE means past it: −27 is 1px short of a dot's FAR edge — the pill
- *    has covered the whole dot, bar a pixel, before it moves. Not −28: the
- *    pill in hand is clamped to the row, so at either end its leading edge
- *    can reach the last dot's far edge but never pass it, and the end dot
- *    never yielded — Destin, R5: "i cant seem to drag it to be the leftmost
- *    or rightmost session". It was +6 ("before contact") while dots
- *    slid aside and needed a head start; now a dot is hidden the moment the
- *    pill touches it (SessionStrip's veil) and jumps unseen, so the trigger
- *    can wait. WHY the far edge: at that instant the pill sits exactly on its
- *    new slot, so the dot lands right behind the pill with only the row gap
- *    between them and can be shown again at once. Yielding earlier left the
- *    dot under the pill's trailing side (hidden, a hole behind) as well as a
- *    hole ahead — Destin, 2026-09-03: "too much empty space on either side of
- *    the dragged chip". The hole AHEAD (the dot the pill is passing over,
- *    hidden) is the price of never touching one; it is now the only hole.
- *    (Only dots reach this line: a wide neighbour's `early` term wins.)
+ *    NEGATIVE means past it: −14 is a dot's CENTRE (dots are 28px) — Chrome's
+ *    rule, a tab swaps with its neighbour when it has crossed half of it. It
+ *    was +6 ("before contact") while dots slid aside and needed a head start,
+ *    then −27 (1px short of the far edge) while the dot ahead was hidden and
+ *    jumped unseen, so that the dot landed exactly one gap behind the pill.
+ *    That made the drop travel up to a dot's width: release with the pill
+ *    over 26 of a dot's 28px and it was NOT passed, so the pill glided back
+ *    a whole pitch — and at the row's end, where the clamped pill can reach
+ *    a dot's far edge by only 1px, a hand let go a few px short and the pill
+ *    "moved back rightward a bit" (Destin, R7). At the centre the drop travels
+ *    at most half a dot, and the end slot has 13px of margin, not 1. The dot
+ *    flows (SessionStrip): before the swap it is drawn shrinking at its old
+ *    spot with a growing image at its new one, after the swap the other way
+ *    round — the two sizes always sum to one, so the swap itself shows
+ *    nothing, wherever it fires. (Only dots reach this line: a wide
+ *    neighbour's `early` term wins.)
  *  - `early`: for a WIDE neighbour the trigger is its centre minus this,
  *    rather than its near edge — a dot must not send a 290px pill sliding
  *    aside the moment it touches it, or the dot ends up drawn over the wide
@@ -143,7 +143,7 @@ export function nearestSlotId(
  *    having REVERSED. The rules only ever move the neighbour ahead, so nothing
  *    can flap while the direction holds; the dead-band is what keeps a shaky
  *    hand at rest from counting as a reversal every other frame. */
-export const DRAG_TUNE = { margin: -27, early: 20, deadband: 4 };
+export const DRAG_TUNE = { margin: -14, early: 20, deadband: 4 };
 
 /** The slot the pill in hand is heading for, given the slot it is heading for
  *  NOW and the direction it is moving. Only the neighbour AHEAD ever yields:

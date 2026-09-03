@@ -86,26 +86,28 @@ describe('nextSlotId — the neighbour ahead yields early, in either direction',
   ];
   const c0 = 89.5;                       // the wide pill's own slot centre
 
-  it('moving right, a dot yields when the pill\'s edge is `margin` short of it — 1px before its far edge, margin being −27', () => {
+  it('moving right, a dot yields when the pill\'s edge is `margin` short of it — its CENTRE, margin being −14', () => {
     // The pill's right edge is at centre + 89.5; d1's left is 181. Contact is
-    // centre 91.5; the yield line is margin short of that (past it: −27 is
-    // 1px before d1's far edge, so the pill has covered it whole, bar a
-    // pixel — the pill is clamped to the row, so at the row's end it can
-    // reach a dot's far edge but never pass it). The dot has flowed to
-    // nothing by then (SessionStrip's flow).
-    const line = c0 + PILL_GAP - DRAG_TUNE.margin;   // 118.5
-    expect(DRAG_TUNE.margin).toBe(-27);
+    // centre 91.5; the yield line is margin short of that (past it: −14 is
+    // d1's centre — Chrome's rule. R7, 2026-09-03: at −27, 1px before the far
+    // edge, a release with the pill over 26 of the dot's 28px was NOT a pass,
+    // and the pill glided back a whole pitch; at the row's end, where the
+    // clamped pill reaches the far edge by 1px, a hand let go a few px short
+    // and "it moves back rightward a bit"). The dot is half-flowed by then
+    // (SessionStrip's flow) and its other image is half-grown behind.
+    const line = c0 + PILL_GAP - DRAG_TUNE.margin;   // 105.5
+    expect(DRAG_TUNE.margin).toBe(-14);
     expect(nextSlotId(row, 'wide', null, line - 0.5, 1, 2)).toBeNull();
     expect(nextSlotId(row, 'wide', null, line + 0.5, 1, 2)).toBe('d1');
   });
 
-  it('moving left, the dot now ahead yields at the same `margin` — its far edge again', () => {
+  it('moving left, the dot now ahead yields at the same `margin` — its centre again', () => {
     // After passing d1 the pill is at position 1 and d1 sits at [0,28] on its
     // left. Coming back, the pill's left edge (centre − 89.5) nears d1's right
     // edge (28): contact at centre 117.5, the line is margin past that.
     const over = nextSlotId(row, 'wide', null, c0 + 31, 1, 2);
     expect(over).toBe('d1');
-    const line = c0 + 28 + DRAG_TUNE.margin;         // 90.5
+    const line = c0 + 28 + DRAG_TUNE.margin;         // 103.5
     expect(nextSlotId(row, 'wide', over, line + 0.5, -1, 2)).toBe('d1');
     expect(nextSlotId(row, 'wide', over, line - 0.5, -1, 2)).toBeNull();
   });
@@ -128,8 +130,8 @@ describe('nextSlotId — the neighbour ahead yields early, in either direction',
   });
 
   it('crosses several dots in one fast move', () => {
-    // Three pitches on, just past the third far-edge line.
-    expect(nextSlotId(row, 'wide', null, c0 + 3 * 30 + 1, 1, 2)).toBe('d3');
+    // Three pitches on, past the third centre line (2 * 30 + 16 = 76 < 90).
+    expect(nextSlotId(row, 'wide', null, c0 + 3 * 30, 1, 2)).toBe('d3');
   });
 
   it('falls back to nearest for a pill that is not in the row', () => {

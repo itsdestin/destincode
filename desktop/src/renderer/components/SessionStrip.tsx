@@ -892,17 +892,21 @@ export default function SessionStrip({
     // will settle (mapToSettled): for the first --dur-reveal of a drag the
     // row is still sliding under the cursor from the select-on-press, and a
     // dot must yield when the pill visibly reaches it, not when it would have
-    // in the settled layout. Each pill's drawn left has its in-flight
-    // transform (a yield, the hop's delayed jump) taken back out.
+    // in the settled layout. Each pill's drawn left is its LAYOUT position
+    // (offsetLeft, which follows the row's reflow but ignores transforms) —
+    // never its bounding rect with the translate taken back out: a dot the
+    // flow has scaled towards its far edge reports a rect that has moved up
+    // to a dot's width, which mapped the pill's centre that far back and
+    // fired the yield a dot late (R7, 2026-09-03: the centre rule fired at
+    // the far edge — the whole drop travel it was meant to remove).
     const centreDrawn = floatLeft !== null ? floatLeft + heldWidth / 2 : e.clientX;
     const drawn: PillRect[] = [];
     bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
       const id = el.dataset.sessionId;
       if (!id) return;
       const r = el.getBoundingClientRect();
-      const m = /matrix\(([^)]+)\)/.exec(getComputedStyle(el).transform);
-      const tx = m ? Number(m[1].split(',')[4]) || 0 : 0;
-      drawn.push({ id, left: r.left - tx, right: r.right - tx });
+      const left = barLeftNow + el.offsetLeft;
+      drawn.push({ id, left, right: left + el.offsetWidth });
       // The veil, decided here for THIS move: a dot drawn within VEIL_PX of
       // where the pill is about to be is hidden in the same render (see
       // veiledRef). Only the rAF loop ever unveils.
@@ -1102,74 +1106,80 @@ export default function SessionStrip({
       setSettle({ ...settle, phase: 'glide' });
     }
   });
-  /** One frame of the flow (see the note at dragOffsetsRef): scale the dot
-   *  the pill is covering, and draw its ghost growing at the landing spot. */
+  /** One frame of the flow (see the note at dragOffsetsRef): scale every dot
+   *  the pill is covering, and draw each one's ghost at its spot across the
+   *  pill. A covered dot has TWO images — at its box and at the mirror spot
+   *  one pill-width away on the other side — each shrinking towards its own
+   *  far edge as the pill covers it, so the two sizes always sum to about
+   *  one. Which image is the real dot is the yield (nextSlotId): before it
+   *  the box is ahead of the pill and the ghost behind, after it the box has
+   *  jumped behind and the ghost is what remains ahead. Since both are drawn
+   *  either way, the swap itself changes nothing on screen, and the yield
+   *  can fire where Chrome's does — the dot's centre — instead of at its far
+   *  edge (2026-09-03, R7: the drop travelled a whole dot, see DRAG_TUNE).
+   *  Direction plays no part: which side of the pill each image is on says
+   *  which way it shrinks. */
   const flow = (bar: HTMLElement, t: DOMRect, heldId: string) => {
-    const dir = travel.current.dir;
     const barL = bar.getBoundingClientRect().left;
     const G = FLOW_GAP_PX;
-    let ghostFor: HTMLElement | null = null;
-    let ghostLeft = 0, ghostScale = 0, ghostOrigin = 'left center', ghostNear = -Infinity;
+    // Scale of a dot drawn at bar-local `left`: 1 when clear of the pill,
+    // shrinking towards its far edge as the pill covers it, 0 under the pill.
+    const scaleAt = (left: number, w: number): { k: number; origin: string } | null => {
+      const dl = barL + left, dr = dl + w;
+      if (!(dl < t.right + G && dr > t.left - G)) return null;   // not covered
+      const onRight = dl + w / 2 > t.left + t.width / 2;
+      return onRight
+        ? { k: Math.min(1, Math.max(0, (dr - (t.right + G)) / w)), origin: 'right center' }
+        : { k: Math.min(1, Math.max(0, ((t.left - G) - dl) / w)), origin: 'left center' };
+    };
+    const wanted = new Map<string, { src: HTMLElement; left: number; k: number; origin: string }>();
     bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
       const id = el.dataset.sessionId;
       if (!id || id === heldId || !dotIdsRef.current.has(id)) return;
       // Where the dot is drawn this frame WITHOUT its scale: layout position
       // plus its step-aside offset (the transform React set).
       const off = dragOffsetsRef.current.get(id) ?? 0;
-      const dl = barL + el.offsetLeft + off;
+      const left = el.offsetLeft + off;
       const w = el.offsetWidth;
-      const dr = dl + w;
-      let k = 1;
-      // Any dot the pill is over — partly, or wholly until it jumps — shrinks
-      // AWAY from the pill, towards its own far edge, so its near edge stays G
-      // clear of the pill; 0 once covered whole. Which side is "far" is which
-      // side of the pill the dot is on, not the direction of travel: at pickup
-      // the twin can sit a few px over the dot BEHIND it too.
-      const onRight = dl + w / 2 > t.left + t.width / 2;
-      const covered = dl < t.right + G && dr > t.left - G;
-      if (covered && onRight) {
-        k = Math.min(1, Math.max(0, (dr - (t.right + G)) / w));
-        el.style.setProperty('--flow-origin', 'right center');
-      } else if (covered) {
-        k = Math.min(1, Math.max(0, ((t.left - G) - dl) / w));
-        el.style.setProperty('--flow-origin', 'left center');
+      const at = scaleAt(left, w);
+      if (at === null || at.k >= 1) {
+        el.style.removeProperty('--flow');
+        el.style.removeProperty('--flow-origin');
+        return;
       }
-      if (k >= 1) el.style.removeProperty('--flow');
-      else el.style.setProperty('--flow', String(k));
-      // The ghost: only for the dot AHEAD in the direction of travel — the
-      // one that will land behind the pill — nearest the leading edge.
-      if (covered && dir > 0 && onRight && dl > ghostNear) {
-        ghostNear = dl;
-        ghostFor = el;
-        ghostLeft = el.offsetLeft + off - (t.width + G);
-        ghostScale = Math.min(1, Math.max(0, ((t.left - G) - (barL + ghostLeft)) / w));
-        ghostOrigin = 'left center';
-      } else if (covered && dir < 0 && !onRight && -dr > ghostNear) {
-        ghostNear = -dr;
-        ghostFor = el;
-        ghostLeft = el.offsetLeft + off + (t.width + G);
-        ghostScale = Math.min(1, Math.max(0, ((barL + ghostLeft + w) - (t.right + G)) / w));
-        ghostOrigin = 'right center';
-      }
+      el.style.setProperty('--flow', String(at.k));
+      el.style.setProperty('--flow-origin', at.origin);
+      // Its other image: the same dot one pill-width across the pill, on the
+      // side the box is not. Drawn while it has any size. A mirror the pill
+      // does not reach is drawn WHOLE, not dropped: the box is covered, so if
+      // its mirror is clear the dot's whole mass is over there — under the
+      // pill entire (k = 0) the mirror sits exactly one gap past the pill's
+      // far edge, and dropping it blinked the dot out for the frame before
+      // its yield (seen at the row's end, 2026-09-03).
+      const mirror = at.origin === 'right center' ? left - (t.width + G) : left + (t.width + G);
+      const m = scaleAt(mirror, w) ?? { k: 1, origin: at.origin === 'right center' ? 'left center' : 'right center' };
+      if (m.k > 0) wanted.set(id, { src: el, left: mirror, k: m.k, origin: m.origin });
     });
-    let ghost = bar.querySelector<HTMLElement>(':scope > [data-ghost]');
-    if (!ghostFor || ghostScale <= 0) { ghost?.remove(); return; }
-    const src: HTMLElement = ghostFor;
-    if (!ghost || ghost.dataset.ghost !== src.dataset.sessionId) {
-      ghost?.remove();
-      // A copy of the dot itself (same colour, same size), stripped of
-      // everything that names it: nothing that walks the row by
-      // `[data-session-id]` may find it.
-      ghost = src.cloneNode(true) as HTMLElement;
-      ghost.removeAttribute('data-session-id');
-      ghost.removeAttribute('data-session-idx');
-      ghost.removeAttribute('title');
-      ghost.setAttribute('aria-hidden', 'true');
-      ghost.dataset.ghost = src.dataset.sessionId ?? '';
-      ghost.classList.remove('session-pill--veiled');
-      bar.appendChild(ghost);
-    }
-    ghost.style.cssText = `position:absolute; top:50%; left:${ghostLeft}px; width:${src.offsetWidth}px; transform:translateY(-50%) scale(${ghostScale}); transform-origin:${ghostOrigin}; pointer-events:none; opacity:1; visibility:visible; transition:none; margin:0;`;
+    bar.querySelectorAll<HTMLElement>(':scope > [data-ghost]').forEach((g) => {
+      if (!wanted.has(g.dataset.ghost ?? '')) g.remove();
+    });
+    wanted.forEach(({ src, left, k, origin }, id) => {
+      let ghost = bar.querySelector<HTMLElement>(`:scope > [data-ghost="${CSS.escape(id)}"]`);
+      if (!ghost) {
+        // A copy of the dot itself (same colour, same size), stripped of
+        // everything that names it: nothing that walks the row by
+        // `[data-session-id]` may find it.
+        ghost = src.cloneNode(true) as HTMLElement;
+        ghost.removeAttribute('data-session-id');
+        ghost.removeAttribute('data-session-idx');
+        ghost.removeAttribute('title');
+        ghost.setAttribute('aria-hidden', 'true');
+        ghost.dataset.ghost = id;
+        ghost.classList.remove('session-pill--veiled');
+        bar.appendChild(ghost);
+      }
+      ghost.style.cssText = `position:absolute; top:50%; left:${left}px; width:${src.offsetWidth}px; transform:translateY(-50%) scale(${k}); transform-origin:${origin}; pointer-events:none; opacity:1; visibility:visible; transition:none; margin:0;`;
+    });
   };
 
   // The twin is a fresh element, so its label opens to full width the instant
@@ -1241,8 +1251,8 @@ export default function SessionStrip({
     return () => {
       cancelAnimationFrame(raf);
       twinMount.current = null;
-      // The flow: no ghost, every dot back at full size.
-      bar.querySelector(':scope > [data-ghost]')?.remove();
+      // The flow: no ghosts, every dot back at full size.
+      bar.querySelectorAll(':scope > [data-ghost]').forEach((g) => g.remove());
       bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
         el.style.removeProperty('--flow');
         el.style.removeProperty('--flow-origin');
@@ -1391,13 +1401,14 @@ export default function SessionStrip({
   // passing over leaves its width as a hole beside the pill — always about
   // one dot's worth, ahead or behind depending on when it jumps — and Destin
   // saw it: "too much empty space on either side of the dragged chip". So
-  // the dot ahead SHRINKS towards its far edge as the pill covers its space,
-  // keeping FLOW_GAP_PX clear of the pill's leading edge, while a ghost of it
-  // GROWS behind the pill at the spot it will land, keeping the same gap from
-  // the trailing edge. When the pill has covered it whole (DRAG_TUNE.margin,
-  // the far edge) the real dot jumps to that spot — at scale 0, unseen — and
-  // takes over from the ghost at full size. Mass flows through the pill;
-  // nothing touches it; the row never shows a hole. All of it is written by
+  // a dot the pill is over SHRINKS towards its far edge as the pill covers
+  // its space, keeping FLOW_GAP_PX clear of the pill's edge, while a ghost of
+  // it GROWS at its spot across the pill, keeping the same gap from the other
+  // edge. When the pill has crossed its centre (DRAG_TUNE.margin) the real
+  // dot jumps to that spot and the ghost takes over at the old one — both
+  // images are drawn before and after, at sizes that sum to one, so the swap
+  // shows nothing. Mass flows through the pill; nothing touches it; the row
+  // never shows a hole. All of it is written by
   // the rAF loop below from the twin's rect each frame (`--flow`, the ghost),
   // never by React, for the reason twinMount gives. The veil stays as the
   // safety net for geometry the flow does not account for (the pickup, while
@@ -1405,6 +1416,17 @@ export default function SessionStrip({
   // Which pills are dots in the pack the drag is judged against — for the rAF loop.
   const dotIdsRef = useRef<Set<string>>(new Set());
   dotIdsRef.current = new Set(displayPack.collapsed);
+
+  // What a hover peek may open into: the strip's pill room minus the packed
+  // row (each visible pill at its packed width, with the gaps). See
+  // LabelStyleInput.room for why the peek is capped at all.
+  const peekRoom = useMemo(() => {
+    const visibleIds = sessions.filter(s => displayPack.expanded.has(s.id) || displayPack.collapsed.includes(s.id));
+    const row = visibleIds.reduce((sum, s) =>
+      sum + (displayPack.expanded.has(s.id) ? (metrics.get(s.id)?.expandedWidth ?? 120) : COLLAPSED_PILL_PX), 0)
+      + Math.max(0, visibleIds.length - 1) * PILL_GAP;
+    return Math.max(0, displayPack.pillBudget - row);
+  }, [sessions, displayPack, metrics]);
 
   // After the hooks above: an early return before them would change the hook
   // order between renders.
@@ -1460,6 +1482,7 @@ export default function SessionStrip({
                     // the old one closes in the same motion.
                     animateExpand: expandArmed,
                     nameWidth: metrics.get(s.id)?.nameWidth ?? 0,
+                    room: peekRoom,
                   })}
                 >
                   {/* Laid out once at full width; the box above clips and fades

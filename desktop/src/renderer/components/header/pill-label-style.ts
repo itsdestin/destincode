@@ -53,6 +53,15 @@ export interface LabelStyleInput {
   /** The name's measured text width in px — the same canvas measurement the
    *  packer budgets with, so the box opens to exactly the room reserved. */
   nameWidth: number;
+  /** For a HOVER PEEK only: the px the strip has free beside its packed row.
+   *  A peek may not open wider than this. WHY (2026-09-03): the packer never
+   *  reserved room for a peek, and in a full strip the peek pushed the row
+   *  past its box — the active pill is the one flex item allowed to shrink,
+   *  so hovering any dot squeezed the active NAME (191px → 78px measured),
+   *  and it popped back whole the instant that dot was pressed. Chrome does
+   *  not widen a tab on hover at all; here the peek opens as far as there is
+   *  room, and not at all when there is none. Absent = unlimited (tests). */
+  room?: number;
 }
 
 // WIDTH-LIKE PROPERTIES ARE NEVER ANIMATED ON AN OVERSHOOT CURVE. max-width is
@@ -66,13 +75,13 @@ const REVEAL_TRANSITION =
 
 /** The pixel width the label box opens to for this pill. Exported so the
  *  badge can wait for exactly this reveal (SessionStrip) and tests can pin it. */
-export function labelTargetWidth(input: Pick<LabelStyleInput, 'isActive' | 'packExpanded' | 'nameWidth'>): number {
-  const { isActive, packExpanded, nameWidth } = input;
+export function labelTargetWidth(input: Pick<LabelStyleInput, 'isActive' | 'packExpanded' | 'nameWidth' | 'room'>): number {
+  const { isActive, packExpanded, nameWidth, room } = input;
   // Capped only when the name is a HOVER PEEK — neither the active pill nor
-  // one the packer measured room for. See HOVER_CAP_PX.
+  // one the packer measured room for. See HOVER_CAP_PX, and `room`.
   const hoverPeek = !isActive && !packExpanded;
   const natural = Math.ceil(nameWidth) + LABEL_TAIL_PX + LABEL_SLACK_PX;
-  return hoverPeek ? Math.min(natural, HOVER_CAP_PX) : natural;
+  return hoverPeek ? Math.max(0, Math.min(natural, HOVER_CAP_PX, room ?? Infinity)) : natural;
 }
 
 export function pillLabelStyle(input: LabelStyleInput): React.CSSProperties {

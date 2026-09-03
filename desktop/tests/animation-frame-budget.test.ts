@@ -278,10 +278,13 @@ describe('motion vocabulary', () => {
     // A dot's step-aside is a jump (it is hidden); a wide neighbour still slides.
     expect(strip).toMatch(/dragging && isDot \? '0s' : 'var\(--dur-hover\) var\(--ease-out\)'/);
     // And the dot FLOWS around the pill (2026-09-03): scaled per frame by the
-    // rAF loop, with a ghost growing at its landing spot; the yield fires at
-    // the dot's far edge, when it is at scale 0. No hole beside the pill.
+    // rAF loop, with a ghost at its mirror spot across the pill — two images
+    // whose sizes sum to one, on both sides of the yield, so the yield can
+    // fire at the dot's centre (R7) and show nothing. No hole beside the pill.
     expect(strip).toMatch(/scale\(var\(--flow, 1\)\)/);
     expect(strip).toMatch(/ghost\.dataset\.ghost = /);
+    expect(strip).toMatch(/const mirror = at\.origin === 'right center' \? left - \(t\.width \+ G\) : left \+ \(t\.width \+ G\);/);
+    expect(strip).not.toMatch(/travel\.current\.dir;\n\s+const barL/);   // the flow is direction-blind
     expect(strip).toMatch(/ghost\.removeAttribute\('data-session-id'\)/);
     expect(strip).toMatch(/twin\.style\.left = /);   // the rAF loop, not React, positions the twin
     // Hidden at once, no fade out; the class beats the inline transition list.

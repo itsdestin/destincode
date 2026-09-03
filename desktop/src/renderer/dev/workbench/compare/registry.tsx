@@ -4461,7 +4461,19 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'name-flow-3',
             label: 'Flow · real widths · sideways never tears off',
-            note: 'What ships. Drag a name all the way left, even past the edge of this pane, and let go; drop one mid-row and watch what else moves (nothing should).',
+            note: 'Superseded by R8 (2026-09-03); renders what ships. The drop still travelled up to a whole dot: a dot counted as passed only 1px before its far edge.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 8,
+        basis: 'Destin, 2026-09-03, on R7: "still janky on release, still doesn\'t always work when i release at the leftmost edge (it moves back rightward a bit …)". The final position comes from where the PILL is, never the cursor; the grab point was not it. The cause was the yield line: a dot counted as passed only when the pill had covered all but 1px of it (−27), so a release with the pill over 26 of a dot\'s 28px was not a pass and the pill glided back a whole pitch — and at the row\'s end, where the clamped pill can reach the far edge by exactly 1px, a hand letting go a few px short landed second and "moved back rightward". Now a dot is passed at its CENTRE, as in Chrome (−14): the drop travels at most half a dot, and the end slot has 13px of margin instead of 1. To make that swap invisible, a crossed dot always has two images — at its old spot and its new one — whose sizes sum to one, on both sides of the swap. Two things the probe found on the way: the row-as-drawn was read from scaled rects, which fired the yield a dot late (now read from layout positions); and in a full strip a hover peek pushed the row past its box, squeezing the active name and popping it back on press (a peek now opens only into the room the strip has free).',
+        candidates: [
+          {
+            id: 'name-flow-4',
+            label: 'Flow · swap at the centre · drop travels half a dot',
+            note: 'What ships. Let go anywhere: the pill settles at most half a dot away. Drag to the very left with the pill only part-way over the first dot and let go — past its middle counts as first.',
             render: () => <SessionStripMotionDemo />,
           },
         ],

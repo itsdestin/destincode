@@ -22,6 +22,12 @@ describe('pillLabelStyle', () => {
 
   it('caps a hover peek, because a peek must not shove the row around', () => {
     expect(labelTargetWidth({ isActive: false, packExpanded: false, nameWidth: 300 })).toBe(HOVER_CAP_PX);
+    // …and never wider than the room the strip has free beside its row: in
+    // a full strip a peek squeezed the active NAME to make room (2026-09-03).
+    expect(labelTargetWidth({ isActive: false, packExpanded: false, nameWidth: 300, room: 40 })).toBe(40);
+    expect(labelTargetWidth({ isActive: false, packExpanded: false, nameWidth: 300, room: 0 })).toBe(0);
+    // The active pill and a pack-expanded pill are never capped by room — the packer reserved theirs.
+    expect(labelTargetWidth({ isActive: true, packExpanded: true, nameWidth: 300, room: 0 })).toBe(300 + LABEL_TAIL_PX + LABEL_SLACK_PX);
   });
 
   it('does NOT cap the active pill or one the packer chose to expand', () => {
