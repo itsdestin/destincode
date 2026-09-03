@@ -5,6 +5,12 @@ name: fswatch probe (macOS investigation)
 # Deliberately dependency-free so a run costs seconds, not the ~6 minutes a
 # full Desktop CI macOS leg costs — the investigation needs many iterations.
 # Delete once the cause is known.
+#
+# Round 1 established that fs.watch on the macOS runner is reliable in steady
+# state: ~1,000 trials, zero misses, including 12 concurrent processes, CPU
+# contention, and 200 live watchers. The one thing round 1 did NOT vary is the
+# gap between fs.watch() returning and the first write — it always waited 50ms.
+# The failing tests write immediately. Round 2 sweeps that gap.
 
 on:
   workflow_dispatch:
@@ -26,32 +32,25 @@ jobs:
       - uses: actions/setup-node@v7
         with: { node-version: 22 }
 
-      - name: System limits
+      - name: Arming-window sweep — the write happens N ms after fs.watch() returns
         run: |
-          echo "cpus: $(node -e 'console.log(require("os").cpus().length)')"
-          echo "tmpdir: $(node -e 'console.log(require("os").tmpdir())')"
-          echo "ulimit -n: $(ulimit -n)"
-          uname -a
-          if [ "$RUNNER_OS" = "macOS" ]; then sysctl kern.maxfiles kern.maxfilesperproc; fi
+          for d in 0 1 2 5 10 25 50 100; do
+            printf 'arm-delay=%-4s ' "$d"
+            node scripts/diag/fswatch-probe.mjs --trials 100 --arm-delay "$d" --timeout 2000 \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(`missed ${j.missed}/${j.trials}  median ${j.medianMs}ms  max ${j.maxMs}ms`)})' || true
+          done
 
-      - name: A — baseline, one process, create
-        run: node scripts/diag/fswatch-probe.mjs --trials 100 || true
-
-      - name: B — baseline, one process, modify existing file
-        run: node scripts/diag/fswatch-probe.mjs --trials 100 --op modify || true
-
-      - name: C — 12 concurrent processes
-        run: node scripts/diag/fswatch-probe.mjs --procs 12 --trials 30 || true
-
-      - name: D — 12 concurrent processes under CPU contention
-        run: node scripts/diag/fswatch-probe.mjs --procs 12 --trials 30 --cpu 8 || true
-
-      - name: E — many live watchers in one process
-        run: node scripts/diag/fswatch-probe.mjs --trials 50 --watchers 200 || true
-
-      - name: F — the real test, in isolation, 10x
+      - name: Arming window under CPU contention (the load correlation)
         run: |
-          npm ci
+          for d in 0 5 25; do
+            printf 'arm-delay=%-4s under load: ' "$d"
+            node scripts/diag/fswatch-probe.mjs --procs 8 --trials 25 --cpu 6 --arm-delay "$d" --timeout 2000 \
+              | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);console.log(`missed ${j.totalMissed}/${j.totalTrials}`)})' || true
+          done
+
+      - name: The real test, in isolation, 10x
+        run: |
+          npm ci --silent
           for i in $(seq 1 10); do
-            npx vitest run tests/git/git-watcher.test.ts 2>&1 | grep -E "Tests  " || true
+            npx vitest run tests/git/git-watcher.test.ts 2>&1 | grep -E "^ +Tests" || echo "run $i: no summary line"
           done

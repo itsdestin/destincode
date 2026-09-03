@@ -14,6 +14,10 @@
 //   --timeout MS      per-trial wait before declaring zero events (default 3000)
 //   --watchers N      concurrent live watchers held open during the run (default 1)
 //   --op create|modify   what the trial does to trigger the event (default create)
+//   --arm-delay MS    pause between fs.watch() returning and the write (default 50).
+//                     THE hypothesis knob: Linux/Windows arm the watch inside the
+//                     call, macOS hands it to a CFRunLoop thread and returns early,
+//                     so a 0 here should only lose events on darwin
 //   --json            emit one JSON summary line (used by the parent below)
 //   --procs N         run N CHILD copies of this probe concurrently and
 //                     aggregate — this is the load dimension the CI failure
@@ -37,6 +41,7 @@ const TRIALS = Number(flag('trials', 50));
 const TIMEOUT = Number(flag('timeout', 3000));
 const WATCHERS = Number(flag('watchers', 1));
 const OP = String(flag('op', 'create'));
+const ARM_DELAY = Number(flag('arm-delay', 50));
 const PROCS = Number(flag('procs', 0));
 const CPU = Number(flag('cpu', 0));
 
@@ -57,10 +62,8 @@ async function trial(i) {
       watcher = fs.watch(dir, () => resolve(Date.now() - started));
       watcher.on('error', () => resolve(-1));
     });
-    // Give the watch a moment to arm before writing. A too-eager write is a
-    // real source of missed events and would be a finding in itself, so this
-    // is deliberately generous — we are testing steady-state delivery.
-    await sleep(50);
+    // The gap between fs.watch() returning and the first write. See --arm-delay.
+    if (ARM_DELAY > 0) await sleep(ARM_DELAY);
     await fs.promises.writeFile(target, `trial-${i}`);
     const ms = await Promise.race([got, sleep(TIMEOUT).then(() => null)]);
     return ms === null ? { ok: false, ms: TIMEOUT } : { ok: ms >= 0, ms };
@@ -96,6 +99,7 @@ async function runSelf() {
   return {
     pid: process.pid,
     trials: TRIALS,
+    armDelay: ARM_DELAY,
     missed,
     idleWatcherError: idle.error,
     medianMs: times.length ? times[Math.floor(times.length / 2)] : null,
@@ -115,7 +119,7 @@ async function runParent() {
   const self = fileURLToPath(import.meta.url);
   const cpuKids = burnCpu(CPU);
   const childArgs = ['--trials', String(TRIALS), '--timeout', String(TIMEOUT),
-    '--watchers', String(WATCHERS), '--op', OP, '--json'];
+    '--watchers', String(WATCHERS), '--op', OP, '--arm-delay', String(ARM_DELAY), '--json'];
   const kids = Array.from({ length: PROCS }, () => fork(self, childArgs, { silent: true }));
   const summaries = await Promise.all(kids.map((k) => new Promise((resolve) => {
     let out = '';
@@ -130,7 +134,7 @@ async function runParent() {
   const totalTrials = summaries.reduce((a, s) => a + (s.trials ?? 0), 0);
   const totalMissed = summaries.reduce((a, s) => a + (s.missed ?? 0), 0);
   console.log(JSON.stringify({
-    mode: 'parent', procs: PROCS, cpuLoad: CPU, op: OP, watchersPerProc: WATCHERS,
+    mode: 'parent', procs: PROCS, cpuLoad: CPU, op: OP, watchersPerProc: WATCHERS, armDelay: ARM_DELAY,
     platform: process.platform, node: process.version, cpus: os.cpus().length,
     totalTrials, totalMissed, perProc: summaries,
   }, null, 1));
