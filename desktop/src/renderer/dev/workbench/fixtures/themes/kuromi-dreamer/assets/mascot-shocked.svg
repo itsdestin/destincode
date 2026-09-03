@@ -1,0 +1,40 @@
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <!-- Kuromi Dreamer · shocked · big round eyes, O mouth, arms raised -->
+  <!-- Devil tail -->
+  <path d="M19 14 Q21 14 21.5 15.5 Q22 17 20.5 17.2 L21.5 18.2 L20 18 L21 19 L19.5 18.5 Z" fill="#1A0F28" opacity="0.85"/>
+  <!-- Body -->
+  <path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z"
+        fill="#FFFFFF" stroke="#1A0F28" stroke-width="0.6"/>
+  <!-- Arms raised outward -->
+  <rect x="1" y="9" width="3" height="4" rx="0.8" fill="#FFFFFF" stroke="#1A0F28" stroke-width="0.6" transform="rotate(20 2.5 11)"/>
+  <rect x="20" y="9" width="3" height="4" rx="0.8" fill="#FFFFFF" stroke="#1A0F28" stroke-width="0.6" transform="rotate(-20 21.5 11)"/>
+  <!-- Legs -->
+  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="#FFFFFF" stroke="#1A0F28" stroke-width="0.6"/>
+  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="#FFFFFF" stroke="#1A0F28" stroke-width="0.6"/>
+  <!-- Wide round eyes -->
+  <circle cx="9.3" cy="10" r="1.7" fill="#1A0F28"/>
+  <circle cx="14.7" cy="10" r="1.7" fill="#1A0F28"/>
+  <circle cx="9.7" cy="9.5" r="0.45" fill="#FFFFFF"/>
+  <circle cx="15.1" cy="9.5" r="0.45" fill="#FFFFFF"/>
+  <!-- O-shaped mouth -->
+  <ellipse cx="12" cy="13.4" rx="0.8" ry="1" fill="#1A0F28"/>
+  <!-- Whiskers -->
+  <g stroke="#1A0F28" stroke-width="0.4" stroke-linecap="round">
+    <line x1="5.5" y1="10.5" x2="7" y2="10.5"/>
+    <line x1="5.5" y1="11.5" x2="7" y2="11.5"/>
+    <line x1="17" y1="10.5" x2="18.5" y2="10.5"/>
+    <line x1="17" y1="11.5" x2="18.5" y2="11.5"/>
+  </g>
+  <!-- Jester hat askew -->
+  <g transform="rotate(-8 12 3)">
+    <path d="M7 4 L6.5 1.5 L9 3.5 Z" fill="#1A0F28"/>
+    <path d="M17 4 L17.5 1.5 L15 3.5 Z" fill="#1A0F28"/>
+  </g>
+  <!-- Pink skull -->
+  <circle cx="12" cy="5.8" r="0.9" fill="#FF4FB8"/>
+  <circle cx="11.7" cy="5.6" r="0.22" fill="#1A0F28"/>
+  <circle cx="12.3" cy="5.6" r="0.22" fill="#1A0F28"/>
+  <rect x="11.7" y="6" width="0.6" height="0.4" fill="#1A0F28"/>
+  <!-- Exclamation sparkle -->
+  <path d="M3 4.5 L3.3 5.3 L4.2 5.5 L3.3 5.7 L3 6.5 L2.7 5.7 L1.8 5.5 L2.7 5.3 Z" fill="#FF4FB8"/>
+</svg>

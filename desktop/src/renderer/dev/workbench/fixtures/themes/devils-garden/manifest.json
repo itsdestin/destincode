@@ -1,0 +1,66 @@
+{
+  "name": "Devil's Garden",
+  "slug": "devils-garden",
+  "dark": true,
+  "author": "claude",
+  "created": "2026-04-12",
+  "tokens": {
+    "canvas": "#140810",
+    "panel": "#221020",
+    "inset": "#2E1828",
+    "well": "#0E0610",
+    "accent": "#FFC627",
+    "on-accent": "#140810",
+    "fg": "#FBE9C9",
+    "fg-2": "#D8C299",
+    "fg-dim": "#BDA57C",
+    "fg-muted": "#A28E6D",
+    "fg-faint": "#836F5E",
+    "edge": "#7A3048",
+    "edge-dim": "#7A304880",
+    "scrollbar-thumb": "#8C3050",
+    "scrollbar-hover": "#FFC627"
+  },
+  "shape": {
+    "radius": "4px",
+    "radius-sm": "6px",
+    "radius-md": "10px",
+    "radius-lg": "16px",
+    "radius-full": "9999px"
+  },
+  "font": {
+    "family": "'Space Grotesk', system-ui, sans-serif",
+    "google-font-url": "https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap"
+  },
+  "background": {
+    "average-color": "#C2A1A8",
+    "type": "image",
+    "value": "assets/wallpaper.jpg",
+    "opacity": 1,
+    "panels-blur": 14,
+    "panels-opacity": 0.72,
+    "bubble-blur": 10,
+    "bubble-opacity": 0.78
+  },
+  "layout": {
+    "chrome-style": "default",
+    "input-style": "floating",
+    "bubble-style": "pill",
+    "header-style": "default",
+    "statusbar-style": "default"
+  },
+  "effects": {
+    "particles": "dust",
+    "particle-count": 25,
+    "particle-speed": 0.4,
+    "particle-drift": 0.3,
+    "particle-size-range": [
+      4,
+      10
+    ],
+    "vignette": 0.2,
+    "noise": 0
+  },
+  "custom_css": "::selection { background: rgba(255, 198, 39, 0.3); }",
+  "contentHash": "sha256:fb2a7a0b1bc9e20f595d35314feb6a2ff4e593043669933faab0c30f8682a6fa"
+}

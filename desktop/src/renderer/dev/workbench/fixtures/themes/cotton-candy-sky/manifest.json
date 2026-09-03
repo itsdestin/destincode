@@ -1,0 +1,68 @@
+{
+  "name": "Cotton Candy Sky",
+  "slug": "cotton-candy-sky",
+  "dark": false,
+  "author": "claude",
+  "created": "2026-06-19",
+  "tokens": {
+    "canvas": "#FBF5FC",
+    "panel": "#ECDDF0",
+    "inset": "#D5BCE0",
+    "well": "#DAC2E6",
+    "accent": "#8B47B8",
+    "on-accent": "#FFFFFF",
+    "fg": "#21152C",
+    "fg-2": "#41304D",
+    "fg-dim": "#564463",
+    "fg-muted": "#695775",
+    "fg-faint": "#84738F",
+    "edge": "#B597C6",
+    "edge-dim": "#B597C680",
+    "scrollbar-thumb": "#8B47B8",
+    "scrollbar-hover": "#73339E"
+  },
+  "shape": {
+    "radius": "14px",
+    "radius-sm": "10px",
+    "radius-md": "16px",
+    "radius-lg": "22px",
+    "radius-full": "9999px"
+  },
+  "font": {
+    "family": "'Comfortaa', 'Cascadia Mono', monospace",
+    "google-font-url": "https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;500;600;700&display=swap"
+  },
+  "background": {
+    "average-color": "#9274CC",
+    "type": "image",
+    "value": "assets/wallpaper.jpg",
+    "terminal-value": "assets/wallpaper-terminal.webp",
+    "opacity": 1,
+    "panels-blur": 16,
+    "panels-opacity": 0.7,
+    "bubble-blur": 10,
+    "bubble-opacity": 0.8
+  },
+  "layout": {
+    "chrome-style": "default",
+    "input-style": "minimal",
+    "bubble-style": "flat",
+    "header-style": "minimal",
+    "statusbar-style": "minimal"
+  },
+  "effects": {
+    "particles": "dust",
+    "particle-count": 20,
+    "particle-speed": 0.3,
+    "particle-drift": 0.35,
+    "particle-size-range": [
+      4,
+      12
+    ],
+    "scan-lines": false,
+    "vignette": 0.18,
+    "noise": 0
+  },
+  "custom_css": "::selection { background: rgba(139, 71, 184, 0.3); color: var(--fg); } [data-theme=\"cotton-candy-sky\"] h1, [data-theme=\"cotton-candy-sky\"] h2 { text-shadow: 0 0 12px rgba(139, 71, 184, 0.18); }",
+  "contentHash": "sha256:5305d87a1a4a634dfba1a459657748dc251c473ddac6634a03ac06bc5903d720"
+}

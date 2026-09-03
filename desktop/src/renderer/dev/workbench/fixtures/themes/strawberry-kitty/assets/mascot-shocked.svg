@@ -1,0 +1,42 @@
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+  <!-- Strawberry Kitty · shocked · wide round eyes, O mouth, arms raised -->
+  <!-- Body -->
+  <path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z"
+        fill="#FFFFFF" stroke="#3A1420" stroke-width="0.6"/>
+  <!-- Cat ear tips -->
+  <path d="M6 4.3 L6.8 1.8 L9 4 Z" fill="#FFFFFF" stroke="#3A1420" stroke-width="0.6"/>
+  <path d="M18 4.3 L17.2 1.8 L15 4 Z" fill="#FFFFFF" stroke="#3A1420" stroke-width="0.6"/>
+  <!-- Arms raised outward -->
+  <rect x="1" y="9" width="3" height="4" rx="0.8" fill="#FFFFFF" stroke="#3A1420" stroke-width="0.6" transform="rotate(20 2.5 11)"/>
+  <rect x="20" y="9" width="3" height="4" rx="0.8" fill="#FFFFFF" stroke="#3A1420" stroke-width="0.6" transform="rotate(-20 21.5 11)"/>
+  <!-- Legs -->
+  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="#FFFFFF" stroke="#3A1420" stroke-width="0.6"/>
+  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="#FFFFFF" stroke="#3A1420" stroke-width="0.6"/>
+  <!-- Wide round eyes -->
+  <circle cx="9.3" cy="10" r="1.7" fill="#3A1420"/>
+  <circle cx="14.7" cy="10" r="1.7" fill="#3A1420"/>
+  <circle cx="9.7" cy="9.5" r="0.45" fill="#FFFFFF"/>
+  <circle cx="15.1" cy="9.5" r="0.45" fill="#FFFFFF"/>
+  <!-- Yellow nose -->
+  <ellipse cx="12" cy="11.6" rx="0.5" ry="0.35" fill="#F7C948"/>
+  <!-- O-shaped mouth -->
+  <ellipse cx="12" cy="13.2" rx="0.7" ry="0.9" fill="#3A1420"/>
+  <!-- Whiskers -->
+  <g stroke="#3A1420" stroke-width="0.4" stroke-linecap="round">
+    <line x1="5.5" y1="10.5" x2="7" y2="10.5"/>
+    <line x1="5.5" y1="11.5" x2="7" y2="11.5"/>
+    <line x1="17" y1="10.5" x2="18.5" y2="10.5"/>
+    <line x1="17" y1="11.5" x2="18.5" y2="11.5"/>
+  </g>
+  <!-- Bow on right ear (askew) -->
+  <g transform="rotate(-8 17.2 3.3)">
+    <path d="M17.2 3.3 L16.2 2.5 L16.2 4 Z" fill="#E14560"/>
+    <path d="M17.2 3.3 L18.2 2.5 L18.2 4 Z" fill="#E14560"/>
+    <circle cx="17.2" cy="3.3" r="0.35" fill="#E14560"/>
+  </g>
+  <!-- Strawberry on left ear -->
+  <path d="M6.7 5.2 Q6 6 6.2 6.8 Q6.6 7.6 7.4 7.5 Q8 7.2 8.1 6.3 Q8 5.4 7.4 5.1 Z" fill="#E14560"/>
+  <path d="M6.5 5.1 L7.6 4.9 L7.5 5.4 L6.9 5.5 Z" fill="#6DB56D"/>
+  <!-- Exclamation sparkle -->
+  <path d="M3 4.5 L3.3 5.3 L4.2 5.5 L3.3 5.7 L3 6.5 L2.7 5.7 L1.8 5.5 L2.7 5.3 Z" fill="#E14560"/>
+</svg>
