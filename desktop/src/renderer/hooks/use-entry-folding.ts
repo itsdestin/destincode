@@ -76,7 +76,10 @@ export interface EntryFolding {
  *   for its duration is the right trade; the alternative is telling the user
  *   "0 results" for text that is in their conversation.
  */
-export function useEntryFolding(enabled: boolean): EntryFolding {
+export function useEntryFolding(
+  enabled: boolean,
+  rootRef: React.RefObject<HTMLElement | null>,
+): EntryFolding {
   const [state, setState] = useState<FoldState>(EMPTY);
 
   // Everything the observer writes lives in refs. A setState per intersection
@@ -149,6 +152,20 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
 
   useEffect(() => {
     if (typeof IntersectionObserver === 'undefined') return;
+    // ROOT IS THE SCROLLER, NOT THE VIEWPORT — and this is the whole difference
+    // between a 1500px lead and none at all.
+    //
+    // With `root: null` the root is the document viewport, and `rootMargin`
+    // expands only THAT rect. Per spec the intermediate clipping ancestors are
+    // still applied at their true bounds, and `.chat-scroll` is exactly such an
+    // ancestor — so the margin bought nothing and an entry unfolded at the
+    // moment it entered the visible area. Destin saw the result immediately:
+    // "even when I scroll SUPER slowly, I can watch the newest message pop in
+    // instead of smoothly scrolling in" (2026-09-03).
+    //
+    // The history-sentinel observer in ChatView already does this correctly
+    // (`{ root, rootMargin: '400px 0px' }`), which is what identified it.
+    const root = rootRef.current ?? null;
     const io = new IntersectionObserver((entries) => {
       for (const entry of entries) {
         const key = (entry.target as HTMLElement).dataset.entryKey;
@@ -172,7 +189,7 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
           foldTimer.current = setTimeout(flushFold, FOLD_IDLE_MS);
         }
       }
-    }, { rootMargin: FOLD_ROOT_MARGIN });
+    }, { root, rootMargin: FOLD_ROOT_MARGIN });
     observer.current = io;
     return () => {
       io.disconnect();
@@ -182,7 +199,7 @@ export function useEntryFolding(enabled: boolean): EntryFolding {
       unfoldTimer.current = null;
       foldTimer.current = null;
     };
-  }, [flushFold, flushUnfold]);
+  }, [flushFold, flushUnfold, rootRef]);
 
   // Suspending folding must unfold what is already folded, synchronously enough
   // that the find bar never walks a DOM with holes in it.

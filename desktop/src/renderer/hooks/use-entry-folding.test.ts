@@ -15,10 +15,12 @@ type Cb = (entries: Array<{ target: Element; isIntersecting: boolean }>) => void
 let fire: Cb;
 let observed: Element[];
 let lastOptions: IntersectionObserverInit | undefined;
+let rootRef: { current: HTMLElement | null };
 
 beforeEach(() => {
   vi.useFakeTimers();
   observed = [];
+  rootRef = { current: document.createElement('div') };
   (globalThis as any).IntersectionObserver = class {
     constructor(cb: Cb, options?: IntersectionObserverInit) { fire = cb; lastOptions = options; }
     observe(el: Element) { observed.push(el); }
@@ -39,7 +41,7 @@ function entry(key: string, height: number) {
 
 describe('useEntryFolding', () => {
   it('folds an entry that scrolled away, at the height it last occupied', () => {
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const el = entry('a', 240);
     act(() => { result.current.registerEntry(el); });
 
@@ -58,7 +60,7 @@ describe('useEntryFolding', () => {
     // every 60 were never measured and never foldable: measured at 433/7000,
     // 294/5000 and 1/100 in three separate builds. At fold time the element is
     // in the DOM with a real height, so measure it then.
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const el = entry('never-seen', 500);
     act(() => { result.current.registerEntry(el); });
     act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
@@ -69,7 +71,7 @@ describe('useEntryFolding', () => {
   it('still refuses to fold when the element measures 0 and nothing was remembered', () => {
     // The scroll-destroying case that remains real: a 0px spacer would collapse
     // the scroll height under the reader.
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const el = entry('zero', 0);
     act(() => { result.current.registerEntry(el); });
     act(() => { fire([{ target: el, isIntersecting: false }]); vi.advanceTimersByTime(FOLD_IDLE_MS); });
@@ -80,7 +82,7 @@ describe('useEntryFolding', () => {
     // An inactive session's pane is content-visibility:hidden, so its entries lay
     // out to 0. Without the fallback a background conversation — where most of
     // the win is — could never fold.
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const el = entry('bg', 260);
     act(() => { result.current.registerEntry(el); });
     act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
@@ -93,7 +95,7 @@ describe('useEntryFolding', () => {
   it('does not re-measure while folded, so the spacer height cannot drift', () => {
     // A folded entry's offsetHeight IS the spacer. Measuring then would overwrite
     // the true height with itself once, and with a stale value forever after.
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const el = entry('b', 300);
     act(() => { result.current.registerEntry(el); });
     act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
@@ -110,7 +112,7 @@ describe('useEntryFolding', () => {
   it('waits for scrolling to settle before folding, but unfolds promptly', () => {
     // Folding mid-scroll re-renders the list under a moving viewport. Unfolding
     // late shows a blank gap. The asymmetry is the whole point.
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const el = entry('c', 120);
     act(() => { result.current.registerEntry(el); });
     act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
@@ -131,7 +133,7 @@ describe('useEntryFolding', () => {
     // ContentFindBar walks the DOM with a TreeWalker. A folded entry is
     // unfindable, so find would report "0 results" for text the user can see in
     // their own conversation.
-    const { result, rerender } = renderHook(({ on }) => useEntryFolding(on), { initialProps: { on: true } });
+    const { result, rerender } = renderHook(({ on }) => useEntryFolding(on, rootRef), { initialProps: { on: true } });
     const el = entry('d', 90);
     act(() => { result.current.registerEntry(el); });
     act(() => { fire([{ target: el, isIntersecting: true }]); vi.advanceTimersByTime(UNFOLD_DEBOUNCE_MS); });
@@ -151,11 +153,16 @@ describe('useEntryFolding', () => {
     // screen unfolds it again on the next flick of the wheel, and the render
     // churn costs more than the memory it saves.
     expect(FOLD_ROOT_MARGIN).toBe('1500px 0px');
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const el = entry('e', 10);
     let release!: () => void;
     act(() => { release = result.current.registerEntry(el); });
     expect(lastOptions?.rootMargin).toBe(FOLD_ROOT_MARGIN);
+    // ROOT MUST BE THE SCROLLER. With root:null the margin expands the document
+    // viewport only — the .chat-scroll clip still applies at its true bounds, so
+    // the 1500px lead evaporates and entries unfold as they enter view. That is
+    // the pop-in Destin saw scrolling slowly (2026-09-03).
+    expect(lastOptions?.root).toBe(rootRef.current);
     expect(observed).toContain(el);
     act(() => { release(); });
     expect(observed).not.toContain(el);
@@ -167,7 +174,7 @@ describe('useEntryFolding', () => {
     // unobserve+observe pairs per render, and because observe() delivers a fresh
     // intersection report each time, it also restarted the fold idle timer — so
     // folding could never fire and the change measured WORSE than doing nothing.
-    const { result, rerender } = renderHook(() => useEntryFolding(true));
+    const { result, rerender } = renderHook(() => useEntryFolding(true, rootRef));
     const first = result.current.registerEntry;
     rerender();
     expect(result.current.registerEntry).toBe(first);
@@ -187,7 +194,7 @@ describe('useEntryFolding', () => {
     // cleared it, so that entry was skipped and — since IntersectionObserver
     // reports TRANSITIONS, and it never transitions again — could never be folded
     // for the rest of the session. Measured: 741 of 12,100 entries folded.
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const el = entry('late', 180);
     act(() => { result.current.registerEntry(el); });
 
@@ -205,7 +212,7 @@ describe('useEntryFolding', () => {
     // The flush must re-evaluate membership rather than drain a queue: two
     // entries leave the viewport, only one triggers the flush window, and both
     // must end up folded.
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     const a = entry('m1', 100);
     const b = entry('m2', 100);
     act(() => { result.current.registerEntry(a); result.current.registerEntry(b); });
@@ -225,7 +232,7 @@ describe('useEntryFolding', () => {
   it('returns a cleanup even with no element or no observer', () => {
     // Same contract as useObservedRef: returning undefined puts the ref on
     // React's null-call convention and the next detach re-enters with null.
-    const { result } = renderHook(() => useEntryFolding(true));
+    const { result } = renderHook(() => useEntryFolding(true, rootRef));
     expect(typeof result.current.registerEntry(null)).toBe('function');
     expect(() => (result.current.registerEntry(null))()).not.toThrow();
   });

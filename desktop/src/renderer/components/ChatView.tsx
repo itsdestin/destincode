@@ -443,7 +443,7 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
   // Suspended while the find bar is open: ContentFindBar finds text by walking
   // the DOM, so a folded entry would be unfindable and the user would be told
   // "0 results" for text that is in their conversation.
-  const folding = useEntryFolding(!findOpen);
+  const folding = useEntryFolding(!findOpen, scrollContainerRef);
 
   // One ref for both observers — the blur-gating one and the folding one — so a
   // timeline entry still carries a single callback ref.
