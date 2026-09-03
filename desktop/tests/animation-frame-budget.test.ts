@@ -24,7 +24,10 @@ import { describe, it, expect } from 'vitest';
 // Investigation: youcoded-dev/docs/archive/investigations/2026-07-30-idle-cpu-burn.md
 const RENDERER = join(__dirname, '..', 'src', 'renderer');
 const read = (...p: string[]) =>
-  readFileSync(join(RENDERER, ...p), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  // CRLF → LF: a Windows checkout (autocrlf) hands the pins below `\r\n`, and every
+  // regex written with a literal `\n` failed there while passing on Linux and macOS
+  // (youcoded#404 CI, 2026-09-03).
+  readFileSync(join(RENDERER, ...p), 'utf8').replace(/\r\n/g, '\n').replace(/\/\*[\s\S]*?\*\//g, '');
 
 describe('perpetual animations are frame-budgeted', () => {
   const globals = read('styles', 'globals.css');
