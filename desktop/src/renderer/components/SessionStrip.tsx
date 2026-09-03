@@ -59,9 +59,17 @@ function motionWindowMs(el: Element | null): number {
 const COLLAPSED_PILL_PX = 28;
 
 /** How close (px) a dot may be drawn to the pill in hand before it is hidden.
- *  More than DRAG_TUNE.margin (6), so a dot is gone before it is asked to
- *  step aside, with a frame's travel of a brisk drag to spare. */
-const VEIL_PX = 10;
+ *  Contact, near enough: every px here is empty space beside the pill
+ *  (Destin, 2026-09-03, on 10px: "too much empty space on either side of the
+ *  dragged chip"). It can be this small because the veil is decided on EVERY
+ *  pointer move against where the pill is about to be drawn (handlePointerMove),
+ *  not only between moves by the rAF loop — so a fast pointer cannot land the
+ *  pill on a dot that is still drawn. */
+const VEIL_PX = 1;
+
+/** The row's gap between pills, in px. The dot flowing around the pill in
+ *  hand keeps exactly this much clear of it on both sides. */
+const FLOW_GAP_PX = PILL_GAP;
 
 
 interface SessionEntry {
@@ -353,9 +361,29 @@ export default function SessionStrip({
   // fraction, not px: on a select-on-press the pill grows from a 24px dot to
   // its full name while in hand, and a px offset would leave the cursor at its
   // far left edge; a fraction keeps it under the same part of the pill.
-  const grabFrac = useRef(0.5);
-  // The cursor's last x, for the rAF loop that re-anchors a shrinking twin.
+  // The cursor's x when the drag started. The twin is drawn at ITS IN-FLOW
+  // BOX plus how far the cursor has moved since — never anchored to a fraction
+  // of the pill under the cursor. WHY (2026-09-03): a drag usually starts while
+  // the row is still reflowing from the select-on-press (the old name
+  // collapsing, the strip re-centring, the pressed name still opening), and a
+  // cursor-anchored twin then parts from its box by the rest of that reflow —
+  // measured 15px, enough to sit on the dot behind it at pickup. Riding the
+  // box, the pill in hand keeps doing exactly what it did before the drag
+  // began (sliding with the row), and it is never anywhere the row's geometry
+  // does not account for. Once the row is still, the two anchorings are the
+  // same thing.
+  const dragStartX = useRef(0);
+  // The cursor's last x, for the rAF loop that positions the twin.
   const cursorXRef = useRef(0);
+  // The twin's `left` and `width` as React first mounted it. WHY they never
+  // change after that: React handles a pointermove as a CONTINUOUS event and
+  // may commit its render after this frame's rAF has run, so a `left` computed
+  // in the handler (against the bar as it was mid-frame, while the row is still
+  // settling) lands a frame late and overwrites the rAF loop's fresh value —
+  // measured 2026-09-03 as the twin alternating ±13px every other frame, and
+  // once landing on a dot. So React writes both exactly once, at mount, and
+  // the rAF loop is the only writer after that.
+  const twinMount = useRef<{ left: number; width: number | undefined } | null>(null);
   // The pack the row is settling INTO for this drag, computed at pointer-down
   // (with the pressed session as active when the mode selects on press). Read
   // in place of the live pack for the whole drag so a resize cannot repack
@@ -738,19 +766,7 @@ export default function SessionStrip({
       if (Math.abs(dx) < 5 && Math.abs(dy) < 5) return;
       isDragging.current = true;
       suppressClick.current = true;
-      // The grab point is taken NOW, not at the press: between the two the
-      // row has slid under the stationary cursor (the old name collapsing,
-      // the strip re-centring), and a fraction measured at the press would
-      // draw the twin up to ~150px from the box it stands in for. Measured
-      // against the box as it is, the twin appears exactly on it; and as the
-      // box shrinks to a dot the twin shrinks around the cursor.
-      const bar0 = pillBarRef.current;
-      const held0 = bar0?.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(dragId)}"]`);
-      if (held0) {
-        const r = held0.getBoundingClientRect();
-        grabFrac.current = r.width > 0 ? Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)) : 0.5;
-      }
-      // (no snapshot needed: the row is read as drawn on every move, below)
+      dragStartX.current = e.clientX;   // see dragStartX
       // Tell main this is a real drag — it starts the cross-window cursor
       // ticker so peer windows can highlight their strip as a drop target.
       const draggedSession = sessions.find(x => x.id === dragId);
@@ -779,8 +795,9 @@ export default function SessionStrip({
     const heldWidth = held ? held.right - held.left : 0;
     const heldEl = pillBarRef.current?.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(dragId)}"]`);
     const widthNow = heldEl ? heldEl.getBoundingClientRect().width || heldWidth : heldWidth;
+    const boxLeft = heldEl ? heldEl.getBoundingClientRect().left : e.clientX;
     const floatLeft = held
-      ? clampFloatLeft(rects, e.clientX - grabFrac.current * widthNow, widthNow)
+      ? clampFloatLeft(rects, boxLeft + (e.clientX - dragStartX.current), widthNow)
       : null;
     // Bar-local against the bar's left edge NOW, for the same reason.
     if (floatLeft !== null) setDragLeft(floatLeft - barLeftNow);
@@ -846,7 +863,7 @@ export default function SessionStrip({
     // dot must yield when the pill visibly reaches it, not when it would have
     // in the settled layout. Each pill's drawn left has its in-flight
     // transform (a yield, the hop's delayed jump) taken back out.
-    const centreDrawn = floatLeft !== null ? e.clientX - grabFrac.current * heldWidth + heldWidth / 2 : e.clientX;
+    const centreDrawn = floatLeft !== null ? floatLeft + heldWidth / 2 : e.clientX;
     const drawn: PillRect[] = [];
     bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
       const id = el.dataset.sessionId;
@@ -855,6 +872,18 @@ export default function SessionStrip({
       const m = /matrix\(([^)]+)\)/.exec(getComputedStyle(el).transform);
       const tx = m ? Number(m[1].split(',')[4]) || 0 : 0;
       drawn.push({ id, left: r.left - tx, right: r.right - tx });
+      // The veil, decided here for THIS move: a dot drawn within VEIL_PX of
+      // where the pill is about to be is hidden in the same render (see
+      // veiledRef). Only the rAF loop ever unveils.
+      // A dot the flow is shaping (`--flow` set, or scaled to nothing) is
+      // the flow's business: it cannot touch the pill, and veiling its
+      // zero-width point inside the pill's footprint made it FADE in after
+      // its jump instead of appearing whole (seen 2026-09-03 at pickup).
+      if (floatLeft !== null && id !== dragId && dotIdsRef.current.has(id)
+          && r.width >= 1 && el.style.getPropertyValue('--flow') === ''
+          && r.right > floatLeft - VEIL_PX && r.left < floatLeft + widthNow + VEIL_PX) {
+        veiledRef.current.add(id);
+      }
     });
     const centre = floatLeft !== null ? mapToSettled(drawn, rects, centreDrawn) : centreDrawn;
     const tv = travel.current;
@@ -1041,6 +1070,76 @@ export default function SessionStrip({
       setSettle({ ...settle, phase: 'glide' });
     }
   });
+  /** One frame of the flow (see the note at dragOffsetsRef): scale the dot
+   *  the pill is covering, and draw its ghost growing at the landing spot. */
+  const flow = (bar: HTMLElement, t: DOMRect, heldId: string) => {
+    const dir = travel.current.dir;
+    const barL = bar.getBoundingClientRect().left;
+    const G = FLOW_GAP_PX;
+    let ghostFor: HTMLElement | null = null;
+    let ghostLeft = 0, ghostScale = 0, ghostOrigin = 'left center', ghostNear = -Infinity;
+    bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
+      const id = el.dataset.sessionId;
+      if (!id || id === heldId || !dotIdsRef.current.has(id)) return;
+      // Where the dot is drawn this frame WITHOUT its scale: layout position
+      // plus its step-aside offset (the transform React set).
+      const off = dragOffsetsRef.current.get(id) ?? 0;
+      const dl = barL + el.offsetLeft + off;
+      const w = el.offsetWidth;
+      const dr = dl + w;
+      let k = 1;
+      // Any dot the pill is over — partly, or wholly until it jumps — shrinks
+      // AWAY from the pill, towards its own far edge, so its near edge stays G
+      // clear of the pill; 0 once covered whole. Which side is "far" is which
+      // side of the pill the dot is on, not the direction of travel: at pickup
+      // the twin can sit a few px over the dot BEHIND it too.
+      const onRight = dl + w / 2 > t.left + t.width / 2;
+      const covered = dl < t.right + G && dr > t.left - G;
+      if (covered && onRight) {
+        k = Math.min(1, Math.max(0, (dr - (t.right + G)) / w));
+        el.style.setProperty('--flow-origin', 'right center');
+      } else if (covered) {
+        k = Math.min(1, Math.max(0, ((t.left - G) - dl) / w));
+        el.style.setProperty('--flow-origin', 'left center');
+      }
+      if (k >= 1) el.style.removeProperty('--flow');
+      else el.style.setProperty('--flow', String(k));
+      // The ghost: only for the dot AHEAD in the direction of travel — the
+      // one that will land behind the pill — nearest the leading edge.
+      if (covered && dir > 0 && onRight && dl > ghostNear) {
+        ghostNear = dl;
+        ghostFor = el;
+        ghostLeft = el.offsetLeft + off - (t.width + G);
+        ghostScale = Math.min(1, Math.max(0, ((t.left - G) - (barL + ghostLeft)) / w));
+        ghostOrigin = 'left center';
+      } else if (covered && dir < 0 && !onRight && -dr > ghostNear) {
+        ghostNear = -dr;
+        ghostFor = el;
+        ghostLeft = el.offsetLeft + off + (t.width + G);
+        ghostScale = Math.min(1, Math.max(0, ((barL + ghostLeft + w) - (t.right + G)) / w));
+        ghostOrigin = 'right center';
+      }
+    });
+    let ghost = bar.querySelector<HTMLElement>(':scope > [data-ghost]');
+    if (!ghostFor || ghostScale <= 0) { ghost?.remove(); return; }
+    const src: HTMLElement = ghostFor;
+    if (!ghost || ghost.dataset.ghost !== src.dataset.sessionId) {
+      ghost?.remove();
+      // A copy of the dot itself (same colour, same size), stripped of
+      // everything that names it: nothing that walks the row by
+      // `[data-session-id]` may find it.
+      ghost = src.cloneNode(true) as HTMLElement;
+      ghost.removeAttribute('data-session-id');
+      ghost.removeAttribute('data-session-idx');
+      ghost.removeAttribute('title');
+      ghost.setAttribute('aria-hidden', 'true');
+      ghost.dataset.ghost = src.dataset.sessionId ?? '';
+      ghost.classList.remove('session-pill--veiled');
+      bar.appendChild(ghost);
+    }
+    ghost.style.cssText = `position:absolute; top:50%; left:${ghostLeft}px; width:${src.offsetWidth}px; transform:translateY(-50%) scale(${ghostScale}); transform-origin:${ghostOrigin}; pointer-events:none; opacity:1; visibility:visible; transition:none; margin:0;`;
+  };
+
   // The twin is a fresh element, so its label opens to full width the instant
   // it mounts — while the in-flow box it stands in for is still mid-reveal
   // after a select-on-press, and the dots beyond it have not been pushed yet.
@@ -1055,24 +1154,27 @@ export default function SessionStrip({
     let raf = 0;
     const tick = () => {
       const real = pillElement(dragId);
-      const twin = bar.querySelector<HTMLElement>(':scope > div[aria-hidden]');
+      const twin = bar.querySelector<HTMLElement>(':scope > div[aria-hidden]:not([data-ghost])');
       if (real && twin) {
         const w = real.getBoundingClientRect().width;
         twin.style.width = `${w}px`;
         // And its LEFT: the cursor stays at the same fraction of a twin that
         // is still opening after a press, so both edges move with it rather
         // than the leading edge sweeping across the dots ahead.
-        twin.style.left = `${cursorXRef.current - grabFrac.current * w - bar.getBoundingClientRect().left}px`;
+        twin.style.left = `${real.getBoundingClientRect().left + (cursorXRef.current - dragStartX.current) - bar.getBoundingClientRect().left}px`;
         // The veil (see veiledRef): a dot within VEIL_PX of the twin, where
         // it is DRAWN this frame, is hidden; one that has come clear is shown
         // again (its inline opacity transition fades it in). Written straight
         // to the DOM — one class toggle per dot per frame at most.
         const t = twin.getBoundingClientRect();
+        flow(bar, t, dragId);
         bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
           const id = el.dataset.sessionId;
           if (!id || id === dragId || !dotIdsRef.current.has(id)) return;
           const r = el.getBoundingClientRect();
-          const near = r.right > t.left - VEIL_PX && r.left < t.right + VEIL_PX;
+          // Same exemption as in handlePointerMove: the flow's dots are its own.
+          const flowing = r.width < 1 || el.style.getPropertyValue('--flow') !== '';
+          const near = !flowing && r.right > t.left - VEIL_PX && r.left < t.right + VEIL_PX;
           const veiled = veiledRef.current.has(id);
           if (near && !veiled) { veiledRef.current.add(id); el.classList.add('session-pill--veiled'); }
           else if (!near && veiled) { veiledRef.current.delete(id); el.classList.remove('session-pill--veiled'); }
@@ -1083,6 +1185,13 @@ export default function SessionStrip({
     raf = requestAnimationFrame(tick);
     return () => {
       cancelAnimationFrame(raf);
+      twinMount.current = null;
+      // The flow: no ghost, every dot back at full size.
+      bar.querySelector(':scope > [data-ghost]')?.remove();
+      bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
+        el.style.removeProperty('--flow');
+        el.style.removeProperty('--flow-origin');
+      });
       // The drag is over: everything is drawn again.
       veiledRef.current.clear();
       bar.querySelectorAll('.session-pill--veiled').forEach((el) => el.classList.remove('session-pill--veiled'));
@@ -1211,16 +1320,25 @@ export default function SessionStrip({
   // Only dots: a wide neighbour still slides, on the fast-deceleration curve;
   // blanking a 190px name would leave a hole. Cleared when the drag ends.
   const veiledRef = useRef<Set<string>>(new Set());
-  const prevOffsetsRef = useRef<ReadonlyMap<string, number>>(EMPTY_OFFSETS);
-  if (dragging) {
-    for (const s of sessions) {
-      const off = dragOffsets.get(s.id) ?? 0;
-      if (off !== (prevOffsetsRef.current.get(s.id) ?? 0) && !displayPack.expanded.has(s.id)) veiledRef.current.add(s.id);
-    }
-  } else if (veiledRef.current.size > 0) {
-    veiledRef.current.clear();
-  }
-  prevOffsetsRef.current = dragOffsets;
+  if (!dragging && veiledRef.current.size > 0) veiledRef.current.clear();
+  // Mirror of the offsets for the rAF loop, which reads them every frame.
+  const dragOffsetsRef = useRef<ReadonlyMap<string, number>>(EMPTY_OFFSETS);
+  dragOffsetsRef.current = dragOffsets;
+  // THE DOT FLOWS AROUND THE PILL (2026-09-03). Hiding the dot the pill is
+  // passing over leaves its width as a hole beside the pill — always about
+  // one dot's worth, ahead or behind depending on when it jumps — and Destin
+  // saw it: "too much empty space on either side of the dragged chip". So
+  // the dot ahead SHRINKS towards its far edge as the pill covers its space,
+  // keeping FLOW_GAP_PX clear of the pill's leading edge, while a ghost of it
+  // GROWS behind the pill at the spot it will land, keeping the same gap from
+  // the trailing edge. When the pill has covered it whole (DRAG_TUNE.margin,
+  // the far edge) the real dot jumps to that spot — at scale 0, unseen — and
+  // takes over from the ghost at full size. Mass flows through the pill;
+  // nothing touches it; the row never shows a hole. All of it is written by
+  // the rAF loop below from the twin's rect each frame (`--flow`, the ghost),
+  // never by React, for the reason twinMount gives. The veil stays as the
+  // safety net for geometry the flow does not account for (the pickup, while
+  // the row is still sliding under the cursor).
   // Which pills are dots in the pack the drag is judged against — for the rAF loop.
   const dotIdsRef = useRef<Set<string>>(new Set());
   dotIdsRef.current = new Set(displayPack.collapsed);
@@ -1336,9 +1454,14 @@ export default function SessionStrip({
                     ? undefined
                     : settle?.deltas.has(s.id)
                       ? `translateX(${settle.phase === 'hold' ? settle.deltas.get(s.id) : 0}px)`
-                      : dragOffsets.has(s.id)
-                        ? `translateX(${dragOffsets.get(s.id)}px)`
-                        : (isHovered && !isActive) ? 'scale(1.02)' : undefined,
+                      : dragging && isDot
+                        // `--flow` is the shrink of the dot flowing around the
+                        // pill in hand (rAF loop); React never sets it.
+                        ? `translateX(${dragOffsets.get(s.id) ?? 0}px) scale(var(--flow, 1))`
+                        : dragOffsets.has(s.id)
+                          ? `translateX(${dragOffsets.get(s.id)}px)`
+                          : (isHovered && !isActive) ? 'scale(1.02)' : undefined,
+                  transformOrigin: dragging && isDot ? 'var(--flow-origin, center)' : undefined,
                   // The 3px focus outline (globals.css) reads as a bright ring
                   // around the thing you are dragging. Suppressed in hand.
                   zIndex: settle?.heldId === s.id ? 10 : undefined,
@@ -1364,11 +1487,10 @@ export default function SessionStrip({
                   aria-hidden
                   className={`${pillClass} shrink-0 cursor-grabbing`}
                   style={{
-                    // Width is driven from the in-flow box by the rAF sync
-                    // above; the first frame gets the box's width from React.
-                    width: pillElement(s.id)?.getBoundingClientRect().width,
+                    // Mount-only (see twinMount): the rAF loop owns both after.
+                    width: (twinMount.current ??= { left: dragLeft, width: pillElement(s.id)?.getBoundingClientRect().width }).width,
                     position: 'absolute',
-                    left: dragLeft,
+                    left: twinMount.current.left,
                     top: '50%',
                     transform: 'translateY(-50%)',
                     zIndex: 10,

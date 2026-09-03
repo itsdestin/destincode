@@ -118,10 +118,19 @@ export function nearestSlotId(
 
 /** How early a neighbour gets out of the way, in px.
  *  - `margin`: the neighbour AHEAD of the pill (in the direction it is moving)
- *    yields when the pill's leading edge comes within this of its near edge —
- *    BEFORE contact, so the 150ms step-aside has a head start and the pill
- *    never sits over a dot that has not moved yet (Destin, 2026-09-01: "so the
- *    dragged pill doesn't overlap the dots before they move").
+ *    yields when the pill's leading edge is this far short of its near edge.
+ *    NEGATIVE means past it: −28 is a dot's FAR edge — the pill has covered
+ *    the whole dot before it moves. It was +6 ("before contact") while dots
+ *    slid aside and needed a head start; now a dot is hidden the moment the
+ *    pill touches it (SessionStrip's veil) and jumps unseen, so the trigger
+ *    can wait. WHY the far edge: at that instant the pill sits exactly on its
+ *    new slot, so the dot lands right behind the pill with only the row gap
+ *    between them and can be shown again at once. Yielding earlier left the
+ *    dot under the pill's trailing side (hidden, a hole behind) as well as a
+ *    hole ahead — Destin, 2026-09-03: "too much empty space on either side of
+ *    the dragged chip". The hole AHEAD (the dot the pill is passing over,
+ *    hidden) is the price of never touching one; it is now the only hole.
+ *    (Only dots reach this line: a wide neighbour's `early` term wins.)
  *  - `early`: for a WIDE neighbour the trigger is its centre minus this,
  *    rather than its near edge — a dot must not send a 290px pill sliding
  *    aside the moment it touches it, or the dot ends up drawn over the wide
@@ -130,7 +139,7 @@ export function nearestSlotId(
  *    having REVERSED. The rules only ever move the neighbour ahead, so nothing
  *    can flap while the direction holds; the dead-band is what keeps a shaky
  *    hand at rest from counting as a reversal every other frame. */
-export const DRAG_TUNE = { margin: 6, early: 20, deadband: 4 };
+export const DRAG_TUNE = { margin: -28, early: 20, deadband: 4 };
 
 /** The slot the pill in hand is heading for, given the slot it is heading for
  *  NOW and the direction it is moving. Only the neighbour AHEAD ever yields:

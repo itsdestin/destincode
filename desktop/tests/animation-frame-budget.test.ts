@@ -273,7 +273,7 @@ describe('motion vocabulary', () => {
     // would be fine if they teleport or fade in/fade out as long as they dont
     // visually touch the dragged pill." Geometric, not timed.
     const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/const VEIL_PX = 10;/);
+    expect(strip).toMatch(/const VEIL_PX = 1;/);
     expect(strip).toMatch(/r\.right > t\.left - VEIL_PX && r\.left < t\.right \+ VEIL_PX/);
     // A dot's step-aside is a jump (it is hidden); a wide neighbour still slides.
     expect(strip).toMatch(/dragging && isDot \? '0s' : 'var\(--dur-hover\) var\(--ease-out\)'/);

@@ -86,21 +86,24 @@ describe('nextSlotId — the neighbour ahead yields early, in either direction',
   ];
   const c0 = 89.5;                       // the wide pill's own slot centre
 
-  it('moving right, a dot yields `margin` px BEFORE the pill\'s edge reaches it', () => {
+  it('moving right, a dot yields when the pill\'s edge is `margin` short of it — its far edge, margin being −28', () => {
     // The pill's right edge is at centre + 89.5; d1's left is 181. Contact is
-    // centre 91.5; the yield line is margin short of that.
-    const line = c0 + PILL_GAP - DRAG_TUNE.margin;   // 85.5
+    // centre 91.5; the yield line is margin short of that (past it: −28 is
+    // d1's far edge, so the pill has covered it whole). The dot has been
+    // hidden since contact (SessionStrip's veil).
+    const line = c0 + PILL_GAP - DRAG_TUNE.margin;   // 119.5
+    expect(DRAG_TUNE.margin).toBe(-28);
     expect(nextSlotId(row, 'wide', null, line - 0.5, 1, 2)).toBeNull();
     expect(nextSlotId(row, 'wide', null, line + 0.5, 1, 2)).toBe('d1');
   });
 
-  it('moving left, the dot now ahead yields the same `margin` px before contact', () => {
+  it('moving left, the dot now ahead yields at the same `margin` — its far edge again', () => {
     // After passing d1 the pill is at position 1 and d1 sits at [0,28] on its
     // left. Coming back, the pill's left edge (centre − 89.5) nears d1's right
     // edge (28): contact at centre 117.5, the line is margin past that.
-    const over = nextSlotId(row, 'wide', null, c0 + 10, 1, 2);
+    const over = nextSlotId(row, 'wide', null, c0 + 31, 1, 2);
     expect(over).toBe('d1');
-    const line = c0 + 28 + DRAG_TUNE.margin;         // 123.5
+    const line = c0 + 28 + DRAG_TUNE.margin;         // 89.5
     expect(nextSlotId(row, 'wide', over, line + 0.5, -1, 2)).toBe('d1');
     expect(nextSlotId(row, 'wide', over, line - 0.5, -1, 2)).toBeNull();
   });
@@ -123,7 +126,8 @@ describe('nextSlotId — the neighbour ahead yields early, in either direction',
   });
 
   it('crosses several dots in one fast move', () => {
-    expect(nextSlotId(row, 'wide', null, c0 + 3 * 30, 1, 2)).toBe('d3');
+    // Three pitches on, just past the third far-edge line.
+    expect(nextSlotId(row, 'wide', null, c0 + 3 * 30 + 1, 1, 2)).toBe('d3');
   });
 
   it('falls back to nearest for a pill that is not in the row', () => {
