@@ -34,8 +34,9 @@ const DESKTOP_LIBS: { lib: string; license: string; source: string }[] = [
 ];
 
 const ANDROID_LIBS: { lib: string; license: string; source: string }[] = [
-  { lib: 'Termux terminal-emulator', license: 'GPLv3', source: 'github.com/termux/termux-app' },
-  { lib: 'Termux terminal-view', license: 'GPLv3', source: 'github.com/termux/termux-app' },
+  // Termux's LICENSE.md carves terminal-emulator out as Apache 2.0 (the rest of
+  // termux-app is GPLv3). terminal-view is no longer linked — see app/build.gradle.kts.
+  { lib: 'Termux terminal-emulator', license: 'Apache 2.0', source: 'github.com/termux/termux-app' },
   { lib: 'AndroidX / Jetpack Compose', license: 'Apache 2.0', source: 'developer.android.com' },
   { lib: 'Apache Commons Compress', license: 'Apache 2.0', source: 'commons.apache.org' },
   { lib: 'CommonMark', license: 'BSD 2-Clause', source: 'github.com/commonmark/commonmark-java' },
@@ -184,16 +185,16 @@ export default function AboutPopup({ open, onClose, platform, version, build, ch
                   The YouCoded desktop application is licensed under the MIT License.
                 </p>
                 <p className="text-2xs text-fg-dim leading-relaxed">
-                  Note: The YouCoded Android application is distributed under GPLv3 because it links against Termux. The desktop application has no such dependency and is MIT throughout.
+                  The YouCoded Android application is MIT-licensed as well; it includes Termux&apos;s terminal-emulator library under the Apache License 2.0.
                 </p>
               </>
             ) : (
               <>
                 <p className="text-2xs text-fg-dim leading-relaxed">
-                  The YouCoded Android application is distributed under the GNU General Public License v3.0 (GPLv3) because it links against Termux terminal components, which are GPLv3.
+                  The YouCoded Android application is licensed under the MIT License, the same as the desktop app and the shared interface that powers both.
                 </p>
                 <p className="text-2xs text-fg-dim leading-relaxed">
-                  The YouCoded source code itself — including the shared React interface that powers this app — is offered under the MIT License. The Android distribution as a whole is GPLv3; the underlying source remains MIT upstream.
+                  It includes a copy of Termux&apos;s terminal-emulator library, which is licensed under the Apache License 2.0; its license and NOTICE ship with the app.
                 </p>
               </>
             )}

@@ -2,6 +2,17 @@
 
 All notable changes to YouCoded are documented in this file.
 
+## [Unreleased]
+
+### Changed
+- **Android app relicensed from GPLv3 to MIT** — The whole repository is now
+  MIT. The GPL label on the Android app rested on a misreading of Termux's
+  license: Termux's own LICENSE.md carves its terminal-emulator library (the
+  only Termux code the app contains) out as Apache 2.0, and no other Android
+  dependency is copyleft. The vendored library keeps its Apache 2.0 LICENSE and
+  NOTICE. No runtime change; the license shown in the About screen, README,
+  and LICENSE files is what changes.
+
 ## [1.2.4] — 2026-05-18
 
 **Claude Code CLI baseline:** v2.1.143

@@ -15,7 +15,7 @@ If you don't agree with these Terms, please don't use the Services. Continuing t
 The YouCoded software is open source. Each repository carries its own LICENSE file, and **those licenses govern your rights to use, modify, and redistribute the source code itself.** In summary:
 
 - The YouCoded desktop app and shared React UI are under the **MIT License**.
-- The YouCoded Android app is distributed under the **GNU GPL v3** because it links against Termux components.
+- The YouCoded Android app is also under the **MIT License**. It includes a vendored copy of Termux's terminal-emulator library, which is under the **Apache License 2.0** (see `terminal-emulator-vendored/LICENSE` and `NOTICE` in the youcoded repository).
 - The marketplace and theme registries (`wecoded-marketplace`, `wecoded-themes`) are under the **Apache License 2.0**.
 - Bundled plugins each carry their own license; check the relevant repository.
 

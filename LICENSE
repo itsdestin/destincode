@@ -1,28 +1,22 @@
 YouCoded License
 ================
 
-YouCoded is dual-licensed to reflect the different licensing obligations of
-its desktop and Android distributions.
+YouCoded is licensed under the MIT License, the full text of which follows
+below. This covers everything in this repository — the desktop application
+(`desktop/`), the shared React user interface (`desktop/src/renderer/`), the
+Android application (`app/`), build scripts (`scripts/`), and documentation
+(`docs/`) — with one exception:
 
-  • The YouCoded desktop application (Electron + React — located in
-    `desktop/`), the shared React user interface (`desktop/src/renderer/`),
-    repository-level build scripts (`scripts/`), documentation (`docs/`), and
-    other non-platform-specific files in this repository are licensed under
-    the MIT License, the full text of which follows below. A copy also lives
-    at `desktop/LICENSE`.
+  • `terminal-emulator-vendored/` is a vendored copy of the Termux project's
+    terminal-emulator library (github.com/termux/termux-app, itself derived
+    from jackpal/Android-Terminal-Emulator). It is upstream code, licensed
+    under the Apache License, Version 2.0. Its license text and preserved
+    copyright notices live at `terminal-emulator-vendored/LICENSE` and
+    `terminal-emulator-vendored/NOTICE`; the Apache License requires that
+    NOTICE to accompany redistributions of the library. See
+    `terminal-emulator-vendored/VENDORED.md` for what was vendored and how.
 
-  • The YouCoded Android application (located in `app/`) is licensed under
-    the GNU General Public License, version 3 (GPLv3), because it links
-    against Termux terminal-emulator and terminal-view, which are GPLv3. The
-    full GPLv3 text and a preamble explaining the boundary lives at
-    `app/LICENSE`.
-
-GPLv3 Section 5 permits MIT-licensed source (such as the shared React UI) to
-be aggregated into the Android application. The resulting Android .apk / .aab
-distribution is governed by GPLv3, but the underlying source code — as offered
-in this repository — retains its original MIT license. Redistributing the
-MIT-licensed portions on their own, or bundling them with other MIT-compatible
-software, does not trigger GPLv3's copyleft.
+Copies of the MIT text also live at `desktop/LICENSE` and `app/LICENSE`.
 
 ----------------------------------------------------------------------------
 
