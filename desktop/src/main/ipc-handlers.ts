@@ -2148,23 +2148,14 @@ export function registerIpcHandlers(
     });
   }
 
-  // --- Usage cache refresher ---
-  // Runs usage-fetch.js periodically to keep .usage-cache.json fresh
-  // even when the YouCoded toolkit's statusline isn't running.
-  const rawUsageFetchPath = path.resolve(__dirname, '../../hook-scripts/usage-fetch.js');
-  const unpackedUsageFetchPath = rawUsageFetchPath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`);
-  const usageFetchScript = fs.existsSync(unpackedUsageFetchPath) ? unpackedUsageFetchPath : rawUsageFetchPath;
-
-  function refreshUsageCache() {
-    try {
-      execFile('node', [usageFetchScript], { timeout: 15000 }, () => {
-        // Output written to .usage-cache.json; buildStatusData() reads it
-      });
-    } catch { /* node not found or script error — status bar just shows no data */ }
-  }
-
-  refreshUsageCache();
-  const usageRefreshInterval = setInterval(refreshUsageCache, 5 * 60 * 1000);
+  // (There is deliberately no usage-cache refresher here any more. It used to
+  // run hook-scripts/usage-fetch.js every 5 minutes, which read the user's
+  // Claude.ai OAuth token from ~/.claude/.credentials.json and called
+  // Anthropic's usage API — Anthropic's Claude Code terms forbid third-party
+  // apps from using that token. ~/.claude/.usage-cache.json is now written by
+  // hook-scripts/statusline.sh from the rate_limits object Claude Code itself
+  // passes to the status line, so buildStatusData() above keeps reading the
+  // same file and the chips only update while a Claude Code session is live.)
 
   // --- Topic file watcher (auto-title) ---
   // The auto-title hook writes topics to ~/.claude/topics/topic-{CLAUDE_CODE_SESSION_ID}.
@@ -4527,7 +4518,6 @@ export function registerIpcHandlers(
   return function cleanup(): Promise<void> {
     stopThemeWatcher();
     clearInterval(statusInterval);
-    clearInterval(usageRefreshInterval);
     transcriptWatcher.stopAll();
     // Flush + tear down every live native session on quit (best-effort, bounded
     // to one in-flight streaming part). Fire-and-forget with .catch — cleanup()

@@ -3,7 +3,7 @@
 # Line 1: Session name (bold, if named)
 # Line 2: Sync status (from .sync-status file)
 # Line 3: Model + context remaining
-# Line 4: Rate limit info (from usage-fetch.js)
+# Line 4: Rate limit info (from Claude Code's own rate_limits stdin payload)
 # Line 5: Toolkit version + announcement (if active)
 
 # Source shared infrastructure (trap handlers, error capture, rotation)
@@ -26,7 +26,78 @@ let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
     const sid=j.session_id||'';
     const m=j.model?.display_name||j.model?.id||'unknown';
     const rem=j.context_window?.remaining_percentage!=null?Math.round(j.context_window.remaining_percentage):100;
-    console.log(name+SEP+m+SEP+rem+SEP+sid);
+    const home=process.env.HOME||process.env.USERPROFILE||'';
+    // --- Rate limits: Line 4 + ~/.claude/.usage-cache.json ---
+    // Legal: Anthropic forbids third-party apps from collecting or using the
+    // Claude.ai OAuth token (code.claude.com/docs/en/legal-and-compliance), so
+    // the old usage-fetch.js call to api.anthropic.com/api/oauth/usage is gone.
+    // Claude Code itself hands this script the same figures as rate_limits
+    // (CC >= 2.1.80, docs: code.claude.com/docs/en/statusline#rate-limit-usage):
+    //   rate_limits.<five_hour|seven_day>.used_percentage  0-100
+    //   rate_limits.<five_hour|seven_day>.resets_at        Unix epoch SECONDS
+    // It appears only for Pro/Max logins and only after the first API reply of a
+    // session; each window may be absent on its own, and CC drops a window once
+    // its reset time has passed. The cache keeps the shape every reader already
+    // parses — {five_hour:{utilization, resets_at: ISO string}, seven_day:{...}}
+    // (ipc-handlers buildStatusData, StatusBar chips, UsageCard, Android
+    // SessionService) — so nothing downstream had to change.
+    let usage=null;
+    const cachePath=home?path.join(home,'.claude','.usage-cache.json'):'';
+    try{
+      const rl=j.rate_limits;
+      if(rl&&typeof rl==='object'){
+        usage={};
+        for(const w of ['five_hour','seven_day']){
+          const src=rl[w];
+          if(!src||src.used_percentage==null)continue;
+          const win={utilization:Math.round(src.used_percentage)};
+          const n=Number(src.resets_at);
+          // Seconds per the docs; a value already in milliseconds is left alone.
+          if(Number.isFinite(n)&&n>0)win.resets_at=new Date(n>1e11?n:n*1000).toISOString();
+          usage[w]=win;
+        }
+        if(cachePath){try{fs.writeFileSync(cachePath,JSON.stringify(usage))}catch(_){}}
+      }else if(cachePath&&fs.existsSync(cachePath)){
+        // No rate_limits yet (before the first reply, or not a Pro/Max login):
+        // keep showing the last known figures, but drop any window whose reset
+        // time has passed so yesterday's exhausted bar never reads as today's.
+        // Nothing refreshes this file between sessions any more, so this is the
+        // only place stale windows get cleared.
+        const old=JSON.parse(fs.readFileSync(cachePath,'utf8'));
+        usage={};let pruned=false;
+        for(const w of ['five_hour','seven_day']){
+          const win=old&&old[w];
+          if(!win||win.utilization==null)continue;
+          const t=win.resets_at?Date.parse(win.resets_at):NaN;
+          if(Number.isFinite(t)&&t<=Date.now()){pruned=true;continue}
+          usage[w]=win;
+        }
+        if(pruned){try{fs.writeFileSync(cachePath,JSON.stringify(usage))}catch(_){}}
+      }
+    }catch(_){usage=null}
+    // Render Line 4 exactly as before: each window coloured by its own
+    // percentage (green <50, yellow <80, red >=80), 12-hour reset times.
+    let usageLine='';
+    if(usage){
+      const GREEN='\x1b[92m',YELLOW='\x1b[33m',RED='\x1b[31m',RESET='\x1b[0m';
+      const colorFor=p=>p>=80?RED:p>=50?YELLOW:GREEN;
+      const tfmt={hour:'numeric',minute:'2-digit',hour12:true};
+      const parts=[];
+      const f=usage.five_hour;
+      if(f&&f.utilization!=null){
+        const r=f.resets_at?new Date(f.resets_at):null;
+        const when=r&&!isNaN(r)?': Resets at '+r.toLocaleTimeString('en-US',tfmt):'';
+        parts.push(colorFor(f.utilization)+'5h ('+f.utilization+'%)'+when+RESET);
+      }
+      const sv=usage.seven_day;
+      if(sv&&sv.utilization!=null){
+        const r=sv.resets_at?new Date(sv.resets_at):null;
+        const when=r&&!isNaN(r)?': Resets on '+r.toLocaleDateString('en-US',{weekday:'long'})+' at '+r.toLocaleTimeString('en-US',tfmt):'';
+        parts.push(colorFor(sv.utilization)+'7d ('+sv.utilization+'%)'+when+RESET);
+      }
+      usageLine=parts.join(RESET+' | '+RESET);
+    }
+    console.log(name+SEP+m+SEP+rem+SEP+sid+SEP+usageLine);
     // Write session stats JSON for desktop/Android status bar widgets
     // Field mapping from Claude Code's actual status line JSON structure:
     //   cost.total_cost_usd, cost.total_duration_ms, cost.total_api_duration_ms,
@@ -49,7 +120,6 @@ let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
         linesAdded:c.total_lines_added??null,
         linesRemoved:c.total_lines_removed??null,
       };
-      const home=process.env.HOME||process.env.USERPROFILE||'';
       if(home){
         const p=path.join(home,'.claude','.session-stats-'+sid+'.json');
         try{fs.writeFileSync(p,JSON.stringify(stats))}catch(_){}
@@ -58,7 +128,7 @@ let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
   }catch(e){console.error('statusline parse error: '+e.message);console.log(SEP+'unknown'+SEP+'100'+SEP)}
 })" 2>>"$STATUSLINE_LOG")
 
-IFS=$(printf '\037') read -r SESSION_NAME MODEL REMAINING SESSION_ID <<< "$PARSED"
+IFS=$(printf '\037') read -r SESSION_NAME MODEL REMAINING SESSION_ID USAGE_LINE <<< "$PARSED"
 
 # Defaults if node failed
 MODEL=${MODEL:-unknown}
@@ -167,77 +237,17 @@ CYAN='\033[36m'
 MODEL_LINE="${MODEL_LINE}  ${DIM}|${RESET}  ${CTX_COLOR}Context Remaining: ${REMAINING}%${RESET}"
 printf '%b\n' "$MODEL_LINE"
 
-# --- Line 4: Rate limit info (via usage-fetch.js) ---
-# Find hooks directory: config-based lookup (works with copies on Windows), symlink fallback
-# Check config.local.json first (machine-specific), then config.json (portable) — Design ref: D1
-HOOKS_DIR=""
-_TK=""
-if command -v node &>/dev/null; then
-    for _cfg in "$HOME/.claude/toolkit-state/config.local.json" "$HOME/.claude/toolkit-state/config.json"; do
-        [[ ! -f "$_cfg" ]] && continue
-        _TK=$(node -e "try{const c=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));if(c.toolkit_root)console.log(c.toolkit_root)}catch{}" "$_cfg" 2>/dev/null)
-        [[ -n "$_TK" ]] && break
-    done
-fi
-[[ -n "$_TK" && -d "$_TK/core/hooks" ]] && HOOKS_DIR="$_TK/core/hooks"
-if [[ -z "$HOOKS_DIR" ]]; then
-    _REAL="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || realpath "${BASH_SOURCE[0]}" 2>/dev/null || python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
-    HOOKS_DIR="$(dirname "$_REAL")"
-fi
-USAGE_FETCH="$HOOKS_DIR/usage-fetch.js"
-
-if [[ -f "$USAGE_FETCH" ]] && command -v node &>/dev/null; then
-    USAGE_JSON=$(node "$USAGE_FETCH" 2>>"$STATUSLINE_LOG") || USAGE_JSON=""
-    if [[ -n "$USAGE_JSON" ]]; then
-        # Each timer gets its own ANSI color based on its own utilization percentage
-        USAGE_LINE=$(node -e "
-            const d = JSON.parse(process.argv[1]);
-            const fiveH = d.five_hour;
-            const sevenD = d.seven_day;
-            const GREEN = '\x1b[92m';
-            const DIM = '\x1b[90m';
-            const YELLOW = '\x1b[33m';
-            const RED = '\x1b[31m';
-            const RESET = '\x1b[0m';
-
-            function colorFor(pct) {
-                if (pct >= 80) return RED;
-                if (pct >= 50) return YELLOW;
-                return GREEN;
-            }
-
-            const parts = [];
-
-            if (fiveH && fiveH.utilization != null) {
-                const pct = fiveH.utilization;
-                const c = colorFor(pct);
-                const resetsAt = new Date(fiveH.resets_at);
-                const timeStr = resetsAt.toLocaleTimeString('en-US', {
-                    hour: 'numeric', minute: '2-digit', hour12: true
-                });
-                parts.push(c + '5h (' + pct + '%): Resets at ' + timeStr + RESET);
-            }
-
-            if (sevenD && sevenD.utilization != null) {
-                const pct = sevenD.utilization;
-                const c = colorFor(pct);
-                const resetsAt = new Date(sevenD.resets_at);
-                const dayStr = resetsAt.toLocaleDateString('en-US', { weekday: 'long' });
-                const timeStr = resetsAt.toLocaleTimeString('en-US', {
-                    hour: 'numeric', minute: '2-digit', hour12: true
-                });
-                parts.push(c + '7d (' + pct + '%): Resets on ' + dayStr + ' at ' + timeStr + RESET);
-            }
-
-            if (parts.length > 0) {
-                process.stdout.write(parts.join(RESET + ' | ' + RESET));
-            }
-        " "$USAGE_JSON" 2>/dev/null) || USAGE_LINE=""
-
-        if [[ -n "$USAGE_LINE" ]]; then
-            printf '%b\n' "$USAGE_LINE"
-        fi
-    fi
+# --- Line 4: Rate limit info (from Claude Code's rate_limits payload) ---
+# Legal: this line used to shell out to usage-fetch.js, which read the user's
+# Claude.ai OAuth token and called Anthropic's usage API — something Anthropic's
+# Claude Code terms forbid third-party apps from doing. It is now rendered by the
+# parser above straight from the stdin JSON; nothing here reads a token or
+# touches the network. Empty until Claude Code sends rate_limits (after the
+# first reply of a session, Pro/Max only) and no earlier figures are cached.
+# USAGE_LINE carries raw ANSI bytes from node — %s, not %b, so they are not
+# reinterpreted (same reason as the announcement fragment below).
+if [[ -n "$USAGE_LINE" ]]; then
+    printf '%s\n' "$USAGE_LINE"
 fi
 
 # --- Line 5: Toolkit version + announcement ---

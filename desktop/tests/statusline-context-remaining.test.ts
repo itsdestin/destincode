@@ -137,15 +137,9 @@ const hasBash = (() => {
 describe.skipIf(!hasBash)('statusline.sh end to end — the .context-<id> file', () => {
   function runScript(json: string) {
     const home = freshHome();
-    // Point the toolkit lookup at an empty core/hooks directory so the script
-    // finds no usage-fetch.js. Without this the script would run the real one,
-    // which calls the Claude usage API over the network.
-    const toolkit = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-toolkit-'));
-    fs.mkdirSync(path.join(toolkit, 'core', 'hooks'), { recursive: true });
-    fs.writeFileSync(
-      path.join(home, '.claude', 'toolkit-state', 'config.local.json'),
-      JSON.stringify({ toolkit_root: toolkit }),
-    );
+    // (No network dodge needed any more: the script used to shell out to
+    // usage-fetch.js, which called the Claude usage API; that is gone —
+    // see statusline-rate-limits.test.ts, which pins its absence.)
     // Run from a directory that is not a git checkout, so the script's branch
     // probe finds nothing and the run does not depend on where the tests live.
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-nogit-'));

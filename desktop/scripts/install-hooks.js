@@ -47,6 +47,13 @@ function resolveHookDir() {
       fs.cpSync(path.join(HOOK_SRC_DIR, file), path.join(STABLE_HOOK_DIR, file), { recursive: true });
       if (file.endsWith('.sh')) fs.chmodSync(path.join(STABLE_HOOK_DIR, file), 0o755);
     }
+    // Legal: usage-fetch.js (read the Claude.ai OAuth token, called Anthropic's
+    // usage API) is no longer bundled — Anthropic's Claude Code terms forbid
+    // third-party apps from using that token. The copy loop above only adds and
+    // overwrites, so remove the copy earlier app versions staged here; nothing
+    // runs it any more, but no token-reading code should be left on disk.
+    // Mirrors Bootstrap.kt on Android.
+    try { fs.rmSync(path.join(STABLE_HOOK_DIR, 'usage-fetch.js'), { force: true }); } catch { /* best effort */ }
     // Trust the stable dir only if the critical script actually landed.
     if (fs.existsSync(path.join(STABLE_HOOK_DIR, 'relay.js'))) return STABLE_HOOK_DIR;
   } catch (e) {

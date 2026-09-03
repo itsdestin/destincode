@@ -242,7 +242,6 @@ class SessionService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var urlObserver: FileObserver? = null
-    private var usageRefreshTimer: java.util.Timer? = null
     private var statusBroadcastTimer: java.util.Timer? = null
     private var announcementService: AnnouncementService? = null
     // Phase 5d: FileObserver for theme hot-reload
@@ -333,7 +332,6 @@ class SessionService : Service() {
         bootstrap = bs
         titlesDir.mkdirs()
         startUrlObserver(bs)
-        startUsageRefresh(bs)
         announcementService = AnnouncementService(bs.homeDir).also { it.start() }
         startStatusBroadcast(bs)
         skillProvider = LocalSkillProvider(bs.homeDir, applicationContext)
@@ -477,29 +475,12 @@ class SessionService : Service() {
         urlObserver?.startWatching()
     }
 
-    /** Periodically runs usage-fetch.js to keep .usage-cache.json fresh. */
-    private fun startUsageRefresh(bs: Bootstrap) {
-        usageRefreshTimer?.cancel()
-        val nodePath = File(bs.usrDir, "bin/node").absolutePath
-        val scriptPath = File(bs.homeDir, ".claude-mobile/usage-fetch.js").absolutePath
-        val env = bs.buildRuntimeEnv()
-
-        usageRefreshTimer = java.util.Timer("usage-refresh", true).apply {
-            scheduleAtFixedRate(object : java.util.TimerTask() {
-                override fun run() {
-                    try {
-                        val pb = ProcessBuilder(nodePath, scriptPath)
-                            .directory(bs.homeDir)
-                            .redirectErrorStream(true)
-                        pb.environment().putAll(env)
-                        val process = pb.start()
-                        process.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)
-                        if (process.isAlive) process.destroyForcibly()
-                    } catch (_: Exception) {}
-                }
-            }, 10_000, 5 * 60 * 1000) // initial 10s delay, then every 5 min
-        }
-    }
+    // (No usage-refresh timer any more. It ran ~/.claude-mobile/usage-fetch.js
+    // every 5 minutes, which read the Claude.ai OAuth token and called Anthropic's
+    // usage API — forbidden for third-party apps by Anthropic's Claude Code terms.
+    // .usage-cache.json is now written by assets/statusline.sh from the
+    // rate_limits object Claude Code passes to the status line; the broadcast
+    // below keeps reading the same file unchanged.)
 
     /**
      * Broadcasts status:data to React UI every 10s, mirroring desktop's status poller.
@@ -813,8 +794,6 @@ class SessionService : Service() {
         // Phase 5d: stop theme watcher
         themeWatcher?.stopWatching()
         themeWatcher = null
-        usageRefreshTimer?.cancel()
-        usageRefreshTimer = null
         statusBroadcastTimer?.cancel()
         statusBroadcastTimer = null
         announcementService?.stop()

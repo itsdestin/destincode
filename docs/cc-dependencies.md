@@ -119,9 +119,9 @@ Update this table when you re-run snapshots after a CC version bump. Anything th
 - **Break symptom:** Hooks silently stop firing or fail with cryptic errors; write-guard / worktree-guard / statusline stop functioning.
 
 ### Statusline hook payload
-- **Files:** `desktop/hook-scripts/statusline.sh`, `app/src/main/assets/statusline.sh`, `desktop/hook-scripts/usage-fetch.js`
-- **Depends on:** CC's statusline JSON payload fields (`model`, `session_id`, `version`, and any usage counters surfaced to the statusline hook)
-- **Break symptom:** Status bar goes blank or shows stale values; usage counters stop updating; session-context pill loses model/version info.
+- **Files:** `desktop/hook-scripts/statusline.sh`, `app/src/main/assets/statusline.sh`
+- **Depends on:** CC's statusline JSON payload fields (`model`, `session_id`, `context_window.remaining_percentage`, `cost.*`, and `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` — added in CC 2.1.80; `resets_at` is Unix epoch **seconds**). The 5-hour / 7-day usage chips and `~/.claude/.usage-cache.json` are fed ONLY by `rate_limits` — the old `usage-fetch.js` (OAuth-token call to Anthropic's usage API) was removed because Anthropic's Claude Code terms forbid third-party apps from using that token, and must not come back.
+- **Break symptom:** Status bar goes blank or shows stale values; usage chips never appear (a `rate_limits` rename or a switch of `resets_at` to milliseconds would do this); session-context pill loses model/version info.
 
 ### Plugin registry four-file format
 - **Files:** `desktop/src/main/claude-code-registry.ts`, `app/src/main/.../skills/PluginInstaller.kt`
