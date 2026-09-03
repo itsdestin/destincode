@@ -28,7 +28,13 @@ describe('matchesQuery', () => {
 
   it('requires every word — a wrong word still excludes the row', () => {
     expect(matchesQuery('gpt claude', ...GPT)).toBe(false);
-    expect(matchesQuery('gpt 4', ...GPT)).toBe(false);
+    expect(matchesQuery('gpt 4', ...GPT)).toBe(false); // this row only; GPT-4 has its own, below
+  });
+
+  it('finds the OTHER GPT rows the same query names', () => {
+    expect(matchesQuery('gpt 4', 'OpenAI: GPT-4', 'OpenRouter')).toBe(true);
+    expect(matchesQuery('gpt 4', 'OpenAI: GPT-4o mini', 'OpenRouter')).toBe(true);
+    expect(matchesQuery('gpt 4', 'Anthropic: Claude Opus 4', 'OpenRouter')).toBe(false);
   });
 
   it('is case-insensitive and tolerates extra whitespace', () => {
