@@ -4437,7 +4437,19 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'name-flow',
             label: 'Name in hand · dots flow around it',
-            note: 'What ships. Drag a name along the row: the dot ahead squeezes down as the pill reaches it and swells up behind it as it passes; a wide neighbour still slides aside.',
+            note: 'Drag a name along the row: the dot ahead squeezes down as the pill reaches it and swells up behind it as it passes; a wide neighbour still slides aside. Superseded by R6 (2026-09-03); renders what ships.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 6,
+        basis: 'Destin, 2026-09-03, on R5: "this is MUCH better … however, it still bugs out a bit when the chip is released, and i cant seem to drag it to be the leftmost or rightmost session. it should also stop moving at the left/right boundaries of the outer container rather than sliding past." Three fixes: the pill in hand is clamped to the row of pills (the clamp had stopped reaching the screen); a dot at either end now counts as passed 1px before its far edge, which the clamped pill can reach; and a drop no longer disturbs the row — the flow keeps running while the dropped pill glides home, the row keeps the drag\'s layout until the cursor leaves the strip, and no hover preview opens until the hand has moved 8px.',
+        candidates: [
+          {
+            id: 'name-flow-2',
+            label: 'Flow · clean release · reaches both ends',
+            note: 'What ships. Drag a name to the very left or right and let go; drop it mid-row; watch the release.',
             render: () => <SessionStripMotionDemo />,
           },
         ],

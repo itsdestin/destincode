@@ -86,13 +86,15 @@ describe('nextSlotId — the neighbour ahead yields early, in either direction',
   ];
   const c0 = 89.5;                       // the wide pill's own slot centre
 
-  it('moving right, a dot yields when the pill\'s edge is `margin` short of it — its far edge, margin being −28', () => {
+  it('moving right, a dot yields when the pill\'s edge is `margin` short of it — 1px before its far edge, margin being −27', () => {
     // The pill's right edge is at centre + 89.5; d1's left is 181. Contact is
-    // centre 91.5; the yield line is margin short of that (past it: −28 is
-    // d1's far edge, so the pill has covered it whole). The dot has been
-    // hidden since contact (SessionStrip's veil).
-    const line = c0 + PILL_GAP - DRAG_TUNE.margin;   // 119.5
-    expect(DRAG_TUNE.margin).toBe(-28);
+    // centre 91.5; the yield line is margin short of that (past it: −27 is
+    // 1px before d1's far edge, so the pill has covered it whole, bar a
+    // pixel — the pill is clamped to the row, so at the row's end it can
+    // reach a dot's far edge but never pass it). The dot has flowed to
+    // nothing by then (SessionStrip's flow).
+    const line = c0 + PILL_GAP - DRAG_TUNE.margin;   // 118.5
+    expect(DRAG_TUNE.margin).toBe(-27);
     expect(nextSlotId(row, 'wide', null, line - 0.5, 1, 2)).toBeNull();
     expect(nextSlotId(row, 'wide', null, line + 0.5, 1, 2)).toBe('d1');
   });
@@ -103,7 +105,7 @@ describe('nextSlotId — the neighbour ahead yields early, in either direction',
     // edge (28): contact at centre 117.5, the line is margin past that.
     const over = nextSlotId(row, 'wide', null, c0 + 31, 1, 2);
     expect(over).toBe('d1');
-    const line = c0 + 28 + DRAG_TUNE.margin;         // 89.5
+    const line = c0 + 28 + DRAG_TUNE.margin;         // 90.5
     expect(nextSlotId(row, 'wide', over, line + 0.5, -1, 2)).toBe('d1');
     expect(nextSlotId(row, 'wide', over, line - 0.5, -1, 2)).toBeNull();
   });

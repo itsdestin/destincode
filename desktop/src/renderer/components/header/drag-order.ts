@@ -119,8 +119,12 @@ export function nearestSlotId(
 /** How early a neighbour gets out of the way, in px.
  *  - `margin`: the neighbour AHEAD of the pill (in the direction it is moving)
  *    yields when the pill's leading edge is this far short of its near edge.
- *    NEGATIVE means past it: −28 is a dot's FAR edge — the pill has covered
- *    the whole dot before it moves. It was +6 ("before contact") while dots
+ *    NEGATIVE means past it: −27 is 1px short of a dot's FAR edge — the pill
+ *    has covered the whole dot, bar a pixel, before it moves. Not −28: the
+ *    pill in hand is clamped to the row, so at either end its leading edge
+ *    can reach the last dot's far edge but never pass it, and the end dot
+ *    never yielded — Destin, R5: "i cant seem to drag it to be the leftmost
+ *    or rightmost session". It was +6 ("before contact") while dots
  *    slid aside and needed a head start; now a dot is hidden the moment the
  *    pill touches it (SessionStrip's veil) and jumps unseen, so the trigger
  *    can wait. WHY the far edge: at that instant the pill sits exactly on its
@@ -139,7 +143,7 @@ export function nearestSlotId(
  *    having REVERSED. The rules only ever move the neighbour ahead, so nothing
  *    can flap while the direction holds; the dead-band is what keeps a shaky
  *    hand at rest from counting as a reversal every other frame. */
-export const DRAG_TUNE = { margin: -28, early: 20, deadband: 4 };
+export const DRAG_TUNE = { margin: -27, early: 20, deadband: 4 };
 
 /** The slot the pill in hand is heading for, given the slot it is heading for
  *  NOW and the direction it is moving. Only the neighbour AHEAD ever yields:

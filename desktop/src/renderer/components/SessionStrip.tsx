@@ -414,6 +414,9 @@ export default function SessionStrip({
   // px, and without them in the settle they all hop that much at the drop.
   const settleRef = useRef<{ heldId: string; lefts: Map<string, number> } | null>(null);
   const [settle, setSettle] = useState<{ heldId: string; deltas: Map<string, number>; phase: 'hold' | 'glide' } | null>(null);
+  // Mirror for the rAF loop, which keeps the flow running through the settle.
+  const settleStateRef = useRef(settle);
+  settleStateRef.current = settle;
   // True for the one render in which the DOM order changes after a drop.
   // Neighbours' transforms drop to zero in that same render, and their DOM
   // position moves by exactly the amount the transform was — so their
@@ -614,7 +617,15 @@ export default function SessionStrip({
     collapsedWidth: COLLAPSED_PILL_PX,
   })), [sessions, metrics]);
 
+  // No hover peek right after a drop, until the hand has moved (2026-09-03):
+  // the dropped pill glides back to its slot and out from under the cursor,
+  // which then sits on the neighbouring dot — and that dot's peek opened, the
+  // row widened and re-centred, all inside the drop's own settle. Destin: "it
+  // still bugs out a bit when the chip is released." Released by 8px of
+  // pointer travel (a real intent to hover) or the cursor leaving the strip.
+  const hoverLock = useRef<{ x: number } | null>(null);
   const handleEnter = useCallback((id: string) => {
+    if (hoverLock.current !== null) return;
     // A pack-expanded pill already shows its name — there is nothing to
     // reveal, and setting hoveredId would only cost a render.
     if (packRef.current.expanded.has(id)) return;
@@ -697,6 +708,7 @@ export default function SessionStrip({
     // the cursor. Menu rows never select on press.
     const selectsNow = inStrip && sessionId !== activeSessionId;
     const activeForDrag = selectsNow ? sessionId : activeSessionId;
+    setPostDropHold(false);   // a press packs afresh — see displayPack
 
     if (barEl) {
       const barRect = barEl.getBoundingClientRect();
@@ -743,6 +755,7 @@ export default function SessionStrip({
   }, [sessions, sessionStatuses, activeSessionId, onSelectSession, metrics, measurementsOf]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (hoverLock.current !== null && Math.abs(e.clientX - hoverLock.current.x) > 8) hoverLock.current = null;
     // Live tear-off continuation — runs even after we've cleared dragId so the
     // detached window keeps following the cursor. Must be checked BEFORE the
     // dragId null-guard below.
@@ -896,6 +909,7 @@ export default function SessionStrip({
   }, [dragId]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (isDragging.current) hoverLock.current = { x: e.clientX };   // see hoverLock
     const wasDragging = isDragging.current;
     const releasedDragId = dragId;
     const releasedOverId = overId;
@@ -975,6 +989,7 @@ export default function SessionStrip({
       }
       if (snapshot.size > 0) settleRef.current = { heldId: releasedSession.id, lefts: snapshot };
       setReorderQuiet(true);
+      setPostDropHold(true);   // see displayPack
       // The drop selects the pill, so its name stays open as the active label;
       // the peek state that kept it open through the drag is done.
       setHoveredId(null);
@@ -1147,21 +1162,39 @@ export default function SessionStrip({
   // for the first ~40ms of every drag started right after a press. So while a
   // pill is in hand the twin's WIDTH follows the in-flow box's width, frame by
   // frame, written straight to the DOM (no React churn for a 200ms settle).
+  // The loop also runs THROUGH THE SETTLE after a drop (2026-09-03): a drop
+  // can land while the dot ahead is mid-flow (part covered, its ghost part
+  // grown). The pill then glides back to its slot, and if the flow stopped at
+  // the drop that dot popped to full size under the gliding pill and the ghost
+  // vanished — Destin: "it still bugs out a bit when the chip is released".
+  // With the flow fed the REAL pill's rect during the glide, the dot regrows
+  // and the ghost shrinks away exactly as the pill uncovers them.
+  const flowActive = dragLeft !== null || settle !== null;
   useEffect(() => {
-    if (dragLeft === null || dragId === null) return;
+    if (!flowActive) return;
     const bar = pillBarRef.current;
     if (!bar) return;
     let raf = 0;
     const tick = () => {
-      const real = pillElement(dragId);
+      const dragId = dragIdRef.current;
+      const real = dragId !== null ? pillElement(dragId) : null;
       const twin = bar.querySelector<HTMLElement>(':scope > div[aria-hidden]:not([data-ghost])');
-      if (real && twin) {
+      if (dragId !== null && real && twin) {
         const w = real.getBoundingClientRect().width;
         twin.style.width = `${w}px`;
-        // And its LEFT: the cursor stays at the same fraction of a twin that
-        // is still opening after a press, so both edges move with it rather
-        // than the leading edge sweeping across the dots ahead.
-        twin.style.left = `${real.getBoundingClientRect().left + (cursorXRef.current - dragStartX.current) - bar.getBoundingClientRect().left}px`;
+        // Its LEFT: the in-flow box plus the cursor's travel (dragStartX),
+        // clamped to the row of pills — never past the first pill's left edge
+        // or the last pill's right (Destin, R5: "it should stop moving at the
+        // left/right boundaries … rather than sliding past"; the handler's
+        // clamp never reached the DOM once React stopped writing `left`).
+        // Layout positions, so the yields' transforms do not move the ends.
+        const barL = bar.getBoundingClientRect().left;
+        const pills = bar.querySelectorAll<HTMLElement>('[data-session-id]');
+        const first = pills[0], last = pills[pills.length - 1];
+        const minLeft = first ? first.offsetLeft : 0;
+        const maxLeft = last ? last.offsetLeft + last.offsetWidth - w : Infinity;
+        const wanted = real.getBoundingClientRect().left + (cursorXRef.current - dragStartX.current) - barL;
+        twin.style.left = `${Math.min(maxLeft, Math.max(minLeft, wanted))}px`;
         // The veil (see veiledRef): a dot within VEIL_PX of the twin, where
         // it is DRAWN this frame, is hidden; one that has come clear is shown
         // again (its inline opacity transition fades it in). Written straight
@@ -1179,6 +1212,11 @@ export default function SessionStrip({
           if (near && !veiled) { veiledRef.current.add(id); el.classList.add('session-pill--veiled'); }
           else if (!near && veiled) { veiledRef.current.delete(id); el.classList.remove('session-pill--veiled'); }
         });
+      } else {
+        // Settling after a drop: the real pill is what moves now.
+        const st = settleStateRef.current;
+        const landed = st ? pillElement(st.heldId) : null;
+        if (st && landed) flow(bar, landed.getBoundingClientRect(), st.heldId);
       }
       raf = requestAnimationFrame(tick);
     };
@@ -1196,7 +1234,7 @@ export default function SessionStrip({
       veiledRef.current.clear();
       bar.querySelectorAll('.session-pill--veiled').forEach((el) => el.classList.remove('session-pill--veiled'));
     };
-  }, [dragLeft !== null, dragId]);
+  }, [flowActive]);
 
   // Belt and braces: transitionend does not fire for an element that was
   // re-rendered out of its transition, so the glide state also times out.
@@ -1234,7 +1272,18 @@ export default function SessionStrip({
 
   // Everything below reads the pack the drag was packed against (frozen at
   // pointer-down) while a pill is held; `pack` is the live one otherwise.
-  const displayPack = dragId !== null && frozenPackRef.current !== null ? frozenPackRef.current : pack;
+  // …and STAYS on the drag's pack after a drop, until the pointer leaves the
+  // strip (2026-09-03). A drop reorders the row, and the live packer, re-run
+  // on the new order, may pick a different second pill to open — measured:
+  // the dot right after the dropped pill bloomed to a 151px name at the very
+  // moment of the drop, and the whole row re-centred 60px under the cursor.
+  // Destin: "it still bugs out a bit when the chip is released." The hold is
+  // released when the cursor leaves the strip, on the next press, or when the
+  // session list changes — never by a timer, so nothing moves under a hand
+  // that has not moved.
+  const [postDropHold, setPostDropHold] = useState(false);
+  useEffect(() => { setPostDropHold(false); }, [sessions.length]);
+  const displayPack = (dragId !== null || postDropHold) && frozenPackRef.current !== null ? frozenPackRef.current : pack;
 
   // Mirror of `displayPack` for event handlers — they must read the CURRENT
   // pack at event time, not the one captured when the callback was created. A
@@ -1358,6 +1407,7 @@ export default function SessionStrip({
         // here as a safety net in case the pill unmounts mid-drag (live tear-off).
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onMouseLeave={() => { setPostDropHold(false); hoverLock.current = null; }}
         className={`session-strip relative flex items-center gap-0.5 bg-inset rounded-full px-1.5 py-0.5 overflow-hidden min-w-0 shrink transition-shadow ${incomingDropActive ? 'ring-2 ring-accent/70' : ''}`}
       >
         {/* ── Session pills ──────────────────────────────── */}
