@@ -4473,7 +4473,19 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'name-flow-4',
             label: 'Flow · swap at the centre · drop travels half a dot',
-            note: 'What ships. Let go anywhere: the pill settles at most half a dot away. Drag to the very left with the pill only part-way over the first dot and let go — past its middle counts as first.',
+            note: 'Superseded by R9 (2026-09-03); renders what ships. The row still shifted and came back after a drop: the hand, still moving, drifted onto the next dot and its peek opened and closed.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 9,
+        basis: 'Destin, 2026-09-03, on R8: "its still jumping/glitching back and forth on release before settling in the final position". Never reproduced with a cursor that holds still after release; reproduced at once with one that keeps moving like a hand (the probe\'s AFTER=hand): the hand drifts onto the next dot, its name peeks open, the centred row widens and shifts 5px, then the peek closes as the hand leaves and the row comes back — all inside the drop\'s own settle. A peek now opens only after the cursor has RESTED on a dot for 150ms (an open peek still follows the cursor at once), so a hand passing over dots never widens the row.',
+        candidates: [
+          {
+            id: 'name-flow-5',
+            label: 'Flow · a peek waits for the hand to rest',
+            note: 'What ships. Let go and keep your hand moving, as you naturally would: nothing on the row moves but the pill settling. Rest on a dot for a moment: its name still peeks.',
             render: () => <SessionStripMotionDemo />,
           },
         ],

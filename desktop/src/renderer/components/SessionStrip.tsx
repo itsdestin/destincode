@@ -64,6 +64,17 @@ const COLLAPSED_PILL_PX = 28;
  *  was packed a chip too wide (see PackInput.budget for what that did). */
 const OVERFLOW_CHIP_PX = 28;
 
+/** How long the cursor must rest on a dot before its name peeks open. A peek
+ *  widens the row (as far as there is room — see LabelStyleInput.room) and the
+ *  centred strip re-lays out around it, so a peek must be MEANT: the hand
+ *  crossing dots on its way somewhere, or drifting onto the next dot after a
+ *  drop, opened one for a few frames and closed it again — the whole row
+ *  shifted 5px and came back inside the drop's own settle (probed 2026-09-03
+ *  with a hand that keeps moving after release; Destin, R8: "jumping/glitching
+ *  back and forth on release before settling"). Once a peek is open, moving
+ *  to the next dot switches it at once — the intent is already shown. */
+const PEEK_DWELL_MS = 150;
+
 /** The room the strip's children have: the flex-1 wrapper's width (not the
  *  strip's own, which is whatever its pills happen to occupy — a chicken-and-
  *  egg that once kept a 2nd pill from ever appearing) minus the strip's OWN
@@ -305,6 +316,9 @@ export default function SessionStrip({
   // Used by the FolderSwitcher "Manage projects…" footer to open Project View.
   const { dispatch: artifactDispatch } = useArtifact();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const hoveredRef = useRef<string | null>(null);
+  hoveredRef.current = hoveredId;
+  const enterTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [shiftNavIdx, setShiftNavIdx] = useState<number>(-1);
   const shiftNavActive = useRef(false);
@@ -649,7 +663,15 @@ export default function SessionStrip({
     // trigger its hover reveal and grow the row under the cursor.
     if (dragIdRef.current !== null) return;
     if (leaveTimer.current) { clearTimeout(leaveTimer.current); leaveTimer.current = null; }
-    setHoveredId(id);
+    if (enterTimer.current) { clearTimeout(enterTimer.current); enterTimer.current = null; }
+    // A peek already open follows the cursor at once; the first one waits for
+    // the hand to rest (PEEK_DWELL_MS).
+    if (hoveredRef.current !== null) { setHoveredId(id); return; }
+    enterTimer.current = setTimeout(() => {
+      enterTimer.current = null;
+      if (dragIdRef.current !== null || hoverLock.current !== null) return;
+      setHoveredId(id);
+    }, PEEK_DWELL_MS);
   }, []);
 
   const handleLeave = useCallback(() => {
@@ -660,6 +682,7 @@ export default function SessionStrip({
     // was the ~150px void Destin photographed on 2026-09-01: the geometry was
     // frozen at peek width, the pill was not. Hover is released at drop.
     if (dragIdRef.current !== null) return;
+    if (enterTimer.current) { clearTimeout(enterTimer.current); enterTimer.current = null; }
     leaveTimer.current = setTimeout(() => setHoveredId(null), 80);
   }, []);
 

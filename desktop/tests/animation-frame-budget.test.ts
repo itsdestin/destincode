@@ -505,6 +505,19 @@ describe('motion vocabulary', () => {
     expect(read('components', 'SessionStrip.tsx')).not.toMatch(/cubic-bezier\(/);
   });
 
+  it('opens a hover peek only after the hand rests on the dot — never in passing', () => {
+    // 2026-09-03 (R8): a hand that keeps moving after a drop drifted onto the
+    // next dot; its peek opened, the row widened and re-centred, then closed
+    // as the hand left — "jumping/glitching back and forth on release".
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/const PEEK_DWELL_MS = 150;/);
+    expect(strip).toMatch(/enterTimer\.current = setTimeout\(\(\) => \{[\s\S]{0,200}setHoveredId\(id\);\n\s+\}, PEEK_DWELL_MS\);/);
+    // An open peek still follows the cursor at once.
+    expect(strip).toMatch(/if \(hoveredRef\.current !== null\) \{ setHoveredId\(id\); return; \}/);
+    // Leaving the dot cancels a pending peek.
+    expect(strip).toMatch(/const handleLeave = useCallback\(\(\) => \{[\s\S]{0,700}clearTimeout\(enterTimer\.current\)/);
+  });
+
   it('attaches pill hover handlers unconditionally', () => {
     // Fix: attaching them only to non-pack-expanded pills means a pill the
     // packer collapses UNDER a stationary cursor never gets its mouseenter,
