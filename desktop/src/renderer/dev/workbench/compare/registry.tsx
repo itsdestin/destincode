@@ -4449,7 +4449,19 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'name-flow-2',
             label: 'Flow · clean release · reaches both ends',
-            note: 'What ships. Drag a name to the very left or right and let go; drop it mid-row; watch the release.',
+            note: 'Superseded by R7 (2026-09-03); renders what ships. Two more bugs at R6: the row was packed wider than the strip and the active name squeezed, so a drag parked every dot 25px off; and reaching for the first slot past the pane\'s edge tore the pill off.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 7,
+        basis: 'Destin, 2026-09-03, on R6: "i still cant drag a session into the leftmost position, and they still bug out a little on release." Both measured, neither in the motion. (1) The packer was handed the wrapper\'s full width — the strip\'s own padding included — and never knew about the "+N" chip, so a full row was packed ~37px too wide; the active pill, the one flex item allowed to shrink, rendered 25px narrower than the width the drag froze, every dot yielded 25px too far, and all of them snapped back on release. A second, smaller version of the same thing: the packer reserved ceil(text)+slack, 2-3px more than a pill ever renders at. The packer now packs into the room the strip really has and a pill\'s reserved width IS its rendered width — a dot lands exactly one gap from the dropped pill, and nothing else moves at the drop (measured 0px). (2) The tear-off fired on the cursor leaving the window SIDEWAYS; reaching for the first slot overshoots past the edge, which spawned a window and snapped the pill home. Sideways never tears off now, as in Chrome — only above or below.',
+        candidates: [
+          {
+            id: 'name-flow-3',
+            label: 'Flow · real widths · sideways never tears off',
+            note: 'What ships. Drag a name all the way left, even past the edge of this pane, and let go; drop one mid-row and watch what else moves (nothing should).',
             render: () => <SessionStripMotionDemo />,
           },
         ],

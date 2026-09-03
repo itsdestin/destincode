@@ -58,6 +58,22 @@ function motionWindowMs(el: Element | null): number {
  *  row of N dots was under-reserved by 4N px and the active name got squeezed. */
 const COLLAPSED_PILL_PX = 28;
 
+/** The "+N" overflow chip's room: min-w-[18px] + px-1 fits two digits at
+ *  ~24px, plus its ml-1 (4). Reserved by the packer only when something
+ *  overflows — it did not know about the chip until 2026-09-03, and a full row
+ *  was packed a chip too wide (see PackInput.budget for what that did). */
+const OVERFLOW_CHIP_PX = 28;
+
+/** The room the strip's children have: the flex-1 wrapper's width (not the
+ *  strip's own, which is whatever its pills happen to occupy — a chicken-and-
+ *  egg that once kept a 2nd pill from ever appearing) minus the strip's OWN
+ *  padding, which the wrapper's width includes and the children cannot use. */
+function stripBudget(bar: HTMLElement): number {
+  const cs = getComputedStyle(bar);
+  const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  return (bar.parentElement?.clientWidth ?? bar.clientWidth) - pad;
+}
+
 /** How close (px) a dot may be drawn to the pill in hand before it is hidden.
  *  Contact, near enough: every px here is empty space beside the pill
  *  (Destin, 2026-09-03, on 10px: "too much empty space on either side of the
@@ -713,20 +729,20 @@ export default function SessionStrip({
     if (barEl) {
       const barRect = barEl.getBoundingClientRect();
       barLeftAtPress.current = barRect.left;
-      const budget = barEl.parentElement?.clientWidth ?? barEl.clientWidth;
       const target = packSessions({
-        sessions: measurementsOf(), activeId: activeForDrag, budget, gap: PILL_GAP, triggerWidth: 24,
+        sessions: measurementsOf(), activeId: activeForDrag, budget: stripBudget(barEl), gap: PILL_GAP,
+        triggerWidth: 24, overflowChipWidth: OVERFLOW_CHIP_PX,
       });
       frozenPackRef.current = target;
       const visible = sessions.filter(x => target.expanded.has(x.id) || target.collapsed.includes(x.id));
       // A pill's settled width: its full measured width if the packer expands
-      // it (capped at the budget, where the active pill ellipsises instead),
-      // else a dot. The pill in hand keeps its open name — Destin, 2026-09-02:
+      // it (capped at the room the packer had, where CSS squeezes the active
+      // pill instead — pack-sessions.ts PackResult.pillBudget), else a dot. The pill in hand keeps its open name — Destin, 2026-09-02:
       // "i want to keep the fully expanded name" — so in the row's eyes it is
       // its full width, and a neighbour steps that far to make room.
       const widthOf = (id: string) => {
         if (!target.expanded.has(id)) return COLLAPSED_PILL_PX;
-        return Math.min(metrics.get(id)?.expandedWidth ?? 120, Math.max(COLLAPSED_PILL_PX, budget - 24 - PILL_GAP));
+        return Math.min(metrics.get(id)?.expandedWidth ?? 120, Math.max(COLLAPSED_PILL_PX, target.pillBudget));
       };
       // The row starts where the first pill starts today (the bar's padding).
       const first = barEl.querySelector<HTMLElement>('[data-session-id]');
@@ -816,9 +832,13 @@ export default function SessionStrip({
     if (floatLeft !== null) setDragLeft(floatLeft - barLeftNow);
 
     // Chrome-style live tear-off. Once the pill has been dragged past the
-    // header (cursor Y below the strip's bottom by >= 60px, or outside the
-    // source window entirely), spawn the peer window NOW instead of waiting
-    // for pointerup. Subsequent pointermove frames hit the early-return block
+    // header (cursor Y below the strip's bottom by >= 60px, or above or below
+    // the source window), spawn the peer window NOW instead of waiting for
+    // pointerup. SIDEWAYS never tears off, as in Chrome: the pill is clamped
+    // to the row, and a hand reaching for the FIRST slot overshoots past the
+    // window's edge — which spawned a window and snapped the pill home
+    // (Destin, R6: "i still cant drag a session into the leftmost position";
+    // in the review pane the strip sits 15px from the edge). Subsequent pointermove frames hit the early-return block
     // at the top of this callback and stream cursor positions to the new window.
     const bar = pillBarRef.current;
     // Don't allow tearing off the only session in a window — matches Chrome
@@ -826,9 +846,7 @@ export default function SessionStrip({
     // click-through state when the source window empties mid-drag.
     if (!liveDetachPending.current && bar && dragId !== null && sessions.length > 1) {
       const stripRect = bar.getBoundingClientRect();
-      const outsideOwnWindow =
-        e.clientY < 0 || e.clientY > window.innerHeight ||
-        e.clientX < 0 || e.clientX > window.innerWidth;
+      const outsideOwnWindow = e.clientY < 0 || e.clientY > window.innerHeight;
       // 60px past the strip's bottom ≈ "this pill is clearly not in the strip
       // anymore" without being so eager that a fumbled drag tears a window.
       const belowStrip = e.clientY > stripRect.bottom + 60;
@@ -1003,13 +1021,12 @@ export default function SessionStrip({
 
     // Resolve drop across all peer windows: main hit-tests [data-session-strip]
     // in each window against the current cursor. If a hit, re-dock there;
-    // if no hit and the cursor is outside our own viewport, detach to a
-    // new peer window; otherwise fall through to the local reorder path.
+    // if no hit and the cursor is above or below our own viewport, detach to
+    // a new peer window; otherwise fall through to the local reorder path.
+    // Sideways is not "outside" — same rule as the live tear-off above.
     const clientX = e.clientX;
     const clientY = e.clientY;
-    const outsideOwnWindow =
-      clientX < 0 || clientY < 0 ||
-      clientX > window.innerWidth || clientY > window.innerHeight;
+    const outsideOwnWindow = clientY < 0 || clientY > window.innerHeight;
     const screenX = (e as any).screenX ?? (window.screenX + clientX);
     const screenY = (e as any).screenY ?? (window.screenY + clientY);
 
@@ -1251,6 +1268,7 @@ export default function SessionStrip({
     expanded: new Set(),
     collapsed: sessions.map(s => s.id),
     overflow: [],
+    pillBudget: 0,
   });
 
   // Fix (active pill snapped open): packSessions always marks the active pill
@@ -1300,17 +1318,13 @@ export default function SessionStrip({
   const repack = useCallback(() => {
     const bar = pillBarRef.current;
     if (!bar) return;
-    // Fix: read the flex-1 wrapper's allocated width, not the strip's own
-    // content width. Without this, the budget equals whatever 1 pill happens
-    // to occupy — a chicken-and-egg that prevents a 2nd pill from ever
-    // appearing (2nd session would need space that wasn't measured yet).
-    const budget = bar.parentElement?.clientWidth ?? bar.clientWidth;
     const result = packSessions({
       sessions: measurementsOf(),
       activeId: activeSessionId,
-      budget,
+      budget: stripBudget(bar),   // see stripBudget
       gap: PILL_GAP,
       triggerWidth: 24, // ▾ button is w-5 + ml-1
+      overflowChipWidth: OVERFLOW_CHIP_PX,
     });
     setPack(result);
   }, [activeSessionId, measurementsOf]);

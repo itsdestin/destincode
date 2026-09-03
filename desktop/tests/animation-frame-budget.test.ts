@@ -431,6 +431,33 @@ describe('motion vocabulary', () => {
     expect(strip).toMatch(/: displayPack\.expanded\.has\(s\.id\) \|\| isHovered \|\| isActive;/);
   });
 
+  it('packs the row into the room it really has, so a drag is judged against the widths that get drawn', () => {
+    // 2026-09-03: the packer was handed the wrapper's full width (the strip's
+    // own padding included) and never knew about the "+N" chip, so a full row
+    // was packed ~37px too wide; the active pill, the one flex item allowed to
+    // shrink, rendered 25px narrower than the width the drag geometry froze,
+    // and every dot moved 25px too far — snapping back on release.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/function stripBudget\(bar: HTMLElement\)/);
+    expect(strip).toMatch(/parseFloat\(cs\.paddingLeft\)[^\n]*parseFloat\(cs\.paddingRight\)/);
+    expect(strip).not.toMatch(/parentElement\?\.clientWidth \?\? bar(El)?\.clientWidth;/);   // only inside stripBudget
+    // Both packs — the live repack and the press-time freeze — reserve the chip.
+    expect(strip.match(/overflowChipWidth: OVERFLOW_CHIP_PX/g)?.length).toBe(2);
+    // The held pill's settled width is capped at the room the packer HAD, never at a re-derived number.
+    expect(strip).toMatch(/Math\.max\(COLLAPSED_PILL_PX, target\.pillBudget\)/);
+  });
+
+  it('tears a pill off only above or below the window — sideways stays in the row, as in Chrome', () => {
+    // Destin, R6 (2026-09-03): "i still cant drag a session into the leftmost
+    // position" — reaching for the first slot overshoots past the edge, which
+    // read as "outside the window" and spawned a window instead of a drop.
+    const strip = read('components', 'SessionStrip.tsx');
+    expect(strip).toMatch(/const outsideOwnWindow = e\.clientY < 0 \|\| e\.clientY > window\.innerHeight;/);
+    expect(strip).toMatch(/const outsideOwnWindow = clientY < 0 \|\| clientY > window\.innerHeight;/);
+    expect(strip).not.toMatch(/clientX < 0/);
+    expect(strip).not.toMatch(/clientX > window\.innerWidth/);
+  });
+
   it('puts nothing but the dot and the name on a pill — the runtime lives in the menu', () => {
     // Until 2026-09-02 a native pill carried a "YouCoded · Coder" badge that
     // opened after the name on every switch — a second motion to wait for, and

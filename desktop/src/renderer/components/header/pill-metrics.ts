@@ -10,7 +10,7 @@
 // (Destin: "eliminate the 'youcoded - coder' tags in session names entirely");
 // the runtime and model now sit under the name in the All Sessions menu
 // (session-runtime-label.ts). A pill is its dot and its name, nothing else.
-import { LABEL_TAIL_PX, LABEL_SLACK_PX } from './pill-label-style';
+import { LABEL_TAIL_PX } from './pill-label-style';
 
 /** Pill chrome around the label: 6px left pad + dot (10) + 4px gap + 6px right
  *  pad + 2px border. */
@@ -28,7 +28,8 @@ export const NAME_FONT = '500 12px system-ui, -apple-system, sans-serif';
 export interface PillMetrics {
   /** The name's text width alone — what the label box animates open to (plus its tail). */
   nameWidth: number;
-  /** Everything: what the packer budgets for an expanded pill. */
+  /** Everything: what the packer budgets for an expanded pill — and exactly
+   *  what the pill renders at, fractional px included. */
   expandedWidth: number;
 }
 
@@ -40,8 +41,15 @@ export function pillMetrics(
   font: string = NAME_FONT,
 ): PillMetrics {
   const nameWidth = measureText(name, font);
-  // Rounded up: a fractional text width must never under-reserve.
-  const expandedWidth = Math.ceil(nameWidth) + LABEL_TAIL_PX + LABEL_SLACK_PX + PILL_CHROME_PX;
+  // EXACTLY the rendered width, not rounded up and without the label's slack.
+  // The label box is `max-width: ceil(text) + tail + slack` (pill-label-style),
+  // but a max-width is a ceiling, not a size: the box lays out at the name's
+  // own width, text + tail, so that is what the pill measures. Until
+  // 2026-09-03 this reserved ceil + slack — 2-3px more than the pill ever
+  // took — and a drag, judged against the reserved widths, parked every dot
+  // 2px past its true place; they all nudged back on release (Destin, R6:
+  // "they still bug out a little on release").
+  const expandedWidth = nameWidth + LABEL_TAIL_PX + PILL_CHROME_PX;
   return { nameWidth, expandedWidth };
 }
 

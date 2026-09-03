@@ -48,6 +48,23 @@ describe('packSessions', () => {
     expect(r.overflow).toEqual(['c', 'd', 'e']);
   });
 
+  it('reserves the "+N" chip once something overflows, and reports the room it packed into', () => {
+    // Active (120) + trigger (20) + gap (2) leaves 58: two dots (20 + 2 + 20 = 42)
+    // fit and the third overflows — which draws the chip, so the row is packed
+    // again with the chip (24) + a gap out: 32 left, ONE dot. Until 2026-09-03
+    // the chip was not reserved: the strip drew 8 pills + chip + trigger into
+    // room for 8 pills + trigger, and CSS squeezed the active name by 25px.
+    const sessions = [mk('a'), mk('b'), mk('c'), mk('d')];
+    const r = packSessions({ sessions, activeId: 'a', budget: 200, gap: 2, triggerWidth: 20, overflowChipWidth: 24 });
+    expect(r.collapsed).toEqual(['b']);
+    expect(r.overflow).toEqual(['c', 'd']);
+    expect(r.pillBudget).toBe(200 - 20 - 2 - 24 - 2);
+    // No overflow → no chip → nothing reserved for it.
+    const fits = packSessions({ sessions: sessions.slice(0, 3), activeId: 'a', budget: 200, gap: 2, triggerWidth: 20, overflowChipWidth: 24 });
+    expect(fits.overflow).toEqual([]);
+    expect(fits.pillBudget).toBe(200 - 20 - 2);
+  });
+
   it('treats a non-existent activeId as no-active and packs greedily', () => {
     const sessions = [mk('a'), mk('b'), mk('c')];
     const r = packSessions({ sessions, activeId: 'missing', budget: 90, gap: 2, triggerWidth: 20 });
