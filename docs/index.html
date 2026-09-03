@@ -1257,6 +1257,28 @@ body.cycler-static .lead-hold{display:none}
         <a data-dl="dl-linux" class="dlchip" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19,16C19,17.72 18.37,19.3 17.34,20.5C17.75,20.89 18,21.41 18,22H6C6,21.41 6.25,20.89 6.66,20.5C5.63,19.3 5,17.72 5,16H3C3,14.75 3.57,13.64 4.46,12.91L4.47,12.89C6,11.81 7,10 7,8V7A5,5 0 0,1 12,2A5,5 0 0,1 17,7V8C17,10 18,11.81 19.53,12.89L19.54,12.91C20.43,13.64 21,14.75 21,16H19M16,16A4,4 0 0,0 12,12A4,4 0 0,0 8,16A4,4 0 0,0 12,20A4,4 0 0,0 16,16Z"/></svg><span>Linux</span></a>
         <a data-dl="dl-android" class="dlchip" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.44 5.56c-.68 1.16-1.36 2.33-2.03 3.5-.04-.02-.08-.03-.11-.04-1.83-.7-3.49-.8-4.42-.79-1.86.02-3.36.46-4.26.82-.09-.15-1.76-3.02-2.03-3.49a1.15 1.15 0 0 0-.14-.19c-.33-.36-.9-.49-1.38-.2-.47.28-.71.94-.39 1.5 1.95 3.37-.1-.22 1.95 3.36.02.03-.5.26-1.4 1.02C2.9 12.18.45 14.77 0 18.99h24c-.12-1.11-.37-2.1-.75-3.07-.74-1.91-1.84-3.29-2.74-4.18a12.1 12.1 0 0 0-2.13-1.69c.66-1.12 1.31-2.25 1.96-3.38.21-.36.19-.8-.01-1.12a1.1 1.1 0 0 0-.85-.53c-.52-.05-.94.31-1.05.54z"/></svg><span>Android</span></a>
         <a data-dl="dl-ios" class="dlchip" href="#"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg><span>iOS<sup>*</sup></span></a>
+<script>
+// Highlight the visitor's own platform as the primary download, on both the
+// docked pill (.dlbtn) and the footer chips (.dlchip). The old page did this
+// and the redesign shipped with Windows hard-coded; Destin asked for it back.
+// Order is untouched: the pill's width is pinned per theme, and reordering
+// would shift it. Runs inline, right after the markup, so there is no flash.
+(function(){
+  try {
+    var ua = navigator.userAgent || '';
+    var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+    var id = 'dl-windows';
+    if (/iPhone|iPad|iPod/.test(ua) || (/Mac/.test(plat) && navigator.maxTouchPoints > 1)) id = 'dl-ios';
+    else if (/Android/.test(ua)) id = 'dl-android';
+    else if (/Mac/.test(plat)) id = 'dl-macos';
+    else if (/Win/.test(plat)) id = 'dl-windows';
+    else if (/Linux|X11|CrOS/.test(plat + ua)) id = 'dl-linux';
+    if (id === 'dl-windows') return; // already the default in the markup
+    document.querySelectorAll('.dlbtn.primary, .dlchip.primary').forEach(function(el){ el.classList.remove('primary'); });
+    document.querySelectorAll('[data-dl="' + id + '"]').forEach(function(el){ el.classList.add('primary'); });
+  } catch (e) { /* leave Windows highlighted */ }
+})();
+</script>
         </div>
         <button class="trypill" type="button"><span class="dot"></span>Try Demo</button>
       </div>
