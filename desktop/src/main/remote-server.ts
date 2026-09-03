@@ -53,6 +53,20 @@ import { getGithubConnect, disconnectGithub } from './github-connect';
 import { resolveConversations, readConversation } from './chatsearch-index/refs-service';
 
 const PTY_BUFFER_SIZE = 4 * 1024 * 1024; // 4MB per session — enough for full conversation replay
+// Perf (2026-09-03): the rolling PTY replay buffer is a LIST OF OUTPUT CHUNKS,
+// not one big string, so appending costs O(chunk) instead of O(whole buffer).
+// `length` is the running total of `chunks` measured in JavaScript string length
+// (UTF-16 code units) — deliberately the SAME unit the old
+// `buf.length > PTY_BUFFER_SIZE` cap counted, so the effective cap size does not
+// silently change. (It is a character count, not a byte count: a non-ASCII char
+// can cost 2 units and a UTF-8 byte count would differ — exactly as before.)
+interface PtyBuffer { chunks: string[]; length: number; }
+// Perf: a PTY can emit a single keystroke at a time, and 4 MB of 1-char chunks
+// would be millions of array entries (each JS string carries tens of bytes of
+// overhead). So while the newest chunk is still small, append INTO it rather than
+// pushing a new entry — copying under 4 KB is free, and it caps the array at
+// roughly a thousand entries no matter how the output is chopped up.
+const PTY_CHUNK_COALESCE_BELOW = 4096;
 const HOOK_BUFFER_SIZE = 10_000; // ~10MB max, covers full conversations without excessive memory
 const AUTH_TIMEOUT_MS = 5000;
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -93,7 +107,12 @@ export class RemoteServer {
   // Channels already warned about, so an unbridged channel that a client polls
   // logs once instead of every second. See the `default:` case in handleMessage.
   private warnedChannels = new Set<string>();
-  private ptyBuffers = new Map<string, string>(); // sessionId → rolling PTY output
+  // sessionId → rolling PTY output. Perf: was `Map<string, string>`, where
+  // onPtyOutput did `buf += data` then `buf.slice(...)`; once a busy session filled
+  // the 4 MB cap, EVERY subsequent chunk re-allocated and copied ~4 MB — and it ran
+  // whether or not anyone was connected, because the remote server is always on.
+  // Chunks are joined into a string only at connect/replay time.
+  private ptyBuffers = new Map<string, PtyBuffer>();
   private hookBuffers = new Map<string, any[]>(); // sessionId → rolling hook events
   // Task 9 (plan 1c) — mirrors hookBuffers, but keyed sessionId → childId,
   // holding only the LATEST specialists:event per helper (never an
@@ -453,13 +472,41 @@ export class RemoteServer {
   // --- Event handlers for buffering ---
 
   private onPtyOutput = (sessionId: string, data: string) => {
-    // Append to rolling buffer
-    let buf = this.ptyBuffers.get(sessionId) || '';
-    buf += data;
-    if (buf.length > PTY_BUFFER_SIZE) {
-      buf = buf.slice(buf.length - PTY_BUFFER_SIZE);
+    // Append to the rolling replay buffer. Perf: push the chunk instead of
+    // rebuilding the whole string — see PtyBuffer for the 4 MB-per-chunk copy
+    // this replaces.
+    let buf = this.ptyBuffers.get(sessionId);
+    if (!buf) { buf = { chunks: [], length: 0 }; this.ptyBuffers.set(sessionId, buf); }
+    // An empty chunk adds nothing to the replayed text but WOULD add an array
+    // entry, so skip it here. The live broadcast below is deliberately untouched —
+    // a client that is listening still sees exactly the frames it saw before.
+    if (data.length > 0) {
+      const last = buf.chunks.length - 1;
+      if (last >= 0 && buf.chunks[last].length < PTY_CHUNK_COALESCE_BELOW) {
+        buf.chunks[last] += data; // merge into the small tail chunk (see PTY_CHUNK_COALESCE_BELOW)
+      } else {
+        buf.chunks.push(data);
+      }
+      buf.length += data.length;
+
+      // Trim WHOLE chunks off the head until we are back under the cap.
+      // Behaviour note: the old code cut mid-chunk at exactly PTY_BUFFER_SIZE, so
+      // the replay could begin part-way through a terminal escape sequence; the cut
+      // now lands on a chunk boundary, which means the buffer can hold slightly
+      // LESS than the cap. That is the intended trade — the replayed tail is
+      // otherwise identical, and it is strictly less likely to start mid-escape.
+      while (buf.length > PTY_BUFFER_SIZE && buf.chunks.length > 1) {
+        buf.length -= buf.chunks.shift()!.length;
+      }
+      // A single chunk larger than the entire cap cannot be dropped without losing
+      // everything, so trim its tail instead — the one copy left in this path, and
+      // it only happens when one read delivers more than 4 MB at once.
+      if (buf.length > PTY_BUFFER_SIZE) {
+        const only = buf.chunks[0];
+        buf.chunks[0] = only.slice(only.length - PTY_BUFFER_SIZE);
+        buf.length = buf.chunks[0].length;
+      }
     }
-    this.ptyBuffers.set(sessionId, buf);
 
     // Broadcast live
     this.broadcast({ type: 'pty:output', payload: { sessionId, data } });
@@ -509,10 +556,13 @@ export class RemoteServer {
       }
       return;
     }
-    let buf = this.hookBuffers.get(sessionId) || [];
+    const buf = this.hookBuffers.get(sessionId) || [];
     buf.push(event);
+    // Perf: drop the overflow IN PLACE. This was `buf = buf.slice(...)`, which
+    // allocated a fresh 10,000-entry array on every single event once the cap was
+    // reached. splice keeps exactly the same surviving events in the same order.
     if (buf.length > HOOK_BUFFER_SIZE) {
-      buf = buf.slice(buf.length - HOOK_BUFFER_SIZE);
+      buf.splice(0, buf.length - HOOK_BUFFER_SIZE);
     }
     this.hookBuffers.set(sessionId, buf);
   }
@@ -827,10 +877,13 @@ export class RemoteServer {
     setTimeout(() => {
       if (ws.readyState !== WebSocket.OPEN) return;
 
-      // PTY buffers
+      // PTY buffers. Perf: join the chunks only HERE, at connect time — the buffer
+      // is stored chopped up precisely so that arriving output never re-copies the
+      // whole 4 MB (see PtyBuffer). The joined text is what the old single-string
+      // buffer held, apart from the head trim now landing on a chunk boundary.
       for (const [sessionId, buf] of this.ptyBuffers) {
         if (buf.length > 0) {
-          ws.send(JSON.stringify({ type: 'pty:output', payload: { sessionId, data: buf } }));
+          ws.send(JSON.stringify({ type: 'pty:output', payload: { sessionId, data: buf.chunks.join('') } }));
         }
       }
 
@@ -2502,6 +2555,15 @@ export class RemoteServer {
   }
 
   broadcast(msg: { type: string; payload: any }): void {
+    // Perf: with nobody connected there is no one to send to, so skip the
+    // JSON.stringify as well. This matters because broadcast() runs on EVERY PTY
+    // chunk and the remote server is always on — a user who never opens remote
+    // access was still paying to serialize every byte their terminal printed.
+    // Safe to short-circuit: the loop below is the only thing this method does, and
+    // its sole effect is writing to connected client sockets — nothing in the app
+    // observes broadcast() as a side effect (`this.clients` is the same set
+    // getClientCount() reports, and it is empty here).
+    if (this.clients.size === 0) return;
     const data = JSON.stringify(msg);
     for (const client of this.clients) {
       if (client.ws.readyState === WebSocket.OPEN) {
