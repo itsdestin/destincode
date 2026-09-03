@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   selectNativeStatusChips,
-  selectCacheReuse,
-  selectReuseDisplay,
   type NativeStatusChips,
 } from '../src/renderer/components/StatusBar';
+import { selectCacheReuse, selectReuseDisplay } from '../src/renderer/state/cache-reuse';
 
 describe('native StatusBar chips', () => {
   it('exposes in/out/speed for the shared In:/Out:/Speed: chips', () => {
@@ -138,26 +137,70 @@ describe('selectCacheReuse — the fraction of the prompt served from cache', ()
     expect(reuse.ratio).toBeCloseTo(0.9);
   });
 
-  it("adds reads and writes back for Claude Code's Anthropic accounting", () => {
-    // Anthropic's input_tokens is the UNCACHED REMAINDER, so the prompt total is
-    // input + read + create. Using the native rule here would report 100%.
-    const reuse = selectCacheReuse(
-      { inputTokens: 100, cacheReadTokens: 800, cacheCreationTokens: 100 },
-      null,
-    );
-    expect(reuse.promptTokens).toBe(1000);
-    expect(reuse.ratio).toBeCloseTo(0.8);
+  // REGRESSION (Destin, 2026-09-03): the chip was pinned under 50% on every
+  // Claude Code session. The CC branch treated the statusline's inputTokens as
+  // Anthropic's raw-API "uncached remainder" and added the reads back — but
+  // statusline.sh reads `context_window.total_input_tokens`, which is the WHOLE
+  // prompt with the cached part already in it. Counting the reads twice makes
+  // the answer X/(X+X), so 100% real reuse rendered as 50% and 50% was the
+  // ceiling the chip could ever reach.
+  //
+  // Every fixture below is a VERBATIM row from ~/.claude/.session-stats-*.json
+  // on 2026-09-03 — not an invented one. The invented fixture this replaces is
+  // how the bug got past review in the first place.
+  it.each([
+    // input,   read,    create, expected % (was ~50 before the fix)
+    [137_831, 137_280,     495, 100],
+    [518_721, 518_069,     551, 100],
+    [313_449, 312_097,   1_350, 100],
+    [390_873, 366_893,  23_978,  94],
+    [271_096, 269_917,     913, 100],
+    [271_700, 271_361,     337, 100],
+    [318_948, 317_401,   1_545, 100],
+    [111_152, 109_981,   1_169,  99],
+  ])(
+    'reports real reuse for a Claude Code session (in=%i read=%i create=%i -> %i%%)',
+    (inputTokens, cacheReadTokens, cacheCreationTokens, pct) => {
+      const reuse = selectCacheReuse({ inputTokens, cacheReadTokens, cacheCreationTokens }, null);
+      expect(Math.round(reuse.ratio! * 100)).toBe(pct);
+      // The whole point: never the halved figure the old formula produced.
+      expect(Math.round(reuse.ratio! * 100)).toBeGreaterThan(50);
+    },
+  );
+
+  it("treats the statusline's inputTokens as the WHOLE prompt, like the native one", () => {
+    // One denominator for both runtimes now. Passing the identical counts down
+    // either branch must give the identical answer — if these two ever diverge,
+    // one label means two measurements again.
+    const counts = { inputTokens: 111_152, cacheReadTokens: 109_981, cacheCreationTokens: 1_169 };
+    const viaStatusline = selectCacheReuse(counts, null);
+    const viaNative = selectCacheReuse(null, native(counts));
+    expect(viaStatusline.promptTokens).toBe(111_152);
+    expect(viaNative.promptTokens).toBe(111_152);
+    expect(viaStatusline.ratio).toBe(viaNative.ratio);
+  });
+
+  it('bounds the prompt by its known parts if a source ever reports a remainder', () => {
+    // The safety rail on Math.max. No source does this today, but if a future
+    // Claude Code release went back to Anthropic's raw convention (inputTokens =
+    // uncached remainder), the reads and writes we KNOW are in the prompt still
+    // hold the denominator up. The answer is then high by the size of the
+    // remainder — never halved, and never above 100%.
+    const reuse = selectCacheReuse({ inputTokens: 100, cacheReadTokens: 800, cacheCreationTokens: 100 }, null);
+    expect(reuse.promptTokens).toBe(900);
+    expect(reuse.ratio).toBeCloseTo(0.889, 3);
+    expect(reuse.ratio!).toBeLessThanOrEqual(1);
   });
 
   it('never mixes a numerator and denominator from different sources', () => {
-    // CC wins on cache numbers, so its inputTokens must win too — reading 900
-    // against the native 50_000 would report a wrong, tiny percentage.
+    // CC wins on cache numbers, so its inputTokens must win too — reading CC's
+    // 109,981 against the native 50,000 would report a wrong, clamped 100%.
     const reuse = selectCacheReuse(
-      { inputTokens: 100, cacheReadTokens: 900, cacheCreationTokens: 0 },
+      { inputTokens: 111_152, cacheReadTokens: 109_981, cacheCreationTokens: 1_169 },
       native({ inputTokens: 50_000, cacheReadTokens: 10, cacheCreationTokens: 0 }),
     );
-    expect(reuse.promptTokens).toBe(1000);
-    expect(reuse.readTokens).toBe(900);
+    expect(reuse.promptTokens).toBe(111_152);
+    expect(reuse.readTokens).toBe(109_981);
   });
 
   it('stays null when nothing reported cache data (chip shows --)', () => {

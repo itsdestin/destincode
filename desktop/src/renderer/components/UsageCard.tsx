@@ -1,5 +1,6 @@
 import type { UsageSnapshot } from '../state/chat-types';
 import { ProgressBar } from './ui';
+import { selectCacheReuse } from '../state/cache-reuse';
 
 // Permanent inline card rendered when user types /cost or /usage. Snapshot-only —
 // we deliberately don't subscribe to live stats here; the status bar handles the
@@ -137,10 +138,13 @@ export default function UsageCard({ snapshot: s }: Props) {
   // every native session at all-zero before a turn has run — so `!= null` is
   // exactly "somebody measured this".
   const cacheMeasured = s.cacheReadTokens != null || s.cacheCreationTokens != null;
-  const cacheHitRate =
-    cacheTotal > 0 && s.cacheReadTokens != null
-      ? s.cacheReadTokens / cacheTotal
-      : null;
+  // Fix: this used to be reads/(reads+writes) — the exact "hit rate" the status
+  // bar replaced in 2026-08 because it sits at 100% forever on any provider that
+  // reports no cache writes (every native one). The card kept the dead formula,
+  // so the two surfaces printed different percentages for one session. Both now
+  // call the SAME selector, which answers the question a user actually has: how
+  // much of the prompt came from cache instead of being re-read.
+  const cacheReuse = selectCacheReuse(s, null);
 
   const fiveHourColor = utilizationColor(s.fiveHourUtilization);
   const sevenDayColor = utilizationColor(s.sevenDayUtilization);
@@ -259,7 +263,7 @@ export default function UsageCard({ snapshot: s }: Props) {
             {cacheMeasured && (
               <div>
                 <div className="text-fg-muted text-xs mb-0.5">
-                  Cache{cacheHitRate != null && ` · ${Math.round(cacheHitRate * 100)}% hit`}
+                  Cache{cacheReuse.ratio != null && ` · ${Math.round(cacheReuse.ratio * 100)}% reused`}
                 </div>
                 <div className="tabular-nums">{formatTokens(cacheTotal)}</div>
               </div>

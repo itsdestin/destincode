@@ -106,6 +106,23 @@ let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
     //   context_window.current_usage.cache_read_input_tokens,
     //   context_window.current_usage.cache_creation_input_tokens,
     //   context_window.context_window_size
+    //
+    // WHAT THESE ACTUALLY MEAN (read out of the shipped CLI binary, v2.1.259,
+    // 2026-09-03 — the `context_window` object is built by one function):
+    //   total_input_tokens = input + cache_creation + cache_read of the CURRENT
+    //                        request. It is the WHOLE prompt, cached part
+    //                        INCLUDED — NOT Anthropic's raw `input_tokens`,
+    //                        which is only the uncached remainder. Anything
+    //                        that adds the cache reads back on top of this
+    //                        counts them twice; that is exactly how the status
+    //                        bar's Reuse chip got stuck under 50% (fixed in
+    //                        renderer/state/cache-reuse.ts).
+    //   total_output_tokens = the CURRENT request's output_tokens. Not a
+    //                        session total — a 42-hour session read 713 here.
+    //   current_usage      = that same current request's raw usage object, so
+    //                        the cache numbers below share its scope.
+    // Nothing under `context_window` accumulates across a session; only the
+    // `cost.*` fields do.
     if(sid){
       const c=j.cost||{};const cw=j.context_window||{};const cu=cw.current_usage||{};
       const stats={

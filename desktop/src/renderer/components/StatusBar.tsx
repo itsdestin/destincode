@@ -19,6 +19,7 @@ import { Dialog } from './ui';
 import { resolveModelBrand, type ProviderIconKey } from './provider-brand';
 import { ProviderIcon } from './ProviderIcon';
 import type { SessionTotals } from '../state/session-totals';
+import { selectCacheReuse, selectReuseDisplay } from '../state/cache-reuse';
 import { CLAUDE_ALIASES, type ClaudeAlias } from '../../shared/model-ids';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
@@ -228,77 +229,6 @@ export function selectNativeStatusChips(
     cacheReadTokens: usage.cacheReadTokens ?? null,
     cacheCreationTokens: usage.cacheCreationTokens ?? null,
   };
-}
-
-/** What the cache-reuse chip renders, all resolved from ONE source. */
-export interface CacheReuse {
-  /** Prompt tokens served from cache instead of re-read. null = none reported. */
-  readTokens: number | null;
-  /** The WHOLE prompt the model read, cached portion included. */
-  promptTokens: number | null;
-  /** readTokens / promptTokens, clamped to 0..1. null when incomputable. */
-  ratio: number | null;
-}
-
-/** How much of the prompt was served from cache rather than re-read.
- *
- *  Fix: this replaced a "hit rate" of reads/(reads+writes), which was pinned at
- *  100% forever. That formula only means anything on providers that BILL for
- *  cache writes (Anthropic-style explicit caching). Every native provider here —
- *  OpenRouter's models and local llama.cpp — caches automatically and reports no
- *  write count at all, so the denominator collapsed to reads/reads. Verified
- *  against 507 recorded turns: cacheCreationTokens was 0 on every single one
- *  (Destin, 2026-08-16).
- *
- *  WHY the two branches — the sources disagree about what inputTokens MEANS, and
- *  mixing them is exactly how the old per-turn figure ended up halved:
- *    - Claude Code's statusline uses Anthropic's convention, where inputTokens is
- *      the UNCACHED REMAINDER. The prompt total is input + read + create.
- *    - The native harness goes through an OpenAI-compatible provider, where
- *      prompt_tokens is the WHOLE prompt with cached tokens already counted in.
- *      Adding reads there double-counts them and halves the answer.
- *  So the numerator and denominator must always come from the same source. */
-export function selectCacheReuse(
-  ss: Pick<SessionStats, 'inputTokens' | 'cacheReadTokens' | 'cacheCreationTokens'> | null | undefined,
-  nativeChips: Pick<NativeStatusChips, 'inputTokens' | 'cacheReadTokens' | 'cacheCreationTokens'> | null | undefined,
-): CacheReuse {
-  // Precedence matches the Cached: chip beside it — CC's statusline wins when it
-  // has written cache numbers, native fills in otherwise. Picked as a UNIT so the
-  // denominator can never be resolved from a different source than the numerator.
-  const useCC = ss?.cacheReadTokens != null;
-  const readTokens = useCC ? ss!.cacheReadTokens : nativeChips?.cacheReadTokens ?? null;
-  const createTokens = useCC ? ss!.cacheCreationTokens : nativeChips?.cacheCreationTokens ?? null;
-  const inputTokens = useCC ? ss!.inputTokens : nativeChips?.inputTokens ?? null;
-
-  if (readTokens == null || inputTokens == null) return { readTokens, promptTokens: null, ratio: null };
-
-  const promptTokens = useCC ? inputTokens + readTokens + (createTokens ?? 0) : inputTokens;
-  // Clamped: a provider that reports inconsistent counts should show a bounded
-  // percentage, not 340%. The tooltip still prints the raw numbers, so genuinely
-  // bad data stays visible instead of being silently smoothed away.
-  const ratio = promptTokens > 0 ? Math.min(1, readTokens / promptTokens) : null;
-  return { readTokens, promptTokens, ratio };
-}
-
-/** What the reuse chip should actually show. Kept separate from the JSX so the
- *  "don't alarm anyone on turn 1" rule is unit-testable rather than buried in a
- *  render branch. */
-export type ReuseDisplay =
-  | { kind: 'unknown' }                  // '--' — nothing reported cache data
-  | { kind: 'first-turn' }               // 'New' — no earlier prompt to reuse yet
-  | { kind: 'percent'; pct: number };
-
-export function selectReuseDisplay(reuse: CacheReuse, turnsWithUsage: 0 | 1 | 2 | undefined): ReuseDisplay {
-  if (reuse.ratio == null) return { kind: 'unknown' };
-  // ?? 1, not ?? 2: an unwired caller errs toward the calm reading rather than
-  // raising a red alarm it has no evidence for.
-  const firstTurn = (turnsWithUsage ?? 1) <= 1;
-  // Zero reuse means two very different things depending on WHEN it happens. On
-  // a session's first turn there is simply no earlier prompt to reuse, which is
-  // expected and should read as neutral. The same zero on turn 30 means the
-  // cache stopped being hit — worth flagging, so it falls through to a red 0%.
-  if (reuse.ratio === 0 && firstTurn) return { kind: 'first-turn' };
-  return { kind: 'percent', pct: Math.round(reuse.ratio * 100) };
 }
 
 function utilizationColor(pct: number): string {
