@@ -4432,18 +4432,12 @@ const ALL_SURFACES: CompareSurface[] = [
       },
       {
         n: 5,
-        basis: 'The jank was structural, not a tuning problem: an open name (~180px) in hand among 28px dots meant every dot had to cross the whole pill to get out of its way, and no treatment of that crossing (a slide, then a blink) looked right. Chrome never has this problem because every tab it lets you drag is the same width as its neighbours. So now the pill in hand IS a dot: the name closes the moment the pointer moves far enough to be a drag (a plain click still opens it on press, unchanged), every neighbour moves exactly one dot-width, and the name opens again where the dot is dropped. One question left: how a dot makes that one-dot-width move.',
+        basis: 'Destin, 2026-09-02, on R4: "i want to keep the fully expanded name. the problem is that the dragged session kept visibly overlapping dots before they appeared to begin to move. it would be fine if they teleport or fade in/fade out as long as they dont visually touch the dragged pill." (A round that put a dot in hand was built and withdrawn.) So the rule is now geometric rather than timed: a dot within 10px of the dragged pill is not drawn at all, it moves while hidden, and it fades back in only once the pill is clear of it. Two pickup fixes stay: the pill appears exactly on its own box and its grab point is measured when the drag starts, and dots make room where they are drawn rather than where they will settle.',
         candidates: [
           {
-            id: 'dot-slide',
-            label: 'Dot in hand · dots slide',
-            note: 'A yielding dot slides its one dot-width on the fast-deceleration curve — Chrome\'s swap between two things of one size.',
-            render: () => <SessionStripMotionDemo yieldAs="slide" />,
-          },
-          {
-            id: 'dot-hop',
-            label: 'Dot in hand · dots hop',
-            note: 'A yielding dot blinks across instead: fades out, moves while invisible, fades in one dot-width over.',
+            id: 'name-veil',
+            label: 'Name in hand · dots never touch it',
+            note: 'What ships. Drag a name along the row: dots ahead vanish before the pill reaches them and reappear behind it once it has passed; a wide neighbour still slides aside.',
             render: () => <SessionStripMotionDemo />,
           },
         ],

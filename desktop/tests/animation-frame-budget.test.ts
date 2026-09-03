@@ -267,22 +267,19 @@ describe('motion vocabulary', () => {
     expect(strip).not.toMatch(/useOneShotWindow\([^)]*,\s*\d+\)/);   // no literal duration at a call site
   });
 
-  it('hops a dot aside for a dragged pill — never slides it — and reveals on the plain curve', () => {
-    // Sliding a dot on any curve leaves it visibly under the pill in hand for
-    // as long as it is moving (Destin, 2026-09-02: "dots still keep sliding
-    // under the selected pill"). So during a drag a neighbour's transform
-    // does not animate: it jumps, delayed by half the blink that hides it.
+  it('never draws a dot touching the pill in hand — veiled by proximity, moved while hidden', () => {
+    // Destin, 2026-09-02, after a slide and then a blink: "the dragged session
+    // kept visibly overlapping dots before they appeared to begin to move. it
+    // would be fine if they teleport or fade in/fade out as long as they dont
+    // visually touch the dragged pill." Geometric, not timed.
     const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/dragging \? 'var\(--pill-yield, 0s linear calc\(var\(--dur-hover\) \/ 2\)\)'/);
-    expect(strip).toMatch(/session-pill--hop-a/);
-    expect(strip).toMatch(/session-pill--hop-b/);
-    // The blink: invisible across the middle, where the jump lands.
-    for (const name of ['pill-hop-a', 'pill-hop-b']) {
-      const kf = globals.match(new RegExp(`@keyframes ${name} \\{([\\s\\S]*?)\\n\\}`))?.[1] ?? '';
-      expect(kf).toMatch(/25%\s*\{\s*opacity:\s*0/);
-      expect(kf).toMatch(/75%\s*\{\s*opacity:\s*0/);
-      expect(globals).toMatch(new RegExp(`\\.session-pill--${name.slice(5)} \\{ animation: ${name} var\\(--dur-hover\\) linear 1; \\}`));
-    }
+    expect(strip).toMatch(/const VEIL_PX = 10;/);
+    expect(strip).toMatch(/r\.right > t\.left - VEIL_PX && r\.left < t\.right \+ VEIL_PX/);
+    // A dot's step-aside is a jump (it is hidden); a wide neighbour still slides.
+    expect(strip).toMatch(/dragging && isDot \? '0s' : 'var\(--dur-hover\) var\(--ease-out\)'/);
+    // Hidden at once, no fade out; the class beats the inline transition list.
+    expect(globals).toMatch(/\.session-pill--veiled \{ opacity: 0 !important; transition-duration: 0s !important; \}/);
+    expect(globals).not.toMatch(/pill-hop|data-yield/);
     const label = read('components/header', 'pill-label-style.ts');
     expect(label).toMatch(/max-width var\(--dur-reveal\) var\(--ease-reveal\)/);
   });
@@ -313,13 +310,13 @@ describe('motion vocabulary', () => {
     expect(root).toMatch(/--frame-edge:/);
   });
 
-  it('has no review scaffolds left but the round-4 yield one — every earlier round was picked on 2026-09-02', () => {
-    // The speed presets ([data-motion]), the select-on modes ([data-select])
-    // and the arrival alternatives ([data-arrival], plus the `?arrival=` param
-    // in index.tsx) were each picked and deleted; the winners are the plain
-    // values. Spring is the arrival: 14px lift on an overshooting curve.
-    // `[data-yield]` (slide vs hop, with a dot in hand) is the one open pick.
-    expect(globals).toMatch(/\[data-yield="slide"\] \{ --pill-yield:/);
+  it('has no review scaffolds left — every round was picked on 2026-09-02', () => {
+    // The speed presets ([data-motion]), the select-on modes ([data-select]),
+    // the arrival alternatives ([data-arrival], plus the `?arrival=` param in
+    // index.tsx) and the yield scaffold ([data-yield]) were each picked and
+    // deleted; the winners are the plain values. Spring is the arrival: 14px
+    // lift on an overshooting curve.
+    expect(globals).not.toMatch(/data-yield|--pill-yield/);
     expect(globals).not.toMatch(/data-motion|data-arrival|--switch-lift|--switch-ease/);
     expect(read('.', 'index.tsx')).not.toMatch(/arrival/);
     expect(globals).toMatch(/@keyframes switch-arrival \{[^}]*translateY\(14px\)/);
@@ -341,13 +338,13 @@ describe('motion vocabulary', () => {
     // Perpetual animation is the thing this file exists to prevent. One run.
     expect(globals).toMatch(/\.switch-arrival\s*\{[^}]*animation:[^;]*switch-arrival/);
     expect(globals).not.toMatch(/\.switch-arrival\s*\{[^}]*infinite/);
-    expect(globals).not.toMatch(/pill-hop-[ab][^;]*infinite/);
+    expect(globals).not.toMatch(/session-pill--veiled[^}]*animation/);
   });
 
   it('gates the arrival animation on reduced motion AND Reduce Visual Effects', () => {
     expect(globals).toMatch(/@media \(prefers-reduced-motion: reduce\) \{[^}]*\.switch-arrival[^}]*\}/);
     expect(globals).toMatch(/\[data-reduced-effects\] \.switch-arrival/);
-    expect(globals).toMatch(/\[data-reduced-effects\] \.session-pill--hop-a/);
+    // The veil is a plain class, not an animation — nothing to gate.
   });
 
   it('draws the pill in hand as a TWIN of the real pill, never a ghost or an insertion line', () => {
@@ -418,13 +415,13 @@ describe('motion vocabulary', () => {
     expect(strip).not.toMatch(/\boverIdx\b/);
   });
 
-  it('holds a DOT while dragging — the name closes at pickup and opens at the drop', () => {
-    // An open name in hand among dots meant every dot crossed the whole pill
-    // to make room; no treatment of that crossing read right (Destin, R3:
-    // "still feels janky"). With a dot in hand each yield is one dot-width.
+  it('keeps the open name in hand while dragging', () => {
+    // A round that collapsed the pill in hand to a dot was built and withdrawn
+    // (Destin, 2026-09-02: "i want to keep the fully expanded name"). The
+    // pill's settled width in the drag's geometry is its full width.
     const strip = read('components', 'SessionStrip.tsx');
-    expect(strip).toMatch(/if \(id === sessionId\) return COLLAPSED_PILL_PX;/);
-    expect(strip).toMatch(/: !isBeingDragged && \(displayPack\.expanded\.has\(s\.id\) \|\| isHovered \|\| isActive\)/);
+    expect(strip).not.toMatch(/if \(id === sessionId\) return COLLAPSED_PILL_PX;/);
+    expect(strip).toMatch(/: displayPack\.expanded\.has\(s\.id\) \|\| isHovered \|\| isActive;/);
   });
 
   it('puts nothing but the dot and the name on a pill — the runtime lives in the menu', () => {

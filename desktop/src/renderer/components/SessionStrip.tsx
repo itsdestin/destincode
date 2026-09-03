@@ -58,6 +58,11 @@ function motionWindowMs(el: Element | null): number {
  *  row of N dots was under-reserved by 4N px and the active name got squeezed. */
 const COLLAPSED_PILL_PX = 28;
 
+/** How close (px) a dot may be drawn to the pill in hand before it is hidden.
+ *  More than DRAG_TUNE.margin (6), so a dot is gone before it is asked to
+ *  step aside, with a frame's travel of a brisk drag to spare. */
+const VEIL_PX = 10;
+
 
 interface SessionEntry {
   id: string;
@@ -676,18 +681,10 @@ export default function SessionStrip({
       const visible = sessions.filter(x => target.expanded.has(x.id) || target.collapsed.includes(x.id));
       // A pill's settled width: its full measured width if the packer expands
       // it (capped at the budget, where the active pill ellipsises instead),
-      // else a dot. THE PILL IN HAND IS A DOT (2026-09-02): the moment a drag
-      // starts its name closes, so in the row's eyes it is 28px wide and every
-      // neighbour only ever has to move one dot-width to make room — Chrome's
-      // swap, between things of one size. With the open name in hand (~180px)
-      // each dot had to cross the whole pill to get out of its way, and no
-      // treatment of that crossing — a slide, then a blink — stopped it
-      // reading as jank (Destin, R3: "the interaction between the selected
-      // moving pill and the other dots/sessions still feels janky"). A plain
-      // click is untouched: the name opens on press as before, and closes
-      // only when the pointer actually moves far enough to be a drag.
+      // else a dot. The pill in hand keeps its open name — Destin, 2026-09-02:
+      // "i want to keep the fully expanded name" — so in the row's eyes it is
+      // its full width, and a neighbour steps that far to make room.
       const widthOf = (id: string) => {
-        if (id === sessionId) return COLLAPSED_PILL_PX;
         if (!target.expanded.has(id)) return COLLAPSED_PILL_PX;
         return Math.min(metrics.get(id)?.expandedWidth ?? 120, Math.max(COLLAPSED_PILL_PX, budget - 24 - PILL_GAP));
       };
@@ -1062,15 +1059,34 @@ export default function SessionStrip({
       if (real && twin) {
         const w = real.getBoundingClientRect().width;
         twin.style.width = `${w}px`;
-        // And its LEFT: the cursor stays at the same fraction of a shrinking
-        // twin, so both edges close in on the cursor rather than the right
-        // edge sweeping left across the dots ahead.
+        // And its LEFT: the cursor stays at the same fraction of a twin that
+        // is still opening after a press, so both edges move with it rather
+        // than the leading edge sweeping across the dots ahead.
         twin.style.left = `${cursorXRef.current - grabFrac.current * w - bar.getBoundingClientRect().left}px`;
+        // The veil (see veiledRef): a dot within VEIL_PX of the twin, where
+        // it is DRAWN this frame, is hidden; one that has come clear is shown
+        // again (its inline opacity transition fades it in). Written straight
+        // to the DOM — one class toggle per dot per frame at most.
+        const t = twin.getBoundingClientRect();
+        bar.querySelectorAll<HTMLElement>('[data-session-id]').forEach((el) => {
+          const id = el.dataset.sessionId;
+          if (!id || id === dragId || !dotIdsRef.current.has(id)) return;
+          const r = el.getBoundingClientRect();
+          const near = r.right > t.left - VEIL_PX && r.left < t.right + VEIL_PX;
+          const veiled = veiledRef.current.has(id);
+          if (near && !veiled) { veiledRef.current.add(id); el.classList.add('session-pill--veiled'); }
+          else if (!near && veiled) { veiledRef.current.delete(id); el.classList.remove('session-pill--veiled'); }
+        });
       }
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
+    return () => {
+      cancelAnimationFrame(raf);
+      // The drag is over: everything is drawn again.
+      veiledRef.current.clear();
+      bar.querySelectorAll('.session-pill--veiled').forEach((el) => el.classList.remove('session-pill--veiled'));
+    };
   }, [dragLeft !== null, dragId]);
 
   // Belt and braces: transitionend does not fire for an element that was
@@ -1180,43 +1196,34 @@ export default function SessionStrip({
     ? neighbourOffsets(pillRectsRef.current, dragId, overId)
     : EMPTY_OFFSETS;
 
-  // A neighbour HOPS aside rather than sliding (2026-09-02). Sliding it on the
-  // fast-deceleration curve still left it visibly passing under the pill in
-  // hand for a few frames (Destin, on the tuned build: "dots still keep
-  // sliding under the selected pill"), and no curve fixes that — the two are
-  // on the same pixels for as long as the dot is moving. So the dot blinks:
-  // it fades out where it is (gone within a quarter of the blink), its
-  // transform changes while it cannot be seen (a 0s transition delayed by
-  // half the blink), and it fades back in where it now belongs. Nothing is
-  // ever seen crossing the pill.
-  //
-  // Each CHANGE of a pill's offset (yield, or un-yield as the pointer comes
-  // back) bumps that pill's generation; the class alternates between two
-  // identical keyframe names on the parity, which is what restarts a CSS
-  // animation on an element that is already running one. Cleared when the
-  // drag ends, so the drop (the settle glide) and an ordinary repack never
-  // blink anything. Read in a memo, not an effect: the class must be in the
-  // same commit as the transform change it hides.
-  const hopRef = useRef<Map<string, { off: number; gen: number }>>(new Map());
-  const hopGen = useMemo(() => {
-    const prev = hopRef.current;
-    const next = new Map<string, { off: number; gen: number }>();
-    if (dragging) {
-      for (const s of sessions) {
-        const off = dragOffsets.get(s.id) ?? 0;
-        const p = prev.get(s.id);
-        // A pill unseen so far was at offset 0 (nothing has yielded before the
-        // drag starts). Measured 2026-09-02: the first yield of a drag happens
-        // on the very render the twin appears, so an entry seeded with the
-        // yielded offset would never blink for it — and the dots the pill was
-        // picked up over jumped in full view.
-        const was = p === undefined ? 0 : p.off;
-        next.set(s.id, { off, gen: p === undefined ? (off === was ? 0 : 1) : off === was ? p.gen : p.gen + 1 });
-      }
+  // NO DOT IS EVER DRAWN TOUCHING THE PILL IN HAND (2026-09-02). Destin, after
+  // a slide and then a blink had both been tried: "the problem is that the
+  // dragged session kept visibly overlapping dots before they appeared to
+  // begin to move. it would be fine if they teleport or fade in/fade out as
+  // long as they dont visually touch the dragged pill." So the rule is
+  // geometric, not timed: a dot within VEIL_PX of the twin is not drawn at
+  // all (`.session-pill--veiled`, instant), it moves — a plain jump — while
+  // it cannot be seen, and it fades back in only once it is clear of the pill
+  // again. Two writers keep the set in step: the rAF loop below (proximity,
+  // read off the DOM every frame, and the only thing that ever UNVEILS) and
+  // this render (a dot whose step-aside offset changes is veiled in the same
+  // commit that moves it, so a fast pointer can never land the jump in view).
+  // Only dots: a wide neighbour still slides, on the fast-deceleration curve;
+  // blanking a 190px name would leave a hole. Cleared when the drag ends.
+  const veiledRef = useRef<Set<string>>(new Set());
+  const prevOffsetsRef = useRef<ReadonlyMap<string, number>>(EMPTY_OFFSETS);
+  if (dragging) {
+    for (const s of sessions) {
+      const off = dragOffsets.get(s.id) ?? 0;
+      if (off !== (prevOffsetsRef.current.get(s.id) ?? 0) && !displayPack.expanded.has(s.id)) veiledRef.current.add(s.id);
     }
-    hopRef.current = next;
-    return next;
-  }, [dragging, dragOffsets, sessions]);
+  } else if (veiledRef.current.size > 0) {
+    veiledRef.current.clear();
+  }
+  prevOffsetsRef.current = dragOffsets;
+  // Which pills are dots in the pack the drag is judged against — for the rAF loop.
+  const dotIdsRef = useRef<Set<string>>(new Set());
+  dotIdsRef.current = new Set(displayPack.collapsed);
 
   // After the hooks above: an early return before them would change the hook
   // order between renders.
@@ -1241,18 +1248,14 @@ export default function SessionStrip({
           const isActive = s.id === activeSessionId;
           const isHovered = hoveredId === s.id;
           const isBeingDragged = dragId === s.id && isDragging.current;
-          // The pill in hand is a dot: its name closes at pickup (the twin's
-          // width follows the in-flow box, so the thing under the cursor
-          // shrinks with it) and opens again where it is dropped — the arming
-          // window covers both ends of a drag. See widthOf in handlePointerDown.
           const showName = forceSingle
             ? isActive
-            : !isBeingDragged && (displayPack.expanded.has(s.id) || isHovered || isActive);
+            : displayPack.expanded.has(s.id) || isHovered || isActive;
           // A HOVER PEEK: the name is showing only because the cursor is on it.
           // The packer reserved no room for this pill, so the name is capped
           // (pill-label-style.ts).
           const hoverPeek = !isActive && !displayPack.expanded.has(s.id);
-          const hop = hopGen.get(s.id);
+          const isDot = !displayPack.expanded.has(s.id);
 
           const pillClass = `
                   relative flex items-center gap-1 rounded-full px-1.5 py-px
@@ -1300,7 +1303,7 @@ export default function SessionStrip({
                 // decide inside, where pack state is read at event time.
                 onMouseEnter={() => handleEnter(s.id)}
                 onMouseLeave={handleLeave}
-                className={`${pillClass} ${isActive ? 'min-w-0 shrink' : 'shrink-0'} ${isBeingDragged ? 'cursor-grabbing' : ''}${hop !== undefined && hop.gen > 0 ? (hop.gen % 2 ? ' session-pill--hop-a' : ' session-pill--hop-b') : ''}`}
+                className={`${pillClass} ${isActive ? 'min-w-0 shrink' : 'shrink-0'} ${isBeingDragged ? 'cursor-grabbing' : ''}${veiledRef.current.has(s.id) ? ' session-pill--veiled' : ''}`}
                 style={{
                   // Explicit property list, not `all`: `all` animates every
                   // animatable property that changes, including layout ones, and
@@ -1320,13 +1323,12 @@ export default function SessionStrip({
                       // the layout effect above.
                       ? 'none'
                       // `transform` gets the settle curve when a drop is gliding
-                      // home; during a drag a neighbour's transform does not
-                      // animate at all — it JUMPS, halfway through the blink
-                      // that hides it (see hopGen) — unless the review scaffold
-                      // `[data-yield="slide"]` sets --pill-yield, which makes it
-                      // a plain slide instead; a hover scales on the decelerate
-                      // curve. Never an overshoot: a release must not spring.
-                      : `transform ${settle?.deltas.has(s.id) ? 'var(--dur-hover) var(--ease-settle)' : dragging ? 'var(--pill-yield, 0s linear calc(var(--dur-hover) / 2))' : 'var(--dur-hover) var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
+                      // home. During a drag a DOT stepping aside does not animate
+                      // at all — it jumps while veiled (see veiledRef) — and a
+                      // wide neighbour slides on the fast-deceleration curve; a
+                      // hover scales on the same curve. Never an overshoot: a
+                      // release must not spring.
+                      : `transform ${settle?.deltas.has(s.id) ? 'var(--dur-hover) var(--ease-settle)' : dragging && isDot ? '0s' : 'var(--dur-hover) var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
                   // Four mutually exclusive transform states: the pill in hand
                   // (under the cursor), a dropped pill gliding home, a neighbour
                   // stepping aside, or a plain hover.

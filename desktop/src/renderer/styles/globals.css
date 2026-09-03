@@ -904,44 +904,14 @@ body[data-mode="buddy-chat"] #theme-bg {
   white-space: nowrap;
 }
 
-/* A neighbouring dot HOPS aside for a dragged pill (2026-09-02): it fades
-   out where it is, its transform jumps while it is invisible (SessionStrip
-   delays that change by half of this), and it fades back in where it now
-   belongs — so it is never seen sliding under the pill in hand. Out fast (a
-   quarter of the blink, ~45ms): at pickup the pill in hand can already sit
-   over the dots that must yield, and every frame they stay opaque is a frame
-   of the pill over a dot. Two identical
-   keyframe names, alternated by SessionStrip on every change of a pill's
-   offset: swapping the animation-name is what restarts a running animation.
-   Linear, one run, gesture-triggered. */
-@keyframes pill-hop-a {
-  0%   { opacity: 1; }
-  25%  { opacity: 0; }
-  75%  { opacity: 0; }
-  100% { opacity: 1; }
-}
-@keyframes pill-hop-b {
-  0%   { opacity: 1; }
-  25%  { opacity: 0; }
-  75%  { opacity: 0; }
-  100% { opacity: 1; }
-}
-.session-pill--hop-a { animation: pill-hop-a var(--dur-hover) linear 1; }
-.session-pill--hop-b { animation: pill-hop-b var(--dur-hover) linear 1; }
-@media (prefers-reduced-motion: reduce) {
-  .session-pill--hop-a, .session-pill--hop-b { animation: none; }
-}
-[data-reduced-effects] .session-pill--hop-a,
-[data-reduced-effects] .session-pill--hop-b { animation: none; }
-
-/* REVIEW SCAFFOLD (2026-09-02, round 4): with a DOT in hand every yield is one
-   dot-width, so a plain slide is Chrome's swap and may read better than the
-   blink. `data-yield="slide"` on a wrapper turns the hop back into a slide on
-   the fast-deceleration curve; nothing in the product sets it. The loser is
-   deleted after the pick — outside :root, like every scaffold before it. */
-[data-yield="slide"] { --pill-yield: var(--dur-hover) var(--ease-out); }
-[data-yield="slide"] .session-pill--hop-a,
-[data-yield="slide"] .session-pill--hop-b { animation: none; }
+/* A dot near the pill in hand is NOT DRAWN (2026-09-02). SessionStrip veils
+   any dot within a few px of the dragged pill — hidden at once (no fade out,
+   the pill is arriving), moved while hidden, and shown again only once the
+   pill is clear, when the pill's own opacity transition fades it back in.
+   Destin: "it would be fine if they teleport or fade in/fade out as long as
+   they dont visually touch the dragged pill." !important because the pill's
+   transition list and opacity are set inline. */
+.session-pill--veiled { opacity: 0 !important; transition-duration: 0s !important; }
 
 /* Perf: frame-budget the perpetual Tailwind animations with steps() timing.
    On a high-refresh display, ANY smoothly-animating element makes Chromium
@@ -1837,10 +1807,11 @@ pre.yc-code code {
      strip and on session switch reads as one decision instead of six.
        --ease-reveal  a plain ease, for things that OPEN: a name revealing,
                       a hover, a colour. Gentle start, gentle stop.
-       --ease-out     decelerates fast, for things that must LEAD: a hover
-                      scaling up, the All Sessions menu dropping in. (The
-                      dots stepping aside for a dragged pill used it too,
-                      until they started hopping instead — see pill-hop-a.)
+       --ease-out     decelerates fast, for things that must LEAD: a wide
+                      neighbour stepping aside for a dragged pill, a hover
+                      scaling up, the All Sessions menu dropping in. (A DOT
+                      stepping aside does not animate at all — it is hidden
+                      while it moves; see .session-pill--veiled.)
        --ease-settle  a released pill gliding the last few px home.
      NO OVERSHOOT on any width-like property: a spring on the pill sent the
      whole row past its destination and back ("much too bouncy/aggressive").
