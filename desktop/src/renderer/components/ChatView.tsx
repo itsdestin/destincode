@@ -17,6 +17,8 @@ import CopyPicker from './CopyPicker';
 import ThinkingIndicator from './ThinkingIndicator';
 import AttentionBanner from './AttentionBanner';
 import ModelLoadingBar from './ModelLoadingBar';
+import { useObservedRef } from '../hooks/use-observed-ref';
+import { useEntryFolding } from '../hooks/use-entry-folding';
 import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
 import { useArtifact } from '../state/ArtifactContext';
@@ -417,9 +419,49 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
     return () => bubbleObserverRef.current?.disconnect();
   }, []);
 
-  const observeEntry = useCallback((el: HTMLDivElement | null) => {
-    if (el) bubbleObserverRef.current?.observe(el);
-  }, []);
+  // Fix (perf cycle 3): release the element when React detaches the ref.
+  //
+  // An IntersectionObserver holds a STRONG reference to every target it
+  // observes, and this ref is attached to EVERY timeline entry. The old body
+  // only ever called observe(), so any entry removed from the DOM stayed
+  // reachable from the live observer for as long as this ChatView was mounted.
+  // Nothing removes a timeline entry today, so it never leaked in practice —
+  // but it means the FIRST change that drops an entry (eviction, or collapsing
+  // a distant entry to a placeholder) would free nothing at all, silently, with
+  // every existing test still green. Measured context: a conversation read to
+  // the top holds ~1.44M DOM nodes.
+  //
+  // React 19 supports returning a cleanup function from a callback ref, which
+  // fires on detach — that is the only hook where unobserve can be called, so
+  // it is used rather than hand-tracking a Set of observed nodes.
+  const observeEntry = useObservedRef<HTMLDivElement>(bubbleObserverRef);
+
+  // Perf cycle 3: entries far outside the viewport render as a spacer of the
+  // height they last occupied, instead of their full body. Nothing leaves the
+  // reducer — see use-entry-folding.ts for why eviction was rejected on review.
+  //
+  // Suspended while the find bar is open: ContentFindBar finds text by walking
+  // the DOM, so a folded entry would be unfindable and the user would be told
+  // "0 results" for text that is in their conversation.
+  const folding = useEntryFolding(!findOpen, scrollContainerRef);
+
+  // One ref for both observers — the blur-gating one and the folding one — so a
+  // timeline entry still carries a single callback ref.
+  // Depends on the two REGISTRATION callbacks, never on the `folding` object.
+  //
+  // That object is a fresh literal every render, so depending on it made
+  // attachEntry's identity change every render — and a ref callback whose
+  // identity changes is detached and re-attached by React on EVERY entry, every
+  // render. For a 7,000-entry conversation that is 7,000 unobserve+observe pairs
+  // per render, each observe delivering a fresh intersection report, which in
+  // turn restarted the fold idle timer so folding could never fire. It made the
+  // measured numbers WORSE than doing nothing (2026-08-28).
+  const registerFold = folding.registerEntry;
+  const attachEntry = useCallback((el: HTMLDivElement | null) => {
+    const releaseBlur = observeEntry(el);
+    const releaseFold = registerFold(el);
+    return () => { releaseBlur(); releaseFold(); };
+  }, [observeEntry, registerFold]);
 
   // Arrow key scrolling with acceleration when not typing
   const scrollSpeed = useRef(0);
@@ -1025,18 +1067,26 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
                   break;
                 }
               }
+              // Folded: render the wrapper at exactly the height its body last
+              // occupied and omit the body. The wrapper stays in the DOM so the
+              // scroll height, the observers and captureScrollAnchor's
+              // `.timeline-entry` query all see an unchanged list.
+              const folded = folding.isFolded(key!);
+              const foldHeight = folded ? folding.heightOf(key!) : undefined;
               return (
                 <div
                   key={key!}
-                  ref={observeEntry}
+                  ref={attachEntry}
+                  data-entry-key={key!}
                   className={`timeline-entry in-view${isPreCompaction ? ' opacity-60 transition-opacity' : ''}`}
+                  style={folded && foldHeight ? { height: foldHeight } : undefined}
                   title={isPreCompaction
                     ? (archiveKind === 'clear'
                       ? 'Cleared — still here to read, but not in Claude\'s context'
                       : 'Archived by compaction — not in Claude\'s active context')
                     : undefined}
                 >
-                  {content}
+                  {folded && foldHeight ? null : content}
                 </div>
               );
               });
