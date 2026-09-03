@@ -13,6 +13,7 @@ import {
   CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, SAMPLE_SVG, makeDetailPngBase64, makeSamplePdfBase64, contextGroups,
 } from './fixtures/artifacts';
 import { resolveFixture, CS_ERR_READ } from './fixtures/chatsearch';
+import { SHEET_BEFORE, SHEET_AFTER } from './fixtures/sheets';
 import type { MockState, MockSessionMeta } from './scenarios';
 import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
 import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
@@ -1380,6 +1381,15 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
           if (detailed) return { ok: true, base64: detailed, mime: 'image/png' };
         }
         return { ok: true, base64: SAMPLE_PNG_BASE64, mime: 'image/png' };
+      }
+      // Promo: the site session's spreadsheet. `window.__workbenchSheet = 'after'`
+      // (set by the recording scene once the assistant's Edit card completes)
+      // swaps in the sorted workbook; the viewer re-reads when its file is
+      // re-opened, and the video cuts across that re-open.
+      if (ext === 'xlsx') {
+        const after = (globalThis as any).__workbenchSheet === 'after';
+        return { ok: true, base64: after ? SHEET_AFTER : SHEET_BEFORE,
+                 mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
       }
       if (ext === 'pdf') {
         const pdf = makeSamplePdfBase64();
