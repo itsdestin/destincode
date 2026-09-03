@@ -4432,12 +4432,12 @@ const ALL_SURFACES: CompareSurface[] = [
       },
       {
         n: 5,
-        basis: 'Destin, 2026-09-02, on R4: "i want to keep the fully expanded name. the problem is that the dragged session kept visibly overlapping dots before they appeared to begin to move. it would be fine if they teleport or fade in/fade out as long as they dont visually touch the dragged pill." (A round that put a dot in hand was built and withdrawn.) So the rule is now geometric rather than timed: a dot within 10px of the dragged pill is not drawn at all, it moves while hidden, and it fades back in only once the pill is clear of it. Two pickup fixes stay: the pill appears exactly on its own box and its grab point is measured when the drag starts, and dots make room where they are drawn rather than where they will settle.',
+        basis: 'Destin, 2026-09-02, on R4: "i want to keep the fully expanded name. the problem is that the dragged session kept visibly overlapping dots before they appeared to begin to move. it would be fine if they teleport or fade in/fade out as long as they dont visually touch the dragged pill." (A round with a dot in hand was built and withdrawn.) A first cut hid any dot within a few px of the pill; Destin, 2026-09-03: "too much empty space on either side of the dragged chip" — and it was measurable: a hidden dot is a hole the width of a dot, on one side or the other, whenever the pill is over it. So the dot FLOWS: as the pill covers a dot\'s space the dot shrinks towards its far edge, keeping the row gap clear of the leading edge, while a ghost of it grows behind the pill at the spot it will land; once covered whole it takes over from the ghost at full size. Measured: 2–4px mean gap on both sides, 0px contact in every frame.',
         candidates: [
           {
-            id: 'name-veil',
-            label: 'Name in hand · dots never touch it',
-            note: 'What ships. Drag a name along the row: dots ahead vanish before the pill reaches them and reappear behind it once it has passed; a wide neighbour still slides aside.',
+            id: 'name-flow',
+            label: 'Name in hand · dots flow around it',
+            note: 'What ships. Drag a name along the row: the dot ahead squeezes down as the pill reaches it and swells up behind it as it passes; a wide neighbour still slides aside.',
             render: () => <SessionStripMotionDemo />,
           },
         ],
