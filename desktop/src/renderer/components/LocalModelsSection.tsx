@@ -17,6 +17,7 @@ import type {
   InstalledLocalModel, DetectedEndpoint, HFSearchHit,
 } from '../../shared/model-manager-types';
 import { stripSplitSuffix } from '../../shared/gguf-split';
+import { matchesQuery } from '../../shared/text-match';
 import { resolveModelBrand } from './provider-brand';
 import { ProviderIcon } from './ProviderIcon';
 
@@ -189,8 +190,8 @@ function ModelBrowser({
   }, [query]);
 
   const q = query.trim().toLowerCase();
-  const matches = (...fields: (string | null | undefined)[]) =>
-    !q || fields.some((f) => (f ?? '').toLowerCase().includes(q));
+  // Word-by-word and punctuation-insensitive, so "qwen 30b" finds "qwen3-30b".
+  const matches = (...fields: (string | null | undefined)[]) => matchesQuery(q, ...fields);
 
   // Installed (filtered) + in-progress / partial downloads.
   const installedFiltered = (installed ?? []).filter((m) => matches(m.id, m.quant, m.quantDescription));
