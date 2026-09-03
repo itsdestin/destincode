@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><g class="comp-bob">
+  <path d="M3.4 1.9 Q1 4.5 1.7 7 Q3 9.6 5.7 9.2 Q7.7 8.3 8 5.4 Q7.7 2.4 5.7 1.5 Z" fill="#E14560"/>
+  <path d="M2.8 1.6 L6.5 0.9 L6.2 2.6 L4.2 2.9 Z" fill="#6DB56D"/>
+  <circle cx="3.4" cy="4.6" r="0.4" fill="#FFF2A8"/><circle cx="5.6" cy="4.9" r="0.4" fill="#FFF2A8"/><circle cx="4.5" cy="6.9" r="0.4" fill="#FFF2A8"/>
+</g></svg>

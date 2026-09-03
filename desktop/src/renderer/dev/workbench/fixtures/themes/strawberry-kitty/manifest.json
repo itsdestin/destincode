@@ -1,0 +1,82 @@
+{
+  "name": "Strawberry Kitty",
+  "slug": "strawberry-kitty",
+  "version": "1.2.1",
+  "companions": [
+    {"asset": "assets/companions/berry.svg", "size": 0.13, "dx": -0.487, "dy": -0.287, "stiffness": 85, "damping": 8, "float": 0.03, "floatMs": 2400},
+    {"asset": "assets/companions/berry.svg", "size": 0.087, "dx": 0.47, "dy": 0.209, "stiffness": 60, "damping": 6, "float": 0.043, "floatMs": 2900},
+    {"asset": "assets/companions/spark-red.svg", "size": 0.07, "dx": 0.365, "dy": -0.452, "stiffness": 100, "damping": 8, "float": 0.039, "floatMs": 1900}
+  ],
+  "dark": false,
+  "author": "claude",
+  "created": "2026-04-12",
+  "description": "Lighter pink Hello Kitty x strawberry shortcake — pastel rose canvas, floating chrome, pill bubbles, dust drift over a sweet berry wallpaper.",
+  "tokens": {
+    "canvas": "#F8D7DE",
+    "panel": "#FCE4E9",
+    "inset": "#FFFEFE",
+    "well": "#EFBCC6",
+    "accent": "#CC4060",
+    "on-accent": "#FFFFFF",
+    "fg": "#3A1420",
+    "fg-2": "#5C2235",
+    "fg-dim": "#7E3850",
+    "fg-muted": "#A26179",
+    "fg-faint": "#B8858F",
+    "edge": "#E09AA8",
+    "edge-dim": "#E09AA880",
+    "scrollbar-thumb": "#CC4060",
+    "scrollbar-hover": "#B33952"
+  },
+  "shape": {
+    "radius": "18px",
+    "radius-sm": "16px",
+    "radius-md": "26px",
+    "radius-lg": "32px",
+    "radius-full": "9999px"
+  },
+  "font": {
+    "family": "'Comfortaa', 'Cascadia Mono', monospace",
+    "google-font-url": "https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;500;600;700&display=swap"
+  },
+  "background": {
+    "average-color": "#F0CDC6",
+    "type": "image",
+    "value": "assets/wallpaper.png",
+    "terminal-value": "assets/wallpaper-terminal.webp",
+    "opacity": 1,
+    "panels-blur": 4,
+    "panels-opacity": 0.3,
+    "bubble-blur": 13,
+    "bubble-opacity": 0.68,
+    "pattern": "assets/pattern.svg",
+    "pattern-opacity": 0.06
+  },
+  "layout": {
+    "chrome-style": "floating",
+    "input-style": "floating",
+    "bubble-style": "pill",
+    "header-style": "default",
+    "statusbar-style": "default"
+  },
+  "effects": {
+    "particles": "dust",
+    "particle-count": 24,
+    "particle-speed": 0.3,
+    "particle-drift": 0.3,
+    "particle-size-range": [
+      3,
+      8
+    ],
+    "vignette": 0.14,
+    "noise": 0
+  },
+  "mascot": {
+    "rig": "assets/mascot-rig.svg",
+    "idle": "assets/mascot-idle.svg",
+    "welcome": "assets/mascot-welcome.svg",
+    "shocked": "assets/mascot-shocked.svg",
+    "dizzy": "assets/mascot-dizzy.svg"
+  },
+  "custom_css": "::selection { background: rgba(217,78,107,0.32); color: var(--fg); }"
+}
