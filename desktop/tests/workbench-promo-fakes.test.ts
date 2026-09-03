@@ -50,3 +50,40 @@ describe('spreadsheet bytes', () => {
     expect(Number(rs.at(-1)?.[2])).toBe(amounts.reduce((a, b) => a + b, 0));
   });
 });
+
+describe('remote access fake', () => {
+  it('is untouched without ?remote= (catch-all answers [])', async () => {
+    const c = await shim('');
+    expect(await c.remote.getConfig()).toEqual([]);
+  });
+  it('?remote=setup renders the QR state: enabled, password set, Tailscale url, no clients', async () => {
+    const c = await shim('?remote=setup');
+    const cfg = await c.remote.getConfig();
+    expect(cfg).toMatchObject({ enabled: true, hasPassword: true, clientCount: 0 });
+    const ts = await c.remote.detectTailscale();
+    expect(ts).toMatchObject({ installed: true, connected: true });
+    expect(ts.url).toMatch(/^https?:\/\//);
+    expect(await c.remote.getClientList()).toEqual([]);
+  });
+  it('?remote=connected lists one phone', async () => {
+    const c = await shim('?remote=connected');
+    const cls = await c.remote.getClientList();
+    expect(cls).toHaveLength(1);
+    expect(cls[0]).toMatchObject({ id: expect.any(String), ip: expect.any(String), connectedAt: expect.any(Number) });
+    expect((await c.remote.getConfig()).clientCount).toBe(1);
+    expect(await c.remote.getClientCount()).toBe(1);
+  });
+});
+
+describe('takeover (lease) fake', () => {
+  it('reports no holder without ?lease=', async () => {
+    const c = await shim('?scenario=site');
+    expect(await c.syncSpaces.leaseQuery('any')).toEqual({ held: false });
+  });
+  it('?lease=held:Pixel%209 reports another device and lets the takeover succeed', async () => {
+    const c = await shim('?scenario=site&lease=held%3APixel%209');
+    expect(await c.syncSpaces.leaseQuery('wb-past-1')).toEqual({ held: true, device: 'Pixel 9', self: false, source: 'workbench' });
+    expect(await c.syncSpaces.leaseTakeover('wb-past-1')).toEqual({ outcome: 'acquired' });
+    expect(await c.syncSpaces.leaseForce('wb-past-1')).toEqual({ ok: true });
+  });
+});

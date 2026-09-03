@@ -150,6 +150,12 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // (main/preload.ts), not unbuilt features, so they belong here and not in
   // mock-only.ts.
   'on.statusData', 'modes.get', 'modes.set',
+  // Promo switches (Task 4) — ?remote= / ?lease= — real preload channels
+  // (remote:, syncSpaces.lease*), hand-written so a filmed take shows the QR/
+  // takeover states on demand instead of whatever the catch-all's [] renders as.
+  'remote.getConfig', 'remote.setConfig', 'remote.setPassword', 'remote.detectTailscale',
+  'remote.getClientCount', 'remote.getClientList', 'remote.disconnectClient',
+  'syncSpaces.leaseQuery', 'syncSpaces.leaseTakeover', 'syncSpaces.leaseForce',
 ];
 
 const warned = new Set<string>();
@@ -1039,6 +1045,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     syncNow: async () => ({ ok: true }),
     stopProject: async () => ({ ok: true }),
     renameProject: async () => ({ ok: true }),
+    // Promo: the conversation-lease gate App.tsx runs before a resume.
+    leaseQuery: async () => leaseHolder ? { held: true, device: leaseHolder, self: false, source: 'workbench' } : { held: false },
+    leaseTakeover: async () => ({ outcome: 'acquired' as const }),
+    leaseForce: async () => ({ ok: true }),
   };
 
   // MOCK_ONLY — the LOCAL-folder half of the same field, mirroring how
@@ -1105,6 +1115,31 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       return { ok: true as const, messages, hasMore: start > 0 };
     },
   };
+
+  // Promo switches (dev-only, like ?signedIn=1). `?remote=setup|connected` makes
+  // the Settings → Remote Access popup render a real state instead of the
+  // catch-all's [] (which reads as "Disabled"); `?lease=held:<device>` makes a
+  // resume raise the "active on another device" takeover dialog.
+  const remoteSwitch = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('remote') : null;
+  const leaseSwitch = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('lease') : null;
+  const leaseHolder = leaseSwitch?.startsWith('held:') ? leaseSwitch.slice(5) : null;
+
+  // Shapes: SettingsPanel.tsx RemoteConfig / TailscaleInfo / ClientInfo.
+  const remoteClients = remoteSwitch === 'connected'
+    ? [{ id: 'c-phone', ip: '100.92.14.9', connectedAt: Date.now() - 600_000 }] : [];
+  let remoteConfig = { enabled: true, port: 7842, hasPassword: true, trustTailscale: true, keepAwakeHours: 4, clientCount: remoteClients.length };
+  // Ns<'remote'> (Partial<Window['claude']['remote']>) rejects this literal: the real
+  // setConfig/setPassword resolve to void, but the mock returns the updated config so
+  // a filmed take can show the change take effect without a second round trip.
+  const remote: Record<string, (...a: any[]) => Promise<unknown>> | undefined = remoteSwitch ? {
+    getConfig: async () => remoteConfig,
+    setConfig: async (updates: Partial<typeof remoteConfig>) => { remoteConfig = { ...remoteConfig, ...updates }; return remoteConfig; },
+    setPassword: async () => { remoteConfig = { ...remoteConfig, hasPassword: true }; return remoteConfig; },
+    detectTailscale: async () => ({ installed: true, connected: true, ip: '100.92.14.3', hostname: 'destin-laptop', url: 'http://destin-laptop:7842' }),
+    getClientCount: async () => remoteClients.length,
+    getClientList: async () => remoteClients,
+    disconnectClient: async () => undefined,
+  } : undefined;
 
   // Signed OUT is the honest default, and the `[]` catch-all gets it backwards:
   // account.signedIn() returning `[]` is TRUTHY, and account.user() returning
@@ -1708,6 +1743,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade,
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
 }
