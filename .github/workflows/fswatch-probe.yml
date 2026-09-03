@@ -1,0 +1,57 @@
+name: fswatch probe (macOS investigation)
+
+# TEMPORARY instrument for the recurring macOS watcher failure
+# (docs/active/investigations/2026-09-01-sync-engine-debounce-macos-flake.md).
+# Deliberately dependency-free so a run costs seconds, not the ~6 minutes a
+# full Desktop CI macOS leg costs — the investigation needs many iterations.
+# Delete once the cause is known.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/macos-fswatch]
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with: { node-version: 22 }
+
+      - name: System limits
+        run: |
+          echo "cpus: $(node -e 'console.log(require("os").cpus().length)')"
+          echo "tmpdir: $(node -e 'console.log(require("os").tmpdir())')"
+          echo "ulimit -n: $(ulimit -n)"
+          uname -a
+          if [ "$RUNNER_OS" = "macOS" ]; then sysctl kern.maxfiles kern.maxfilesperproc; fi
+
+      - name: A — baseline, one process, create
+        run: node scripts/diag/fswatch-probe.mjs --trials 100 || true
+
+      - name: B — baseline, one process, modify existing file
+        run: node scripts/diag/fswatch-probe.mjs --trials 100 --op modify || true
+
+      - name: C — 12 concurrent processes
+        run: node scripts/diag/fswatch-probe.mjs --procs 12 --trials 30 || true
+
+      - name: D — 12 concurrent processes under CPU contention
+        run: node scripts/diag/fswatch-probe.mjs --procs 12 --trials 30 --cpu 8 || true
+
+      - name: E — many live watchers in one process
+        run: node scripts/diag/fswatch-probe.mjs --trials 50 --watchers 200 || true
+
+      - name: F — the real test, in isolation, 10x
+        run: |
+          npm ci
+          for i in $(seq 1 10); do
+            npx vitest run tests/git/git-watcher.test.ts 2>&1 | grep -E "Tests  " || true
+          done
