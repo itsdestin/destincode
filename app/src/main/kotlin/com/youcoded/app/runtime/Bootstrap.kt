@@ -1112,11 +1112,12 @@ class Bootstrap(internal val context: Context) {
         // Deploy CLAUDE.md instruction
         deployAutoTitleInstruction()
 
-        // Deploy usage-fetch.js to ~/.claude-mobile/ for cache population
-        val usageFetchDest = File(mobileDir, "usage-fetch.js")
-        context.assets.open("usage-fetch.js").use { input ->
-            usageFetchDest.outputStream().use { output -> input.copyTo(output) }
-        }
+        // Legal: usage-fetch.js (read the Claude.ai OAuth token, called Anthropic's
+        // usage API) is no longer shipped — Anthropic's Claude Code terms forbid
+        // third-party apps from using that token. Remove the copy earlier builds
+        // deployed so no token-reading code is left on the device; nothing runs
+        // it any more. Rate-limit figures now come from statusline.sh below.
+        File(mobileDir, "usage-fetch.js").delete()
 
         // Deploy statusline.sh to ~/.claude-mobile/ for session stats + context %
         val statuslineDest = File(mobileDir, "statusline.sh")

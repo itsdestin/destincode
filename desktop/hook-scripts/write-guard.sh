@@ -39,7 +39,6 @@ if [[ "$FILE_PATH" != *"/memory/"* ]] && \
    [[ "$FILE_PATH" != *"installed_plugins.json"* ]] && \
    [[ "$FILE_PATH" != *"settings.local.json"* ]] && \
    [[ "$FILE_PATH" != *"statusline.sh"* ]] && \
-   [[ "$FILE_PATH" != *"usage-fetch.js"* ]] && \
    [[ "$FILE_PATH" != *"/mcp-servers/"* ]] && \
    [[ "$FILE_PATH" != *"\\mcp-servers\\"* ]] && \
    [[ "$FILE_PATH" != *"check-inbox.sh"* ]] && \
