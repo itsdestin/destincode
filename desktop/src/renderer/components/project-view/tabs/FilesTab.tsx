@@ -131,8 +131,36 @@ import { Button, EmptyState } from '../../ui';
 // content-search groups already use. Module scope, NOT inside the component: a
 // component declared in a render body gets a fresh identity every render, which
 // remounts every row inside it and drops keyboard focus mid-scroll.
-function ListBox({ children }: { children: React.ReactNode }) {
-  return <div className="rounded-lg border border-edge-dim overflow-hidden">{children}</div>;
+// The rounded box the list-view rows sit in.
+//
+// `scrolls` decides WHICH element scrolls, and it is not cosmetic:
+//  - true (plain folder browsing, where this box is the only thing in the
+//    column): the box keeps its default flex-shrink, so it takes the height
+//    available and scrolls its own rows. The scrollbar then draws INSIDE the
+//    rounded border, against the rows it moves. Reported 2026-09-03: with the
+//    column scrolling instead, the bar sat in the gutter outside the border and
+//    read as belonging to nothing.
+//  - false (search results, where headers and the content-match list stack
+//    above and below it): the box takes its natural height with shrink-0 and
+//    the COLUMN scrolls, so all the sections move together. Without shrink-0 it
+//    would collapse to the column's height and clip its own rows with no
+//    scrollbar anywhere — measured at 1440x560: 9 rows in the DOM, 3 visible.
+// max-sm keeps both out of the way: below 640px the whole page scrolls, and a
+// second scrolling region inside it would trap the gesture.
+function ListBox({ children, scrolls }: { children: React.ReactNode; scrolls?: boolean }) {
+  if (!scrolls) return <div className="shrink-0 rounded-lg border border-edge-dim overflow-hidden">{children}</div>;
+  // TWO elements, deliberately. Chromium paints a scrollbar in its own gutter,
+  // which is NOT clipped by the scrolling element's own border-radius — so with
+  // the border and the scrolling on one div the thumb's square end ran over the
+  // rounded corners (reported 2026-09-03, "still overlaps the edge of the
+  // container when scrolled all the way up/down"). An ANCESTOR's rounded
+  // overflow-hidden does clip a descendant's scrollbar, so the border and the
+  // radius live on the outer div and the scrolling happens inside it.
+  return (
+    <div className="min-h-0 flex flex-col rounded-lg border border-edge-dim overflow-hidden">
+      <div className="min-h-0 overflow-y-auto max-sm:overflow-visible">{children}</div>
+    </div>
+  );
 }
 
 // Tiny per-type glyph for the folder-card filename list — one icon per
@@ -460,7 +488,7 @@ export function FilesTab({
   const isList = view === 'list';
   // Full-bleed blocks (empty states, section headers, the content-hit list) span
   // every grid column in grid view; in the list's flex column they're just w-full.
-  const fullW = isList ? 'w-full' : 'col-span-full';
+  const fullW = isList ? 'w-full shrink-0' : 'col-span-full';
   // Shared row shell. `border-b … last:border-b-0` draws the hairlines INSIDE
   // the rounded box that wraps the rows, so the bottom edge stays clean.
   const ROW_CLS = 'w-full flex items-center gap-2.5 px-3 py-2 text-left min-w-0 '
@@ -638,7 +666,8 @@ export function FilesTab({
       {/* List view is a plain column — no card hover-lift, so it needs none of
           the p-2/-m-2 overflow room the grid does. */}
       <div className={isList
-        ? 'flex-1 overflow-auto max-sm:overflow-visible flex flex-col gap-2 content-start'
+        ? `flex-1 min-h-0 flex flex-col gap-2 content-start max-sm:overflow-visible ${
+            flat ? 'overflow-auto' : 'overflow-hidden'}`
         : 'flex-1 overflow-auto max-sm:overflow-visible grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2'}>
         {flat
           ? (
@@ -718,7 +747,7 @@ export function FilesTab({
           : isList
           ? (
             // Same order as the cards: loose files first, then subfolders.
-            <ListBox>
+            <ListBox scrolls>
               {dirView.files.map(renderFileRow)}
               {dirView.folders.map(renderFolderRow)}
             </ListBox>

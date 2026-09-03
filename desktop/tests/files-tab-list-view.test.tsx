@@ -30,12 +30,12 @@ const FILES = [
 
 const project = { id: 'p1', path: '/proj', name: 'Proj' } as any;
 
-function renderTab(view: 'grid' | 'list') {
+function renderTab(view: 'grid' | 'list', search = '') {
   return render(
     <ArtifactProvider value={{ state: { activeArtifactBySession: {} } as any, dispatch: vi.fn() }}>
       <FilesTab
         project={project}
-        search=""
+        search={search}
         types={new Set()}
         sortBy="name"
         view={view}
@@ -63,6 +63,7 @@ beforeEach(() => {
       watchProject: () => Promise.reject(new Error('no watcher in tests')),
       get: () => Promise.resolve({ ok: false }),
       readBinary: () => Promise.resolve({ ok: false }),
+      searchContent: () => Promise.resolve({ ok: true, hits: [] }),
     },
   };
 });
@@ -90,6 +91,54 @@ describe('FilesTab list view', () => {
     const titles = [...container.querySelectorAll('button[title]')].map((b) => b.getAttribute('title'));
     expect(titles.indexOf('chart.png')).toBeLessThan(titles.indexOf('docs'));
     expect(titles.indexOf('notes.md')).toBeLessThan(titles.indexOf('docs'));
+  });
+
+  // Which element scrolls, and why it matters. Both halves were live findings
+  // on 2026-09-03, in this order:
+  //   1. "there are no folders appearing in list view… or maybe it just isnt
+  //      scrollable" — the box had taken the column's height and clipped every
+  //      row past the fold (folders draw last), and the column saw no overflow
+  //      so no scrollbar appeared. Measured at 1440x560: 9 rows, 3 visible.
+  //   2. "this scrollbar is weird and sits outside the container it scrolls
+  //      through" — the fix for (1) made the COLUMN scroll, which drew the bar
+  //      in the gutter beside the rounded border instead of against the rows.
+  // Browsing: the box scrolls itself, bar inside the border. Searching: the box
+  // is natural height and the column scrolls, so headers, name matches and
+  // content matches move as one. jsdom does no layout, so classes are the pin.
+  const rowParent = (container: HTMLElement) =>
+    container.querySelector('button[title="notes.md"]')!.parentElement!;
+
+  it('scrolls inside its own border while browsing folders', async () => {
+    const { container, findByTitle } = renderTab('list');
+    await findByTitle('docs');
+    const scroller = rowParent(container);
+    expect(scroller.className).toContain('overflow-y-auto');
+    // shrink-0 here would stop it taking the available height, so the COLUMN
+    // would scroll again and the bar would leave the border.
+    expect(scroller.className).not.toContain('shrink-0');
+  });
+
+  it('wraps the scroller in the rounded clip, so the bar cannot cross the corners', async () => {
+    // Chromium paints a scrollbar in a gutter that its OWN border-radius does
+    // not clip, so with the border and the scrolling on one element the thumb
+    // ran over the rounded corners at the ends of its travel. An ancestor's
+    // rounded overflow-hidden does clip it — hence two elements, not one.
+    const { container, findByTitle } = renderTab('list');
+    await findByTitle('docs');
+    const wrap = rowParent(container).parentElement!;
+    expect(wrap.className).toContain('rounded-lg');
+    expect(wrap.className).toContain('overflow-hidden');
+    expect(wrap.className).toContain('border');
+  });
+
+  it('hands scrolling back to the column when searching', async () => {
+    const { container, findByTitle } = renderTab('list', 'notes');
+    await findByTitle('notes.md');
+    const box = rowParent(container);
+    // Natural height: the name matches, their header and the content matches
+    // below have to scroll together, not each in their own little window.
+    expect(box.className).toContain('shrink-0');
+    expect(box.className).not.toContain('overflow-y-auto');
   });
 
   it('draws cards, not rows, in grid view', async () => {
