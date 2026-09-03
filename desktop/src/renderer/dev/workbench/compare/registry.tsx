@@ -66,6 +66,12 @@ import {
   type PermissionModeDef,
 } from './permission-modes';
 import type { CompareSurface } from './types';
+// session-strip-motion / session-switch-arrival: the REAL SessionStrip in a
+// demo host, so its motion is felt rather than watched. Every round has been
+// picked (2026-09-02) and each candidate now renders what shipped; they once
+// differed only in a data-motion / data-arrival attribute the host set — a
+// review scaffold in globals.css, since deleted — never in code.
+import { SessionStripMotionDemo } from '../mockups/SessionStripMotion';
 // The REAL derivation the shipping card will use — a candidate that hardcoded
 // its options would be comparing wording against something that cannot happen.
 import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
@@ -4344,6 +4350,236 @@ function PresentRefTable() {
 
 const ALL_SURFACES: CompareSurface[] = [
   {
+    id: 'session-strip-motion',
+    label: 'Session strip — motion',
+    question: 'How fast, and on what curve, should a click open a name, a hover peek it, and a drag move a pill?',
+    frame: 'canvas',
+    // FLUID: the strip is a wide, short thing that lives across the whole
+    // header. Judged at the width the page can give it, panes stacked.
+    paneWidth: { min: 460, max: 1400 },
+    rounds: [
+      {
+        n: 1,
+        basis: 'Rebuilt 2026-09-01 after Destin rejected the first cut as "much too bouncy/aggressive". No candidate overshoots; they differ only in speed and curve. The mechanics (peek stays open through a click, the pill rides under the cursor, release glides) are the same in all three.',
+        candidates: [
+          {
+            id: 'settled',
+            label: 'Settled',
+            note: 'Decelerates fast and stops dead: 150ms hover, 200ms name reveal. NOT PICKED (2026-09-02); the treatment is gone and this renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'crisp',
+            label: 'Crisp',
+            note: 'Same curve, a third quicker: 100ms hover, 140ms reveal. NOT PICKED (2026-09-02); the treatment is gone and this renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'soft',
+            label: 'Soft',
+            note: 'A plain ease and a little longer: 180ms hover, 260ms reveal. PICKED 2026-09-02 ("i like soft, but it will need to be tuned/repaired a bit") — now the :root values.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'Destin, 2026-09-01, on R1: "I want this to work a little more like chrome, where the new session is selected right when I click the new session pill and begin to drag … the old session would collapse to status dot and new session would expand right as drag begins." Three answers to WHEN the switch happens; the pill in hand now floats over the row so the row can reshape underneath it in all three.',
+        candidates: [
+          {
+            id: 'press',
+            label: 'Switch on press',
+            note: 'The session switches the instant you press, like a Chrome tab: the old name collapses, the pressed one opens, the conversation changes underneath. PICKED 2026-09-02 — now the only behaviour.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'press-dot',
+            label: 'Switch on press, name on drop',
+            note: 'Switches on press too, but the pill in hand stays a dot while you drag; its name opens where you let go. NOT PICKED (2026-09-02); removed, renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'release',
+            label: 'Switch on release',
+            note: 'Nothing changes until you let go: the row keeps its shape through the drag, then the dropped pill becomes the active one. NOT PICKED (2026-09-02); removed, renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 3,
+        basis: 'Destin picked Soft (R1) and Press (R2) on 2026-09-02, both with "it\'s jank / needs tuning". The merge, tuned: reveals and hovers on Soft\'s plain ease; the dots stepping aside for a dragged pill still LEAD on the fast-deceleration curve (a gentle start there left the pill over a dot); and the window that arms the label transitions now reads the durations off the stylesheet — fixed at 360ms it closed before Soft\'s badge (260 + 180ms) had finished opening, so the badge popped.',
+        candidates: [
+          {
+            id: 'soft-press',
+            label: 'Soft + press, tuned',
+            note: 'Switch on press, 180ms hover, 260ms reveal, a "YouCoded · Coder" badge opening after the name, drag with dots sliding aside early. Superseded by R4 (2026-09-02); renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 4,
+        basis: 'Destin, 2026-09-02, on R3: "eliminate the \'youcoded - coder\' tags in session names entirely. they still cause a bit of visual jank. we should instead have labels next to the project folder label in the session switcher dropdown … keep the model/brand icons used on other model surfaces. also dots still keep sliding under the selected pill." Two changes: the pill is its dot and its name, nothing else — the runtime and model moved under the name in the All Sessions menu ("Claude Code · Sonnet", "YouCoded Coder · Qwen3 Coder") with the brand mark the status bar chip uses; and a dot no longer slides aside for a dragged pill, it hops — fades out where it is, moves while invisible, fades in where it now belongs.',
+        candidates: [
+          {
+            id: 'soft-press-hop',
+            label: 'Soft + press, no tag, dots hop',
+            note: 'The open name stayed in hand and each dot hopped the whole pill\'s width. Destin, 2026-09-02: "this is better, but the interaction between the selected moving pill and the other dots/sessions still feels janky." Superseded by R5; renders what ships.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 5,
+        basis: 'Destin, 2026-09-02, on R4: "i want to keep the fully expanded name. the problem is that the dragged session kept visibly overlapping dots before they appeared to begin to move. it would be fine if they teleport or fade in/fade out as long as they dont visually touch the dragged pill." (A round with a dot in hand was built and withdrawn.) A first cut hid any dot within a few px of the pill; Destin, 2026-09-03: "too much empty space on either side of the dragged chip" — and it was measurable: a hidden dot is a hole the width of a dot, on one side or the other, whenever the pill is over it. So the dot FLOWS: as the pill covers a dot\'s space the dot shrinks towards its far edge, keeping the row gap clear of the leading edge, while a ghost of it grows behind the pill at the spot it will land; once covered whole it takes over from the ghost at full size. Measured: 2–4px mean gap on both sides, 0px contact in every frame.',
+        candidates: [
+          {
+            id: 'name-flow',
+            label: 'Name in hand · dots flow around it',
+            note: 'Drag a name along the row: the dot ahead squeezes down as the pill reaches it and swells up behind it as it passes; a wide neighbour still slides aside. Superseded by R6 (2026-09-03); renders what ships.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 6,
+        basis: 'Destin, 2026-09-03, on R5: "this is MUCH better … however, it still bugs out a bit when the chip is released, and i cant seem to drag it to be the leftmost or rightmost session. it should also stop moving at the left/right boundaries of the outer container rather than sliding past." Three fixes: the pill in hand is clamped to the row of pills (the clamp had stopped reaching the screen); a dot at either end now counts as passed 1px before its far edge, which the clamped pill can reach; and a drop no longer disturbs the row — the flow keeps running while the dropped pill glides home, the row keeps the drag\'s layout until the cursor leaves the strip, and no hover preview opens until the hand has moved 8px.',
+        candidates: [
+          {
+            id: 'name-flow-2',
+            label: 'Flow · clean release · reaches both ends',
+            note: 'Superseded by R7 (2026-09-03); renders what ships. Two more bugs at R6: the row was packed wider than the strip and the active name squeezed, so a drag parked every dot 25px off; and reaching for the first slot past the pane\'s edge tore the pill off.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 7,
+        basis: 'Destin, 2026-09-03, on R6: "i still cant drag a session into the leftmost position, and they still bug out a little on release." Both measured, neither in the motion. (1) The packer was handed the wrapper\'s full width — the strip\'s own padding included — and never knew about the "+N" chip, so a full row was packed ~37px too wide; the active pill, the one flex item allowed to shrink, rendered 25px narrower than the width the drag froze, every dot yielded 25px too far, and all of them snapped back on release. A second, smaller version of the same thing: the packer reserved ceil(text)+slack, 2-3px more than a pill ever renders at. The packer now packs into the room the strip really has and a pill\'s reserved width IS its rendered width — a dot lands exactly one gap from the dropped pill, and nothing else moves at the drop (measured 0px). (2) The tear-off fired on the cursor leaving the window SIDEWAYS; reaching for the first slot overshoots past the edge, which spawned a window and snapped the pill home. Sideways never tears off now, as in Chrome — only above or below.',
+        candidates: [
+          {
+            id: 'name-flow-3',
+            label: 'Flow · real widths · sideways never tears off',
+            note: 'Superseded by R8 (2026-09-03); renders what ships. The drop still travelled up to a whole dot: a dot counted as passed only 1px before its far edge.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 8,
+        basis: 'Destin, 2026-09-03, on R7: "still janky on release, still doesn\'t always work when i release at the leftmost edge (it moves back rightward a bit …)". The final position comes from where the PILL is, never the cursor; the grab point was not it. The cause was the yield line: a dot counted as passed only when the pill had covered all but 1px of it (−27), so a release with the pill over 26 of a dot\'s 28px was not a pass and the pill glided back a whole pitch — and at the row\'s end, where the clamped pill can reach the far edge by exactly 1px, a hand letting go a few px short landed second and "moved back rightward". Now a dot is passed at its CENTRE, as in Chrome (−14): the drop travels at most half a dot, and the end slot has 13px of margin instead of 1. To make that swap invisible, a crossed dot always has two images — at its old spot and its new one — whose sizes sum to one, on both sides of the swap. Two things the probe found on the way: the row-as-drawn was read from scaled rects, which fired the yield a dot late (now read from layout positions); and in a full strip a hover peek pushed the row past its box, squeezing the active name and popping it back on press (a peek now opens only into the room the strip has free).',
+        candidates: [
+          {
+            id: 'name-flow-4',
+            label: 'Flow · swap at the centre · drop travels half a dot',
+            note: 'Superseded by R9 (2026-09-03); renders what ships. The row still shifted and came back after a drop: the hand, still moving, drifted onto the next dot and its peek opened and closed.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 9,
+        basis: 'Destin, 2026-09-03, on R8: "its still jumping/glitching back and forth on release before settling in the final position". Never reproduced with a cursor that holds still after release; reproduced at once with one that keeps moving like a hand (the probe\'s AFTER=hand): the hand drifts onto the next dot, its name peeks open, the centred row widens and shifts 5px, then the peek closes as the hand leaves and the row comes back — all inside the drop\'s own settle. A peek now opens only after the cursor has RESTED on a dot for 150ms (an open peek still follows the cursor at once), so a hand passing over dots never widens the row.',
+        candidates: [
+          {
+            id: 'name-flow-5',
+            label: 'Flow · a peek waits for the hand to rest',
+            note: 'Superseded by R10 (2026-09-03); renders what ships. A hand rocking across a swap point still flickered the dot: its box moved a frame before the flow resized it.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 10,
+        basis: 'Destin, 2026-09-03, on R9: "stilll janky". Reproduced with a cursor that ROCKS ±7px at the swap point (the probe\'s WOBBLE), which no earlier probe did and every hand does: a yield is a React commit that moves the dot\'s box one pill-width across, and the flow that sizes its two images ran a frame later in the rAF loop — so every crossing painted one frame with the dot doubled on one side of the pill and absent on the other, several times a second while the hand hunted for the spot. And at the drop the dots kept their flow scale but lost the transform that applied it, so a half-shrunk dot popped to full size under the gliding pill (10px of contact) while its ghost was still shrinking. The flow now also runs as a layout effect on every commit that moves a box or lands the pill — after the DOM changes, before paint — and the dots keep the flow\'s scale through the settle. Probed with wobble and a moving hand at three spots: no dot\'s visible size changes by more than 2px between frames, 0px contact.',
+        candidates: [
+          {
+            id: 'name-flow-6',
+            label: 'Flow · the swap and the sizing land in one frame',
+            note: 'Superseded by R11 (2026-09-03); renders what ships. The drag visuals hung on a ref that pointerup flipped before the drop was committed: a hand that lifts while moving saw the pill snap home and then jump to its slot.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 11,
+        basis: 'Destin, 2026-09-03, on R10: "its STILL jumping around the switcher on release. you\'re missing something here. try harder and evaluate more thoroughly until it\'s a smooth release under all conditions." So: a randomised sweep (scripts/ui-review/drag-fuzz.mjs) — 20-24 drags in a row on one page, mouse and touch, at his screen\'s 1.5x scale with the frame-rate cap lifted, hand-like paths, grabs anywhere, wobble, releases mid-motion, drags begun inside the press reflow, hands that keep moving — scored per release on contact, size continuity, reversal, anything-else-moving and blink. It found what no probe had: the twin and the step-aside were rendered off the isDragging REF, which pointerup flips at once while the drop is committed after an IPC round trip — the last pointermove\'s own render landed in that gap whenever the hand lifted while still moving (a touchpad, a finger always does), unmounted the twin and snapped the pill to its ORIGIN, and the commit then jumped everything to the new order (116px on touch). Five more behind it: dots were given a FLIP glide at the drop (a covered dot popped to full size under the settling pill and slid 128px); yields were judged from a centre placed with the settled width while the twin was still opening (dots yielded 60px early); the post-drop peek lock lifted after 8px, so a resting hand still opened a peek half a second later; the old active pill, still closing, was flowed as a dot (a 77px ghost of its name); a tap leaves a sticky hover under the finger, so a dot opened its peek and stayed 56px wide through the next drag. All fixed; the deck pane now runs with the workbench\'s fake IPC latency at 0, as the app does. After: 96 of 96 randomised releases clean on every check.',
+        candidates: [
+          {
+            id: 'name-flow-7',
+            label: 'Flow · release holds until the drop lands',
+            note: 'What ships. Let go the way you actually do — mid-motion, on the touchpad, on the screen with a finger. The pill goes only where it is: no snap home, no second jump.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'session-switch-arrival',
+    label: 'Session switch — the conversation arrives',
+    question: 'When you switch sessions, how does the incoming conversation appear?',
+    frame: 'canvas',
+    paneWidth: { min: 460, max: 1400 },
+    rounds: [
+      {
+        n: 1,
+        basis: 'Spec §4.2: one animated element, never per-bubble; the outgoing conversation is never animated. Three arrivals on the Settled strip.',
+        candidates: [
+          {
+            id: 'lift',
+            label: 'Fade and lift',
+            note: 'The conversation fades in while rising 6px. Kept as the baseline; fade-only and cut were removed after R1 ("i want to try a few slightly more interesting/bouncy options", 2026-09-02).',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'fade',
+            label: 'Fade only',
+            note: 'The same fade with no movement. NOT PICKED (2026-09-02); removed, renders the baseline.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'cut',
+            label: 'Cut',
+            note: 'No animation — the conversation is simply there. NOT PICKED (2026-09-02); removed, renders the baseline.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'Destin, 2026-09-02, on R1: "i want to try a few slightly more interesting/bouncy options." Overshoot is fine here — it is on the transform of ONE element, which moves nothing but itself; the strip\'s no-overshoot rule is about width-like properties. Same 300ms-ish length; they differ in what moves.',
+        candidates: [
+          {
+            id: 'lift',
+            label: 'Fade and lift',
+            note: 'Fades in while rising 6px on the plain ease, 300ms. NOT PICKED (2026-09-02); removed, renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'spring',
+            label: 'Spring up',
+            note: 'Rises 14px and overshoots a touch before settling, while fading in. 380ms. PICKED 2026-09-02 — now the only arrival.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'grow',
+            label: 'Grow in',
+            note: 'Starts a hair smaller (96%) and springs to size while fading in. NOT PICKED (2026-09-02); removed, renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+          {
+            id: 'slide',
+            label: 'Slide in',
+            note: 'Comes in from the right by 32px with a soft overshoot. NOT PICKED (2026-09-02); removed, renders what shipped.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: 'close-prompt-body',
     label: 'Close session — body',
     question: 'How should the collapsed tags/note summary and Mark complete sit together?',
@@ -5130,7 +5366,7 @@ const ALL_SURFACES: CompareSurface[] = [
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'chatsearch-present';
+const ACTIVE_FIRST = 'session-strip-motion';
 
 export const COMPARE_SURFACES: CompareSurface[] = [
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),

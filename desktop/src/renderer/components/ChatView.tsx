@@ -21,6 +21,7 @@ import { useObservedRef } from '../hooks/use-observed-ref';
 import { useEntryFolding } from '../hooks/use-entry-folding';
 import { useAttentionClassifier } from '../hooks/useAttentionClassifier';
 import { useTheme } from '../state/theme-context';
+import { useOneShotWindow } from '../hooks/use-one-shot-window';
 import { useArtifact } from '../state/ArtifactContext';
 import { SessionDrawer } from './SessionDrawer';
 import { useActiveProject } from '../hooks/useActiveProject';
@@ -73,7 +74,16 @@ interface Props {
 export default function ChatView({ sessionId, visible, sessionActive, cwd, gamePane, provider, onOpenProviderSettings, onCancelQueued, onEditQueued }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
-  const { showTimestamps } = useTheme();
+  const { showTimestamps, reducedEffects } = useTheme();
+
+  // Motion on a SESSION SWITCH only.
+  //  • `sessionActive`, not `visible` — `visible` also flips on the Ctrl+`
+  //    chat↔terminal toggle, which is frequent; a switch is deliberate.
+  //  • the trailing `&& sessionActive` makes it one-directional: the window
+  //    also opens when the pane goes INACTIVE, and this is what suppresses it.
+  //  • `reducedEffects` is folded in here rather than at the class, so the
+  //    timer never even starts when the user has effects off.
+  const arriving = useOneShotWindow(sessionActive) && sessionActive && !reducedEffects;
   // Artifact drawer state — read from ArtifactContext so ChatView reacts to
   // the drawer toggle without needing a prop threaded down from App.tsx.
   const { state: artifactState, dispatch: artifactDispatch } = useArtifact();
@@ -936,7 +946,10 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
               the content no longer starts under the header, it starts under
               the row. */}
           <div ref={scrollContainerRef} className={`chat-scroll flex-1 min-h-0 overflow-y-auto${findOpen ? ' chat-scroll--below-find-row' : ''}`}>
-           <div ref={contentRef}>
+           {/* The arrival class is on the CONTENT wrapper, not the scroller:
+               animating transform on the scroll container would make it a
+               containing block and disturb useStickToBottom's measurements. */}
+           <div ref={contentRef} className={arriving ? 'switch-arrival' : undefined}>
         {/* Paged history: crossing this loads the previous ~30 turns. Rendered
             only while there IS older history, so reaching the beginning of the
             conversation stops the fetching for good. */}

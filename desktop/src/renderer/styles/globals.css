@@ -869,6 +869,69 @@ body[data-mode="buddy-chat"] #theme-bg {
   contain: layout style;
 }
 
+/* Session switch: the incoming conversation arrives as ONE element.
+   Deliberately not per-bubble. On a high-refresh display the frame cost is
+   per-FRAME rather than per-element (see the frame-budget note at the top of
+   tests/animation-frame-budget.test.ts), but a staggered cascade also has to
+   MEASURE which bubbles are on screen first, and a scrolled-back conversation
+   can hold thousands of messages. One element has no cost that scales with
+   transcript length.
+
+   The OUTGOING conversation is not animated: content-visibility has already
+   taken it out of the layout tree, and Chrome does not animate the page you
+   are leaving either. */
+@keyframes switch-arrival {
+  /* "Spring up", picked 2026-09-02 from four arrivals (lift / spring / grow /
+     slide): the conversation rises 14px and overshoots a touch before it
+     settles, fading in as it comes. The curve overshoots ON PURPOSE — it is
+     on the transform of one element, which moves nothing but itself; the
+     strip's no-overshoot rule is about width-like properties. */
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.switch-arrival {
+  animation: switch-arrival var(--dur-switch) cubic-bezier(0.34, 1.56, 0.64, 1) 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch-arrival { animation: none; }
+}
+
+/* Reduce Visual Effects — the app's own toggle, set on <html> by
+   theme-engine.ts. Honoured alongside the OS preference, never instead of it. */
+[data-reduced-effects] .switch-arrival { animation: none; }
+
+/* ── Session pill label (2026-09-01) ─────────────────────────────────────────
+   The label is a clipping box whose max-width animates (pill-label-style.ts);
+   the name inside is laid out ONCE at its full width so it never re-wraps or
+   re-ellipsises mid-animation. Whatever does not fit fades out over the last
+   LABEL_TAIL_PX, the way Chrome fades a tab title — a squeezed active pill and
+   a pill mid-reveal are the same treatment at two moments. The 12px here is
+   LABEL_TAIL_PX in pill-label-style.ts; the test pins them together. */
+.session-pill__label {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 12px), transparent);
+}
+.session-pill__name {
+  display: block;
+  width: max-content;
+  padding-right: 12px;
+  white-space: nowrap;
+}
+
+/* A dot near the pill in hand is NOT DRAWN (2026-09-02). SessionStrip veils
+   any dot within a few px of the dragged pill — hidden at once (no fade out,
+   the pill is arriving), moved while hidden, and shown again only once the
+   pill is clear, when the pill's own opacity transition fades it back in.
+   Destin: "it would be fine if they teleport or fade in/fade out as long as
+   they dont visually touch the dragged pill." !important because the pill's
+   transition list and opacity are set inline. */
+.session-pill--veiled { opacity: 0 !important; transition-duration: 0s !important; }
+
 /* Perf: frame-budget the perpetual Tailwind animations with steps() timing.
    On a high-refresh display, ANY smoothly-animating element makes Chromium
    produce and present a frame at the full refresh rate — measured 2026-07-30 on
@@ -1758,6 +1821,36 @@ pre.yc-code code {
 :root {
   --frame-edge: 10px;
   --frame-corner: 12px;
+  /* ── Motion vocabulary (2026-08-31; Destin picked "Soft" 2026-09-02) ──
+     Three curves and three durations, so related motion in the session
+     strip and on session switch reads as one decision instead of six.
+       --ease-reveal  a plain ease, for things that OPEN: a name revealing,
+                      a hover, a colour. Gentle start, gentle stop.
+       --ease-out     decelerates fast, for things that must LEAD: a wide
+                      neighbour stepping aside for a dragged pill, a hover
+                      scaling up, the All Sessions menu dropping in. (A DOT
+                      stepping aside does not animate at all — it is hidden
+                      while it moves; see .session-pill--veiled.)
+       --ease-settle  a released pill gliding the last few px home.
+     NO OVERSHOOT on any width-like property: a spring on the pill sent the
+     whole row past its destination and back ("much too bouncy/aggressive").
+     Overshoot is allowed on the switch arrival's transform (see
+     @keyframes switch-arrival), which is why its curve is not a token here.
+
+     Deliberately in this theme-independent :root block, NOT in the
+     `[data-theme=...]` palette blocks above: a community theme that only
+     redefines colors must not be able to accidentally drop the app's motion.
+
+     These are for TRANSIENT, gesture-triggered motion only (a click, a
+     hover-in, a session switch). Anything that animates perpetually keeps
+     steps() timing — see the frame-budget note at the top of this file and
+     tests/animation-frame-budget.test.ts. */
+  --ease-reveal: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-settle: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --dur-hover: 180ms;
+  --dur-reveal: 260ms;
+  --dur-switch: 380ms;
   /* Bottom chrome height INCLUDING the soft keyboard. The chrome-glass cutout
      polygon is anchored to the bottom of the layout viewport, which does not
      shrink when the keyboard opens (interactive-widget=resizes-visual) — so a

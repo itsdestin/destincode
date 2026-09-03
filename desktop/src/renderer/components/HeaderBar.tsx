@@ -182,6 +182,10 @@ interface SessionEntry {
   permissionMode: string;
   /** Runtime backend — mirrors SessionInfo.provider. */
   provider?: 'claude' | 'native';
+  /** Native preset and model — mirror SessionInfo; SessionStrip's All Sessions
+   *  menu shows them under the name ("YouCoded Coder · DeepSeek R1"). */
+  harnessId?: string;
+  model?: string;
 }
 
 

@@ -18,6 +18,14 @@ import type { CompareFrame } from './types';
  *  being judged. */
 export const PANE_WIDTH = 360;
 
+/** A surface's width as a range: a fixed number is `{ min: n, max: n }`, none
+ *  is the default. The one place the two shapes of `paneWidth` are reconciled. */
+export function paneWidthRange(w: number | { min: number; max: number } | undefined): { min: number; max: number } {
+  if (w === undefined) return { min: PANE_WIDTH, max: PANE_WIDTH };
+  if (typeof w === 'number') return { min: w, max: w };
+  return { min: Math.min(w.min, w.max), max: Math.max(w.min, w.max) };
+}
+
 export function Frame({ frame, width, children }: {
   frame: CompareFrame; width?: number; children: React.ReactNode;
 }) {

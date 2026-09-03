@@ -14,16 +14,36 @@ export interface SessionMeasurement {
 export interface PackInput {
   sessions: readonly SessionMeasurement[];
   activeId: string | null;
+  /** The room the strip's CONTENT box has for its children — the wrapper's
+   *  width minus the strip's own padding (SessionStrip's stripBudget). Until
+   *  2026-09-03 the wrapper's full width was passed, so a full row was packed
+   *  12px too wide and the active pill (the one flex item allowed to shrink)
+   *  absorbed it: its name rendered 25px narrower than the packer had
+   *  reserved, and a drag — judged against the reserved widths — moved every
+   *  dot 25px too far, which snapped back on release. */
   budget: number;
   gap: number;
   triggerWidth: number;
+  /** Width of the "+N" overflow chip (with its margin), reserved only when
+   *  something overflows — the same squeeze as above, from the other tail
+   *  element the packer did not know about. Default 0 keeps the pure tests. */
+  overflowChipWidth?: number;
 }
 
 export interface PackResult {
   expanded: Set<string>;
   collapsed: string[];
   overflow: string[];
+  /** The room the visible pills were packed into, after the tail reserves.
+   *  What an active pill that does not fit is squeezed to (CSS shrinks it) —
+   *  the strip caps its settled width at this, so the drag geometry and the
+   *  drawn pill agree. */
+  pillBudget: number;
 }
+
+/** Horizontal gap between pills, in CSS px. Matches `gap-0.5` on the strip.
+ *  Shared with drag-order.ts so the two cannot drift apart. */
+export const PILL_GAP = 2;
 
 function sumWithGaps(widths: number[], gap: number): number {
   if (widths.length === 0) return 0;
@@ -32,16 +52,25 @@ function sumWithGaps(widths: number[], gap: number): number {
 
 // Caller guarantees session ids are unique within `sessions`.
 export function packSessions(input: PackInput): PackResult {
-  const { sessions, activeId, budget, gap, triggerWidth } = input;
+  const { budget, gap, triggerWidth, overflowChipWidth = 0 } = input;
+  // Budget available to pills, after reserving the ▾ trigger + one gap to it.
+  const pillBudget = Math.max(0, budget - triggerWidth - gap);
+  const first = packInto(input, pillBudget);
+  if (first.overflow.length === 0 || overflowChipWidth <= 0) return first;
+  // Something overflows, so the "+N" chip will be drawn too: pack again with
+  // its room taken out. Less room can only overflow more, never less, so the
+  // chip stays and one pass is enough.
+  return packInto(input, Math.max(0, pillBudget - overflowChipWidth - gap));
+}
+
+function packInto(input: PackInput, pillBudget: number): PackResult {
+  const { sessions, activeId, gap } = input;
   if (sessions.length === 0) {
-    return { expanded: new Set(), collapsed: [], overflow: [] };
+    return { expanded: new Set(), collapsed: [], overflow: [], pillBudget };
   }
 
   const active = sessions.find(s => s.id === activeId) ?? null;
   const others = sessions.filter(s => s.id !== activeId);
-
-  // Budget available to pills, after reserving the ▾ trigger + one gap to it.
-  const pillBudget = Math.max(0, budget - triggerWidth - gap);
 
   // Always include the active pill. Try expanded first, fall back to collapsed
   // if even its expanded width does not fit.
@@ -60,6 +89,7 @@ export function packSessions(input: PackInput): PackResult {
       expanded: new Set([active.id]),
       collapsed: [],
       overflow: others.map(o => o.id),
+      pillBudget,
     };
   }
 
@@ -90,6 +120,7 @@ export function packSessions(input: PackInput): PackResult {
         expanded: new Set(sessions.map(s => s.id)),
         collapsed: [],
         overflow: [],
+        pillBudget,
       };
     }
   }
@@ -98,6 +129,7 @@ export function packSessions(input: PackInput): PackResult {
     expanded: new Set([active.id]),
     collapsed: collapsedIds,
     overflow: overflowIds,
+    pillBudget,
   };
 }
 
@@ -121,5 +153,5 @@ function greedyCollapsed(
       overflow.push(s.id);
     }
   }
-  return { expanded: new Set(), collapsed, overflow };
+  return { expanded: new Set(), collapsed, overflow, pillBudget: budget };
 }

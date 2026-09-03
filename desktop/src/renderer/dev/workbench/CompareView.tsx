@@ -20,7 +20,7 @@
 import React from 'react';
 import { Select } from '../../components/ui/Select';
 import { COMPARE_SURFACES } from './compare/registry';
-import { Frame, PANE_WIDTH } from './compare/Frame';
+import { Frame, paneWidthRange } from './compare/Frame';
 import type { CompareSurface } from './compare/types';
 
 // Pick history lives in localStorage so a reload — which HMR does constantly —
@@ -158,7 +158,7 @@ export function CompareView() {
           {round.candidates.map((c, i) => {
             const chosen = pickedThisRound === c.id;
             return (
-              <div key={c.id} className="flex flex-col gap-2" style={{ width: surface.paneWidth ?? PANE_WIDTH }}>
+              <div key={c.id} className="flex flex-col gap-2" style={{ width: paneWidthRange(surface.paneWidth).min }}>
                 <div className="flex items-baseline gap-2">
                   <span className="text-3xs font-medium text-fg-muted">{String.fromCharCode(65 + i)}</span>
                   <span className="text-xs text-fg flex-1 min-w-0 truncate">{c.label}</span>
@@ -179,7 +179,7 @@ export function CompareView() {
                     candidate itself — tinting the surface would change the
                     thing being judged. */}
                 <div className={`rounded-lg p-2 ${chosen ? 'ring-2 ring-accent' : ''}`}>
-                  <Frame frame={surface.frame} width={surface.paneWidth}>{c.render()}</Frame>
+                  <Frame frame={surface.frame} width={paneWidthRange(surface.paneWidth).min}>{c.render()}</Frame>
                 </div>
               </div>
             );
