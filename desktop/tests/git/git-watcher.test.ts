@@ -9,6 +9,12 @@ import {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Proving an event does NOT arrive needs a bounded wait; there is no signal for
+// "nothing happened". 800ms is the 300ms debounce plus generous margin for a
+// loaded CI box. Everything that waits for an event that SHOULD arrive uses
+// vi.waitFor instead, so it finishes as soon as the event lands.
+const SETTLE_MS = 800;
+
 function hasGit(): boolean {
   try { execFileSync('git', ['--version'], { stdio: 'ignore' }); return true; } catch { return false; }
 }
@@ -52,9 +58,25 @@ describe('git-watcher', () => {
     await fs.promises.writeFile(path.join(root, '.git', 'index'), 'i1');
     await fs.promises.writeFile(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/other\n');
     await fs.promises.writeFile(path.join(root, '.git', 'index'), 'i2');
-    await wait(700); // debounce is 300ms; fs.watch latency varies by platform
-    expect(events.length).toBe(1);
+    await vi.waitFor(() => expect(events.length).toBe(1));
     expect(events[0]).toEqual({ repoRoot: root });
+    // The point of the debounce: a burst is ONE event, so it has to still be
+    // one after everything has had time to arrive.
+    await wait(SETTLE_MS);
+    expect(events.length).toBe(1);
+  });
+
+  // The test above can no longer distinguish a working watcher from a dead one:
+  // watchGit emits once on subscribe by design (see git-watcher.ts), so it would
+  // pass with fs.watch delivering nothing at all. This is the test that fails if
+  // the watcher itself breaks — the change is made AFTER the subscribe emit has
+  // been drained, so only a live watch can report it.
+  it('reports a change made after the subscribe reconcile has landed', async () => {
+    expect(watchGit(root, 1).ok).toBe(true);
+    await vi.waitFor(() => expect(events.length).toBe(1));
+    events.length = 0;
+    await fs.promises.writeFile(path.join(root, '.git', 'index'), 'later');
+    await vi.waitFor(() => expect(events).toEqual([{ repoRoot: root }]));
   });
 
   it('stops emitting after the last subscriber unwatches', async () => {
@@ -63,7 +85,7 @@ describe('git-watcher', () => {
     unwatchGit(root, 1);
     unwatchGit(root, 2);
     await fs.promises.writeFile(path.join(root, '.git', 'index'), 'x');
-    await wait(500);
+    await wait(SETTLE_MS);
     expect(events).toEqual([]);
   });
 
@@ -71,7 +93,7 @@ describe('git-watcher', () => {
     watchGit(root, 7);
     dropGitSubscriber(7);
     await fs.promises.writeFile(path.join(root, '.git', 'index'), 'x');
-    await wait(500);
+    await wait(SETTLE_MS);
     expect(events).toEqual([]);
   });
 
@@ -114,13 +136,12 @@ describe('git-watcher', () => {
     expect(watchGit(root, 1).ok).toBe(true); // refcount for subscriber 1 is now 2
     unwatchGit(root, 1); // refcount 2 -> 1, entry must still be alive
     await fs.promises.writeFile(path.join(root, '.git', 'index'), 'x1');
-    await wait(500);
-    expect(events.length).toBe(1);
+    await vi.waitFor(() => expect(events.length).toBe(1));
 
     unwatchGit(root, 1); // refcount 1 -> 0, last subscriber gone, entry closes
     events = [];
     await fs.promises.writeFile(path.join(root, '.git', 'index'), 'x2');
-    await wait(500);
+    await wait(SETTLE_MS);
     expect(events).toEqual([]);
   });
 
@@ -134,7 +155,7 @@ describe('git-watcher', () => {
       dropGitSubscriber(5);
       await fs.promises.writeFile(path.join(root, '.git', 'index'), 'x');
       await fs.promises.writeFile(path.join(root2, '.git', 'index'), 'x');
-      await wait(500);
+      await wait(SETTLE_MS);
       expect(events).toEqual([]);
     } finally {
       await fs.promises.rm(root2, { recursive: true, force: true });
@@ -179,8 +200,7 @@ describe.skipIf(!hasGit())('git-watcher (linked worktree, real git)', () => {
     await fs.promises.writeFile(path.join(linkedRoot, 'a.txt'), 'one\ntwo\n');
     sh(linkedRoot, ['add', '.']);
     sh(linkedRoot, ['commit', '-m', 'change from linked worktree']);
-    await wait(700); // debounce is 300ms; fs.watch latency varies by platform
-    expect(events.length).toBeGreaterThanOrEqual(1);
+    await vi.waitFor(() => expect(events.length).toBeGreaterThanOrEqual(1));
     expect(events[0]).toEqual({ repoRoot: linkedRoot });
   });
 });

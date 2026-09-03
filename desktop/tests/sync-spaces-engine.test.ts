@@ -63,10 +63,38 @@ describe('SpaceSyncEngine', () => {
     await engine.stop();
   });
 
+
+  // The debounce test above can no longer tell a live watcher from a dead one:
+  // addSpace() syncs once by design, so it would pass with chokidar delivering
+  // nothing. This is the test that fails if watching itself breaks — the write
+  // happens after the startup sync has landed, so only a real event can cause
+  // the second one.
+  it('syncs a change made after the startup sync has landed', async () => {
+    const t = fakeTransport();
+    const engine = new SpaceSyncEngine(t, { debounceMs: 100, pollMs: 0, onEvent: () => {} });
+    await engine.addSpace({ id: 'project:x', kind: 'project', root: tmp });
+    await drainStartupSync(t);
+    fs.writeFileSync(path.join(tmp, 'later.md'), 'written after the watch is armed');
+    await vi.waitFor(() => expect(t.pushes.length).toBe(1), { timeout: WAIT_MS });
+    await engine.stop();
+  });
+
+// addSpace() deliberately schedules ONE sync (engine.ts — it closes the macOS
+// window where fs.watch has returned but the OS watch is not armed yet, during
+// which changes are dropped entirely). Tests that assert "this change caused NO
+// sync" must let that one land first, or they are really asserting the
+// reconcile away. Draining it keeps them testing the ignore filter, which is
+// what they are for.
+async function drainStartupSync(t: { pushes: unknown[] }): Promise<void> {
+  await vi.waitFor(() => expect(t.pushes.length).toBe(1), { timeout: WAIT_MS });
+  t.pushes.length = 0;
+}
+
   it('ignores changes under .youcoded/ and node_modules/', async () => {
     const t = fakeTransport();
     const engine = new SpaceSyncEngine(t, { debounceMs: 100, pollMs: 0, onEvent: () => {} });
     await engine.addSpace({ id: 'project:x', kind: 'project', root: tmp });
+    await drainStartupSync(t);
     fs.mkdirSync(path.join(tmp, '.youcoded'), { recursive: true });
     fs.writeFileSync(path.join(tmp, '.youcoded', 'sync.log'), 'x');
     fs.mkdirSync(path.join(tmp, 'node_modules'), { recursive: true });
@@ -80,6 +108,7 @@ describe('SpaceSyncEngine', () => {
     const t = fakeTransport();
     const engine = new SpaceSyncEngine(t, { debounceMs: 100, pollMs: 0, onEvent: () => {} });
     await engine.addSpace({ id: 'personal', kind: 'personal', root: tmp });
+    await drainStartupSync(t);
     // cas-write.ts takes a mkdir-based lock (`<file>.json.lock`) around every
     // conversation/registry write and removes it milliseconds later. Chokidar
     // racing that rmdir on Windows throws EPERM, which surfaced to the user as

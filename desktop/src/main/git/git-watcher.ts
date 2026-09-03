@@ -15,6 +15,33 @@ type Emit = (evt: GitWatchEvent) => void;
 
 const DEBOUNCE_MS = 300;
 
+// WHY a reconcile emit on subscribe: on macOS, fs.watch() RETURNS BEFORE THE
+// WATCH IS ARMED. libuv hands the request to a CoreFoundation run loop on
+// another thread, so anything that changes between the call and the arming is
+// never reported — not late, never. Linux (inotify) and Windows
+// (ReadDirectoryChangesW) arm inside the call and have no such window.
+//
+// Measured on a 3-core macOS CI runner under CPU contention, with
+// scripts/diag/fswatch-probe.mjs (bare fs.watch, no app code): 4 of 200 changes
+// written immediately after the call were lost, 0 of 200 when the write came
+// 5ms later, 0 of 200 at 25ms — while Linux lost 0 of 200 at every gap. That is
+// the whole of the recurring macOS CI failure in this file and in
+// sync-spaces-engine, and it is a real defect in the app, not just in a test:
+// a commit made in the instant after a project opens would go unnoticed.
+//
+// There is no "armed" event to wait for. fs.watch has none, and chokidar's
+// 'ready' does not cover it either (that hypothesis was tested and disproven —
+// see the investigation). So rather than trying to observe arming, we make
+// missing the window harmless: subscribing schedules one event through the SAME
+// debounce a real change uses. Consumers re-read git state, exactly as they
+// would for a change they were told about, so a change lost to the window is
+// still acted on. A real change arriving during the debounce coalesces into
+// that one emit rather than adding to it.
+//
+// Unconditional rather than darwin-only on purpose: the cost is one extra git
+// status read per subscribe, and platform-forked behaviour here would mean the
+// path that matters is the one nobody runs locally.
+
 interface Entry {
   watchers: fs.FSWatcher[];
   refs: Map<number, number>; // subscriberId -> refcount
@@ -107,6 +134,9 @@ export function watchGit(repoRoot: string, subscriberId: number): { ok: boolean 
     }
     if (created.watchers.length === 0) return { ok: false };
     entries.set(repoRoot, created);
+    // Close the macOS arming window — see DEBOUNCE_MS above. Must come after
+    // the entry is registered, so an unwatch during the debounce can cancel it.
+    fire();
     entry = created;
   }
   entry.refs.set(subscriberId, (entry.refs.get(subscriberId) ?? 0) + 1);
