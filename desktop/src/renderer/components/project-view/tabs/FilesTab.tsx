@@ -59,6 +59,12 @@ const kindLabel = fileTypeLabel;
 // seg-row sort <select> in ProjectView via this exported key type.
 // 'type' removed 2026-07-23 — the Type FILTER supersedes sorting by type.
 export type FileSortKey = 'name' | 'recent';
+
+// How the file list is drawn: the thumbnail grid (default) or a compact row
+// list. Lifted to ProjectView like `sortBy` so the toolbar toggle can own it.
+// Two modes only — a third "small icons" size was considered and dropped
+// (design deck 2026-09-03, Q-1): it does no job the other two don't already do.
+export type FileViewMode = 'grid' | 'list';
 const fileNameOf = (a: ArtifactRecord) => a.path.split('/').pop() ?? a.path;
 function fileComparator(sortBy: FileSortKey) {
   return (a: ArtifactRecord, b: ArtifactRecord): number => {
@@ -117,18 +123,26 @@ function listDir(artifacts: ArtifactRecord[], dir: string, sortBy: FileSortKey):
 // reads better at the card sizes than the segmented control's default 2.
 // Aliased: detail-tool-icons also exports a (different) FolderIcon used by the
 // Reveal button above.
-import { FolderIcon as FolderCardIcon, DocIcon, ImageIcon, SheetIcon, CodeGlyphIcon } from '../icons';
+import { FolderIcon as FolderCardIcon, DocIcon, ImageIcon, SheetIcon, CodeGlyphIcon, GridViewIcon, ListViewIcon } from '../icons';
 import { ChevronIcon } from '../../Icons';
 import { Button, EmptyState } from '../../ui';
 
+// The rounded box the list-view rows sit in — the same container language the
+// content-search groups already use. Module scope, NOT inside the component: a
+// component declared in a render body gets a fresh identity every render, which
+// remounts every row inside it and drops keyboard focus mid-scroll.
+function ListBox({ children }: { children: React.ReactNode }) {
+  return <div className="rounded-lg border border-edge-dim overflow-hidden">{children}</div>;
+}
+
 // Tiny per-type glyph for the folder-card filename list — one icon per
 // fileTypeGroup, so the list rows read like a miniature file listing.
-function MiniTypeIcon({ path }: { path: string }) {
+function MiniTypeIcon({ path, size = 12 }: { path: string; size?: number }) {
   const group = fileTypeGroup(path);
-  if (group === 'image') return <ImageIcon size={12} />;
-  if (group === 'sheet') return <SheetIcon size={12} />;
-  if (group === 'code') return <CodeGlyphIcon size={12} />;
-  return <DocIcon size={12} />;
+  if (group === 'image') return <ImageIcon size={size} />;
+  if (group === 'sheet') return <SheetIcon size={size} />;
+  if (group === 'code') return <CodeGlyphIcon size={size} />;
+  return <DocIcon size={size} />;
 }
 
 // The folder-tree file browser for one project — search, type filter, sort,
@@ -139,6 +153,8 @@ export function FilesTab({
   search,
   types,
   sortBy,
+  view,
+  onViewChange,
   refreshKey,
   onMutated,
   onCurrentDirChange,
@@ -149,6 +165,13 @@ export function FilesTab({
   // Multi-select type filter; EMPTY set = all types (filter popover).
   types: ReadonlySet<FileTypeGroup>;
   sortBy: FileSortKey;               // filter popover: sort
+  // Grid of thumbnails vs. compact list. Owned by ProjectView (the toolbar
+  // toggle lives on the seg-row next to search) and remembered app-wide, so
+  // every project opens in the view you last chose.
+  view: FileViewMode;
+  // Variant B: the switch is drawn HERE, on the breadcrumb line, so ProjectView
+  // hands down the setter as well as the value.
+  onViewChange: (v: FileViewMode) => void;
   refreshKey: number; // bumped by ProjectView after "+ Add file" to force a reload
   // VESTIGIAL as of 2026-07-23: this fired after the only in-tab sidecar mutation
   // (Exclude, on an external-artifact row) so ProjectView could refetch counts
@@ -429,13 +452,87 @@ export function FilesTab({
     );
   };
 
+  // ── List view ──────────────────────────────────────────────────────────────
+  // Same data, same click target as the cards above — only the drawing differs.
+  // A row is icon + filename + kind + when-it-changed (design deck 2026-09-03,
+  // Q-3a). The last two columns are max-sm:hidden: on a phone the row keeps the
+  // filename, which is the part you're actually reading.
+  const isList = view === 'list';
+  // Full-bleed blocks (empty states, section headers, the content-hit list) span
+  // every grid column in grid view; in the list's flex column they're just w-full.
+  const fullW = isList ? 'w-full' : 'col-span-full';
+  // Shared row shell. `border-b … last:border-b-0` draws the hairlines INSIDE
+  // the rounded box that wraps the rows, so the bottom edge stays clean.
+  const ROW_CLS = 'w-full flex items-center gap-2.5 px-3 py-2 text-left min-w-0 '
+    + 'border-b border-edge-dim last:border-b-0 transition-colors';
+
+  const renderFileRow = (a: ArtifactRecord) => {
+    const filename = a.path.split('/').pop() ?? a.path;
+    const isActive = pvActiveId === a.id;
+    const isDeleted = a.status === 'deleted';
+    // In flat mode (search / type filter) the second column carries the file's
+    // folder instead of its kind — the same swap the cards make, for the same
+    // reason: with no breadcrumb, location is the more useful fact.
+    const secondary = flat && a.path.includes('/')
+      ? a.path.slice(0, a.path.lastIndexOf('/'))
+      : kindLabel(a.path);
+    return (
+      <button
+        key={a.id}
+        type="button"
+        className={`${ROW_CLS} ${isActive ? 'bg-inset text-fg' : 'hover:bg-well'} ${isDeleted ? 'opacity-60' : ''}`}
+        onClick={() => dispatch({ type: 'ACTIVE_ARTIFACT_SET', sessionId: PV_SESSION, artifactId: a.id })}
+        title={isDeleted ? `${a.path}\nDeleted (file is no longer on disk)` : a.path}
+      >
+        <span className={`shrink-0 ${isActive ? 'text-accent' : 'text-fg-muted'}`}>
+          <MiniTypeIcon path={a.path} size={15} />
+        </span>
+        <span className={`flex-1 min-w-0 truncate text-xs font-mono text-fg-2 ${isDeleted ? 'line-through' : ''}`}>
+          {filename}
+        </span>
+        {isDeleted && (
+          <span className="shrink-0 px-1.5 py-0.5 text-3xs font-semibold border border-edge rounded text-fg-muted">
+            deleted
+          </span>
+        )}
+        <span className="max-sm:hidden shrink-0 w-32 truncate text-[10.5px] text-fg-muted">{secondary}</span>
+        <span className="max-sm:hidden shrink-0 w-20 text-right text-[10.5px] text-fg-muted">
+          {relTime(a.lastModified)}
+        </span>
+      </button>
+    );
+  };
+
+  const renderFolderRow = (f: DirFolder) => (
+    <button
+      key={'dir:' + f.path}
+      type="button"
+      className={`${ROW_CLS} hover:bg-well`}
+      onClick={() => setCurrentDir(f.path)}
+      title={f.path}
+    >
+      <span className="shrink-0 text-accent"><FolderCardIcon size={15} strokeWidth={1.5} /></span>
+      <span className="flex-1 min-w-0 truncate text-xs font-mono text-fg-2">{f.name}</span>
+      <span className="max-sm:hidden shrink-0 w-32 truncate text-[10.5px] text-fg-muted">
+        {f.count} file{f.count === 1 ? '' : 's'}
+      </span>
+      {/* A folder has no single modified time — the column stays empty rather
+          than borrowing one file's date and reading as the folder's. */}
+      <span className="max-sm:hidden shrink-0 w-20" />
+    </button>
+  );
+
   const emptyHere = !flat && dirView.folders.length === 0 && dirView.files.length === 0;
 
   return (
     <div className="relative flex flex-col h-full overflow-hidden px-2 sm:px-4 pt-4 pb-4 gap-3 min-w-0 max-sm:h-auto max-sm:overflow-visible">
-      {/* Breadcrumb — folder-browse mode only (search/type-filter flatten the tree). */}
-      {!flat && (
-        <div className="flex items-center gap-1 text-xs shrink-0 flex-wrap min-w-0">
+      {/* Breadcrumb line — folder path on the left, view switch on the right.
+          Rendered even when search/type-filter has flattened the tree (which
+          hides the path itself): the switch has to stay reachable while you
+          search, and a row that disappears under you reads as a bug. */}
+      <div className="flex items-center justify-between gap-3 shrink-0 min-w-0">
+        {!flat ? (
+        <div className="flex items-center gap-1 text-xs flex-wrap min-w-0">
           <button
             type="button"
             onClick={() => setCurrentDir('')}
@@ -460,7 +557,36 @@ export function FilesTab({
             );
           })}
         </div>
-      )}
+        ) : <span />}
+        {/* Minified switch: two bare icon buttons, no pill behind them — this
+            line is quieter than the toolbar row and a filled pill here would
+            outweigh the breadcrumb next to it. The active one is the accent
+            colour rather than an accent fill. */}
+        <div className="shrink-0 flex items-center gap-0.5" role="radiogroup" aria-label="File view">
+          {([
+            { id: 'grid' as const, label: 'Grid view', icon: <GridViewIcon size={14} /> },
+            { id: 'list' as const, label: 'List view', icon: <ListViewIcon size={14} /> },
+          ]).map((v) => {
+            const active = view === v.id;
+            return (
+              <button
+                key={v.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                title={v.label}
+                aria-label={v.label}
+                onClick={() => onViewChange(v.id)}
+                className={`p-1 rounded-md inline-flex items-center justify-center transition-colors ${
+                  active ? 'text-accent bg-inset' : 'text-fg-muted hover:text-fg hover:bg-inset'
+                }`}
+              >
+                {v.icon}
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       {loading && (
         <p className="text-sm text-fg-muted">Loading {noun}…</p>
@@ -509,7 +635,11 @@ export function FilesTab({
           ONE column at 390px, but that makes each card a ~342x176 slab — much
           wider than tall, nothing like the intended card proportion. Two ~165px
           columns read correctly on a phone. */}
-      <div className="flex-1 overflow-auto max-sm:overflow-visible grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2">
+      {/* List view is a plain column — no card hover-lift, so it needs none of
+          the p-2/-m-2 overflow room the grid does. */}
+      <div className={isList
+        ? 'flex-1 overflow-auto max-sm:overflow-visible flex flex-col gap-2 content-start'
+        : 'flex-1 overflow-auto max-sm:overflow-visible grid grid-cols-2 sm:grid-cols-[repeat(auto-fill,minmax(180px,1fr))] gap-3 content-start p-2 -m-2'}>
         {flat
           ? (
             <>
@@ -517,7 +647,7 @@ export function FilesTab({
                   of two bare "(0)" headers over blank space (Destin, 2026-07-23).
                   Same EmptyState + action pattern as the Resume browser. */}
               {noSearchResults && (
-                <div className="col-span-full">
+                <div className={fullW}>
                   <EmptyState
                     message={<>No {noun} match “{search.trim()}”.</>}
                     action={onClearSearch ? { label: 'Clear search', onClick: onClearSearch } : undefined}
@@ -525,11 +655,13 @@ export function FilesTab({
                 </div>
               )}
               {searching && !noSearchResults && (
-                <div className="col-span-full text-[10.5px] uppercase tracking-wider text-fg-muted mb-0.5 px-0.5">
+                <div className={`${fullW} text-[10.5px] uppercase tracking-wider text-fg-muted mb-0.5 px-0.5`}>
                   Matches by file name ({flatResults.length})
                 </div>
               )}
-              {flatResults.map(renderFileCard)}
+              {isList
+                ? <div className={fullW}><ListBox>{flatResults.map(renderFileRow)}</ListBox></div>
+                : flatResults.map(renderFileCard)}
               {searching && !noSearchResults && (() => {
                 const rows = contentRows;
                 // Group + sort BEFORE capping, so the biggest groups survive the cut.
@@ -537,7 +669,7 @@ export function FilesTab({
                 const { groups, shownRows, capped: displayCapped } = capGroups(all, MAX_CONTENT_ROWS);
                 const capped = contentTruncated || displayCapped;
                 return (
-                  <div className="col-span-full min-w-0">
+                  <div className={`${fullW} min-w-0`}>
                     <div className="text-[10.5px] uppercase tracking-wider text-fg-muted mt-2 mb-1.5 px-0.5">
                       Matches by file contents ({shownRows}{capped ? '+' : ''})
                     </div>
@@ -582,6 +714,14 @@ export function FilesTab({
                 );
               })()}
             </>
+          )
+          : isList
+          ? (
+            // Same order as the cards: loose files first, then subfolders.
+            <ListBox>
+              {dirView.files.map(renderFileRow)}
+              {dirView.folders.map(renderFolderRow)}
+            </ListBox>
           )
           : (
             <>
