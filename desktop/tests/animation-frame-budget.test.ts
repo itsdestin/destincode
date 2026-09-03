@@ -276,7 +276,12 @@ describe('motion vocabulary', () => {
     expect(strip).toMatch(/const VEIL_PX = 1;/);
     expect(strip).toMatch(/r\.right > t\.left - VEIL_PX && r\.left < t\.right \+ VEIL_PX/);
     // A dot's step-aside is a jump (it is hidden); a wide neighbour still slides.
-    expect(strip).toMatch(/dragging && isDot \? '0s' : 'var\(--dur-hover\) var\(--ease-out\)'/);
+    expect(strip).toMatch(/\(dragging \|\| settle !== null\) && isDot \? '0s' : 'var\(--dur-hover\) var\(--ease-out\)'/);
+    // The flow's scale stays on the dots THROUGH the settle, and the flow runs
+    // as a layout effect on every commit that moves a box (R9): a yield or a
+    // drop must never paint a frame the rAF loop has not sized yet.
+    expect(strip).toMatch(/settle !== null && isDot\n[\s\S]{0,600}\? 'scale\(var\(--flow, 1\)\)'/);
+    expect(strip).toMatch(/useLayoutEffect\(\(\) => \{\n\s+if \(!flowActive\) return;[\s\S]{0,600}flow\(bar, t, heldId\);/);
     // And the dot FLOWS around the pill (2026-09-03): scaled per frame by the
     // rAF loop, with a ghost at its mirror spot across the pill — two images
     // whose sizes sum to one, on both sides of the yield, so the yield can

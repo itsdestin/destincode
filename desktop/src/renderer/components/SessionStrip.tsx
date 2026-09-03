@@ -1420,6 +1420,27 @@ export default function SessionStrip({
   // Mirror of the offsets for the rAF loop, which reads them every frame.
   const dragOffsetsRef = useRef<ReadonlyMap<string, number>>(EMPTY_OFFSETS);
   dragOffsetsRef.current = dragOffsets;
+  // THE SWAP AND THE FLOW MUST LAND IN ONE FRAME. A yield is a React commit
+  // (the dot's step-aside transform moves its box one pill-width across); the
+  // flow that sizes the dot's two images ran only in the rAF loop below, one
+  // frame later. In between, one frame painted the box at its NEW spot with
+  // the OLD spot's scale and origin, and the ghost — still where the last
+  // frame left it — at that same spot: the dot doubled on one side of the pill
+  // and absent on the other. A hand rocking across the swap line does that
+  // several times a second (probed 2026-09-03 with WOBBLE=7: 12px flicker on
+  // every crossing; Destin, R9: "stilll janky"). So the flow also runs as a
+  // LAYOUT effect on every commit that moves a box or lands the pill — after
+  // the DOM changes, before paint — and the rAF loop only follows the cursor.
+  useLayoutEffect(() => {
+    if (!flowActive) return;
+    const bar = pillBarRef.current;
+    const heldId = dragId ?? settle?.heldId ?? null;
+    if (!bar || heldId === null) return;
+    const twin = bar.querySelector<HTMLElement>(':scope > div[aria-hidden]:not([data-ghost])');
+    const t = twin ? twin.getBoundingClientRect() : pillElement(heldId)?.getBoundingClientRect();
+    if (t) flow(bar, t, heldId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- overId (the yield) and settle (the drop) are the commits that move boxes; flow reads refs
+  }, [flowActive, dragId, overId, settle]);
   // THE DOT FLOWS AROUND THE PILL (2026-09-03). Hiding the dot the pill is
   // passing over leaves its width as a hole beside the pill — always about
   // one dot's worth, ahead or behind depending on when it jumps — and Destin
@@ -1556,7 +1577,7 @@ export default function SessionStrip({
                       // wide neighbour slides on the fast-deceleration curve; a
                       // hover scales on the same curve. Never an overshoot: a
                       // release must not spring.
-                      : `transform ${settle?.deltas.has(s.id) ? 'var(--dur-hover) var(--ease-settle)' : dragging && isDot ? '0s' : 'var(--dur-hover) var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
+                      : `transform ${settle?.deltas.has(s.id) ? 'var(--dur-hover) var(--ease-settle)' : (dragging || settle !== null) && isDot ? '0s' : 'var(--dur-hover) var(--ease-out)'}, border-color var(--dur-hover) var(--ease-reveal), background-color var(--dur-hover) var(--ease-reveal), box-shadow var(--dur-hover) var(--ease-reveal), opacity var(--dur-hover) var(--ease-reveal)`,
                   // Four mutually exclusive transform states: the pill in hand
                   // (under the cursor), a dropped pill gliding home, a neighbour
                   // stepping aside, or a plain hover.
@@ -1570,8 +1591,15 @@ export default function SessionStrip({
                         ? `translateX(${dragOffsets.get(s.id) ?? 0}px) scale(var(--flow, 1))`
                         : dragOffsets.has(s.id)
                           ? `translateX(${dragOffsets.get(s.id)}px)`
-                          : (isHovered && !isActive) ? 'scale(1.02)' : undefined,
-                  transformOrigin: dragging && isDot ? 'var(--flow-origin, center)' : undefined,
+                          : settle !== null && isDot
+                            // Through the settle too: at the drop the dots kept
+                            // `--flow` but lost the transform that applied it, so
+                            // a half-shrunk dot popped to full size under the
+                            // gliding pill while its ghost was still shrinking
+                            // (probed 2026-09-03, R9: 10px of contact at release).
+                            ? 'scale(var(--flow, 1))'
+                            : (isHovered && !isActive) ? 'scale(1.02)' : undefined,
+                  transformOrigin: (dragging || settle !== null) && isDot ? 'var(--flow-origin, center)' : undefined,
                   // The 3px focus outline (globals.css) reads as a bright ring
                   // around the thing you are dragging. Suppressed in hand.
                   zIndex: settle?.heldId === s.id ? 10 : undefined,

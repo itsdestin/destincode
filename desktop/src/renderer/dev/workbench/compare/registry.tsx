@@ -4485,7 +4485,19 @@ const ALL_SURFACES: CompareSurface[] = [
           {
             id: 'name-flow-5',
             label: 'Flow · a peek waits for the hand to rest',
-            note: 'What ships. Let go and keep your hand moving, as you naturally would: nothing on the row moves but the pill settling. Rest on a dot for a moment: its name still peeks.',
+            note: 'Superseded by R10 (2026-09-03); renders what ships. A hand rocking across a swap point still flickered the dot: its box moved a frame before the flow resized it.',
+            render: () => <SessionStripMotionDemo />,
+          },
+        ],
+      },
+      {
+        n: 10,
+        basis: 'Destin, 2026-09-03, on R9: "stilll janky". Reproduced with a cursor that ROCKS ±7px at the swap point (the probe\'s WOBBLE), which no earlier probe did and every hand does: a yield is a React commit that moves the dot\'s box one pill-width across, and the flow that sizes its two images ran a frame later in the rAF loop — so every crossing painted one frame with the dot doubled on one side of the pill and absent on the other, several times a second while the hand hunted for the spot. And at the drop the dots kept their flow scale but lost the transform that applied it, so a half-shrunk dot popped to full size under the gliding pill (10px of contact) while its ghost was still shrinking. The flow now also runs as a layout effect on every commit that moves a box or lands the pill — after the DOM changes, before paint — and the dots keep the flow\'s scale through the settle. Probed with wobble and a moving hand at three spots: no dot\'s visible size changes by more than 2px between frames, 0px contact.',
+        candidates: [
+          {
+            id: 'name-flow-6',
+            label: 'Flow · the swap and the sizing land in one frame',
+            note: 'What ships. Hunt for a spot: rock the pill back and forth over a dot and watch the dot — it should never blink or double. Let go mid-swap: the dot behind the pill grows back as the pill settles, nothing pops.',
             render: () => <SessionStripMotionDemo />,
           },
         ],
