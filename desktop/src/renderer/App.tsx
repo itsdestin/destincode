@@ -32,7 +32,7 @@ import { dispatchSlashCommand, type DispatcherResult } from './state/slash-comma
 import { runNativeSlashAction, routeSlashResult } from './state/native-slash-actions';
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
-import { buildUsageSnapshot, type SubscriptionUsage } from './state/usage-snapshot';
+import { buildUsageSnapshot, pruneExpiredUsage, type SubscriptionUsage } from './state/usage-snapshot';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
@@ -1451,7 +1451,8 @@ function AppInner() {
       lastStatusJsonRef.current = json;
       setStatusData((prev) => ({
         ...prev,
-        usage: data.usage,
+        // A window past its reset time is stale, not current — see pruneExpiredUsage.
+        usage: pruneExpiredUsage(data.usage),
         announcement: data.announcement,
         updateStatus: data.updateStatus,
         syncWarnings: Array.isArray(data.syncWarnings) ? data.syncWarnings : [],

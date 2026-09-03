@@ -10,6 +10,7 @@
 // presentation layer can guard, so the derivation moved out to
 // src/renderer/state/usage-snapshot.ts and is pinned here.
 import { describe, it, expect } from 'vitest';
+import { pruneExpiredUsage } from '../src/renderer/state/usage-snapshot';
 import { buildUsageSnapshot, type UsageSnapshotInput } from '../src/renderer/state/usage-snapshot';
 import { emptyTotals } from '../src/renderer/state/session-totals';
 import { selectNativeStatusChips } from '../src/renderer/components/StatusBar';
@@ -192,5 +193,32 @@ describe('buildUsageSnapshot — the rest of the shape', () => {
 
   it('returns null when there is nothing at all to describe', () => {
     expect(buildUsageSnapshot(base)).toBeNull();
+  });
+});
+
+// The usage cache is only rewritten while a Claude Code session is live, so a
+// window whose reset time has passed must not be shown as if it were current.
+describe('pruneExpiredUsage', () => {
+  const NOW = Date.parse('2026-09-03T12:00:00Z');
+  it('keeps windows that reset in the future', () => {
+    const u = { five_hour: { utilization: 42, resets_at: '2026-09-03T15:00:00Z' } };
+    expect(pruneExpiredUsage(u, NOW)).toEqual(u);
+  });
+  it('drops a window whose reset time has passed and keeps the other', () => {
+    const u = {
+      five_hour: { utilization: 95, resets_at: '2026-09-03T09:00:00Z' },
+      seven_day: { utilization: 30, resets_at: '2026-09-07T09:00:00Z' },
+    };
+    expect(pruneExpiredUsage(u, NOW)).toEqual({ seven_day: u.seven_day });
+  });
+  it('returns null when every window is expired, missing, or the input is not an object', () => {
+    expect(pruneExpiredUsage({ five_hour: { utilization: 95, resets_at: '2026-09-03T09:00:00Z' } }, NOW)).toBeNull();
+    expect(pruneExpiredUsage(null, NOW)).toBeNull();
+    expect(pruneExpiredUsage(undefined, NOW)).toBeNull();
+    expect(pruneExpiredUsage({}, NOW)).toBeNull();
+  });
+  it('keeps a window with an unparseable reset time rather than guessing it expired', () => {
+    const u = { five_hour: { utilization: 10, resets_at: 'garbage' } };
+    expect(pruneExpiredUsage(u, NOW)).toEqual(u);
   });
 });

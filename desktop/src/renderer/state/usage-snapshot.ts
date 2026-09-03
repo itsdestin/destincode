@@ -38,6 +38,32 @@ export interface SubscriptionUsage {
   seven_day?: { utilization: number; resets_at: string };
 }
 
+/** Drop any usage window whose reset time has already passed.
+ *
+ *  WHY: ~/.claude/.usage-cache.json is now written only by statusline.sh while
+ *  a Claude Code session is live (the old 5-minute background refresher read
+ *  the user's OAuth token, which Anthropic forbids third-party apps from
+ *  doing, so it was removed). Between sessions nothing refreshes the file, so
+ *  without this an exhausted "5h 95%" bar from last night would still be
+ *  showing this morning. Pruning on arrival covers every consumer — the status
+ *  bar chips and the /usage card — on desktop, Android and remote browsers in
+ *  one place. `now` is injectable for tests. */
+export function pruneExpiredUsage(
+  usage: SubscriptionUsage | null | undefined,
+  now: number = Date.now(),
+): SubscriptionUsage | null {
+  if (!usage || typeof usage !== 'object') return null;
+  const out: SubscriptionUsage = {};
+  for (const key of ['five_hour', 'seven_day'] as const) {
+    const win = usage[key];
+    if (!win || win.utilization == null) continue;
+    const t = win.resets_at ? Date.parse(win.resets_at) : NaN;
+    if (Number.isFinite(t) && t <= now) continue;
+    out[key] = win;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 /** The bit of a session's chat state this derivation reads. */
 export interface UsageSnapshotSession {
   timeline: ReadonlyArray<{ kind: string; turnId?: string }>;
