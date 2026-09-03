@@ -61,7 +61,8 @@ sealed class ApiResult<out T> {
 
 class MarketplaceApiClient(
     private val store: MarketplaceAuthStore,
-    private val host: String = "https://wecoded-marketplace-api.destinj101.workers.dev",
+    // WHY: Moved to its own domain so Cloudflare's cache and rate limiter apply; the old workers.dev address still answers for older app versions.
+    private val host: String = "https://api.youcoded.ai",
 ) {
     private val http = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)

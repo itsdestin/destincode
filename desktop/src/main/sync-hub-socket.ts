@@ -18,7 +18,8 @@ import {
   type ReconnectingWebSocketCtor,
 } from './reconnecting-ws';
 
-const SYNC_HUB_URL = 'wss://wecoded-marketplace-api.destinj101.workers.dev/sync/hub';
+// WHY: Moved to its own domain so Cloudflare's cache and rate limiter apply; the old workers.dev address still answers for older app versions.
+const SYNC_HUB_URL = 'wss://api.youcoded.ai/sync/hub';
 
 // Structural socket surface + injectable constructor. Named exports so the
 // state-machine test (tests/sync-hub-socket.test.ts) can substitute a fake

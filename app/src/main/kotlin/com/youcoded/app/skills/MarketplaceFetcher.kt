@@ -12,7 +12,8 @@ import java.net.URL
 // desktop/src/renderer/state/marketplace-api-client.ts. Two hand-maintained copies of
 // one URL in two languages is exactly the drift the IPC parity tests exist to catch,
 // so desktop/tests/ipc-channels.test.ts asserts the two strings are byte-identical.
-internal const val MARKETPLACE_API_HOST = "https://wecoded-marketplace-api.destinj101.workers.dev"
+// WHY: Moved to its own domain so Cloudflare's cache and rate limiter apply; the old workers.dev address still answers for older app versions.
+internal const val MARKETPLACE_API_HOST = "https://api.youcoded.ai"
 
 /**
  * The whole of one HTTP GET that this file needs. `status` is inspected before `body`

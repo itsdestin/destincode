@@ -14,7 +14,8 @@ import { randomUUID, createHmac } from "node:crypto";
 import { machineIdSync } from "node-machine-id";
 import { ANALYTICS_SALT } from "./analytics-salt";
 
-const API_BASE = "https://wecoded-marketplace-api.destinj101.workers.dev";
+// WHY: Moved to its own domain so Cloudflare's cache and rate limiter apply; the old workers.dev address still answers for older app versions.
+const API_BASE = "https://api.youcoded.ai";
 const ANALYTICS_FILE = path.join(os.homedir(), ".claude", "youcoded-analytics.json");
 
 interface AnalyticsState {

@@ -3,7 +3,8 @@
 // fetch calls go directly to the Worker (CORS allowlist covers both platforms).
 // No IPC needed for read endpoints; write endpoints gate on token which callers supply via getToken().
 
-export const MARKETPLACE_API_HOST = "https://wecoded-marketplace-api.destinj101.workers.dev";
+// WHY: Moved to its own domain so Cloudflare's cache and rate limiter apply; the old workers.dev address still answers for older app versions.
+export const MARKETPLACE_API_HOST = "https://api.youcoded.ai";
 
 export class MarketplaceApiError extends Error {
   constructor(public readonly status: number, message: string) {

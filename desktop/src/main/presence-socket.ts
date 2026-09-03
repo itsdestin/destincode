@@ -11,7 +11,8 @@ import {
   type ReconnectingWebSocketCtor,
 } from './reconnecting-ws';
 
-const PRESENCE_URL = 'wss://wecoded-marketplace-api.destinj101.workers.dev/social/presence';
+// WHY: Moved to its own domain so Cloudflare's cache and rate limiter apply; the old workers.dev address still answers for older app versions.
+const PRESENCE_URL = 'wss://api.youcoded.ai/social/presence';
 
 // Structural socket surface + injectable constructor. Kept as named exports so
 // the state-machine test (tests/presence-socket.test.ts) can substitute a fake

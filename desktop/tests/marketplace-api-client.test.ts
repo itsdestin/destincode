@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createMarketplaceApiClient } from "../src/renderer/state/marketplace-api-client";
+import { createMarketplaceApiClient, MARKETPLACE_API_HOST } from "../src/renderer/state/marketplace-api-client";
 
 describe("MarketplaceApiClient", () => {
   const HOST = "https://api.test";
@@ -192,5 +192,17 @@ describe("MarketplaceApiClient", () => {
         message: "that handle is taken",
       });
     });
+  });
+});
+
+// The Worker moved from its workers.dev address to a custom domain on 2026-09-03 so
+// Cloudflare's cache and rate limiter apply. Every desktop caller (renderer client,
+// analytics, presence + sync-hub sockets) hard-codes the host, and ipc-channels.test.ts
+// only checks that Kotlin matches THIS constant — so this is the one place the actual
+// value is pinned. A drift back to the old host would silently still work (it keeps
+// answering) while bypassing the cache, which is why it gets a test and not a comment.
+describe("marketplace Worker host", () => {
+  it("MARKETPLACE_API_HOST points at the custom domain, not the workers.dev address", () => {
+    expect(MARKETPLACE_API_HOST).toBe("https://api.youcoded.ai");
   });
 });
