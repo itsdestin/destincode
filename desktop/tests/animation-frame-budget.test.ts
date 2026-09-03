@@ -277,6 +277,13 @@ describe('motion vocabulary', () => {
     expect(strip).toMatch(/r\.right > t\.left - VEIL_PX && r\.left < t\.right \+ VEIL_PX/);
     // A dot's step-aside is a jump (it is hidden); a wide neighbour still slides.
     expect(strip).toMatch(/dragging && isDot \? '0s' : 'var\(--dur-hover\) var\(--ease-out\)'/);
+    // And the dot FLOWS around the pill (2026-09-03): scaled per frame by the
+    // rAF loop, with a ghost growing at its landing spot; the yield fires at
+    // the dot's far edge, when it is at scale 0. No hole beside the pill.
+    expect(strip).toMatch(/scale\(var\(--flow, 1\)\)/);
+    expect(strip).toMatch(/ghost\.dataset\.ghost = /);
+    expect(strip).toMatch(/ghost\.removeAttribute\('data-session-id'\)/);
+    expect(strip).toMatch(/twin\.style\.left = /);   // the rAF loop, not React, positions the twin
     // Hidden at once, no fade out; the class beats the inline transition list.
     expect(globals).toMatch(/\.session-pill--veiled \{ opacity: 0 !important; transition-duration: 0s !important; \}/);
     expect(globals).not.toMatch(/pill-hop|data-yield/);
