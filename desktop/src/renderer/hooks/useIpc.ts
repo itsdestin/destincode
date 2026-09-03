@@ -227,6 +227,10 @@ declare global {
         getDirectory: () => Promise<import('../../shared/types').WindowDirectory>;
         onDirectoryUpdated: (cb: (dir: import('../../shared/types').WindowDirectory) => void) => () => void;
         requestTranscriptReplay: (sessionId: string) => void;
+        /** Ownership handoffs main queued while this window was booting. */
+        claimPending: () => Promise<import('../../shared/types').SessionOwnershipAcquired[]>;
+        /** Re-send the session state that exists only in main's memory. */
+        replayLiveState: (sessionId: string) => Promise<void>;
         /** Perf cycle 2: one page of history. `beforeCursor` null = the newest
          *  page; pass a previous page's `cursor` for the page before it. */
         requestTranscriptPage: (req: { sessionId: string; beforeCursor: import('../../shared/types').PageCursor | null; claudeSessionId?: string; projectSlug?: string })

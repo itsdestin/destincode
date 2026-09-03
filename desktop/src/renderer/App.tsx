@@ -1863,7 +1863,11 @@ function AppInner() {
       if (typeof dir.leaderWindowId === 'number') setLeaderWindowId(dir.leaderWindowId);
     }).catch(() => {});
 
-    const cleanupAcquired = det.onOwnershipAcquired?.((payload: any) => {
+    // Named, not inline: BOTH the push (onOwnershipAcquired) and the pull
+    // (claimPending, below) run the identical acquisition. See claimPending's
+    // WHY — a fresh tear-off window is handed its session before this
+    // subscription exists, and that push is dropped, not queued.
+    const applyAcquired = (payload: any) => {
       const { sessionId: sid, sessionInfo, freshWindow, refocusOnly } = payload;
       if (refocusOnly) {
         // Switcher asked us to focus an existing local session — just flip active.
@@ -1891,18 +1895,33 @@ function AppInner() {
         const next = new Set(prev); next.add(sid); return next;
       });
       if (freshWindow) setSessionId(sid);
-      // Hydrate reducer from disk. Main streams every transcript event back on
-      // the normal channel; uuid dedup absorbs any overlap with live events.
+      // Hydrate from ONE page, not a whole-transcript replay. Main knows this
+      // window INHERITED the session and serves its first page read to EOF
+      // (WindowRegistry.markInheritedByTransfer) — so the page is complete
+      // through the newest message, which the stop-at-startOffset page was not.
       //
-      // The LAST remaining requestTranscriptReplay caller, deliberately (perf
-      // cycle 2): the replay handler ALSO re-sends broker-held permission asks
-      // and specialist run records, which live only in main's memory and have no
-      // record in the JSONL — a page cannot carry them, so a re-docked native
-      // session would come back with a button-less ask and a status-less
-      // helper card. Folding those into the page response is a follow-up; until
-      // then a re-dock pays the full-replay cost that first open no longer does.
-      det.requestTranscriptReplay?.(sid);
-    });
+      // Called here rather than left to the sessions effect below so the order
+      // is deterministic: this claims `firstPageAsked` first, and replayLiveState
+      // is chained AFTER the page resolves. That ordering is load-bearing —
+      // replayLiveState ends with the replay-complete marker, which reaps tool
+      // cards the history left 'running', and it must not run before the page
+      // that creates those cards has been applied.
+      void loadFirstPage(sid).then(() => det.replayLiveState?.(sid));
+    };
+
+    const cleanupAcquired = det.onOwnershipAcquired?.(applyAcquired);
+
+    // The pull half. A window created BY a tear-off is handed its session one
+    // statement after `new BrowserWindow()` — long before this React tree
+    // exists — and Electron DROPS a send with no listener rather than queueing
+    // it (measured on 41.10.7). Every tear-off into a fresh window therefore
+    // skipped the whole handoff: no history hydration (so the conversation
+    // ended at the moment the session was resumed), no "open on the session you
+    // just dragged", no re-send of an open permission ask. Main queues the
+    // payload for a window that has not pulled yet; this drains that queue.
+    det.claimPending?.().then((queued: any[]) => {
+      for (const payload of queued ?? []) applyAcquired(payload);
+    }).catch(() => {});
 
     const cleanupLost = det.onOwnershipLost?.((payload: any) => {
       const { sessionId: sid } = payload;
@@ -1932,7 +1951,7 @@ function AppInner() {
       cleanupAcquired?.();
       cleanupLost?.();
     };
-  }, [dispatch]);
+  }, [dispatch, loadFirstPage]);
 
   // (Removed) A mount effect used to fetch skills.list() and store it in a `skills`
   // state that nothing ever read — a wasted IPC round-trip on every mount. The real

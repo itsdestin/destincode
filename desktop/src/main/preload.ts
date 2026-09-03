@@ -217,6 +217,8 @@ const IPC = {
   WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
   SESSION_OWNERSHIP_ACQUIRED: 'session:ownership-acquired',
   SESSION_OWNERSHIP_LOST: 'session:ownership-lost',
+  DETACH_CLAIM_PENDING: 'detach:claim-pending',
+  SESSION_REPLAY_LIVE_STATE: 'session:replay-live-state',
   SESSION_DETACH_START: 'session:detach-start',
   SESSION_DETACH_LIVE: 'session:detach-live',
   SESSION_DRAG_WINDOW_MOVE: 'session:drag-window-move',
@@ -1033,6 +1035,19 @@ contextBridge.exposeInMainWorld('claude', {
     // uuid-based dedup handles any overlap with live events.
     requestTranscriptReplay: (sessionId: string) =>
       ipcRenderer.send(IPC.TRANSCRIPT_REPLAY, { sessionId }),
+    // Pull the ownership handoffs main queued while this window was booting.
+    // Called once from App's mount effect, right after onOwnershipAcquired is
+    // subscribed — a push that lands before that subscription is DROPPED by
+    // Electron, not queued, which is why the pull exists.
+    claimPending: (): Promise<any[]> =>
+      ipcRenderer.invoke(IPC.DETACH_CLAIM_PENDING),
+    // Re-send the session state that exists only in main's memory (open
+    // permission asks, specialist + background-shell run records, and the
+    // replay-complete marker). Awaited AFTER the history page lands, because
+    // the marker reaps tool cards the page left 'running' and must not run
+    // before those cards exist.
+    replayLiveState: (sessionId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.SESSION_REPLAY_LIVE_STATE, { sessionId }),
     // Perf cycle 2: request/response, unlike the fire-and-forget replay above.
     // Returns ONE page of history (newest when beforeCursor is null, else the
     // page immediately older than the cursor) so opening a huge conversation
