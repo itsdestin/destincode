@@ -31,6 +31,22 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v6
 
+      # build-web-ui.sh runs `npm run build` in desktop/, which invokes
+      # electron-builder for every configured Linux target (AppImage + deb +
+      # rpm + pacman), so this runner needs rpm + bsdtar even though Android
+      # never consumes the installers. PR #98 added the pacman+rpm targets and
+      # updated android-ci.yml and android-test-build.yml but NOT this file --
+      # so the Android RELEASE workflow has been broken since 2026-05-20 and
+      # nobody noticed, because v1.2.4 (18 May) is the last release cut.
+      # Failure signature: bsdtar exit 127 inside fpm's pacman step.
+      #   libarchive-tools -> provides bsdtar (pacman target)
+      #   rpm              -> provides rpmbuild (rpm target)
+      - name: Install Linux build deps
+        # `apt-get update` prefix: the cached package index on ubuntu-latest
+        # often points to .deb versions that have rolled off the mirror, so
+        # a bare install hits HTTP 404 / exit 100. Refresh the index first.
+        run: sudo apt-get update && sudo apt-get install -y rpm libarchive-tools
+
       - name: Build React UI
         run: ./scripts/build-web-ui.sh
 
