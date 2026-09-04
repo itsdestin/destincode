@@ -1722,10 +1722,16 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // list above); every other skills channel keeps the catch-all `[]`. Before
   // 2026-08-25 all of these answered `[]`, so Marketplace/Library/skills drawer
   // rendered empty in the workbench and were unreviewable in any theme.
-  let skillFavourites: string[] = ['civic-report', 'superpowers'];
+  let skillFavourites: string[] = studentSwitch ? ['civic-report'] : ['civic-report', 'superpowers'];
   // Installed set + packages map are per-page state, so skills.install below
   // can add to them (fixtures stay pristine — every shim starts from the copy).
-  let installedSkills: Record<string, unknown>[] = INSTALLED_SKILLS.map((s) => ({ ...s }));
+  // Student mode drops the developer bundles (Superpowers' "Dispatching
+  // Parallel Agents", the marketplace publisher) from the drawer: the skills
+  // drawer opens on camera in the marketplace beat.
+  const DEVELOPER_BUNDLES = ['superpowers', 'wecoded-marketplace-publisher'];
+  let installedSkills: Record<string, unknown>[] = INSTALLED_SKILLS
+    .filter((s) => !studentSwitch || !DEVELOPER_BUNDLES.includes(s.pluginName))
+    .map((s) => ({ ...s }));
   const installedPackages: Record<string, any> = JSON.parse(JSON.stringify(INSTALLED_PACKAGES));
   // Quick chips are a STATEFUL mock, not a canned read: the editor writes
   // through setChips on every add/remove/reorder/edit, so a read-only fixture
