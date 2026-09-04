@@ -43,6 +43,7 @@
 html[data-dark="1"]{ --glass-hi:rgba(255,255,255,.14); --ink:rgba(0,0,0,.42); }
 html[data-dark="0"]{ --glass-hi:rgba(255,255,255,.55); --ink:rgba(255,255,255,.34); }
 html{scroll-behavior:smooth}
+
 body{font-family:var(--font-theme);color:var(--fg);line-height:1.6;-webkit-font-smoothing:antialiased;
   overflow-x:hidden;background:var(--canvas);transition:color .5s}
 img,video{display:block;max-width:100%}
@@ -1209,7 +1210,14 @@ body.cycler-static .lead-hold{display:none}
    a width-only rule, and the worst case for a bar pinned over a short window.
    ========================================================================== */
 @media(max-width:760px), (max-height:480px){
-  .nav{top:8px}
+  /* The bar ran edge to edge: .nav is fixed left:0/right:0 and .nav-in is
+     capped at 1280px, so on a wide window it floats with a gutter either side
+     and on a phone that cap never binds (Destin 2026-09-03: "the top bar ...
+     visibly touches the left/right edges of the phone screen"). 10px, a little
+     tighter than the 18px the page's own content sits at, so the bar still
+     reads as sitting slightly proud of the column under it — the same
+     relationship it has on a desktop. */
+  .nav{top:8px;padding:0 10px}
   .nav-in{height:50px;padding:0 12px 0 13px;gap:10px;
     background:rgb(var(--panel-rgb));
     -webkit-backdrop-filter:none;backdrop-filter:none;
@@ -1439,6 +1447,38 @@ body.cycler-static .lead-hold{display:none}
   .topcta{bottom:16px;padding:12px 20px;font-size:.84rem}
 }
 
+
+/* ---- touch feedback (LAST in the sheet on purpose) -------------------------------------------------------
+   Tapping anything was painting the browser's own translucent grey-blue block
+   over it (Destin 2026-09-03: "the gross native-browser blue highlight region"),
+   which on the FAQ rows covers the whole card. The property is inherited, so
+   one declaration at the root covers the page; it does nothing at all under a
+   mouse, so no desktop visitor sees a change from this line.
+
+   Turning it off with nothing in its place would leave a tap looking like it
+   missed, so the controls that had only a :hover state — which a finger never
+   triggers — get a real pressed state below. `user-select:none` goes on the
+   same set: a tap that lands slightly long on a summary was starting a text
+   selection, which is the other half of what reads as "highlighted". It is NOT
+   on paragraphs; body copy stays selectable. */
+html{-webkit-tap-highlight-color:transparent}
+.faq summary,.dlbtn,.dlchip,.trypill,.topcta,.integration-tag,.mascot,.sw,
+.acct,.flinks a,.nav-links a,.logo,.railtab,.dot,.embed-start,.install-modal-close,
+.distro-option,.install-modal-download-btn,.install-modal-details summary{
+  -webkit-user-select:none;user-select:none}
+/* Pressed states. Deliberately a shade of the theme's own foreground rather
+   than an accent wash: it has to read on six wallpapers and under a thumb that
+   is covering most of the control. */
+.faq summary:active{background:rgba(var(--fg-rgb),.07)}
+.integration-tag:active,.distro-option:active{background:rgba(var(--fg-rgb),.12)}
+/* .acct's background is `var(--glass-prose) !important` (the readability floor
+   every prose panel gets), so a background here cannot win. Brightness instead. */
+.acct:active{filter:brightness(.95)}
+.dlchip:active,.dlbtn:active,.flinks a:active,.nav-links a:active{opacity:.72}
+.dlchip.primary:active,.dlbtn.primary:active,.topcta:active,
+.install-modal-download-btn:active{filter:brightness(.92)}
+.mascot:active{transform:scale(.96)}
+.trypill:active,.embed-start:active{filter:brightness(.94)}
 </style>
 </head>
 <body class="intro-mode fade-d pill-accent legend-on h1-md brand-tile wm-one">
