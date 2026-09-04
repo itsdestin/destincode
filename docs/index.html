@@ -5,9 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YouCoded Assistant — Agentic AI for Everyone</title>
 <meta name="description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
-<!-- Social previews carried over from the previous live page when the redesign
-     shipped (2026-09-03) — the mockup had none, and without og:image a shared
-     link renders as a bare URL. The favicon is NO LONGER carried over: the old
+<!-- Social preview. og-image.png is a PHOTOGRAPH OF THIS PAGE, rebuilt by
+     docs/tools/gen-og-image.mjs — regenerate it whenever the hero changes.
+     It used to be a dark screenshot of the app from before the redesign, so
+     every shared link showed a grey window that looked nothing like the site
+     it opened (reported 2026-09-04). The favicon is NO LONGER carried over: the old
      favicon-*.svg files were the previous page's "YC" index card, which looked
      nothing like the redesign's nav mark, so a tab and the page it belonged to
      did not read as the same product. favicon.svg is now that mark, and
@@ -16,11 +18,20 @@
 <meta property="og:description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://youcoded.ai/">
-<meta property="og:image" content="https://youcoded.ai/og-image.png">
+<!-- ?v=2 is a CACHE BUST, not decoration. Slack, iMessage, Discord, Facebook
+     and Twitter all cache a preview image BY URL, for days, and a link Destin
+     had already shared kept showing the old picture after the file was
+     replaced. Bump the number whenever og-image.png is regenerated. -->
+<meta property="og:image" content="https://youcoded.ai/og-image.png?v=2">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The YouCoded Assistant website: the headline &quot;An Assistant That's Yours.&quot; between four theme mascots, above the app running a real conversation.">
+<meta property="og:site_name" content="YouCoded Assistant">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="YouCoded Assistant — Agentic AI for Everyone">
 <meta name="twitter:description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
-<meta name="twitter:image" content="https://youcoded.ai/og-image.png">
+<meta name="twitter:image" content="https://youcoded.ai/og-image.png?v=2">
+<meta name="twitter:image:alt" content="The YouCoded Assistant website: the headline &quot;An Assistant That's Yours.&quot; between four theme mascots, above the app running a real conversation.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg" id="favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
