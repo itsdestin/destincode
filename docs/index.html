@@ -2724,8 +2724,13 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
           variants: [
             {
               key: 'dl-macos-arm64',
-              label: 'Apple silicon &mdash; M1, M2, M3 or M4',
-              hint: 'Macs sold from late 2020 onward. Apple menu → About This Mac shows a <strong>Chip</strong> line.',
+              // Open-ended, not a list. M5 and M6 shipped after this label was
+              // written and a numbered list goes stale with every Apple launch
+              // (Destin, 2026-09-03). "M1 or newer" also tells an Intel owner
+              // they are NOT covered, which "all M-series chips" leaves open --
+              // and picking the wrong one here downloads a build that will not run.
+              label: 'Apple silicon &mdash; M1 or newer',
+              hint: 'Macs sold from late 2020 onward. Apple menu → About This Mac shows a <strong>Chip</strong> line beginning with <strong>Apple</strong>.',
               steps: [
             'Open the file you just downloaded, then drag YouCoded into your <strong>Applications</strong> folder.',
             'Open your <strong>Applications</strong> folder and double-click YouCoded. macOS will show a warning: <em>"YouCoded can\'t be opened because Apple cannot check it for malicious software."</em> Click <strong>Done</strong>.',
