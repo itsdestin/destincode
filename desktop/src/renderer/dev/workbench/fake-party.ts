@@ -121,6 +121,13 @@ export class FakeConnectFourServer {
     let msg: any;
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg?.type !== 'move' || this.ended) return;
+    // WHY (2026-09-03, promo film): the chess client sends through this same
+    // fake socket, and its move is a `{move:{from,to}}` pair with no `column`.
+    // dropPiece(board, undefined) threw inside the client's send(), which sat
+    // BEFORE useChessGame's local dispatch — so the pawn never moved on screen.
+    // A move this server does not understand is dropped, like the illegal
+    // column below; Jake simply never answers a chess move.
+    if (!Number.isInteger(msg.column)) return;
 
     const result = dropPiece(this.board, msg.column, RED);
     if (!result) return; // illegal column (full or out of range) — drop it, same as a no-op relay

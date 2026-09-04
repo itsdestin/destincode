@@ -90,6 +90,14 @@ describe('FakeConnectFourServer', () => {
     expect(received).toHaveLength(0); // no bot reply — there was nothing to reply to
   });
 
+  it('drops a chess-shaped move (no column) without throwing, and Jake stays silent', () => {
+    const server = new FakeConnectFourServer();
+    const received: FakeMessage[] = [];
+    expect(() => server.receive(JSON.stringify({ type: 'move', username: 'you', move: { from: 'e2', to: 'e4' } }), (msg) => received.push(msg))).not.toThrow();
+    vi.advanceTimersByTime(5000);
+    expect(received).toEqual([]);
+  });
+
   it('a winning sequence ends with a real move-message shape, and checkWin agrees', () => {
     // Deterministic bot: always column 6, ignoring the board — lets the test
     // build a guaranteed vertical win for Jake without needing to out-think
