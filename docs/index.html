@@ -1940,11 +1940,31 @@ function chainWheel(frame){
   }, { passive: false, capture: true });
 }
 
+// The demo is the desktop app, so its title bar carries the minimise / maximise
+// / close buttons Electron needs on a frameless window. On a phone they are
+// three controls for a window there is no window manager for, and Destin asked
+// for them gone (2026-09-03). Hidden here rather than in the app: nothing about
+// the product changes, only this marketing embed, and only on a phone -- on a
+// desktop the demo IS a desktop window and its chrome belongs to it.
+//
+// Matched on the buttons' own `title`, which is the one stable thing about them
+// (the cluster's class list is Tailwind utilities). If those titles are ever
+// reworded the buttons simply come back, which is visible rather than silent.
+var PHONE_EMBED_CSS = 'div:has(> button[title="Minimize"]){display:none !important}';
+function stripEmbedChrome(f){
+  if (!posterPhoneMQ.matches) return;
+  try {
+    var d = f.contentDocument; if (!d || d.getElementById('yc-phone-chrome')) return;
+    var st = d.createElement('style'); st.id = 'yc-phone-chrome';
+    st.textContent = PHONE_EMBED_CSS;
+    (d.head || d.documentElement).appendChild(st);
+  } catch (e) { /* cross-origin one day: leave the chrome alone */ }
+}
 function bootEmbed(){
   if (!embed || embedLive) return; embedLive = true;
   var f = embed.querySelector('.embed-iframe'), start = embed.querySelector('.embed-start'), inter = embed.querySelector('.embed-interact');
   start.hidden = true;
-  f.addEventListener('load', function(){ embed.classList.add('live'); inter.hidden = false; syncEmbedTheme(); chainWheel(f); });
+  f.addEventListener('load', function(){ embed.classList.add('live'); inter.hidden = false; syncEmbedTheme(); stripEmbedChrome(f); chainWheel(f); });
   f.src = f.dataset.src + '#t=' + currentTheme;
 }
 // --- The download pill: floats over the embed's dissolve, then docks to the
