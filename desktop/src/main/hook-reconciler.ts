@@ -14,9 +14,10 @@ import { listInstalledPluginDirs } from './claude-code-registry';
  *     decomposition flattens the core directory)
  *   - Prune plugin-owned entries whose target file no longer exists on disk
  *     (e.g., hooks dropped from the manifest in phase-3 flatten: sync.sh,
- *     title-update.sh, done-sound.sh, etc.). Never touches entries whose
- *     command path is outside every installed plugin root — those are
- *     user-added and preserved.
+ *     title-update.sh, done-sound.sh, etc.), plus entries under the deleted
+ *     legacy youcoded-core clone (see ownedLegacyRoots). Never touches
+ *     entries whose command path is outside every one of those roots —
+ *     those are user-added and preserved.
  *
  * Triggered on app launch and after core install/update.
  *
@@ -128,6 +129,20 @@ function extractScriptPath(command: string): string | null {
   }
   if (p.startsWith('~')) p = path.join(os.homedir(), p.slice(1));
   return p;
+}
+
+/**
+ * Roots the app owns for prune purposes even when they no longer exist on
+ * disk. The youcoded-core clone is deleted at launch by legacy-cleanup.ts, so
+ * by the time reconcileHooks() runs it is NOT returned by
+ * listInstalledPluginDirs() (that function only walks directories that
+ * exist). Without this, its orphaned settings.json entries look user-added
+ * and are preserved forever — which is why every new Claude Code session
+ * opened with "No such file or directory". The app created that directory and
+ * the app deleted it, so nothing a user wrote can legitimately live there.
+ */
+function ownedLegacyRoots(): string[] {
+  return [path.join(os.homedir(), '.claude', 'plugins', 'youcoded-core')];
 }
 
 /**
@@ -249,7 +264,9 @@ export function reconcileHooks(): ReconcileHooksResult {
   // Prune pass — remove plugin-owned entries whose script file is gone.
   // Runs last so any path-rewrite from the loop above gets a chance to
   // "save" an entry whose basename still appears in a manifest.
-  const pluginRoots = listInstalledPluginDirs();
+  // Deleted-but-app-owned roots go in alongside the live ones so an orphan
+  // left by legacy-cleanup.ts is still recognised as ours to remove.
+  const pluginRoots = [...listInstalledPluginDirs(), ...ownedLegacyRoots()];
   const pruned = pruneDeadPluginHooks(settings, pluginRoots);
   if (pruned > 0) changed = true;
 
