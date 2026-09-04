@@ -209,6 +209,10 @@ interface Props {
   settingsBadge?: boolean;
   settingsDangerBadge?: boolean;
   sessionStatuses?: Map<string, SessionStatusColor>;
+  /** Passed straight through to SessionStrip — the last few messages of a
+   *  session, for the card drawn under the cursor when it is dragged to
+   *  another window. Only App can supply it; the strip has no chat state. */
+  dragPreviewMessages?: (sessionId: string) => { role: 'user' | 'assistant'; text: string }[];
   // WHY: `onResumeSession` removed — HeaderBar accepted it but never called it.
   // Resuming is owned by ResumeBrowser, opened via `onOpenResumeBrowser` below.
   // App.tsx was still passing it through; that call site is updated too.
@@ -341,6 +345,7 @@ export default function HeaderBar({
   viewMode, onToggleView,
   gamePanelOpen, onToggleGamePanel, gameConnected, challengePending,
   settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge, sessionStatuses,
+  dragPreviewMessages,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   windowDirectory, myWindowId,
@@ -532,6 +537,7 @@ export default function HeaderBar({
         onCreateSession={onCreateSession}
         onCloseSession={onCloseSession}
         sessionStatuses={sessionStatuses}
+        dragPreviewMessages={dragPreviewMessages}
         onOpenResumeBrowser={onOpenResumeBrowser}
         onReorderSessions={onReorderSessions}
         defaultModel={defaultModel}

@@ -23,6 +23,9 @@ import { PRIORITY_TAG } from './tags/built-in-tags';
 import { NotePageGlyph } from './tags/glyphs';
 import { TagChip } from './tags/TagChip';
 import type { TagRecord } from '../../shared/tags';
+import { chooseTearOffModel } from '../session-drag-model';
+import { sessionIdFromDragFileName } from '../session-drag-model';
+import { paintSessionDragImage, type DragImageMessage } from '../session-drag-image';
 
 // Stable empty map for the non-dragging render, so a new Map is not allocated
 // on every frame the strip re-renders.
@@ -123,6 +126,10 @@ interface Props {
   onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }, preset?: string) => void;
   onCloseSession: (id: string) => void;
   sessionStatuses?: Map<string, SessionStatusColor>;
+  /** Last few messages of a session, for the picture drawn under the cursor
+   *  while dragging it to another window ('os-drag' tear-off only). Optional:
+   *  without it the card still draws, with its placeholder body. */
+  dragPreviewMessages?: (sessionId: string) => DragImageMessage[];
   // WHY: `onResumeSession` is no longer accepted here. The strip never invoked
   // it — resuming is owned by the ResumeBrowser modal, opened via
   // `onOpenResumeBrowser` below. App/HeaderBar were still passing it through;
@@ -303,6 +310,7 @@ function SessionName({ name }: { name: string }) {
 export default function SessionStrip({
   sessions, activeSessionId, onSelectSession,
   onCreateSession, onCloseSession, sessionStatuses,
+  dragPreviewMessages,
   onOpenResumeBrowser, onReorderSessions,
   defaultModel, defaultSkipPermissions, defaultProjectFolder,
   windowDirectory, myWindowId,
@@ -827,6 +835,111 @@ export default function SessionStrip({
     pointerCaptureId.current = e.pointerId;
   }, [sessions, sessionStatuses, activeSessionId, onSelectSession, metrics, measurementsOf]);
 
+  // ── Cross-window tear-off model ───────────────────────────────────────────
+  //
+  // Which mechanism carries a pill OUT of this window. Reordering INSIDE the
+  // strip is the pointer path on every platform and is not affected — that is
+  // the whole point of choosing here rather than at pointer-down. See
+  // session-drag-model.ts for the measurements behind the fork.
+  //
+  // Read once per mount: preload reports it synchronously, and a drag cannot
+  // wait for a round trip.
+  const tearOffModel = useMemo(
+    () => chooseTearOffModel((window as any).claude?.platformFacts),
+    [],
+  );
+
+  // Tear down every trace of an in-flight drag. Needed as its own function on
+  // the 'os-drag' model because once the compositor owns the gesture this
+  // window stops receiving pointermove and does not see pointerup until the
+  // whole drag has ended somewhere else — so the usual "clean up in
+  // handlePointerUp" never runs in time, and the pill was left stranded
+  // mid-flight on screen (measured in the two-window probe, 2026-09-04).
+  const handoffCleanup = useCallback(() => {
+    setDragId(null);
+    setOverId(null);
+    overIdRef.current = null;
+    setDragLeft(null);
+    setDragActive(false);
+    dragOrigin.current = null;
+    isDragging.current = false;
+    liveDetachPending.current = false;
+    // The strip keeps pointer capture on the bar; hand it back so the next
+    // press starts clean even though this gesture ends in another window.
+    const el = pointerCaptureEl.current;
+    const id = pointerCaptureId.current;
+    if (el && id !== null) { try { el.releasePointerCapture(id); } catch { /* already gone */ } }
+    pointerCaptureEl.current = null;
+    pointerCaptureId.current = null;
+    // Cleared on a timeout, matching handlePointerUp: the click that follows a
+    // release must still be swallowed, and it has not been dispatched yet.
+    setTimeout(() => { suppressClick.current = false; }, 0);
+  }, []);
+
+  // The picture the compositor carries under the cursor. Returns null when the
+  // platform gives no 2D canvas (tests) — main then falls back to the app icon,
+  // so a drag never fails over its own artwork.
+  const paintDragImageFor = useCallback((sessionId: string): string | null => {
+    const session = sessions.find((x) => x.id === sessionId);
+    if (!session) return null;
+    return paintSessionDragImage({
+      name: session.name,
+      color: sessionStatuses?.get(sessionId) || 'gray',
+      messages: dragPreviewMessages?.(sessionId) ?? [],
+      fontFamily: NAME_FONT,
+    });
+  }, [sessions, sessionStatuses, dragPreviewMessages]);
+
+  // ── Receiving side of an 'os-drag' ────────────────────────────────────────
+  //
+  // The compositor tells this window a drag is over it, in WINDOW-LOCAL
+  // coordinates — which work on Wayland, unlike every screen coordinate the
+  // pointer model depends on. Nothing here computes a position; the window is
+  // simply told.
+  //
+  // dropEffect must match what the source OFFERS. The source is a file drag, so
+  // it offers 'copy'; asking for 'move' makes Chromium reject the drop SILENTLY
+  // — dragover keeps firing forever and the drop event simply never arrives.
+  // That is exactly what the first probe measured, and it cost a round of
+  // "this design collapses" before the cause was found. Do not "correct" this
+  // to 'move' because a session is being moved.
+  const dragCarriesSession = useCallback((dt: DataTransfer | null): boolean => {
+    if (!dt) return false;
+    // Mid-drag the file NAMES are not readable (the browser withholds contents
+    // until drop), so the most we can check here is that files are involved.
+    // A foreign file drag therefore also highlights the strip; the drop handler
+    // is where it is rejected, without side effects.
+    return Array.from(dt.types || []).includes('Files');
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (tearOffModel !== 'os-drag' || !dragCarriesSession(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    setIncomingDropActive(true);
+  }, [tearOffModel, dragCarriesSession]);
+
+  const handleDragLeave = useCallback(() => {
+    if (tearOffModel !== 'os-drag') return;
+    setIncomingDropActive(false);
+  }, [tearOffModel]);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    if (tearOffModel !== 'os-drag') return;
+    setIncomingDropActive(false);
+    const name = e.dataTransfer?.files?.[0]?.name;
+    const sessionId = sessionIdFromDragFileName(name);
+    // Anything that is not one of our session drags falls through untouched —
+    // a user dropping a real file on the header must not move a session, and
+    // must not have their drop swallowed either.
+    if (!sessionId) return;
+    e.preventDefault();
+    // Main resolves the source window from its ownership registry; this message
+    // deliberately carries no source, so it cannot be used to move a session
+    // that this window was never offered.
+    (window as any).claude?.detach?.dragAdopt?.({ sessionId });
+  }, [tearOffModel]);
+
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
     if (e.pointerType) lastPointerType.current = e.pointerType;
     // Live tear-off continuation — runs even after we've cleared dragId so the
@@ -902,7 +1015,14 @@ export default function SessionStrip({
     // Don't allow tearing off the only session in a window — matches Chrome
     // (a single tab can't be torn out of its window) and avoids the broken
     // click-through state when the source window empties mid-drag.
-    if (!liveDetachPending.current && bar && dragId !== null && sessions.length > 1) {
+    //
+    // On the 'os-drag' model that guard moves to MAIN, so the condition below
+    // relaxes: a lone session must still be able to LEAVE, because dropping it
+    // into another window is precisely the move that was impossible on Wayland.
+    // Main refuses only the pointless half — releasing a lone session over
+    // nothing, which would close this window and open an identical one.
+    const canLeave = sessions.length > 1 || tearOffModel === 'os-drag';
+    if (!liveDetachPending.current && bar && dragId !== null && canLeave) {
       const stripRect = bar.getBoundingClientRect();
       const outsideOwnWindow = e.clientY < 0 || e.clientY > window.innerHeight;
       // 60px past the strip's bottom ≈ "this pill is clearly not in the strip
@@ -913,6 +1033,19 @@ export default function SessionStrip({
         const draggedSession = sessions.find(x => x.id === dragId);
         if (!draggedSession) return;
         const det = (window as any).claude?.detach;
+        if (tearOffModel === 'os-drag' && det?.dragHandoff) {
+          // Hand the gesture to the compositor. From here the app receives no
+          // more pointer events for this drag — no pointermove, and pointerup
+          // only once the whole drag has ended — so the drag UI must be torn
+          // down NOW rather than on release. Leaving it up is what stranded a
+          // ghost pill on screen in the probe.
+          handoffCleanup();
+          det.dragHandoff({
+            sessionId: draggedSession.id,
+            icon: paintDragImageFor(draggedSession.id),
+          }).catch(() => { /* main put the pill back; nothing to undo here */ });
+          return;
+        }
         if (det?.detachLive) {
           det.detachLive({
             sessionId: draggedSession.id,
@@ -1552,6 +1685,11 @@ export default function SessionStrip({
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onMouseLeave={() => { setPostDropHold(false); hoverLock.current = null; }}
+        // Receiving side of an 'os-drag' tear-off — inert on every other model,
+        // where the drag never becomes an OS drag in the first place.
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
         className={`session-strip relative flex items-center gap-0.5 bg-inset rounded-full px-1.5 py-0.5 overflow-hidden min-w-0 shrink transition-shadow ${incomingDropActive ? 'ring-2 ring-accent/70' : ''}`}
       >
         {/* ── Session pills ──────────────────────────────── */}
