@@ -1,4 +1,5 @@
 import { MARKETPLACE_API_HOST } from '../../state/marketplace-api-client';
+import type { TranscriptEvent } from '../../../shared/types';
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
 import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
@@ -11,14 +12,16 @@ import { buildHydratePayload } from './seed-chat';
 import {
   projects as artifactProjects, projectsWithCounts, sessionArtifacts, allFiles,
   CONTENT as ARTIFACT_CONTENT, SAMPLE_PNG_BASE64, SAMPLE_SVG, makeDetailPngBase64, makeSamplePdfBase64, contextGroups,
+  studentProjects, studentProjectsWithCounts, studentAllFiles, studentSessionFiles, studentContextGroups,
 } from './fixtures/artifacts';
 import { resolveFixture, CS_ERR_READ } from './fixtures/chatsearch';
+import { SHEET_BEFORE, SHEET_AFTER } from './fixtures/sheets';
 import type { MockState, MockSessionMeta } from './scenarios';
 import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
 import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
 // Scripted replies (site scenario / phase-2 play-through): a typed message
 // gets a fixture-driven answer instead of being swallowed by the catch-all.
-import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns } from './reply-script';
+import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns, scriptToEvents } from './reply-script';
 // Task 7c: Connect Four's friends/presence layer (window.claude.social) — see
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
@@ -108,7 +111,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'artifacts.listProjectsIndex', 'artifacts.listSession', 'artifacts.listProject',
   'artifacts.listAllFiles', 'artifacts.get', 'artifacts.checkExistence',
   'artifacts.searchContent', 'artifacts.watchProject', 'artifacts.unwatchProject',
-  'artifacts.readBinary',
+  'artifacts.readBinary', 'artifacts.save',
   'syncSpaces.status', 'syncSpaces.syncNow', 'syncSpaces.stopProject',
   'syncSpaces.renameProject', 'syncSpaces.setProjectDescription',
   'syncSpaces.listDevices', 'syncSpaces.renameDevice', 'syncSpaces.removeDevice',
@@ -154,6 +157,12 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // (main/preload.ts), not unbuilt features, so they belong here and not in
   // mock-only.ts.
   'on.statusData', 'modes.get', 'modes.set',
+  // Promo switches (Task 4) — ?remote= / ?lease= — real preload channels
+  // (remote:, syncSpaces.lease*), hand-written so a filmed take shows the QR/
+  // takeover states on demand instead of whatever the catch-all's [] renders as.
+  'remote.getConfig', 'remote.setConfig', 'remote.setPassword', 'remote.detectTailscale',
+  'remote.getClientCount', 'remote.getClientList', 'remote.disconnectClient',
+  'syncSpaces.leaseQuery', 'syncSpaces.leaseTakeover', 'syncSpaces.leaseForce',
 ];
 
 const warned = new Set<string>();
@@ -602,6 +611,12 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     if (ms > 0) setTimeout(() => { const id = store.getState().sessions[0]?.id; if (id) startReply(id, '(autoplay)'); }, ms);
   }
 
+  // New session id -> the Resume row it was resumed from. App asks for a
+  // session's first page of history TWICE: once for every session it knows
+  // (App.tsx `for (const s of sessions) loadFirstPage(s.id)`, no locator) and
+  // once from the resume path with the row's id — and only the FIRST ask per
+  // session id runs. So the locator-less ask must already know the row.
+  const resumedFrom = new Map<string, string>();
   const session: Ns<'session'> & UntypedSessionWrites = {
     list: async () => store.getState().sessions,
     browse: async () => store.getState().past,
@@ -610,9 +625,19 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       // Deterministic-ish id without Date.now(): the store's length is enough
       // to keep ids unique within a page, and stable across reloads.
       const id = `wb-new-${store.getState().sessions.length + 1}`;
+      // A RESUME (App.tsx handleResumeSession passes resumeSessionId) is
+      // created under the placeholder title "Resuming..." and renamed by main
+      // once Claude Code's first hook reports in. There is no main here, so the
+      // pill stayed "Resuming..." and the chat sat behind "Initializing
+      // session..." for good. Take the title from the Resume row itself, and
+      // send the first hook event App is waiting for (below) — the promo's
+      // phone beat takes a session over and has to land in its conversation.
+      const resumedRow = (opts as any).resumeSessionId
+        ? store.getState().past.find((p) => p.sessionId === (opts as any).resumeSessionId) : undefined;
+      if (resumedRow) resumedFrom.set(id, resumedRow.sessionId);
       const created = {
         id,
-        name: opts.name || 'new session',
+        name: resumedRow?.name || opts.name || 'new session',
         cwd: opts.cwd || '',
         permissionMode: opts.skipPermissions ? 'bypass' : 'normal',
         skipPermissions: !!opts.skipPermissions,
@@ -628,6 +653,13 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       // on screen, which reads as a bug in the surface under design rather
       // than a hole in the mock. Spec §3.3.
       subs.created.forEach((f) => f(created));
+      // "First hook event for a session = Claude is initialized" (App.tsx
+      // hookHandler). SessionStart maps to no chat action, so the only effect
+      // is lifting the Initializing overlay. Deferred so App has run its
+      // sessionCreated handler (SESSION_INIT) before the hook arrives.
+      if (resumedRow && created.provider === 'claude') {
+        setTimeout(() => subs.hook.forEach((f) => f({ type: 'SessionStart', sessionId: id, payload: {} })), 50);
+      }
       return created;
     },
 
@@ -1054,6 +1086,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     syncNow: async () => ({ ok: true }),
     stopProject: async () => ({ ok: true }),
     renameProject: async () => ({ ok: true }),
+    // Promo: the conversation-lease gate App.tsx runs before a resume.
+    leaseQuery: async () => leaseHolder ? { held: true, device: leaseHolder, self: false, source: 'workbench' } : { held: false },
+    leaseTakeover: async () => ({ outcome: 'acquired' as const }),
+    leaseForce: async () => ({ ok: true }),
     // The synced device registry behind the popup's Devices count-tab. Without
     // it the catch-all answers [] and the demo reads "0 Devices / No devices
     // yet" directly under "All synced", which contradicts itself — cross-device
@@ -1131,16 +1167,33 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // Project View's Conversations and Context tabs. Conversations reuse the same
   // seeded past sessions the Resume browser shows, filtered by project, so the
   // two surfaces cannot disagree about what exists.
+  // Promo (student=1): the LIVE sessions open in that folder count too, mapped
+  // to the past-row shape. Econ 201 then holds two conversations (the "econ
+  // midterm brief" past row and the open "econ study guide" tab) while the
+  // Resume browser's search for "econ" still matches exactly one row — a
+  // second past row in that folder would match by projectPath and break the
+  // conversations beat's one-result search.
+  const conversationsIn = (projectPath: string) => {
+    const past = store.getState().past
+      .filter((p) => p.projectPath === projectPath)
+      .map((p) => ({ ...p, preview: p.note ?? `Session in ${p.projectSlug}` }));
+    if (!studentSwitch) return past;
+    const live = store.getState().sessions
+      .filter((x: any) => x.cwd === projectPath && !past.some((p) => p.name === x.name))
+      .map((x: any) => ({
+        sessionId: x.id, name: x.name, projectSlug: projectPath.split('/').pop()!, projectPath,
+        lastModified: Date.now() - 30 * 60_000, size: 2048, provider: x.provider, preview: 'Open in a tab right now',
+      }));
+    return [...live, ...past];
+  };
   const project = {
     listConversations: async (projectPath: string) => ({
       ok: true,
-      conversations: store.getState().past
-        .filter((p) => p.projectPath === projectPath)
-        .map((p) => ({ ...p, preview: p.note ?? `Session in ${p.projectSlug}` })),
+      conversations: conversationsIn(projectPath),
     }),
     listContext: async (projectPath: string) => ({
       ok: true,
-      groups: contextGroups(projectPath),
+      groups: studentSwitch ? studentContextGroups(projectPath) : contextGroups(projectPath),
     }),
     readContextFile: async (_root: string, absolutePath: string) => ({
       ok: true,
@@ -1182,6 +1235,57 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       return { ok: true as const, messages, hasMore: start > 0 };
     },
   };
+
+  // Promo switches (dev-only, like ?signedIn=1). `?remote=setup|connected` makes
+  // the Settings → Remote Access popup render a real state instead of the
+  // catch-all's [] (which reads as "Disabled"); `?lease=held:<device>` makes a
+  // resume raise the "active on another device" takeover dialog.
+  const remoteSwitch = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('remote') : null;
+  const leaseSwitch = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('lease') : null;
+  const leaseHolder = leaseSwitch?.startsWith('held:') ? leaseSwitch.slice(5) : null;
+  // `&student=1` (scenarios.ts reads the same flag for sessions/past/tags):
+  // the student persona also owns Project View, the Session Files drawer and
+  // the history of a resumed session below, so a promo scene never shows the
+  // YouCoded repo's own files behind a student's conversation.
+  const studentSwitch = typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('student') === '1';
+
+  // Promo (model beat): the model picker shows ONLY favourites until you type
+  // (components/model/ModelPicker.tsx), and it keeps them in localStorage under
+  // this key — there is no IPC channel to fake. A fresh headless-Chrome profile
+  // has none, so the picker would open on "No favourites yet". Seed four models
+  // from four companies the first time this origin boots; a reviewer who
+  // un-stars one keeps their change (the key is only written when absent).
+  // Keys are `${providerId}:${modelId}` (ModelPicker's choiceKey); the models
+  // are rows of fixtures/providers.ts, so they resolve to real catalog entries.
+  try {
+    const FAV_KEY = 'youcoded-model-favorites';
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(FAV_KEY) === null) {
+      localStorage.setItem(FAV_KEY, JSON.stringify([
+        'pv-openrouter:anthropic/claude-sonnet-4-6',
+        'pv-openrouter:deepseek/deepseek-v3.2',
+        'pv-openrouter:x-ai/grok-4',
+        'pv-openrouter:openai/gpt-5',
+      ]));
+    }
+  } catch { /* storage blocked: the picker just opens on its empty state */ }
+
+  // Shapes: SettingsPanel.tsx RemoteConfig / TailscaleInfo / ClientInfo.
+  const remoteClients = remoteSwitch === 'connected'
+    ? [{ id: 'c-phone', ip: '100.92.14.9', connectedAt: Date.now() - 600_000 }] : [];
+  let remoteConfig = { enabled: true, port: 7842, hasPassword: true, trustTailscale: true, keepAwakeHours: 4, clientCount: remoteClients.length };
+  // Ns<'remote'> (Partial<Window['claude']['remote']>) rejects this literal: the real
+  // setConfig/setPassword resolve to void, but the mock returns the updated config so
+  // a filmed take can show the change take effect without a second round trip.
+  const remote: Record<string, (...a: any[]) => Promise<unknown>> | undefined = remoteSwitch ? {
+    getConfig: async () => remoteConfig,
+    setConfig: async (updates: Partial<typeof remoteConfig>) => { remoteConfig = { ...remoteConfig, ...updates }; return remoteConfig; },
+    setPassword: async () => { remoteConfig = { ...remoteConfig, hasPassword: true }; return remoteConfig; },
+    detectTailscale: async () => ({ installed: true, connected: true, ip: '100.92.14.3', hostname: 'destin-laptop', url: 'http://destin-laptop:7842' }),
+    getClientCount: async () => remoteClients.length,
+    getClientList: async () => remoteClients,
+    disconnectClient: async () => undefined,
+  } : undefined;
 
   // Signed OUT is the honest default, and the `[]` catch-all gets it backwards:
   // account.signedIn() returning `[]` is TRUTHY, and account.user() returning
@@ -1354,24 +1458,41 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // shells — the catch-all's `[]` is not `{ ok, projects }`, so every consumer
   // bails on the `res?.ok` guard and shows nothing. An empty surface is not a
   // reviewable mockup, which is the whole point of the workbench.
+  // Bodies written by the artifact editor this session. Memory only, cleared by
+  // a reload — the Workbench has no disk and must not pretend otherwise.
+  const EDITED_ARTIFACTS = new Map<string, string>();
+  const EDITED_MTIME = new Map<string, number>();
   const artifacts = {
     listProjectsIndex: async (opts?: { withCounts?: boolean }) => ({
       ok: true,
       // MOCKUP: descriptions edited in-session override the seeded ones, so the
       // inline editor behaves like the real thing instead of snapping back.
-      projects: (opts?.withCounts ? projectsWithCounts() : artifactProjects())
+      projects: (studentSwitch
+        ? (opts?.withCounts ? studentProjectsWithCounts((path) => conversationsIn(path).length) : studentProjects())
+        : (opts?.withCounts ? projectsWithCounts() : artifactProjects()))
         .map((p) => ({ ...p, description: descriptionFor(p.path, p.description) })),
     }),
+    // Student mode: every session's drawer lists the Econ 201 session's files
+    // (fixtures/artifacts.ts studentSessionFiles — why every session is there).
     listSession: async (sessionId: string) => ({
-      ok: true, artifacts: sessionArtifacts(sessionId),
+      ok: true, artifacts: studentSwitch ? studentSessionFiles() : sessionArtifacts(sessionId),
     }),
     listProject: async (projectId: string) => ({
-      ok: true, artifacts: allFiles(projectId),
+      ok: true, artifacts: studentSwitch ? studentAllFiles(projectId) : allFiles(projectId),
     }),
     listAllFiles: async (projectId: string) => ({
-      ok: true, files: allFiles(projectId), truncated: false,
+      ok: true, files: studentSwitch ? studentAllFiles(projectId) : allFiles(projectId), truncated: false,
     }),
     get: async (_projectRoot: string, artifactId: string, opts?: { full?: boolean }) => {
+      // An in-session edit wins over the seeded body. Without this the artifact
+      // editor was a dead end in the Workbench: Save had no handler at all, so
+      // the panel snapped back to the fixture and the whole edit-a-file story
+      // could not be shown, let alone recorded.
+      const edited = EDITED_ARTIFACTS.get(artifactId);
+      if (edited !== undefined) {
+        return { ok: true, content: edited, orphan: false, binary: false,
+                 truncated: false, sizeBytes: edited.length, mtimeMs: EDITED_MTIME.get(artifactId) ?? 1 };
+      }
       const content = ARTIFACT_CONTENT[artifactId];
       const asBinary = BINARY_FIXTURES[artifactId];
       if (asBinary !== undefined) {
@@ -1405,6 +1526,19 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         sizeBytes: fake ?? content.length, mtimeMs: 1,
       };
     },
+    // Real handler shape (ipc-handlers.ts artifacts:save): { ok, mtimeMs } or a
+    // conflict/refusal. The mock only ever succeeds — there is no second writer
+    // in a Workbench, so a stale-mtime conflict is a state it cannot honestly
+    // produce, and faking one would put a scary dialog in a recorded demo.
+    save: async (
+      _projectRoot: string, _projectId: string, _projectName: string,
+      artifactId: string, content: string,
+    ) => {
+      const mtimeMs = Date.now();
+      EDITED_ARTIFACTS.set(artifactId, content);
+      EDITED_MTIME.set(artifactId, mtimeMs);
+      return { ok: true, mtimeMs };
+    },
     // Nothing is missing from disk here — every fixture "exists" by construction.
     checkExistence: async () => ({ ok: true, missingIds: [] as string[] }),
     // Image bytes for ArtifactThumbnail / ImageView. Real handler shape
@@ -1432,6 +1566,15 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
           if (detailed) return { ok: true, base64: detailed, mime: 'image/png' };
         }
         return { ok: true, base64: SAMPLE_PNG_BASE64, mime: 'image/png' };
+      }
+      // Promo: the site session's spreadsheet. `window.__workbenchSheet = 'after'`
+      // (set by the recording scene once the assistant's Edit card completes)
+      // swaps in the sorted workbook; the viewer re-reads when its file is
+      // re-opened, and the video cuts across that re-open.
+      if (ext === 'xlsx') {
+        const after = (globalThis as any).__workbenchSheet === 'after';
+        return { ok: true, base64: after ? SHEET_AFTER : SHEET_BEFORE,
+                 mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
       }
       if (ext === 'pdf') {
         const pdf = makeSamplePdfBase64();
@@ -1507,6 +1650,21 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // onDirectoryUpdated push — pulling `leaderWindowId: WORKBENCH_WINDOW_ID`
     // here is what makes `isLeader` resolve true.
     getDirectory: async () => ({ leaderWindowId: WORKBENCH_WINDOW_ID, windows: [] }),
+    // The first page of a RESUMED session's history (App.tsx loadFirstPage).
+    // The catch-all's `[]` has no `.events`, so a resume in the workbench used
+    // to show an empty conversation. Student mode answers a resume of the
+    // "econ midterm brief" row (scenarios.ts studentPast, wb-past-0) with the
+    // briefing fixture as finished history — the promo's phone beat takes that
+    // session over and has to show the brief. Everything else: an honest
+    // empty page.
+    requestTranscriptPage: async (req: { sessionId: string; claudeSessionId?: string }) => {
+      const empty = { events: [] as TranscriptEvent[], cursor: null, hasMore: false };
+      const row = req.claudeSessionId ?? resumedFrom.get(req.sessionId);
+      if (!studentSwitch || row !== 'wb-past-0') return empty;
+      const raw = REPLY_SCRIPTS['./fixtures/replies/briefing.jsonl'];
+      if (!raw) return empty;
+      return { ...empty, events: scriptToEvents(req.sessionId, parseReplyScript(raw), "brief me on tomorrow's econ midterm") as TranscriptEvent[] };
+    },
   };
 
   // No `tags` namespace exists in useIpc.ts at all, so none of this is
@@ -1642,7 +1800,17 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // list above); every other skills channel keeps the catch-all `[]`. Before
   // 2026-08-25 all of these answered `[]`, so Marketplace/Library/skills drawer
   // rendered empty in the workbench and were unreviewable in any theme.
-  let skillFavourites: string[] = ['civic-report', 'superpowers'];
+  let skillFavourites: string[] = studentSwitch ? ['civic-report'] : ['civic-report', 'superpowers'];
+  // Installed set + packages map are per-page state, so skills.install below
+  // can add to them (fixtures stay pristine — every shim starts from the copy).
+  // Student mode drops the developer bundles (Superpowers' "Dispatching
+  // Parallel Agents", the marketplace publisher) from the drawer: the skills
+  // drawer opens on camera in the marketplace beat.
+  const DEVELOPER_BUNDLES = ['superpowers', 'wecoded-marketplace-publisher'];
+  let installedSkills: Record<string, unknown>[] = INSTALLED_SKILLS
+    .filter((s) => !studentSwitch || !DEVELOPER_BUNDLES.includes(s.pluginName))
+    .map((s) => ({ ...s }));
+  const installedPackages: Record<string, any> = JSON.parse(JSON.stringify(INSTALLED_PACKAGES));
   // Quick chips are a STATEFUL mock, not a canned read: the editor writes
   // through setChips on every add/remove/reorder/edit, so a read-only fixture
   // would make every mutation appear to do nothing. Mirrors the real store's
@@ -1657,6 +1825,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     { skillId: 'encyclopedia-librarian', label: 'Briefing', prompt: 'brief me on ' },
     { label: 'Draft Text', prompt: 'help me draft a text to ' },
   ];
+  // Student mode: the same row without the developer chips (Git Status /
+  // Review PR / Fix Tests sat under every student scene of the promo).
+  if (studentSwitch) chipList = chipList.filter((c) => !/Git Status|Review PR|Fix Tests/.test(c.label));
   const skills = {
     getChips: async () => chipList.map((c) => ({ ...c })),
     setChips: async (next: { skillId?: string; label: string; prompt: string }[]) => {
@@ -1667,7 +1838,36 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // member rows (skills, specialists, tools INSIDE bundles) plus a few
     // standalone items — the shape the real catalog will return once built.
     listMarketplace: async () => (marketplaceEmpty ? [] : buildCatalog(MARKETPLACE_PLUGINS)),
-    list: async () => (marketplaceEmpty ? [] : INSTALLED_SKILLS.map((s) => ({ ...s }))),
+    list: async () => (marketplaceEmpty ? [] : installedSkills.map((s) => ({ ...s }))),
+    // Promo (marketplace beat): Install STICKS for the page's lifetime. Before
+    // this both channels fell to the catch-all, so the detail button flashed
+    // "Installing…" and snapped back to Install, the drawer's Installed list
+    // never changed and no chip appeared — the beat had nothing to show.
+    // The three surfaces that read the result all re-fetch after the call
+    // (marketplace-context installSkill → fetchAll + refreshDrawerSkills; the
+    // composer's QuickChips read skills.getChips), so mutating the three lists
+    // here is enough. The catalog is untouched: star ratings stay what they are.
+    install: async (id: string) => {
+      const plugin = MARKETPLACE_PLUGINS.find((p) => p.id === id);
+      if (!plugin || installedSkills.some((s) => s.id === id || s.pluginName === id)) return { ok: true };
+      const installedAt = new Date(1_756_900_000_000).toISOString();
+      installedSkills = [...installedSkills, {
+        id: plugin.id, displayName: plugin.displayName, description: plugin.description, category: plugin.category,
+        prompt: `/${plugin.id}`, source: 'marketplace', pluginName: plugin.id, type: 'plugin',
+        author: plugin.author, version: plugin.version, visibility: 'published', installedAt,
+      }];
+      installedPackages[plugin.id] = { version: plugin.version, source: 'marketplace', installedAt, removable: true, components: [], status: 'installed' };
+      if (!chipList.some((c) => c.skillId === plugin.id || c.label === plugin.displayName)) {
+        chipList = [...chipList, { skillId: plugin.id, label: plugin.displayName, prompt: `/${plugin.id} ` }];
+      }
+      return { ok: true };
+    },
+    uninstall: async (id: string) => {
+      installedSkills = installedSkills.filter((s) => s.id !== id && s.pluginName !== id);
+      delete installedPackages[id];
+      chipList = chipList.filter((c) => c.skillId !== id);
+      return { ok: true };
+    },
     getFavorites: async () => [...skillFavourites],
     setFavorite: async (id: string, favorited: boolean) => {
       skillFavourites = favorited
@@ -1695,7 +1895,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
   };
   const marketplace = {
-    getPackages: async () => (marketplaceEmpty ? {} : JSON.parse(JSON.stringify(INSTALLED_PACKAGES))),
+    getPackages: async () => (marketplaceEmpty ? {} : JSON.parse(JSON.stringify(installedPackages))),
   };
 
   // Games arcade (Step 1). Maps the workbench's own scenario switch onto the
@@ -1750,6 +1950,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade,
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
 }

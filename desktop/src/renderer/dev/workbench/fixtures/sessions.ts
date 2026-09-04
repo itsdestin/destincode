@@ -168,3 +168,26 @@ export function siteSessions(): SessionInfo[] {
     },
   ];
 }
+
+// Promo (scenario=site&student=1): the ONE site session plus four more in the
+// same student's voice, so the strip has enough pills to drag one along it.
+// Only site-1 has a conversation (seed-chat.ts SESSION_FOR) — it stays FIRST so
+// it is the session the app opens on, and it is the pill the promo drags, so
+// the chat behind the drag never goes blank. The old take filmed the developer
+// strip ("fix chat scroll stick", "gpt-5.6 debug session") and dragged an
+// empty session; a viewer review sent it back on both counts.
+export function studentSessions(): SessionInfo[] {
+  const [planMyWeek] = siteSessions();
+  const student = (id: string, name: string, cwd: string, createdAt: number, model: string): SessionInfo => ({
+    id, name, cwd, createdAt, model,
+    permissionMode: 'normal', skipPermissions: false, status: 'idle',
+    provider: 'native', harnessId: 'coder',
+  });
+  return [
+    planMyWeek,
+    student('site-2', 'econ study guide', '/home/you/School/Econ 201', 1_753_789_000_000, 'qwen3-coder-30b-a3b-instruct'),
+    student('site-3', 'club newsletter', '/home/you/Robotics Club', 1_753_788_000_000, 'anthropic/claude-sonnet-4-6'),
+    student('site-4', 'compare two laptops', '/home/you/Documents', 1_753_787_000_000, 'qwen3-coder-30b-a3b-instruct'),
+    student('site-5', 'cover letter', '/home/you/Job hunt', 1_753_786_000_000, 'openai/gpt-5.6-sol'),
+  ];
+}
