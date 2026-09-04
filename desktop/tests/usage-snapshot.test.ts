@@ -53,10 +53,10 @@ describe('buildUsageSnapshot — the native totals fallback', () => {
   });
 
   it('returns null for a Claude Code session that has measured nothing yet', () => {
-    // A CC session's numbers are Claude Code's own. With no statusline written
-    // there is genuinely nothing to snapshot, and the card must not be opened
-    // on an empty page. Native totals are deliberately NOT substituted here —
-    // a CC session's line count covers shell-command edits this app never sees.
+    // No statusline AND no counted turn: genuinely nothing to snapshot, and the
+    // card must not be opened on an empty page. (Token totals ARE now read for
+    // Claude Code sessions — see the 2026-09-03 note in usage-snapshot.ts — but
+    // an all-zero totals object is "no turn has run", so this still holds.)
     expect(buildUsageSnapshot({ ...base, isNative: false, session: nativeSession(turn()) })).toBeNull();
   });
 
@@ -73,19 +73,32 @@ describe('buildUsageSnapshot — the native totals fallback', () => {
     expect(snap!.linesRemoved).toBeNull();
   });
 
-  it('lets a Claude Code statusline zero through as the real measurement it is', () => {
+  it('lets a measured zero through as the real measurement it is', () => {
     // The mirror image, and the half that is easy to break: a cold or expired
     // prompt cache genuinely reads 0 cached tokens. That is a measurement, and
     // collapsing it to null would hide a true answer.
+    //
+    // Rewritten 2026-09-03: this used to prove the point with a statusline
+    // fixture, back when the card's token counts came from there. They come
+    // from session totals now (the statusline's are one request's, not the
+    // session's), so the same point is made where it now lives — a counted turn
+    // with a cold cache. inputTokens > 0 is what says "a turn was counted"; the
+    // zeros beside it are then real.
+    const totals = {
+      ...emptyTotals(), inputTokens: 4_000, outputTokens: 0,
+      cacheReadTokens: 0, cacheCreationTokens: 0,
+    };
     const snap = buildUsageSnapshot({
       ...base,
+      session: nativeSession(turn(), totals),
       stats: {
         costUsd: null, inputTokens: 0, outputTokens: 0,
         cacheReadTokens: 0, cacheCreationTokens: 0, contextTokens: null,
         duration: null, apiDuration: null, linesAdded: 0, linesRemoved: 0,
       },
     });
-    expect(snap!.inputTokens).toBe(0);
+    expect(snap!.inputTokens).toBe(4_000);
+    expect(snap!.outputTokens).toBe(0);
     expect(snap!.cacheReadTokens).toBe(0);
     expect(snap!.cacheCreationTokens).toBe(0);
     expect(snap!.linesAdded).toBe(0);

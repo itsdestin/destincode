@@ -927,37 +927,55 @@ export default function StatusBar({
   // context % is accurate for the local model, not a hardcoded guess.
   const nativeChips = selectNativeStatusChips(nativeUsage, nativeContextLength);
 
-  // In/Out come from the CC statusline for CC sessions and from SESSION TOTALS
-  // for native ones. They used to come from the last completed turn, which made
-  // one label mean two different measurements depending on the runtime — the
-  // defect this change exists to remove (spec §6). Totals include specialists;
-  // input is counted per request, because that is what a provider bills for.
+  // In/Out are SESSION TOTALS for both runtimes. They used to come from the last
+  // completed turn, which made one label mean two different measurements
+  // depending on the runtime — the defect this change exists to remove
+  // (spec §6). Totals include specialists; input is counted per request,
+  // because that is what a provider bills for.
   //
-  // Fix: the "zero means nothing measured yet" collapse belongs ONLY to the
-  // native branch, not to the shared variable. A statusline zero (ss?.xxx) is
-  // a REAL measurement — e.g. a cold or expired prompt cache genuinely reads 0
-  // cached tokens — and must pass through untouched, including a literal 0.
-  // A native zero is ambiguous (emptyTotals() starts every session at all-zero,
-  // before any turn has run), so ONLY nativeTotals collapses 0 -> null here;
-  // the render gates below then use `!= null` to hide just that null, not a
-  // real measured 0 from the statusline.
-  const inTokens = ss?.inputTokens ?? (nativeTotals && nativeTotals.inputTokens > 0 ? nativeTotals.inputTokens : null);
-  const outTokens = ss?.outputTokens ?? (nativeTotals && nativeTotals.outputTokens > 0 ? nativeTotals.outputTokens : null);
+  // Fix (2026-09-03): the precedence used to put the statusline FIRST. That was
+  // the bug — the statusline's numbers are one request's, so Out: read 713 on a
+  // 42-hour session and In: showed a single prompt. `nativeTotals` is now fed
+  // for Claude Code sessions too and is a genuine per-request sum for both
+  // runtimes, so it goes first and the statusline is no longer consulted for
+  // tokens at all. Cost, duration and line counts still come from `ss`: those
+  // ARE session totals (Claude Code's `cost.*` block accumulates; only its
+  // `context_window.*` block does not).
+  //
+  // "Has anything been measured yet?" is ONE question with ONE answer, asked of
+  // inputTokens: every request a provider bills has a prompt, so inputTokens > 0
+  // exactly when at least one turn has been counted. Asking it per-field is what
+  // the old code did, and it could not tell a cold prompt cache (a real reading
+  // of 0 cache reads, which is common and must render) from a session that has
+  // not run a turn (nothing to say, so no chip). Now a zero in any OTHER field
+  // is always a real measurement and always renders.
+  const measured = !!nativeTotals && nativeTotals.inputTokens > 0;
+  const totalTokens = (v: number | undefined) => (measured ? v ?? null : null);
+  const inTokens = totalTokens(nativeTotals?.inputTokens);
+  const outTokens = totalTokens(nativeTotals?.outputTokens);
   // Cached/Reuse get the identical treatment: CC's statusline first (real
   // measurement, 0 included), then session totals for native (0 -> null,
   // nothing measured yet) — never the last-turn nativeChips, which would
   // blend "this session so far" and "the last turn" under one label again.
-  const cacheReadTotal = ss?.cacheReadTokens ?? (nativeTotals && nativeTotals.cacheReadTokens > 0 ? nativeTotals.cacheReadTokens : null);
-  const cacheCreationTotal = ss?.cacheCreationTokens ?? (nativeTotals && nativeTotals.cacheCreationTokens > 0 ? nativeTotals.cacheCreationTokens : null);
+  const cacheReadTotal = totalTokens(nativeTotals?.cacheReadTokens);
+  const cacheCreationTotal = totalTokens(nativeTotals?.cacheCreationTokens);
   // Speed had the identical problem: a CC chip stuck at "--" for native sessions
   // beside a native chip that duplicated it AND ignored show('output-speed'), so
   // hiding Speed in settings didn't hide it. CC derives it from the statusline's
   // apiDuration; native's provider already reports tokens/sec on turn-complete.
-  // Unlike In/Out/Cached/Reuse above, this one stays LAST-TURN for both runtimes
-  // — it measures a moment (how fast is it going right now), not a session total.
-  const speedTokPerSec = ss?.outputTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
-    ? Math.round(ss.outputTokens / ss.apiDuration)
+  //
+  // Fix (2026-09-03): the Claude Code side divided `ss.outputTokens` by
+  // `ss.apiDuration` — one REQUEST's output over the WHOLE SESSION's API time,
+  // two different scopes either side of the slash. It rounded to 0 on every
+  // real session measured (3 tokens / 55.7s, 3,495 / 7,269s), so the chip was a
+  // constant zero. Both halves now come from the session: its summed output
+  // tokens over its summed API seconds, which is an honest average. Native
+  // keeps its provider-reported last-turn rate; the tooltip says which is which
+  // rather than letting one label quietly cover two measurements.
+  const speedTokPerSec = outTokens != null && ss?.apiDuration != null && ss.apiDuration > 0
+    ? Math.round(outTokens / ss.apiDuration)
     : nativeChips?.tokensPerSecond ?? null;
+  const speedIsSessionAverage = outTokens != null && ss?.apiDuration != null && ss.apiDuration > 0;
 
   return (
     <div className="status-bar flex flex-wrap items-center gap-x-2 gap-y-1 px-2 sm:px-3 py-1 text-3xs text-fg-muted">
@@ -1302,9 +1320,7 @@ export default function StatusBar({
       {show('tokens-in') && inTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss == null && nativeTotals != null
-            ? `Input tokens: ${inTokens.toLocaleString()}. ${SCOPE_NOTE} ${INPUT_NOTE}`
-            : `Input tokens: ${inTokens.toLocaleString()}`}
+          title={`Input tokens: ${inTokens.toLocaleString()}. ${SCOPE_NOTE} ${INPUT_NOTE}`}
         >
           <span className="text-fg-muted">In:</span>
           <span className="text-fg-2">{formatTokens(inTokens)}</span>
@@ -1314,17 +1330,13 @@ export default function StatusBar({
       {/* Output tokens. Rule 1 (spec §3): no value, no chip. Session total for
           native (spec §6); see the In chip above for why this stays
           abbreviated with the exact count in the tooltip.
-          Gate is `!= null`, same reasoning as In above: a native zero is
-          already collapsed to null (nothing measured yet), so `!= null`
-          hides it correctly — but a statusline 0 (a real measured turn that
-          genuinely produced no output tokens) must still render, and a
-          truthy check would wrongly hide that real measurement too. */}
+          Gate is `!= null`, not falsy: `measured` above has already turned
+          "no turn counted yet" into null, so a 0 reaching here is a real
+          measurement (a turn that produced no output) and must render. */}
       {show('tokens-out') && outTokens != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss == null && nativeTotals != null
-            ? `Output tokens: ${outTokens.toLocaleString()}. ${SCOPE_NOTE}`
-            : `Output tokens: ${outTokens.toLocaleString()}`}
+          title={`Output tokens: ${outTokens.toLocaleString()}. ${SCOPE_NOTE}`}
         >
           <span className="text-fg-muted">Out:</span>
           <span className="text-fg-2">{formatTokens(outTokens)}</span>
@@ -1353,9 +1365,7 @@ export default function StatusBar({
         return (
           <span
             className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-            title={ss == null && nativeTotals != null
-              ? `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}. ${SCOPE_NOTE}`
-              : `Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}`}
+            title={`Cache read: ${cr.toLocaleString()} | Cache created: ${(cc ?? 0).toLocaleString()}. ${SCOPE_NOTE}`}
           >
             <span className="text-fg-muted">Cached:</span>
             <span className="text-[#4CAF50]">{formatTokens(cr)}</span>
@@ -1372,11 +1382,14 @@ export default function StatusBar({
           rendering. 'first-turn' is a real, known state (nothing to reuse yet)
           and keeps rendering "New", same as before. */}
       {show('cache-hit-rate') && (() => {
-        const reuse = selectCacheReuse(ss, nativeTotals);
+        // Session totals only — passing `ss` here would make Reuse describe the
+        // last request while In:/Out:/Cached: beside it describe the session.
+        const reuse = selectCacheReuse(null, nativeTotals);
         const display = selectReuseDisplay(reuse, turnsWithUsage);
         if (display.kind === 'unknown') return null;
         const prompt = (reuse.promptTokens ?? 0).toLocaleString();
-        const usingTotals = ss == null && nativeTotals != null;
+        // Always the session scope now — see the reuse source above.
+        const usingTotals = nativeTotals != null;
         // Fix: zero reuse on a session TOTAL (as opposed to a single turn)
         // reads as an accusation — "Reused 0 of X" sounds like the cache is
         // broken, when it's just as likely nothing has been reused yet.
@@ -1434,7 +1447,7 @@ export default function StatusBar({
       {show('output-speed') && speedTokPerSec != null && (
         <span
           className="flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim"
-          title={ss?.outputTokens != null && ss?.apiDuration != null ? `${ss.outputTokens.toLocaleString()} tokens in ${formatDuration(ss.apiDuration)}` : 'Output tokens per second on the last turn'}
+          title={speedIsSessionAverage ? `${outTokens!.toLocaleString()} output tokens in ${formatDuration(ss!.apiDuration!)} of model time — this session's average, not its current speed.` : 'Output tokens per second on the last turn'}
         >
           <span className="text-fg-muted">Speed:</span>
           <span className="text-fg-2">

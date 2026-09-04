@@ -20,6 +20,26 @@ describe('reducer session totals', () => {
     expect(s.get(SID)!.totals.outputTokens).toBe(30);
   });
 
+  it('counts a turn exactly once, even when the watcher re-delivers it', () => {
+    // The watcher's re-emit contract and re-dock replay both RE-DELIVER
+    // turn-complete ("the reducer absorbs them"), and addTurnUsage is not
+    // idempotent. This was latent until 2026-09-03, when the In:/Out:/Cached:
+    // chips started reading a Claude Code session's totals — before that
+    // nothing displayed them, so a double count was invisible. Re-docking a
+    // session would otherwise have inflated every number on the bar.
+    let s = start();
+    const usage = { inputTokens: 1_000, outputTokens: 90, cacheReadTokens: 800, cacheCreationTokens: 20 };
+    s = chatReducer(s, turnComplete(usage, 'dup-1'));
+    s = chatReducer(s, turnComplete(usage, 'dup-1'));   // same turn, re-delivered
+    s = chatReducer(s, turnComplete(usage, 'dup-1'));   // and again
+    expect(s.get(SID)!.totals.inputTokens).toBe(1_000);
+    expect(s.get(SID)!.totals.outputTokens).toBe(90);
+    expect(s.get(SID)!.totals.cacheReadTokens).toBe(800);
+    // A genuinely different turn still adds.
+    s = chatReducer(s, turnComplete(usage, 'dup-2'));
+    expect(s.get(SID)!.totals.inputTokens).toBe(2_000);
+  });
+
   it('does not count a SUBAGENT turn-complete twice — the subagent-usage event owns that', () => {
     let s = start();
     s = chatReducer(s, {

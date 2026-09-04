@@ -11,11 +11,49 @@ import { ccProjectSlug } from './slug-encoding';
 // parseTranscriptLine
 // ---------------------------------------------------------------------------
 
+/** Running token tally for the turn currently being parsed.
+ *
+ *  WHY this exists: Claude Code writes ONE assistant line per API request, and
+ *  a single user turn is normally many requests — every tool call is another
+ *  round trip. Only the LAST of them carries a `stop_reason` other than
+ *  `tool_use`, and only that one produced a `turn-complete` event, so the usage
+ *  the app recorded was one request's, not the turn's. Measured across six of
+ *  Destin's real transcripts on 2026-09-03: turn-complete lines are 4-17% of the
+ *  assistant lines that carry usage, so the session's Out: chip was showing
+ *  roughly a twentieth of the truth (713 output tokens for a 42-hour session).
+ *
+ *  The native runtime never had this bug because `native-session-host.ts` sums
+ *  every step of a turn before it emits turn-complete. This makes the Claude
+ *  Code path do the same thing, so ONE label means ONE measurement on both.
+ *
+ *  Subagents cannot contaminate it: Claude Code writes Task transcripts to
+ *  their own files (watched by SubagentWatcher), and a main transcript contains
+ *  zero `isSidechain` assistant lines — verified across those same six files. */
+export interface TurnUsageTally {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+export function emptyTurnUsageTally(): TurnUsageTally {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0 };
+}
+
 /**
  * Parses a single JSONL line from a Claude Code transcript file.
  * Returns zero or more TranscriptEvents.
+ *
+ * `tally` is the caller's per-session accumulator (TranscriptWatcher keeps one
+ * on each WatchedSession). Every assistant line's usage is added to it, and a
+ * turn-complete both reports and resets it. Omitting it keeps the OLD
+ * one-request behaviour, which is only ever what a single-line unit test wants.
  */
-export function parseTranscriptLine(line: string, sessionId: string): TranscriptEvent[] {
+export function parseTranscriptLine(
+  line: string,
+  sessionId: string,
+  tally: TurnUsageTally = emptyTurnUsageTally(),
+): TranscriptEvent[] {
   let parsed: any;
   try {
     parsed = JSON.parse(line);
@@ -221,13 +259,38 @@ export function parseTranscriptLine(line: string, sessionId: string): Transcript
   // (tool_use means Claude is waiting for tool results, not actually done).
   // Enrich with model + usage + anthropicRequestId so the reducer can attach
   // them to the completing AssistantTurn for UI surfacing.
+  // Fold THIS request into the turn's running tally. Runs for every assistant
+  // line, `tool_use` ones included — those are the ~95% the old code dropped.
+  //
+  // inputTokens is stamped as the WHOLE prompt (uncached remainder + cache read
+  // + cache creation) rather than Anthropic's raw `input_tokens`, which is only
+  // the remainder. That is deliberate and load-bearing: the native runtime's
+  // inputTokens is already the whole prompt, and the Claude Code statusline's
+  // `context_window.total_input_tokens` is built the same way (see the comment
+  // in hook-scripts/statusline.sh). Every consumer of this field — the In:
+  // chip, session-totals, selectCacheReuse — therefore gets one meaning from
+  // both runtimes instead of two.
+  const requestUsage = message.usage;
+  if (requestUsage) {
+    const read = requestUsage.cache_read_input_tokens ?? 0;
+    const create = requestUsage.cache_creation_input_tokens ?? 0;
+    tally.inputTokens += (requestUsage.input_tokens ?? 0) + read + create;
+    tally.outputTokens += requestUsage.output_tokens ?? 0;
+    tally.cacheReadTokens += read;
+    tally.cacheCreationTokens += create;
+  }
+
   if (message.stop_reason && message.stop_reason !== 'tool_use') {
-    const usage = message.usage && {
-      inputTokens: message.usage.input_tokens ?? 0,
-      outputTokens: message.usage.output_tokens ?? 0,
-      cacheReadTokens: message.usage.cache_read_input_tokens ?? 0,
-      cacheCreationTokens: message.usage.cache_creation_input_tokens ?? 0,
-    };
+    // Report the WHOLE turn, then reset for the next one. `hasUsage` is checked
+    // against the tally rather than this line's own `message.usage`, because a
+    // final line with no usage block can still be closing a turn whose earlier
+    // requests were all measured — dropping those would put us back where we
+    // started, only less obviously.
+    const hasUsage = tally.inputTokens > 0 || tally.outputTokens > 0
+      || tally.cacheReadTokens > 0 || tally.cacheCreationTokens > 0;
+    const usage = hasUsage ? { ...tally } : undefined;
+    tally.inputTokens = 0; tally.outputTokens = 0;
+    tally.cacheReadTokens = 0; tally.cacheCreationTokens = 0;
     events.push({
       type: 'turn-complete',
       sessionId,
@@ -330,6 +393,10 @@ interface WatchedSession {
   // When recent exceeds DEDUP_CAP, we rotate (discard old, promote recent to
   // old, start a fresh recent). Replaces the old "build an array, slice it,
   // rebuild the Set" prune which was O(DEDUP_CAP) per prune event.
+  // Running token tally for the turn currently in flight. Lives HERE and not in
+  // readNewLinesOnce because a single turn's requests routinely arrive across
+  // many reads — a per-read tally would reset mid-turn and undercount again.
+  turnUsage: TurnUsageTally;
   seenUuidsRecent: Set<string>;
   seenUuidsOld: Set<string>;
   watcher: fs.FSWatcher | null;
@@ -403,6 +470,7 @@ export class TranscriptWatcher extends EventEmitter {
       partialBytes: Buffer.alloc(0),
       reading: false,
       rerunQueued: false,
+      turnUsage: emptyTurnUsageTally(),
       seenUuidsRecent: new Set(),
       seenUuidsOld: new Set(),
       watcher: null,
@@ -503,13 +571,16 @@ export class TranscriptWatcher extends EventEmitter {
     // tool-result / turn-complete still emit (reducer Map.set absorbs them).
     // Without this, every re-dock/replay rendered duplicate text segments.
     const seenUuids = new Set<string>();
+    // A tally of its own: a replay walks the file from the top, so sharing the
+    // live tailer's in-flight tally would both double-count and reset it.
+    const replayUsage = emptyTurnUsageTally();
     if (fs.existsSync(session.jsonlPath)) {
       let raw: string;
       try { raw = fs.readFileSync(session.jsonlPath, 'utf8'); }
       catch { raw = ''; }
       for (const line of raw.split('\n')) {
         if (!line.trim()) continue;
-        const parsed = parseTranscriptLine(line, desktopSessionId);
+        const parsed = parseTranscriptLine(line, desktopSessionId, replayUsage);
         if (parsed.length === 0) continue;
         const lineUuid = parsed[0].uuid;
         const isRepeat = !!lineUuid && seenUuids.has(lineUuid);
@@ -707,7 +778,7 @@ export class TranscriptWatcher extends EventEmitter {
       const trimmed = chunk.trim();
       if (!trimmed) continue;
 
-      const events = parseTranscriptLine(trimmed, session.desktopSessionId);
+      const events = parseTranscriptLine(trimmed, session.desktopSessionId, session.turnUsage);
       if (events.length === 0) continue;
 
       // Deduplicate by uuid — Claude writes incremental updates with the

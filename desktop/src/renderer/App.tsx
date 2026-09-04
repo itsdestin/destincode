@@ -2720,8 +2720,19 @@ function AppInner() {
   // watcher stamps it), and the reuse chip serves both runtimes.
   const turnsWithUsage = useTurnsWithUsage(sessionId);
   // Session-so-far totals for the bar's token / cost / code-change chips.
-  // Null for CC sessions, which take those numbers from the statusline.
-  const nativeTotals = useNativeSessionTotals(isNativeSession ? sessionId : null);
+  //
+  // Fix (2026-09-03): this used to be gated on isNativeSession, with the note
+  // "Null for CC sessions, which take those numbers from the statusline". The
+  // statusline cannot supply them: `context_window.total_input_tokens` and
+  // `total_output_tokens` describe the CURRENT REQUEST, not the session (the
+  // shipped CLI builds that whole object from one usage record — see
+  // hook-scripts/statusline.sh), which is why a 42-hour session's Out: chip read
+  // 713. Claude Code turns DO accumulate into session.totals — the reducer says
+  // so at TRANSCRIPT_TURN_COMPLETE — and now that the transcript watcher sums
+  // every request of a turn rather than only its last one, those totals are
+  // real. Ungated, so In:/Out:/Cached:/Reuse mean "this session so far" on both
+  // runtimes, which is what their shared labels have always claimed.
+  const sessionTotals = useNativeSessionTotals(sessionId);
   // A session with no map entry at all (a gap in the seeding paths above) reads
   // as 'unknown', not 'normal' — 'normal' would claim a specific, possibly wrong
   // permission posture instead of admitting YouCoded hasn't determined it yet.
@@ -3182,7 +3193,7 @@ function AppInner() {
                   nativeUsage={nativeStatusUsage}
                   nativeContextLength={nativeStatusUsage?.contextLength ?? null}
                   turnsWithUsage={turnsWithUsage}
-                  nativeTotals={nativeTotals}
+                  nativeTotals={sessionTotals}
                 />
               </div>
           </>
