@@ -49,7 +49,7 @@
 :root{
   --font-ui:'DM Sans',system-ui,sans-serif; --font-mono:'JetBrains Mono',monospace;
   --font-theme:'DM Sans',system-ui,sans-serif;
-  --wide:1280px; --nav-h:70px;
+  --wide:1280px; --nav-h:78px;
   --glass:rgba(var(--panel-rgb), var(--panel-op));
   --glass-prose:rgba(var(--panel-rgb), var(--panel-op-prose));
   --glass-hi:rgba(255,255,255,.22);
@@ -98,7 +98,7 @@ a{color:inherit}
 
 /* ---- nav: a floating glass bar, not a full-width strip ---- */
 .nav{position:fixed;top:14px;left:0;right:0;z-index:60;pointer-events:none}
-.nav-in{pointer-events:auto;max-width:var(--wide);margin:0 auto;height:56px;padding:0 12px 0 16px;
+.nav-in{pointer-events:auto;max-width:var(--wide);margin:0 auto;height:64px;padding:0 12px 0 16px;
   display:flex;align-items:center;gap:20px;border-radius:var(--radius)}  /* match the footer card, not a full pill (Destin 2026-08-30) */
 .logo{display:flex;align-items:center;gap:10px;text-decoration:none}
 .mark{width:26px;height:26px;border-radius:8px;background:var(--accent);color:var(--on-accent);
@@ -625,72 +625,40 @@ body.pill-accent.legend-on .dl-legend{border-color:transparent;color:var(--fg);
   -webkit-backdrop-filter:none;backdrop-filter:none;
   box-shadow:0 0 0 1.5px rgba(var(--accent-rgb),.9)}
 /* ===========================================================================
-   NAV BRAND VARIANTS, round two (2026-08-31). Round one restyled the whole bar
-   and Destin rejected all four -- "not great options, closer to L". So the bar,
-   its glass, its height, the link styling and the two-line lockup all stay
-   exactly as they are. Only two things move: the mark (the YC square becomes
-   the app's own mascot, in four containers) and the wordmark's typography.
-   Every variant ships the same markup; the class picks what shows.
+   THE HEADER LOCKUP — final, 2026-09-04. Destin signed this off in round 6 of
+   docs/active/reviews/2026-09-04-nav-header/ (workspace repo). This block
+   REPLACES the brand-variant and wordmark-treatment menus that lived here while
+   the decision was open; every rejected option is recoverable from git history.
+
+   Four deliberate departures from what shipped before:
+   1. The mark is GLASS -- the same frosted material as the bar -- with the
+      mascot painted IN the accent instead of knocked out of a solid block. The
+      bar no longer has one solid anchor point; that is the intended read.
+   2. The name is pinned to DM Sans. It used to inherit var(--font-theme), so
+      the logo was literally drawn in a different typeface in all eight themes.
+   3. Everything is uppercase and widely tracked. Caps live or die on tracking:
+      at the old -.01em these same words read as a mistake, not as a logo.
+   4. The accent lands on "YOU", not on "Coded" -- the emphasis is the person.
+
+   Scoped to .nav on purpose: the FOOTER logo shares .mark and .wm with a
+   different payload ("YC" text, no tagline) and is deliberately untouched here.
    =========================================================================== */
-
-.mark-bot{display:none;width:60%;height:60%}
-.mark-bot path,.mark-bot rect,.mark-bot circle,.mark-bot g{fill:currentColor}
-.wm-rule{display:none}
-/* All four swap the monogram for the mascot -- that is the point of the round. */
-body[class*="brand-"] .mark-yc{display:none}
-body[class*="brand-"] .mark-bot{display:block}
-
-/* ---- A  TILE — the pure icon swap ----------------------------------------
-   Same solid accent square the YC monogram sits in, same size, mascot in the
-   on-accent colour. Text untouched. This is the control: it isolates whether
-   the mark alone is the problem. */
-body.brand-tile .mark{border-radius:9px}
-
-/* ---- B/C/D (disc, accent circle, bare) are PARKED, not built: Destin kept the
-   tile and asked for wordmark options against it instead. Their rules are gone
-   from here; the classes brand-disc / brand-round / brand-bare can be rebuilt
-   from git history if wanted. */
-
-/* ===========================================================================
-   WORDMARK TREATMENTS (2026-08-31 round three). All ride on brand-tile -- the
-   mark, the bar and the tagline line are fixed; only the "YouCoded Assistant"
-   type changes.
-   =========================================================================== */
-
-/* E  ONE COLOUR — the accent appears exactly once on the page's top edge, in
-   the mark. The name carries no colour of its own. */
-body.wm-one .wm{font-weight:700}
-body.wm-one .wm b{color:inherit;font-weight:700}
-body.wm-one .wm i{opacity:.45;font-weight:500}
-
-/* F  WEIGHT SPLIT — same idea, but "Coded" is still distinguished, by weight
-   rather than by colour. Reads as one word with an emphasis inside it. */
-body.wm-weight .wm{font-weight:400;font-size:.97rem}
-body.wm-weight .wm b{color:inherit;font-weight:800}
-body.wm-weight .wm i{opacity:.45;font-weight:400}
-
-/* G  NAME + CATEGORY — the name gets bigger and tighter and "ASSISTANT" stops
-   being part of the sentence, becoming a small typeset category label beside
-   it in the same mono face as the tagline. */
-body.wm-cat .wm{font-size:1.04rem;font-weight:800;letter-spacing:-.025em}
-body.wm-cat .wm b{color:var(--accent);font-weight:800}
-body.wm-cat .wm i{font-family:var(--font-mono);text-transform:uppercase;font-style:normal;
-  font-size:.55rem;letter-spacing:.14em;font-weight:500;opacity:.5;
-  margin-left:3px;position:relative;top:-3px}
-
-/* H  MERGED SECOND LINE — "Assistant" leaves the name line and joins the
-   tagline, so line one is purely the name and line two is purely the
-   explanation. The name-block goes display:block to force the break; i and em
-   then flow together on the line beneath. */
-body.wm-merge .wm{font-weight:700}
-body.wm-merge .wm b{color:var(--accent);font-weight:800}
-body.wm-merge .wm-name{display:block;letter-spacing:-.02em}
-body.wm-merge .wm i,body.wm-merge .wm em{display:inline;font-family:var(--font-mono);
-  font-style:normal;text-transform:uppercase;font-size:.54rem;letter-spacing:.11em;
-  font-weight:500;opacity:.5;margin-top:0}
-/* Non-breaking spaces: the plain ones either side of the dot were being eaten
-   at the inline boundary, so the separator ended up glued to "AGENTS". */
-body.wm-merge .wm i::after{content:'\00a0\00a0\00b7\00a0'}
+.nav .mark{width:38px;height:38px;border-radius:32%;
+  background:var(--glass);color:var(--accent);
+  border:1px solid var(--hair);
+  box-shadow:inset 0 1px 0 var(--glass-hi)}
+.nav .mark-bot{display:block;width:62%;height:62%}
+.nav .mark-bot path,.nav .mark-bot rect,.nav .mark-bot circle,.nav .mark-bot g{fill:currentColor}
+.nav .wm{font-family:'DM Sans',system-ui,sans-serif;font-weight:700;font-size:.94rem;
+  line-height:1.14;letter-spacing:.22em;text-transform:uppercase}
+.nav .wm .wm-a{color:var(--accent)}
+.nav .wm b{font-weight:700;color:inherit}
+.nav .wm i{font-weight:700;opacity:.45}
+/* The tagline joins the name's typeface and tracking so the two lines read as
+   one block rather than as a logo with a caption stuck under it. */
+.nav .wm em{display:block;font-family:inherit;font-weight:500;
+  font-size:.564rem;letter-spacing:.22em;text-transform:uppercase;
+  opacity:.5;margin-top:2px}
 
 /* ==========================================================================
    HEADER ARRANGEMENTS (D1–D4)
@@ -1446,7 +1414,7 @@ body.cycler-static .lead-hold{display:none}
      reads as sitting slightly proud of the column under it — the same
      relationship it has on a desktop. */
   .nav{top:8px;padding:0 10px}
-  .nav-in{height:50px;padding:0 12px 0 13px;gap:10px;
+  .nav-in{height:56px;padding:0 12px 0 13px;gap:10px;
     background:rgb(var(--panel-rgb));
     -webkit-backdrop-filter:none;backdrop-filter:none;
     box-shadow:inset 0 1px 0 var(--glass-hi), 0 10px 26px -14px var(--ink)}
@@ -1534,7 +1502,7 @@ body.cycler-static .lead-hold{display:none}
 
   /* Anchor jumps (the logo's #top, and anything added later) must clear the
      fixed bar or they land with the heading underneath it. */
-  html{scroll-padding-top:66px}
+  html{scroll-padding-top:72px}
 
   /* ---- page gutters -------------------------------------------------- */
   /* 30px of padding either side of a 390px screen leaves a 330px column. */
@@ -1542,9 +1510,12 @@ body.cycler-static .lead-hold{display:none}
 
   /* the bar's own rules are in the block above this one -- they apply to a
      phone on its SIDE as well, which is 844px wide. */
-  .nav .mark{width:24px;height:24px}
-  .nav .wm{font-size:.88rem}
-  .nav .wm em{font-size:.5rem}
+  /* Caps at .22em are far wider than the mixed-case lockup this replaced, so a
+     phone eases the tracking as well as the size -- at 390px the old numbers
+     ran the wordmark into the right edge of the bar. */
+  .nav .mark{width:30px;height:30px}
+  .nav .wm{font-size:.8rem;letter-spacing:.16em}
+  .nav .wm em{font-size:.48rem;letter-spacing:.16em}
 
   /* ---- hero ------------------------------------------------------------ */
   .hero{padding-top:calc(var(--nav-h) + 10px)}
@@ -1709,12 +1680,12 @@ html{-webkit-tap-highlight-color:transparent}
 .trypill:active,.embed-start:active{filter:brightness(.94)}
 </style>
 </head>
-<body class="intro-mode fade-d pill-accent legend-on h1-md brand-tile wm-one">
+<body class="intro-mode fade-d pill-accent legend-on h1-md">
 
 <div class="backdrop" id="backdrop"><div class="bd-layer" id="bd-a"></div><div class="bd-layer" id="bd-b"></div><div class="bd-scrim"></div></div>
 
 <nav class="nav"><div class="nav-in">
-  <a href="#top" class="logo"><span class="mark"><span class="mark-yc">YC</span><svg class="mark-bot" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+  <a href="#top" class="logo"><span class="mark"><svg class="mark-bot" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
   <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
        actually renders for a theme that ships no mascot of its own. Pure
        currentColor, so it takes whichever theme colour we set on the button. -->
@@ -1723,7 +1694,7 @@ html{-webkit-tap-highlight-color:transparent}
   <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
   <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
   <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
-</svg></span><span class="wm"><span class="wm-name">You<b>Coded</b></span><span class="wm-rule"></span> <i>Assistant</i><em>Agents for everyone</em></span></a>
+</svg></span><span class="wm"><span class="wm-name"><span class="wm-a">You</span><b>Coded</b></span> <i>Assistant</i><em>Agents for everyone</em></span></a>
   <div class="nav-right">
     
     <ul class="nav-links"><li><a href="#about">About</a></li><li><a href="#demo">Features</a></li><li><a href="#faq">FAQ</a></li></ul>
