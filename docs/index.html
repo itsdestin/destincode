@@ -22,7 +22,7 @@
      and Twitter all cache a preview image BY URL, for days, and a link Destin
      had already shared kept showing the old picture after the file was
      replaced. Bump the number whenever og-image.png is regenerated. -->
-<meta property="og:image" content="https://youcoded.ai/og-image.png?v=4">
+<meta property="og:image" content="https://youcoded.ai/og-image.png?v=5">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="The YouCoded Assistant website: the headline &quot;An Assistant That's Yours.&quot; between four theme mascots, above the app running a real conversation.">
@@ -30,7 +30,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="YouCoded Assistant — Agentic AI for Everyone">
 <meta name="twitter:description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
-<meta name="twitter:image" content="https://youcoded.ai/og-image.png?v=4">
+<meta name="twitter:image" content="https://youcoded.ai/og-image.png?v=5">
 <meta name="twitter:image:alt" content="The YouCoded Assistant website: the headline &quot;An Assistant That's Yours.&quot; between four theme mascots, above the app running a real conversation.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg" id="favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -871,14 +871,14 @@ body:has(.hero-themefirst) .nav .swatches{display:none}
 .mascot[data-idle="scan"]    .rig-idle{animation:m-scan    5.4s ease-in-out infinite}
 .mascot[data-idle="bob"]     .rig-idle{animation:m-bob     2.6s cubic-bezier(.3,.7,.4,1) infinite}
 /* Cotton Candy hovers -- it never quite settles. */
-@keyframes m-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.2px)}}
+@keyframes m-float{0%,100%{transform:translateY(.5px)}50%{transform:translateY(-1.7px)}}
 /* Meadow Mist breathes. Widest and slowest of the four, deliberately: a green
    meadow theme that fidgets is selling the wrong feeling. */
-@keyframes m-breathe{0%,100%{transform:scale(1,1)}50%{transform:scale(.985,1.035) translateY(-.35px)}}
+@keyframes m-breathe{0%,100%{transform:scale(1.015,.985)}50%{transform:scale(.975,1.05) translateY(-.6px)}}
 /* Halftone slides side to side like something scanning. */
-@keyframes m-scan{0%,100%{transform:translateX(-1.1px)}50%{transform:translateX(1.1px)}}
+@keyframes m-scan{0%,100%{transform:translateX(-1.6px) rotate(-2deg)}50%{transform:translateX(1.6px) rotate(2deg)}}
 /* Golden can't hold still -- a springy double-beat, up fast, down slow. */
-@keyframes m-bob{0%,58%,100%{transform:translateY(0)}22%{transform:translateY(-1.5px)}76%{transform:translateY(-.5px)}}
+@keyframes m-bob{0%,58%,100%{transform:translateY(0) scale(1,1)}22%{transform:translateY(-2.1px) scale(.97,1.04)}76%{transform:translateY(-.8px) scale(.99,1.01)}}
 
 /* --- LAYER 2: the minor poses. One-shot, on .rig-root and the limbs, two per
    character, taken in ROTATION by the script so both actually get seen. The
@@ -887,113 +887,131 @@ body:has(.hero-themefirst) .nav .swatches{display:none}
    first one to end. ------------------------------------------------------- */
 
 /* AN ARM ONLY READS IF IT GROWS. Measured 2026-09-04 at the picker's real size:
-   a raised arm is a ~5px shape floating a pixel off a 25px body, and at EVERY
-   hold angle from -60 to -170 it reads as a stray dot rather than a limb --
-   angle was never the problem. Scaling it ~1.7-2x while it is up (from the
-   shoulder, since transform-origin is 50% 0%) turns the same shape into an
-   unmistakable raised arm. Every pose below that lifts an arm does this; it is
-   the difference between "waving" and "a smudge appeared".
+   a raised arm is a ~5px shape floating a pixel off a 25px body, and it reads
+   as a stray dot at EVERY hold angle from -60 to -170 -- angle was never the
+   problem. Scaling it ~1.7-2x while it is up (from the shoulder, since
+   transform-origin is 50% 0%) turns the same shape into an unmistakable limb.
+   Every pose that lifts an arm does it. The film had to learn the same lesson
+   in the other direction -- engine.ts on `cheer`: "a 7 px bob did not register".
 
-   The other rule the same measurements produced: HOLD arms near vertical (0 or
-   past ~120deg) or near horizontal (~90deg), never at a diagonal. A rounded
-   rectangle stopped at 45deg reads as a diamond, not an arm. */
+   ANGLES ARE THE FILM'S, not invented here: worktrees/promo (feat/promo-video)
+   scripts/promo/src/host/engine.ts. wave -150 with a +-16 waggle, cheer +-150
+   with a +-18 pump and a real jump, shrug +-75, tada +-115, think -165,
+   startle +-160. Keeping them means the site and the film move the same way. */
 
-/* WAVE HI (Cotton Candy) — one arm up beside the head, waggling, with the body
-   leaning INTO it so the whole silhouette says hello rather than one corner. */
-.mascot[data-run="wavehi"] .rig-arm-right{animation:m-wavehi 1.35s cubic-bezier(.3,.9,.4,1.2)}
-.mascot[data-run="wavehi"] .rig-root{animation:m-wavehi-lean 1.35s ease-in-out}
-@keyframes m-wavehi{
+/* WAVE (Cotton Candy) — engine.ts `wave`: the right arm to -150 and a waggle on
+   top of it. The body leaning into it is the site's own addition: at 45px the
+   whole silhouette has to say hello, not one corner of it. */
+.mascot[data-run="wave"] .rig-arm-right{animation:m-wave 1.4s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="wave"] .rig-root{animation:m-wave-lean 1.4s ease-in-out}
+@keyframes m-wave{
   0%,100%{transform:rotate(0) scale(1)}
-  18%{transform:rotate(-132deg) scale(1.95)}
-  40%{transform:rotate(-114deg) scale(1.95)}
-  60%{transform:rotate(-140deg) scale(1.95)}
-  80%{transform:rotate(-118deg) scale(1.9)}}
-@keyframes m-wavehi-lean{0%,100%{transform:rotate(0)} 20%,80%{transform:rotate(6deg)}}
+  16%{transform:rotate(-150deg) scale(1.95)}
+  36%{transform:rotate(-134deg) scale(1.95)}
+  56%{transform:rotate(-166deg) scale(1.95)}
+  76%{transform:rotate(-138deg) scale(1.95)}
+  90%{transform:rotate(-152deg) scale(1.9)}}
+@keyframes m-wave-lean{0%,100%{transform:rotate(0)} 18%,86%{transform:rotate(6deg)}}
 
-/* CHEER (Cotton Candy) — both arms up. Symmetry makes it the loud one. */
-.mascot[data-run="cheer"] .rig-arm-left {animation:m-cheer-l 1.25s cubic-bezier(.3,.9,.4,1.2)}
-.mascot[data-run="cheer"] .rig-arm-right{animation:m-cheer-r 1.25s cubic-bezier(.3,.9,.4,1.2)}
-.mascot[data-run="cheer"] .rig-root{animation:m-rise 1.25s cubic-bezier(.3,.9,.4,1.2)}
+/* CHEER (Cotton Candy) — engine.ts `cheer`: both arms to +-150, pumping, and the
+   body genuinely jumps with the legs kicking under it. Wears the `happy` face. */
+.mascot[data-run="cheer"] .rig-arm-left {animation:m-cheer-l 1.3s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="cheer"] .rig-arm-right{animation:m-cheer-r 1.3s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="cheer"] .rig-root{animation:m-cheer-body 1.3s cubic-bezier(.3,.7,.4,1)}
+.mascot[data-run="cheer"] .rig-leg-left {animation:m-kick-l 1.3s ease-in-out}
+.mascot[data-run="cheer"] .rig-leg-right{animation:m-kick-r 1.3s ease-in-out}
 @keyframes m-cheer-l{0%,100%{transform:rotate(0) scale(1)}
-  22%{transform:rotate(132deg) scale(1.8)} 45%{transform:rotate(112deg) scale(1.8)}
-  68%{transform:rotate(132deg) scale(1.8)} 84%{transform:rotate(116deg) scale(1.75)}}
+  20%{transform:rotate(150deg) scale(1.85)} 42%{transform:rotate(132deg) scale(1.85)}
+  64%{transform:rotate(150deg) scale(1.85)} 84%{transform:rotate(134deg) scale(1.8)}}
 @keyframes m-cheer-r{0%,100%{transform:rotate(0) scale(1)}
-  22%{transform:rotate(-132deg) scale(1.8)} 45%{transform:rotate(-112deg) scale(1.8)}
-  68%{transform:rotate(-132deg) scale(1.8)} 84%{transform:rotate(-116deg) scale(1.75)}}
-@keyframes m-rise{0%,100%{transform:translateY(0)} 24%{transform:translateY(-1.6px)} 70%{transform:translateY(-1px)}}
+  20%{transform:rotate(-150deg) scale(1.85)} 42%{transform:rotate(-132deg) scale(1.85)}
+  64%{transform:rotate(-150deg) scale(1.85)} 84%{transform:rotate(-134deg) scale(1.8)}}
+@keyframes m-cheer-body{0%,100%{transform:translateY(0) scale(1,1)}
+  20%{transform:translateY(-3.2px) scale(.94,1.09)} 46%{transform:translateY(0) scale(1.06,.93)}
+  64%{transform:translateY(-2.4px) scale(.96,1.06)} 86%{transform:translateY(0) scale(1.03,.97)}}
+@keyframes m-kick-l{0%,100%{transform:rotate(0)} 20%,64%{transform:rotate(-16deg)}}
+@keyframes m-kick-r{0%,100%{transform:rotate(0)} 20%,64%{transform:rotate(16deg)}}
 
-/* STRETCH (Meadow Mist) — arms straight OUT sideways and back, slow, like
-   waking up. Held at 88deg, not the 62deg it started at: at 62 both arms were
-   diamonds. */
-.mascot[data-run="stretch"] .rig-arm-left {animation:m-stretch-l 2.6s ease-in-out}
-.mascot[data-run="stretch"] .rig-arm-right{animation:m-stretch-r 2.6s ease-in-out}
-.mascot[data-run="stretch"] .rig-root{animation:m-stretch-body 2.6s ease-in-out}
-@keyframes m-stretch-l{0%,100%{transform:rotate(0) scale(1)} 38%,62%{transform:rotate(88deg) scale(1.7)}}
-@keyframes m-stretch-r{0%,100%{transform:rotate(0) scale(1)} 38%,62%{transform:rotate(-88deg) scale(1.7)}}
-@keyframes m-stretch-body{0%,100%{transform:translateY(0) scale(1,1)}
-  38%,62%{transform:translateY(-.8px) scale(.97,1.05)}}
+/* SHRUG (Meadow Mist) — engine.ts `shrug`: both arms out at +-75, a 6deg tilt,
+   a small squash, held briefly. Wears the curious face: a shrug without a
+   question on the face is just arms moving. */
+.mascot[data-run="shrug"] .rig-arm-left {animation:m-shrug-l 1.9s ease-in-out}
+.mascot[data-run="shrug"] .rig-arm-right{animation:m-shrug-r 1.9s ease-in-out}
+.mascot[data-run="shrug"] .rig-root{animation:m-shrug-body 1.9s ease-in-out}
+@keyframes m-shrug-l{0%,100%{transform:rotate(0) scale(1)} 32%,68%{transform:rotate(78deg) scale(1.7)}}
+@keyframes m-shrug-r{0%,100%{transform:rotate(0) scale(1)} 32%,68%{transform:rotate(-78deg) scale(1.7)}}
+@keyframes m-shrug-body{0%,100%{transform:rotate(0) scale(1,1)}
+  32%,68%{transform:rotate(6deg) scale(1.04,.95) translateY(.5px)}}
 
-/* SWAY (Meadow Mist) — one long lean, arms trailing a beat behind the body. */
-.mascot[data-run="sway"] .rig-root{animation:m-sway 2.2s ease-in-out}
-.mascot[data-run="sway"] .rig-arm-left{animation:m-trail-l 2.2s ease-in-out}
-.mascot[data-run="sway"] .rig-arm-right{animation:m-trail-r 2.2s ease-in-out}
-@keyframes m-sway{0%,100%{transform:rotate(0)} 30%{transform:rotate(-5deg)} 70%{transform:rotate(5deg)}}
-@keyframes m-trail-l{0%,100%{transform:rotate(0)} 36%{transform:rotate(13deg)} 76%{transform:rotate(-9deg)}}
-@keyframes m-trail-r{0%,100%{transform:rotate(0)} 36%{transform:rotate(9deg)} 76%{transform:rotate(-13deg)}}
+/* NOD (Meadow Mist) — engine.ts `nod`: two deep dips with a squash. All body,
+   no limbs, which is why it is the one that reads best of the four at this size. */
+.mascot[data-run="nod"] .rig-root{animation:m-nod 1.25s ease-in-out}
+@keyframes m-nod{
+  0%,100%{transform:scale(1,1) rotate(0)}
+  26%{transform:scale(1.1,.84) rotate(5deg) translateY(1.4px)}
+  52%{transform:scale(1,1) rotate(0)}
+  74%{transform:scale(1.07,.89) rotate(3.5deg) translateY(1px)}}
 
-/* LOOK (Halftone) — a glance left, then right, HELD at each side. On .rig-root,
-   not .rig-body: this character's head and torso are one shape, so tilting the
-   body alone slid it off its own arms and read as the head coming loose. */
-.mascot[data-run="look"] .rig-root{animation:m-look 2.4s cubic-bezier(.3,.8,.35,1)}
-@keyframes m-look{
-  0%,100%{transform:translateX(0) rotate(0)}
-  16%{transform:translateX(-1.4px) rotate(-9deg)}
-  44%{transform:translateX(-1.4px) rotate(-9deg)}
-  62%{transform:translateX(1.4px) rotate(9deg)}
-  86%{transform:translateX(1.4px) rotate(9deg)}}
+/* THINK (Halftone) — engine.ts `think`: the right arm up and IN to -165 (a hand
+   to the chin), the body tilted -7, held, then released. Curious face. */
+.mascot[data-run="think"] .rig-arm-right{animation:m-think-arm 2.4s cubic-bezier(.3,.8,.35,1)}
+.mascot[data-run="think"] .rig-root{animation:m-think-body 2.4s cubic-bezier(.3,.8,.35,1)}
+@keyframes m-think-arm{0%,100%{transform:rotate(0) scale(1)} 22%,78%{transform:rotate(-165deg) scale(1.8)}}
+@keyframes m-think-body{0%,100%{transform:rotate(0)} 22%,78%{transform:rotate(-7deg)}}
 
-/* GLITCH (Halftone) — a hard horizontal stutter. The theme is built on
-   chromatic aberration and misregistration, so the one pose that is pure
-   digital fault belongs to this character and no other. Steps, not easing:
-   a smooth glitch is not a glitch. */
-.mascot[data-run="glitch"] .rig-root{animation:m-glitch .62s steps(1,end)}
-@keyframes m-glitch{
-  0%,100%{transform:translate(0,0)}
-  10%{transform:translate(-1.6px,.4px)} 22%{transform:translate(1.4px,-.3px)}
-  34%{transform:translate(-.9px,0)}     46%{transform:translate(1.7px,.5px)}
-  58%{transform:translate(-1.2px,-.4px)} 72%{transform:translate(.7px,0)}
-  86%{transform:translate(-.4px,.2px)}}
+/* STARTLE (Halftone) — engine.ts `startle`: straight up in the air, arms thrown
+   to +-160, legs kicking out, shocked face, then a squash on the landing. */
+.mascot[data-run="startle"] .rig-root{animation:m-startle 1.05s cubic-bezier(.2,.9,.3,1.2)}
+.mascot[data-run="startle"] .rig-arm-left {animation:m-startle-l 1.05s cubic-bezier(.2,.9,.3,1.2)}
+.mascot[data-run="startle"] .rig-arm-right{animation:m-startle-r 1.05s cubic-bezier(.2,.9,.3,1.2)}
+.mascot[data-run="startle"] .rig-leg-left {animation:m-startle-legl 1.05s ease-out}
+.mascot[data-run="startle"] .rig-leg-right{animation:m-startle-legr 1.05s ease-out}
+@keyframes m-startle{
+  0%{transform:translateY(0) scale(1,1)}
+  22%{transform:translateY(-4.6px) scale(.9,1.16)}
+  58%{transform:translateY(0) scale(1.12,.86)}
+  78%{transform:translateY(-.6px) scale(.98,1.03)}
+  100%{transform:translateY(0) scale(1,1)}}
+@keyframes m-startle-l{0%,100%{transform:rotate(0) scale(1)} 20%,58%{transform:rotate(160deg) scale(1.9)}}
+@keyframes m-startle-r{0%,100%{transform:rotate(0) scale(1)} 20%,58%{transform:rotate(-160deg) scale(1.9)}}
+@keyframes m-startle-legl{0%,100%{transform:rotate(0)} 22%,52%{transform:rotate(-18deg)}}
+@keyframes m-startle-legr{0%,100%{transform:rotate(0)} 22%,52%{transform:rotate(18deg)}}
 
-/* HOP (Golden) — two jumps, legs tucking under. */
-.mascot[data-run="hop"] .rig-root{animation:m-hop 1.1s cubic-bezier(.3,.7,.4,1)}
-.mascot[data-run="hop"] .rig-leg-left{animation:m-tuck-l 1.1s ease-in-out}
-.mascot[data-run="hop"] .rig-leg-right{animation:m-tuck-r 1.1s ease-in-out}
-@keyframes m-hop{0%,46%,100%{transform:translateY(0)}
-  20%{transform:translateY(-2.4px)} 68%{transform:translateY(-1.6px)}}
-@keyframes m-tuck-l{0%,46%,100%{transform:rotate(0)} 20%{transform:rotate(22deg)} 68%{transform:rotate(15deg)}}
-@keyframes m-tuck-r{0%,46%,100%{transform:rotate(0)} 20%{transform:rotate(-22deg)} 68%{transform:rotate(-15deg)}}
+/* TADA (Golden) — engine.ts `tada`: both arms sweep up and out to +-115 with a
+   hop and a lean, then hold wide. Happy face. */
+.mascot[data-run="tada"] .rig-arm-left {animation:m-tada-l 1.5s cubic-bezier(.3,.9,.35,1.3)}
+.mascot[data-run="tada"] .rig-arm-right{animation:m-tada-r 1.5s cubic-bezier(.3,.9,.35,1.3)}
+.mascot[data-run="tada"] .rig-root{animation:m-tada-body 1.5s cubic-bezier(.3,.9,.35,1.3)}
+@keyframes m-tada-l{0%,100%{transform:rotate(0) scale(1)} 26%,74%{transform:rotate(115deg) scale(1.85)}}
+@keyframes m-tada-r{0%,100%{transform:rotate(0) scale(1)} 26%,74%{transform:rotate(-115deg) scale(1.85)}}
+@keyframes m-tada-body{0%,100%{transform:translateY(0) rotate(0) scale(1,1)}
+  26%{transform:translateY(-2.8px) rotate(5deg) scale(.96,1.07)}
+  74%{transform:translateY(-.4px) rotate(5deg) scale(1,1)}}
 
-/* ARMWAVE (Golden) — "the wave", inside one body: the left arm goes up and
-   comes down, and the right follows a beat later, so the motion travels across
-   the character. Same keyframes on both arms, offset by a NEGATIVE delay so the
-   right arm starts already part-way in and both still finish inside the run. */
+/* ARMWAVE (Golden) — "the wave", inside one body: the left arm goes up and comes
+   down, the right follows a beat later, so the motion travels across the
+   character. The site's own, not the film's -- it is the thing Destin asked for
+   by name. Same keyframes on both arms, the right one delayed. */
 .mascot[data-run="armwave"] .rig-arm-left {animation:m-armwave 1.5s ease-in-out}
 .mascot[data-run="armwave"] .rig-arm-right{animation:m-armwave-r 1.5s ease-in-out .3s}
 .mascot[data-run="armwave"] .rig-root{animation:m-armwave-body 1.8s ease-in-out}
-@keyframes m-armwave{0%,58%,100%{transform:rotate(0) scale(1)} 24%,38%{transform:rotate(126deg) scale(1.9)}}
-@keyframes m-armwave-r{0%,58%,100%{transform:rotate(0) scale(1)} 24%,38%{transform:rotate(-126deg) scale(1.9)}}
-@keyframes m-armwave-body{0%,100%{transform:translateY(0)} 30%{transform:translateY(-.7px)}}
+@keyframes m-armwave{0%,58%,100%{transform:rotate(0) scale(1)} 24%,38%{transform:rotate(140deg) scale(1.9)}}
+@keyframes m-armwave-r{0%,58%,100%{transform:rotate(0) scale(1)} 24%,38%{transform:rotate(-140deg) scale(1.9)}}
+@keyframes m-armwave-body{0%,100%{transform:translateY(0)} 30%{transform:translateY(-1.1px)}}
 
 /* RELAY — the row-wide version of the same idea, and the only pose all four
    share. Every so often the script fires it left to right down the row, so the
-   four chips do a stadium wave at each other. Short and both-armed, because at
-   this size a travelling gesture only reads if each step is unmistakable. */
-.mascot[data-run="relay"] .rig-arm-left {animation:m-relay-l .9s cubic-bezier(.3,.9,.4,1.3)}
-.mascot[data-run="relay"] .rig-arm-right{animation:m-relay-r .9s cubic-bezier(.3,.9,.4,1.3)}
-.mascot[data-run="relay"] .rig-root{animation:m-relay-body .9s cubic-bezier(.3,.9,.4,1.3)}
-@keyframes m-relay-l{0%,100%{transform:rotate(0) scale(1)} 30%,58%{transform:rotate(134deg) scale(2)}}
-@keyframes m-relay-r{0%,100%{transform:rotate(0) scale(1)} 30%,58%{transform:rotate(-134deg) scale(2)}}
-@keyframes m-relay-body{0%,100%{transform:translateY(0)} 34%,56%{transform:translateY(-2.2px)}}
+   four chips do a stadium wave at each other. Both-armed and short, because at
+   this size a travelling gesture only reads if each step is unmistakable. It
+   wears the plain welcome face on purpose: `happy` is not a face every rig has,
+   and Halftone dances too. */
+.mascot[data-run="relay"] .rig-arm-left {animation:m-relay-l .95s cubic-bezier(.3,.9,.4,1.3)}
+.mascot[data-run="relay"] .rig-arm-right{animation:m-relay-r .95s cubic-bezier(.3,.9,.4,1.3)}
+.mascot[data-run="relay"] .rig-root{animation:m-relay-body .95s cubic-bezier(.3,.9,.4,1.3)}
+@keyframes m-relay-l{0%,100%{transform:rotate(0) scale(1)} 28%,58%{transform:rotate(148deg) scale(2)}}
+@keyframes m-relay-r{0%,100%{transform:rotate(0) scale(1)} 28%,58%{transform:rotate(-148deg) scale(2)}}
+@keyframes m-relay-body{0%,100%{transform:translateY(0) scale(1,1)}
+  32%,56%{transform:translateY(-3px) scale(.95,1.08)}}
 
 /* --- the click reaction. Shared shape (a quick squash and pop) so the row
    answers a tap consistently; the pose that follows is the mascot's own next
@@ -1717,8 +1735,8 @@ html{-webkit-tap-highlight-color:transparent}
     <p class="kicker">Free &middot; Open source &middot; BYO model</p>
     <div class="flankrow">
       <div class="mrow mrow-l">
-<button class="mascot" data-theme="cotton-candy-sky" data-idle="float" data-acts="wavehi cheer" data-face="welcome"
-  aria-label="Use the Cotton Candy Sky look" style="--a:#8B47B8;--rig-on-accent:#21152C"><span class="m-chip"></span>
+<button class="mascot" data-theme="cotton-candy-sky" data-idle="float" data-acts="wave cheer" data-face="welcome"
+  aria-label="Use the Cotton Candy Sky look" style="--a:#8B47B8;--rig-on-accent:#2c173b"><span class="m-chip"></span>
 <svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <defs>
 <radialGradient id="g-hi-cotton-candy-sky" cx="33%" cy="20%" r="80%">
@@ -1770,38 +1788,23 @@ html{-webkit-tap-highlight-color:transparent}
 <path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
 <path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
 </g>
-<g class="rig-face rig-face-welcome">
-<ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
-<ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
-<circle cx="10" cy="10.25" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.3" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
-<circle cx="15.4" cy="9.95" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.65" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
-<g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-welcome"><clipPath id="lid-9.3-9.55-0.0-cotton-candy-sky"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-cotton-candy-sky)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-cotton-candy-sky"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-cotton-candy-sky)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
 </g>
-<g class="rig-face rig-face-curious">
-<ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
-<ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
-<g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="9" cy="10.3" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="9.95" cy="10.15" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<g class="rig-face rig-face-curious"><clipPath id="lid-9.3-9.55-0.0-cotton-candy-sky"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-cotton-candy-sky)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-cotton-candy-sky"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-cotton-candy-sky)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M8 7.1 L10.6 6.9" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.600 Q14.7 5.700 16.050 6.000" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12.05" cy="13.35" rx="0.45" ry="0.5" fill="var(--rig-on-accent, #2a1004)"/></g>
 <g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
 <path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
 <ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
 </g>
-<g class="rig-face rig-face-shocked">
-<circle cx="9.3" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
-<circle cx="14.7" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
-<circle cx="9.9" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/><circle cx="15.3" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/>
-<ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="var(--rig-on-accent, #2a1004)"/>
-</g>
-<g class="rig-face rig-face-blink">
-<path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
-<path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
-</g>
+<g class="rig-face rig-face-shocked"><clipPath id="lid-9.3-9.7-0.0-cotton-candy-sky"><rect x="7.308" y="7.236" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-9.3-9.7-0.0-cotton-candy-sky)"><ellipse cx="9.3" cy="9.7" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.084" cy="10.484" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="9.356" cy="11.156" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.420" cy="11.156" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.4-0.0-cotton-candy-sky"><rect x="12.708" y="6.936" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-14.7-9.4-0.0-cotton-candy-sky)"><ellipse cx="14.7" cy="9.4" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.484" cy="10.184" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="14.756" cy="10.856" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.820" cy="10.856" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M7.950 6.500 Q9.3 5.900 10.650 6.500" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.200 Q14.7 5.600 16.050 6.200" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12" cy="13.6" rx="0.7" ry="0.85" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-happy"><path d="M8 10.4 Q9.3 8.6 10.6 10.4" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M13.4 10.1 Q14.7 8.3 16 10.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M10.3 13 Q10.3 12.7 12 12.7 Q13.7 12.7 13.7 13 A1.7 1.5 0 0 1 10.3 13 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-blink"><path d="M8 10 Q9.3 10.5 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><path d="M13.4 9.8 Q14.7 10.3 16 9.8" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
 <g id="slot-eyewear-cotton-candy-sky"/>
 </g>
 <g id="slot-hat-cotton-candy-sky"/>
 </g></g>
 </svg><span class="m-name">Cotton Candy Sky</span></button>
-<button class="mascot" data-theme="meadow-mist" data-idle="breathe" data-acts="stretch sway" data-face="welcome"
-  aria-label="Use the Meadow Mist look" style="--a:#2F7D55;--rig-on-accent:#041008"><span class="m-chip"></span>
+<button class="mascot" data-theme="meadow-mist" data-idle="breathe" data-acts="shrug nod" data-face="welcome"
+  aria-label="Use the Meadow Mist look" style="--a:#2F7D55;--rig-on-accent:#0f281b"><span class="m-chip"></span>
 <svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <defs>
 <radialGradient id="g-hi-meadow-mist" cx="33%" cy="20%" r="80%">
@@ -1853,31 +1856,16 @@ html{-webkit-tap-highlight-color:transparent}
 <path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
 <path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
 </g>
-<g class="rig-face rig-face-welcome">
-<ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
-<ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
-<circle cx="10" cy="10.25" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.3" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
-<circle cx="15.4" cy="9.95" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.65" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
-<g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-welcome"><clipPath id="lid-9.3-9.55-0.0-meadow-mist"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-meadow-mist)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-meadow-mist"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-meadow-mist)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
 </g>
-<g class="rig-face rig-face-curious">
-<ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
-<ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
-<g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="9" cy="10.3" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="9.95" cy="10.15" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<g class="rig-face rig-face-curious"><clipPath id="lid-9.3-9.55-0.0-meadow-mist"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-meadow-mist)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-meadow-mist"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-meadow-mist)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M8 7.1 L10.6 6.9" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.600 Q14.7 5.700 16.050 6.000" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12.05" cy="13.35" rx="0.45" ry="0.5" fill="var(--rig-on-accent, #2a1004)"/></g>
 <g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
 <path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
 <ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
 </g>
-<g class="rig-face rig-face-shocked">
-<circle cx="9.3" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
-<circle cx="14.7" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
-<circle cx="9.9" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/><circle cx="15.3" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/>
-<ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="var(--rig-on-accent, #2a1004)"/>
-</g>
-<g class="rig-face rig-face-blink">
-<path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
-<path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
-</g>
+<g class="rig-face rig-face-shocked"><clipPath id="lid-9.3-9.7-0.0-meadow-mist"><rect x="7.308" y="7.236" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-9.3-9.7-0.0-meadow-mist)"><ellipse cx="9.3" cy="9.7" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.084" cy="10.484" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="9.356" cy="11.156" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.420" cy="11.156" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.4-0.0-meadow-mist"><rect x="12.708" y="6.936" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-14.7-9.4-0.0-meadow-mist)"><ellipse cx="14.7" cy="9.4" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.484" cy="10.184" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="14.756" cy="10.856" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.820" cy="10.856" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M7.950 6.500 Q9.3 5.900 10.650 6.500" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.200 Q14.7 5.600 16.050 6.200" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12" cy="13.6" rx="0.7" ry="0.85" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-happy"><path d="M8 10.4 Q9.3 8.6 10.6 10.4" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M13.4 10.1 Q14.7 8.3 16 10.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M10.3 13 Q10.3 12.7 12 12.7 Q13.7 12.7 13.7 13 A1.7 1.5 0 0 1 10.3 13 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-blink"><path d="M8 10 Q9.3 10.5 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><path d="M13.4 9.8 Q14.7 10.3 16 9.8" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
 <g id="slot-eyewear-meadow-mist"/>
 </g>
 <g id="slot-hat-meadow-mist"/>
@@ -1893,7 +1881,7 @@ html{-webkit-tap-highlight-color:transparent}
         </span>
       </span></h1>
       <div class="mrow mrow-r">
-<button class="mascot" data-theme="halftone-dimension" data-idle="scan" data-acts="look glitch" data-face="welcome"
+<button class="mascot" data-theme="halftone-dimension" data-idle="scan" data-acts="think startle" data-face="welcome"
   aria-label="Use the Halftone Dimension look" style="--a:#E51F48"><span class="m-chip"></span>
 <svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <!--
@@ -1995,7 +1983,7 @@ Contract: ../README.md
 <g id="slot-hat-halftone-dimension"/>
 </g></g>
 </svg><span class="m-name">Halftone Dimension</span></button>
-<button class="mascot" data-theme="golden-sunbreak" data-idle="bob" data-acts="hop armwave" data-face="welcome"
+<button class="mascot" data-theme="golden-sunbreak" data-idle="bob" data-acts="tada armwave" data-face="welcome"
   aria-label="Use the Golden Sunbreak look" style="--a:#ffc030"><span class="m-chip"></span>
 <svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <!--
@@ -2054,31 +2042,16 @@ Contract: ../README.md
 <path fill="#2a1004" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
 <path fill="#2a1004" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
 </g>
-<g class="rig-face rig-face-welcome">
-<ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="#2a1004"/>
-<ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="#2a1004"/>
-<circle cx="10" cy="10.25" r="0.28" fill="#ffc030"/><circle cx="9.35" cy="10.85" r="0.2" fill="#ffe090"/><circle cx="10.3" cy="10.85" r="0.14" fill="#ffd060"/>
-<circle cx="15.4" cy="9.95" r="0.28" fill="#ffc030"/><circle cx="14.75" cy="10.55" r="0.2" fill="#ffe090"/><circle cx="15.65" cy="10.55" r="0.14" fill="#ffd060"/>
-<g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="#2a1004"/></g>
+<g class="rig-face rig-face-welcome"><clipPath id="lid-9.3-9.55-0.0-golden-sunbreak"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-golden-sunbreak)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-golden-sunbreak"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-golden-sunbreak)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
 </g>
-<g class="rig-face rig-face-curious">
-<ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="#2a1004"/>
-<ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="#2a1004"/>
-<g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="#ffc030"/><circle cx="9" cy="10.3" r="0.22" fill="#ffe090"/><circle cx="9.95" cy="10.15" r="0.14" fill="#ffd060"/></g>
+<g class="rig-face rig-face-curious"><clipPath id="lid-9.3-9.55-0.0-golden-sunbreak"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-golden-sunbreak)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-golden-sunbreak"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-golden-sunbreak)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M8 7.1 L10.6 6.9" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.600 Q14.7 5.700 16.050 6.000" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12.05" cy="13.35" rx="0.45" ry="0.5" fill="var(--rig-on-accent, #2a1004)"/></g>
 <g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="#ffc030"/><circle cx="14.4" cy="10" r="0.22" fill="#ffe090"/><circle cx="15.35" cy="9.85" r="0.14" fill="#ffd060"/></g>
 <path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="#2a1004" stroke-width="0.45" stroke-linecap="round"/>
 <ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="#2a1004"/>
 </g>
-<g class="rig-face rig-face-shocked">
-<circle cx="9.3" cy="9.8" r="2.1" fill="#2a1004"/>
-<circle cx="14.7" cy="9.8" r="2.1" fill="#2a1004"/>
-<circle cx="9.9" cy="9.2" r="0.5" fill="#ffe090"/><circle cx="15.3" cy="9.2" r="0.5" fill="#ffe090"/>
-<ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="#2a1004"/>
-</g>
-<g class="rig-face rig-face-blink">
-<path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="#2a1004" stroke-width="0.9" stroke-linecap="round"/>
-<path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="#2a1004" stroke-width="0.9" stroke-linecap="round"/>
-</g>
+<g class="rig-face rig-face-shocked"><clipPath id="lid-9.3-9.7-0.0-golden-sunbreak"><rect x="7.308" y="7.236" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-9.3-9.7-0.0-golden-sunbreak)"><ellipse cx="9.3" cy="9.7" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.084" cy="10.484" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="9.356" cy="11.156" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.420" cy="11.156" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.4-0.0-golden-sunbreak"><rect x="12.708" y="6.936" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-14.7-9.4-0.0-golden-sunbreak)"><ellipse cx="14.7" cy="9.4" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.484" cy="10.184" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="14.756" cy="10.856" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.820" cy="10.856" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M7.950 6.500 Q9.3 5.900 10.650 6.500" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.200 Q14.7 5.600 16.050 6.200" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12" cy="13.6" rx="0.7" ry="0.85" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-happy"><path d="M8 10.4 Q9.3 8.6 10.6 10.4" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M13.4 10.1 Q14.7 8.3 16 10.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M10.3 13 Q10.3 12.7 12 12.7 Q13.7 12.7 13.7 13 A1.7 1.5 0 0 1 10.3 13 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-blink"><path d="M8 10 Q9.3 10.5 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><path d="M13.4 9.8 Q14.7 10.3 16 9.8" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
 <g id="slot-eyewear-golden-sunbreak"/>
 </g>
 <g id="slot-hat-golden-sunbreak"/>
@@ -2811,7 +2784,17 @@ applyTheme("cotton-candy-sky");
   var visible = true, timers = [], turn = {};
 
   // Which face a pose wears. Anything unlisted keeps the resting 'welcome'.
-  var POSE_FACE = { look: 'curious', glitch: 'shocked', pop: 'shocked' };
+  // Which face a pose wears. Straight from the film's actions: startle and the
+  // click both wear `shocked` (now the WARM shocked -- the same big sparkled
+  // eyes with raised brows, never the hollow black discs), think and shrug wear
+  // `curious`, the celebrations wear `happy`. Anything unlisted rests on
+  // `welcome`. RELAY is deliberately unlisted: not every rig has a happy face
+  // and Halftone dances too.
+  var POSE_FACE = { startle: 'shocked', pop: 'shocked', think: 'curious', shrug: 'curious' };
+  // The film's `happy` face IS in these rigs and is used there, but it is two
+  // thin closed arcs and at 45px it reads as "the eyes have gone missing", so
+  // the celebrations here keep the open welcome face. Not a port error -- a
+  // size decision, and the only one where the site departs from the film.
 
   function actsOf(chip){ return (chip.getAttribute('data-acts') || '').split(' ').filter(Boolean); }
 
@@ -2820,8 +2803,15 @@ applyTheme("cotton-candy-sky");
   // does and why a staggered pose (ARMWAVE offsets the right arm by .3s) got
   // cut off half way through. Infinite animations are excluded: the long idle
   // is one of them and it never finishes by design.
+  // Never ask a rig for a face it has not got: Halftone keeps its own visor
+  // faces and has no `happy`, and an unmatched data-face shows NO face group at
+  // all -- a blank head, which is worse than any expression.
+  function faceOn(chip, want){
+    return chip.querySelector('.rig-face-' + want) ? want : 'welcome';
+  }
+
   function play(chip, run, thenFace){
-    chip.setAttribute('data-face', POSE_FACE[run] || 'welcome');
+    chip.setAttribute('data-face', faceOn(chip, POSE_FACE[run] || 'welcome'));
     chip.removeAttribute('data-run');
     void chip.offsetWidth;                      // reflow, so re-running the same pose restarts it
     chip.setAttribute('data-run', run);
@@ -2837,7 +2827,7 @@ applyTheme("cotton-candy-sky");
       // Guard: a click may have started a DIFFERENT pose while this one ran.
       if (chip.getAttribute('data-run') !== run) return;
       chip.removeAttribute('data-run');
-      chip.setAttribute('data-face', thenFace || 'welcome');
+      chip.setAttribute('data-face', faceOn(chip, thenFace || 'welcome'));
     };
     if (!pending.length) { setTimeout(settle, 700); return; }   // no CSS matched; don't strand the face
     Promise.all(pending).then(settle);
