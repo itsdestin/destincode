@@ -5,7 +5,9 @@ import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
+import { chatGptPlanLabel, type ChatGptAccountStatus, type ChatGptUsage } from '../../shared/chatgpt-types';
 import { AnchorTip, Button, Dialog, InputGroup, TextInput, SettingRow } from './ui';
+import BrailleSpinner from './BrailleSpinner';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -63,7 +65,7 @@ export default function ModelProvidersSection({
           </svg>
         }
         title="Model Providers"
-        description="Claude Code, OpenRouter, and local models"
+        description="Claude Code, ChatGPT, OpenRouter, local models"
         onClick={() => setOpen(true)}
       />
 
@@ -92,11 +94,13 @@ function ModelProvidersPopupInner({
     <>
       <Dialog open onClose={onClose} title="Model Providers" size="panel">
             <p className="text-2xs text-fg-dim leading-relaxed">
-              Choose which AI engine powers your sessions. Claude Code is the default; OpenRouter and
-              local models are optional alternatives.
+              Choose which AI engine powers your sessions. Claude Code is the default; a ChatGPT plan,
+              OpenRouter and local models are optional alternatives.
             </p>
 
             <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
+
+            <ChatGptBlock />
 
             <OpenRouterBlock />
 
@@ -217,6 +221,171 @@ function ClaudeCodeBlock({
       </div>
     </section>
   );
+}
+
+// ── 1b. ChatGPT ──────────────────────────────────────────────────────────────
+// Sign in with ChatGPT (design 2026-09-04, questions deck Q-1a/Q-2a/Q-6a): the
+// user's own ChatGPT plan, used by YouCoded's assistant. A sign-in, not a key —
+// so this is its own block with the Claude Code and OpenRouter rows for
+// neighbours, not a row in the API-key list below. The (i) carries the one
+// honest sentence about the footing (Q-6a): OpenAI welcomes this out loud but
+// has not written it into its terms.
+
+/** Reads the account state through the (still MOCK_ONLY) `chatgpt` namespace —
+ *  reached with a cast like `firstRun`, until it joins the typed bridge. */
+function chatGptApi(): {
+  status: () => Promise<ChatGptAccountStatus>;
+  signIn: () => Promise<boolean>;
+  cancelSignIn: () => Promise<boolean>;
+  signOut: () => Promise<boolean>;
+} {
+  return (window as any).claude.chatgpt;
+}
+
+function ChatGptBlock() {
+  const [status, setStatus] = useState<ChatGptAccountStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try { setStatus(await chatGptApi().status()); }
+    catch (e) { setNote(e instanceof Error ? e.message : 'Could not read the ChatGPT sign-in state.'); }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // While the browser round-trip is open, poll — the sign-in completes in a
+  // tab this app does not own, so nothing else tells the row it is done.
+  useEffect(() => {
+    if (status?.state !== 'waiting') return;
+    const t = setInterval(() => { void refresh(); }, 1000);
+    return () => clearInterval(t);
+  }, [status?.state, refresh]);
+
+  const run = async (verb: () => Promise<boolean>, failText: string) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const ok = await verb();
+      if (!ok) setNote(failText);
+      await refresh();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : failText);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Plain-word status line — no glyphs (the app's standing rule).
+  let line: React.ReactNode;
+  let tone: 'ok' | 'muted' | 'bad' = 'muted';
+  if (!status) {
+    line = 'Checking…';
+  } else if (status.state === 'signed-in') {
+    line = `Signed in as ${status.email} · ${chatGptPlanLabel(status.plan)}`;
+    tone = 'ok';
+  } else if (status.state === 'waiting') {
+    line = (
+      <span className="inline-flex items-center gap-1.5">
+        <BrailleSpinner size="sm" />
+        Waiting for you to finish in the browser…
+      </span>
+    );
+  } else if (status.state === 'blocked') {
+    // OpenAI's own words, verbatim — never a guessed cause.
+    line = `Signed in as ${status.email} — ${status.reason}`;
+    tone = 'bad';
+  } else {
+    line = 'Not signed in';
+  }
+
+  return (
+    <section>
+      <SectionHeader
+        title="ChatGPT"
+        info={{
+          label: 'About ChatGPT sign-in',
+          body: (
+            <>
+              <p>
+                Sign in with your ChatGPT account and YouCoded's assistant can use the models your
+                plan includes — GPT-5.6 and the rest — with no API key and nothing extra to pay.
+              </p>
+              <p>
+                It runs on your plan's limits: a five-hour window and a weekly one, the same ones
+                the Codex app uses. The usage card and the status bar show how much is left.
+              </p>
+              <p>
+                OpenAI has publicly welcomed apps like this using your plan, but it is not written
+                into their terms yet. If OpenAI ever turns it off, this row will say so plainly and
+                everything else in the app keeps working.
+              </p>
+            </>
+          ),
+        }}
+      />
+
+      <div className="bg-inset/50 rounded-lg px-3 py-2.5">
+        <div className="flex items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs text-fg font-medium">ChatGPT</p>
+            <p className={`text-2xs mt-0.5 ${tone === 'ok' ? 'text-green-600' : tone === 'bad' ? 'text-destructive-fg' : 'text-fg-muted'}`}>
+              {line}
+            </p>
+          </div>
+          {/* One action per state (G-4): the primary is the sign-in; everything
+              after it is an outline peer. */}
+          {status?.state === 'waiting' ? (
+            <Button variant="secondary" size="sm" disabled={busy} className="shrink-0"
+              onClick={() => void run(() => chatGptApi().cancelSignIn(), 'Could not cancel the sign-in.')}>
+              Cancel
+            </Button>
+          ) : status?.state === 'signed-in' || status?.state === 'blocked' ? (
+            <Button variant="secondary" size="sm" disabled={busy} className="shrink-0"
+              onClick={() => void run(() => chatGptApi().signOut(), 'Could not sign out.')}>
+              Sign out
+            </Button>
+          ) : (
+            <Button size="sm" disabled={busy || !status} className="shrink-0"
+              onClick={() => void run(() => chatGptApi().signIn(), 'Could not open the sign-in page.')}>
+              Sign in with ChatGPT
+            </Button>
+          )}
+        </div>
+
+        {status?.state === 'signed-in' ? (
+          <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
+            {planUsageLine(status.usage) ?? 'Your plan’s models are in the model picker under ChatGPT.'}
+          </p>
+        ) : status?.state === 'waiting' ? (
+          <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
+            Sign in on chatgpt.com in the tab that opened, then come back here.
+          </p>
+        ) : status?.state === 'signed-out' ? (
+          <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
+            Your plan's models, in YouCoded's assistant. Opens chatgpt.com to sign in.
+          </p>
+        ) : null}
+
+        {note && <p className="text-3xs mt-2 text-destructive-fg">{note}</p>}
+      </div>
+    </section>
+  );
+}
+
+/** "34% of the 5-hour window (resets 4:10 pm) · 12% of the week" — the two
+ *  rolling windows the plan is metered on, or null when OpenAI reported none. */
+function planUsageLine(u: ChatGptUsage | null | undefined): string | null {
+  if (!u) return null;
+  const parts: string[] = [];
+  if (u.five_hour) parts.push(`${Math.round(u.five_hour.utilization)}% of the 5-hour window (resets ${clockTime(u.five_hour.resets_at)})`);
+  if (u.seven_day) parts.push(`${Math.round(u.seven_day.utilization)}% of the week`);
+  return parts.length ? `Plan usage: ${parts.join(' · ')}` : null;
+}
+
+function clockTime(iso: string): string {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return 'later';
+  return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 // ── 2. OpenRouter ────────────────────────────────────────────────────────────

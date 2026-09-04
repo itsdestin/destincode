@@ -81,6 +81,10 @@ export interface UsageSnapshotInput {
   /** Claude Code's context reading (percent REMAINING), if any. */
   contextPercent: number | null;
   usage: SubscriptionUsage | null;
+  /** Which plan `usage` belongs to. Absent → 'claude' (every caller before
+   *  Sign in with ChatGPT). App picks the ChatGPT windows for a session bound
+   *  to a 'chatgpt' provider (hooks/use-provider-type.ts). */
+  subscriptionPlan?: 'claude' | 'chatgpt';
   /** True for a YouCoded-runtime session. Gates every native fallback below. */
   isNative: boolean;
   session: UsageSnapshotSession | undefined;
@@ -107,7 +111,7 @@ export function lastTurnUsage(session: UsageSnapshotSession | undefined): TurnUs
  * session may have no data for a few seconds.
  */
 export function buildUsageSnapshot(input: UsageSnapshotInput): UsageSnapshot | null {
-  const { sessionId, now, stats, contextPercent: ctx, usage, isNative, session } = input;
+  const { sessionId, now, stats, contextPercent: ctx, usage, isNative, session, subscriptionPlan } = input;
 
   // Native fallback (spec §10). The statusline is written by Claude Code, which
   // a native session never runs — so without this every session figure below
@@ -208,5 +212,6 @@ export function buildUsageSnapshot(input: UsageSnapshotInput): UsageSnapshot | n
     fiveHourResetsAt: usage?.five_hour?.resets_at ?? null,
     sevenDayUtilization: usage?.seven_day?.utilization ?? null,
     sevenDayResetsAt: usage?.seven_day?.resets_at ?? null,
+    subscriptionPlan: subscriptionPlan ?? 'claude',
   };
 }

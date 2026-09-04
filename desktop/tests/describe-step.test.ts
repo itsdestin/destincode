@@ -73,7 +73,7 @@ describe('describeStep', () => {
 
   it('describes the auth step', () => {
     expect(describeStep(state({ currentStep: 'AUTHENTICATE' })))
-      .toBe('Sign in with your Claude account to finish setup.');
+      .toBe('Sign in with your Claude or ChatGPT account to finish setup.');
   });
 
   it('describes the developer-mode step', () => {

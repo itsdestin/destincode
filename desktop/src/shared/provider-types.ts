@@ -5,7 +5,11 @@ export type ProviderType =
   | 'local-engine'        // supervised llama-server (registered in Plan B; entry exists from day one)
   | 'openai-compatible'   // Ollama, LM Studio, custom endpoints
   | 'openrouter'
-  | 'anthropic' | 'openai' | 'google';  // direct-key providers
+  | 'anthropic' | 'openai' | 'google'   // direct-key providers
+  // Sign in with ChatGPT: the user's own plan, reached through OpenAI's sign-in
+  // rather than a key. Keyless like 'local-engine' — `ready` means signed in.
+  // shared/chatgpt-types.ts carries the account state.
+  | 'chatgpt';
 
 export interface ProviderConfig {
   id: string;             // 'local' | 'openrouter' | ulid for user-created entries

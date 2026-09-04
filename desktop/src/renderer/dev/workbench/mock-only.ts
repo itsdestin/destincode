@@ -32,4 +32,12 @@
 // the workbench can still show the you-alone, empty and stale-board states
 // without a live leaderboard. `no MOCK_ONLY entry has since gained a real
 // channel` in workbench-mock-contract.test.ts is what forces this cleanup.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
+  // Sign in with ChatGPT (design 2026-09-04): the account state machine and its
+  // three verbs. The real backend is the OAuth round-trip in main
+  // (docs/active/investigations/2026-09-04-chatgpt-subscription-paths.md §2).
+  { channel: 'chatgpt.status', feature: 'Sign in with ChatGPT — account state (signed-out / waiting / signed-in / blocked)' },
+  { channel: 'chatgpt.signIn', feature: 'Sign in with ChatGPT — open the browser round-trip' },
+  { channel: 'chatgpt.cancelSignIn', feature: 'Sign in with ChatGPT — abandon a waiting round-trip' },
+  { channel: 'chatgpt.signOut', feature: 'Sign in with ChatGPT — forget the account on this computer' },
+];

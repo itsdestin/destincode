@@ -320,8 +320,13 @@ export default function UsageCard({ snapshot: s }: Props) {
                 native session without leaving the user guessing (spec §10) —
                 and it stops the card recreating the confusion the bar just
                 shed. */}
+            {/* Sign in with ChatGPT (2026-09-04): the same two bars describe the
+                ChatGPT plan when the session runs on one; the scope line says
+                which, because "5-hour limit" alone no longer names the plan. */}
             <p className="text-3xs text-fg-muted pt-1">
-              Measured across your whole Claude account, not just this conversation.
+              {s.subscriptionPlan === 'chatgpt'
+                ? 'Measured across your whole ChatGPT plan, not just this conversation.'
+                : 'Measured across your whole Claude account, not just this conversation.'}
             </p>
           </div>
         )}

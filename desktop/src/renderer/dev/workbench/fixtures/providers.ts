@@ -8,6 +8,9 @@ export interface CatalogRow { id: string; providerId: string; label: string }
 export function providers(): ProviderRow[] {
   return [
     { id: 'pv-openrouter', type: 'openrouter', label: 'OpenRouter', ready: true },
+    // Sign in with ChatGPT (2026-09-04): a keyless provider whose `ready` is
+    // "signed in". The mock shim flips it with the sign-in state (`?chatgpt=`).
+    { id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT', ready: true },
     { id: 'local', type: 'local-engine', label: 'Local Models', ready: true },
     // Deliberately not ready: the runtime selector has a distinct disabled row
     // treatment, and a fixture where everything is ready never shows it.
@@ -18,6 +21,13 @@ export function providers(): ProviderRow[] {
 export function catalog(): CatalogRow[] {
   return [
     { id: 'anthropic/claude-sonnet-4-6', providerId: 'pv-openrouter', label: 'Claude Sonnet 4.6' },
+    // The ChatGPT plan's own catalog — what OpenAI lists for a signed-in Plus
+    // account (names as OpenAI publishes them; the real list comes from the
+    // account at sign-in, so nothing here is hand-maintained in the app).
+    { id: 'gpt-5.6-sol', providerId: 'chatgpt', label: 'GPT-5.6 Sol' },
+    { id: 'gpt-5.6-terra', providerId: 'chatgpt', label: 'GPT-5.6 Terra' },
+    { id: 'gpt-5.6-luna', providerId: 'chatgpt', label: 'GPT-5.6 Luna' },
+    { id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5' },
     { id: 'openai/gpt-5', providerId: 'pv-openrouter', label: 'GPT-5' },
     { id: 'x-ai/grok-4', providerId: 'pv-openrouter', label: 'Grok 4' },  // site row-1 skit switches to it
     // Promo (model beat): two DeepSeek rows so the favourites list opens with

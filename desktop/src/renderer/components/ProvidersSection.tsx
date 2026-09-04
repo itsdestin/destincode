@@ -88,6 +88,8 @@ const safeProviders = {
 // below the row carries the detailed install/status controls.
 function stateWord(p: ProviderStatus): string {
   if (p.type === 'local-engine') return p.ready ? 'Installed' : 'Not installed';
+  // Keyless like the local engine: `ready` is "signed in" (shared/chatgpt-types.ts).
+  if (p.type === 'chatgpt') return p.ready ? 'Signed in' : 'Not signed in';
   if (!p.enabled) return 'Disabled';
   if (p.ready) return 'Connected';
   // enabled && !ready && not local → the key is missing (ready already accounts
@@ -142,11 +144,13 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
 
   if (!supported) return null;
 
-  // In embedded mode the local-engine row (managed in Local Models) AND the
-  // openrouter row (managed by the section's own Connect control) are hidden.
+  // In embedded mode the local-engine row (managed in Local Models), the
+  // openrouter row (managed by the section's own Connect control) AND the
+  // chatgpt row (managed by the popup's ChatGPT block — a sign-in, not a key)
+  // are hidden.
   const visibleRows = rows === null
     ? null
-    : (embedded ? rows.filter((p) => p.type !== 'local-engine' && p.type !== 'openrouter') : rows);
+    : (embedded ? rows.filter((p) => p.type !== 'local-engine' && p.type !== 'openrouter' && p.type !== 'chatgpt') : rows);
 
   return (
     <section>

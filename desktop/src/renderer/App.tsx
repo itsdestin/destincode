@@ -33,6 +33,7 @@ import { runNativeSlashAction, routeSlashResult } from './state/native-slash-act
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
 import { buildUsageSnapshot, pruneExpiredUsage, type SubscriptionUsage } from './state/usage-snapshot';
+import { resolveProviderType, useFallbackBinding, useModelProviderType } from './hooks/use-provider-type';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
@@ -135,6 +136,10 @@ interface SessionStats {
 
 interface StatusDataState {
   usage: any;
+  /** The ChatGPT plan's rolling windows (Sign in with ChatGPT, 2026-09-04),
+   *  pushed beside Claude's on status:data. Shown only for a session bound to
+   *  a 'chatgpt' provider — see the StatusBar props below. */
+  chatgptUsage: any;
   announcement: any;
   updateStatus: any;
   model: string | null;
@@ -206,7 +211,7 @@ function AppInner() {
   const isLeader = myWindowId != null && leaderWindowId === myWindowId;
   const [viewModes, setViewModes] = useState<Map<string, ViewMode>>(new Map());
   const [statusData, setStatusData] = useState<StatusDataState>({
-    usage: null, announcement: null, updateStatus: null,
+    usage: null, chatgptUsage: null, announcement: null, updateStatus: null,
     model: null, contextMap: {}, gitBranchMap: {}, sessionStatsMap: {},
     syncWarnings: [],
     lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
@@ -1453,6 +1458,7 @@ function AppInner() {
         ...prev,
         // A window past its reset time is stale, not current — see pruneExpiredUsage.
         usage: pruneExpiredUsage(data.usage),
+        chatgptUsage: pruneExpiredUsage(data.chatgptUsage),
         announcement: data.announcement,
         updateStatus: data.updateStatus,
         syncWarnings: Array.isArray(data.syncWarnings) ? data.syncWarnings : [],
@@ -2247,16 +2253,22 @@ function AppInner() {
     // The derivation itself lives in state/usage-snapshot.ts — a pure function,
     // so the thing /usage is entirely made of can be tested without rendering
     // App (no test imports this file). This wrapper only gathers the inputs.
-    (sid: string) =>
-      buildUsageSnapshot({
+    (sid: string) => {
+      const info = sessionsRef.current.find((x) => x.id === sid);
+      // A session bound to the ChatGPT plan reports THAT plan's windows on the
+      // card (questions deck Q-4a); every other session keeps Claude's.
+      const onChatGpt = info?.provider === 'native' && resolveProviderType(info.model) === 'chatgpt';
+      return buildUsageSnapshot({
         sessionId: sid,
         now: Date.now(),
         stats: statusData.sessionStatsMap[sid],
         contextPercent: statusData.contextMap[sid] ?? null,
-        usage: statusData.usage as SubscriptionUsage | null,
-        isNative: sessionsRef.current.find((x) => x.id === sid)?.provider === 'native',
+        usage: (onChatGpt ? statusData.chatgptUsage : statusData.usage) as SubscriptionUsage | null,
+        subscriptionPlan: onChatGpt ? 'chatgpt' : 'claude',
+        isNative: info?.provider === 'native',
         session: chatStateMapRef.current.get(sid),
-      }),
+      });
+    },
     [statusData],
   );
 
@@ -2706,6 +2718,11 @@ function AppInner() {
   // Native sessions: permission modes are a harness policy (Phase 2), not a
   // PTY shift+tab cycle — hide the badge + cycle affordance for them.
   const isNativeSession = currentSession?.provider === 'native';
+  // Sign in with ChatGPT (2026-09-04): which provider the bound model runs on,
+  // and what to offer when its plan window runs out (the plan-limit card).
+  const activeProviderType = useModelProviderType(isNativeSession ? currentSession?.model : null);
+  const onChatGptPlan = activeProviderType === 'chatgpt';
+  const fallbackBinding = useFallbackBinding(onChatGptPlan ? 'chatgpt' : null);
   // What the StatusBar model chip renders — see model-chip.ts for why native
   // sessions bypass the Claude Code alias matcher entirely.
   const modelChip = modelChipFor(currentSession, currentModel);
@@ -3029,6 +3046,13 @@ function AppInner() {
                       // Provider-config error bubble → open Settings straight to
                       // the Model Providers section so the key can be fixed.
                       onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
+                      // Plan-limit card (Q-5a): one tap rebinds THIS conversation
+                      // to another connected provider's model; the picker's swap path.
+                      planLimitAlternative={onChatGptPlan && fallbackBinding && sessionId ? {
+                        label: fallbackBinding.label,
+                        metered: fallbackBinding.metered,
+                        onPick: () => { void window.claude.native.setBinding(sessionId, { providerId: fallbackBinding.providerId, modelId: fallbackBinding.modelId }); },
+                      } : null}
                       onCancelQueued={handleCancelQueued}
                       onEditQueued={handleEditQueued}
                     />
@@ -3132,7 +3156,7 @@ function AppInner() {
                 <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => setToast(msg)} onSendBlocked={(retry) => setToast({ message: 'Claude is waiting for your response — answer the prompt first.', durationMs: 8000, action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } })} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
                   statusData={{
-                    usage: statusData.usage,
+                    usage: onChatGptPlan ? statusData.chatgptUsage : statusData.usage,
                     updateStatus: statusData.updateStatus,
                     announcement: statusData.announcement,
                     contextPercent: sessionId ? (statusData.contextMap[sessionId] ?? null) : null,
@@ -3153,6 +3177,8 @@ function AppInner() {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
                   model={modelChip}
+                  modelProviderType={activeProviderType}
+                  usagePlan={onChatGptPlan ? 'chatgpt' : 'claude'}
                   provider={isNativeSession ? 'native' : 'claude'}
                   permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
                   onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}

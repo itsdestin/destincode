@@ -75,20 +75,28 @@ function ProgressBar({ percent }: { percent: number }) {
 function AuthScreen({
   authMode,
   onOAuth,
+  onChatGpt,
   onApiKey,
 }: {
   authMode: FirstRunState['authMode'];
   onOAuth: () => void;
+  // Sign in with ChatGPT (design 2026-09-04, Q-1a): a second plan the app can
+  // run on from day one, so a ChatGPT-only user is not sent to "Skip setup".
+  onChatGpt: () => void;
   onApiKey: (key: string) => void;
 }) {
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiKey, setApiKey] = useState('');
 
-  if (authMode === 'oauth') {
+  if (authMode === 'oauth' || authMode === 'chatgpt') {
     return (
       <div className="mt-6 text-center flex items-center justify-center gap-2 text-sm text-fg-dim">
         <BrailleSpinner size="sm" />
-        <span>A browser window should have opened. Complete sign-in there…</span>
+        <span>
+          {authMode === 'chatgpt'
+            ? 'A browser window should have opened. Finish signing in to ChatGPT there…'
+            : 'A browser window should have opened. Complete sign-in there…'}
+        </span>
       </div>
     );
   }
@@ -96,15 +104,22 @@ function AuthScreen({
   return (
     <div className="mt-6 w-full max-w-md rounded-2xl bg-panel border border-edge p-6 flex flex-col items-center gap-4">
       <p className="text-sm text-fg-dim text-center leading-relaxed">
-        Sign in with your Claude Pro or Max plan — no API key or credit card needed.
+        Sign in with your Claude or ChatGPT plan — no API key or credit card needed.
       </p>
 
       {/* Documented pill exception: first-run hero CTAs keep rounded-full and
           their own larger padding. Only the hover and the focus ring normalize —
-          hover:opacity-90 faded the label along with the fill. */}
-      <Button onClick={onOAuth} className="px-6 py-3 rounded-full font-semibold text-base">
-        Log in with Claude
-      </Button>
+          hover:opacity-90 faded the label along with the fill.
+          One primary per view (G-4): Claude Code is the default engine, so its
+          button is the filled one; ChatGPT is the outlined peer beside it. */}
+      <div className="flex flex-wrap items-center justify-center gap-3">
+        <Button onClick={onOAuth} className="px-6 py-3 rounded-full font-semibold text-base">
+          Log in with Claude
+        </Button>
+        <Button variant="secondary" onClick={onChatGpt} className="px-6 py-3 rounded-full font-semibold text-base">
+          Log in with ChatGPT
+        </Button>
+      </div>
 
       {!showApiKey ? (
         <button
@@ -268,6 +283,12 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
     (window as any).claude.firstRun.startAuth('oauth');
   }, []);
 
+  // The ChatGPT round-trip: main opens chatgpt.com and waits for OpenAI's
+  // callback (docs/active/investigations/2026-09-04-chatgpt-subscription-paths.md §2).
+  const handleChatGpt = useCallback(() => {
+    (window as any).claude.firstRun.startAuth('chatgpt');
+  }, []);
+
   const handleApiKey = useCallback((key: string) => {
     (window as any).claude.firstRun.submitApiKey(key);
   }, []);
@@ -331,6 +352,7 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
             <AuthScreen
               authMode={state.authMode}
               onOAuth={handleOAuth}
+              onChatGpt={handleChatGpt}
               onApiKey={handleApiKey}
             />
           )}
