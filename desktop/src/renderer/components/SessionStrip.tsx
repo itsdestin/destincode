@@ -304,6 +304,19 @@ function SessionName({ name }: { name: string }) {
   );
 }
 
+// A 1x1 transparent canvas for setDragImage: the compositor then carries
+// nothing visible and the strip draws the pill in hand itself (see
+// handleDragStart). Made once; a canvas needs no place in the document.
+let blankCanvas: HTMLCanvasElement | null = null;
+function blankDragImage(): HTMLCanvasElement {
+  if (!blankCanvas) {
+    blankCanvas = document.createElement('canvas');
+    blankCanvas.width = 1;
+    blankCanvas.height = 1;
+  }
+  return blankCanvas;
+}
+
 /* ── Main component ──────────────────────────────────────── */
 
 export default function SessionStrip({
@@ -1182,6 +1195,10 @@ export default function SessionStrip({
   // `dragover` stream (~190/s, working clientX — measured 2026-09-04). Why not
   // the pointer path plus a mid-gesture handoff: session-drag-model.ts.
   const htmlDragActive = useRef(false);
+  // The pill in hand BELOW the row — see the drag stream listener further down.
+  const [carried, setCarried] = useState(false);
+  const carriedEl = useRef<HTMLDivElement | null>(null);
+  const carriedPos = useRef({ x: 0, y: 0 });
 
   // Every trace of the drag, cleared. Also the safety net below: if another
   // window adopted the pill, its ownership leaves this window and the pill
@@ -1198,6 +1215,7 @@ export default function SessionStrip({
     setDragLeft(null);
     setDragActive(false);
     setIncomingDropActive(false);
+    setCarried(false);
     setTimeout(() => { suppressClick.current = false; }, 0);
   }, []);
   useEffect(() => {
@@ -1213,32 +1231,36 @@ export default function SessionStrip({
     // 'move' is what a session transfer is, and the browser honours it here
     // (it was startDrag's FILE drag that could only offer copy — gone now).
     dt.effectAllowed = 'move';
-    // The picture under the cursor: the pill exactly as drawn at this instant,
-    // cloned because the original is about to be hidden in its slot. Off
-    // screen while the browser snapshots it, removed the moment it has.
-    // Comes through at full size, crisp at 1.5x (probe, 2026-09-04).
+    // The picture the compositor carries is INVISIBLE (a 1x1 transparent
+    // canvas). The strip draws the pill in hand itself: inside the row that is
+    // the twin — #404's motion, untouched — and below the row it is the
+    // carried ghost, placed from the dragover stream (window-local
+    // coordinates, which work on Wayland). A first cut used a snapshot of the
+    // pill as the compositor's picture and switched the twin off: that
+    // flattened the whole in-row animation, because the loop that flows the
+    // dots around the pill keys off the twin (Destin, 2026-09-04: "completely
+    // broken the old animation"). The one place nothing is drawn is the bare
+    // desktop between two windows — where a release does nothing anyway.
     try {
-      const pillEl = e.currentTarget as HTMLElement;
-      const clone = pillEl.cloneNode(true) as HTMLElement;
-      clone.style.position = 'fixed';
-      clone.style.top = '-1000px';
-      clone.style.left = '-1000px';
-      clone.style.visibility = 'visible';
-      clone.style.transform = 'none';
-      clone.style.transition = 'none';
-      clone.style.boxShadow = '0 8px 20px rgba(0,0,0,0.35)';
-      document.body.appendChild(clone);
-      dt.setDragImage(clone, grabOffsetInPill.current.x, grabOffsetInPill.current.y);
-      setTimeout(() => clone.remove(), 0);
+      dt.setDragImage(blankDragImage(), 0, 0);
     } catch { /* jsdom, or a platform without setDragImage: the browser's default picture */ }
     beginLocalSessionDrag({ sessionId, lone: sessions.length <= 1 });
     htmlDragActive.current = true;
-    // What the first real pointermove would have armed — there may not be one
-    // (Chromium promotes a press to a drag within a few px).
-    isDragging.current = true;
-    setDragActive(true);   // see dragActive
     suppressClick.current = true;
     dragStartX.current = e.clientX;   // see dragStartX
+    // What the first real pointermove would have armed — there may not be one
+    // (Chromium promotes a press to a drag within a few px). DEFERRED by a
+    // tick, and this is load-bearing: `dragActive` re-renders the pill in its
+    // slot as `visibility: hidden`, and Chromium ABORTS a drag whose source is
+    // hidden synchronously inside dragstart — dragend fired 12ms after
+    // dragstart with the pointer still, every time (recorded in the dev
+    // window, 2026-09-04). A tick later the browser has its snapshot and no
+    // longer cares.
+    setTimeout(() => {
+      if (!htmlDragActive.current) return;   // already ended — nothing to arm
+      isDragging.current = true;
+      setDragActive(true);   // see dragActive
+    }, 0);
   }, [tearOffModel, sessions]);
 
   // dropEffect 'move': something took it — this strip reordered, another
@@ -1250,33 +1272,75 @@ export default function SessionStrip({
     clearHtmlDrag();
   }, [clearHtmlDrag]);
 
+  // The pill in hand BELOW the row: a ghost drawn under the cursor, anywhere
+  // in the window. Mounted by state, MOVED by a ref (one style write per
+  // dragover, no React churn — the same rule the twin follows).
+  const placeCarried = (x: number, y: number) => {
+    carriedPos.current = { x, y };
+    const el = carriedEl.current;
+    if (el) el.style.transform = `translate(${x - grabOffsetInPill.current.x}px, ${y - grabOffsetInPill.current.y}px)`;
+  };
+
+  // The drag stream, for the whole window. One listener at the document,
+  // not per element: Chromium's dragenter/dragleave pairs carry no usable
+  // relatedTarget, so "is the cursor over the row" is a hit-test on each
+  // dragover, never an enter/leave count.
+  //   Our own pill, over or beside the row (the pointer path's own rule — Y
+  //   is ignored for the slot, 60px below the strip is "out"): the slot logic,
+  //   fed exactly as pointermove fed it. Below that: the carried ghost, and
+  //   the neighbours close the gap as Chrome's tabs do.
+  //   Another window's pill: the strip lights up while the cursor is over it.
+  const latestMove = useRef(handlePointerMove);
+  latestMove.current = handlePointerMove;
+  useEffect(() => {
+    if (tearOffModel !== 'html-drag') return;
+    const onDragOver = (e: DragEvent) => {
+      if (!dragCarriesSession(e.dataTransfer)) return;
+      const bar = pillBarRef.current;
+      if (!bar) return;
+      const r = bar.getBoundingClientRect();
+      if (!localSessionDrag()) {
+        const over = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+        setIncomingDropActive(over);
+        return;
+      }
+      if (!htmlDragActive.current) return;
+      const inRow = e.clientY <= r.bottom + 60 && e.clientY >= r.top - 60;
+      if (inRow) {
+        if (carriedEl.current) setCarried(false);
+        latestMove.current({
+          clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY, pointerType: 'mouse',
+        } as unknown as React.PointerEvent);
+      } else {
+        placeCarried(e.clientX, e.clientY);
+        if (!carriedEl.current) setCarried(true);
+        if (overIdRef.current !== null) { overIdRef.current = null; setOverId(null); }
+      }
+    };
+    // Leaving the window (no relatedTarget), any drop, any end: no highlight.
+    const onLeave = (e: DragEvent) => { if (!e.relatedTarget) setIncomingDropActive(false); };
+    const off = () => setIncomingDropActive(false);
+    document.addEventListener('dragover', onDragOver);
+    document.addEventListener('dragleave', onLeave);
+    document.addEventListener('drop', off);
+    document.addEventListener('dragend', off);
+    return () => {
+      document.removeEventListener('dragover', onDragOver);
+      document.removeEventListener('dragleave', onLeave);
+      document.removeEventListener('drop', off);
+      document.removeEventListener('dragend', off);
+    };
+  }, [tearOffModel]);
+
   // The strip as a drop target — for its OWN pill (a reorder) and for another
-  // window's (adopt it). The payload is withheld until drop, so mid-drag the
-  // only distinction available is whether THIS window started the drag.
+  // window's (adopt it). Accepting is all this does; the motion is fed by the
+  // document listener above. Never stopPropagation here: the drop zone over
+  // the chat (SessionDropZone) disarms itself on the document's drop, and a
+  // swallowed event would leave it covering the chat after a strip drop.
   const handleDragOver = useCallback((e: React.DragEvent) => {
     if (tearOffModel !== 'html-drag' || !dragCarriesSession(e.dataTransfer)) return;
     e.preventDefault();
-    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
-    if (localSessionDrag()) {
-      // Our own pill: the pointer path's slot logic, fed from the drag stream.
-      handlePointerMove({
-        clientX: e.clientX, clientY: e.clientY, screenX: e.screenX, screenY: e.screenY, pointerType: 'mouse',
-      } as unknown as React.PointerEvent);
-    } else {
-      setIncomingDropActive(true);
-    }
-  }, [tearOffModel, handlePointerMove]);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    if (tearOffModel !== 'html-drag') return;
-    // Moving between the bar's own children fires this too.
-    const to = e.relatedTarget as Node | null;
-    if (to && e.currentTarget.contains(to)) return;
-    setIncomingDropActive(false);
-    // Our own pill has left the strip: the neighbours close the gap, as
-    // Chrome's tabs do when a tab is pulled out of the row.
-    if (localSessionDrag() && overIdRef.current !== null) { overIdRef.current = null; setOverId(null); }
   }, [tearOffModel]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
@@ -1287,7 +1351,6 @@ export default function SessionStrip({
     // must not have their drop swallowed either.
     if (!sessionId) return;
     e.preventDefault();
-    e.stopPropagation();
     setIncomingDropActive(false);
     if (!sessions.some((x) => x.id === sessionId)) {
       // Another window's pill. Main resolves the source window from its
@@ -1771,7 +1834,6 @@ export default function SessionStrip({
         // 'html-drag' only — reorder of our own pill and adoption of another
         // window's; inert on every other model, where no browser drag exists.
         onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
         onDrop={handleDrop}
         className={`session-strip relative flex items-center gap-0.5 bg-inset rounded-full px-1.5 py-0.5 overflow-hidden min-w-0 shrink transition-shadow ${incomingDropActive ? 'ring-2 ring-accent/70' : ''}`}
       >
@@ -1908,10 +1970,8 @@ export default function SessionStrip({
               >
                 {pillBody}
               </button>
-              {isBeingDragged && dragLeft !== null && (tearOffModel !== 'html-drag') && (
+              {isBeingDragged && dragLeft !== null && (
                 // The twin: the pill in hand, drawn at the cursor. NO transition
-                // (not on 'html-drag', where the compositor draws the pill in
-                // hand from the dragstart snapshot — two pills would show).
                 // on its position — a 150ms ease there made the pill trail the
                 // pointer like it was on a rubber band. pointer-events off so
                 // the pointerup lands on the bar that holds capture.
@@ -1929,10 +1989,37 @@ export default function SessionStrip({
                     pointerEvents: 'none',
                     boxShadow: '0 8px 20px rgba(0,0,0,0.35)',
                     transition: 'box-shadow var(--dur-hover) var(--ease-reveal)',
+                    // Below the row ('html-drag') the carried ghost is the
+                    // pill in hand; the twin waits, unseen, in the row.
+                    visibility: carried ? 'hidden' : undefined,
                   }}
                 >
                   {pillBody}
                 </div>
+              )}
+              {isBeingDragged && carried && createPortal(
+                // The carried ghost: the pill in hand once it has left the row
+                // ('html-drag'). Positioned by placeCarried, straight to the
+                // DOM, per dragover. Nothing may click through to it.
+                <div
+                  ref={carriedEl}
+                  aria-hidden
+                  className={`${pillClass} border-edge bg-panel cursor-grabbing`}
+                  style={{
+                    position: 'fixed',
+                    left: 0,
+                    top: 0,
+                    transform: `translate(${carriedPos.current.x - grabOffsetInPill.current.x}px, ${carriedPos.current.y - grabOffsetInPill.current.y}px)`,
+                    zIndex: 9999,
+                    pointerEvents: 'none',
+                    boxShadow: '0 8px 20px rgba(0,0,0,0.35)',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  <SessionDot color={color} isActive={isActive} />
+                  <span className="session-pill__label text-xs font-medium text-fg-2 px-0.5">{s.name}</span>
+                </div>,
+                document.body,
               )}
             </React.Fragment>
           );
