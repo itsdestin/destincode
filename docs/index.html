@@ -636,8 +636,10 @@ body.pill-accent.legend-on .dl-legend{border-color:transparent;color:var(--fg);
       bar no longer has one solid anchor point; that is the intended read.
    2. The name is pinned to DM Sans. It used to inherit var(--font-theme), so
       the logo was literally drawn in a different typeface in all eight themes.
-   3. Everything is uppercase and widely tracked. Caps live or die on tracking:
-      at the old -.01em these same words read as a mistake, not as a logo.
+   3. Everything is uppercase and tracked out to .12em. Caps live or die on
+      tracking: at the old -.01em these same words read as a mistake rather
+      than as a logo. .22em was tried first and read as too airy (Destin,
+      2026-09-04); the tagline shares the value so the two lines stay one block.
    4. The accent lands on "YOU", not on "Coded" -- the emphasis is the person.
 
    Scoped to .nav on purpose: the FOOTER logo shares .mark and .wm with a
@@ -650,14 +652,14 @@ body.pill-accent.legend-on .dl-legend{border-color:transparent;color:var(--fg);
 .nav .mark-bot{display:block;width:62%;height:62%}
 .nav .mark-bot path,.nav .mark-bot rect,.nav .mark-bot circle,.nav .mark-bot g{fill:currentColor}
 .nav .wm{font-family:'DM Sans',system-ui,sans-serif;font-weight:700;font-size:.94rem;
-  line-height:1.14;letter-spacing:.22em;text-transform:uppercase}
+  line-height:1.14;letter-spacing:.12em;text-transform:uppercase}
 .nav .wm .wm-a{color:var(--accent)}
 .nav .wm b{font-weight:700;color:inherit}
 .nav .wm i{font-weight:700;opacity:.45}
 /* The tagline joins the name's typeface and tracking so the two lines read as
    one block rather than as a logo with a caption stuck under it. */
 .nav .wm em{display:block;font-family:inherit;font-weight:500;
-  font-size:.564rem;letter-spacing:.22em;text-transform:uppercase;
+  font-size:.564rem;letter-spacing:.12em;text-transform:uppercase;
   opacity:.5;margin-top:2px}
 
 /* ==========================================================================
@@ -1510,12 +1512,13 @@ body.cycler-static .lead-hold{display:none}
 
   /* the bar's own rules are in the block above this one -- they apply to a
      phone on its SIDE as well, which is 844px wide. */
-  /* Caps at .22em are far wider than the mixed-case lockup this replaced, so a
-     phone eases the tracking as well as the size -- at 390px the old numbers
-     ran the wordmark into the right edge of the bar. */
+  /* Caps are wider than the mixed-case lockup this replaced, so a phone shrinks
+     the type more than the mark. The tracking is NOT eased here: at .12em the
+     desktop value already fits 390px, and overriding it would leave a phone
+     tracked WIDER than the desktop it shrank from. */
   .nav .mark{width:30px;height:30px}
-  .nav .wm{font-size:.8rem;letter-spacing:.16em}
-  .nav .wm em{font-size:.48rem;letter-spacing:.16em}
+  .nav .wm{font-size:.8rem}
+  .nav .wm em{font-size:.48rem}
 
   /* ---- hero ------------------------------------------------------------ */
   .hero{padding-top:calc(var(--nav-h) + 10px)}
