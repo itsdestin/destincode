@@ -1242,6 +1242,35 @@ function registerDetachIpc() {
     stopCursorTicker();
   });
 
+  // ── 'html-drag' tear-off (Linux/Wayland) ──────────────────────────────────
+  //
+  // Everything above this point resolves a cross-window drag from SCREEN
+  // coordinates, and on Wayland every one of those is zero — the cursor's
+  // position, each window's position, and setPosition, which is a no-op that
+  // still reports success. So peer windows never highlighted, the torn-off
+  // window never followed the cursor, and the drop always resolved to "you
+  // dropped it on nothing". A pill in a torn-off window could never be dragged
+  // back (Destin, 2026-09-03: "permanently stuck with two windows").
+  //
+  // There, the pill is a browser-native draggable and the compositor carries
+  // the whole gesture; the window it lands on is TOLD, in its own window-local
+  // coordinates, and claims the session with the message below. Main's only
+  // job is ownership. (A previous attempt started the drag from here with
+  // webContents.startDrag — abandoned because on Linux that API crops the
+  // picture to ~138px and can carry nothing but a file: session-drag-model.ts.)
+  //
+  // The window that RECEIVED an 'html-drag' drop claims the session. Unlike
+  // SESSION_DRAG_DROPPED (sent by the source), this arrives from the TARGET, so
+  // the source is resolved from the registry and never taken from the payload —
+  // a forged message can only move a session to the window that sent it, and
+  // only if some window really owns it.
+  ipcMain.on(IPC.SESSION_DRAG_ADOPT, (evt, payload: { sessionId: string }) => {
+    const from = windowRegistry.getOwner(payload.sessionId);
+    if (from == null || from === evt.sender.id) return;
+    transferOwnership(payload.sessionId, from, evt.sender.id, /*freshWindow*/ false);
+    maybeAutoCloseEmpty(from);
+  });
+
   // Switcher selected a remote session — focus that window and tell it to
   // switch its active session.
   ipcMain.on(IPC.WINDOW_FOCUS_AND_SWITCH, (_evt, { windowId, sessionId }: { windowId: number; sessionId: string }) => {

@@ -97,6 +97,7 @@ import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import RemoteUnsupportedNotice from './components/RemoteUnsupportedNotice';
+import { SessionDropZone } from './components/SessionDropZone';
 import { ContextMenuHost } from './components/context-menu/ContextMenuHost';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
@@ -2942,6 +2943,13 @@ function AppInner() {
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>
+            {/* On Linux/Wayland a session pill dragged over the chat area can
+                be dropped there — "open in a new window" for this window's
+                own pill, "move here" for another window's. Inert everywhere
+                else. A child of this positioned box so it covers the chat and
+                not the header. See SessionDropZone for why the empty desktop
+                is not a drop target there. */}
+            <SessionDropZone sessions={sessions} />
             {/* Chrome-glass: single backdrop-filter layer for the entire
                 frame chrome. Replaces the per-element backdrop-filters on
                 HeaderBar, frame-edges, frame-divider, drawer-pane, and the

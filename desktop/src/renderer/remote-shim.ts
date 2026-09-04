@@ -1508,6 +1508,9 @@ export function installShim(): void {
       dragStarted: (_p: any) => {},
       dragEnded: () => {},
       dragDropped: (_p: any) => {},
+      // Claiming a dropped session is desktop-Electron only (main moves
+      // ownership between windows). A browser tab or the phone has one window.
+      dragAdopt: (_p: any) => {},
       focusAndSwitch: (_p: any) => {},
       openDetached: (_p: any) => {},
       requestTranscriptReplay: (_sid: string) => {},

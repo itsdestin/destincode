@@ -225,6 +225,7 @@ const IPC = {
   SESSION_DRAG_STARTED: 'session:drag-started',
   SESSION_DRAG_ENDED: 'session:drag-ended',
   SESSION_DRAG_DROPPED: 'session:drag-dropped',
+  SESSION_DRAG_ADOPT: 'session:drag-adopt',
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
@@ -622,6 +623,20 @@ contextBridge.exposeInMainWorld('claude', {
   // hide Install buttons on macOS-only integrations when running on Windows).
   getPlatform: (): Promise<'darwin' | 'win32' | 'linux' | 'android'> =>
     ipcRenderer.invoke(IPC.PLATFORM_GET),
+  // FACTS about the host windowing system, read once at preload time. Pure
+  // data — the decision that consumes it lives in renderer/session-drag-model.ts,
+  // so the rule ("which drag model") stays testable without a live Electron.
+  //
+  // Synchronous on purpose: the session strip has to choose a tear-off model in
+  // the middle of a pointermove, where awaiting a round-trip would mean the
+  // first drag after launch silently used the wrong one. Preload must not name
+  // a model itself — session-drag-model.test.ts pins that.
+  platformFacts: {
+    platform: process.platform as string,
+    // Wayland vs X11 decides whether window positions and the cursor's screen
+    // position are readable at all — on Wayland every such API returns zero.
+    wayland: !!process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland',
+  },
   // YouCoded account (device-code OAuth) — token stays in main process.
   // start/poll/updateProfile/setHandle/deleteAccount wrap API calls and return
   // ApiResult so the renderer can inspect HTTP status codes across the contextBridge
@@ -1020,6 +1035,12 @@ contextBridge.exposeInMainWorld('claude', {
     dragEnded: () => ipcRenderer.send(IPC.SESSION_DRAG_ENDED),
     dragDropped: (payload: { sessionId: string; targetWindowId: number; insertIndex: number }) =>
       ipcRenderer.send(IPC.SESSION_DRAG_DROPPED, payload),
+    // Sent by the window that RECEIVED a browser-drag drop (Linux/Wayland —
+    // session-drag-model.ts). It names only the session:
+    // main resolves the source from the WindowRegistry, so a forged drop can
+    // never move a session the sender was not entitled to move.
+    dragAdopt: (payload: { sessionId: string }) =>
+      ipcRenderer.send(IPC.SESSION_DRAG_ADOPT, payload),
     focusAndSwitch: (payload: { windowId: number; sessionId: string }) =>
       ipcRenderer.send(IPC.WINDOW_FOCUS_AND_SWITCH, payload),
     // Request/response — ask main which window's strip currently contains the cursor
