@@ -1719,6 +1719,49 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       ({ ok: true as const, value: { ok: true as const, best: score, best_at: Math.floor(Date.now() / 1000), runs: 1, is_best: true } }),
   };
 
+  // The buddy floater. Six of these mirror preload.ts; helperStatus and
+  // installHelper have NO real backend yet and are registered in MOCK_ONLY —
+  // they are the Linux/KDE helper design (docs/active/design/2026-09-04-linux-buddy-helper/).
+  //
+  // ?buddyHelper= picks which Linux the workbench is pretending to be:
+  //   installed  the KWin helper is in place — the buddy can be dragged  (default)
+  //   available  KDE Plasma, helper not added yet — the consent path
+  //   none       a Linux desktop this cannot work on — the unavailable path
+  const buddyHelperMode = (typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('buddyHelper')) || 'installed';
+  let buddyHelperInstalled = buddyHelperMode === 'installed';
+  const buddyHelperSupported = buddyHelperMode !== 'none';
+  let buddyDismissed = false;
+  let buddyKeepAbove = true;
+  const buddyStatusSubs = new Set<(s: unknown) => void>();
+  const pushBuddyStatus = () => {
+    const snap = { dismissed: buddyDismissed, keepAbove: buddyKeepAbove };
+    buddyStatusSubs.forEach((cb) => cb(snap));
+  };
+  const buddy = {
+    getStatus: async () => ({ dismissed: buddyDismissed, keepAbove: buddyKeepAbove }),
+    show: async () => { buddyDismissed = false; pushBuddyStatus(); },
+    hide: async () => {},
+    dismiss: async () => { buddyDismissed = true; pushBuddyStatus(); },
+    // Mirrors the real one's contract exactly: resolves FALSE when KWin could
+    // not be reached, never throws. On the `none` desktop that is every call.
+    setKeepAbove: async (v: boolean) => { buddyKeepAbove = v; return buddyHelperSupported; },
+    onStatusChanged: (cb: (s: unknown) => void) => {
+      buddyStatusSubs.add(cb);
+      return () => buddyStatusSubs.delete(cb);
+    },
+    // MOCK_ONLY. supported = this desktop can run the helper at all (KDE);
+    // installed = the helper package is present in the user's KDE settings.
+    helperStatus: async () => ({ supported: buddyHelperSupported, installed: buddyHelperInstalled }),
+    // MOCK_ONLY. Real one writes the package into ~/.local/share/kwin/scripts,
+    // enables it and asks KWin to reconfigure. Fails on a non-KDE desktop.
+    installHelper: async () => {
+      if (!buddyHelperSupported) return { ok: false as const };
+      buddyHelperInstalled = true;
+      return { ok: true as const };
+    },
+  };
+
   return {
     // Marketplace feedback (overhaul §1.7). PARTIAL on purpose: only these three
     // are hand-written; `install`, `rate`, `deleteRating`, `likeTheme` and
@@ -1750,6 +1793,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade,
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, buddy,
   } as unknown as Record<string, Record<string, unknown>>;
 }

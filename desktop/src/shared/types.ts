@@ -1144,6 +1144,16 @@ export interface AttentionApi {
 }
 
 export interface BuddyApi {
+  // The Linux/KDE helper (docs/active/design/2026-09-04-linux-buddy-helper/).
+  // OPTIONAL because they are MOCK_ONLY today: the workbench implements them so
+  // the UI could be designed and reviewed, and preload.ts does not serve them
+  // yet. When the real backend lands they lose the `?` and come off the
+  // MOCK_ONLY registry in the same change.
+  //
+  // supported = this desktop can run the helper at all (KDE Plasma).
+  // installed = the helper is already in the user's KDE settings.
+  helperStatus?(): Promise<{ supported: boolean; installed: boolean }>;
+  installHelper?(): Promise<{ ok: boolean }>;
   show(): Promise<void>;
   hide(): Promise<void>;
   toggleChat(): Promise<void>;

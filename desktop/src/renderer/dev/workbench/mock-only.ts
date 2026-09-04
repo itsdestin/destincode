@@ -32,4 +32,11 @@
 // the workbench can still show the you-alone, empty and stale-board states
 // without a live leaderboard. `no MOCK_ONLY entry has since gained a real
 // channel` in workbench-mock-contract.test.ts is what forces this cleanup.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];
+// The Linux/KDE buddy helper (docs/active/design/2026-09-04-linux-buddy-helper/).
+// The buddy appears on Wayland today but cannot be dragged, because an app is not
+// allowed to move its own window. A KWin helper script can. These two channels are
+// the app's side of that: ask whether the helper is possible/present, and add it.
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
+  { channel: 'buddy.helperStatus', feature: 'linux-buddy-helper' },
+  { channel: 'buddy.installHelper', feature: 'linux-buddy-helper' },
+];
