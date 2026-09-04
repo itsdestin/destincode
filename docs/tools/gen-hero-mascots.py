@@ -1,49 +1,75 @@
 """Generate the hero's four rigged mascot buttons for youcoded/docs/index.html.
 
-The art is the app's OWN default buddy rig (desktop/src/renderer/components/
-mascot/default-buddy-rig.ts) — the 2.5D-soft skin, tinted through --rig-accent /
---rig-on-accent. One silhouette, four colours, exactly as the 2026-08-30 picker
-decision requires; what differs per button is how it MOVES.
+Run from the repo root:  python3 docs/tools/gen-hero-mascots.py
+Paste its output over the two <div class="mrow"> blocks in docs/index.html.
 
 NOT a build step -- index.html is hand-edited and is the live page. This exists so
-that when the app's buddy rig changes, or the picker's four themes change, the
-markup can be regenerated instead of four 6 KB SVG blocks being edited by hand.
-Paste its output over the two <div class="mrow"> blocks in docs/index.html.
+that when a theme's mascot changes, or the picker's four themes change, the markup
+can be regenerated instead of four 7 KB SVG blocks being edited by hand.
+
+WHERE THE ART COMES FROM. Each button wears its theme's OWN mascot, vendored into
+docs/mascots/<slug>.rig.svg from wecoded-themes/themes/<slug>/assets/mascot-rig.svg
+-- the rigs rebuilt to the rig contract in wecoded-themes/mascots/README.md
+(f52cc85, 130afab). They are complete characters with hardcoded identity colours
+and six authored faces, so nothing here tints them.
+
+A theme with no mascot of its own falls back to the app's built-in default buddy
+(desktop/src/renderer/components/mascot/default-buddy-rig.ts), which IS tinted --
+and its face socket is deliberately a DARK theme colour, never the theme's
+on-accent. Passing on-accent gave white-on-purple eyes and a white mouth, and
+Destin's word for the result was "terrifying" (2026-09-04). The rig library says
+the same thing in prose: "paint eyes on top in a DARK socket colour".
 """
-import re, sys
+import re
+import sys
 
-# Run from the repo root:  python3 docs/tools/gen-hero-mascots.py
-RIG_TS = 'desktop/src/renderer/components/mascot/default-buddy-rig.ts'
+DEFAULT_RIG_TS = 'desktop/src/renderer/components/mascot/default-buddy-rig.ts'
+THEME_RIG = 'docs/mascots/%s.rig.svg'
 
+# slug, display name, accent, dark face socket (only used by the fallback buddy;
+# a theme rig paints its own face), idle act
 PICKER = [
-    # slug,                 name,                  accent,     onAccent,  act
-    ('cotton-candy-sky',    'Cotton Candy Sky',    '#8B47B8', '#FFFFFF', 'greet'),
-    ('meadow-mist',         'Meadow Mist',         '#2F7D55', '#FFFFFF', 'sway'),
-    ('halftone-dimension',  'Halftone Dimension',  '#E51F48', '#ffffff', 'look'),
-    ('golden-sunbreak',     'Golden Sunbreak',     '#ffc030', '#000000', 'hop'),
+    ('cotton-candy-sky',   'Cotton Candy Sky',   '#8B47B8', '#21152C', 'greet'),
+    ('meadow-mist',        'Meadow Mist',        '#2F7D55', '#041008', 'sway'),
+    ('halftone-dimension', 'Halftone Dimension', '#E51F48', None,      'look'),
+    ('golden-sunbreak',    'Golden Sunbreak',    '#ffc030', None,      'hop'),
 ]
 
-# Buddy-floater-only furniture: peek mittens for clinging to a screen edge, and
-# the three accessory slots the theme system fills. None of it can happen in a
-# 62px picker chip, so it is dropped rather than shipped as dead markup.
-DROP_GROUPS = ['rig-hand-peek-right', 'rig-hand-peek-left',
-               'slot-hat', 'slot-eyewear', 'slot-item', 'rig-face-dizzy']
-DEF_IDS = ['g-hi', 'g-lo', 'g-limb-shade', 'g-spec', 'f-soft']
+# Dropped: the mittens that grip a screen edge (there is no screen edge in a
+# 62px chip) and the dizzy face (nothing here spins).
+#
+# NOT DROPPED, and this was a real mistake on the first pass: slot-hat and
+# slot-eyewear. They read like empty scaffolding, but the rig library puts each
+# theme's SIGNATURE in them -- "the dimensional visor is eyewear, Kuromi's
+# jester hat and Strawberry Kitty's ears-and-bow are hats" (wecoded-themes/
+# mascots/README.md -> Component slots). Stripping them turned Halftone's bot
+# into a featureless dark blob and left both cats bald. An empty slot costs 20
+# bytes; an emptied one costs the character.
+DROP_GROUPS = ['rig-hand-peek-right', 'rig-hand-peek-left', 'rig-face-dizzy']
+
+PARTS = ['rig-root', 'rig-arm-left', 'rig-arm-right', 'rig-leg-left',
+         'rig-leg-right', 'rig-body', 'rig-tail']
+FACES = ['idle', 'welcome', 'curious', 'shocked', 'blink']
 
 
-def rig_body() -> str:
-    src = open(RIG_TS, encoding='utf-8').read()
-    m = re.search(r'DEFAULT_BUDDY_RIG = `([\s\S]*?)`;', src)
-    if not m:
-        sys.exit('could not find DEFAULT_BUDDY_RIG in ' + RIG_TS)
-    svg = m.group(1)
+def inner_svg(svg: str) -> str:
+    """Everything between <svg …> and </svg>."""
     return svg[svg.index('>', svg.index('<svg')) + 1: svg.rindex('</svg>')]
 
 
+def load_rig(slug: str) -> str:
+    try:
+        return inner_svg(open(THEME_RIG % slug, encoding='utf-8').read())
+    except FileNotFoundError:
+        src = open(DEFAULT_RIG_TS, encoding='utf-8').read()
+        m = re.search(r'DEFAULT_BUDDY_RIG = `([\s\S]*?)`;', src)
+        if not m:
+            sys.exit('could not find DEFAULT_BUDDY_RIG in ' + DEFAULT_RIG_TS)
+        return inner_svg(m.group(1))
+
+
 def drop_group(svg: str, gid: str) -> str:
-    """Remove <g id="gid" …>…</g> (or its self-closing form). The rig nests only
-    one level inside these groups, so a non-greedy match to the next </g> is
-    correct — asserted by the caller checking the id is gone."""
+    """Remove <g id="gid" …>…</g>, or its self-closing form, balancing nesting."""
     self_closing = re.search(r'<g id="%s"\s*/>' % re.escape(gid), svg)
     if self_closing:
         return svg[:self_closing.start()] + svg[self_closing.end():]
@@ -60,40 +86,47 @@ def drop_group(svg: str, gid: str) -> str:
     return svg[:open_m.start()] + svg[i:]
 
 
-def button(slug, name, accent, on_accent, act, body) -> str:
-    # Def ids are suffixed per button so four inlined copies never share a
-    # gradient by accident; every OTHER hook is a class, because the driver and
-    # the stylesheet address parts by class and duplicate ids would be a trap.
-    for d in DEF_IDS:
-        body = body.replace('id="%s"' % d, 'id="%s-%s"' % (d, slug))
-        body = body.replace('url(#%s)' % d, 'url(#%s-%s)' % (d, slug))
-    for part in ['rig-root', 'rig-arm-left', 'rig-arm-right', 'rig-leg-left',
-                 'rig-leg-right', 'rig-body']:
+def button(slug, name, accent, socket, act) -> str:
+    body = load_rig(slug)
+    for gid in DROP_GROUPS:
+        body = drop_group(body, gid)
+        assert 'id="%s"' % gid not in body, (slug, gid)
+
+    # Rig hooks become CLASSES. The driver and the stylesheet address parts by
+    # class precisely because four rigs are inlined into one document and four
+    # elements called rig-arm-left would be a trap.
+    for part in PARTS:
         body = body.replace('<g id="%s"' % part, '<g class="%s"' % part)
-    for face in ['idle', 'welcome', 'curious', 'shocked', 'blink']:
-        # The inline display:none is dropped: an inline style outranks the
+    for face in FACES:
+        # The inline display:none goes with it -- an inline style outranks the
         # stylesheet, and the stylesheet is what switches faces.
-        body = body.replace('<g id="rig-face-%s" style="display:none">' % face,
-                            '<g class="rig-face rig-face-%s">' % face)
-        body = body.replace('<g id="rig-face-%s">' % face,
-                            '<g class="rig-face rig-face-%s">' % face)
-    assert 'id="rig-' not in body and 'style="display:none"' not in body, slug
+        body = re.sub(r'<g id="rig-face-%s"[^>]*>' % face,
+                      '<g class="rig-face rig-face-%s">' % face, body)
+    assert 'id="rig-' not in body, slug
+
+    # Every id that SURVIVES is a gradient/filter/clip the art references. Suffix
+    # them per button: four inlined rigs otherwise share whichever "gs-hi" the
+    # document happens to define first, and one theme's lighting silently paints
+    # another's body.
+    for rid in sorted(set(re.findall(r'id="([^"]+)"', body)), key=len, reverse=True):
+        body = body.replace('id="%s"' % rid, 'id="%s-%s"' % (rid, slug))
+        body = body.replace('url(#%s)' % rid, 'url(#%s-%s)' % (rid, slug))
+        body = body.replace('href="#%s"' % rid, 'href="#%s-%s"' % (rid, slug))
+    assert 'url(#' not in body or all(
+        ref.endswith('-' + slug) for ref in re.findall(r'url\(#([^)]+)\)', body)), slug
+
     body = re.sub(r'\n\s+', '\n', body).strip()
+    style = '--a:%s' % accent + (';--rig-on-accent:%s' % socket if socket else '')
     return (
         '<button class="mascot" data-theme="%s" data-act="%s" data-face="welcome"\n'
-        '  aria-label="Use the %s look" style="--a:%s;--rig-on-accent:%s">'
-        '<span class="m-chip"></span>\n'
+        '  aria-label="Use the %s look" style="%s"><span class="m-chip"></span>\n'
         '<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">\n'
         '%s\n</svg><span class="m-name">%s</span></button>'
-    ) % (slug, act, name, accent, on_accent, body, name)
+    ) % (slug, act, name, style, body, name)
 
 
 def main():
-    body = rig_body()
-    for gid in DROP_GROUPS:
-        body = drop_group(body, gid)
-        assert 'id="%s"' % gid not in body, gid
-    out = [button(*row, body) for row in PICKER]
+    out = [button(*row) for row in PICKER]
     print('<!--LEFT-->\n' + '\n'.join(out[:2]))
     print('<!--RIGHT-->\n' + '\n'.join(out[2:]))
 
