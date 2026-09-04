@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
+  <!-- Golden Sunbreak scene companion: the sun. Spring-follows the mascot in
+       the app; class names (comp-pulse / comp-spin) map to app-side keyframes. -->
+  <defs>
+    <radialGradient id="gs-comp-sun" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#fff6d8"/>
+      <stop offset="35%" stop-color="#ffd968" stop-opacity="0.95"/>
+      <stop offset="62%" stop-color="#ffc030" stop-opacity="0.3"/>
+      <stop offset="100%" stop-color="#ffc030" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <g class="comp-pulse">
+    <g class="comp-spin" fill="#ffc030" opacity="0.8">
+      <path d="M20 4.6 Q21.7 9.2 20 12.2 Q18.3 9.2 20 4.6 Z" transform="rotate(0 20 20)"/>
+      <path d="M20 4.6 Q21.7 9.2 20 12.2 Q18.3 9.2 20 4.6 Z" transform="rotate(45 20 20)"/>
+      <path d="M20 4.6 Q21.7 9.2 20 12.2 Q18.3 9.2 20 4.6 Z" transform="rotate(90 20 20)"/>
+      <path d="M20 4.6 Q21.7 9.2 20 12.2 Q18.3 9.2 20 4.6 Z" transform="rotate(135 20 20)"/>
+      <path d="M20 4.6 Q21.7 9.2 20 12.2 Q18.3 9.2 20 4.6 Z" transform="rotate(180 20 20)"/>
+      <path d="M20 4.6 Q21.7 9.2 20 12.2 Q18.3 9.2 20 4.6 Z" transform="rotate(225 20 20)"/>
+      <path d="M20 4.6 Q21.7 9.2 20 12.2 Q18.3 9.2 20 4.6 Z" transform="rotate(270 20 20)"/>
+      <path d="M20 4.6 Q21.7 9.2 20 12.2 Q18.3 9.2 20 4.6 Z" transform="rotate(315 20 20)"/>
+    </g>
+    <circle cx="20" cy="20" r="13.5" fill="url(#gs-comp-sun)"/>
+    <circle cx="20" cy="20" r="5.4" fill="#ffdf7e"/>
+    <circle cx="20" cy="20" r="3.7" fill="#fff3cf"/>
+    <circle cx="18.5" cy="18.3" r="1" fill="#ffffff" opacity="0.85"/>
+  </g>
+</svg>

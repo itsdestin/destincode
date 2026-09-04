@@ -7,7 +7,7 @@ import { createMockShim } from './mock-shim';
 import { SCENARIO_IDS, type ScenarioId } from './scenarios';
 // Task 7c: swaps the real PartyKit socket for an in-page fake so Connect Four
 // is playable (and filmable) with no network. See fake-party.ts for the WHY.
-import { FakePartySocket, isWorkbenchAutoplay } from './fake-party';
+import { FakePartySocket, isWorkbenchFakeParty } from './fake-party';
 import { __setPartySocketFactory } from '../../game/party-client';
 import type { WidgetId } from '../../state/status-widgets';
 import { installWorkerApiMock } from './fixtures/marketplace/worker-api-mock';
@@ -110,7 +110,9 @@ export function installMock(): void {
   // never touches party-client.ts, so `__setPartySocketFactory` stays unset
   // and the (unreachable, since the game panel needs an account) real
   // PartySocket path is exactly what it was before this file existed.
-  if (isWorkbenchAutoplay()) {
+  // `?autoplay=0` still gets the fake socket: the lobby's Challenge button
+  // must land on Jake's board, not a real PartyKit room (see isWorkbenchFakeParty).
+  if (isWorkbenchFakeParty()) {
     __setPartySocketFactory(FakePartySocket);
   }
   // The Worker (install counts, thumbs, comments) is reached with plain fetch,

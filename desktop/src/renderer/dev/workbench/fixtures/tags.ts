@@ -14,3 +14,15 @@ export function tags(): TagRecord[] {
     { id: 'tag_retired', label: 'retired', color: 'tag-gray', archived: true, createdAt: '2026-06-01T09:00:00.000Z' },
   ];
 }
+
+// Promo (scenario=site&student=1): a student's tag set. The Resume browser's
+// Organize sheet lists every tag by name, so "work / bug / idea" would read as
+// a developer's app in the middle of a student's clip. Same slot rules as above.
+export function studentTags(): TagRecord[] {
+  return [
+    { id: 'tag_econ', label: 'econ', color: 'tag-blue', archived: false, createdAt: '2026-07-01T09:00:00.000Z' },
+    { id: 'tag_club', label: 'club', color: 'tag-green', archived: false, createdAt: '2026-07-02T09:00:00.000Z' },
+    { id: 'tag_jobhunt', label: 'job hunt', color: 'tag-purple', archived: false, createdAt: '2026-07-03T09:00:00.000Z' },
+    { id: 'tag_urgent', label: 'urgent', color: 'tag-red', archived: false, createdAt: '2026-07-04T09:00:00.000Z' },
+  ];
+}

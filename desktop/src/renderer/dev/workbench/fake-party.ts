@@ -121,6 +121,13 @@ export class FakeConnectFourServer {
     let msg: any;
     try { msg = JSON.parse(raw); } catch { return; }
     if (msg?.type !== 'move' || this.ended) return;
+    // WHY (2026-09-03, promo film): the chess client sends through this same
+    // fake socket, and its move is a `{move:{from,to}}` pair with no `column`.
+    // dropPiece(board, undefined) threw inside the client's send(), which sat
+    // BEFORE useChessGame's local dispatch — so the pawn never moved on screen.
+    // A move this server does not understand is dropped, like the illegal
+    // column below; Jake simply never answers a chess move.
+    if (!Number.isInteger(msg.column)) return;
 
     const result = dropPiece(this.board, msg.column, RED);
     if (!result) return; // illegal column (full or out of range) — drop it, same as a no-op relay
@@ -232,17 +239,27 @@ export class FakePartySocket implements PartySocketLike {
 // install-mock.ts's installMock() has run — it is never set in the shipped
 // Electron/Android app, so this can never be true outside the workbench.
 export function isWorkbenchAutoplay(): boolean {
-  if (typeof window === 'undefined' || !(window as any).__workbenchStore) return false;
-  if (typeof location === 'undefined') return false;
-  const q = new URLSearchParams(location.search);
+  if (!isWorkbenchFakeParty()) return false;
   // `?autoplay=0` OPTS OUT. Autoplay exists so the landing-page film has a live
   // board within a second of opening the panel — but it fires the moment
   // presence connects, which made the LOBBY (the friend list, the Challenge
   // buttons, and now each friend's head-to-head record) unreachable in the
   // workbench for any signed-in session. A surface nobody can screenshot is a
   // surface nobody reviews.
-  if (q.get('autoplay') === '0') return false;
+  return new URLSearchParams(location.search).get('autoplay') !== '0';
+}
+
+// WHY a second gate (2026-09-03, promo film): install-mock.ts used to inject the
+// fake Connect Four socket only when autoplay was on, so `?autoplay=0` reached
+// the lobby but its Challenge button then went down the REAL PartySocket path —
+// a production WebSocket from a workbench tab, and never a board. The promo's
+// lobby scene clicks that button and needs Jake to answer. The fake socket now
+// follows `?signedIn=1` alone; autoplay only decides whether the lobby is
+// skipped. Signed-out stays byte-for-byte what it was.
+export function isWorkbenchFakeParty(): boolean {
+  if (typeof window === 'undefined' || !(window as any).__workbenchStore) return false;
+  if (typeof location === 'undefined') return false;
   // Same switch mock-shim.ts's `account` fake uses (`?signedIn=1`) — keeps a
   // signed-out workbench byte-for-byte identical to before this task.
-  return q.get('signedIn') === '1';
+  return new URLSearchParams(location.search).get('signedIn') === '1';
 }

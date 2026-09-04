@@ -9,8 +9,11 @@ on:
 jobs:
   build:
     strategy:
-      # Don't cancel in-flight Windows/Mac builds if one platform fails —
-      # we'd rather ship 2/3 platforms than 0/3.
+      # Don't cancel in-flight builds if one platform fails, so every platform's
+      # result is visible. NOTE: this does NOT ship 2/3 platforms - the `upload` job
+      # below needs every build leg green, so one red leg (including the macOS
+      # signature check) withholds the whole GitHub release. That is deliberate: a
+      # release with a broken Mac dmg is worse than a release that waits a day.
       fail-fast: false
       matrix:
         include:
@@ -94,6 +97,15 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      # WHY: electron-builder SILENTLY skips macOS signing when it cannot sign, and a
+      # Dependabot bump did exactly that on 2026-07-23 - six weeks of unopenable Mac
+      # builds with every check green. The script (shared with the other mac workflow,
+      # so betas and releases are held to one standard) explains the rest.
+      - name: Verify the macOS bundle is signed
+        if: matrix.name == 'macos'
+        shell: bash
+        run: bash scripts/verify-mac-signature.sh
 
       - name: Smoke test
         # Launch the production build briefly and verify no renderer crash.
