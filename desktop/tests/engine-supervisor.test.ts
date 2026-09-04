@@ -111,8 +111,15 @@ describe('EngineSupervisor', () => {
       '--models-max', '2',
       '--sleep-idle-seconds', '300', // per-model 5-min auto-sleep (2026-07-14)
       '-c', '32768',
+      '--spec-default',              // draft-free speculative decoding (2026-09-04)
+      '--cache-type-k', 'q8_0',      // 8-bit KEY cache only — see the WHY in the supervisor
     ]);
     expect(args).not.toContain('-m'); // router mode = no model arg
+    // A quantized VALUE cache refuses to load whenever flash attention is off
+    // (verified b10665: "quantized V cache requires flash_attn"), and -fa is auto.
+    // Pin its absence so a future "match K and V" tidy-up can't brick CPU fallbacks.
+    expect(args).not.toContain('--cache-type-v');
+    expect(args).not.toContain('-ctv');
     expect(opts.env.LLAMA_CACHE).toBe('C:/fake/cache');
   });
 

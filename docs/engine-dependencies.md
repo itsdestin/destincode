@@ -67,6 +67,7 @@ Exact router-mode arg list (no `-m`):
 ```
 --host 127.0.0.1 --port <ENGINE_PORT> --no-webui --jinja
 --models-dir <cacheDir> --models-max 2 -c <contextSize> --sleep-idle-seconds 300
+--spec-default --cache-type-k q8_0
 ```
 - **`--models-dir <cacheDir>` is LOAD-BEARING.** It is what makes the router
   DISCOVER manually-placed GGUFs and auto-load them by filename id. Verified
@@ -90,6 +91,22 @@ Exact router-mode arg list (no `-m`):
   Verified b9992. FINER-grained than the engine-wide idle stop (`idleMs`, 10 min)
   which tears down the whole process — the two are complementary. `SLEEP_IDLE_SECONDS`
   in `engine-supervisor.ts`; the flag presence is pinned in `engine-supervisor.test.ts`.
+- **Speed flags (2026-09-04), both measured on b10665, Qwen3.5-9B Q8_0, Z13 Vulkan;
+  guard: `test-engine/probe-speed.mjs` (flags reach the model child AND the drafter fires).**
+  - **`--spec-default`** — llama.cpp's draft-FREE speculative decoding (n-gram lookup
+    against the prompt; `--spec-type` was `none` by default). A 736-token "rewrite this
+    file with one change" reply went **16 → 104 tok/s** (768 drafted, 673–722 accepted);
+    a 700-token essay was 9.0 → 9.3 tok/s with `draft_n` absent — the drafter simply
+    never fires on novel prose, so no measured penalty. This is the shape of every
+    Edit/Write tool call. The router forwards it to each model child (probe-pinned).
+  - **`--cache-type-k q8_0`** — 8-bit KEY cache. `llama-bench` at 16,384 tokens of
+    depth: generation 11.4 → 16.2 tok/s, prompt 281 → 452 tok/s, half the K memory.
+  - **V cache is deliberately left f16.** `-ctv q8_0` measured a further prompt-speed
+    gain (598 tok/s at depth) but **is a FATAL load error whenever flash attention is
+    off** — verified with `-fa off -ctv q8_0`: `quantized V cache requires flash_attn to
+    be enabled`, the model never loads. `-fa` is `auto`, so a CPU fallback or a GPU
+    without FA support would break every local send. `-ctk q8_0 -fa off` boots fine
+    (also verified). `engine-supervisor.test.ts` pins the ABSENCE of `--cache-type-v`.
 - **`--jinja`** from day one so Phase 2 tool calling needs no process-shape change.
 - **`-c` is inherited by every loaded model instance** — confirmed: the router
   writes each model's preset with `ctx-size = <-c>` (seen in `/models` `status`).
@@ -205,6 +222,19 @@ context window.
   `build/bin/llama-server` (a stale guess). Enforced by `engine-acquisition`'s
   post-unpack existence check (fails loudly, never installs a broken dir).
 - **There is NO upstream Linux CUDA asset** — CUDA opt-in (Plan C) is Windows-only.
+  **But b10665 DOES ship assets we do not pin (checked 2026-09-04 via the release
+  API):** `ubuntu-rocm-7.14-x64` (204 MB), `win-rocm-7.14-x64`, `win-cuda-13.3-x64`,
+  `win-cuda-13.4-arm64`, `ubuntu-sycl-fp16/fp32-x64`, `win-sycl-x64`, `*-openvino-*`,
+  `win-opencl-adreno-arm64`, and `android-arm64`. The Linux ROCm tarball ran out of the
+  box on the Z13 (host ROCm 7.2.4) and measured 805 pp / 20.8 tg tok/s on Qwen3.5-9B
+  Q8_0 versus 383 / 11.5 on the pinned Vulkan build — a candidate opt-in backend, not
+  a default (it needs host ROCm drivers Vulkan does not). Tracked in
+  `docs/roadmap/local-models.md`.
+- **The Windows CUDA zips do NOT contain the CUDA runtime.** The release notes list a
+  separate `cudart-llama-bin-win-cuda-<ver>-x64.zip` (373 MB) next to every CUDA build;
+  `engine-acquisition.ts` fetches only the engine zip and nothing in the app handles
+  `cudart`, so "Switch to CUDA" can only boot on a PC that already has the toolkit on
+  PATH. Roadmap item filed 2026-09-04 (needs a Windows repro).
 - Windows unpack MUST use System32 `bsdtar` (reads both `.zip` and `.tar.gz`); a
   bare `tar` on PATH can resolve to Git's GNU tar, which cannot read `.zip`.
 
@@ -276,6 +306,11 @@ PASS on b9992 (Windows x64 Vulkan), 2026-07-14 — also re-run on every engine b
 `probe-tools.mjs` (Plan C: `--jinja` constrained tool-call round-trip + never-force +
 real `/props` `n_ctx`) runs against an already-running engine — re-run on every engine
 bump; verified live during acceptance on the Linux dev box.
+`probe-speed.mjs` (2026-09-04: `--spec-default` + `--cache-type-k q8_0` reach the model
+CHILD's cmdline and the drafter fires on an echo task at ≥50% acceptance) — re-run on
+every engine bump. **PASS on b10665** (Linux x64 Vulkan, `Qwen3.5-2B-Q8_0`): 640 drafted,
+573 accepted (90%), 281 tok/s; probe-tools also PASSED against a router carrying both
+flags on the same day, so grammar-constrained tool calls and n-gram drafting coexist.
 
 **b10665 bump, 2026-08-27 (Linux x64 Vulkan, `Qwen3.5-2B-Q8_0` + `Qwen3-0.6B-Q4_K_M`):**
 all five PASS — health, models (id parity + `?reload=1`), chat (streamed, 47 t/s),

@@ -307,6 +307,21 @@ export class EngineSupervisor extends EventEmitter {
         // to use without tearing down the whole engine. See engine-dependencies.md.
         '--sleep-idle-seconds', String(this.opts.sleepIdleSeconds ?? SLEEP_IDLE_SECONDS),
         '-c', String(this.opts.contextSize),
+        // Speed (2026-09-04, measured on b10665 — docs/engine-dependencies.md → "Speed flags"):
+        // --spec-default = llama.cpp's draft-FREE speculative decoding (n-gram lookup
+        // in the prompt itself, no second model). Edit/Write tool calls and rewrites
+        // echo text the model has already seen, which is exactly what it predicts:
+        // a 736-token file rewrite went 16 → 104 tok/s; a 700-token essay was
+        // unchanged (the drafter never fires on novel prose), so there is no
+        // measured penalty. Router children inherit it (probe-speed.mjs pins that).
+        '--spec-default',
+        // 8-bit KEY cache: +40% generation at 16k of context and half the K-cache
+        // memory, quality loss negligible. Deliberately K ONLY — a quantized V
+        // cache is a FATAL load error whenever flash attention resolves to off
+        // ("quantized V cache requires flash_attn", verified 2026-09-04 with -fa off),
+        // and -fa is 'auto', so on a CPU fallback or an unsupported GPU every
+        // local send would break. Keys never had that dependency.
+        '--cache-type-k', 'q8_0',
       ],
       {
         // --models-dir above is what serves the GGUFs (both hand-placed and

@@ -45,6 +45,8 @@ The pinned version + per-platform asset table live in
   starts re-scanning, which would make our refresh redundant rather than wrong.
 - `node probe-chat.mjs --binary <path>` — streamed `/v1/chat/completions`
   round-trip: auto-load on first request, delta frames, final usage/timings.
+- `node probe-speed.mjs --binary <path>` — the speed flags (`--spec-default`, `--cache-type-k q8_0`)
+  reach the router's model child and the n-gram drafter fires on an echo task (2026-09-04)
 
 Each probe exits 0 on pass and prints the raw JSON it saw (that output is what
 goes into `engine-dependencies.md` entries).
