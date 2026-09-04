@@ -21,8 +21,13 @@
 //     --models-dir <cacheDir> --models-max 2 --sleep-idle-seconds 300 \
 //     -c <contextSize> --parallel 4
 //
-// Usage: node test-engine/probe-parallel.mjs <baseURL> <modelId>
-const [base, model] = process.argv.slice(2);
+// Usage: node test-engine/probe-parallel.mjs <baseURL> <modelId> [N,N,...]
+// WHY the optional third argument (2026-09-04, stage-two probe re-run): the
+// original fixed {1,2,4} list stops exactly at the slot count, so it can show
+// batching but never the CEILING — what happens when fan-out exceeds the slots
+// (N=8 on a 4-slot server should serialize into two waves). Default unchanged.
+const [base, model, nsArg] = process.argv.slice(2);
+const NS = nsArg ? nsArg.split(',').map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0) : [1, 2, 4];
 if (!base || !model) { console.error('usage: probe-parallel.mjs <baseURL> <modelId>'); process.exit(2); }
 
 const PROMPT = 'In one short sentence, name the capital of France.';
@@ -61,7 +66,7 @@ async function runBatch(n) {
 
   const rows = [];
   let singleAvg = null;
-  for (const n of [1, 2, 4]) {
+  for (const n of NS) {
     let r;
     try {
       r = await runBatch(n);
