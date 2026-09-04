@@ -127,3 +127,100 @@ describe('model favourites fake', () => {
     }
   });
 });
+
+describe('marketplace install sticks (dev-only)', () => {
+  it('Install adds Remember to the installed list, the packages map and the chip row; uninstall reverses all three', async () => {
+    const c = await shim('?scenario=site&student=1');
+    const before = await c.skills.list();
+    expect(before.some((s: any) => s.id === 'remember')).toBe(false);
+    expect((await c.skills.getChips()).some((x: any) => x.label === 'Remember')).toBe(false);
+
+    await c.skills.install('remember');
+    const after = await c.skills.list();
+    expect(after.some((s: any) => s.id === 'remember' && s.displayName === 'Remember')).toBe(true);
+    expect((await c.marketplace.getPackages()).remember?.status).toBe('installed');
+    expect((await c.skills.getChips()).filter((x: any) => x.label === 'Remember')).toHaveLength(1);
+    // Idempotent: a second install never doubles anything.
+    await c.skills.install('remember');
+    expect((await c.skills.getChips()).filter((x: any) => x.label === 'Remember')).toHaveLength(1);
+
+    await c.skills.uninstall('remember');
+    expect((await c.skills.list()).some((s: any) => s.id === 'remember')).toBe(false);
+    expect((await c.marketplace.getPackages()).remember).toBeUndefined();
+    expect((await c.skills.getChips()).some((x: any) => x.label === 'Remember')).toBe(false);
+  });
+
+  it('leaves the catalog (and its ratings) untouched by an install', async () => {
+    const c = await shim('?scenario=site');
+    const a = JSON.stringify(await c.skills.listMarketplace());
+    await c.skills.install('remember');
+    expect(JSON.stringify(await c.skills.listMarketplace())).toBe(a);
+  });
+});
+
+describe('student project (student=1)', () => {
+  it('lists Econ 201 first with files, two conversations and a context note; off, the developer projects are unchanged', async () => {
+    const c = await shim('?scenario=site&student=1');
+    const { projects } = await c.artifacts.listProjectsIndex({ withCounts: true });
+    expect(projects[0].name).toBe('Econ 201');
+    expect(projects[0].description).toMatch(/Microeconomics/);
+    expect(projects[0].conversationCount).toBe(2);
+    const { files } = await c.artifacts.listAllFiles(projects[0].id);
+    const names = files.map((f: any) => f.path);
+    expect(names).toEqual(expect.arrayContaining(['Q3-sales.xlsx', 'syllabus.md']));
+    expect(names.some((n: string) => n.startsWith('lecture notes/'))).toBe(true);
+    const { conversations } = await c.project.listConversations(projects[0].path);
+    expect(conversations.map((x: any) => x.name).sort()).toEqual(['econ midterm brief', 'econ study guide']);
+    const { groups } = await c.project.listContext(projects[0].path);
+    const text = JSON.stringify(groups);
+    expect(text).toContain('Second-year student. Keep explanations short.');
+    expect(text).not.toMatch(/CLAUDE\.md|react-renderer/);
+    // The drawer of any student session lists the spreadsheet.
+    const { artifacts } = await c.artifacts.listSession('wb-new-1');
+    expect(artifacts.map((a: any) => a.path)).toContain('Q3-sales.xlsx');
+
+    const plain = await shim('?scenario=site');
+    expect((await plain.artifacts.listProjectsIndex()).projects[0].name).toBe('youcoded');
+    expect((await plain.artifacts.listSession('wb-new-1')).artifacts.map((a: any) => a.path)).not.toContain('Q3-sales.xlsx');
+  });
+});
+
+describe('resumed history (phone takeover)', () => {
+  it('answers the first page of a resumed "econ midterm brief" with the briefing as finished history', async () => {
+    const c = await shim('?scenario=site&student=1&lease=held%3ADesktop');
+    expect(await c.syncSpaces.leaseQuery('wb-past-0')).toMatchObject({ held: true, device: 'Desktop' });
+    const page = await c.detach.requestTranscriptPage({ sessionId: 'wb-new-1', beforeCursor: null, claudeSessionId: 'wb-past-0', projectSlug: 'Econ 201' });
+    expect(page.hasMore).toBe(false);
+    expect(page.events[0]).toMatchObject({ type: 'user-message', sessionId: 'wb-new-1', data: { text: "brief me on tomorrow's econ midterm" } });
+    expect(page.events.some((e: any) => e.type === 'assistant-text' && /brief/i.test(e.data.text))).toBe(true);
+    expect(page.events.at(-1).type).toBe('turn-complete');
+    // App's first ask carries no locator (App.tsx loads a first page for every
+    // session it knows); a session created by a resume still answers it.
+    const created = await c.session.create({ name: 'Resuming...', cwd: '/home/you/School/Econ 201', resumeSessionId: 'wb-past-0' });
+    const bare = await c.detach.requestTranscriptPage({ sessionId: created.id, beforeCursor: null });
+    expect(bare.events.length).toBe(page.events.length);
+  });
+  it('is an honest empty page for any other session, and outside student mode', async () => {
+    const c = await shim('?scenario=site&student=1');
+    expect(await c.detach.requestTranscriptPage({ sessionId: 'x', beforeCursor: null, claudeSessionId: 'wb-past-1' })).toEqual({ events: [], cursor: null, hasMore: false });
+    const plain = await shim('?scenario=site');
+    expect((await plain.detach.requestTranscriptPage({ sessionId: 'x', beforeCursor: null, claudeSessionId: 'wb-past-0' })).events).toEqual([]);
+  });
+});
+
+describe('resuming a Resume row in the workbench', () => {
+  it('names the new session after the row and sends the first hook event that lifts "Initializing session…"', async () => {
+    const c = await shim('?scenario=site&student=1');
+    const hooks: any[] = [];
+    c.on.hookEvent((e: any) => hooks.push(e));
+    const created = await c.session.create({ name: 'Resuming...', cwd: '/home/you/School/Econ 201', resumeSessionId: 'wb-past-0' });
+    expect(created.name).toBe('econ midterm brief');
+    await new Promise((r) => setTimeout(r, 120));
+    expect(hooks).toEqual([expect.objectContaining({ type: 'SessionStart', sessionId: created.id })]);
+    // A plain create is untouched: no hook, the given name.
+    const plain = await c.session.create({ name: 'fresh', cwd: '/home/you' });
+    await new Promise((r) => setTimeout(r, 120));
+    expect(plain.name).toBe('fresh');
+    expect(hooks).toHaveLength(1);
+  });
+});

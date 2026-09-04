@@ -1,0 +1,2 @@
+{"type":"assistant_text","text":"Elasticity is how much the amount people buy changes when the price changes. Elastic means a small price change moves sales a lot; inelastic means sales barely move.","delay":500,"model":"x-ai/grok-4"}
+{"type":"turn_complete","delay":200,"model":"x-ai/grok-4"}
