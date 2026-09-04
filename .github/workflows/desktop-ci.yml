@@ -9,9 +9,28 @@ on:
   # failing pushes) without anyone noticing. `pull_request` also lets
   # Dependabot's `dependabot/**` PRs run checks; they matched none of the old
   # push patterns. `push: [master]` keeps the post-merge run on master.
+  # docs/** is skipped: every step in this workflow runs inside `desktop/`
+  # (npm ci, npm test, knip, eslint, npm run build) and none of them reads
+  # docs/. A docs-only change was costing ~15 minutes of builds across three
+  # operating systems for a diff that cannot affect any of them.
+  #
+  # This is NOT the branch-name allowlist described above coming back. That one
+  # was a PROXY -- a guess at "is this a PR" that guessed wrong. This is a
+  # direct claim about which files the build reads, and `paths-ignore` skips a
+  # PR only when EVERY changed file matches, so anything touching docs/ AND
+  # src/ still runs the whole matrix.
+  #
+  # THE ONE TRAP, written down because it is invisible until it bites: a
+  # skipped workflow reports NO status, not a passing one. If master is ever
+  # given branch protection with `build` as a required check, docs-only PRs
+  # will sit unmergeable forever waiting for a run that never starts. Turning
+  # protection on means dropping this filter, or making the required check a
+  # tiny always-runs job. Master is unprotected as of 2026-09-04.
   push:
     branches: [master]
+    paths-ignore: ['docs/**']
   pull_request:
+    paths-ignore: ['docs/**']
   workflow_dispatch:
 
 jobs:

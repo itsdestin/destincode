@@ -4,7 +4,7 @@
 
 If you've found a security issue in YouCoded — desktop, Android, the marketplace worker, or any of the bundled plugins — **please report it privately rather than opening a public GitHub issue**.
 
-**Email:** destinj101@gmail.com
+**Email:** support@youcoded.ai
 **Subject line:** `[YouCoded Security] <short description>`
 
 What helps:

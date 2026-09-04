@@ -1,22 +1,31 @@
 {
   "name": "Golden Sunbreak",
   "slug": "golden-sunbreak",
+  "version": "1.2.0",
+  "companions": [
+    {"asset": "assets/companions/sun.svg", "size": 0.435, "dx": -0.6, "dy": -0.452, "stiffness": 65, "damping": 9, "float": 0.026, "floatMs": 2600},
+    {"asset": "assets/companions/mote-amber.svg", "size": 0.065, "dx": 0.313, "dy": -0.365, "stiffness": 120, "damping": 8, "float": 0.039, "floatMs": 1700},
+    {"asset": "assets/companions/mote-pale.svg", "size": 0.048, "dx": 0.487, "dy": -0.122, "stiffness": 85, "damping": 7, "float": 0.048, "floatMs": 2100},
+    {"asset": "assets/companions/mote-soft.svg", "size": 0.039, "dx": -0.4, "dy": 0.2, "stiffness": 55, "damping": 6, "float": 0.057, "floatMs": 2500}
+  ],
   "dark": true,
+  "author": "itsdestin",
+  "created": "2026-03-28",
   "description": "Weathering With You — Tokyo bathed in god-ray light. Deep violet-black panels, warm amber gold, soft dust-mote particles.",
   "tokens": {
     "canvas": "#08080e",
     "panel": "#140e1a",
-    "inset": "#1c1428",
+    "inset": "#1C1428",
     "well": "#050408",
     "accent": "#ffc030",
     "on-accent": "#000000",
-    "fg": "#f8e8c8",
-    "fg-2": "#dcc898",
-    "fg-dim": "#b09060",
-    "fg-muted": "#806840",
-    "fg-faint": "#504028",
-    "edge": "#281e10",
-    "edge-dim": "#281e1080",
+    "fg": "#F8E8C8",
+    "fg-2": "#DCC898",
+    "fg-dim": "#B09060",
+    "fg-muted": "#917950",
+    "fg-faint": "#6F5E45",
+    "edge": "#3C3223",
+    "edge-dim": "#4B403180",
     "scrollbar-thumb": "#c89020",
     "scrollbar-hover": "#ffc030"
   },
@@ -30,8 +39,10 @@
     "radius-full": "9999px"
   },
   "background": {
+    "average-color": "#727E86",
     "type": "image",
     "value": "assets/wallpaper.jpg",
+    "terminal-value": "assets/wallpaper-terminal.webp",
     "opacity": 0.98,
     "panels-blur": 18,
     "panels-opacity": 0.72,
@@ -59,6 +70,7 @@
     "send": "assets/icon-send.svg"
   },
   "mascot": {
+    "rig": "assets/mascot-rig.svg",
     "idle": "assets/mascot-idle.svg",
     "welcome": "assets/mascot-welcome.svg",
     "inquisitive": "assets/mascot-inquisitive.svg"

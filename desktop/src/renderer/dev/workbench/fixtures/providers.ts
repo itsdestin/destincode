@@ -20,6 +20,11 @@ export function catalog(): CatalogRow[] {
     { id: 'anthropic/claude-sonnet-4-6', providerId: 'pv-openrouter', label: 'Claude Sonnet 4.6' },
     { id: 'openai/gpt-5', providerId: 'pv-openrouter', label: 'GPT-5' },
     { id: 'x-ai/grok-4', providerId: 'pv-openrouter', label: 'Grok 4' },  // site row-1 skit switches to it
+    // Promo (model beat): two DeepSeek rows so the favourites list opens with
+    // four different companies' models. Names + provider only — no prices,
+    // costs or "free" tags anywhere in the picker (Destin: nothing faked there).
+    { id: 'deepseek/deepseek-v3.2', providerId: 'pv-openrouter', label: 'DeepSeek V3.2' },
+    { id: 'deepseek/deepseek-r1', providerId: 'pv-openrouter', label: 'DeepSeek R1' },
     { id: 'qwen2.5-coder:14b', providerId: 'local', label: 'Qwen2.5 Coder 14B' },
     { id: 'llama3.1:8b', providerId: 'local', label: 'Llama 3.1 8B' },
   ];

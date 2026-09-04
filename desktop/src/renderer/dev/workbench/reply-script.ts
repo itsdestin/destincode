@@ -118,3 +118,29 @@ export async function playReply(sessionId: string, text: string, script: ReplyLi
     }
   }
 }
+
+/** The same fixture as a finished page of history — every line at once, no
+ *  streaming, no permission pause — in the event shape `detach.requestTranscriptPage`
+ *  returns (TranscriptEvent, the shape playReply streams). Used by the shim to
+ *  answer the first-page load of a RESUMED session with a real conversation:
+ *  the promo's phone beat takes over "econ midterm brief" and must show the
+ *  brief, and before this the page came back empty. `userText`, when given,
+ *  is the user bubble the fixture never carries (see the header). */
+export function scriptToEvents(sessionId: string, lines: ReplyLine[], userText?: string): unknown[] {
+  const out: unknown[] = [];
+  const t = (type: string, data: Record<string, unknown>) =>
+    out.push({ type, sessionId, uuid: uid(), timestamp: stamp(), data });
+  if (userText) t('user-message', { text: userText });
+  for (const line of lines) {
+    switch (line.type) {
+      case 'assistant_text': t('assistant-text', { text: line.text, partId: uid(), model: line.model }); break;
+      case 'user_message': t('user-message', { text: line.text }); break;
+      case 'tool_use': t('tool-use', { toolUseId: line.id, toolName: line.name, toolInput: line.input }); break;
+      case 'tool_result': t('tool-result', { toolUseId: line.tool_use_id, toolResult: line.content, isError: !!line.is_error }); break;
+      // In history the ask was answered long ago: only the call it became remains.
+      case 'permission_request': t('tool-use', { toolUseId: line.id, toolName: line.name, toolInput: line.input }); break;
+      case 'turn_complete': t('turn-complete', { stopReason: 'end_turn', model: line.model ?? null }); break;
+    }
+  }
+  return out;
+}
