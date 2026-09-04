@@ -89,7 +89,13 @@ A complete notice should include: identification of the work allegedly infringed
 
 We respond to good-faith notices in good faith and aim to act on them promptly. If we remove content based on a notice and you believe the removal was a mistake, you may submit a counter-notice with the corresponding details. We may also forward notices and counter-notices to the original submitter to allow direct dispute resolution.
 
-This Section is the YouCoded process for handling infringement claims. It is offered in the spirit of the DMCA's takedown framework. **YouCoded has not (yet) registered a designated DMCA agent with the U.S. Copyright Office**; that registration is on the project's near-term roadmap. Until then, the email address above is the canonical contact for takedowns.
+This Section is the YouCoded process for handling infringement claims under the DMCA's takedown framework. Our designated agent, registered with the U.S. Copyright Office (DMCA Designated Agent Directory registration DMCA-1079861), is:
+
+- **Destin Moss**, Member, Destin's Adventures, LLC
+- 14002 N 49th Ave, Unit 1023, Glendale, AZ 85306, United States
+- support@youcoded.ai
+
+Notices sent to the email address above reach the designated agent.
 
 ---
 
