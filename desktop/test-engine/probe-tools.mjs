@@ -13,7 +13,10 @@ async function chat(body) {
   return res.json();
 }
 (async () => {
-  try { const props = await (await fetch(`${base}/props`)).json(); console.log('ctx  loaded n_ctx =', props?.default_generation_settings?.n_ctx ?? props?.n_ctx ?? '(field not found — check the pinned build)'); } catch { console.log('ctx  /props unavailable'); }
+  // WHY ?model= (2026-09-04): router-mode /props only describes the named model — bare /props answers
+  // n_ctx 0 with no slot field. With the model named, n_ctx is the PER-SLOT window and total_slots
+  // (n_slots on older builds) is the parallel-slot count the app's concurrency cap reads.
+  try { const props = await (await fetch(`${base}/props?model=${encodeURIComponent(model)}`)).json(); console.log('ctx  loaded per-slot n_ctx =', props?.default_generation_settings?.n_ctx ?? props?.n_ctx ?? '(field not found — check the pinned build)', ' total_slots =', props?.total_slots ?? props?.n_slots ?? '(field not found — check the pinned build)'); } catch { console.log('ctx  /props unavailable'); }
   const toolResp = await chat({ messages: [{ role: 'user', content: 'Read the file at src/index.ts using the Read tool.' }], tools: [READ_TOOL], tool_choice: 'auto', parallel_tool_calls: false });
   const call = toolResp.choices?.[0]?.message?.tool_calls?.[0];
   if (!call) throw new Error('FAIL: no tool_call emitted for a tool-y prompt (this model may not support tool calling)');

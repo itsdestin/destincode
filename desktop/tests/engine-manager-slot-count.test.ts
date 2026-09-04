@@ -6,11 +6,21 @@
 // regression from the pre-Task-13 flat cap of 4.
 //
 // This file proves the piece that closes that gap: EngineManager actually
-// reads llama-server's n_slots off the SAME /props response that already
+// reads llama-server's slot count off the SAME /props response that already
 // supplies the context window (no second HTTP round trip), with the same
 // defensive "absent/zero/non-numeric = unknown" posture n_ctx already gets
 // (see engine-context-router-fallback.test.ts for the identical n_ctx bug —
 // this mirrors that fix rather than reinventing the parsing strategy).
+//
+// 2026-09-04 correction (measured live against the pinned b10665 in router
+// mode): the field is `total_slots`, NOT `n_slots`, and it only appears when
+// the request names a model — `GET /props` with no `?model=` answers
+// `{model_path:"none", default_generation_settings.n_ctx: 0}` and NO slot
+// field at all, while `GET /props?model=<id>` answers `total_slots: 4` plus
+// the PER-SLOT n_ctx (`-c` / slots). The earlier version of this file pinned
+// the wrong name and the model-less URL, which is exactly why the bug shipped
+// with every test green: totalSlots was ALWAYS null in production, so every
+// local model was capped at ONE helper while the engine had four slots.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
@@ -69,12 +79,14 @@ function plantInstall(backend = 'cpu') {
 
 /** fetch stub: /health answers ok immediately (our fake child never really
  *  binds a port, so ensureRunning's identity guard needs pidOnPort wired to
- *  match); /props answers the given body; anything else answers {}. */
-function fetchWithProps(propsBody: unknown, propsSpy?: () => void): ReturnType<typeof vi.fn> {
+ *  match); /props (with or without a `?model=` query — the spy receives the
+ *  full URL so a test can assert on the query) answers the given body;
+ *  anything else answers {}. */
+function fetchWithProps(propsBody: unknown, propsSpy?: (url: string) => void): ReturnType<typeof vi.fn> {
   return vi.fn(async (url: string) => {
     if (String(url).endsWith('/health')) return { ok: true, status: 200, json: async () => ({ status: 'ok' }) } as any;
-    if (String(url).endsWith('/props')) {
-      propsSpy?.();
+    if (new URL(String(url)).pathname === '/props') {
+      propsSpy?.(String(url));
       return { ok: true, status: 200, json: async () => propsBody } as any;
     }
     return { ok: true, status: 200, json: async () => ({}) } as any;
@@ -91,7 +103,7 @@ function plantedManager(fetchImpl: ReturnType<typeof vi.fn>, cacheDir: string) {
   });
 }
 
-describe('resolveSlotCount — /props n_slots parsing (Task 13 fix pass)', () => {
+describe('resolveSlotCount — /props total_slots parsing (Task 13 fix pass)', () => {
   it('reads a positive integer straight through', () => {
     expect(resolveSlotCount(4)).toBe(4);
     expect(resolveSlotCount(1)).toBe(1);
@@ -114,24 +126,64 @@ describe('resolveSlotCount — /props n_slots parsing (Task 13 fix pass)', () =>
 });
 
 describe('EngineManager.effectiveContextWindow — totalSlots (Task 13 fix pass)', () => {
-  it('surfaces n_slots from the SAME /props body that already supplies context — one fetch serves both', async () => {
+  it('asks /props?model=<id> and surfaces total_slots plus the PER-SLOT n_ctx from that one body — one fetch serves both', async () => {
     const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
     const propsSpy = vi.fn();
-    const fetchImpl = fetchWithProps({ default_generation_settings: { n_ctx: 32_768 }, n_slots: 2 }, propsSpy);
+    // The exact b10665 router-mode answer to /props?model=Qwen3.5-2B-Q8_0 with
+    // `-c 16384 --parallel 4`: n_ctx is 16384 / 4, the window ONE request gets.
+    const fetchImpl = fetchWithProps({ default_generation_settings: { n_ctx: 4096 }, total_slots: 4 }, propsSpy);
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 16_384 } }));
+    plantInstall();
+    mgr = plantedManager(fetchImpl, cacheDir);
+
+    const result = await mgr.effectiveContextWindow('Qwen3.5-2B-Q8_0');
+    // The honest window is the per-slot one the engine reported, NOT the -c we
+    // passed on the command line (that is the TOTAL shared across all slots).
+    expect(result).toEqual({ contextLength: 4096, totalSlots: 4 });
+    // ONE /props read produced BOTH fields — the exact "no second HTTP round
+    // trip" property the fix pass exists to guarantee — and it named the model,
+    // because a model-less /props carries no slot field on this build at all.
+    expect(propsSpy).toHaveBeenCalledTimes(1);
+    expect(propsSpy).toHaveBeenCalledWith('http://127.0.0.1:9999/props?model=Qwen3.5-2B-Q8_0');
+  });
+
+  it('URL-encodes the model id in the query (router ids can carry characters a query string cannot)', async () => {
+    const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
+    const propsSpy = vi.fn();
+    const fetchImpl = fetchWithProps({ default_generation_settings: { n_ctx: 4096 }, total_slots: 4 }, propsSpy);
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 16_384 } }));
+    plantInstall();
+    mgr = plantedManager(fetchImpl, cacheDir);
+
+    await mgr.effectiveContextWindow('odd model&id');
+    expect(propsSpy).toHaveBeenCalledWith(`http://127.0.0.1:9999/props?model=${encodeURIComponent('odd model&id')}`);
+  });
+
+  it('an OLDER build that still answers n_slots (no total_slots) is read through the fallback name', async () => {
+    const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
+    const fetchImpl = fetchWithProps({ default_generation_settings: { n_ctx: 32_768 }, n_slots: 2 });
     await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 32_768 } }));
     plantInstall();
     mgr = plantedManager(fetchImpl, cacheDir);
 
     const result = await mgr.effectiveContextWindow('some-model');
     expect(result).toEqual({ contextLength: 32_768, totalSlots: 2 });
-    // ONE /props read produced BOTH fields — the exact "no second HTTP round
-    // trip" property the fix pass exists to guarantee.
-    expect(propsSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('an absent n_slots resolves to unknown (null), not a guessed count, while context still resolves normally', async () => {
+  it('total_slots wins over a stray n_slots when a body somehow carries both', async () => {
     const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
-    const fetchImpl = fetchWithProps({ default_generation_settings: { n_ctx: 64_000 } }); // no n_slots field at all
+    const fetchImpl = fetchWithProps({ default_generation_settings: { n_ctx: 4096 }, total_slots: 4, n_slots: 1 });
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 16_384 } }));
+    plantInstall();
+    mgr = plantedManager(fetchImpl, cacheDir);
+
+    const result = await mgr.effectiveContextWindow('some-model');
+    expect(result.totalSlots).toBe(4);
+  });
+
+  it('a body with no slot field at all resolves to unknown (null), not a guessed count, while context still resolves normally', async () => {
+    const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
+    const fetchImpl = fetchWithProps({ default_generation_settings: { n_ctx: 64_000 } }); // neither total_slots nor n_slots
     await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 64_000 } }));
     plantInstall();
     mgr = plantedManager(fetchImpl, cacheDir);
@@ -141,11 +193,13 @@ describe('EngineManager.effectiveContextWindow — totalSlots (Task 13 fix pass)
     expect(result.totalSlots).toBeNull();
   });
 
-  it('router mode\'s literal n_slots: 0 (nothing resident) resolves to unknown, mirroring n_ctx\'s own 0-means-unknown handling', async () => {
+  it('the MODEL-LESS router answer (model_path "none", n_ctx 0, no slot field) still resolves to the configured -c and unknown slots', async () => {
     const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
-    // {"model_path":"none","n_ctx":0,"n_slots":0} — the exact router-mode shape
-    // the n_ctx regression test (engine-context-router-fallback.test.ts) documents.
-    const fetchImpl = fetchWithProps({ model_path: 'none', n_ctx: 0, n_slots: 0 });
+    // Measured 2026-09-04 on b10665: this is what /props returns when the
+    // request names no model, or names one that is not resident yet. The app
+    // now always sends ?model=, but a not-yet-loaded model can still get this
+    // shape, and it must degrade exactly as before — never to "0 slots".
+    const fetchImpl = fetchWithProps({ model_path: 'none', default_generation_settings: { n_ctx: 0 } });
     await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 128_000 } }));
     plantInstall();
     mgr = plantedManager(fetchImpl, cacheDir);
@@ -153,6 +207,18 @@ describe('EngineManager.effectiveContextWindow — totalSlots (Task 13 fix pass)
     const result = await mgr.effectiveContextWindow('some-model');
     expect(result.contextLength).toBe(128_000);   // falls back to the configured -c, same as n_ctx's existing fix
     expect(result.totalSlots).toBeNull();          // NOT 0 slots — unknown
+  });
+
+  it('a literal total_slots: 0 resolves to unknown, mirroring n_ctx\'s own 0-means-unknown handling', async () => {
+    const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
+    const fetchImpl = fetchWithProps({ model_path: 'none', n_ctx: 0, total_slots: 0 });
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 128_000 } }));
+    plantInstall();
+    mgr = plantedManager(fetchImpl, cacheDir);
+
+    const result = await mgr.effectiveContextWindow('some-model');
+    expect(result.contextLength).toBe(128_000);
+    expect(result.totalSlots).toBeNull();
   });
 
   it('no engine installed yet: both fields are the conservative "unknown" default', async () => {

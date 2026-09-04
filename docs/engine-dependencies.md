@@ -23,9 +23,12 @@ release that can load the model. b10665 is the newest release at bump time.
 `GET /models` rows still report `status` as an OBJECT (`{value:'unloaded'|…}`), not a
 bare string; streamed `/v1/chat/completions` still carries the `timings` block
 (`prompt_n`/`prompt_ms`/`predicted_n`/`predicted_ms`/`cache_n`) `prefill-progress.ts`
-reads; router-mode `/props` with nothing resident still answers `{model_path:"none",
-default_generation_settings.n_ctx: 0}` — the documented case `effectiveContextWindow`
-already falls back to the configured `-c` for.
+reads; router-mode `/props` with no `?model=` (or a model not yet resident) still answers
+`{model_path:"none", default_generation_settings.n_ctx: 0}` and **no slot field** — the
+documented case `effectiveContextWindow` falls back to the configured `-c` for. **The app
+must ask `/props?model=<id>`** (fixed 2026-09-04): only then does the router answer
+`total_slots: 4` and the PER-SLOT `n_ctx` (`-c` / slots). The key is `total_slots` — there is
+no `n_slots` key on b10665; the app reads `total_slots ?? n_slots` for older builds.
 
 **Bump procedure** (same discipline as a Claude Code bump):
 1. `node desktop/scripts/generate-engine-pin.mjs <new-tag>` → paste rows into
@@ -180,15 +183,20 @@ context window.
   back with NO `tool_calls` — the model answers in `message.content`. A build that
   force-calls a tool on ordinary text would break normal chat; the probe asserts
   against this.
-- **Real context window via `GET /props`.** The loaded model's actual `n_ctx` is the
-  ground truth the known-model registry (advertised context) is checked against.
-  **The field name drifts across builds** — read `default_generation_settings.n_ctx`
-  first, then fall back to top-level `n_ctx`; if neither is present the build moved
-  it again (re-check against the pinned tag). This is `-c` propagated to the loaded
-  instance (see the `--models-dir` / `-c` notes above).
+- **Real context window + slot count via `GET /props?model=<id>`.** The loaded model's
+  actual `n_ctx` is the ground truth the known-model registry (advertised context) is
+  checked against. **Name the model in the query** — in router mode a bare `/props` answers
+  `n_ctx: 0` and no slot field regardless of what is loaded (verified 2026-09-04 on b10665;
+  the app shipped for weeks reading that model-less answer, so every local model was capped
+  at ONE concurrent helper). **The field names drift across builds** — read
+  `default_generation_settings.n_ctx` first, then fall back to top-level `n_ctx`; the slot
+  count is `total_slots` on b10665 (`n_slots` on older builds — read `total_slots ?? n_slots`);
+  if none is present the build moved it again (re-check against the pinned tag). With the
+  model named, `n_ctx` is the **per-slot** window: `-c` divided by the slot count, which is
+  what a single request actually gets (see the `--models-dir` / `-c` notes above).
 - **Verified by `test-engine/probe-tools.mjs`** — fires a tool-y prompt (asserts
   schema-valid JSON args), a plain prompt (asserts no forced call), and prints the
-  `/props` `n_ctx`. Usage: `node test-engine/probe-tools.mjs http://127.0.0.1:<port>
+  `/props?model=` per-slot `n_ctx` and `total_slots`. Usage: `node test-engine/probe-tools.mjs http://127.0.0.1:<port>
   <model-id>` against an already-running engine. **Engine-bump gated:** re-run this
   probe whenever the pinned llama.cpp build changes (tool-call arg encoding and the
   `/props` field layout are both build-sensitive).
@@ -318,7 +326,8 @@ classification.
 | 2 | 599 | 598 | 597 | 599 | batched |
 | 4 | 1200 | 1188 | 1178 | 1199 | partial |
 
-Server startup log showed `n_slots = 4` even with no `--parallel` flag —
+Server startup log showed `n_slots = 4` (the log's name; `/props?model=` reports the same
+figure as `total_slots`) even with no `--parallel` flag —
 this build's `-np -1` "auto" already resolves to 4 slots on this hardware.
 
 **Run 2 — explicit `--parallel 4` added to the same spawn args:**
