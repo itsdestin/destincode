@@ -97,13 +97,25 @@ function past(i: number, name: string, extra: Partial<PastSession> = {}): PastSe
 }
 
 // `lastUsedModel` is deliberately present on SOME rows and absent on others.
-// That asymmetry is real, not fixture laziness: only native sessions record a
-// model ref today (see PastSession.lastUsedModel in ResumeBrowser.tsx for the
-// trace), so a design that assumes every card can show a model chip would look
-// fine here and wrong in the app. Rows 0 and 3 stay bare on purpose.
+// That asymmetry is real, not fixture laziness: a conversation whose transcript
+// records no real model carries none (see PastSession.lastUsedModel in
+// ResumeBrowser.tsx for the trace), so a design that assumes every card can
+// show a model chip would look fine here and wrong in the app. Row 3 stays bare
+// on purpose.
+//
+// Row 0 is the CLAUDE CODE case — providerType 'claude-code', which is what
+// session-browser.ts writes for a CC row. It was missing until 2026-09-04, and
+// its absence is why the card line and the Model picker could disagree about
+// which mark a CC session wears without the workbench ever showing it. (The
+// note here used to say "only native sessions record a model ref today"; that
+// stopped being true when the CC side landed.)
 function defaultPast(): PastSession[] {
   return [
-    past(0, 'fix chat scroll stick', { flags: { priority: true }, tags: ['tag_bug'] }),
+    past(0, 'fix chat scroll stick', {
+      flags: { priority: true },
+      tags: ['tag_bug'],
+      lastUsedModel: { modelId: 'claude-opus-5', providerType: 'claude-code', providerLabel: 'Claude Code' },
+    }),
     past(1, 'theme contrast pass', {
       provider: 'native',
       harnessId: 'coder',

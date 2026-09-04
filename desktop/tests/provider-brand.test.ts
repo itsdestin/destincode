@@ -23,6 +23,20 @@ describe('resolveModelBrand', () => {
     expect(resolveModelBrand('claude-sonnet-4-6')?.color).toBe('var(--brand-claude)');
   });
 
+  // The Claude Code runtime gets the CC mascot, NOT the Anthropic mark, even
+  // though its model ids all match /claude/i. Pinned because the resume
+  // browser's card line and its Model picker disagreed for exactly this reason
+  // (2026-09-04): one mark per session, everywhere it is shown.
+  it('pins the Claude Code runtime to the CC mascot, ahead of the id sweep', () => {
+    expect(resolveModelBrand('claude-opus-5', 'claude-code')?.icon).toBe('claudecode');
+    expect(resolveModelBrand('claude-haiku-4-5-20251001', 'claude-code')?.icon).toBe('claudecode');
+    expect(resolveModelBrand('<synthetic>', 'claude-code')?.icon).toBe('claudecode');
+    expect(resolveModelBrand('claude-opus-5', 'claude-code')?.color).toBe('var(--brand-claude)');
+    // An Anthropic API key (OpenRouter or direct) is still the Anthropic mark.
+    expect(resolveModelBrand('anthropic/claude-opus-5', 'openrouter')?.icon).toBe('anthropic');
+    expect(resolveModelBrand('claude-opus-5', 'anthropic')?.icon).toBe('anthropic');
+  });
+
   it('detects Google / Gemini / Gemma models', () => {
     expect(resolveModelBrand('google/gemini-2.5-flash')?.icon).toBe('google');
     expect(resolveModelBrand('gemma-2-9b-it')?.icon).toBe('google');
