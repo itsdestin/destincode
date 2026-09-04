@@ -79,6 +79,11 @@ export class WindowRegistry extends EventEmitter {
     }
     // Release subscriptions too — buddy windows subscribe without owning.
     this.releaseAllSubscriptionsForWindow(id, /* silent */ true);
+    // A window that closed before reading its inherited page leaves a mark that
+    // would otherwise outlive it and mis-serve whoever inherits that id later.
+    for (const [sessionId, winId] of this.inheritedByTransfer) {
+      if (winId === id) this.inheritedByTransfer.delete(sessionId);
+    }
     this.emit('changed');
   }
 
@@ -150,6 +155,37 @@ export class WindowRegistry extends EventEmitter {
 
   getOwner(sessionId: string): number | undefined {
     return this.ownership.get(sessionId);
+  }
+
+  // sessionId -> the window that inherited it through an ownership TRANSFER and
+  // has not yet read its first page of history.
+  //
+  // Why this exists: TRANSCRIPT_PAGE's first page deliberately stops at the
+  // transcript watcher's startOffset, because everything after that byte was
+  // already delivered to the requester over the live TRANSCRIPT_EVENT stream.
+  // That contract holds for a window that has been listening since the watcher
+  // attached — and is FALSE for a window that just inherited the session, which
+  // received none of it. Such a window used to render history that ended at the
+  // moment the session was resumed, silently missing every message since
+  // (Destin, 2026-09-03: "the latest message shown is not actually the latest").
+  // A marked session's first page reads to EOF instead. One-shot: consumed by
+  // the first page read, so paging further back behaves normally.
+  private readonly inheritedByTransfer = new Map<string, number>();
+
+  /** Mark a session as inherited by `windowId`, so its first page reads to EOF. */
+  markInheritedByTransfer(sessionId: string, windowId: number): void {
+    this.inheritedByTransfer.set(sessionId, windowId);
+  }
+
+  /**
+   * True exactly once, for the window that inherited this session — and clears
+   * the mark. Any other window (or a second read) gets false and today's
+   * stop-at-startOffset behaviour.
+   */
+  consumeInheritedByTransfer(sessionId: string, windowId: number): boolean {
+    if (this.inheritedByTransfer.get(sessionId) !== windowId) return false;
+    this.inheritedByTransfer.delete(sessionId);
+    return true;
   }
 
   /**

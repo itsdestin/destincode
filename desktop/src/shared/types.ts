@@ -1580,6 +1580,18 @@ export const IPC = {
   WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
   SESSION_OWNERSHIP_ACQUIRED: 'session:ownership-acquired',
   SESSION_OWNERSHIP_LOST: 'session:ownership-lost',
+  // Pull half of SESSION_OWNERSHIP_ACQUIRED. A window created BY a tear-off is
+  // handed its session before its renderer can subscribe, and Electron drops
+  // (never queues) a send with no listener — so the renderer asks for what it
+  // inherited once mounted. Returns SessionOwnershipAcquired[] and clears it.
+  DETACH_CLAIM_PENDING: 'detach:claim-pending',
+  // Re-send the parts of a session's state that live ONLY in main's memory and
+  // have no record in the transcript on disk: open permission asks, specialist
+  // run records, background shell run records, and the replay-complete marker
+  // that reaps tool cards the history left 'running'. Split out of
+  // TRANSCRIPT_REPLAY so an ownership handoff can hydrate from one PAGE of
+  // history instead of a whole-transcript replay.
+  SESSION_REPLAY_LIVE_STATE: 'session:replay-live-state',
   SESSION_DETACH_START: 'session:detach-start',
   // Chrome-style live tear-off: spawn the peer window mid-drag (before pointerup)
   // once the pill has moved far enough from the header. Source window then

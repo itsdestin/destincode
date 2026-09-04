@@ -1665,6 +1665,12 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       if (!raw) return empty;
       return { ...empty, events: scriptToEvents(req.sessionId, parseReplyScript(raw), "brief me on tomorrow's econ midterm") as TranscriptEvent[] };
     },
+    // Both called unconditionally from App.tsx's mount effect. The workbench is
+    // one window that never inherits a session, so there is nothing to claim
+    // and no memory-only state to re-send — but the keys must exist, because a
+    // missing one is a TypeError at mount, not a no-op.
+    claimPending: async () => [],
+    replayLiveState: async () => {},
   };
 
   // No `tags` namespace exists in useIpc.ts at all, so none of this is

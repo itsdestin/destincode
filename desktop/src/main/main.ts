@@ -24,12 +24,13 @@ import fs from 'fs';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { WindowRegistry } from './window-registry';
+import { PendingAcquireQueue } from './pending-acquire';
 import { registerIpcHandlers } from './ipc-handlers';
 import { RemoteServer } from './remote-server';
 import { RemoteConfig } from './remote-config';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
-import { IPC, PermissionOverrides, PERMISSION_OVERRIDES_DEFAULT, type AttentionState, type AttentionSummary, type AttentionReport } from '../shared/types';
+import { IPC, PermissionOverrides, PERMISSION_OVERRIDES_DEFAULT, type AttentionState, type AttentionSummary, type AttentionReport, type SessionOwnershipAcquired } from '../shared/types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import { MOUNT_PROBE_JS } from './dev-mount-probe';
 import { log, rotateLog } from './logger';
@@ -175,6 +176,12 @@ const sessionManager = new SessionManager();
 // singletons (PartyKit lobby). Populated when sessions are created and
 // when windows spawn/close. See window-registry.ts.
 const windowRegistry = new WindowRegistry();
+
+// Ownership handoffs that arrived before their target window could listen.
+// See pending-acquire.ts for the full WHY — short version: `webContents.send`
+// into a not-yet-mounted renderer is dropped, never queued, so a tear-off's
+// handoff has to be pulled by the renderer rather than pushed at it.
+const pendingAcquire = new PendingAcquireQueue<SessionOwnershipAcquired>();
 
 // IDs in the registry are webContents.id values, NOT BrowserWindow.id values.
 // BrowserWindow.fromId(webContentsId) silently returns null, so previously
@@ -760,6 +767,7 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     // states from a closed window don't persist in the aggregated summary.
     attentionReports.delete(wid);
     debouncedBroadcastAttention();
+    pendingAcquire.forget(wid);
     windowRegistry.unregisterWindow(wid);
     // Spec §7.6: "Buddy closes with main." If this was the last main window
     // (i.e., all remaining open windows are buddy windows), tear down the
@@ -1047,6 +1055,24 @@ function registerDetachIpc() {
   // treating its own directory entry as a remote session.
   ipcMain.handle(IPC.WINDOW_GET_ID, (evt) => evt.sender.id);
 
+  // Renderer asks "did I inherit anything while I was still booting?"
+  //
+  // WHY (2026-09-03): a tear-off hands the session to a window created one
+  // statement earlier, so `tgt.webContents.send(SESSION_OWNERSHIP_ACQUIRED)`
+  // fired at a renderer whose React tree did not exist yet. Electron does NOT
+  // queue for a late subscriber — measured on 41.10.7: a message sent right
+  // after `new BrowserWindow()` never reaches a listener registered 1.5s later,
+  // it is dropped outright. So the handoff, and everything it triggers (history
+  // hydration, opening on the dragged session, re-sending open permission asks)
+  // silently did nothing on EVERY tear-off into a fresh window.
+  //
+  // Fix shape follows the one already used for the buddy overlay's boot
+  // geometry (see BUDDY_OVERLAY_READY): the renderer PULLS once mounted rather
+  // than being pushed at before it can listen. `readyWindows` is what makes the
+  // two paths exclusive — before a window has pulled, transfers queue; after,
+  // they push as before — so a payload is delivered exactly once either way.
+  ipcMain.handle(IPC.DETACH_CLAIM_PENDING, (evt) => pendingAcquire.claim(evt.sender.id));
+
   // Appearance sync across peer windows. When one window writes a theme /
   // font / reduced-effects change, it broadcasts and every OTHER window
   // receives the same prefs via appearance:sync. ThemeProvider applies
@@ -1067,10 +1093,21 @@ function registerDetachIpc() {
     const currentOwner = windowRegistry.getOwner(sessionId);
     if (currentOwner !== srcWindowId) return; // stale — another event already moved it
     windowRegistry.assignSession(sessionId, targetWindowId);
+    // The target has not been receiving this session's live transcript stream,
+    // so its first page of history must read to EOF rather than stopping at the
+    // watcher's startOffset. See WindowRegistry.markInheritedByTransfer.
+    windowRegistry.markInheritedByTransfer(sessionId, targetWindowId);
     const src = windowFromWcId(srcWindowId);
     const tgt = windowFromWcId(targetWindowId);
     src?.webContents.send(IPC.SESSION_OWNERSHIP_LOST, { sessionId });
-    tgt?.webContents.send(IPC.SESSION_OWNERSHIP_ACQUIRED, { sessionId, sessionInfo: info, freshWindow });
+    const payload = { sessionId, sessionInfo: info, freshWindow };
+    // A window that has not yet pulled (DETACH_CLAIM_PENDING) has no listener —
+    // a send would be dropped on the floor. Queue for its pull instead.
+    if (pendingAcquire.isReady(targetWindowId)) {
+      tgt?.webContents.send(IPC.SESSION_OWNERSHIP_ACQUIRED, payload);
+    } else {
+      pendingAcquire.enqueue(targetWindowId, payload);
+    }
   }
 
   // If a window was emptied by a detach/re-dock and another peer window
