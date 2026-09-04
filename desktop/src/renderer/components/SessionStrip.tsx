@@ -2,7 +2,7 @@ import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useMe
 import { createPortal } from 'react-dom';
 import { SessionStatusColor, STATUS_LABEL } from './StatusDot';
 import { Button, Toggle } from './ui';
-import { isAndroid } from '../platform';
+import { isAndroid, isRemoteMode } from '../platform';
 import FolderSwitcher from './FolderSwitcher';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
 import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
@@ -1383,7 +1383,10 @@ export default function SessionStrip({
   const [pillMenu, setPillMenu] = useState<{ x: number; y: number; sessionId: string } | null>(null);
   const handlePillContextMenu = useCallback((e: React.MouseEvent, sessionId: string) => {
     const det = (window as any).claude?.detach;
-    if (typeof det?.openDetached !== 'function') return;   // single-window surfaces: the default menu, if any
+    // Desktop Electron only. The phone and the remote browser are one window,
+    // and their shim stubs every detach call as a no-op — so the function
+    // check alone would offer "Move to new window" there and do nothing.
+    if (isAndroid() || isRemoteMode() || typeof det?.openDetached !== 'function') return;
     e.preventDefault();
     e.stopPropagation();
     setPillMenu({ x: e.clientX, y: e.clientY, sessionId });
