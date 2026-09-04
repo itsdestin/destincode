@@ -5,9 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YouCoded Assistant — Agentic AI for Everyone</title>
 <meta name="description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
-<!-- Social previews + favicon: carried over from the previous live page when the
-     redesign shipped (2026-09-03). The mockup had none; without og:image a shared
-     link renders as a bare URL. -->
+<!-- Social previews carried over from the previous live page when the redesign
+     shipped (2026-09-03) — the mockup had none, and without og:image a shared
+     link renders as a bare URL. The favicon is NO LONGER carried over: the old
+     favicon-*.svg files were the previous page's "YC" index card, which looked
+     nothing like the redesign's nav mark, so a tab and the page it belonged to
+     did not read as the same product. favicon.svg is now that mark, and
+     applyTheme() re-tints it live to whichever theme the visitor picks. -->
 <meta property="og:title" content="YouCoded Assistant — Agentic AI for Everyone">
 <meta property="og:description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
 <meta property="og:type" content="website">
@@ -17,7 +21,7 @@
 <meta name="twitter:title" content="YouCoded Assistant — Agentic AI for Everyone">
 <meta name="twitter:description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
 <meta name="twitter:image" content="https://youcoded.ai/og-image.png">
-<link rel="icon" href="favicon-light.svg" id="favicon">
+<link rel="icon" type="image/svg+xml" href="favicon.svg" id="favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;0,9..40,800;0,9..40,900;1,9..40,400;1,9..40,900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -800,6 +804,126 @@ body:has(.hero-themefirst) .nav .swatches{display:none}
   .mascot.on .m-chip::after{opacity:.36}}
 .mascot:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
 
+/* ==========================================================================
+   RIGGED MASCOTS (2026-09-04). The four chips stopped being one flat
+   silhouette and became the app's OWN default buddy rig — the 2.5D-soft skin
+   from desktop/src/renderer/components/mascot/default-buddy-rig.ts, tinted per
+   theme through --rig-accent / --rig-on-accent. The 2026-08-30 rule still
+   holds and is why they are all the SAME character: four different theme
+   mascots at 62px read as four different kinds of thing. What differs is how
+   each one MOVES, which is what makes the row read as alive rather than as
+   four icons that happen to wobble in unison.
+
+   Everything below is CSS animation driven by two attributes the script flips
+   (data-face, data-run). No rAF loop: the hero already does scroll work every
+   frame and four JS-driven mascots would compete with it.
+   ========================================================================== */
+.m-rig{--rig-accent:var(--a);overflow:visible}
+/* The rig's viewBox is "-3 -5 30 30" -- 30 units of canvas around a 24-unit
+   character, headroom the buddy floater needs for raised arms and hats. The
+   flat silhouette it replaced was a bare 0 0 24 24, so reusing its 58% shrank
+   the character by a fifth. 58 x 30/24 = 72.5 keeps the robot exactly the size
+   the picker was tuned at, with the padding living outside the box. */
+.m-rig{width:72.5%;height:72.5%}
+.mascot.m-lg .m-rig{width:70%;height:70%}
+/* Rotations hinge where the rig contract says they do. Limbs are drawn HANGING
+   DOWN from their data-pivot, and every pivot is the top-centre of that limb's
+   own box (arms 2.5/21.5 at y9, legs 8.95/15.05 at y17) -- so fill-box + 50% 0%
+   IS the contract, expressed in the one unit CSS gets right here.
+   NOT transform-box:view-box with the pivots in px: measured 2026-09-04, Chrome
+   reads those lengths as rendered CSS pixels, not viewBox units, so at this size
+   the shoulder landed in the middle of the head and the waving arm detached and
+   flew off the body. */
+.m-rig .rig-arm-left,.m-rig .rig-arm-right,
+.m-rig .rig-leg-left,.m-rig .rig-leg-right,
+.m-rig .rig-root,.m-rig .rig-body{transform-box:fill-box}
+.m-rig .rig-arm-left,.m-rig .rig-arm-right,
+.m-rig .rig-leg-left,.m-rig .rig-leg-right{transform-origin:50% 0%}
+/* Whole-body moves pivot at the FEET, so a lean or a hop lifts and tips the
+   character rather than sliding it sideways off its own legs. */
+.m-rig .rig-root,.m-rig .rig-body{transform-origin:50% 100%}
+
+/* --- faces: exactly one shows, chosen by data-face on the button ---------- */
+.m-rig .rig-face{display:none}
+.mascot[data-face="idle"]    .rig-face-idle,
+.mascot[data-face="welcome"] .rig-face-welcome,
+.mascot[data-face="curious"] .rig-face-curious,
+.mascot[data-face="shocked"] .rig-face-shocked,
+.mascot[data-face="blink"]   .rig-face-blink{display:block}
+
+/* --- the four acts. Each runs ONCE when the script sets data-run, which it
+   clears on animationend, so an act can always be re-triggered by a click even
+   while its idle turn is mid-flight. --------------------------------------- */
+
+/* GREET (Cotton Candy Sky) — BOTH arms go up and shake, like a small cheer.
+   Not the app's one-armed wave: measured 2026-09-04, a single arm swung up at
+   this size is a 4px wedge floating beside a head, and the eye reads it as a
+   stray shape rather than a limb. Symmetry is what makes it legible — two
+   shapes moving the same way at the same time read as a gesture, one does not.
+   The body rises with them so the whole silhouette changes, which is the part
+   that survives at 45px. */
+.mascot[data-run="greet"] .rig-arm-left {animation:m-cheer-l 1.25s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="greet"] .rig-arm-right{animation:m-cheer-r 1.25s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="greet"] .rig-root{animation:m-cheer-body 1.25s cubic-bezier(.3,.9,.4,1.2)}
+@keyframes m-cheer-l{
+  0%,100%{transform:rotate(0)} 22%{transform:rotate(128deg)}
+  45%{transform:rotate(104deg)} 68%{transform:rotate(128deg)} 84%{transform:rotate(108deg)}}
+@keyframes m-cheer-r{
+  0%,100%{transform:rotate(0)} 22%{transform:rotate(-128deg)}
+  45%{transform:rotate(-104deg)} 68%{transform:rotate(-128deg)} 84%{transform:rotate(-108deg)}}
+@keyframes m-cheer-body{
+  0%,100%{transform:translateY(0)} 24%{transform:translateY(-1.6px)} 70%{transform:translateY(-1px)}}
+
+/* SWAY (Meadow Mist) — the whole body leans and comes back, arms trailing a
+   beat behind it. The calmest of the four on purpose: a green meadow theme
+   that jitters would be selling the wrong feeling. */
+.mascot[data-run="sway"] .rig-root{animation:m-sway 2.2s ease-in-out}
+.mascot[data-run="sway"] .rig-arm-left{animation:m-trail-l 2.2s ease-in-out}
+.mascot[data-run="sway"] .rig-arm-right{animation:m-trail-r 2.2s ease-in-out}
+@keyframes m-sway{0%,100%{transform:rotate(0)} 30%{transform:rotate(-5deg)} 70%{transform:rotate(5deg)}}
+@keyframes m-trail-l{0%,100%{transform:rotate(0)} 36%{transform:rotate(13deg)} 76%{transform:rotate(-9deg)}}
+@keyframes m-trail-r{0%,100%{transform:rotate(0)} 36%{transform:rotate(9deg)} 76%{transform:rotate(-13deg)}}
+
+/* LOOK (Halftone Dimension) — a glance left, then right, HELD at each side.
+   On .rig-root, not .rig-body: this character's head and torso are one shape,
+   so tilting the body alone slid it off its own arms and legs and read as the
+   head coming loose (seen 2026-09-04). The whole character turns instead.
+   What separates it from SWAY, which also tips the body, is the timing and the
+   face: sway is one slow continuous breath, look SNAPS and holds, wearing the
+   curious face the script pairs with it. */
+.mascot[data-run="look"] .rig-root{animation:m-look 2.4s cubic-bezier(.3,.8,.35,1)}
+@keyframes m-look{
+  0%,100%{transform:translateX(0) rotate(0)}
+  16%{transform:translateX(-1.4px) rotate(-9deg)}
+  44%{transform:translateX(-1.4px) rotate(-9deg)}
+  62%{transform:translateX(1.4px) rotate(9deg)}
+  86%{transform:translateX(1.4px) rotate(9deg)}}
+
+/* HOP (Golden Sunbreak) — two little jumps, legs tucking under. */
+.mascot[data-run="hop"] .rig-root{animation:m-hop 1.1s cubic-bezier(.3,.7,.4,1)}
+.mascot[data-run="hop"] .rig-leg-left{animation:m-tuck-l 1.1s ease-in-out}
+.mascot[data-run="hop"] .rig-leg-right{animation:m-tuck-r 1.1s ease-in-out}
+@keyframes m-hop{
+  0%,46%,100%{transform:translateY(0)}
+  20%{transform:translateY(-2.4px)} 68%{transform:translateY(-1.6px)}}
+@keyframes m-tuck-l{0%,46%,100%{transform:rotate(0)} 20%{transform:rotate(22deg)} 68%{transform:rotate(15deg)}}
+@keyframes m-tuck-r{0%,46%,100%{transform:rotate(0)} 20%{transform:rotate(-22deg)} 68%{transform:rotate(-15deg)}}
+
+/* --- the click reaction. Shared shape (a quick squash and pop) so the row
+   answers a tap consistently; the act that runs alongside it is the mascot's
+   own, so the four still feel like four characters. It has to be SHORT: the
+   click also re-skins the entire page, and a long mascot animation running
+   under a full-page crossfade reads as lag. ------------------------------- */
+.mascot[data-run="pop"] .rig-root{animation:m-pop .42s cubic-bezier(.2,.9,.3,1.5)}
+@keyframes m-pop{
+  0%{transform:scale(1)} 26%{transform:scale(.84,1.14) translateY(-1.4px)}
+  60%{transform:scale(1.1,.92)} 100%{transform:scale(1)}}
+
+/* Motion is decoration here — the picker still works entirely by clicking. */
+@media (prefers-reduced-motion:reduce){
+  .m-rig *{animation:none !important}}
+
+
 /* ---- M1 FLANK: two either side of the headline ---- */
 .hero-flank .flankrow{display:flex;align-items:center;justify-content:center;gap:34px}
 .hero-flank .flankrow h1{margin:0}
@@ -1506,26 +1630,166 @@ html{-webkit-tap-highlight-color:transparent}
   <div class="wrap">
     <p class="kicker">Free &middot; Open source &middot; BYO model</p>
     <div class="flankrow">
-      <div class="mrow mrow-l"><button class="mascot" data-theme="cotton-candy-sky" aria-label="Use the Cotton Candy Sky look" style="--a:#8B47B8"><span class="m-chip"></span><svg class="m-art" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-  <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
-       actually renders for a theme that ships no mascot of its own. Pure
-       currentColor, so it takes whichever theme colour we set on the button. -->
-  <path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
-  <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>
-  <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
-  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
-  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
+      <div class="mrow mrow-l">
+<button class="mascot" data-theme="cotton-candy-sky" data-act="greet" data-face="welcome"
+  aria-label="Use the Cotton Candy Sky look" style="--a:#8B47B8;--rig-on-accent:#FFFFFF"><span class="m-chip"></span>
+<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<defs>
+<radialGradient id="g-hi-cotton-candy-sky" cx="33%" cy="20%" r="80%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.42"/>
+<stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="g-lo-cotton-candy-sky" x1="0" y1="0" x2="0.22" y2="1">
+<stop offset="52%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.34"/>
+</linearGradient>
+<linearGradient id="g-limb-shade-cotton-candy-sky" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.32"/>
+</linearGradient>
+<radialGradient id="g-spec-cotton-candy-sky" cx="30%" cy="16%" r="26%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="f-soft-cotton-candy-sky" x="-60%" y="-60%" width="220%" height="220%">
+<feGaussianBlur stdDeviation="0.45"/>
+</filter>
+</defs>
+<g class="rig-root">
+<g class="rig-arm-left" data-pivot="2.5 9">
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#g-limb-shade-cotton-candy-sky)"/>
+</g>
+<g class="rig-arm-right" data-pivot="21.5 9">
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="url(#g-limb-shade-cotton-candy-sky)"/>
+</g>
+<g class="rig-leg-left" data-pivot="8.95 17">
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-cotton-candy-sky)"/>
+</g>
+<g class="rig-leg-right" data-pivot="15.05 17">
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-cotton-candy-sky)"/>
+</g>
+<g class="rig-body">
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-lo-cotton-candy-sky)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-hi-cotton-candy-sky)"/>
+<ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#g-spec-cotton-candy-sky)" transform="rotate(-14 9.6 6.4)"/>
+<path d="M5 10.5 L5 8 A4 4 0 0 1 9 4 L11 4" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.32" filter="url(#f-soft-cotton-candy-sky)"/>
+<g class="rig-face rig-face-idle">
+<path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+<path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+</g>
+<g class="rig-face rig-face-welcome">
+<ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
+<ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="10" cy="10.25" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.3" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
+<circle cx="15.4" cy="9.95" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.65" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
+<g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+</g>
+<g class="rig-face rig-face-curious">
+<ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
+<ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
+<g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="9" cy="10.3" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="9.95" cy="10.15" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
+<ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-shocked">
+<circle cx="9.3" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="14.7" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="9.9" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/><circle cx="15.3" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/>
+<ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-blink">
+<path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+<path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+</g>
+</g>
+</g>
 </svg><span class="m-name">Cotton Candy Sky</span></button>
-        <button class="mascot" data-theme="meadow-mist" aria-label="Use the Meadow Mist look" style="--a:#2F7D55"><span class="m-chip"></span><svg class="m-art" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-  <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
-       actually renders for a theme that ships no mascot of its own. Pure
-       currentColor, so it takes whichever theme colour we set on the button. -->
-  <path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
-  <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>
-  <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
-  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
-  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
-</svg><span class="m-name">Meadow Mist</span></button></div>
+<button class="mascot" data-theme="meadow-mist" data-act="sway" data-face="welcome"
+  aria-label="Use the Meadow Mist look" style="--a:#2F7D55;--rig-on-accent:#FFFFFF"><span class="m-chip"></span>
+<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<defs>
+<radialGradient id="g-hi-meadow-mist" cx="33%" cy="20%" r="80%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.42"/>
+<stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="g-lo-meadow-mist" x1="0" y1="0" x2="0.22" y2="1">
+<stop offset="52%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.34"/>
+</linearGradient>
+<linearGradient id="g-limb-shade-meadow-mist" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.32"/>
+</linearGradient>
+<radialGradient id="g-spec-meadow-mist" cx="30%" cy="16%" r="26%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="f-soft-meadow-mist" x="-60%" y="-60%" width="220%" height="220%">
+<feGaussianBlur stdDeviation="0.45"/>
+</filter>
+</defs>
+<g class="rig-root">
+<g class="rig-arm-left" data-pivot="2.5 9">
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#g-limb-shade-meadow-mist)"/>
+</g>
+<g class="rig-arm-right" data-pivot="21.5 9">
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="url(#g-limb-shade-meadow-mist)"/>
+</g>
+<g class="rig-leg-left" data-pivot="8.95 17">
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-meadow-mist)"/>
+</g>
+<g class="rig-leg-right" data-pivot="15.05 17">
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-meadow-mist)"/>
+</g>
+<g class="rig-body">
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-lo-meadow-mist)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-hi-meadow-mist)"/>
+<ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#g-spec-meadow-mist)" transform="rotate(-14 9.6 6.4)"/>
+<path d="M5 10.5 L5 8 A4 4 0 0 1 9 4 L11 4" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.32" filter="url(#f-soft-meadow-mist)"/>
+<g class="rig-face rig-face-idle">
+<path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+<path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+</g>
+<g class="rig-face rig-face-welcome">
+<ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
+<ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="10" cy="10.25" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.3" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
+<circle cx="15.4" cy="9.95" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.65" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
+<g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+</g>
+<g class="rig-face rig-face-curious">
+<ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
+<ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
+<g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="9" cy="10.3" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="9.95" cy="10.15" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
+<ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-shocked">
+<circle cx="9.3" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="14.7" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="9.9" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/><circle cx="15.3" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/>
+<ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-blink">
+<path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+<path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+</g>
+</g>
+</g>
+</svg><span class="m-name">Meadow Mist</span></button>
+</div>
       <h1>An Assistant That's <span class="word-cycler" aria-label="Useful., Fun., Yours.">
         <span class="cycler-sizer" aria-hidden="true">Useful.</span>
         <span class="cycler-stage" aria-hidden="true">
@@ -1534,26 +1798,166 @@ html{-webkit-tap-highlight-color:transparent}
           <span class="cycler-word cycler-word-3 cycler-word-final">Yours.</span>
         </span>
       </span></h1>
-      <div class="mrow mrow-r"><button class="mascot" data-theme="halftone-dimension" aria-label="Use the Halftone Dimension look" style="--a:#E51F48"><span class="m-chip"></span><svg class="m-art" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-  <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
-       actually renders for a theme that ships no mascot of its own. Pure
-       currentColor, so it takes whichever theme colour we set on the button. -->
-  <path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
-  <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>
-  <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
-  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
-  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
+      <div class="mrow mrow-r">
+<button class="mascot" data-theme="halftone-dimension" data-act="look" data-face="welcome"
+  aria-label="Use the Halftone Dimension look" style="--a:#E51F48;--rig-on-accent:#ffffff"><span class="m-chip"></span>
+<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<defs>
+<radialGradient id="g-hi-halftone-dimension" cx="33%" cy="20%" r="80%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.42"/>
+<stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="g-lo-halftone-dimension" x1="0" y1="0" x2="0.22" y2="1">
+<stop offset="52%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.34"/>
+</linearGradient>
+<linearGradient id="g-limb-shade-halftone-dimension" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.32"/>
+</linearGradient>
+<radialGradient id="g-spec-halftone-dimension" cx="30%" cy="16%" r="26%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="f-soft-halftone-dimension" x="-60%" y="-60%" width="220%" height="220%">
+<feGaussianBlur stdDeviation="0.45"/>
+</filter>
+</defs>
+<g class="rig-root">
+<g class="rig-arm-left" data-pivot="2.5 9">
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#g-limb-shade-halftone-dimension)"/>
+</g>
+<g class="rig-arm-right" data-pivot="21.5 9">
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="url(#g-limb-shade-halftone-dimension)"/>
+</g>
+<g class="rig-leg-left" data-pivot="8.95 17">
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-halftone-dimension)"/>
+</g>
+<g class="rig-leg-right" data-pivot="15.05 17">
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-halftone-dimension)"/>
+</g>
+<g class="rig-body">
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-lo-halftone-dimension)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-hi-halftone-dimension)"/>
+<ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#g-spec-halftone-dimension)" transform="rotate(-14 9.6 6.4)"/>
+<path d="M5 10.5 L5 8 A4 4 0 0 1 9 4 L11 4" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.32" filter="url(#f-soft-halftone-dimension)"/>
+<g class="rig-face rig-face-idle">
+<path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+<path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+</g>
+<g class="rig-face rig-face-welcome">
+<ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
+<ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="10" cy="10.25" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.3" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
+<circle cx="15.4" cy="9.95" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.65" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
+<g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+</g>
+<g class="rig-face rig-face-curious">
+<ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
+<ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
+<g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="9" cy="10.3" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="9.95" cy="10.15" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
+<ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-shocked">
+<circle cx="9.3" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="14.7" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="9.9" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/><circle cx="15.3" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/>
+<ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-blink">
+<path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+<path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+</g>
+</g>
+</g>
 </svg><span class="m-name">Halftone Dimension</span></button>
-        <button class="mascot" data-theme="golden-sunbreak" aria-label="Use the Golden Sunbreak look" style="--a:#ffc030"><span class="m-chip"></span><svg class="m-art" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-  <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
-       actually renders for a theme that ships no mascot of its own. Pure
-       currentColor, so it takes whichever theme colour we set on the button. -->
-  <path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
-  <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>
-  <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
-  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
-  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
-</svg><span class="m-name">Golden Sunbreak</span></button></div>
+<button class="mascot" data-theme="golden-sunbreak" data-act="hop" data-face="welcome"
+  aria-label="Use the Golden Sunbreak look" style="--a:#ffc030;--rig-on-accent:#000000"><span class="m-chip"></span>
+<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<defs>
+<radialGradient id="g-hi-golden-sunbreak" cx="33%" cy="20%" r="80%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.42"/>
+<stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="g-lo-golden-sunbreak" x1="0" y1="0" x2="0.22" y2="1">
+<stop offset="52%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.34"/>
+</linearGradient>
+<linearGradient id="g-limb-shade-golden-sunbreak" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.32"/>
+</linearGradient>
+<radialGradient id="g-spec-golden-sunbreak" cx="30%" cy="16%" r="26%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="f-soft-golden-sunbreak" x="-60%" y="-60%" width="220%" height="220%">
+<feGaussianBlur stdDeviation="0.45"/>
+</filter>
+</defs>
+<g class="rig-root">
+<g class="rig-arm-left" data-pivot="2.5 9">
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#g-limb-shade-golden-sunbreak)"/>
+</g>
+<g class="rig-arm-right" data-pivot="21.5 9">
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="url(#g-limb-shade-golden-sunbreak)"/>
+</g>
+<g class="rig-leg-left" data-pivot="8.95 17">
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-golden-sunbreak)"/>
+</g>
+<g class="rig-leg-right" data-pivot="15.05 17">
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-golden-sunbreak)"/>
+</g>
+<g class="rig-body">
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-lo-golden-sunbreak)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-hi-golden-sunbreak)"/>
+<ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#g-spec-golden-sunbreak)" transform="rotate(-14 9.6 6.4)"/>
+<path d="M5 10.5 L5 8 A4 4 0 0 1 9 4 L11 4" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.32" filter="url(#f-soft-golden-sunbreak)"/>
+<g class="rig-face rig-face-idle">
+<path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+<path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+</g>
+<g class="rig-face rig-face-welcome">
+<ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
+<ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="10" cy="10.25" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.3" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
+<circle cx="15.4" cy="9.95" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.65" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
+<g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+</g>
+<g class="rig-face rig-face-curious">
+<ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
+<ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
+<g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="9" cy="10.3" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="9.95" cy="10.15" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
+<ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-shocked">
+<circle cx="9.3" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="14.7" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
+<circle cx="9.9" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/><circle cx="15.3" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/>
+<ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-blink">
+<path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+<path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+</g>
+</g>
+</g>
+</svg><span class="m-name">Golden Sunbreak</span></button>
+</div>
     </div>
     <p class="hero-sub">An AI agent you own and shape. Use any AI model from any provider to work and build your way.</p>
     <div class="dlrow">
@@ -1810,6 +2214,27 @@ function backdropCss(t){
 }
 function rgb(h){ h=(h||'#000').replace('#',''); if(h.length===3) h=h.split('').map(function(c){return c+c}).join('');
   return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)].join(','); }
+// The tab icon IS the nav mark: same rounded accent square, same built-in
+// mascot, re-tinted for whichever theme is showing (inset 72% not the header's
+// 60% -- a 16px tab needs the bigger glyph; see docs/favicon.svg). Built
+// as a data: URL rather than eight static files, so a theme added to THEMES gets
+// a matching favicon with nothing else to remember. Chrome re-reads the <link>
+// on href change; swapping the whole element is not needed and flickers.
+// MASCOT_PATHS is the one copy of the silhouette -- docs/favicon.svg (the
+// resting state a bookmark or a crawler gets) draws the identical paths.
+var MASCOT_PATHS =
+  '<path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>' +
+  '<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>' +
+  '<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>' +
+  '<rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>' +
+  '<rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>';
+function setFavicon(t){
+  var link = document.getElementById('favicon'); if (!link) return;
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">' +
+    '<rect width="48" height="48" rx="16.6" fill="' + t.accent + '"/>' +
+    '<g transform="translate(6.72 6.72) scale(1.44)" fill="' + t.onAccent + '">' + MASCOT_PATHS + '</g></svg>';
+  link.setAttribute('href', 'data:image/svg+xml,' + encodeURIComponent(svg));
+}
 function applyTheme(slug){
   var t = THEMES[slug]; if(!t) return;
   var r = document.documentElement.style;
@@ -1850,6 +2275,7 @@ function applyTheme(slug){
     s.classList.toggle('on', on);
     s.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
+  setFavicon(t);
   try { localStorage.setItem('yc-mock-theme', slug); } catch(e){}
   // The demo is the real app's interface, and it keeps its theme under this
   // key (same origin, so we share storage): set it before boot, sync it after.
@@ -2225,6 +2651,112 @@ document.addEventListener('click', function(e){
   var b = e.target.closest('.sw, .mascot'); if (b) applyTheme(b.dataset.theme);
 });
 applyTheme("cotton-candy-sky");
+
+// ---------------------------------------------------------------------------
+// MASCOT BEHAVIOUR (2026-09-04). Each of the four picker chips has its own idle
+// turn and its own face, so the row reads as four characters rather than four
+// copies of one icon. All the motion is in CSS (see "RIGGED MASCOTS" above);
+// this only decides WHEN, and the "when" is deliberately staggered so the four
+// never fire together -- four simultaneous animations read as one twitch.
+//
+// Cheap on purpose: no requestAnimationFrame, no per-frame work. Timers set an
+// attribute; the compositor does the rest. The whole loop also stops while the
+// hero is off screen, because animating four SVGs nobody can see is pure cost.
+// ---------------------------------------------------------------------------
+var MASCOT_ACTS = {
+  // period  = seconds between idle turns (jittered, so they drift apart)
+  // face    = the face worn while the act plays; resting face is 'welcome'
+  greet: { period: 6.5, face: 'welcome' },   // waves at you
+  sway:  { period: 8.0, face: 'welcome' },   // leans, arms trailing
+  look:  { period: 5.5, face: 'curious' },   // glances left, then right
+  hop:   { period: 4.5, face: 'welcome' },   // two little jumps
+};
+(function mascotBehaviour(){
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.mascot[data-act]'));
+  if (!chips.length) return;
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  var visible = true, timers = [];
+
+  // One act, once. Clearing data-run on animationend is what lets a click
+  // interrupt an idle turn already in flight -- without it the browser sees the
+  // same animation-name still set and does not restart it.
+  function play(chip, run, face, thenFace){
+    chip.setAttribute('data-face', face);
+    chip.removeAttribute('data-run');
+    void chip.offsetWidth;                 // force a reflow so the next set restarts it
+    chip.setAttribute('data-run', run);
+    var art = chip.querySelector('.m-rig');
+    var done = function(){
+      art.removeEventListener('animationend', done);
+      if (chip.getAttribute('data-run') === run) chip.removeAttribute('data-run');
+      chip.setAttribute('data-face', thenFace || 'welcome');
+    };
+    art.addEventListener('animationend', done);
+  }
+
+  // A blink is a face swap with no animation at all -- 120ms of closed eyes.
+  function blink(chip){
+    if (chip.getAttribute('data-run')) return;   // never blink mid-act
+    var was = chip.getAttribute('data-face') || 'welcome';
+    chip.setAttribute('data-face', 'blink');
+    setTimeout(function(){
+      if (chip.getAttribute('data-face') === 'blink') chip.setAttribute('data-face', was);
+    }, 120);
+  }
+
+  function schedule(){
+    timers.forEach(clearTimeout); timers = [];
+    if (reduced.matches || !visible) return;
+    chips.forEach(function(chip, i){
+      var act = MASCOT_ACTS[chip.getAttribute('data-act')];
+      if (!act) return;
+      // Stagger the first turn by index, then jitter every following one, so
+      // the four drift permanently out of phase instead of re-syncing.
+      var tick = function(first){
+        var wait = first ? (900 + i * 1300) : (act.period * 1000 * (0.75 + Math.random() * 0.5));
+        timers.push(setTimeout(function(){
+          if (!visible || reduced.matches) return;
+          play(chip, chip.getAttribute('data-act'), act.face);
+          tick(false);
+        }, wait));
+      };
+      tick(true);
+      var blinkTick = function(){
+        timers.push(setTimeout(function(){
+          if (!visible || reduced.matches) return;
+          blink(chip); blinkTick();
+        }, 2600 + Math.random() * 4200));
+      };
+      blinkTick();
+    });
+  }
+
+  // Clicking a chip re-skins the page; the mascot answers with a short squash
+  // and pop, then its own act -- so "I heard you" and "this is who I am" land
+  // in the same beat. Capture phase, because applyTheme's own click handler is
+  // on document and we want the pop to start on the same frame as the re-skin.
+  document.addEventListener('click', function(e){
+    var chip = e.target.closest && e.target.closest('.mascot[data-act]');
+    if (!chip || reduced.matches) return;
+    var act = MASCOT_ACTS[chip.getAttribute('data-act')] || { face: 'welcome' };
+    play(chip, 'pop', 'shocked', act.face);
+    // The character's own move follows the pop rather than fighting it.
+    setTimeout(function(){ play(chip, chip.getAttribute('data-act'), act.face); }, 420);
+  }, true);
+
+  // Nothing runs while the row is off screen or the tab is in the background.
+  if (typeof IntersectionObserver === 'function') {
+    new IntersectionObserver(function(entries){
+      visible = entries.some(function(en){ return en.isIntersecting; });
+      schedule();
+    }, { threshold: 0 }).observe(chips[0].closest('.flankrow') || chips[0]);
+  }
+  document.addEventListener('visibilitychange', function(){
+    visible = !document.hidden; schedule();
+  });
+  if (reduced.addEventListener) reduced.addEventListener('change', schedule);
+  schedule();
+})();
 
 // --- Sticky feature theater: the step nearest the middle owns the pinned stage.
 // --- "What you get": one shared show(i), four ways of choosing i ----------
