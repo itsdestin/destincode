@@ -124,37 +124,14 @@ jobs:
           YOUCODED_BUILD_CHANNEL: BETA
         run: npm run build
 
-
       # WHY: electron-builder SILENTLY skips macOS signing when it cannot sign, and a
-      # Dependabot bump did exactly that on 2026-07-23 (26.8.1 -> 26.15.3 dropped the
-      # ad-hoc fallback). Every Mac build from then to 2026-09-03 shipped without a
-      # seal, which macOS treats as a BROKEN app — no "Open Anyway" button, no way in —
-      # and not one check anywhere went red. An unsigned bundle has no _CodeSignature
-      # directory and keeps the stock Electron identifier, so assert both.
+      # Dependabot bump did exactly that on 2026-07-23 - six weeks of unopenable Mac
+      # builds with every check green. The script (shared with the other mac workflow,
+      # so betas and releases are held to one standard) explains the rest.
       - name: Verify the macOS bundle is signed
         if: matrix.name == 'macos'
         shell: bash
-        run: |
-          set -euo pipefail
-          found=0
-          while IFS= read -r app; do
-            found=$((found + 1))
-            echo "checking $app"
-            if [ ! -d "$app/Contents/_CodeSignature" ]; then
-              echo "::error::$app has no _CodeSignature seal - electron-builder skipped signing"
-              exit 1
-            fi
-            ident=$(codesign -d --verbose=2 "$app" 2>&1 | sed -n 's/^Identifier=//p')
-            if [ "$ident" != "com.youcoded.desktop" ]; then
-              echo "::error::$app signing identifier is '$ident', expected com.youcoded.desktop"
-              exit 1
-            fi
-          done < <(find release -maxdepth 2 -name 'YouCoded.app' -type d)
-          if [ "$found" -eq 0 ]; then
-            echo "::error::no YouCoded.app found under desktop/release/"
-            exit 1
-          fi
-          echo "$found macOS bundle(s) signed and sealed"
+        run: bash scripts/verify-mac-signature.sh
 
       - name: Install xvfb (Linux)
         if: runner.os == 'Linux'
