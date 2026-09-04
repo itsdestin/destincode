@@ -90,3 +90,40 @@ describe('takeover (lease) fake', () => {
     expect(await c.syncSpaces.leaseForce('wb-past-1')).toEqual({ ok: true });
   });
 });
+
+describe('model favourites fake', () => {
+  // ModelPicker keeps favourites in localStorage (no IPC); the shim seeds four
+  // models from four companies when the key is absent, and never overwrites.
+  const fakeStorage = (initial: Record<string, string> = {}) => {
+    const m = new Map(Object.entries(initial));
+    return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => { m.set(k, v); }, map: m };
+  };
+
+  it('seeds Claude, DeepSeek, Grok and GPT favourites on a fresh origin, all resolving to catalog rows', async () => {
+    const ls = fakeStorage();
+    vi.stubGlobal('localStorage', ls);
+    const c = await shim('?scenario=site&student=1');
+    const favs: string[] = JSON.parse(ls.map.get('youcoded-model-favorites')!);
+    const catalog: { id: string; providerId: string }[] = await c.providers.catalog();
+    const keys = new Set(catalog.map((m) => `${m.providerId}:${m.id}`));
+    for (const f of favs) expect(keys.has(f)).toBe(true);
+    const labels = catalog.filter((m) => favs.includes(`${m.providerId}:${m.id}`)).map((m) => m.id);
+    expect(labels).toEqual(expect.arrayContaining(['anthropic/claude-sonnet-4-6', 'deepseek/deepseek-v3.2', 'x-ai/grok-4', 'openai/gpt-5']));
+    vi.unstubAllGlobals();
+  });
+
+  it('never overwrites favourites the reviewer already has', async () => {
+    const ls = fakeStorage({ 'youcoded-model-favorites': '["local:llama3.1:8b"]' });
+    vi.stubGlobal('localStorage', ls);
+    await shim('?scenario=site');
+    expect(ls.map.get('youcoded-model-favorites')).toBe('["local:llama3.1:8b"]');
+    vi.unstubAllGlobals();
+  });
+
+  it('prices nothing: no catalog row carries a price, cost or free tag', async () => {
+    const c = await shim('?scenario=site');
+    for (const row of await c.providers.catalog()) {
+      expect(JSON.stringify(row).toLowerCase()).not.toMatch(/price|cost|free/);
+    }
+  });
+});

@@ -1124,6 +1124,26 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   const leaseSwitch = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('lease') : null;
   const leaseHolder = leaseSwitch?.startsWith('held:') ? leaseSwitch.slice(5) : null;
 
+  // Promo (model beat): the model picker shows ONLY favourites until you type
+  // (components/model/ModelPicker.tsx), and it keeps them in localStorage under
+  // this key — there is no IPC channel to fake. A fresh headless-Chrome profile
+  // has none, so the picker would open on "No favourites yet". Seed four models
+  // from four companies the first time this origin boots; a reviewer who
+  // un-stars one keeps their change (the key is only written when absent).
+  // Keys are `${providerId}:${modelId}` (ModelPicker's choiceKey); the models
+  // are rows of fixtures/providers.ts, so they resolve to real catalog entries.
+  try {
+    const FAV_KEY = 'youcoded-model-favorites';
+    if (typeof localStorage !== 'undefined' && localStorage.getItem(FAV_KEY) === null) {
+      localStorage.setItem(FAV_KEY, JSON.stringify([
+        'pv-openrouter:anthropic/claude-sonnet-4-6',
+        'pv-openrouter:deepseek/deepseek-v3.2',
+        'pv-openrouter:x-ai/grok-4',
+        'pv-openrouter:openai/gpt-5',
+      ]));
+    }
+  } catch { /* storage blocked: the picker just opens on its empty state */ }
+
   // Shapes: SettingsPanel.tsx RemoteConfig / TailscaleInfo / ClientInfo.
   const remoteClients = remoteSwitch === 'connected'
     ? [{ id: 'c-phone', ip: '100.92.14.9', connectedAt: Date.now() - 600_000 }] : [];
