@@ -1200,6 +1200,10 @@ function AppInner() {
             toolUseId: event.data.toolUseId,
             toolName: event.data.toolName,
             toolInput: event.data.toolInput || {},
+            // Carried so a specialist's mid-run note can be placed among its
+            // tool rows by time (reconcileNoteSegments); the top-level card
+            // ignores it. Must stay identical to transcript-page-actions.ts.
+            timestamp: event.timestamp,
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
           });

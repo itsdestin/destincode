@@ -472,6 +472,14 @@ export type SubagentSegment =
       // per delta — see chat-reducer.ts applySubagentEvent. CC events never
       // set this, so its absence preserves today's one-segment-per-event.
       partId?: string;
+      /** When this happened (epoch ms, the transcript event's own stamp).
+       *  Optional on every non-note segment because it exists for ONE reason:
+       *  placing a mid-run 'note' (below, which always has a time) among the
+       *  rows that happened before and after it, instead of at the bottom of
+       *  the trail on replay (chat-reducer.ts reconcileNoteSegments). A
+       *  segment without one is never ordered against — it just keeps its
+       *  place. Nothing else reads it. */
+      timestamp?: number;
     }
   | {
       type: 'tool';
@@ -480,6 +488,8 @@ export type SubagentSegment =
       toolName: string;
       input: Record<string, unknown>;
       status: 'running' | 'complete' | 'failed' | 'awaiting-approval';
+      /** See the 'text' variant's `timestamp` — same field, same one reason. */
+      timestamp?: number;
       response?: string;
       error?: string;
       structuredPatch?: StructuredPatchHunk[];
@@ -512,6 +522,8 @@ export type SubagentSegment =
       id: string;
       content: string;
       partId?: string;
+      /** See the 'text' variant's `timestamp` — same field, same one reason. */
+      timestamp?: number;
     };
 
 /** Specialists 1c — one mid-run steering message, kept on the ledger record so

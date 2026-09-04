@@ -450,6 +450,10 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
         id: `sa-text-${action.uuid}`,
         content: action.text,
         partId: action.partId,
+        // Stamped with the FIRST delta's time (later deltas merge into this
+        // segment above without touching it) so a mid-run note can be placed
+        // relative to it — see reconcileNoteSegments.
+        timestamp: action.timestamp,
       });
     }
   } else if (action.type === 'TRANSCRIPT_ASSISTANT_REASONING') {
@@ -468,6 +472,7 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
         id: `sa-think-${action.uuid}`,
         content: action.text,
         partId: action.partId,
+        timestamp: action.timestamp, // as for text above
       });
     }
   } else if (action.type === 'TRANSCRIPT_TOOL_USE') {
@@ -481,6 +486,11 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
       toolName: action.toolName,
       input: action.toolInput,
       status: 'running',
+      // Fix (2026-09-01 investigation, notes not interleaved): the row's own
+      // time, so a note sent mid-run can be slotted before or after it by
+      // reconcileNoteSegments. Undefined for an event without a stamp, which
+      // simply means "cannot be ordered against" — never a wrong position.
+      timestamp: action.timestamp,
     };
     if (existingIdx >= 0) {
       const existing = segments[existingIdx] as Extract<SubagentSegment, { type: 'tool' }>;
@@ -513,6 +523,10 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
           id: next.id,
           toolUseId: action.toolUseId,
           input: action.toolInput,
+          // The placeholder was minted by the ask, which has no transcript
+          // stamp — the real tool-use event is the first thing that knows
+          // when this row happened.
+          timestamp: next.timestamp,
         };
       } else {
         segments.push(next);
@@ -645,6 +659,19 @@ function findSpecialistCard(
  * array instead, matching the spec's stated id scheme; safe because the
  * ledger always resends the full, append-only notes array, so index i keeps
  * naming the same note across calls.
+ *
+ * Fix (2026-09-01 investigation, notes not interleaved): an unseen note used
+ * to be APPENDED to the tail. Live that is usually where it belongs — nothing
+ * later has arrived yet — but on a replay (reattach, restart, a late run push)
+ * every tool row is already on the card, so a note sent mid-run showed up
+ * AFTER tool calls that happened after it, and the trail lied as an audit log.
+ * Now the note is inserted before the first segment stamped LATER than it
+ * (every child segment carries the transcript event's own time since this
+ * fix; a note carries the ledger's). A note later than everything still
+ * appends, so the live path is unchanged. A segment with no stamp (an older
+ * event shape) is never ordered against — it just keeps its place. Ids stay
+ * index-based, so the resend idempotence above is untouched: placement only
+ * ever happens the FIRST time a note is seen.
  */
 function reconcileNoteSegments(
   existing: SubagentSegment[] | undefined,
@@ -658,7 +685,11 @@ function reconcileNoteSegments(
     const note = notes[i];
     const id = `sa-note-${childId}-${i}`;
     if (known.has(id)) continue;
-    segs = [...(segs ?? []), { type: 'note', id, content: note.text, from: note.from, timestamp: note.at }];
+    const seg: SubagentSegment = { type: 'note', id, content: note.text, from: note.from, timestamp: note.at };
+    const list = segs ?? [];
+    // First row that happened strictly after this note; -1 → nothing did, append.
+    const at = list.findIndex(s => s.timestamp !== undefined && s.timestamp > note.at);
+    segs = at < 0 ? [...list, seg] : [...list.slice(0, at), seg, ...list.slice(at)];
     known.add(id);
   }
   return segs;
