@@ -37,19 +37,66 @@ export default function ConnectFourBoard({ connection }: Props) {
   const isPlaying = state.screen === 'playing';
   const canMove = isMyTurn && isPlaying && !state.opponentDisconnected;
 
+  // The board stores 1 for seat 0's discs and 2 for seat 1's, so your own
+  // discs are `seat + 1`. Hoisted out of the cell loop because the
+  // screen-reader commentary below needs it too, to say whether the last
+  // disc was yours or theirs.
+  const mine = (state.seat ?? 0) + 1;
+
   const handleColClick = (col: number) => {
     if (!canMove) return;
     connection.makeMove(col);
   };
 
-  // Ghost piece: find the lowest empty row in the hovered column
-  const getGhostRow = (col: number): number | null => {
-    if (!canMove || hoveredCol !== col || !play.board[col]) return null;
+  // The row a disc dropped into this column would land in, or null if the
+  // column is full (or the board has not arrived yet). One helper, because
+  // the ghost disc, the tab-stop gating and the column's spoken name all
+  // need the same answer.
+  const landingRow = (col: number): number | null => {
+    const column = play.board[col];
+    if (!column) return null;
     for (let row = 0; row < ROWS; row++) {
-      if (!play.board[col][row]) return row;
+      if (!column[row]) return row;
     }
     return null; // column full
   };
+
+  const filledCount = (col: number): number => {
+    const column = play.board[col];
+    if (!column) return 0;
+    let n = 0;
+    for (let row = 0; row < ROWS; row++) if (column[row]) n++;
+    return n;
+  };
+
+  // Ghost piece: shown for the column under the pointer OR the one holding
+  // keyboard focus — focus is the keyboard's hover, so a player who tabs
+  // along the columns gets the same "it lands here" preview a mouse gives.
+  const getGhostRow = (col: number): number | null => {
+    if (!canMove || hoveredCol !== col) return null;
+    return landingRow(col);
+  };
+
+  // What assistive tech reads for a column. Occupancy is the fact a player
+  // who cannot see the board actually needs to choose a move.
+  const columnLabel = (col: number): string => {
+    const filled = filledCount(col);
+    const full = landingRow(col) === null;
+    const occupancy = full ? 'full' : `${filled} of ${ROWS} filled`;
+    return canMove && !full
+      ? `Column ${col + 1}, ${occupancy}, drop here`
+      : `Column ${col + 1}, ${occupancy}`;
+  };
+
+  // Running commentary for screen readers: who just moved where, and whose
+  // turn it is now. Reading the disc at lastMove tells us whose it was
+  // without the shell having to track a mover seat.
+  const lastMoveText = play.lastMove
+    ? `${cellValue(play.board, play.lastMove.col, play.lastMove.row) === mine ? 'You' : state.opponent ?? 'Opponent'} dropped in column ${play.lastMove.col + 1}. `
+    : '';
+  const commentary = !isPlaying
+    ? ''
+    : `${lastMoveText}${canMove ? 'Your turn.' : `${state.opponent ?? 'Opponent'}'s turn.`}`;
 
   return (
     <div className="flex flex-col gap-2 p-3">
@@ -114,17 +161,40 @@ export default function ConnectFourBoard({ connection }: Props) {
             const isHovered = hoveredCol === col;
             const ghostRow = getGhostRow(col);
 
+            // Only a column you could actually drop into takes a tab stop, the
+            // same rule ChessBoard uses for its squares — seven dead stops on
+            // the opponent's turn would bury the rest of the pane. The button
+            // is never `disabled`, because a disabled button cannot be focused
+            // and so cannot be read at all; handleColClick already refuses.
+            const playable = canMove && landingRow(col) !== null;
+
             return (
-              <div
+              <button
                 key={col}
+                type="button"
+                // A real button, so the board is playable from the keyboard —
+                // Tab to a column, Enter or Space to drop. Chess in this same
+                // panel has always worked this way; Connect 4's columns were
+                // plain divs with mouse handlers only.
+                tabIndex={playable ? 0 : -1}
+                aria-label={columnLabel(col)}
                 // Lets the review rig play a real game to its end — without a
                 // stable hook the end-of-match card (and the head-to-head line
                 // on it) can only be reached by clicking blind coordinates.
                 data-col={col}
-                className={`flex-1 min-w-0 flex flex-col gap-1 rounded-sm cursor-pointer transition-colors ${
-                  canMove && isHovered ? 'bg-accent/15' : ''
-                }`}
+                // `p-0 border-0` undoes the browser's button chrome. The
+                // background is a SINGLE conditional class, never two `bg-*`
+                // utilities on one element — those do not blend, one just wins
+                // (the same trap ChessBoard documents on its square shading).
+                className={`flex-1 min-w-0 flex flex-col gap-1 rounded-sm p-0 border-0 transition-colors ${
+                  playable ? 'cursor-pointer' : 'cursor-default'
+                } ${canMove && isHovered ? 'bg-accent/15' : 'bg-transparent'}`}
                 onMouseEnter={() => setHoveredCol(col)}
+                // Focus is the keyboard's hover: tabbing onto a column shows
+                // the same ghost disc the pointer does, so a sighted keyboard
+                // player can see where the piece would land.
+                onFocus={() => setHoveredCol(col)}
+                onBlur={() => setHoveredCol(null)}
                 onClick={() => handleColClick(col)}
               >
                 {/* Render rows top-down visually (ROWS-1 down to 0 in data) */}
@@ -140,9 +210,6 @@ export default function ConnectFourBoard({ connection }: Props) {
                   // a conversation. `ring-white` went with the blue board: a
                   // literal white ring is invisible on the light themes, so the
                   // win line rings in the accent instead.
-                  // The board stores 1 for seat 0's discs and 2 for seat 1's,
-                  // so your own discs are `seat + 1`.
-                  const mine = (state.seat ?? 0) + 1;
                   // `flex-1` + `aspect-square`: the disc takes its size from
                   // the column, which takes its size from the pane.
                   let cellClass = 'flex-1 min-h-0 aspect-square rounded-full transition-all ';
@@ -165,13 +232,20 @@ export default function ConnectFourBoard({ connection }: Props) {
                     cellClass += 'bg-canvas';
                   }
 
-                  return <div key={dataRow} className={cellClass} />;
+                  return <div key={dataRow} className={cellClass} aria-hidden="true" />;
                 })}
-              </div>
+              </button>
             );
           })}
         </div>
       </div>
+
+      {/* Screen-reader running commentary, the same primitive 2048 and Flappy
+          use. Polite, and only the facts a player who cannot see the board
+          needs between moves: what the last drop was, and whose turn it is. */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {commentary}
+      </span>
     </div>
   );
 }
