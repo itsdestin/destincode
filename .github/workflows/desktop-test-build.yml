@@ -124,6 +124,15 @@ jobs:
           YOUCODED_BUILD_CHANNEL: BETA
         run: npm run build
 
+      # WHY: electron-builder SILENTLY skips macOS signing when it cannot sign, and a
+      # Dependabot bump did exactly that on 2026-07-23 - six weeks of unopenable Mac
+      # builds with every check green. The script (shared with the other mac workflow,
+      # so betas and releases are held to one standard) explains the rest.
+      - name: Verify the macOS bundle is signed
+        if: matrix.name == 'macos'
+        shell: bash
+        run: bash scripts/verify-mac-signature.sh
+
       - name: Install xvfb (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb

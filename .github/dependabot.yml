@@ -32,6 +32,13 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "@vscode/ripgrep"    # downloads a platform binary at install
         update-types: ["version-update:semver-major"]
+      # electron-builder is the PACKAGER: a MINOR of it (26.8.1 -> 26.15.3, 2026-07-23,
+      # grouped into desktop-minor-patch) silently stopped signing the Mac app, and
+      # desktop-ci.yml never packages a Mac build, so PR CI cannot see this class.
+      # Minors AND majors are bumped by hand; the review step is "dispatch
+      # desktop-test-build and open the dmg on a Mac". Patches still flow.
+      - dependency-name: "electron-builder"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   # ---- PartyKit multiplayer server ----
   - package-ecosystem: "npm"
