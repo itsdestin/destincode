@@ -1159,6 +1159,207 @@ body.cycler-static .lead-hold{display:none}
   .demo-pinned .step{position:relative;inset:auto;opacity:1;transform:none}
 }
 
+
+/* ==========================================================================
+   NARROW FEATURE DECK  (<=1000px)  — added 2026-09-03
+   ==========================================================================
+   On a wide window the ten feature cards are a scroll-driven stack: each one
+   sticks 80px from the top, the next slides up over it, and the covered one
+   scales and fades. The whole ladder is derived in JS from ONE number --
+   card zero's height -- because at desktop width every card is exactly as tall
+   as its 16:10 clip, so they all match.
+
+   Below 1000px that stops being true. This page already single-columns the
+   ODD cards at 1000 (the rule two blocks up), while `:nth-child(even)` keeps
+   its two-column grid on specificity -- so the cards end up different heights
+   and the stride is wrong for nine of the ten. Measured 2026-09-03 on the live
+   page: 10 cards, all 524px at 1440; THREE distinct heights at 1000, six at
+   900, eight at 800. What that looks like is a card sitting half-covered by
+   the next one at full opacity, with the copy underneath simply gone.
+
+   So below 1000 the stack is retired and the cards are plain blocks: clip on
+   top at full width, copy under it, nothing sticky, nothing scroll-driven.
+   1000px is not a new breakpoint -- it is the one this page already uses for
+   every other grid it collapses (.cols, .acctgrid, .pingrid, .railgrid, and
+   the odd deck cards). Above it nothing here applies and the desktop stack is
+   untouched.
+   ========================================================================== */
+@media(max-width:1000px){
+  /* Both selectors, because the even-card rule outranks a bare one. */
+  .demo-deck .step,
+  .demo-deck .step:nth-child(even){
+    position:static;top:auto;
+    grid-template-columns:1fr;gap:18px;
+    margin-bottom:16px;padding:20px;
+    /* The JS driver is switched off at this width too (`narrowMQ` in the deck
+       block), so nothing writes --d or .buried. These only matter if it runs
+       once anyway -- a resize across the line before the next scroll event. */
+    transform:none !important;opacity:1 !important;
+    filter:none !important;pointer-events:auto !important}
+  .demo-deck .step:nth-child(even) .deckclip{order:0}
+  .demo-deck .decktext::after{display:none}   /* the last card's dwell, unneeded */
+
+  /* The roadmap card's media is a drawn diagram absolutely positioned into a
+     16:10 box. Narrow, its own content is taller than that box, so the two
+     halves printed on top of each other. In the flow, one column, box sizes
+     to it. */
+  .demo-deck .step .deckclip.deckclip-sketch{aspect-ratio:auto;border:0}
+  .demo-deck .step .deckclip .sketch{position:static;inset:auto;
+    grid-template-columns:1fr;gap:12px;padding:18px;
+    border:1px solid var(--hair);border-radius:12px}
+}
+
+/* ==========================================================================
+   PHONE LAYOUT  (<=760px)  — added 2026-09-03
+   ==========================================================================
+   The block above puts the feature cards in the flow for every narrow width.
+   This one is the rest of the phone: a download pill wider than the screen, a
+   translucent bar with paragraphs sliding under it, 420px gallery stills on a
+   390px screen, a footer row that broke "Built by Destin" over three lines,
+   and desktop type in a 330px column. Measured at 390px before any of this
+   existed: 15,683px of page with whole empty screens in it.
+
+   Everything is INSIDE the media query, so the desktop page is untouched by
+   construction — nothing above these two blocks was edited for mobile, and a
+   geometry diff of all 400 elements at 1920/1440/1280/1100/1001 confirms it.
+   The intent is kept: the same sections, the same words, the same theme-skinned
+   glass, the same clips. Only the arrangement changes.
+   ========================================================================== */
+@media(max-width:760px){
+
+  /* Anchor jumps (the logo's #top, and anything added later) must clear the
+     fixed bar or they land with the heading underneath it. */
+  html{scroll-padding-top:66px}
+
+  /* ---- page gutters -------------------------------------------------- */
+  /* 30px of padding either side of a 390px screen leaves a 330px column. */
+  .wrap,.galwrap{padding:0 18px}
+
+  /* ---- nav ------------------------------------------------------------
+     The bar is fixed over the page at the theme's own panel opacity (0.7 for
+     Cotton Candy), which is fine over a wallpaper and unreadable over a
+     paragraph. On a phone the page is one column WIDE, so text passes under
+     the whole bar rather than beside it. Opaque here, glass everywhere else. */
+  .nav{top:8px}
+  /* OPAQUE, and the blur goes with it. Measured at 94 percent alpha: a
+     paragraph passing underneath was still legible through the bar -- 6
+     percent of near-black text on a light panel is plenty to read, and it put
+     a second ghost sentence across the wordmark. The colour is still the
+     theme's own panel, so the bar re-skins with the mascot picker like
+     everything else; it just stops being see-through. Dropping the
+     backdrop-filter is free paint back: a blurred fixed layer re-composites
+     the whole strip on every scrolled frame, and at full opacity it was
+     blurring something nobody could see. */
+  .nav-in{height:50px;padding:0 12px 0 13px;gap:10px;
+    background:rgb(var(--panel-rgb));
+    -webkit-backdrop-filter:none;backdrop-filter:none;
+    box-shadow:inset 0 1px 0 var(--glass-hi), 0 10px 26px -14px var(--ink)}
+  .nav .mark{width:24px;height:24px}
+  .nav .wm{font-size:.88rem}
+  .nav .wm em{font-size:.5rem}
+
+  /* ---- hero ------------------------------------------------------------ */
+  .hero{padding-top:calc(var(--nav-h) + 10px)}
+  .hero-flank .flankrow{gap:12px}
+  .hero-flank .mascot{width:50px;height:50px;border-radius:15px}
+  .hero-flank .mrow{gap:10px}
+  .hero-sub{font-size:1.02rem;margin-top:12px}
+  .kicker{font-size:.7rem;letter-spacing:.12em}
+
+  /* ---- the download row -----------------------------------------------
+     A 999px pill is a shape for a single row of chips. Wrapped onto three
+     lines at 390px it became a rounded blob with the chips floating loose
+     inside it. Below 760 it is a CARD with a two-up grid: the visitor's own
+     platform full width on top (the script above marks it .primary), the
+     other four underneath. Same chips, same order, same accent. */
+  body.fade-a .dlfloat,body.fade-b .dlfloat,
+  body.fade-c .dlfloat,body.fade-d .dlfloat{
+    display:flex;flex-direction:column;align-items:stretch;gap:10px;
+    width:100%;margin-top:20px}
+  .dlpill{display:grid;grid-template-columns:1fr 1fr;gap:8px;
+    padding:12px;border-radius:calc(var(--radius) + 4px);width:auto !important}
+  body.legend-on .dlpill{padding-top:16px}
+  body.legend-on .dl-legend{left:16px}
+  .dlchip{grid-column:span 1;justify-content:center;padding:14px 8px;
+    border-radius:var(--radius);background:rgba(var(--fg-rgb),.07);
+    font-size:.9rem;min-height:48px}
+  .dlchip.primary{grid-column:1 / -1}
+  .trypill{width:auto !important;min-height:48px;border-radius:calc(var(--radius) + 4px)}
+
+  /* ---- the live demo ---------------------------------------------------
+     The iframe boots the real app: a 2.2MB script plus its wallpapers. It
+     used to start on its own as soon as it scrolled into view, so a phone on
+     a cellular connection paid ~3MB before the visitor had asked for
+     anything. It now waits for the button. (The gate is in JS; this only
+     makes the button worth tapping.) */
+  body.fade-d .hero .embed,body.fade-d .embed-stage{aspect-ratio:16/11}
+  .embed-start{padding:14px 22px;font-size:.95rem;min-height:48px;white-space:nowrap}
+  body.fade-d .hero-app{margin-bottom:0}
+
+  /* ---- sections and prose --------------------------------------------- */
+  section{padding:22px 0}
+  .panel{padding:20px 17px}
+  .prose .big{font-size:1.06rem;line-height:1.5}
+  .cols{font-size:.97rem;gap:13px}
+  .permission{margin-top:20px;padding-top:16px;font-size:.9rem}
+  .lede,.note{font-size:.95rem}
+
+  /* the feature deck's narrow layout is the <=1000px block above; the phone
+     only tightens its type and drops the phone-in-a-phone overlay. */
+  .demo-deck .step,
+  .demo-deck .step:nth-child(even){gap:15px;margin-bottom:14px;padding:15px 15px 18px}
+  .demo-deck .step h3{font-size:1.2rem}
+  .demo-deck .step p{font-size:.94rem;margin-top:10px}
+  /* The phone-beside-the-desktop overlay is 20 percent of the clip's width. On a
+     390px screen that is a 68px-wide picture of a phone, on a phone -- and a
+     175KB clip fetched for it. */
+  .deck-phone{display:none !important}
+  .demo-deck .step .deckclip .sketch{padding:15px;font-size:.74rem}
+
+  /* ---- gallery ---------------------------------------------------------
+     420px-wide stills overflow a 390px screen, so the last one always looked
+     cut off rather than scrollable. */
+  .gal{padding:18px 0 10px}
+  .gal img{width:min(82vw,420px)}
+
+  /* ---- FAQ / accounts / integrations ---------------------------------- */
+  .faq summary{padding:15px 17px;font-size:.95rem;gap:10px}
+  .faq .a{padding:0 17px 17px;font-size:.92rem}
+  .acct{padding:19px 17px}
+  /* Two or three to a row instead of one or two: the theme fonts are wide,
+     and twenty chips at the desktop size ran fourteen rows down the page.
+     min-height keeps every one a 44px touch target. */
+  .integrations-tags{gap:7px}
+  .integration-tag{padding:9px 13px;font-size:.82rem;min-height:44px}
+
+  /* ---- the closer row -------------------------------------------------- */
+  .closer{gap:18px}
+  .dlrow.small{margin:0;justify-content:flex-start;width:100%}
+
+  /* ---- footer ----------------------------------------------------------
+     A flex row with `margin-left:auto` on the links: at 390px "Built by
+     Destin" broke over three lines and the Open Source badge sat in the
+     middle of them. */
+  .foot{flex-direction:column;align-items:flex-start;gap:15px;padding:22px 18px}
+  .flinks{margin-left:0;flex-wrap:wrap;gap:12px 18px}
+  .flinks a{font-size:.9rem}
+  .legal{font-size:.75rem}
+
+  /* ---- the "back to Download" pill -------------------------------------
+     Hidden on desktop because the floating download pill is always docked at
+     the bottom of the window. On a phone that pill is static in the hero, so
+     once you have scrolled past it the page has no download control at all
+     until the footer -- roughly 13,000px of nothing to press. */
+  body.fade-d .topcta{display:block !important}
+  /* Bottom RIGHT, not bottom centre. Centred it landed in the middle of the
+     card headline you were reading; against the right edge it only ever
+     covers the tail of a line, which is where a floating action is expected
+     on a phone anyway. */
+  .topcta{left:auto;right:16px;bottom:16px;padding:12px 18px;font-size:.82rem;
+    transform:translateY(14px)}
+  .topcta.show{transform:translateY(0)}
+}
+
 </style>
 </head>
 <body class="intro-mode fade-d pill-accent legend-on h1-md brand-tile wm-one">
@@ -1678,6 +1879,15 @@ var demoRevealed = false, lastFz = null;
 // OUTRANKS the media query's `position:static`, so without this guard a narrow
 // window turned the row into a fixed overlay the moment you scrolled.
 var wideMQ = matchMedia('(min-width: 821px)');
+// The phone layout (see the <=760px block in the stylesheet). Anything
+// scroll-driven, anything that boots a megabyte, and anything that measures
+// a pill nobody can see is gated on this.
+var phoneMQ = matchMedia('(max-width: 760px)');
+// The narrow feature deck (see the <=1000px block in the stylesheet). Wider than
+// the phone line on purpose: the deck's scroll ladder assumes every card is the
+// same height, which stops being true the moment this page single-columns any of
+// them -- and it already does that at 1000.
+var narrowMQ = matchMedia('(max-width: 1000px)');
 function placeFloat(){
   if (!dlFloat || !heroApp || getComputedStyle(dlFloat).display === 'none') return;
   if (!wideMQ.matches) { dlFloat.classList.remove('docked', 'hidden'); return; }
@@ -1813,8 +2023,16 @@ if (tryPill && embed) {
 if (embed) {
   embed.querySelector('.embed-start').addEventListener('click', function(){ bootEmbed(); embed.classList.add('interactive'); });
   embed.querySelector('.embed-interact').addEventListener('click', function(){ embed.classList.add('interactive'); });
-  // Also boot once it scrolls into view, unless the visitor asked for less motion.
-  if (!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObserver' in window) {
+  // Also boot once it scrolls into view, unless the visitor asked for less
+  // motion -- or is on a phone, or has Data Saver on. The iframe is the REAL
+  // app: a 2.2MB script plus its wallpapers, about 3MB before anyone has asked
+  // for it. On a desktop that is a demo booting while you read the headline;
+  // on a phone on cellular it is a third of the page's whole weight spent on
+  // something the visitor may never touch. There it waits for the button.
+  var autoBoot = !matchMedia('(prefers-reduced-motion: reduce)').matches
+    && !phoneMQ.matches
+    && !(navigator.connection && navigator.connection.saveData);
+  if (autoBoot && 'IntersectionObserver' in window) {
     // A "most of the embed is visible" threshold never becomes true when the
     // embed is TALLER than the window (763px in an 813px viewport leaves it
     // just short at rest), so D1's demo sat on its dark poster until the
@@ -1924,8 +2142,15 @@ function lockRate(v, desk){
 function warm(v){
   if (!v || v.dataset.warm) return;
   v.dataset.warm = '1';
+  // preload="auto" alone is enough: the element already ran resource
+  // selection and stopped, and raising preload resumes the fetch.
+  //
+  // load() used to follow it, and load() ABORTS whatever is in flight and
+  // re-runs resource selection from the top -- so the browser fetched the
+  // file once for warm() and a second time for play(). Measured 2026-09-03
+  // over the whole page: 7,381KB of video for 3,700KB of clips, every one of
+  // the nine downloaded twice, both full 200s. Costs a phone 3.7MB.
   v.preload = 'auto';
-  try { v.load(); } catch (e) {}
 }
 function show(i){
   if (i === cur) return;
@@ -1950,7 +2175,15 @@ var onShow = null;
 // download buttons live in the hero -- so it pulls you to the top. Runs in
 // every style, which is why it is not inside any of the blocks below.
 addEventListener('scroll', function(){
-  document.getElementById('topcta').classList.toggle('show', scrollY > innerHeight * 0.9);
+  // Past the first screen, and NOT once the footer is on screen -- the footer
+  // carries the page's own download links, and a floating copy of the same
+  // call to action sitting on top of them reads as a bug. (Same rule the
+  // desktop's floating pill follows in placeFloat().) On a phone this pill is
+  // the only download control between the hero and the footer, so where it
+  // stops mattering is exactly where the real one starts.
+  var f = document.querySelector('footer');
+  var nearFoot = !!f && f.getBoundingClientRect().top < innerHeight - 40;
+  document.getElementById('topcta').classList.toggle('show', scrollY > innerHeight * 0.9 && !nearFoot);
 }, { passive: true });
 
 // --- THEATER (original): the step nearest the middle of the window wins.
@@ -1992,6 +2225,10 @@ if (document.querySelector('.demo-deck')) {
     var copy = document.createElement('div'); copy.className = 'deckcopy';
     while (st.firstChild) copy.appendChild(st.firstChild);
     var clip = document.createElement('div'); clip.className = 'deckclip';
+    // The last card's media is a drawn diagram, not a 16:10 clip. Tag its box
+    // so the phone layout can let it size to its own content instead of
+    // absolutely positioning a two-column diagram into a 16:10 hole.
+    if (slides[i] && slides[i].classList.contains('sketch')) clip.className += ' deckclip-sketch';
     if (slides[i]) clip.appendChild(slides[i]);
     var ph = document.querySelector('.deck-phone[data-phone-for="' + i + '"]');
     if (ph) clip.appendChild(ph);
@@ -2028,7 +2265,35 @@ if (document.querySelector('.demo-deck')) {
   if (window.ResizeObserver) new ResizeObserver(relayout).observe(flow);
   // The deck starts a clip on its OWN line, well before the card parks.
   deckDrivesVideo = true;
+
+  // ---- NARROW: the cards are a plain stack, so nothing here drives them ----
+  // Below 1000px the stylesheet takes the cards out of position:sticky and gives
+  // each one a single column. That leaves only one job: play the clip you are
+  // actually looking at, and pause the rest. One at a time, not the desktop's
+  // two -- narrow, there is rarely more than one card on screen, and a second
+  // decoding video is battery the visitor cannot see being spent.
+  var narrowStyled = false;
+  function narrowDeck(){
+    if (!narrowStyled) {
+      // Clear whatever the desktop driver last wrote, in case the window was
+      // resized (or rotated) across the breakpoint mid-scroll.
+      steps.forEach(function(s){ s.style.removeProperty('--d'); s.classList.remove('buried'); });
+      narrowStyled = true;
+    }
+    var mid = innerHeight / 2, best = -1, bd = 1e9;
+    steps.forEach(function(s, n){
+      var r = s.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > innerHeight) return;      // not on screen at all
+      var d = Math.abs(r.top + r.height / 2 - mid);
+      if (d < bd) { bd = d; best = n; }
+    });
+    if (best >= 0) show(best);
+    playSlides(best >= 0 ? [best] : []);
+  }
+
   var onDeck = function(){
+    if (narrowMQ.matches) return narrowDeck();
+    narrowStyled = false;
     // 'd' is how many card-lengths the scroll has travelled since this card
     // reached the top -- a CONTINUOUS number, not a count of cards on top of it.
     //
