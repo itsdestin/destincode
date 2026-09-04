@@ -1,7 +1,8 @@
 // ---------------------------------------------------------------------------
 // INVARIANT: which mechanism carries a session pill OUT of its window is chosen
-// from FACTS about the host, and the session id survives the only channel an
-// OS drag gives us to carry it — a file name.
+// from FACTS about the host, and the session id rides in the drag's own
+// payload under a private MIME type — which is also how "is this drag ours" is
+// answered mid-drag, when the value itself is still withheld.
 //
 // Why this is pinned: the cross-window half of session detach reads screen
 // coordinates, and on Linux/Wayland every one of those is zero (see
@@ -15,13 +16,18 @@ import fs from 'fs';
 import path from 'path';
 import {
   chooseTearOffModel,
-  dragFileNameFor,
-  sessionIdFromDragFileName,
+  SESSION_DRAG_MIME,
+  dragCarriesSession,
+  writeSessionDrag,
+  readSessionDrag,
+  beginLocalSessionDrag,
+  endLocalSessionDrag,
+  localSessionDrag,
 } from '../src/renderer/session-drag-model';
 
 describe('chooseTearOffModel', () => {
-  it('hands the gesture to the compositor on Linux + Wayland, where coordinates are all zero', () => {
-    expect(chooseTearOffModel({ platform: 'linux', wayland: true })).toBe('os-drag');
+  it('lets the browser own the gesture on Linux + Wayland, where coordinates are all zero', () => {
+    expect(chooseTearOffModel({ platform: 'linux', wayland: true })).toBe('html-drag');
   });
 
   it('keeps the live tear-off everywhere it actually works', () => {
@@ -39,25 +45,48 @@ describe('chooseTearOffModel', () => {
   });
 });
 
-describe('the drag payload rides on a file name', () => {
-  it('round-trips a session id', () => {
-    const id = '9f1c0b6e-1c2d-4a3b-9e8f-0a1b2c3d4e5f';
-    expect(sessionIdFromDragFileName(dragFileNameFor(id))).toBe(id);
+/** jsdom has no DataTransfer; this is what the real one does with types/data. */
+function fakeTransfer() {
+  const data = new Map<string, string>();
+  return {
+    get types() { return Array.from(data.keys()); },
+    setData: (t: string, v: string) => { data.set(t, v); },
+    getData: (t: string) => data.get(t) ?? '',
+  };
+}
+
+describe('the drag payload', () => {
+  it('round-trips a session id through the private MIME type', () => {
+    const dt = fakeTransfer();
+    writeSessionDrag(dt, '9f1c0b6e-1c2d-4a3b-9e8f-0a1b2c3d4e5f');
+    expect(dt.types).toEqual([SESSION_DRAG_MIME]);
+    expect(dragCarriesSession(dt)).toBe(true);
+    expect(readSessionDrag(dt)).toBe('9f1c0b6e-1c2d-4a3b-9e8f-0a1b2c3d4e5f');
   });
 
-  it('round-trips an id that would otherwise break a file name', () => {
-    const id = 'a/b c%d';
-    const name = dragFileNameFor(id);
-    expect(name).not.toContain('/');
-    expect(sessionIdFromDragFileName(name)).toBe(id);
+  it('is recognisable mid-drag from types alone, before the value is readable', () => {
+    // The browser withholds getData until the drop; types are visible throughout.
+    expect(dragCarriesSession({ types: [SESSION_DRAG_MIME] })).toBe(true);
   });
 
   it('refuses anything that is not one of ours, so a real file drop is not eaten', () => {
-    expect(sessionIdFromDragFileName('report.pdf')).toBeNull();
-    expect(sessionIdFromDragFileName('youcoded-session--.ycsession')).toBeNull();
-    expect(sessionIdFromDragFileName('')).toBeNull();
-    expect(sessionIdFromDragFileName(null)).toBeNull();
-    expect(sessionIdFromDragFileName(undefined)).toBeNull();
+    expect(dragCarriesSession({ types: ['Files'] })).toBe(false);
+    expect(dragCarriesSession({ types: ['text/plain', 'text/uri-list'] })).toBe(false);
+    expect(dragCarriesSession({ types: [] })).toBe(false);
+    expect(dragCarriesSession(null)).toBe(false);
+    expect(readSessionDrag({ types: ['Files'], getData: () => 'x' })).toBeNull();
+    // Ours by type but empty: still not a session.
+    expect(readSessionDrag({ types: [SESSION_DRAG_MIME], getData: () => '' })).toBeNull();
+  });
+});
+
+describe('the drag this window started', () => {
+  it('is visible while in flight and gone after', () => {
+    expect(localSessionDrag()).toBeNull();
+    beginLocalSessionDrag({ sessionId: 'a', lone: false });
+    expect(localSessionDrag()).toEqual({ sessionId: 'a', lone: false });
+    endLocalSessionDrag();
+    expect(localSessionDrag()).toBeNull();
   });
 });
 
@@ -72,7 +101,11 @@ describe('preload reports facts, not a verdict', () => {
   });
 
   it('does not name a drag model', () => {
-    expect(preload).not.toMatch(/'os-drag'|"os-drag"/);
+    expect(preload).not.toMatch(/'html-drag'|"html-drag"/);
     expect(preload).not.toMatch(/chooseTearOffModel/);
+  });
+
+  it('never starts a drag from main — Linux startDrag crops the picture and carries only a file', () => {
+    expect(preload).not.toMatch(/startDrag|dragHandoff/);
   });
 });

@@ -1205,7 +1205,7 @@ function registerDetachIpc() {
     stopCursorTicker();
   });
 
-  // ── 'os-drag' tear-off (Linux/Wayland) ────────────────────────────────────
+  // ── 'html-drag' tear-off (Linux/Wayland) ──────────────────────────────────
   //
   // Everything above this point resolves a cross-window drag from SCREEN
   // coordinates, and on Wayland every one of those is zero — the cursor's
@@ -1215,75 +1215,14 @@ function registerDetachIpc() {
   // dropped it on nothing". A pill in a torn-off window could never be dragged
   // back (Destin, 2026-09-03: "permanently stuck with two windows").
   //
-  // The fix is to let the COMPOSITOR run the part of the drag that leaves the
-  // window. The pointer path still runs inside the strip, so the reorder motion
-  // is untouched; once the pill is pulled clear, the strip calls this and the
-  // OS carries it. The destination window is then TOLD it was dropped on, in
-  // its own window-local coordinates, which work fine on Wayland.
+  // There, the pill is a browser-native draggable and the compositor carries
+  // the whole gesture; the window it lands on is TOLD, in its own window-local
+  // coordinates, and claims the session with the message below. Main's only
+  // job is ownership. (A previous attempt started the drag from here with
+  // webContents.startDrag — abandoned because on Linux that API crops the
+  // picture to ~138px and can carry nothing but a file: session-drag-model.ts.)
   //
-  // Two things are load-bearing and were measured with a two-window probe
-  // before any of this was written (2026-09-04, and the first attempt failed):
-  //   - The gesture CANNOT be promoted from inside the page. Setting
-  //     draggable=true mid-drag never fires dragstart; the browser decides at
-  //     mouse-down and will not change its mind. webContents.startDrag is the
-  //     only API that can begin a drag mid-gesture.
-  //   - startDrag drags FILES. There is no way to attach a custom payload, so
-  //     the session id rides on a temporary file's NAME and is read back from
-  //     `dataTransfer.files[0].name` on the other side. The file itself is
-  //     empty and is deleted as soon as the drag ends. (Dropping the pill on a
-  //     file manager therefore drops an empty file named after the session,
-  //     rather than doing nothing — the least-bad option available.)
-  const DRAG_FILE_PREFIX = 'youcoded-session--';
-  const DRAG_FILE_SUFFIX = '.ycsession';
-  ipcMain.handle(IPC.SESSION_DRAG_HANDOFF, async (evt, payload: { sessionId: string; icon?: string | null }) => {
-    const sourceId = evt.sender.id;
-    if (windowRegistry.getOwner(payload.sessionId) !== sourceId) return { outcome: 'returned' as const };
-
-    const file = path.join(
-      os.tmpdir(),
-      `${DRAG_FILE_PREFIX}${encodeURIComponent(payload.sessionId)}${DRAG_FILE_SUFFIX}`,
-    );
-    try {
-      fs.writeFileSync(file, '');
-    } catch {
-      return { outcome: 'returned' as const };
-    }
-
-    // The picture under the cursor. Painted by the renderer because main has no
-    // DOM and cannot know the active theme; the app icon is the fallback so a
-    // failed paint costs an ugly drag, never a broken one.
-    let icon = payload.icon ? nativeImage.createFromDataURL(payload.icon) : nativeImage.createEmpty();
-    if (icon.isEmpty()) icon = nativeImage.createFromPath(path.join(__dirname, '../../assets/icon.png'));
-
-    try {
-      // Returns when the drag SESSION ENDS (measured on KWin) — this await is
-      // the whole gesture. Any drop reaches SESSION_DRAG_ADOPT before it
-      // resolves, so ownership below is already up to date.
-      await Promise.resolve(evt.sender.startDrag({ file, icon }));
-    } catch {
-      /* drag refused by the platform — fall through and put the pill back */
-    }
-    try { fs.unlinkSync(file); } catch { /* already gone */ }
-
-    if (windowRegistry.getOwner(payload.sessionId) !== sourceId) return { outcome: 'adopted' as const };
-
-    // Nobody took it. Released over empty desktop = tear off into a new window,
-    // which is the only way this gesture can make one on Wayland (there are no
-    // coordinates to spawn it at, so the compositor places it).
-    //
-    // Chrome's rule, and the one the pointer path already follows: a window's
-    // ONLY session cannot be torn off — that would close this window and open
-    // an identical one. Note the guard is here and NOT in the strip: the strip
-    // must still hand off a lone session, because dropping it INTO another
-    // window is exactly the move that was impossible before.
-    if (windowRegistry.sessionsForWindow(sourceId).length <= 1) return { outcome: 'returned' as const };
-    const newWin = createAppWindow({ width: 900, height: 700 });
-    transferOwnership(payload.sessionId, sourceId, newWin.webContents.id, /*freshWindow*/ true);
-    maybeAutoCloseEmpty(sourceId);
-    return { outcome: 'detached' as const };
-  });
-
-  // The window that RECEIVED an 'os-drag' drop claims the session. Unlike
+  // The window that RECEIVED an 'html-drag' drop claims the session. Unlike
   // SESSION_DRAG_DROPPED (sent by the source), this arrives from the TARGET, so
   // the source is resolved from the registry and never taken from the payload —
   // a forged message can only move a session to the window that sent it, and

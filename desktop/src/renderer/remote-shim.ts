@@ -1508,11 +1508,8 @@ export function installShim(): void {
       dragStarted: (_p: any) => {},
       dragEnded: () => {},
       dragDropped: (_p: any) => {},
-      // 'os-drag' tear-off is desktop-Electron only (it needs the main process
-      // to start a real OS drag). A browser tab or the phone resolves to
-      // 'returned' — the pill goes back where it was, which is what already
-      // happens there, rather than appearing to move and then not moving.
-      dragHandoff: (_p: any) => Promise.resolve({ outcome: 'returned' as const }),
+      // Claiming a dropped session is desktop-Electron only (main moves
+      // ownership between windows). A browser tab or the phone has one window.
       dragAdopt: (_p: any) => {},
       focusAndSwitch: (_p: any) => {},
       openDetached: (_p: any) => {},

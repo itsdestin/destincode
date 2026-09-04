@@ -1590,7 +1590,6 @@ export const IPC = {
   SESSION_DRAG_STARTED: 'session:drag-started',
   SESSION_DRAG_ENDED: 'session:drag-ended',
   SESSION_DRAG_DROPPED: 'session:drag-dropped',
-  SESSION_DRAG_HANDOFF: 'session:drag-handoff',
   SESSION_DRAG_ADOPT: 'session:drag-adopt',
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',

@@ -97,6 +97,7 @@ import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import RemoteUnsupportedNotice from './components/RemoteUnsupportedNotice';
+import { SessionDropZone } from './components/SessionDropZone';
 import { ContextMenuHost } from './components/context-menu/ContextMenuHost';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
@@ -551,35 +552,6 @@ function AppInner() {
       return true;
     }
     return false;
-  }, []);
-
-  // The card drawn under the cursor while a session pill is dragged to another
-  // window shows a glimpse of that conversation, so what you are carrying is
-  // identifiable. The strip has no chat state of its own, so App supplies it:
-  // the last few plain messages, oldest first, text only — no tool cards, no
-  // prompts, no system markers, none of which read as a conversation at 330px.
-  // Read from the ref, not state: this runs once, mid-gesture, and must not
-  // make the header re-render on every streamed token.
-  const dragPreviewMessages = useCallback((sid: string): { role: 'user' | 'assistant'; text: string }[] => {
-    const state = chatStateMapRef.current.get(sid);
-    if (!state) return [];
-    const out: { role: 'user' | 'assistant'; text: string }[] = [];
-    for (const entry of state.timeline) {
-      if (entry.kind === 'user') {
-        const text = entry.message.content.trim();
-        if (text) out.push({ role: 'user', text });
-      } else if (entry.kind === 'assistant-turn') {
-        const turn = state.assistantTurns.get(entry.turnId);
-        const text = (turn?.segments ?? [])
-          .filter((seg): seg is Extract<typeof seg, { type: 'text' }> => seg.type === 'text')
-          .map((seg) => seg.content)
-          .join(' ')
-          .trim();
-        if (text) out.push({ role: 'assistant', text });
-      }
-    }
-    // Three is what fits the card's fixed body height.
-    return out.slice(-3);
   }, []);
 
   const guardedPtySend = useCallback((sid: string, text: string): boolean => {
@@ -2952,6 +2924,13 @@ function AppInner() {
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>
+            {/* On Linux/Wayland a session pill dragged over the chat area can
+                be dropped there — "open in a new window" for this window's
+                own pill, "move here" for another window's. Inert everywhere
+                else. A child of this positioned box so it covers the chat and
+                not the header. See SessionDropZone for why the empty desktop
+                is not a drop target there. */}
+            <SessionDropZone sessions={sessions} />
             {/* Chrome-glass: single backdrop-filter layer for the entire
                 frame chrome. Replaces the per-element backdrop-filters on
                 HeaderBar, frame-edges, frame-divider, drawer-pane, and the
@@ -2968,7 +2947,6 @@ function AppInner() {
               <HeaderBar
                 sessions={sessions}
                 activeSessionId={sessionId}
-                dragPreviewMessages={dragPreviewMessages}
                 onSelectSession={(id: string) => {
                   // Switching sessions REMOUNTS the artifact drawer, which
                   // would silently discard a dirty editor draft — route the

@@ -223,7 +223,6 @@ const IPC = {
   SESSION_DRAG_STARTED: 'session:drag-started',
   SESSION_DRAG_ENDED: 'session:drag-ended',
   SESSION_DRAG_DROPPED: 'session:drag-dropped',
-  SESSION_DRAG_HANDOFF: 'session:drag-handoff',
   SESSION_DRAG_ADOPT: 'session:drag-adopt',
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
@@ -1034,14 +1033,8 @@ contextBridge.exposeInMainWorld('claude', {
     dragEnded: () => ipcRenderer.send(IPC.SESSION_DRAG_ENDED),
     dragDropped: (payload: { sessionId: string; targetWindowId: number; insertIndex: number }) =>
       ipcRenderer.send(IPC.SESSION_DRAG_DROPPED, payload),
-    // Compositor tear-off (Linux/Wayland). Hands the in-flight gesture to the
-    // COMPOSITOR mid-drag; resolves only once that drag has ended, with what
-    // became of the session. `icon` is a PNG data URL painted by the renderer
-    // (session-drag-image.ts) — main cannot snapshot a DOM node.
-    dragHandoff: (payload: { sessionId: string; icon?: string | null }):
-      Promise<{ outcome: 'adopted' | 'detached' | 'returned' }> =>
-      ipcRenderer.invoke(IPC.SESSION_DRAG_HANDOFF, payload),
-    // Sent by the window that RECEIVED the drop. It names only the session:
+    // Sent by the window that RECEIVED a browser-drag drop (Linux/Wayland —
+    // session-drag-model.ts). It names only the session:
     // main resolves the source from the WindowRegistry, so a forged drop can
     // never move a session the sender was not entitled to move.
     dragAdopt: (payload: { sessionId: string }) =>
