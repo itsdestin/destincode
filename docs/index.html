@@ -2167,13 +2167,20 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
   var CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
   var API_URL = 'https://api.github.com/repos/itsdestin/youcoded/releases?per_page=10';
   // Keys that match a data-dl button set that button's href too; the
-  // dl-linux-* keys have no button on purpose — they only populate
+  // dl-linux-* and dl-macos-* keys have no button on purpose — they only populate
   // __youcodedReleaseAssets so the Linux modal's distro picker can offer them.
   // Anything absent from the release is simply never recorded, and the picker
   // only offers what it finds.
   var matchers = {
     'dl-windows':      function(n) { return /\.exe$/i.test(n); },
+    // dl-macos has no single right answer -- a release carries an Apple
+    // silicon .dmg and an Intel one, and an Intel Mac cannot open the Apple
+    // silicon build at all. This key stays "first .dmg" only as the hero
+    // button's no-JS href; the install modal asks which Mac the visitor has
+    // and downloads dl-macos-arm64 / dl-macos-intel accordingly.
     'dl-macos':        function(n) { return /\.dmg$/i.test(n); },
+    'dl-macos-arm64':  function(n) { return /arm64\.dmg$/i.test(n); },
+    'dl-macos-intel':  function(n) { return /\.dmg$/i.test(n) && !/arm64/i.test(n); },
     'dl-linux':        function(n) { return /\.AppImage$/i.test(n); },
     'dl-linux-deb':    function(n) { return /\.deb$/i.test(n); },
     'dl-linux-rpm':    function(n) { return /\.rpm$/i.test(n); },
@@ -2308,9 +2315,18 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
           ],
           note: null
         },
+        // Mac ships two builds and the wrong one simply will not open, so this
+        // entry carries `variants` the same way Linux does. Before 2026-09-03
+        // there was no picker: the resolver took the first asset ending in
+        // .dmg, GitHub returns assets alphabetically, and "-arm64.dmg" sorts
+        // ahead of ".dmg" -- so every Intel Mac visitor was handed the Apple
+        // silicon build with no way to get the other one.
         'dl-macos': {
           platformLabel: 'Mac',
-          intro: 'YouCoded is open-source and isn\'t signed with an Apple Developer certificate yet (it costs $99/yr 😢). macOS will block it on first launch &mdash; this is expected. Here\'s how to get past it.',
+          intro: 'Macs come in two kinds and the installers are not interchangeable &mdash; pick yours below. YouCoded is also open-source and isn\'t signed with an Apple Developer certificate yet (it costs $99/yr 😢), so macOS will block it on first launch. That\'s expected, and the steps get you past it.',
+          variantLegend: 'Which Mac do you have?',
+          // Fallback for a release that carries no .dmg the picker can name:
+          // renderPlatform() reads these when no variant is available.
           steps: [
             'Open the file you just downloaded, then drag YouCoded into your <strong>Applications</strong> folder.',
             'Open your <strong>Applications</strong> folder and double-click YouCoded. macOS will show a warning: <em>"YouCoded can\'t be opened because Apple cannot check it for malicious software."</em> Click <strong>Done</strong>.',
@@ -2320,7 +2336,43 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
             'Go back to your Applications folder and double-click YouCoded one more time. A final dialog appears &mdash; click <strong>Open</strong>.',
             'You only have to do this the first time. After that, YouCoded opens normally.'
           ],
-          note: null
+          note: null,
+          // Preselected from the GPU string when the browser exposes one --
+          // see detectMacVariant. Apple silicon leads because it is both the
+          // majority and what every Mac visitor already got.
+          defaultVariantKey: function() { return detectMacVariant(); },
+          variants: [
+            {
+              key: 'dl-macos-arm64',
+              label: 'Apple silicon &mdash; M1, M2, M3 or M4',
+              hint: 'Macs sold from late 2020 onward. Apple menu → About This Mac shows a <strong>Chip</strong> line.',
+              steps: [
+            'Open the file you just downloaded, then drag YouCoded into your <strong>Applications</strong> folder.',
+            'Open your <strong>Applications</strong> folder and double-click YouCoded. macOS will show a warning: <em>"YouCoded can\'t be opened because Apple cannot check it for malicious software."</em> Click <strong>Done</strong>.',
+            'Open <strong>System Settings → Privacy &amp; Security</strong> (Apple menu → System Settings).',
+            'Scroll down to the <strong>Security</strong> section. You\'ll see a note: <em>"YouCoded was blocked to protect your Mac."</em> Click the <strong>Open Anyway</strong> button next to it.',
+            'Enter your password or use Touch ID to confirm.',
+            'Go back to your Applications folder and double-click YouCoded one more time. A final dialog appears &mdash; click <strong>Open</strong>.',
+            'You only have to do this the first time. After that, YouCoded opens normally.'
+              ],
+              note: null
+            },
+            {
+              key: 'dl-macos-intel',
+              label: 'Intel',
+              hint: 'Macs sold before late 2020. About This Mac shows a <strong>Processor</strong> line instead.',
+              steps: [
+            'Open the file you just downloaded, then drag YouCoded into your <strong>Applications</strong> folder.',
+            'Open your <strong>Applications</strong> folder and double-click YouCoded. macOS will show a warning: <em>"YouCoded can\'t be opened because Apple cannot check it for malicious software."</em> Click <strong>Done</strong>.',
+            'Open <strong>System Settings → Privacy &amp; Security</strong> (Apple menu → System Settings).',
+            'Scroll down to the <strong>Security</strong> section. You\'ll see a note: <em>"YouCoded was blocked to protect your Mac."</em> Click the <strong>Open Anyway</strong> button next to it.',
+            'Enter your password or use Touch ID to confirm.',
+            'Go back to your Applications folder and double-click YouCoded one more time. A final dialog appears &mdash; click <strong>Open</strong>.',
+            'You only have to do this the first time. After that, YouCoded opens normally.'
+              ],
+              note: null
+            }
+          ]
         },
         // Linux is the one platform where the right file depends on the
         // distro, and the browser can't tell us which one it is. So this entry
@@ -2371,6 +2423,7 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
               // Always last, always offered: the universal fallback for
               // distros we don't ship a native package for.
               key: 'dl-linux',
+              always: true,
               label: 'Something else',
               hint: 'AppImage &mdash; one file, runs on any distribution.',
               steps: [
@@ -2423,7 +2476,11 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
         if (!p.variants) return [];
         var have = window.__youcodedReleaseAssets || {};
         return p.variants.filter(function(v) {
-          return v.key === 'dl-linux' || (have[v.key] && have[v.key].url);
+          // `always` was the hardcoded 'dl-linux' check: the AppImage is the
+          // universal fallback and stays on offer even when the release fetch
+          // found nothing. Mac has no such entry -- if neither .dmg resolves
+          // the picker disappears and the modal falls back to p.steps.
+          return v.always || (have[v.key] && have[v.key].url);
         });
       }
 
@@ -2435,12 +2492,48 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
         for (var i = 0; i < vs.length; i++) {
           if (vs[i].key === chosenVariantKey) return vs[i];
         }
+        // Nothing picked yet. A platform may nominate one (Mac guesses the
+        // chip); anything unguessable falls through to the first available,
+        // which each variants list orders most-common-first.
+        if (p.defaultVariantKey) {
+          var want = p.defaultVariantKey();
+          for (var j = 0; j < vs.length; j++) {
+            if (vs[j].key === want) return vs[j];
+          }
+        }
         return vs[0];
       }
 
-      // Radio list of distro choices. Returns '' when there's nothing to
-      // choose between (e.g. a release with only an AppImage) so those users
-      // see exactly the modal they saw before this existed.
+      // Which Mac build to preselect, or null when we cannot tell.
+      // navigator.userAgent is no help: every Mac browser still reports
+      // "Intel Mac OS X", Apple silicon included. The GPU string is the one
+      // synchronous signal that differs -- Apple silicon renders through an
+      // "Apple" GPU, Intel Macs through Intel or AMD/Radeon. Safari 17 stopped
+      // exposing the real renderer, so this returns null there and the picker
+      // simply opens on Apple silicon, which is what every Mac visitor already
+      // got. A wrong guess costs one click, never a broken download.
+      var macVariantGuess;
+      function detectMacVariant() {
+        if (macVariantGuess !== undefined) return macVariantGuess;
+        macVariantGuess = null;
+        try {
+          var gl = document.createElement('canvas').getContext('webgl');
+          if (gl) {
+            var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+            var r = String((dbg && gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) ||
+                           gl.getParameter(gl.RENDERER) || '');
+            // Intel-family first: those strings never contain "Apple", while
+            // Safari's privacy-scrubbed string says "Apple GPU" on both chips.
+            if (/intel|radeon|\bamd\b/i.test(r)) macVariantGuess = 'dl-macos-intel';
+            else if (/apple/i.test(r)) macVariantGuess = 'dl-macos-arm64';
+          }
+        } catch (e) { /* no WebGL, or a privacy setting blocks the context */ }
+        return macVariantGuess;
+      }
+
+      // Radio list of variant choices. Returns '' when there's nothing to
+      // choose between (a release with only an AppImage, or only one .dmg) so
+      // those users see exactly the modal they saw before this existed.
       function renderVariantPicker(p, active) {
         var vs = availableVariants(p);
         if (vs.length < 2) return '';
@@ -2448,7 +2541,7 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
           var size = formatSize(((window.__youcodedReleaseAssets || {})[v.key] || {}).sizeBytes);
           return '' +
             '<label class="distro-option">' +
-              '<input type="radio" name="distro" value="' + v.key + '"' +
+              '<input type="radio" name="variant" value="' + v.key + '"' +
                 (v.key === active.key ? ' checked' : '') + '>' +
               '<span class="distro-option-text">' +
                 '<span class="distro-option-label">' + v.label + '</span>' +
@@ -2457,12 +2550,13 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
             '</label>';
         }).join('');
         return '<fieldset class="distro-picker">' +
-          '<legend>Which distribution do you use?</legend>' + opts + '</fieldset>';
+          '<legend>' + (p.variantLegend || 'Which distribution do you use?') +
+          '</legend>' + opts + '</fieldset>';
       }
 
       // Build the modal body HTML for a given platform, including the
       // "After install" collapsible and (for Android) the runtime-size note.
-      // Platforms with `variants` (Linux) take their steps/note from the
+      // Platforms with `variants` (Linux, Mac) take their steps/note from the
       // active variant and get a picker above them.
       function renderPlatform(platformKey) {
         var p = platforms[platformKey];
@@ -2487,7 +2581,7 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
       }
 
       // The asset key the Download Now button should point at: the chosen
-      // variant for Linux, the platform's own key everywhere else.
+      // variant on Linux and Mac, the platform's own key everywhere else.
       function downloadKeyFor(platformKey) {
         var p = platforms[platformKey];
         var active = p && p.variants ? activeVariant(p) : null;
@@ -2498,8 +2592,9 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
       // every openModal() so reopening the same platform's modal doesn't
       // leave a stale "Download Initiated" label.
       //
-      // `assetKey` is usually the platform/card id, but for Linux it's the
-      // chosen variant's key (dl-linux-deb/-rpm/-pacman) — see downloadKeyFor.
+      // `assetKey` is usually the platform/card id, but on Linux and Mac it's
+      // the chosen variant's key (dl-linux-deb/-rpm/-pacman,
+      // dl-macos-arm64/-intel) — see downloadKeyFor.
       function resetDownloadButton(assetKey, label) {
         downloadBtn.removeAttribute('data-initiated');
         downloadBtn.textContent = label;
@@ -2536,11 +2631,12 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
         document.body.style.overflow = 'hidden';
       }
 
-      // Picking a distro swaps the steps and repoints the download button.
-      // Delegated because the radios are re-created on every render.
+      // Picking a variant (distro on Linux, chip on Mac) swaps the steps and
+      // repoints the download button. Delegated because the radios are
+      // re-created on every render.
       body.addEventListener('change', function(e) {
         var t = e.target;
-        if (!t || t.name !== 'distro' || !openPlatformKey) return;
+        if (!t || t.name !== 'variant' || !openPlatformKey) return;
         chosenVariantKey = t.value;
         body.innerHTML = renderPlatform(openPlatformKey);
         resetDownloadButton(downloadKeyFor(openPlatformKey), 'Download Now');
