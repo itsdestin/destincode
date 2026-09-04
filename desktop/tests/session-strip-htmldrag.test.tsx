@@ -165,14 +165,33 @@ describe('SessionStrip — html-drag (Linux/Wayland)', () => {
     expect(dt.dropEffect).toBe('none'); // never claimed the drag
   });
 
-  it('never opens a window from dragend — "released over nothing" and Escape look identical', () => {
+  it('a drag that nothing accepted opens a new window — the desktop drop, as on Windows', () => {
+    // Escape ends a drag identically (dropEffect 'none'); Destin chose the
+    // desktop drop over Escape — cancelling is dragging back into the strip.
     const { pills } = mount();
     const dt = transfer();
     fireEvent.pointerDown(pills[0], { button: 0, clientX: 20, clientY: 10, pointerId: 1, pointerType: 'mouse' });
     fireEvent.dragStart(pills[0], { dataTransfer: dt, clientX: 20, clientY: 10 });
+    fireEvent.dragEnd(pills[0], { dataTransfer: dt });   // dropEffect stays 'none'
+    expect(detach.openDetached).toHaveBeenCalledWith({ sessionId: 'a' });
+    expect(detach.detachStart).not.toHaveBeenCalled();
+  });
+
+  it('a drag something accepted does NOT also open a window', () => {
+    const { pills } = mount();
+    const dt = transfer();
+    fireEvent.dragStart(pills[0], { dataTransfer: dt, clientX: 20, clientY: 10 });
+    dt.dropEffect = 'move';
     fireEvent.dragEnd(pills[0], { dataTransfer: dt });
     expect(detach.openDetached).not.toHaveBeenCalled();
-    expect(detach.detachStart).not.toHaveBeenCalled();
+  });
+
+  it("a window's only session goes back instead of opening an identical window", () => {
+    const { pills } = mount({ sessions: [sess('only', 'solo')] });
+    const dt = transfer();
+    fireEvent.dragStart(pills[0], { dataTransfer: dt, clientX: 20, clientY: 10 });
+    fireEvent.dragEnd(pills[0], { dataTransfer: dt });
+    expect(detach.openDetached).not.toHaveBeenCalled();
   });
 
   it('right-click offers "Move to new window" and every other window by name', () => {

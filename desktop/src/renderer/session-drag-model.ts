@@ -49,10 +49,11 @@
 //     for reordering; moving a session between windows by touch is the pill's
 //     right-click / long-press menu.
 //   - tell "released over the empty desktop" from "pressed Escape": both end
-//     with dropEffect 'none' and unusable coordinates. So releasing over
-//     nothing puts the pill BACK, never opens a window; a new window is made
-//     by dropping on the source window's own body (SessionDropZone), which is
-//     unambiguous.
+//     with dropEffect 'none' and unusable coordinates. Destin chose the
+//     desktop drop (2026-09-04): releasing over nothing opens a new window,
+//     as on Windows/macOS, and so does Escape; cancelling is dragging the
+//     pill back into the strip. The chat area is a second, labelled route
+//     to the same thing (SessionDropZone).
 //
 // NOTE on XWayland: a Wayland session running the app through XWayland is
 // classified 'html-drag' here even though positioning would work. Deliberate

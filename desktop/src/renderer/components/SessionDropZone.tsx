@@ -1,15 +1,13 @@
 // The chat area as a drop target for a session pill — 'html-drag' model only
 // (Linux/Wayland; session-drag-model.ts has the measurements).
 //
-// WHY this exists: on that model a pill released over the EMPTY DESKTOP cannot
-// open a new window, because the browser reports "released over nothing" and
-// "the user pressed Escape" identically (dropEffect 'none', unusable
-// coordinates — measured 2026-09-04). Rather than guess and open a window on
-// every cancelled drag, the gesture that makes a window is unambiguous: drag
-// the pill DOWN out of the strip and drop it on this window's own chat area.
-// The same surface in another window moves the session there — which also
-// closes the old gap where a drop on another window's chat area made a THIRD
-// window instead of landing in that one.
+// WHY this exists: a labelled, discoverable target. Releasing the pill over the
+// bare desktop opens a new window too (SessionStrip.handleDragEnd), but that
+// gesture is invisible until tried; this box says what dropping here does. In
+// the SOURCE window: "Open in a new window". In ANOTHER window: "Move here" —
+// which also closes the old gap where a drop on another window's chat area
+// made a THIRD window instead of landing in that one. Destin, 2026-09-04: keep
+// the dashed outline.
 //
 // The zone is invisible until a session drag is over this window's chat area,
 // so reordering in the strip never shows it. The label is decided from

@@ -1264,12 +1264,23 @@ export default function SessionStrip({
   }, [tearOffModel, sessions]);
 
   // dropEffect 'move': something took it — this strip reordered, another
-  // window adopted, or a drop zone opened a window. 'none': Escape, or released
-  // over nothing — indistinguishable (measured), and both mean the pill is
-  // back where it was. Either way the drop handlers already did their part.
-  const handleDragEnd = useCallback(() => {
+  // window adopted, or a drop zone opened a window. 'none': released over
+  // NOTHING — the bare desktop, another app, a part of a window that takes no
+  // drop — which opens a new window, as it does on Windows and macOS. Escape
+  // ends a drag the same way and so ALSO opens a window: the two are
+  // indistinguishable (measured 2026-09-04), and Destin chose the desktop drop
+  // over Escape — "if a user wants to cancel, they can just drag it back into
+  // the original session switcher". A window's only session is the exception
+  // (Chrome's rule): it goes back.
+  const handleDragEnd = useCallback((e: React.DragEvent) => {
     if (!htmlDragActive.current) return;
+    const mine = localSessionDrag();
+    const effect = e.dataTransfer?.dropEffect;
     clearHtmlDrag();
+    if (effect === 'none' && mine && !mine.lone) {
+      // The compositor places the window: there are no coordinates to ask for.
+      (window as any).claude?.detach?.openDetached?.({ sessionId: mine.sessionId });
+    }
   }, [clearHtmlDrag]);
 
   // The pill in hand BELOW the row: a ghost drawn under the cursor, anywhere
