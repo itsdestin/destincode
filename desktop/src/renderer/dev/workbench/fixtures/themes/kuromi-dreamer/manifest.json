@@ -1,0 +1,82 @@
+{
+  "name": "Kuromi Dreamer",
+  "slug": "kuromi-dreamer",
+  "version": "1.2.1",
+  "companions": [
+    {"asset": "assets/companions/spark-pink.svg", "size": 0.113, "dx": -0.452, "dy": -0.33, "stiffness": 95, "damping": 8, "float": 0.035, "floatMs": 2000},
+    {"asset": "assets/companions/spark-white.svg", "size": 0.065, "dx": 0.417, "dy": -0.435, "stiffness": 70, "damping": 7, "float": 0.048, "floatMs": 2500},
+    {"asset": "assets/companions/spark-pink-soft.svg", "size": 0.052, "dx": 0.522, "dy": 0.104, "stiffness": 55, "damping": 6, "float": 0.039, "floatMs": 1800}
+  ],
+  "dark": false,
+  "author": "claude",
+  "created": "2026-04-12",
+  "description": "Darker purple Hello Kitty x Kuromi crossover — lavender dusk, floating chrome, pill bubbles, dust drift over a pastel gothic wallpaper.",
+  "tokens": {
+    "canvas": "#C9B8E0",
+    "panel": "#D4C5E6",
+    "inset": "#EFE3F6",
+    "well": "#B5A2CE",
+    "accent": "#8158ad",
+    "on-accent": "#FFFFFF",
+    "fg": "#190E27",
+    "fg-2": "#3A2850",
+    "fg-dim": "#543D6E",
+    "fg-muted": "#65507F",
+    "fg-faint": "#7E6D97",
+    "edge": "#8466A8",
+    "edge-dim": "#8466A880",
+    "scrollbar-thumb": "#6E3FA0",
+    "scrollbar-hover": "#562E80"
+  },
+  "shape": {
+    "radius": "18px",
+    "radius-sm": "16px",
+    "radius-md": "26px",
+    "radius-lg": "32px",
+    "radius-full": "9999px"
+  },
+  "font": {
+    "family": "'Comfortaa', 'Cascadia Mono', monospace",
+    "google-font-url": "https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;500;600;700&display=swap"
+  },
+  "background": {
+    "average-color": "#CCA1D4",
+    "type": "image",
+    "value": "assets/wallpaper.webp",
+    "terminal-value": "assets/wallpaper-terminal.webp",
+    "opacity": 1,
+    "panels-blur": 18,
+    "panels-opacity": 0.74,
+    "bubble-blur": 14,
+    "bubble-opacity": 0.78,
+    "pattern": "assets/pattern.svg",
+    "pattern-opacity": 0.06
+  },
+  "layout": {
+    "chrome-style": "floating",
+    "input-style": "floating",
+    "bubble-style": "pill",
+    "header-style": "default",
+    "statusbar-style": "default"
+  },
+  "effects": {
+    "particles": "dust",
+    "particle-count": 24,
+    "particle-speed": 0.3,
+    "particle-drift": 0.3,
+    "particle-size-range": [
+      3,
+      8
+    ],
+    "vignette": 0.14,
+    "noise": 0
+  },
+  "mascot": {
+    "rig": "assets/mascot-rig.svg",
+    "idle": "assets/mascot-idle.svg",
+    "welcome": "assets/mascot-welcome.svg",
+    "shocked": "assets/mascot-shocked.svg",
+    "dizzy": "assets/mascot-dizzy.svg"
+  },
+  "custom_css": "::selection { background: rgba(110,63,160,0.32); color: var(--fg); }"
+}

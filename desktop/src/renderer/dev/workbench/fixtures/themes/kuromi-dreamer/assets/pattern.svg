@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="currentColor">
+  <!-- Tiny bat -->
+  <path d="M6 8 Q4 7 3 8.5 Q4.5 8.5 5 9 Q5.5 8.3 6 9 Q6.5 8.3 7 9 Q7.5 8.5 9 8.5 Q8 7 6 8 Z"/>
+  <!-- Crescent moon -->
+  <path d="M30 10 A3 3 0 1 0 30 16 A2.2 2.2 0 1 1 30 10 Z"/>
+  <!-- Four-point sparkle -->
+  <path d="M18 22 L18.6 23.8 L20.4 24.4 L18.6 25 L18 26.8 L17.4 25 L15.6 24.4 L17.4 23.8 Z"/>
+  <!-- Tiny star -->
+  <circle cx="10" cy="30" r="0.8"/>
+  <!-- Another sparkle -->
+  <path d="M32 32 L32.4 33 L33.4 33.3 L32.4 33.6 L32 34.6 L31.6 33.6 L30.6 33.3 L31.6 33 Z"/>
+</svg>
