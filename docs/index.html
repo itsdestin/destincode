@@ -263,6 +263,24 @@ footer{padding:0 0 46px}
   background:var(--m-bg);color:var(--m-fg);border:1px solid var(--m-line);border-radius:18px;
   padding:34px 34px 0;box-shadow:0 40px 90px -30px rgba(0,0,0,.8);
   -webkit-backdrop-filter:blur(30px) saturate(1.4);backdrop-filter:blur(30px) saturate(1.4)}
+/* The panel scrolls, and it was showing the browser's own scrollbar: a 17px
+   light-grey slab, square-ended, running the full height of a panel with 18px
+   rounded corners — so it sat across both right-hand corners and read as a
+   piece of some other application (Destin 2026-09-03: "the scroll bars in the
+   popups need to be themed and contained properly").
+   The thumb is the theme's own foreground at low alpha, and the transparent
+   3px border + background-clip is what INSETS it: the thumb never reaches the
+   panel's rounded edge, so the corners stay corners. Firefox gets the same
+   through the two standard properties. */
+.install-modal-panel{scrollbar-width:thin;
+  scrollbar-color:rgba(var(--fg-rgb),.30) transparent}
+.install-modal-panel::-webkit-scrollbar{width:12px}
+.install-modal-panel::-webkit-scrollbar-track{background:transparent}
+.install-modal-panel::-webkit-scrollbar-thumb{
+  background:rgba(var(--fg-rgb),.30);border-radius:999px;
+  border:3px solid transparent;background-clip:content-box}
+.install-modal-panel::-webkit-scrollbar-thumb:hover{
+  background:rgba(var(--fg-rgb),.48);background-clip:content-box}
 .install-modal-close{position:absolute;top:14px;right:14px;width:32px;height:32px;border-radius:9px;
   border:1px solid var(--m-line);background:transparent;color:var(--m-dim);font-size:1.2rem;
   line-height:1;cursor:pointer;display:grid;place-items:center}
@@ -301,8 +319,18 @@ footer{padding:0 0 46px}
 .install-modal-download-btn{background:var(--accent);color:var(--on-accent);text-decoration:none;
   padding:12px 24px;border-radius:999px;font-weight:700;font-size:.92rem}
 .install-modal-download-btn[data-initiated]{opacity:.6;pointer-events:none}
-@media(max-width:700px){
-  .install-modal-panel{margin:0;max-height:100vh;border-radius:0;padding:26px 20px 0}
+/* FULL-SCREEN SHEET, and only where the panel could not fit anyway.
+   Destin 2026-09-03: "the download popup menus aren't centred". The rule used
+   to fire at 700px and set `margin:0`, which killed the `auto` that centres it
+   — so from 621px to 700px the panel stayed 620px wide, lost its rounded
+   corners, and sat jammed against the LEFT edge with every leftover pixel
+   dumped on the right (measured: left 0 / right 80 at a 700px window). The
+   breakpoint now matches the panel's own width plus its gutters, so there is
+   no band where it is neither a centred card nor a full sheet, and `0 auto`
+   keeps it centred even if that maths ever drifts. */
+@media(max-width:660px){
+  .install-modal-panel{margin:0 auto;max-width:none;width:100%;
+    max-height:100vh;min-height:100vh;border-radius:0;padding:26px 20px 0}
   .install-modal-footer{margin:20px -20px 0;padding:14px 20px;border-radius:0}
 }
 
@@ -1403,13 +1431,12 @@ body.cycler-static .lead-hold{display:none}
      once you have scrolled past it the page has no download control at all
      until the footer -- roughly 13,000px of nothing to press. */
   body.fade-d .topcta{display:block !important}
-  /* Bottom RIGHT, not bottom centre. Centred it landed in the middle of the
-     card headline you were reading; against the right edge it only ever
-     covers the tail of a line, which is where a floating action is expected
-     on a phone anyway. */
-  .topcta{left:auto;right:16px;bottom:16px;padding:12px 18px;font-size:.82rem;
-    transform:translateY(14px)}
-  .topcta.show{transform:translateY(0)}
+  /* CENTRED (Destin 2026-09-03). It was moved to the bottom-right corner to
+     keep it off the middle of a headline; he wants it centred, and the reason
+     it was moved is mostly gone anyway now that it hides while you read down
+     and only appears on the way back up. Position and transform are the base
+     rule's; only the size and the gap change here. */
+  .topcta{bottom:16px;padding:12px 20px;font-size:.84rem}
 }
 
 </style>
