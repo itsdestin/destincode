@@ -1790,14 +1790,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         // own time, not Date.now() (which would show the re-dock time).
         mintedTimestamp = action.timestamp;
       }
-      if (abnormalStop) {
-        // Recorded for BOTH the stamp and the mint path: a live abnormal
-        // completion stamped onto a content turn must not re-mint as a ghost
-        // when the same event replays into existing state (content actions get
-        // deduped, so the replayed turn-complete arrives with currentTurnId
-        // null). Normal end_turn completions never grow the set.
-        seenUuids = new Set(session.seenUuids).add(action.uuid);
-      }
+      // Recorded for the stamp path, the mint path AND the totals below.
+      //
+      // Originally this was `if (abnormalStop)`: a live abnormal completion
+      // stamped onto a content turn must not re-mint as a ghost when the same
+      // event replays into existing state (content actions get deduped, so the
+      // replayed turn-complete arrives with currentTurnId null).
+      //
+      // It is now unconditional, because the totals accumulation below needs
+      // the same protection and normal end_turn is the common case. The
+      // watcher's re-emit contract and re-dock replay both RE-DELIVER
+      // turn-complete (readNewLines: "the reducer absorbs them"), and
+      // addTurnUsage is not idempotent — a re-dock would have added the turn's
+      // tokens a second time. That was latent until now only because nothing
+      // read a Claude Code session's totals; the In:/Out:/Cached: chips do.
+      // Widening the set cannot disturb the mint branch, which additionally
+      // requires abnormalStop.
+      const alreadyCounted = session.seenUuids.has(action.uuid);
+      seenUuids = alreadyCounted ? seenUuids : new Set(session.seenUuids).add(action.uuid);
       if (targetTurnId) {
         const turn = assistantTurns.get(targetTurnId);
         if (turn) {
@@ -1829,7 +1839,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // a later change will deliver a specialist's whole run as its own event;
       // counting both that event AND a (currently impossible) subagent
       // turn-complete here would double a user's tokens and cost.
-      const totals = addTurnUsage(session.totals, action.usage ?? {});
+      // `alreadyCounted` (above) is what makes this safe to run on a replayed
+      // event: the tokens are added exactly once per turn uuid, no matter how
+      // many times the watcher re-delivers it.
+      const totals = alreadyCounted ? session.totals : addTurnUsage(session.totals, action.usage ?? {});
 
       next.set(action.sessionId, { ...session, timeline, seenUuids, totals, ...endTurn(session, undefined, assistantTurns) });
       return next;

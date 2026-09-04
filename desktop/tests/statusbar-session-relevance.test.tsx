@@ -225,33 +225,34 @@ describe('StatusBar — a brand-new native session has measured nothing (Finding
   });
 });
 
-describe('StatusBar — a Claude Code measurement of zero is a real reading, not an unmeasured native zero (regression)', () => {
-  // The fix above (gating on a NATIVE-only zero-collapse) sits on the SAME
-  // shared variable (inTokens/outTokens/cacheReadTotal) as the Claude Code
-  // statusline path. A reviewer caught that an earlier version of the fix
-  // collapsed truthiness on that shared variable, which also swallowed a
-  // genuine Claude Code statusline reading of 0 — e.g. Out: 0 tokens on a
-  // turn that produced none, or Cached: 0 on a cold/expired prompt cache
-  // (common, not an edge case). Before that regression these chips rendered
-  // correctly; this pins them back.
-  it('renders Out: 0 and Cached: 0 for a Claude Code session with real statusline zeros', () => {
+describe('StatusBar — a measured zero is a real reading, not an unmeasured one (regression)', () => {
+  // A reviewer once caught a version of the zero-collapse that swallowed a
+  // genuine reading of 0 — Out: 0 on a turn that produced none, or Cached: 0 on
+  // a cold/expired prompt cache (common, not an edge case). This pins it back.
+  //
+  // Rewritten 2026-09-03: the fixture used to be a Claude Code STATUSLINE with
+  // zeros, because that was where the chips read tokens from. It isn't any more
+  // — the statusline's token fields describe one request, so a 42-hour session
+  // showed Out: 713 — and the chips read session totals on both runtimes. The
+  // invariant is unchanged and now has a single expression of it: inputTokens
+  // > 0 means "a turn was counted", and every other zero beside it is real.
+  it('renders Out: 0 and Cached: 0 for a Claude Code session with real zeros', () => {
     withWidgets(['tokens-in', 'tokens-out', 'cache-stats']);
-    const withStats = {
-      ...statusData,
-      sessionStats: {
-        costUsd: null,
-        inputTokens: 1500,
-        outputTokens: 0,
-        cacheReadTokens: 0,
-        cacheCreationTokens: 0,
-        contextTokens: null,
-        duration: null,
-        apiDuration: null,
-        linesAdded: null,
-        linesRemoved: null,
-      },
-    };
-    render(<StatusBar statusData={withStats} provider="claude" sessionId="s1" />);
+    const withStats = { ...statusData };
+    render(
+      <StatusBar
+        statusData={withStats}
+        provider="claude"
+        sessionId="s1"
+        nativeTotals={{
+          ...emptyTotals(),
+          inputTokens: 1500,      // a turn WAS counted…
+          outputTokens: 0,        // …and these zeros are its real readings
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+        }}
+      />,
+    );
     // Non-zero In still renders (sanity — proves the fixture is wired right).
     expect(screen.getByText('In:')).toBeInTheDocument();
     expect(screen.getByText('1.5k')).toBeInTheDocument();

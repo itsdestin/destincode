@@ -125,14 +125,35 @@ export function buildUsageSnapshot(input: UsageSnapshotInput): UsageSnapshot | n
   // own, and its line count in particular covers edits this app never sees
   // (shell commands); the derived count is a DIFFERENT measurement, so
   // substituting it under the same label would make the card contradict the bar.
-  const totals = (isNative ? session?.totals : null) ?? null;
+  // Fix (2026-09-03): was gated on isNative. Claude Code turns accumulate into
+  // session.totals too, and since the transcript watcher started summing every
+  // request of a turn (not only its last), those totals are real — where the
+  // statusline's token fields describe one request. Ungated so the card and the
+  // status bar read the same numbers; see the matching note in App.tsx.
+  const totals = session?.totals ?? null;
   // Context, from the same selector the status bar's native pill uses, fed the
   // same last-completed-turn usage. Two surfaces, one formula: a native session
   // at 61% used to show a pill on the bar and NO context row on the card.
   const nativeUsage = isNative ? lastTurnUsage(session) : null;
   const nativeChips = selectNativeStatusChips(nativeUsage, nativeUsage?.contextLength);
 
-  if (!stats && ctx == null && !usage && !totals) return null;
+  // `totals` is now present for EVERY session (it used to be native-only), and
+  // a brand-new session's is emptyTotals() — all zeros. Its mere existence is
+  // therefore no longer evidence of anything, so the bail asks whether it has
+  // actually recorded something. Without this, a Claude Code session that has
+  // run no turn opens the card on a page of nulls.
+  const totalsHaveContent = !!totals && (
+    totals.inputTokens > 0 || totals.outputTokens > 0 || totals.costUsd > 0
+    || totals.linesAdded > 0 || totals.linesRemoved > 0 || totals.specialistRuns > 0
+    || totals.anyPriced || totals.anyUnpriced || totals.anyFree
+  );
+  // Native keeps the old rule — the harness OWNS a native session's numbers, so
+  // its totals object existing is itself the signal to open the card, which then
+  // reads "working but empty" rather than broken. For Claude Code the object now
+  // exists from birth and says nothing on its own, so it has to have recorded
+  // something first.
+  const totalsCountAsPresent = isNative ? !!totals : totalsHaveContent;
+  if (!stats && ctx == null && !usage && !totalsCountAsPresent) return null;
 
   // A brand-new native session starts at emptyTotals() — every field ZERO
   // before a single turn has run — so a zero here means "nothing measured yet",
@@ -140,7 +161,19 @@ export function buildUsageSnapshot(input: UsageSnapshotInput): UsageSnapshot | n
   // instead of printing a 0 it did not measure. A statusline zero is a REAL
   // measurement and is never collapsed (it wins via ?? below).
   // This mirrors StatusBar.tsx's inTokens/outTokens derivation exactly.
-  const fromTotals = (v: number | undefined) => (v != null && v > 0 ? v : null);
+  //
+  // Fix (2026-09-03): the per-field version of this could not tell a cold prompt
+  // cache (a real reading of 0 cache reads) from a session that has run no turn.
+  // "Has anything been counted?" is now asked ONCE, of inputTokens — every
+  // billed request has a prompt, so inputTokens > 0 is exactly "at least one
+  // turn counted". A zero in any other token field is then a real measurement
+  // and passes through. Byte-for-byte the status bar's `measured` rule; the two
+  // surfaces disagreeing about one session is the failure this mirrors away.
+  const measured = !!totals && totals.inputTokens > 0;
+  const fromTotals = (v: number | undefined) => (measured ? v ?? null : null);
+  // Line counts keep the old per-field rule: they come from patch events, not
+  // from a request, so inputTokens says nothing about whether they were seen.
+  const fromTotalLines = (v: number | undefined) => (v != null && v > 0 ? v : null);
 
   return {
     entryId: `usage-${sessionId}-${now}`,
@@ -154,10 +187,10 @@ export function buildUsageSnapshot(input: UsageSnapshotInput): UsageSnapshot | n
     costIsPartial: stats?.costUsd == null && !!totals?.anyUnpriced,
     countsFromSessionTotals: !stats && !!totals,
     specialistRuns: totals?.specialistRuns ?? 0,
-    inputTokens: stats?.inputTokens ?? fromTotals(totals?.inputTokens),
-    outputTokens: stats?.outputTokens ?? fromTotals(totals?.outputTokens),
-    cacheReadTokens: stats?.cacheReadTokens ?? fromTotals(totals?.cacheReadTokens),
-    cacheCreationTokens: stats?.cacheCreationTokens ?? fromTotals(totals?.cacheCreationTokens),
+    inputTokens: fromTotals(totals?.inputTokens),
+    outputTokens: fromTotals(totals?.outputTokens),
+    cacheReadTokens: fromTotals(totals?.cacheReadTokens),
+    cacheCreationTokens: fromTotals(totals?.cacheCreationTokens),
     contextTokens: stats?.contextTokens ?? null,
     // Byte-for-byte the bar's own precedence (StatusBar.tsx's ContextPopup:
     // `contextPercent ?? nativeChips?.contextPct ?? null`). Written as one
@@ -169,8 +202,8 @@ export function buildUsageSnapshot(input: UsageSnapshotInput): UsageSnapshot | n
     // number to fall back to. The card omits both rows rather than invent one.
     duration: stats?.duration ?? null,
     apiDuration: stats?.apiDuration ?? null,
-    linesAdded: stats?.linesAdded ?? fromTotals(totals?.linesAdded),
-    linesRemoved: stats?.linesRemoved ?? fromTotals(totals?.linesRemoved),
+    linesAdded: stats?.linesAdded ?? fromTotalLines(totals?.linesAdded),
+    linesRemoved: stats?.linesRemoved ?? fromTotalLines(totals?.linesRemoved),
     fiveHourUtilization: usage?.five_hour?.utilization ?? null,
     fiveHourResetsAt: usage?.five_hour?.resets_at ?? null,
     sevenDayUtilization: usage?.seven_day?.utilization ?? null,

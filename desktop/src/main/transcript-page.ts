@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import { parseTranscriptLine } from './transcript-watcher';
+import { parseTranscriptLine, emptyTurnUsageTally } from './transcript-watcher';
 import { SubagentIndex } from './subagent-index';
 import { SubagentWatcher } from './subagent-watcher';
 import type { PageCursor, TranscriptEvent, TranscriptPageResult } from '../shared/types';
@@ -134,11 +134,16 @@ export async function readTranscriptPage(args: PageArgs): Promise<TranscriptPage
     // still emit.
     const events: TranscriptEvent[] = [];
     const seenUuids = new Set<string>();
+    // One tally for the whole page, so a history turn reports the same summed
+    // usage the live tailer would have reported for it. isTurnBoundary above
+    // deliberately does NOT share it — that probe re-parses user lines and
+    // would otherwise re-run this accounting on them.
+    const pageUsage = emptyTurnUsageTally();
     for (const { offset, text } of lines) {
       if (offset < startByte) continue;
       const line = text.trim();
       if (!line) continue;
-      const parsed = parseTranscriptLine(line, sessionId);
+      const parsed = parseTranscriptLine(line, sessionId, pageUsage);
       if (parsed.length === 0) continue;
       const lineUuid = parsed[0].uuid;
       const isRepeat = !!lineUuid && seenUuids.has(lineUuid);

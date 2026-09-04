@@ -85,6 +85,25 @@ const NATIVE_TOKENS = {
 // published rate (NOT free); 'statusbar-delegated' is a free local parent whose
 // every cent came from its metered specialists.
 const STATUSBAR_TOTALS_OVERRIDE: Partial<Record<ScenarioId, { sessionId: string; totals: SessionTotals }>> = {
+  // Added 2026-09-03. The Claude Code scenario used to need no totals, because
+  // the bar read a CC session's tokens off the statusline fixture. It no longer
+  // does — those numbers describe one request, not the session — so without an
+  // entry here the CC sheet would simply lose In:/Out:/Cached:/Reuse.
+  //
+  // Magnitudes are a real session's shape (one of Destin's, 2026-09-03): input
+  // is enormous next to output because every request re-sends the history, and
+  // almost all of it is served from cache. costUsd stays 0/unpriced on purpose —
+  // a Claude Code session's cost comes from the statusline's `cost.*` block,
+  // which really does accumulate, and that fixture already supplies it.
+  'statusbar-cc': {
+    sessionId: 'wb-1',
+    totals: {
+      inputTokens: 29_507_217, outputTokens: 119_894,
+      cacheReadTokens: 29_122_759, cacheCreationTokens: 371_600,
+      costUsd: 0, anyPriced: false, anyUnpriced: false, anyFree: false,
+      linesAdded: 0, linesRemoved: 0, specialistRuns: 0, specialistCostUsd: 0,
+    },
+  },
   'statusbar-local': {
     sessionId: 'wb-2',
     totals: { ...NATIVE_TOKENS, costUsd: 0, anyPriced: false, anyUnpriced: false, anyFree: true, linesAdded: 210, linesRemoved: 45, specialistRuns: 0, specialistCostUsd: 0 },

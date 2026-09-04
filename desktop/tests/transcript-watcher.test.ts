@@ -4,6 +4,7 @@ import os from 'os';
 import path from 'path';
 import {
   parseTranscriptLine,
+  emptyTurnUsageTally,
   TranscriptWatcher,
 } from '../src/main/transcript-watcher';
 import { ccProjectSlug } from '../src/main/slug-encoding';
@@ -287,7 +288,10 @@ describe('parseTranscriptLine', () => {
       stopReason: 'max_tokens',
       model: 'claude-opus-4-7',
       anthropicRequestId: 'req_abc',
-      usage: { inputTokens: 10, outputTokens: 4096, cacheReadTokens: 5, cacheCreationTokens: 2 },
+      // inputTokens is the WHOLE prompt now (10 raw + 5 read + 2 created = 17),
+      // matching what the native runtime and the Claude Code statusline both
+      // mean by it. See the TurnUsageTally comment in transcript-watcher.ts.
+      usage: { inputTokens: 17, outputTokens: 4096, cacheReadTokens: 5, cacheCreationTokens: 2 },
     });
   });
 });
@@ -932,5 +936,102 @@ describe('parseTranscriptLine — recordedAt on tool results', () => {
   it('fails CLOSED when the line has no usable timestamp (recordedAt 0 = never fresh)', () => {
     const events = parseTranscriptLine(line({}), 'sess');
     expect(events.find((e) => e.type === 'tool-result')?.data.recordedAt).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A turn is MANY requests, and until 2026-09-03 only the last one was counted.
+//
+// Claude Code writes one assistant line per API request; every tool call is
+// another round trip, and only the final line of a turn carries a stop_reason
+// other than `tool_use`. The parser reported that final line's usage as the
+// turn's, so the app was recording a few percent of the truth. Measured across
+// six of Destin's real transcripts: turn-complete lines are 4-17% of the
+// assistant lines that carry usage, and one 42-hour session's Out: chip read
+// 713 output tokens against a true 124,912.
+// ---------------------------------------------------------------------------
+describe('parseTranscriptLine — a turn is summed across all its requests', () => {
+  const assistantLine = (
+    uuid: string,
+    stopReason: string,
+    usage: Record<string, number> | null,
+  ) => JSON.stringify({
+    type: 'assistant',
+    uuid,
+    timestamp: '2026-09-03T00:00:00.000Z',
+    message: {
+      role: 'assistant',
+      model: 'claude-opus-5',
+      content: [{ type: 'text', text: 'working' }],
+      stop_reason: stopReason,
+      ...(usage ? { usage } : {}),
+    },
+  });
+
+  const req = (input: number, output: number, read = 0, create = 0) => ({
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_input_tokens: read,
+    cache_creation_input_tokens: create,
+  });
+
+  const usageOf = (events: ReturnType<typeof parseTranscriptLine>) =>
+    events.find((e) => e.type === 'turn-complete')?.data.usage;
+
+  it('adds up every request of a turn, not just the one that ended it', () => {
+    const tally = emptyTurnUsageTally();
+    // Three tool-loop requests, then the reply that ends the turn.
+    parseTranscriptLine(assistantLine('a1', 'tool_use', req(10, 100, 1_000, 50)), 's1', tally);
+    parseTranscriptLine(assistantLine('a2', 'tool_use', req(10, 200, 2_000, 0)), 's1', tally);
+    parseTranscriptLine(assistantLine('a3', 'tool_use', req(10, 300, 3_000, 0)), 's1', tally);
+    const events = parseTranscriptLine(assistantLine('a4', 'end_turn', req(10, 400, 4_000, 0)), 's1', tally);
+
+    // Output is the whole turn's: 100 + 200 + 300 + 400. Before the fix this
+    // was 400 — the last request alone.
+    expect(usageOf(events)).toEqual({
+      inputTokens: 10_090,      // each request's WHOLE prompt (raw + read + create)
+      outputTokens: 1_000,
+      cacheReadTokens: 10_000,
+      cacheCreationTokens: 50,
+    });
+    expect(usageOf(events)!.outputTokens).not.toBe(400);
+  });
+
+  it('resets between turns so the second turn is not the running total', () => {
+    const tally = emptyTurnUsageTally();
+    parseTranscriptLine(assistantLine('b1', 'tool_use', req(0, 100, 1_000)), 's1', tally);
+    parseTranscriptLine(assistantLine('b2', 'end_turn', req(0, 100, 1_000)), 's1', tally);
+    const second = parseTranscriptLine(assistantLine('b3', 'end_turn', req(0, 7, 70)), 's1', tally);
+    expect(usageOf(second)).toEqual({
+      inputTokens: 70, outputTokens: 7, cacheReadTokens: 70, cacheCreationTokens: 0,
+    });
+  });
+
+  it('still closes the turn when only the intermediate requests were measured', () => {
+    // A final line with no usage block must not throw away the requests that
+    // came before it — that is the original bug wearing a different hat.
+    const tally = emptyTurnUsageTally();
+    parseTranscriptLine(assistantLine('c1', 'tool_use', req(0, 500, 9_000)), 's1', tally);
+    const events = parseTranscriptLine(assistantLine('c2', 'end_turn', null), 's1', tally);
+    expect(usageOf(events)).toEqual({
+      inputTokens: 9_000, outputTokens: 500, cacheReadTokens: 9_000, cacheCreationTokens: 0,
+    });
+  });
+
+  it('omits usage entirely when a turn measured nothing', () => {
+    const tally = emptyTurnUsageTally();
+    const events = parseTranscriptLine(assistantLine('d1', 'end_turn', null), 's1', tally);
+    expect(usageOf(events)).toBeUndefined();
+  });
+
+  it('stamps inputTokens as the WHOLE prompt, the way both other sources do', () => {
+    // The native runtime's inputTokens is the whole prompt, and so is the
+    // statusline's context_window.total_input_tokens (it is literally built as
+    // input + cache_creation + cache_read). Raw Anthropic input_tokens — the
+    // uncached remainder — is the odd one out, so it is converted here rather
+    // than leaving every downstream reader to guess which it got.
+    const tally = emptyTurnUsageTally();
+    const events = parseTranscriptLine(assistantLine('e1', 'end_turn', req(7, 1, 900, 93)), 's1', tally);
+    expect(usageOf(events)!.inputTokens).toBe(1_000);
   });
 });
