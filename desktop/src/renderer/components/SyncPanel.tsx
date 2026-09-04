@@ -128,6 +128,9 @@ function platformLabel(p: string): string {
     case 'win32': return 'Windows';
     case 'darwin': return 'macOS';
     case 'linux': return 'Linux';
+    // Android phones join the same device registry; without this the row read a
+    // bare lowercase "android" next to "Linux" and "macOS".
+    case 'android': return 'Android';
     default: return p || '';
   }
 }
@@ -453,7 +456,7 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
   const isEdit = view === 'edit' && !!editingId;
   // Looked up ONCE and shared by the header and the form, so the title cannot
   // name a different backend from the one being edited.
-  const editingBackend = editingId ? (status?.backends.find((b) => b.id === editingId) ?? null) : null;
+  const editingBackend = editingId ? (status?.backends?.find((b) => b.id === editingId) ?? null) : null;
   // Overflow menu state
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   // Count-tabs (Devices/Projects/Conversations) — which pill's list shows below the header.
@@ -1476,11 +1479,17 @@ function SyncPopup({ popupRef, initialStatus, onClose, onRefresh }: SyncPopupPro
             {/* 4. Synced Data Categories — read-only inline list.
                 Tiles used to look like buttons (border + cursor-help) but did nothing.
                 Now passive text with per-item hover tooltips on the default cursor. */}
-            {status && status.syncedCategories.length > 0 && (
+            {/* Fix: `status &&` alone wasn't enough — a status object missing
+                syncedCategories made `.length` throw, and because this renders
+                inside the always-mounted settings drawer the RootErrorBoundary
+                took the WHOLE APP down ("YouCoded failed to start") rather than
+                just this panel. Optional-chain every field the main process
+                could omit. */}
+            {status && (status.syncedCategories?.length ?? 0) > 0 && (
               <div>
                 <span className="text-3xs font-medium text-fg-muted tracking-wider uppercase">Includes </span>
                 <span className="text-2xs text-fg-dim">
-                  {status.syncedCategories.flatMap((cat, i) => {
+                  {(status.syncedCategories ?? []).flatMap((cat, i) => {
                     const label = (
                       <span key={cat} title={CATEGORY_DESCRIPTIONS[cat] || ''}>
                         {CATEGORY_LABELS[cat] || cat}

@@ -111,6 +111,11 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'artifacts.readBinary',
   'syncSpaces.status', 'syncSpaces.syncNow', 'syncSpaces.stopProject',
   'syncSpaces.renameProject', 'syncSpaces.setProjectDescription',
+  'syncSpaces.listDevices', 'syncSpaces.renameDevice', 'syncSpaces.removeDevice',
+  // Legacy rclone half of Backup & Sync. All real preload channels — hand-written
+  // because the catch-all's `[]` is a truthy non-status that crashed the panel.
+  'sync.getStatus', 'sync.getLog', 'sync.force', 'sync.dismissWarning',
+  'sync.pushBackend', 'sync.updateBackend', 'sync.removeBackend', 'sync.addBackend',
   'folders.rename', 'folders.setDescription',
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
@@ -1018,14 +1023,25 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         // wecoded-marketplace is deliberately ABSENT — no space means the gray
         // "Only on this computer" state, i.e. the unsynced-folder branch.
       ],
-      recentEvents: [
-        { type: 'synced', spaceId: 'personal', at: SYNC_NOW - 60_000 },
-        { type: 'synced', spaceId: 'project:youcoded', at: SYNC_NOW - 120_000 },
-        {
-          type: 'error', spaceId: 'project:wecoded-themes', at: SYNC_NOW - 90_000,
-          message: 'GitHub rejected the push: remote contains work you do not have locally.',
-        },
-      ],
+      // The error event is what drives the panel's red "Couldn't sync" box and
+      // the Settings row's "Sync Failing" badge. That is a state worth REVIEWING
+      // in the workbench, but it is not what the public landing page's live demo
+      // should greet a first-time visitor with — so the `site` scenario (and only
+      // it) gets the all-green history instead.
+      recentEvents: activeScenario === 'site'
+        ? [
+            { type: 'synced', spaceId: 'personal', at: SYNC_NOW - 60_000 },
+            { type: 'synced', spaceId: 'project:youcoded', at: SYNC_NOW - 120_000 },
+            { type: 'synced', spaceId: 'project:wecoded-themes', at: SYNC_NOW - 90_000 },
+          ]
+        : [
+            { type: 'synced', spaceId: 'personal', at: SYNC_NOW - 60_000 },
+            { type: 'synced', spaceId: 'project:youcoded', at: SYNC_NOW - 120_000 },
+            {
+              type: 'error', spaceId: 'project:wecoded-themes', at: SYNC_NOW - 90_000,
+              message: 'GitHub rejected the push: remote contains work you do not have locally.',
+            },
+          ],
       syncHub: 'connected',
     }),
     // MOCK_ONLY — no backend yet. The real one becomes setProjectDescription in
@@ -1038,6 +1054,68 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     syncNow: async () => ({ ok: true }),
     stopProject: async () => ({ ok: true }),
     renameProject: async () => ({ ok: true }),
+    // The synced device registry behind the popup's Devices count-tab. Without
+    // it the catch-all answers [] and the demo reads "0 Devices / No devices
+    // yet" directly under "All synced", which contradicts itself — cross-device
+    // sync is the whole point the panel is there to show.
+    listDevices: async () => [
+      { schemaVersion: 1, id: 'machine-z13', name: 'Z13 Laptop', platform: 'linux', lastSeen: SYNC_NOW - 30_000, updatedAt: SYNC_NOW - 30_000, self: true },
+      { schemaVersion: 1, id: 'machine-pixel', name: 'Pixel 9', platform: 'android', lastSeen: SYNC_NOW - 5_400_000, updatedAt: SYNC_NOW - 5_400_000, self: false },
+      { schemaVersion: 1, id: 'machine-mbp', name: 'MacBook Pro', platform: 'darwin', lastSeen: SYNC_NOW - 86_400_000, updatedAt: SYNC_NOW - 86_400_000, self: false },
+    ],
+    renameDevice: async () => ({ ok: true }),
+    removeDevice: async () => ({ ok: true }),
+  };
+
+  // The LEGACY rclone half of Backup & Sync (Drive/iCloud/GitHub backends), which
+  // SyncPanel reads alongside syncSpaces above.
+  //
+  // WHY HAND-WRITTEN: the catch-all resolves an unknown channel to `[]`, and `[]`
+  // is TRUTHY — so `sync.getStatus()` handed the panel an array where it expected
+  // a status OBJECT, `status.syncedCategories` was undefined, and `.length` on it
+  // threw straight through to RootErrorBoundary. The whole app died on "YouCoded
+  // failed to start" the moment anyone opened Backup & Sync, including on the
+  // public landing page's live demo (reproduced 2026-09-04). Same failure shape
+  // the syncSpaces comment above warns about; this is its second instance.
+  const sync = {
+    getStatus: async () => ({
+      backends: [
+        {
+          id: 'drive-1', type: 'drive' as const, label: 'Google Drive',
+          syncEnabled: true, connected: true,
+          config: { DRIVE_ROOT: 'YouCoded/Backup', rcloneRemote: 'gdrive' },
+          lastPushEpoch: Math.floor(SYNC_NOW / 1000) - 300, lastError: null,
+        },
+      ],
+      lastSyncEpoch: Math.floor(SYNC_NOW / 1000) - 120,
+      backupMeta: {
+        last_backup: new Date(SYNC_NOW - 300_000).toISOString(),
+        platform: 'linux',
+        toolkit_version: '1.3.0',
+      },
+      warnings: [],
+      syncInProgress: false,
+      syncingBackendId: null,
+      syncedCategories: ['memory', 'conversations', 'encyclopedia', 'skills', 'system-config'],
+      // Keyed by the machineId of each syncSpaces.listDevices row, so the Devices
+      // tab prints a real "synced Xm ago" per device instead of falling back.
+      lastSyncByDevice: {
+        'machine-z13': SYNC_NOW - 30_000,
+        'machine-pixel': SYNC_NOW - 5_400_000,
+        'machine-mbp': SYNC_NOW - 86_400_000,
+      },
+    }),
+    getLog: async (n = 30) => [
+      `[${new Date(SYNC_NOW - 120_000).toISOString()}] INFO  pulled personal (3 files)`,
+      `[${new Date(SYNC_NOW - 120_000).toISOString()}] INFO  pushed project:youcoded (1 file)`,
+      `[${new Date(SYNC_NOW - 300_000).toISOString()}] INFO  backup -> Google Drive complete`,
+    ].slice(0, n),
+    force: async () => ({ ok: true }),
+    dismissWarning: async () => ({ ok: true }),
+    pushBackend: async () => ({ ok: true }),
+    updateBackend: async () => ({ ok: true }),
+    removeBackend: async () => ({ ok: true }),
+    addBackend: async () => ({ ok: true }),
   };
 
   // MOCK_ONLY — the LOCAL-folder half of the same field, mirroring how
@@ -1671,7 +1749,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       },
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, project, account, social, appearance, specialists, shell,
+    terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
     skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade,
   } as unknown as Record<string, Record<string, unknown>>;
 }
