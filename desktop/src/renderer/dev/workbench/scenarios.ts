@@ -2,10 +2,10 @@ import type { SessionInfo } from '../../../shared/types';
 import type { TagRecord } from '../../../shared/tags';
 import type { StoredProject } from '../../../shared/permission-types';
 import type { FlagName } from '../../components/resume-browser-filters';
-import { sessions, siteSessions } from './fixtures/sessions';
+import { sessions, siteSessions, studentSessions } from './fixtures/sessions';
 import { permissions as seedPermissions, stressPermissions } from './fixtures/permissions';
 import { providers as seedProviders, catalog as seedCatalog, type ProviderRow, type CatalogRow } from './fixtures/providers';
-import { tags as seedTags } from './fixtures/tags';
+import { tags as seedTags, studentTags } from './fixtures/tags';
 import { defaults as seedDefaults, type MockDefaults } from './fixtures/defaults';
 
 export type ScenarioId =
@@ -178,9 +178,43 @@ function sitePast(): PastSession[] {
   ];
 }
 
+// Promo (scenario=site&student=1): the Resume list a student would have. Every
+// name, folder, tag and note is in the `site` persona (courses, a club, a job
+// hunt) because the Resume browser, the Organize sheet and the strip all put
+// this text on screen. Dates are relative to NOW, unlike `past()`'s fixed T0:
+// the clip is shown to strangers, and a list of "7/29/2025" rows reads as an
+// abandoned app, while "2h ago / 1d ago" reads as one in use. The search word
+// the scene types is "econ" — exactly one row matches it, on purpose.
+function studentPast(): PastSession[] {
+  const now = Date.now();
+  const HOUR = 3_600_000, DAY = 24 * HOUR;
+  const row = (i: number, name: string, folder: string, ago: number, extra: Partial<PastSession> = {}): PastSession => ({
+    ...past(i, name, extra),
+    projectSlug: folder.split('/').pop()!,
+    projectPath: folder,
+    lastModified: now - ago,
+  });
+  return [
+    row(0, 'econ midterm brief', '/home/you/School/Econ 201', 2 * HOUR, { tags: ['tag_econ'] }),
+    row(1, 'club budget spreadsheet', '/home/you/Robotics Club', 1 * DAY, {
+      tags: ['tag_club'],
+      note: 'send to Maya before Friday',
+      provider: 'native',
+      lastUsedModel: { modelId: 'qwen3-coder-30b-a3b-instruct', providerType: 'local-engine', providerLabel: 'Local' },
+    }),
+    row(2, 'bio lab report outline', '/home/you/School/Bio 110', 3 * DAY, { flags: { complete: true } }),
+    row(3, 'internship search', '/home/you/Job hunt', 6 * DAY, {
+      tags: ['tag_jobhunt'],
+      provider: 'native',
+      lastUsedModel: { modelId: 'claude-sonnet-4-6', providerType: 'anthropic', providerLabel: 'Anthropic' },
+    }),
+    row(4, 'week plan', '/home/you/Documents', 12 * DAY, {}),
+  ];
+}
+
 /** Builds a fresh state for a scenario. Every call re-runs the fixture
  *  factories, so two stores never share a mutable array. */
-function siteParam(name: 'title' | 'model'): string | null {
+function siteParam(name: 'title' | 'model' | 'student'): string | null {
   if (typeof location === 'undefined') return null;   // Node unit tests import this module
   return new URLSearchParams(location.search).get(name);
 }
@@ -219,6 +253,23 @@ export function seed(scenario: ScenarioId): MockState {
       // native session, two past rows, no pre-set meta.
       // `?title=` renames the one session — a loop that starts empty (`?seed=none`)
       // should not sit under a "plan my week" tab either.
+      // `&student=1` (promo-conversations): five student sessions on the strip,
+      // a student's Resume list and tag set, and tag/note marks on two live
+      // sessions so the All Sessions menu has something to show. Off, the
+      // scenario is exactly what every other landing loop films.
+      if (siteParam('student') === '1') {
+        return {
+          ...base,
+          sessions: studentSessions(),
+          past: studentPast(),
+          tags: studentTags(),
+          meta: {
+            'site-2': { tags: ['tag_econ'], note: '', flags: { priority: true } },
+            'site-3': { tags: ['tag_club'], note: 'send to Maya before Friday', flags: {} },
+            'site-5': { tags: ['tag_jobhunt'], note: '', flags: {} },
+          },
+        };
+      }
       return { ...base, sessions: siteSessions().map((r) => ({ ...r, name: siteParam('title') ?? r.name, model: siteParam('model') ?? r.model })), past: sitePast(), meta: {} };
     // Status-bar relevance review: ONE session on screen, nothing else to
     // scroll past. `sessions()` always puts wb-1 (Claude Code) first and wb-2
