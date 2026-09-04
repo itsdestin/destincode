@@ -1,10 +1,10 @@
 # YouCoded Privacy Policy
 
-**Effective date:** May 5, 2026
+**Effective date:** September 3, 2026
 
-YouCoded is an independent, community-built project run by an individual developer. It is not a company, and it is not affiliated with Anthropic or any other commercial entity. This policy explains in plain language what data the YouCoded software touches, what gets sent to servers operated by the project, and what doesn't.
+YouCoded is made and published by **Destin's Adventures, LLC**, an Arizona limited liability company. It is not affiliated with Anthropic or any other commercial entity. This policy explains in plain language what data the YouCoded software touches, what gets sent to servers operated by the project, and what doesn't.
 
-If anything here conflicts with what the app actually does, **the app is wrong and should be fixed.** Please report mismatches to destinj101@gmail.com.
+If anything here conflicts with what the app actually does, **the app is wrong and should be fixed.** Please report mismatches to support@youcoded.ai.
 
 ---
 
@@ -71,7 +71,7 @@ If you discover a code path that contradicts any of the above, treat it as a pri
 - Your rating value(s) and the plugins they apply to.
 - (For plugin submitters) The pull request you opened to the marketplace registry repository.
 
-This data is stored in a Cloudflare D1 database. **You can delete this data on request** by emailing destinj101@gmail.com from the GitHub address associated with the account (or otherwise demonstrating ownership), and YouCoded will remove your ratings and any associated metadata within 30 days.
+This data is stored in a Cloudflare D1 database. **You can delete this data on request** by emailing support@youcoded.ai from the GitHub address associated with the account (or otherwise demonstrating ownership), and YouCoded will remove your ratings and any associated metadata within 30 days.
 
 ### 3.3 Multiplayer games
 
@@ -112,7 +112,7 @@ Beyond the above, YouCoded does not share your data with any third parties. We d
 ## 5. Your rights and choices
 
 - **Opt out of analytics** at any time in **Settings → About → Privacy**. This stops all heartbeat pings immediately.
-- **Delete marketplace ratings and OAuth data** by emailing destinj101@gmail.com from your GitHub-associated email; we'll remove the data within 30 days.
+- **Delete marketplace ratings and OAuth data** by emailing support@youcoded.ai from your GitHub-associated email; we'll remove the data within 30 days.
 - **Stop using YouCoded** at any time. Uninstalling the app stops all data flows; existing analytics rows continue to age out under the 90-day retention window described in Section 3.1.
 - **Right to access** — for the data described in Section 3.2, we will provide a copy of what we have on file on request.
 - **Children** — YouCoded is not directed at children under 13 and we do not knowingly collect data from them. If you believe a child has used the app, contact us and we'll work with you to handle it.
@@ -138,7 +138,9 @@ We will not retroactively expand what's collected from data already in our syste
 
 ## 8. Contact
 
-- **Email:** destinj101@gmail.com
+Destin's Adventures, LLC, Arizona, United States.
+
+- **Email:** support@youcoded.ai
 - **Subject line for privacy questions:** `[YouCoded Privacy] <short description>`
 - **Source code:** https://github.com/itsdestin/youcoded
 - **Issue tracker (non-sensitive):** https://github.com/itsdestin/youcoded/issues

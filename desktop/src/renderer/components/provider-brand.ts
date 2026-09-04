@@ -235,6 +235,19 @@ export function resolveModelBrand(
 ): ModelBrand | null {
   if (!modelId && !providerType) return null;
 
+  // Pass 0: the Claude Code RUNTIME is its own identity, not "a Claude model".
+  // It has to win BEFORE the id sweep, because a CC model id (`claude-opus-5`)
+  // also matches the Anthropic rule's /claude/i — which is exactly how the
+  // resume browser's card line ended up showing the Anthropic mark next to a
+  // row whose own Model picker showed the Claude Code mascot (reported
+  // 2026-09-04 with a screenshot). ModelPicker (runtime === 'claude') and the
+  // All Sessions row (session-runtime-label.ts) already pin the mascot; this
+  // is the one caller that only has the persisted ref, whose providerType
+  // noteModelUsed writes as 'claude-code' (ipc-handlers.ts).
+  if (providerType === 'claude-code') {
+    return { color: ANTHROPIC_COLOR, brandName: 'Claude Code', icon: 'claudecode' };
+  }
+
   const id = (modelId ?? '').toLowerCase();
 
   // Pass 1: match on the model id.

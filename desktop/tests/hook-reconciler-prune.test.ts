@@ -185,3 +185,82 @@ describe('reconcileHooks integration: prune runs after reconcile', () => {
     expect(written.hooks.SessionStart[0].hooks[0].command).toBe(`bash ${sessionStart}`);
   });
 });
+
+// The legacy youcoded-core clone is deleted by legacy-cleanup.ts at launch, which
+// means it is NOT a currently-installed plugin root by the time reconcileHooks()
+// runs. Its orphaned settings.json entries must still be pruned, or every new
+// Claude Code session opens with "No such file or directory".
+describe('reconcileHooks: legacy youcoded-core clone', () => {
+  let tmpHome: string;
+  let origHomedir: typeof os.homedir;
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-hook-legacy-'));
+    origHomedir = os.homedir;
+    (os as any).homedir = () => tmpHome;
+    pluginDirsForTest = [];
+  });
+
+  afterEach(() => {
+    (os as any).homedir = origHomedir;
+    pluginDirsForTest = [];
+    try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch {}
+  });
+
+  function write(p: string, content: string) {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, content);
+  }
+
+  function legacyHook(name: string): string {
+    return path.join(tmpHome, '.claude', 'plugins', 'youcoded-core', 'hooks', name);
+  }
+
+  it('prunes hooks pointing into the deleted legacy clone', () => {
+    write(path.join(tmpHome, '.claude', 'settings.json'), JSON.stringify({
+      hooks: {
+        SessionStart: [{ matcher: '', hooks: [
+          { type: 'command', command: `bash ${legacyHook('session-start.sh')}` },
+        ] }],
+        PreToolUse: [{ matcher: 'Write|Edit', hooks: [
+          { type: 'command', command: `bash ${legacyHook('worktree-guard.sh')}` },
+        ] }],
+      },
+    }));
+
+    const result = reconcileHooks();
+
+    expect(result.pruned).toBe(2);
+    const written = JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
+    expect(written.hooks.SessionStart).toBeUndefined();
+    expect(written.hooks.PreToolUse).toBeUndefined();
+  });
+
+  it('keeps a legacy-path hook whose script somehow still exists', () => {
+    const live = legacyHook('session-start.sh');
+    write(live, '#!/bin/bash\n');
+    write(path.join(tmpHome, '.claude', 'settings.json'), JSON.stringify({
+      hooks: { SessionStart: [{ matcher: '', hooks: [{ type: 'command', command: `bash ${live}` }] }] },
+    }));
+
+    const result = reconcileHooks();
+
+    expect(result.pruned).toBe(0);
+    const written = JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
+    expect(written.hooks.SessionStart[0].hooks).toHaveLength(1);
+  });
+
+  it('still never prunes a dead user-added hook outside any plugin root', () => {
+    write(path.join(tmpHome, '.claude', 'settings.json'), JSON.stringify({
+      hooks: { SessionStart: [{ matcher: '', hooks: [
+        { type: 'command', command: 'bash /opt/custom/my-hook.sh' },
+      ] }] },
+    }));
+
+    const result = reconcileHooks();
+
+    expect(result.pruned).toBe(0);
+    const written = JSON.parse(fs.readFileSync(path.join(tmpHome, '.claude', 'settings.json'), 'utf8'));
+    expect(written.hooks.SessionStart[0].hooks).toHaveLength(1);
+  });
+});

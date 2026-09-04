@@ -5,19 +5,34 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>YouCoded Assistant — Agentic AI for Everyone</title>
 <meta name="description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
-<!-- Social previews + favicon: carried over from the previous live page when the
-     redesign shipped (2026-09-03). The mockup had none; without og:image a shared
-     link renders as a bare URL. -->
+<!-- Social preview. og-image.png is a PHOTOGRAPH OF THIS PAGE, rebuilt by
+     docs/tools/gen-og-image.mjs — regenerate it whenever the hero changes.
+     It used to be a dark screenshot of the app from before the redesign, so
+     every shared link showed a grey window that looked nothing like the site
+     it opened (reported 2026-09-04). The favicon is NO LONGER carried over: the old
+     favicon-*.svg files were the previous page's "YC" index card, which looked
+     nothing like the redesign's nav mark, so a tab and the page it belonged to
+     did not read as the same product. favicon.svg is now that mark, and
+     applyTheme() re-tints it live to whichever theme the visitor picks. -->
 <meta property="og:title" content="YouCoded Assistant — Agentic AI for Everyone">
 <meta property="og:description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://youcoded.ai/">
-<meta property="og:image" content="https://youcoded.ai/og-image.png">
+<!-- ?v=2 is a CACHE BUST, not decoration. Slack, iMessage, Discord, Facebook
+     and Twitter all cache a preview image BY URL, for days, and a link Destin
+     had already shared kept showing the old picture after the file was
+     replaced. Bump the number whenever og-image.png is regenerated. -->
+<meta property="og:image" content="https://youcoded.ai/og-image.png?v=5">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The YouCoded Assistant website: the headline &quot;An Assistant That's Yours.&quot; between four theme mascots, above the app running a real conversation.">
+<meta property="og:site_name" content="YouCoded Assistant">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="YouCoded Assistant — Agentic AI for Everyone">
 <meta name="twitter:description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
-<meta name="twitter:image" content="https://youcoded.ai/og-image.png">
-<link rel="icon" href="favicon-light.svg" id="favicon">
+<meta name="twitter:image" content="https://youcoded.ai/og-image.png?v=5">
+<meta name="twitter:image:alt" content="The YouCoded Assistant website: the headline &quot;An Assistant That's Yours.&quot; between four theme mascots, above the app running a real conversation.">
+<link rel="icon" type="image/svg+xml" href="favicon.svg" id="favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,700;0,9..40,800;0,9..40,900;1,9..40,400;1,9..40,900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -34,7 +49,7 @@
 :root{
   --font-ui:'DM Sans',system-ui,sans-serif; --font-mono:'JetBrains Mono',monospace;
   --font-theme:'DM Sans',system-ui,sans-serif;
-  --wide:1280px; --nav-h:70px;
+  --wide:1280px; --nav-h:78px;
   --glass:rgba(var(--panel-rgb), var(--panel-op));
   --glass-prose:rgba(var(--panel-rgb), var(--panel-op-prose));
   --glass-hi:rgba(255,255,255,.22);
@@ -43,6 +58,7 @@
 html[data-dark="1"]{ --glass-hi:rgba(255,255,255,.14); --ink:rgba(0,0,0,.42); }
 html[data-dark="0"]{ --glass-hi:rgba(255,255,255,.55); --ink:rgba(255,255,255,.34); }
 html{scroll-behavior:smooth}
+
 body{font-family:var(--font-theme);color:var(--fg);line-height:1.6;-webkit-font-smoothing:antialiased;
   overflow-x:hidden;background:var(--canvas);transition:color .5s}
 img,video{display:block;max-width:100%}
@@ -82,7 +98,7 @@ a{color:inherit}
 
 /* ---- nav: a floating glass bar, not a full-width strip ---- */
 .nav{position:fixed;top:14px;left:0;right:0;z-index:60;pointer-events:none}
-.nav-in{pointer-events:auto;max-width:var(--wide);margin:0 auto;height:56px;padding:0 12px 0 16px;
+.nav-in{pointer-events:auto;max-width:var(--wide);margin:0 auto;height:64px;padding:0 12px 0 16px;
   display:flex;align-items:center;gap:20px;border-radius:var(--radius)}  /* match the footer card, not a full pill (Destin 2026-08-30) */
 .logo{display:flex;align-items:center;gap:10px;text-decoration:none}
 .mark{width:26px;height:26px;border-radius:8px;background:var(--accent);color:var(--on-accent);
@@ -263,6 +279,24 @@ footer{padding:0 0 46px}
   background:var(--m-bg);color:var(--m-fg);border:1px solid var(--m-line);border-radius:18px;
   padding:34px 34px 0;box-shadow:0 40px 90px -30px rgba(0,0,0,.8);
   -webkit-backdrop-filter:blur(30px) saturate(1.4);backdrop-filter:blur(30px) saturate(1.4)}
+/* The panel scrolls, and it was showing the browser's own scrollbar: a 17px
+   light-grey slab, square-ended, running the full height of a panel with 18px
+   rounded corners — so it sat across both right-hand corners and read as a
+   piece of some other application (Destin 2026-09-03: "the scroll bars in the
+   popups need to be themed and contained properly").
+   The thumb is the theme's own foreground at low alpha, and the transparent
+   3px border + background-clip is what INSETS it: the thumb never reaches the
+   panel's rounded edge, so the corners stay corners. Firefox gets the same
+   through the two standard properties. */
+.install-modal-panel{scrollbar-width:thin;
+  scrollbar-color:rgba(var(--fg-rgb),.30) transparent}
+.install-modal-panel::-webkit-scrollbar{width:12px}
+.install-modal-panel::-webkit-scrollbar-track{background:transparent}
+.install-modal-panel::-webkit-scrollbar-thumb{
+  background:rgba(var(--fg-rgb),.30);border-radius:999px;
+  border:3px solid transparent;background-clip:content-box}
+.install-modal-panel::-webkit-scrollbar-thumb:hover{
+  background:rgba(var(--fg-rgb),.48);background-clip:content-box}
 .install-modal-close{position:absolute;top:14px;right:14px;width:32px;height:32px;border-radius:9px;
   border:1px solid var(--m-line);background:transparent;color:var(--m-dim);font-size:1.2rem;
   line-height:1;cursor:pointer;display:grid;place-items:center}
@@ -301,8 +335,18 @@ footer{padding:0 0 46px}
 .install-modal-download-btn{background:var(--accent);color:var(--on-accent);text-decoration:none;
   padding:12px 24px;border-radius:999px;font-weight:700;font-size:.92rem}
 .install-modal-download-btn[data-initiated]{opacity:.6;pointer-events:none}
-@media(max-width:700px){
-  .install-modal-panel{margin:0;max-height:100vh;border-radius:0;padding:26px 20px 0}
+/* FULL-SCREEN SHEET, and only where the panel could not fit anyway.
+   Destin 2026-09-03: "the download popup menus aren't centred". The rule used
+   to fire at 700px and set `margin:0`, which killed the `auto` that centres it
+   — so from 621px to 700px the panel stayed 620px wide, lost its rounded
+   corners, and sat jammed against the LEFT edge with every leftover pixel
+   dumped on the right (measured: left 0 / right 80 at a 700px window). The
+   breakpoint now matches the panel's own width plus its gutters, so there is
+   no band where it is neither a centred card nor a full sheet, and `0 auto`
+   keeps it centred even if that maths ever drifts. */
+@media(max-width:660px){
+  .install-modal-panel{margin:0 auto;max-width:none;width:100%;
+    max-height:100vh;min-height:100vh;border-radius:0;padding:26px 20px 0}
   .install-modal-footer{margin:20px -20px 0;padding:14px 20px;border-radius:0}
 }
 
@@ -508,7 +552,7 @@ body.fade-d .hero>.wrap>.dlrow{display:none}
    sets position:absolute at specificity (0,2,0) and outranked a bare `.dlfloat`
    here, so on a phone-width window the row stayed absolutely positioned and
    then went FIXED the moment you scrolled (same shape as landmine 14). */
-@media(max-width:820px){
+@media(max-width:820px), (max-height:480px){
   body.fade-a .dlfloat,body.fade-b .dlfloat,body.fade-c .dlfloat,body.fade-d .dlfloat,
   body.fade-a .dlfloat.docked,body.fade-b .dlfloat.docked,
   body.fade-c .dlfloat.docked,body.fade-d .dlfloat.docked{
@@ -581,72 +625,42 @@ body.pill-accent.legend-on .dl-legend{border-color:transparent;color:var(--fg);
   -webkit-backdrop-filter:none;backdrop-filter:none;
   box-shadow:0 0 0 1.5px rgba(var(--accent-rgb),.9)}
 /* ===========================================================================
-   NAV BRAND VARIANTS, round two (2026-08-31). Round one restyled the whole bar
-   and Destin rejected all four -- "not great options, closer to L". So the bar,
-   its glass, its height, the link styling and the two-line lockup all stay
-   exactly as they are. Only two things move: the mark (the YC square becomes
-   the app's own mascot, in four containers) and the wordmark's typography.
-   Every variant ships the same markup; the class picks what shows.
+   THE HEADER LOCKUP — final, 2026-09-04. Destin signed this off in round 6 of
+   docs/archive/reviews/2026-09-04-nav-header/ (workspace repo). This block
+   REPLACES the brand-variant and wordmark-treatment menus that lived here while
+   the decision was open; every rejected option is recoverable from git history.
+
+   Four deliberate departures from what shipped before:
+   1. The mark is GLASS -- the same frosted material as the bar -- with the
+      mascot painted IN the accent instead of knocked out of a solid block. The
+      bar no longer has one solid anchor point; that is the intended read.
+   2. The name is pinned to DM Sans. It used to inherit var(--font-theme), so
+      the logo was literally drawn in a different typeface in all eight themes.
+   3. Everything is uppercase and tracked out to .12em. Caps live or die on
+      tracking: at the old -.01em these same words read as a mistake rather
+      than as a logo. .22em was tried first and read as too airy (Destin,
+      2026-09-04); the tagline shares the value so the two lines stay one block.
+   4. The accent lands on "YOU", not on "Coded" -- the emphasis is the person.
+
+   Scoped to .nav on purpose: the FOOTER logo shares .mark and .wm with a
+   different payload ("YC" text, no tagline) and is deliberately untouched here.
    =========================================================================== */
-
-.mark-bot{display:none;width:60%;height:60%}
-.mark-bot path,.mark-bot rect,.mark-bot circle,.mark-bot g{fill:currentColor}
-.wm-rule{display:none}
-/* All four swap the monogram for the mascot -- that is the point of the round. */
-body[class*="brand-"] .mark-yc{display:none}
-body[class*="brand-"] .mark-bot{display:block}
-
-/* ---- A  TILE — the pure icon swap ----------------------------------------
-   Same solid accent square the YC monogram sits in, same size, mascot in the
-   on-accent colour. Text untouched. This is the control: it isolates whether
-   the mark alone is the problem. */
-body.brand-tile .mark{border-radius:9px}
-
-/* ---- B/C/D (disc, accent circle, bare) are PARKED, not built: Destin kept the
-   tile and asked for wordmark options against it instead. Their rules are gone
-   from here; the classes brand-disc / brand-round / brand-bare can be rebuilt
-   from git history if wanted. */
-
-/* ===========================================================================
-   WORDMARK TREATMENTS (2026-08-31 round three). All ride on brand-tile -- the
-   mark, the bar and the tagline line are fixed; only the "YouCoded Assistant"
-   type changes.
-   =========================================================================== */
-
-/* E  ONE COLOUR — the accent appears exactly once on the page's top edge, in
-   the mark. The name carries no colour of its own. */
-body.wm-one .wm{font-weight:700}
-body.wm-one .wm b{color:inherit;font-weight:700}
-body.wm-one .wm i{opacity:.45;font-weight:500}
-
-/* F  WEIGHT SPLIT — same idea, but "Coded" is still distinguished, by weight
-   rather than by colour. Reads as one word with an emphasis inside it. */
-body.wm-weight .wm{font-weight:400;font-size:.97rem}
-body.wm-weight .wm b{color:inherit;font-weight:800}
-body.wm-weight .wm i{opacity:.45;font-weight:400}
-
-/* G  NAME + CATEGORY — the name gets bigger and tighter and "ASSISTANT" stops
-   being part of the sentence, becoming a small typeset category label beside
-   it in the same mono face as the tagline. */
-body.wm-cat .wm{font-size:1.04rem;font-weight:800;letter-spacing:-.025em}
-body.wm-cat .wm b{color:var(--accent);font-weight:800}
-body.wm-cat .wm i{font-family:var(--font-mono);text-transform:uppercase;font-style:normal;
-  font-size:.55rem;letter-spacing:.14em;font-weight:500;opacity:.5;
-  margin-left:3px;position:relative;top:-3px}
-
-/* H  MERGED SECOND LINE — "Assistant" leaves the name line and joins the
-   tagline, so line one is purely the name and line two is purely the
-   explanation. The name-block goes display:block to force the break; i and em
-   then flow together on the line beneath. */
-body.wm-merge .wm{font-weight:700}
-body.wm-merge .wm b{color:var(--accent);font-weight:800}
-body.wm-merge .wm-name{display:block;letter-spacing:-.02em}
-body.wm-merge .wm i,body.wm-merge .wm em{display:inline;font-family:var(--font-mono);
-  font-style:normal;text-transform:uppercase;font-size:.54rem;letter-spacing:.11em;
-  font-weight:500;opacity:.5;margin-top:0}
-/* Non-breaking spaces: the plain ones either side of the dot were being eaten
-   at the inline boundary, so the separator ended up glued to "AGENTS". */
-body.wm-merge .wm i::after{content:'\00a0\00a0\00b7\00a0'}
+.nav .mark{width:38px;height:38px;border-radius:32%;
+  background:var(--glass);color:var(--accent);
+  border:1px solid var(--hair);
+  box-shadow:inset 0 1px 0 var(--glass-hi)}
+.nav .mark-bot{display:block;width:62%;height:62%}
+.nav .mark-bot path,.nav .mark-bot rect,.nav .mark-bot circle,.nav .mark-bot g{fill:currentColor}
+.nav .wm{font-family:'DM Sans',system-ui,sans-serif;font-weight:700;font-size:.94rem;
+  line-height:1.14;letter-spacing:.12em;text-transform:uppercase}
+.nav .wm .wm-a{color:var(--accent)}
+.nav .wm b{font-weight:700;color:inherit}
+.nav .wm i{font-weight:700;opacity:.45}
+/* The tagline joins the name's typeface and tracking so the two lines read as
+   one block rather than as a logo with a caption stuck under it. */
+.nav .wm em{display:block;font-family:inherit;font-weight:500;
+  font-size:.564rem;letter-spacing:.12em;text-transform:uppercase;
+  opacity:.5;margin-top:2px}
 
 /* ==========================================================================
    HEADER ARRANGEMENTS (D1–D4)
@@ -770,6 +784,219 @@ body:has(.hero-themefirst) .nav .swatches{display:none}
   .mascot.on .m-chip{box-shadow:0 0 0 2px var(--a),0 0 10px 2px var(--a),0 16px 30px -14px rgba(0,0,0,.55)}
   .mascot.on .m-chip::after{opacity:.36}}
 .mascot:focus-visible{outline:2px solid var(--accent);outline-offset:4px}
+
+/* ==========================================================================
+   RIGGED MASCOTS (2026-09-04). The four chips stopped being one flat
+   silhouette and became the app's OWN default buddy rig — the 2.5D-soft skin
+   from desktop/src/renderer/components/mascot/default-buddy-rig.ts, tinted per
+   theme through --rig-accent / --rig-on-accent. The 2026-08-30 rule still
+   holds and is why they are all the SAME character: four different theme
+   mascots at 62px read as four different kinds of thing. What differs is how
+   each one MOVES, which is what makes the row read as alive rather than as
+   four icons that happen to wobble in unison.
+
+   Everything below is CSS animation driven by two attributes the script flips
+   (data-face, data-run). No rAF loop: the hero already does scroll work every
+   frame and four JS-driven mascots would compete with it.
+   ========================================================================== */
+.m-rig{--rig-accent:var(--a);overflow:visible}
+/* The rig's viewBox is "-3 -5 30 30" -- 30 units of canvas around a 24-unit
+   character, headroom the buddy floater needs for raised arms and hats. The
+   flat silhouette it replaced was a bare 0 0 24 24, so reusing its 58% shrank
+   the character by a fifth. 58 x 30/24 = 72.5 keeps the robot exactly the size
+   the picker was tuned at, with the padding living outside the box. */
+.m-rig{width:72.5%;height:72.5%}
+.mascot.m-lg .m-rig{width:70%;height:70%}
+/* Rotations hinge where the rig contract says they do. Limbs are drawn HANGING
+   DOWN from their data-pivot, and every pivot is the top-centre of that limb's
+   own box (arms 2.5/21.5 at y9, legs 8.95/15.05 at y17) -- so fill-box + 50% 0%
+   IS the contract, expressed in the one unit CSS gets right here.
+   NOT transform-box:view-box with the pivots in px: measured 2026-09-04, Chrome
+   reads those lengths as rendered CSS pixels, not viewBox units, so at this size
+   the shoulder landed in the middle of the head and the waving arm detached and
+   flew off the body. */
+.m-rig .rig-arm-left,.m-rig .rig-arm-right,
+.m-rig .rig-leg-left,.m-rig .rig-leg-right,
+.m-rig .rig-root,.m-rig .rig-body{transform-box:fill-box}
+.m-rig .rig-arm-left,.m-rig .rig-arm-right,
+.m-rig .rig-leg-left,.m-rig .rig-leg-right{transform-origin:50% 0%}
+/* Whole-body moves pivot at the FEET, so a lean or a hop lifts and tips the
+   character rather than sliding it sideways off its own legs. */
+.m-rig .rig-root,.m-rig .rig-body{transform-origin:50% 100%}
+
+/* --- faces: exactly one shows, chosen by data-face on the button ---------- */
+.m-rig .rig-face{display:none}
+.mascot[data-face="idle"]    .rig-face-idle,
+.mascot[data-face="welcome"] .rig-face-welcome,
+.mascot[data-face="curious"] .rig-face-curious,
+.mascot[data-face="shocked"] .rig-face-shocked,
+.mascot[data-face="blink"]   .rig-face-blink{display:block}
+
+/* --- LAYER 1: the long idle. Infinite, never interrupted, one per character.
+   This is what makes a chip feel alive between poses, and it rides on
+   .rig-idle so a pose can play straight THROUGH it -- an element can only run
+   one CSS animation per property, so the two layers have to be two elements. */
+.mascot[data-idle="float"]   .rig-idle{animation:m-float   3.6s ease-in-out infinite}
+.mascot[data-idle="breathe"] .rig-idle{animation:m-breathe 5.2s ease-in-out infinite}
+.mascot[data-idle="scan"]    .rig-idle{animation:m-scan    5.4s ease-in-out infinite}
+.mascot[data-idle="bob"]     .rig-idle{animation:m-bob     2.6s cubic-bezier(.3,.7,.4,1) infinite}
+/* Cotton Candy hovers -- it never quite settles. */
+@keyframes m-float{0%,100%{transform:translateY(.5px)}50%{transform:translateY(-1.7px)}}
+/* Meadow Mist breathes. Widest and slowest of the four, deliberately: a green
+   meadow theme that fidgets is selling the wrong feeling. */
+@keyframes m-breathe{0%,100%{transform:scale(1.015,.985)}50%{transform:scale(.975,1.05) translateY(-.6px)}}
+/* Halftone slides side to side like something scanning. */
+@keyframes m-scan{0%,100%{transform:translateX(-1.6px) rotate(-2deg)}50%{transform:translateX(1.6px) rotate(2deg)}}
+/* Golden can't hold still -- a springy double-beat, up fast, down slow. */
+@keyframes m-bob{0%,58%,100%{transform:translateY(0) scale(1,1)}22%{transform:translateY(-2.1px) scale(.97,1.04)}76%{transform:translateY(-.8px) scale(.99,1.01)}}
+
+/* --- LAYER 2: the minor poses. One-shot, on .rig-root and the limbs, two per
+   character, taken in ROTATION by the script so both actually get seen. The
+   script clears data-run once every one of them has finished, which is what
+   lets a pose stagger its limbs (see ARMWAVE) instead of being cut off by the
+   first one to end. ------------------------------------------------------- */
+
+/* AN ARM ONLY READS IF IT GROWS. Measured 2026-09-04 at the picker's real size:
+   a raised arm is a ~5px shape floating a pixel off a 25px body, and it reads
+   as a stray dot at EVERY hold angle from -60 to -170 -- angle was never the
+   problem. Scaling it ~1.7-2x while it is up (from the shoulder, since
+   transform-origin is 50% 0%) turns the same shape into an unmistakable limb.
+   Every pose that lifts an arm does it. The film had to learn the same lesson
+   in the other direction -- engine.ts on `cheer`: "a 7 px bob did not register".
+
+   ANGLES ARE THE FILM'S, not invented here: worktrees/promo (feat/promo-video)
+   scripts/promo/src/host/engine.ts. wave -150 with a +-16 waggle, cheer +-150
+   with a +-18 pump and a real jump, shrug +-75, tada +-115, think -165,
+   startle +-160. Keeping them means the site and the film move the same way. */
+
+/* WAVE (Cotton Candy) — engine.ts `wave`: the right arm to -150 and a waggle on
+   top of it. The body leaning into it is the site's own addition: at 45px the
+   whole silhouette has to say hello, not one corner of it. */
+.mascot[data-run="wave"] .rig-arm-right{animation:m-wave 1.4s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="wave"] .rig-root{animation:m-wave-lean 1.4s ease-in-out}
+@keyframes m-wave{
+  0%,100%{transform:rotate(0) scale(1)}
+  16%{transform:rotate(-150deg) scale(1.95)}
+  36%{transform:rotate(-134deg) scale(1.95)}
+  56%{transform:rotate(-166deg) scale(1.95)}
+  76%{transform:rotate(-138deg) scale(1.95)}
+  90%{transform:rotate(-152deg) scale(1.9)}}
+@keyframes m-wave-lean{0%,100%{transform:rotate(0)} 18%,86%{transform:rotate(6deg)}}
+
+/* CHEER (Cotton Candy) — engine.ts `cheer`: both arms to +-150, pumping, and the
+   body genuinely jumps with the legs kicking under it. Wears the `happy` face. */
+.mascot[data-run="cheer"] .rig-arm-left {animation:m-cheer-l 1.3s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="cheer"] .rig-arm-right{animation:m-cheer-r 1.3s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="cheer"] .rig-root{animation:m-cheer-body 1.3s cubic-bezier(.3,.7,.4,1)}
+.mascot[data-run="cheer"] .rig-leg-left {animation:m-kick-l 1.3s ease-in-out}
+.mascot[data-run="cheer"] .rig-leg-right{animation:m-kick-r 1.3s ease-in-out}
+@keyframes m-cheer-l{0%,100%{transform:rotate(0) scale(1)}
+  20%{transform:rotate(150deg) scale(1.85)} 42%{transform:rotate(132deg) scale(1.85)}
+  64%{transform:rotate(150deg) scale(1.85)} 84%{transform:rotate(134deg) scale(1.8)}}
+@keyframes m-cheer-r{0%,100%{transform:rotate(0) scale(1)}
+  20%{transform:rotate(-150deg) scale(1.85)} 42%{transform:rotate(-132deg) scale(1.85)}
+  64%{transform:rotate(-150deg) scale(1.85)} 84%{transform:rotate(-134deg) scale(1.8)}}
+@keyframes m-cheer-body{0%,100%{transform:translateY(0) scale(1,1)}
+  20%{transform:translateY(-3.2px) scale(.94,1.09)} 46%{transform:translateY(0) scale(1.06,.93)}
+  64%{transform:translateY(-2.4px) scale(.96,1.06)} 86%{transform:translateY(0) scale(1.03,.97)}}
+@keyframes m-kick-l{0%,100%{transform:rotate(0)} 20%,64%{transform:rotate(-16deg)}}
+@keyframes m-kick-r{0%,100%{transform:rotate(0)} 20%,64%{transform:rotate(16deg)}}
+
+/* SHRUG (Meadow Mist) — engine.ts `shrug`: both arms out at +-75, a 6deg tilt,
+   a small squash, held briefly. Wears the curious face: a shrug without a
+   question on the face is just arms moving. */
+.mascot[data-run="shrug"] .rig-arm-left {animation:m-shrug-l 1.9s ease-in-out}
+.mascot[data-run="shrug"] .rig-arm-right{animation:m-shrug-r 1.9s ease-in-out}
+.mascot[data-run="shrug"] .rig-root{animation:m-shrug-body 1.9s ease-in-out}
+@keyframes m-shrug-l{0%,100%{transform:rotate(0) scale(1)} 32%,68%{transform:rotate(78deg) scale(1.7)}}
+@keyframes m-shrug-r{0%,100%{transform:rotate(0) scale(1)} 32%,68%{transform:rotate(-78deg) scale(1.7)}}
+@keyframes m-shrug-body{0%,100%{transform:rotate(0) scale(1,1)}
+  32%,68%{transform:rotate(6deg) scale(1.04,.95) translateY(.5px)}}
+
+/* NOD (Meadow Mist) — engine.ts `nod`: two deep dips with a squash. All body,
+   no limbs, which is why it is the one that reads best of the four at this size. */
+.mascot[data-run="nod"] .rig-root{animation:m-nod 1.25s ease-in-out}
+@keyframes m-nod{
+  0%,100%{transform:scale(1,1) rotate(0)}
+  26%{transform:scale(1.1,.84) rotate(5deg) translateY(1.4px)}
+  52%{transform:scale(1,1) rotate(0)}
+  74%{transform:scale(1.07,.89) rotate(3.5deg) translateY(1px)}}
+
+/* THINK (Halftone) — engine.ts `think`: the right arm up and IN to -165 (a hand
+   to the chin), the body tilted -7, held, then released. Curious face. */
+.mascot[data-run="think"] .rig-arm-right{animation:m-think-arm 2.4s cubic-bezier(.3,.8,.35,1)}
+.mascot[data-run="think"] .rig-root{animation:m-think-body 2.4s cubic-bezier(.3,.8,.35,1)}
+@keyframes m-think-arm{0%,100%{transform:rotate(0) scale(1)} 22%,78%{transform:rotate(-165deg) scale(1.8)}}
+@keyframes m-think-body{0%,100%{transform:rotate(0)} 22%,78%{transform:rotate(-7deg)}}
+
+/* STARTLE (Halftone) — engine.ts `startle`: straight up in the air, arms thrown
+   to +-160, legs kicking out, shocked face, then a squash on the landing. */
+.mascot[data-run="startle"] .rig-root{animation:m-startle 1.05s cubic-bezier(.2,.9,.3,1.2)}
+.mascot[data-run="startle"] .rig-arm-left {animation:m-startle-l 1.05s cubic-bezier(.2,.9,.3,1.2)}
+.mascot[data-run="startle"] .rig-arm-right{animation:m-startle-r 1.05s cubic-bezier(.2,.9,.3,1.2)}
+.mascot[data-run="startle"] .rig-leg-left {animation:m-startle-legl 1.05s ease-out}
+.mascot[data-run="startle"] .rig-leg-right{animation:m-startle-legr 1.05s ease-out}
+@keyframes m-startle{
+  0%{transform:translateY(0) scale(1,1)}
+  22%{transform:translateY(-4.6px) scale(.9,1.16)}
+  58%{transform:translateY(0) scale(1.12,.86)}
+  78%{transform:translateY(-.6px) scale(.98,1.03)}
+  100%{transform:translateY(0) scale(1,1)}}
+@keyframes m-startle-l{0%,100%{transform:rotate(0) scale(1)} 20%,58%{transform:rotate(160deg) scale(1.9)}}
+@keyframes m-startle-r{0%,100%{transform:rotate(0) scale(1)} 20%,58%{transform:rotate(-160deg) scale(1.9)}}
+@keyframes m-startle-legl{0%,100%{transform:rotate(0)} 22%,52%{transform:rotate(-18deg)}}
+@keyframes m-startle-legr{0%,100%{transform:rotate(0)} 22%,52%{transform:rotate(18deg)}}
+
+/* TADA (Golden) — engine.ts `tada`: both arms sweep up and out to +-115 with a
+   hop and a lean, then hold wide. Happy face. */
+.mascot[data-run="tada"] .rig-arm-left {animation:m-tada-l 1.5s cubic-bezier(.3,.9,.35,1.3)}
+.mascot[data-run="tada"] .rig-arm-right{animation:m-tada-r 1.5s cubic-bezier(.3,.9,.35,1.3)}
+.mascot[data-run="tada"] .rig-root{animation:m-tada-body 1.5s cubic-bezier(.3,.9,.35,1.3)}
+@keyframes m-tada-l{0%,100%{transform:rotate(0) scale(1)} 26%,74%{transform:rotate(115deg) scale(1.85)}}
+@keyframes m-tada-r{0%,100%{transform:rotate(0) scale(1)} 26%,74%{transform:rotate(-115deg) scale(1.85)}}
+@keyframes m-tada-body{0%,100%{transform:translateY(0) rotate(0) scale(1,1)}
+  26%{transform:translateY(-2.8px) rotate(5deg) scale(.96,1.07)}
+  74%{transform:translateY(-.4px) rotate(5deg) scale(1,1)}}
+
+/* ARMWAVE (Golden) — "the wave", inside one body: the left arm goes up and comes
+   down, the right follows a beat later, so the motion travels across the
+   character. The site's own, not the film's -- it is the thing Destin asked for
+   by name. Same keyframes on both arms, the right one delayed. */
+.mascot[data-run="armwave"] .rig-arm-left {animation:m-armwave 1.5s ease-in-out}
+.mascot[data-run="armwave"] .rig-arm-right{animation:m-armwave-r 1.5s ease-in-out .3s}
+.mascot[data-run="armwave"] .rig-root{animation:m-armwave-body 1.8s ease-in-out}
+@keyframes m-armwave{0%,58%,100%{transform:rotate(0) scale(1)} 24%,38%{transform:rotate(140deg) scale(1.9)}}
+@keyframes m-armwave-r{0%,58%,100%{transform:rotate(0) scale(1)} 24%,38%{transform:rotate(-140deg) scale(1.9)}}
+@keyframes m-armwave-body{0%,100%{transform:translateY(0)} 30%{transform:translateY(-1.1px)}}
+
+/* RELAY — the row-wide version of the same idea, and the only pose all four
+   share. Every so often the script fires it left to right down the row, so the
+   four chips do a stadium wave at each other. Both-armed and short, because at
+   this size a travelling gesture only reads if each step is unmistakable. It
+   wears the plain welcome face on purpose: `happy` is not a face every rig has,
+   and Halftone dances too. */
+.mascot[data-run="relay"] .rig-arm-left {animation:m-relay-l .95s cubic-bezier(.3,.9,.4,1.3)}
+.mascot[data-run="relay"] .rig-arm-right{animation:m-relay-r .95s cubic-bezier(.3,.9,.4,1.3)}
+.mascot[data-run="relay"] .rig-root{animation:m-relay-body .95s cubic-bezier(.3,.9,.4,1.3)}
+@keyframes m-relay-l{0%,100%{transform:rotate(0) scale(1)} 28%,58%{transform:rotate(148deg) scale(2)}}
+@keyframes m-relay-r{0%,100%{transform:rotate(0) scale(1)} 28%,58%{transform:rotate(-148deg) scale(2)}}
+@keyframes m-relay-body{0%,100%{transform:translateY(0) scale(1,1)}
+  32%,56%{transform:translateY(-3px) scale(.95,1.08)}}
+
+/* --- the click reaction. Shared shape (a quick squash and pop) so the row
+   answers a tap consistently; the pose that follows is the mascot's own next
+   one in rotation, so the four still feel like four characters. It has to be
+   SHORT: the click also re-skins the entire page, and a long mascot animation
+   running under a full-page crossfade reads as lag. ----------------------- */
+.mascot[data-run="pop"] .rig-root{animation:m-pop .42s cubic-bezier(.2,.9,.3,1.5)}
+@keyframes m-pop{
+  0%{transform:scale(1)} 26%{transform:scale(.84,1.14) translateY(-1.4px)}
+  60%{transform:scale(1.1,.92)} 100%{transform:scale(1)}}
+
+/* Motion is decoration here — the picker still works entirely by clicking. */
+@media (prefers-reduced-motion:reduce){
+  .m-rig *{animation:none !important}}
+
 
 /* ---- M1 FLANK: two either side of the headline ---- */
 .hero-flank .flankrow{display:flex;align-items:center;justify-content:center;gap:34px}
@@ -1159,14 +1386,309 @@ body.cycler-static .lead-hold{display:none}
   .demo-pinned .step{position:relative;inset:auto;opacity:1;transform:none}
 }
 
+
+/* ==========================================================================
+   THE BAR AT THE TOP, on any small screen  — added 2026-09-03
+   ==========================================================================
+   The bar is fixed over the page at the theme's own panel opacity (0.7 for
+   Cotton Candy Sky), which is fine over a wallpaper and unreadable over a
+   paragraph. On a small screen the page is one column WIDE, so text passes
+   under the whole bar rather than beside it, and you get a ghost sentence
+   printed across the wordmark.
+
+   OPAQUE, and the blur goes with it. Measured at 94 percent alpha the sentence
+   underneath was STILL legible -- 6 percent of near-black text on a light panel
+   is plenty to read. The colour is still the theme's own panel, so the bar
+   re-skins with the mascot picker like everything else; it just stops being
+   see-through. Dropping the backdrop-filter is free paint back: a blurred fixed
+   layer re-composites the whole strip on every scrolled frame, and at full
+   opacity it was blurring something nobody could see.
+
+   The height clause is for a phone held SIDEWAYS (844x390): wide enough to miss
+   a width-only rule, and the worst case for a bar pinned over a short window.
+   ========================================================================== */
+@media(max-width:760px), (max-height:480px){
+  /* The bar ran edge to edge: .nav is fixed left:0/right:0 and .nav-in is
+     capped at 1280px, so on a wide window it floats with a gutter either side
+     and on a phone that cap never binds (Destin 2026-09-03: "the top bar ...
+     visibly touches the left/right edges of the phone screen"). 10px, a little
+     tighter than the 18px the page's own content sits at, so the bar still
+     reads as sitting slightly proud of the column under it — the same
+     relationship it has on a desktop. */
+  .nav{top:8px;padding:0 10px}
+  .nav-in{height:56px;padding:0 12px 0 13px;gap:10px;
+    background:rgb(var(--panel-rgb));
+    -webkit-backdrop-filter:none;backdrop-filter:none;
+    box-shadow:inset 0 1px 0 var(--glass-hi), 0 10px 26px -14px var(--ink)}
+}
+
+/* The Open Source badge moved in the markup so a phone can sit it beside the
+   wordmark. Above 760 it goes back to trailing the links, which is where it has
+   always been — `order` only, so the wide footer is unchanged. (Say the word and
+   this rule comes out and the badge moves up there too.) */
+@media(min-width:761px){
+  .foot .badge{order:9}
+  .foot .legal{order:10}
+  /* Inside .flinks the badge sat on that row's 18px gap; as a child of .foot it
+     sits on .foot's 22px one, which pushed the four links 4px left. This gives
+     the 4px back so the wide footer measures exactly as it did. */
+  .foot .badge{margin-left:-4px}
+}
+
+/* ==========================================================================
+   NARROW FEATURE DECK  (<=1000px)  — added 2026-09-03
+   ==========================================================================
+   On a wide window the ten feature cards are a scroll-driven stack: each one
+   sticks 80px from the top, the next slides up over it, and the covered one
+   scales and fades. The whole ladder is derived in JS from ONE number --
+   card zero's height -- because at desktop width every card is exactly as tall
+   as its 16:10 clip, so they all match.
+
+   Below 1000px that stops being true. This page already single-columns the
+   ODD cards at 1000 (the rule two blocks up), while `:nth-child(even)` keeps
+   its two-column grid on specificity -- so the cards end up different heights
+   and the stride is wrong for nine of the ten. Measured 2026-09-03 on the live
+   page: 10 cards, all 524px at 1440; THREE distinct heights at 1000, six at
+   900, eight at 800. What that looks like is a card sitting half-covered by
+   the next one at full opacity, with the copy underneath simply gone.
+
+   So below 1000 the stack is retired and the cards are plain blocks: clip on
+   top at full width, copy under it, nothing sticky, nothing scroll-driven.
+   1000px is not a new breakpoint -- it is the one this page already uses for
+   every other grid it collapses (.cols, .acctgrid, .pingrid, .railgrid, and
+   the odd deck cards). Above it nothing here applies and the desktop stack is
+   untouched.
+   ========================================================================== */
+@media(max-width:1000px){
+  /* Both selectors, because the even-card rule outranks a bare one. */
+  .demo-deck .step,
+  .demo-deck .step:nth-child(even){
+    position:static;top:auto;
+    grid-template-columns:1fr;gap:18px;
+    margin-bottom:16px;padding:20px;
+    /* The JS driver is switched off at this width too (`narrowMQ` in the deck
+       block), so nothing writes --d or .buried. These only matter if it runs
+       once anyway -- a resize across the line before the next scroll event. */
+    transform:none !important;opacity:1 !important;
+    filter:none !important;pointer-events:auto !important}
+  .demo-deck .step:nth-child(even) .deckclip{order:0}
+  .demo-deck .decktext::after{display:none}   /* the last card's dwell, unneeded */
+
+  /* The roadmap card's media is a drawn diagram absolutely positioned into a
+     16:10 box. Narrow, its own content is taller than that box, so the two
+     halves printed on top of each other. In the flow, one column, box sizes
+     to it. */
+  .demo-deck .step .deckclip.deckclip-sketch{aspect-ratio:auto;border:0}
+  .demo-deck .step .deckclip .sketch{position:static;inset:auto;
+    grid-template-columns:1fr;gap:12px;padding:18px;
+    border:1px solid var(--hair);border-radius:12px}
+}
+
+/* ==========================================================================
+   PHONE LAYOUT  (<=760px)  — added 2026-09-03
+   ==========================================================================
+   The block above puts the feature cards in the flow for every narrow width.
+   This one is the rest of the phone: a download pill wider than the screen, a
+   translucent bar with paragraphs sliding under it, 420px gallery stills on a
+   390px screen, a footer row that broke "Built by Destin" over three lines,
+   and desktop type in a 330px column. Measured at 390px before any of this
+   existed: 15,683px of page with whole empty screens in it.
+
+   Everything is INSIDE the media query, so the desktop page is untouched by
+   construction — nothing above these two blocks was edited for mobile, and a
+   geometry diff of all 400 elements at 1920/1440/1280/1100/1001 confirms it.
+   The intent is kept: the same sections, the same words, the same theme-skinned
+   glass, the same clips. Only the arrangement changes.
+   ========================================================================== */
+@media(max-width:760px){
+
+  /* Anchor jumps (the logo's #top, and anything added later) must clear the
+     fixed bar or they land with the heading underneath it. */
+  html{scroll-padding-top:72px}
+
+  /* ---- page gutters -------------------------------------------------- */
+  /* 30px of padding either side of a 390px screen leaves a 330px column. */
+  .wrap,.galwrap{padding:0 18px}
+
+  /* the bar's own rules are in the block above this one -- they apply to a
+     phone on its SIDE as well, which is 844px wide. */
+  /* Caps are wider than the mixed-case lockup this replaced, so a phone shrinks
+     the type more than the mark. The tracking is NOT eased here: at .12em the
+     desktop value already fits 390px, and overriding it would leave a phone
+     tracked WIDER than the desktop it shrank from. */
+  .nav .mark{width:30px;height:30px}
+  .nav .wm{font-size:.8rem}
+  .nav .wm em{font-size:.48rem}
+
+  /* ---- hero ------------------------------------------------------------ */
+  .hero{padding-top:calc(var(--nav-h) + 10px)}
+  .hero-flank .flankrow{gap:12px}
+  .hero-flank .mascot{width:50px;height:50px;border-radius:15px}
+  .hero-flank .mrow{gap:10px}
+  .hero-sub{font-size:1.02rem;margin-top:12px}
+  .kicker{font-size:.7rem;letter-spacing:.12em}
+
+  /* ---- the download row -----------------------------------------------
+     A 999px pill is a shape for a single row of chips. Wrapped onto three
+     lines at 390px it became a rounded blob with the chips floating loose
+     inside it. Below 760 it is a CARD with a two-up grid: the visitor's own
+     platform full width on top (the script above marks it .primary), the
+     other four underneath. Same chips, same order, same accent. */
+  body.fade-a .dlfloat,body.fade-b .dlfloat,
+  body.fade-c .dlfloat,body.fade-d .dlfloat{
+    display:flex;flex-direction:column;align-items:stretch;gap:10px;
+    width:100%;margin-top:20px}
+  .dlpill{display:grid;grid-template-columns:1fr 1fr;gap:8px;
+    padding:12px;border-radius:calc(var(--radius) + 4px);width:auto !important}
+  body.legend-on .dlpill{padding-top:16px}
+  body.legend-on .dl-legend{left:16px}
+  .dlchip{grid-column:span 1;justify-content:center;padding:14px 8px;
+    border-radius:var(--radius);background:rgba(var(--fg-rgb),.07);
+    font-size:.9rem;min-height:48px}
+  /* First AND full width (Destin 2026-09-03: "the selected one should always be
+     at the top as the first option"). The markup order is Windows, macOS,
+     Linux, Android, iOS and must stay that way — the wide pill's width is
+     pinned per theme and reordering it would move the pill sideways — so the
+     phone reorders visually with `order` instead. */
+  .dlchip.primary{grid-column:1 / -1;order:-1}
+  /* HIDDEN on a phone, not restyled. It does exactly what "Start the demo" on
+     the picture right above it does, and since the demo now waits for a tap
+     that button is the obvious one. The action is not lost -- that is the whole
+     point of keeping the other entry point. */
+  .trypill{display:none}
+
+  /* ---- the live demo ---------------------------------------------------
+     The iframe boots the real app: a 2.2MB script plus its wallpapers. It
+     used to start on its own as soon as it scrolled into view, so a phone on
+     a cellular connection paid ~3MB before the visitor had asked for
+     anything. It now waits for the button. (The gate is in JS; this only
+     makes the button worth tapping.) */
+  /* PHONE-SHAPED, 2:3 (Destin 2026-09-03: "mess with scaling so the demo is
+     actually usable on mobile"). The desktop box is 16:8.8 -- a letterbox. At
+     354px wide that is 195px of app, which is too short to use and too short to
+     read, and a 16:9 still cover-cropped into it lost 43px off each side, which
+     sliced the chat bubbles through the middle of words. At 2:3 the app inside
+     renders its own narrow layout at about 354x531, which is a real phone
+     screen, and the still is the same shape so nothing is cropped at all. */
+  body.fade-d .hero .embed,body.fade-d .embed-stage{aspect-ratio:2/3}
+  .embed-start{padding:14px 22px;font-size:.95rem;min-height:48px;white-space:nowrap}
+  body.fade-d .hero-app{margin-bottom:0}
+
+  /* ---- sections and prose --------------------------------------------- */
+  section{padding:22px 0}
+  .panel{padding:20px 17px}
+  .prose .big{font-size:1.06rem;line-height:1.5}
+  .cols{font-size:.97rem;gap:13px}
+  .permission{margin-top:20px;padding-top:16px;font-size:.9rem}
+  .lede,.note{font-size:.95rem}
+
+  /* the feature deck's narrow layout is the <=1000px block above; the phone
+     only tightens its type and drops the phone-in-a-phone overlay. */
+  .demo-deck .step,
+  .demo-deck .step:nth-child(even){gap:15px;margin-bottom:14px;padding:15px 15px 18px}
+  .demo-deck .step h3{font-size:1.2rem}
+  .demo-deck .step p{font-size:.94rem;margin-top:10px}
+  /* The phone-beside-the-desktop overlay is 20 percent of the clip's width. On a
+     390px screen that is a 68px-wide picture of a phone, on a phone -- and a
+     175KB clip fetched for it. */
+  .deck-phone{display:none !important}
+  .demo-deck .step .deckclip .sketch{padding:15px;font-size:.74rem}
+  /* On the roadmap card the words go FIRST. Every other card is clip-then-copy,
+     but this card's picture is a mock-up of something that does not exist yet
+     and the "Coming after 1.3" chip lives in the copy -- so clip-first meant
+     you met a detailed, real-looking screen a screenful before being told it
+     was a plan. */
+  .demo-deck .step:has(.deckclip-sketch) .deckclip{order:2}
+  .demo-deck .step:has(.deckclip-sketch) .deckcopy{order:1}
+
+  /* ---- gallery ---------------------------------------------------------
+     420px-wide stills overflow a 390px screen, so the last one always looked
+     cut off rather than scrollable. */
+  .gal{padding:18px 0 10px}
+  .gal img{width:min(72vw,420px)}   /* a bigger peek: it has to LOOK swipeable */
+
+  /* ---- FAQ / accounts / integrations ---------------------------------- */
+  .faq summary{padding:15px 17px;font-size:.95rem;gap:10px}
+  .faq .a{padding:0 17px 17px;font-size:.92rem}
+  .acct{padding:19px 17px}
+  /* Two or three to a row instead of one or two: the theme fonts are wide,
+     and twenty chips at the desktop size ran fourteen rows down the page.
+     min-height keeps every one a 44px touch target. */
+  .integrations-tags{gap:7px}
+  .integration-tag{padding:9px 13px;font-size:.82rem;min-height:44px}
+
+  /* ---- the closer row -------------------------------------------------- */
+  .closer{gap:18px}
+  .dlrow.small{margin:0;justify-content:flex-start;width:100%}
+
+  /* ---- footer ----------------------------------------------------------
+     A flex row with `margin-left:auto` on the links: at 390px "Built by
+     Destin" broke over three lines and the Open Source badge sat in the
+     middle of them. Stacked here, and the badge sits beside the wordmark
+     (Destin 2026-09-03) rather than trailing the links. */
+  .foot{flex-direction:column;align-items:flex-start;gap:14px;padding:22px 18px}
+  /* logo and badge share the first line; `order` does the rest of the stack. */
+  .foot .logo{order:1}
+  .foot .badge{order:2;margin-top:-38px;margin-left:150px}
+  .flinks{order:3;margin-left:0;flex-wrap:wrap;gap:4px 6px}
+  /* 44px tall, not 23px -- these were the smallest tap targets on the page. */
+  .flinks a{font-size:.9rem;padding:11px 10px;margin:0 -10px}
+  .legal{order:4;font-size:.75rem}
+
+  /* ---- the "back to Download" pill -------------------------------------
+     Hidden on desktop because the floating download pill is always docked at
+     the bottom of the window. On a phone that pill is static in the hero, so
+     once you have scrolled past it the page has no download control at all
+     until the footer -- roughly 13,000px of nothing to press. */
+  body.fade-d .topcta{display:block !important}
+  /* CENTRED (Destin 2026-09-03). It was moved to the bottom-right corner to
+     keep it off the middle of a headline; he wants it centred, and the reason
+     it was moved is mostly gone anyway now that it hides while you read down
+     and only appears on the way back up. Position and transform are the base
+     rule's; only the size and the gap change here. */
+  .topcta{bottom:16px;padding:12px 20px;font-size:.84rem}
+}
+
+
+/* ---- touch feedback (LAST in the sheet on purpose) -------------------------------------------------------
+   Tapping anything was painting the browser's own translucent grey-blue block
+   over it (Destin 2026-09-03: "the gross native-browser blue highlight region"),
+   which on the FAQ rows covers the whole card. The property is inherited, so
+   one declaration at the root covers the page; it does nothing at all under a
+   mouse, so no desktop visitor sees a change from this line.
+
+   Turning it off with nothing in its place would leave a tap looking like it
+   missed, so the controls that had only a :hover state — which a finger never
+   triggers — get a real pressed state below. `user-select:none` goes on the
+   same set: a tap that lands slightly long on a summary was starting a text
+   selection, which is the other half of what reads as "highlighted". It is NOT
+   on paragraphs; body copy stays selectable. */
+html{-webkit-tap-highlight-color:transparent}
+.faq summary,.dlbtn,.dlchip,.trypill,.topcta,.integration-tag,.mascot,.sw,
+.acct,.flinks a,.nav-links a,.logo,.railtab,.dot,.embed-start,.install-modal-close,
+.distro-option,.install-modal-download-btn,.install-modal-details summary{
+  -webkit-user-select:none;user-select:none}
+/* Pressed states. Deliberately a shade of the theme's own foreground rather
+   than an accent wash: it has to read on six wallpapers and under a thumb that
+   is covering most of the control. */
+.faq summary:active{background:rgba(var(--fg-rgb),.07)}
+.integration-tag:active,.distro-option:active{background:rgba(var(--fg-rgb),.12)}
+/* .acct's background is `var(--glass-prose) !important` (the readability floor
+   every prose panel gets), so a background here cannot win. Brightness instead. */
+.acct:active{filter:brightness(.95)}
+.dlchip:active,.dlbtn:active,.flinks a:active,.nav-links a:active{opacity:.72}
+.dlchip.primary:active,.dlbtn.primary:active,.topcta:active,
+.install-modal-download-btn:active{filter:brightness(.92)}
+.mascot:active{transform:scale(.96)}
+.trypill:active,.embed-start:active{filter:brightness(.94)}
 </style>
 </head>
-<body class="intro-mode fade-d pill-accent legend-on h1-md brand-tile wm-one">
+<body class="intro-mode fade-d pill-accent legend-on h1-md">
 
 <div class="backdrop" id="backdrop"><div class="bd-layer" id="bd-a"></div><div class="bd-layer" id="bd-b"></div><div class="bd-scrim"></div></div>
 
 <nav class="nav"><div class="nav-in">
-  <a href="#top" class="logo"><span class="mark"><span class="mark-yc">YC</span><svg class="mark-bot" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
+  <a href="#top" class="logo"><span class="mark"><svg class="mark-bot" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
   <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
        actually renders for a theme that ships no mascot of its own. Pure
        currentColor, so it takes whichever theme colour we set on the button. -->
@@ -1175,7 +1697,7 @@ body.cycler-static .lead-hold{display:none}
   <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
   <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
   <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
-</svg></span><span class="wm"><span class="wm-name">You<b>Coded</b></span><span class="wm-rule"></span> <i>Assistant</i><em>Agents for everyone</em></span></a>
+</svg></span><span class="wm"><span class="wm-name"><span class="wm-a">You</span><b>Coded</b></span> <i>Assistant</i><em>Agents for everyone</em></span></a>
   <div class="nav-right">
     
     <ul class="nav-links"><li><a href="#about">About</a></li><li><a href="#demo">Features</a></li><li><a href="#faq">FAQ</a></li></ul>
@@ -1186,26 +1708,144 @@ body.cycler-static .lead-hold{display:none}
   <div class="wrap">
     <p class="kicker">Free &middot; Open source &middot; BYO model</p>
     <div class="flankrow">
-      <div class="mrow mrow-l"><button class="mascot" data-theme="cotton-candy-sky" aria-label="Use the Cotton Candy Sky look" style="--a:#8B47B8"><span class="m-chip"></span><svg class="m-art" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-  <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
-       actually renders for a theme that ships no mascot of its own. Pure
-       currentColor, so it takes whichever theme colour we set on the button. -->
-  <path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
-  <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>
-  <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
-  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
-  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
+      <div class="mrow mrow-l">
+<button class="mascot" data-theme="cotton-candy-sky" data-idle="float" data-acts="wave cheer" data-face="welcome"
+  aria-label="Use the Cotton Candy Sky look" style="--a:#8B47B8;--rig-on-accent:#2c173b"><span class="m-chip"></span>
+<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<defs>
+<radialGradient id="g-hi-cotton-candy-sky" cx="33%" cy="20%" r="80%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.42"/>
+<stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="g-lo-cotton-candy-sky" x1="0" y1="0" x2="0.22" y2="1">
+<stop offset="52%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.34"/>
+</linearGradient>
+<linearGradient id="g-limb-shade-cotton-candy-sky" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.32"/>
+</linearGradient>
+<radialGradient id="g-spec-cotton-candy-sky" cx="30%" cy="16%" r="26%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="f-soft-cotton-candy-sky" x="-60%" y="-60%" width="220%" height="220%">
+<feGaussianBlur stdDeviation="0.45"/>
+</filter>
+</defs>
+<g class="rig-idle">
+<g class="rig-root">
+<g class="rig-arm-left" data-pivot="2.5 9">
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#g-limb-shade-cotton-candy-sky)"/>
+</g>
+<g class="rig-arm-right" data-pivot="21.5 9">
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="url(#g-limb-shade-cotton-candy-sky)"/>
+<g id="slot-item-cotton-candy-sky"/>
+</g>
+<g class="rig-leg-left" data-pivot="8.95 17">
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-cotton-candy-sky)"/>
+</g>
+<g class="rig-leg-right" data-pivot="15.05 17">
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-cotton-candy-sky)"/>
+</g>
+<g class="rig-body">
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-lo-cotton-candy-sky)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-hi-cotton-candy-sky)"/>
+<ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#g-spec-cotton-candy-sky)" transform="rotate(-14 9.6 6.4)"/>
+<path d="M5 10.5 L5 8 A4 4 0 0 1 9 4 L11 4" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.32" filter="url(#f-soft-cotton-candy-sky)"/>
+<g class="rig-face rig-face-idle">
+<path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+<path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+</g>
+<g class="rig-face rig-face-welcome"><clipPath id="lid-9.3-9.55-0.0-cotton-candy-sky"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-cotton-candy-sky)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-cotton-candy-sky"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-cotton-candy-sky)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
+</g>
+<g class="rig-face rig-face-curious"><clipPath id="lid-9.3-9.55-0.0-cotton-candy-sky"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-cotton-candy-sky)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-cotton-candy-sky"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-cotton-candy-sky)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M8 7.1 L10.6 6.9" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.600 Q14.7 5.700 16.050 6.000" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12.05" cy="13.35" rx="0.45" ry="0.5" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
+<ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-shocked"><clipPath id="lid-9.3-9.7-0.0-cotton-candy-sky"><rect x="7.308" y="7.236" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-9.3-9.7-0.0-cotton-candy-sky)"><ellipse cx="9.3" cy="9.7" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.084" cy="10.484" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="9.356" cy="11.156" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.420" cy="11.156" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.4-0.0-cotton-candy-sky"><rect x="12.708" y="6.936" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-14.7-9.4-0.0-cotton-candy-sky)"><ellipse cx="14.7" cy="9.4" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.484" cy="10.184" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="14.756" cy="10.856" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.820" cy="10.856" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M7.950 6.500 Q9.3 5.900 10.650 6.500" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.200 Q14.7 5.600 16.050 6.200" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12" cy="13.6" rx="0.7" ry="0.85" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-happy"><path d="M8 10.4 Q9.3 8.6 10.6 10.4" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M13.4 10.1 Q14.7 8.3 16 10.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M10.3 13 Q10.3 12.7 12 12.7 Q13.7 12.7 13.7 13 A1.7 1.5 0 0 1 10.3 13 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-blink"><path d="M8 10 Q9.3 10.5 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><path d="M13.4 9.8 Q14.7 10.3 16 9.8" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
+<g id="slot-eyewear-cotton-candy-sky"/>
+</g>
+<g id="slot-hat-cotton-candy-sky"/>
+</g></g>
 </svg><span class="m-name">Cotton Candy Sky</span></button>
-        <button class="mascot" data-theme="meadow-mist" aria-label="Use the Meadow Mist look" style="--a:#2F7D55"><span class="m-chip"></span><svg class="m-art" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-  <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
-       actually renders for a theme that ships no mascot of its own. Pure
-       currentColor, so it takes whichever theme colour we set on the button. -->
-  <path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
-  <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>
-  <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
-  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
-  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
-</svg><span class="m-name">Meadow Mist</span></button></div>
+<button class="mascot" data-theme="meadow-mist" data-idle="breathe" data-acts="shrug nod" data-face="welcome"
+  aria-label="Use the Meadow Mist look" style="--a:#2F7D55;--rig-on-accent:#0f281b"><span class="m-chip"></span>
+<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<defs>
+<radialGradient id="g-hi-meadow-mist" cx="33%" cy="20%" r="80%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.42"/>
+<stop offset="55%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="g-lo-meadow-mist" x1="0" y1="0" x2="0.22" y2="1">
+<stop offset="52%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.34"/>
+</linearGradient>
+<linearGradient id="g-limb-shade-meadow-mist" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+<stop offset="100%" stop-color="#000000" stop-opacity="0.32"/>
+</linearGradient>
+<radialGradient id="g-spec-meadow-mist" cx="30%" cy="16%" r="26%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="f-soft-meadow-mist" x="-60%" y="-60%" width="220%" height="220%">
+<feGaussianBlur stdDeviation="0.45"/>
+</filter>
+</defs>
+<g class="rig-idle">
+<g class="rig-root">
+<g class="rig-arm-left" data-pivot="2.5 9">
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#g-limb-shade-meadow-mist)"/>
+</g>
+<g class="rig-arm-right" data-pivot="21.5 9">
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="url(#g-limb-shade-meadow-mist)"/>
+<g id="slot-item-meadow-mist"/>
+</g>
+<g class="rig-leg-left" data-pivot="8.95 17">
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-meadow-mist)"/>
+</g>
+<g class="rig-leg-right" data-pivot="15.05 17">
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="var(--rig-accent, #f0a828)"/>
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="url(#g-limb-shade-meadow-mist)"/>
+</g>
+<g class="rig-body">
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="var(--rig-accent, #f0a828)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-lo-meadow-mist)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#g-hi-meadow-mist)"/>
+<ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#g-spec-meadow-mist)" transform="rotate(-14 9.6 6.4)"/>
+<path d="M5 10.5 L5 8 A4 4 0 0 1 9 4 L11 4" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.32" filter="url(#f-soft-meadow-mist)"/>
+<g class="rig-face rig-face-idle">
+<path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+<path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+</g>
+<g class="rig-face rig-face-welcome"><clipPath id="lid-9.3-9.55-0.0-meadow-mist"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-meadow-mist)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-meadow-mist"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-meadow-mist)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
+</g>
+<g class="rig-face rig-face-curious"><clipPath id="lid-9.3-9.55-0.0-meadow-mist"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-meadow-mist)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-meadow-mist"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-meadow-mist)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M8 7.1 L10.6 6.9" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.600 Q14.7 5.700 16.050 6.000" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12.05" cy="13.35" rx="0.45" ry="0.5" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
+<path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
+<ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
+</g>
+<g class="rig-face rig-face-shocked"><clipPath id="lid-9.3-9.7-0.0-meadow-mist"><rect x="7.308" y="7.236" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-9.3-9.7-0.0-meadow-mist)"><ellipse cx="9.3" cy="9.7" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.084" cy="10.484" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="9.356" cy="11.156" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.420" cy="11.156" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.4-0.0-meadow-mist"><rect x="12.708" y="6.936" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-14.7-9.4-0.0-meadow-mist)"><ellipse cx="14.7" cy="9.4" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.484" cy="10.184" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="14.756" cy="10.856" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.820" cy="10.856" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M7.950 6.500 Q9.3 5.900 10.650 6.500" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.200 Q14.7 5.600 16.050 6.200" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12" cy="13.6" rx="0.7" ry="0.85" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-happy"><path d="M8 10.4 Q9.3 8.6 10.6 10.4" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M13.4 10.1 Q14.7 8.3 16 10.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M10.3 13 Q10.3 12.7 12 12.7 Q13.7 12.7 13.7 13 A1.7 1.5 0 0 1 10.3 13 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-blink"><path d="M8 10 Q9.3 10.5 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><path d="M13.4 9.8 Q14.7 10.3 16 9.8" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
+<g id="slot-eyewear-meadow-mist"/>
+</g>
+<g id="slot-hat-meadow-mist"/>
+</g></g>
+</svg><span class="m-name">Meadow Mist</span></button>
+</div>
       <h1>An Assistant That's <span class="word-cycler" aria-label="Useful., Fun., Yours.">
         <span class="cycler-sizer" aria-hidden="true">Useful.</span>
         <span class="cycler-stage" aria-hidden="true">
@@ -1214,33 +1854,191 @@ body.cycler-static .lead-hold{display:none}
           <span class="cycler-word cycler-word-3 cycler-word-final">Yours.</span>
         </span>
       </span></h1>
-      <div class="mrow mrow-r"><button class="mascot" data-theme="halftone-dimension" aria-label="Use the Halftone Dimension look" style="--a:#E51F48"><span class="m-chip"></span><svg class="m-art" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-  <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
-       actually renders for a theme that ships no mascot of its own. Pure
-       currentColor, so it takes whichever theme colour we set on the button. -->
-  <path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
-  <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>
-  <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
-  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
-  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
+      <div class="mrow mrow-r">
+<button class="mascot" data-theme="halftone-dimension" data-idle="scan" data-acts="think startle" data-face="welcome"
+  aria-label="Use the Halftone Dimension look" style="--a:#E51F48"><span class="m-chip"></span>
+<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<!--
+Example rig: Halftone Dimension — the theme's shipped capsule buddy rebuilt to the rig
+contract. 2.5D-soft shading stack on the theme's ink-navy body, with the identity kept
+hardcoded (README → Tinting):
+body #191327 · highlight #332852 · shade #0b0813 · face/socket #1e2636
+CMYK dots + sparkles #e8234a (red) / #00b8ff (cyan) / #ffea00 (yellow)
+The chromatic rim light (cyan top-left / red bottom-right) replaces the single warm rim —
+the misregistered-print read. The dimensional visor is pre-filled into slot-eyewear
+(it is also available standalone at ../components/eyewear/dimensional-visor.svg).
+The chromatic after-image ghost + glitch bars are NOT baked — they ship as scene
+companions that spring-follow the buddy (README → Scene companions).
+NOTE: the shipped flat art drew this body in currentColor, which renders BLACK through
+the app's <img> path — hardcoding the navy here is the fix, not a style change.
+Contract: ../README.md
+-->
+<defs>
+<radialGradient id="hd-hi-halftone-dimension" cx="33%" cy="20%" r="80%">
+<stop offset="0%" stop-color="#332852" stop-opacity="0.9"/>
+<stop offset="55%" stop-color="#332852" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="hd-lo-halftone-dimension" x1="0" y1="0" x2="0.22" y2="1">
+<stop offset="52%" stop-color="#0b0813" stop-opacity="0"/>
+<stop offset="100%" stop-color="#0b0813" stop-opacity="0.8"/>
+</linearGradient>
+<linearGradient id="hd-limb-halftone-dimension" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#191327"/>
+<stop offset="100%" stop-color="#0b0813"/>
+</linearGradient>
+<radialGradient id="hd-spec-halftone-dimension" cx="30%" cy="16%" r="26%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="hd-soft-halftone-dimension" x="-60%" y="-60%" width="220%" height="220%">
+<feGaussianBlur stdDeviation="0.45"/>
+</filter>
+</defs>
+<g class="rig-idle">
+<g class="rig-root">
+<g class="rig-arm-left" data-pivot="2.5 9">
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#hd-limb-halftone-dimension)" stroke="#00b8ff" stroke-width="0.14" stroke-opacity="0.5"/>
+</g>
+<g class="rig-arm-right" data-pivot="21.5 9">
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="url(#hd-limb-halftone-dimension)" stroke="#e8234a" stroke-width="0.14" stroke-opacity="0.5"/>
+<g id="slot-item-halftone-dimension"/>
+</g>
+<g class="rig-leg-left" data-pivot="8.95 17">
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="url(#hd-limb-halftone-dimension)" stroke="#00b8ff" stroke-width="0.14" stroke-opacity="0.4"/>
+</g>
+<g class="rig-leg-right" data-pivot="15.05 17">
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="url(#hd-limb-halftone-dimension)" stroke="#e8234a" stroke-width="0.14" stroke-opacity="0.4"/>
+</g>
+<g class="rig-body">
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="#191327"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#hd-lo-halftone-dimension)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#hd-hi-halftone-dimension)"/>
+<ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#hd-spec-halftone-dimension)" transform="rotate(-14 9.6 6.4)"/>
+<path d="M5 11.5 L5 8 A4 4 0 0 1 9 4 L12 4" fill="none" stroke="#00b8ff" stroke-width="0.35" opacity="0.75" filter="url(#hd-soft-halftone-dimension)"/>
+<path d="M19 8.5 L19 12 A4 4 0 0 1 15 16 L12.5 16" fill="none" stroke="#e8234a" stroke-width="0.35" opacity="0.75" filter="url(#hd-soft-halftone-dimension)"/>
+<circle cx="7" cy="6" r="0.4" fill="#e8234a" opacity="0.25"/><circle cx="9" cy="5.5" r="0.35" fill="#00b8ff" opacity="0.2"/>
+<circle cx="17" cy="6" r="0.4" fill="#e8234a" opacity="0.25"/><circle cx="15" cy="14" r="0.35" fill="#00b8ff" opacity="0.2"/>
+<circle cx="8" cy="14.5" r="0.4" fill="#e8234a" opacity="0.2"/><circle cx="16" cy="5.5" r="0.3" fill="#ffea00" opacity="0.15"/>
+<g class="rig-face rig-face-idle">
+<path fill="#1e2636" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+<path fill="#1e2636" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+</g>
+<g class="rig-face rig-face-welcome">
+<ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="#1e2636"/>
+<ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="#1e2636"/>
+<circle cx="10" cy="10.25" r="0.3" fill="#e8234a" opacity="0.9"/><circle cx="9.35" cy="10.85" r="0.2" fill="#00b8ff" opacity="0.75"/><circle cx="10.3" cy="10.85" r="0.15" fill="#ffea00" opacity="0.6"/>
+<circle cx="15.4" cy="9.95" r="0.3" fill="#e8234a" opacity="0.9"/><circle cx="14.75" cy="10.55" r="0.2" fill="#00b8ff" opacity="0.75"/><circle cx="15.65" cy="10.55" r="0.15" fill="#ffea00" opacity="0.6"/>
+<g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="#1e2636"/></g>
+</g>
+<g class="rig-face rig-face-curious">
+<ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="#1e2636"/>
+<ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="#1e2636"/>
+<g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="#e8234a"/><circle cx="9" cy="10.3" r="0.22" fill="#00b8ff" opacity="0.8"/><circle cx="9.95" cy="10.15" r="0.14" fill="#ffea00" opacity="0.7"/></g>
+<g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="#e8234a"/><circle cx="14.4" cy="10" r="0.22" fill="#00b8ff" opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="#ffea00" opacity="0.7"/></g>
+<path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="#1e2636" stroke-width="0.45" stroke-linecap="round"/>
+<ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="#1e2636"/>
+</g>
+<g class="rig-face rig-face-shocked">
+<circle cx="9.3" cy="9.8" r="2.1" fill="#1e2636"/>
+<circle cx="14.7" cy="9.8" r="2.1" fill="#1e2636"/>
+<circle cx="9.9" cy="9.2" r="0.5" fill="#00b8ff" opacity="0.85"/><circle cx="15.3" cy="9.2" r="0.5" fill="#00b8ff" opacity="0.85"/>
+<ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="#1e2636"/>
+</g>
+<g class="rig-face rig-face-blink">
+<path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="#1e2636" stroke-width="0.9" stroke-linecap="round"/>
+<path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="#1e2636" stroke-width="0.9" stroke-linecap="round"/>
+</g>
+<g id="slot-eyewear-halftone-dimension">
+<rect x="5.8" y="7.6" width="12.4" height="2.8" rx="1.2" fill="#e8234a" opacity="0.55"/>
+<rect x="6.2" y="8" width="11.6" height="2" rx="0.9" fill="#08060e" opacity="0.45"/>
+<path d="M6.6 8.3 L17 8.3" stroke="#00b8ff" stroke-width="0.18" opacity="0.6"/>
+</g>
+</g>
+<g id="slot-hat-halftone-dimension"/>
+</g></g>
 </svg><span class="m-name">Halftone Dimension</span></button>
-        <button class="mascot" data-theme="golden-sunbreak" aria-label="Use the Golden Sunbreak look" style="--a:#ffc030"><span class="m-chip"></span><svg class="m-art" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-  <!-- The app's built-in fallback mascot (AppIcon, Icons.tsx) — what YouCoded
-       actually renders for a theme that ships no mascot of its own. Pure
-       currentColor, so it takes whichever theme colour we set on the button. -->
-  <path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
-  <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>
-  <path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>
-  <rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>
-  <rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>
-</svg><span class="m-name">Golden Sunbreak</span></button></div>
+<button class="mascot" data-theme="golden-sunbreak" data-idle="bob" data-acts="tada armwave" data-face="welcome"
+  aria-label="Use the Golden Sunbreak look" style="--a:#ffc030"><span class="m-chip"></span>
+<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+<!--
+Example rig: Golden Sunbreak — the theme's shipped capsule buddy rebuilt to the rig
+contract in the 2.5D-soft skin (the skin's demo palette IS this theme's amber).
+Identity colors are hardcoded on purpose (README → Tinting):
+body #f0a828 · highlight #ffd268 · shade #b8760f · rim light #ffe9b0
+face/socket #2a1004 · sparkles #ffc030 / #ffe090 / #ffd060
+The flat art's baked sun + dust motes are NOT here — scene flourishes ship as
+companions that spring-follow the buddy (README → Scene companions).
+Contract: ../README.md
+-->
+<defs>
+<radialGradient id="gs-hi-golden-sunbreak" cx="33%" cy="20%" r="80%">
+<stop offset="0%" stop-color="#ffd268" stop-opacity="0.85"/>
+<stop offset="55%" stop-color="#ffd268" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="gs-lo-golden-sunbreak" x1="0" y1="0" x2="0.22" y2="1">
+<stop offset="52%" stop-color="#b8760f" stop-opacity="0"/>
+<stop offset="100%" stop-color="#b8760f" stop-opacity="0.75"/>
+</linearGradient>
+<linearGradient id="gs-limb-golden-sunbreak" x1="0" y1="0" x2="0" y2="1">
+<stop offset="0%" stop-color="#f0a828"/>
+<stop offset="100%" stop-color="#b8760f"/>
+</linearGradient>
+<radialGradient id="gs-spec-golden-sunbreak" cx="30%" cy="16%" r="26%">
+<stop offset="0%" stop-color="#ffffff" stop-opacity="0.5"/>
+<stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+</radialGradient>
+<filter id="gs-soft-golden-sunbreak" x="-60%" y="-60%" width="220%" height="220%">
+<feGaussianBlur stdDeviation="0.45"/>
+</filter>
+</defs>
+<g class="rig-idle">
+<g class="rig-root">
+<g class="rig-arm-left" data-pivot="2.5 9">
+<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#gs-limb-golden-sunbreak)"/>
+</g>
+<g class="rig-arm-right" data-pivot="21.5 9">
+<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z" fill="url(#gs-limb-golden-sunbreak)"/>
+<g id="slot-item-golden-sunbreak"/>
+</g>
+<g class="rig-leg-left" data-pivot="8.95 17">
+<rect x="7.2" y="17" width="3.5" height="4" rx="1.2" fill="url(#gs-limb-golden-sunbreak)"/>
+</g>
+<g class="rig-leg-right" data-pivot="15.05 17">
+<rect x="13.3" y="17" width="3.5" height="4" rx="1.2" fill="url(#gs-limb-golden-sunbreak)"/>
+</g>
+<g class="rig-body">
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="#f0a828"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#gs-lo-golden-sunbreak)"/>
+<path d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z" fill="url(#gs-hi-golden-sunbreak)"/>
+<ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#gs-spec-golden-sunbreak)" transform="rotate(-14 9.6 6.4)"/>
+<path d="M5 10.5 L5 8 A4 4 0 0 1 9 4 L11 4" fill="none" stroke="#ffe9b0" stroke-width="0.32" opacity="0.8" filter="url(#gs-soft-golden-sunbreak)"/>
+<g class="rig-face rig-face-idle">
+<path fill="#2a1004" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+<path fill="#2a1004" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+</g>
+<g class="rig-face rig-face-welcome"><clipPath id="lid-9.3-9.55-0.0-golden-sunbreak"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-golden-sunbreak)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-golden-sunbreak"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-golden-sunbreak)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
+</g>
+<g class="rig-face rig-face-curious"><clipPath id="lid-9.3-9.55-0.0-golden-sunbreak"><rect x="7.500" y="7.350" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-9.3-9.55-0.0-golden-sunbreak)"><ellipse cx="9.3" cy="9.55" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.000" cy="10.250" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="9.350" cy="10.850" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.300" cy="10.850" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.25-0.0-golden-sunbreak"><rect x="12.900" y="7.050" width="3.600" height="4.800"/></clipPath><g clip-path="url(#lid-14.7-9.25-0.0-golden-sunbreak)"><ellipse cx="14.7" cy="9.25" rx="1.600" ry="2.200" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.400" cy="9.950" r="0.300" fill="var(--rig-accent, #ffc030)"/><circle cx="14.750" cy="10.550" r="0.200" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.700" cy="10.550" r="0.140" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M8 7.1 L10.6 6.9" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.600 Q14.7 5.700 16.050 6.000" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12.05" cy="13.35" rx="0.45" ry="0.5" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="#ffc030"/><circle cx="14.4" cy="10" r="0.22" fill="#ffe090"/><circle cx="15.35" cy="9.85" r="0.14" fill="#ffd060"/></g>
+<path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="#2a1004" stroke-width="0.45" stroke-linecap="round"/>
+<ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="#2a1004"/>
+</g>
+<g class="rig-face rig-face-shocked"><clipPath id="lid-9.3-9.7-0.0-golden-sunbreak"><rect x="7.308" y="7.236" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-9.3-9.7-0.0-golden-sunbreak)"><ellipse cx="9.3" cy="9.7" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.084" cy="10.484" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="9.356" cy="11.156" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.420" cy="11.156" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><clipPath id="lid-14.7-9.4-0.0-golden-sunbreak"><rect x="12.708" y="6.936" width="3.984" height="5.328"/></clipPath><g clip-path="url(#lid-14.7-9.4-0.0-golden-sunbreak)"><ellipse cx="14.7" cy="9.4" rx="1.792" ry="2.464" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.484" cy="10.184" r="0.336" fill="var(--rig-accent, #ffc030)"/><circle cx="14.756" cy="10.856" r="0.224" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.820" cy="10.856" r="0.157" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g></g><path d="M7.950 6.500 Q9.3 5.900 10.650 6.500" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.350 6.200 Q14.7 5.600 16.050 6.200" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12" cy="13.6" rx="0.7" ry="0.85" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-happy"><path d="M8 10.4 Q9.3 8.6 10.6 10.4" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M13.4 10.1 Q14.7 8.3 16 10.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M10.3 13 Q10.3 12.7 12 12.7 Q13.7 12.7 13.7 13 A1.7 1.5 0 0 1 10.3 13 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+<g class="rig-face rig-face-blink"><path d="M8 10 Q9.3 10.5 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><path d="M13.4 9.8 Q14.7 10.3 16 9.8" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g></g>
+<g id="slot-eyewear-golden-sunbreak"/>
+</g>
+<g id="slot-hat-golden-sunbreak"/>
+</g></g>
+</svg><span class="m-name">Golden Sunbreak</span></button>
+</div>
     </div>
     <p class="hero-sub">An AI agent you own and shape. Use any AI model from any provider to work and build your way.</p>
     <div class="dlrow">
-        <a data-dl="dl-windows" class="dlbtn primary" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3,12V6.75L9,5.43V11.91L3,12M20,3V11.75L10,11.9V5.21L20,3M3,13L9,13.09V19.9L3,18.75V13M20,13.25V22L10,20.09V13.1L20,13.25Z"/></svg><span>Windows</span></a>
-        <a data-dl="dl-macos" class="dlbtn" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg><span>macOS</span></a>
-        <a data-dl="dl-linux" class="dlbtn" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19,16C19,17.72 18.37,19.3 17.34,20.5C17.75,20.89 18,21.41 18,22H6C6,21.41 6.25,20.89 6.66,20.5C5.63,19.3 5,17.72 5,16H3C3,14.75 3.57,13.64 4.46,12.91L4.47,12.89C6,11.81 7,10 7,8V7A5,5 0 0,1 12,2A5,5 0 0,1 17,7V8C17,10 18,11.81 19.53,12.89L19.54,12.91C20.43,13.64 21,14.75 21,16H19M16,16A4,4 0 0,0 12,12A4,4 0 0,0 8,16A4,4 0 0,0 12,20A4,4 0 0,0 16,16Z"/></svg><span>Linux</span></a>
-        <a data-dl="dl-android" class="dlbtn" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.44 5.56c-.68 1.16-1.36 2.33-2.03 3.5-.04-.02-.08-.03-.11-.04-1.83-.7-3.49-.8-4.42-.79-1.86.02-3.36.46-4.26.82-.09-.15-1.76-3.02-2.03-3.49a1.15 1.15 0 0 0-.14-.19c-.33-.36-.9-.49-1.38-.2-.47.28-.71.94-.39 1.5 1.95 3.37-.1-.22 1.95 3.36.02.03-.5.26-1.4 1.02C2.9 12.18.45 14.77 0 18.99h24c-.12-1.11-.37-2.1-.75-3.07-.74-1.91-1.84-3.29-2.74-4.18a12.1 12.1 0 0 0-2.13-1.69c.66-1.12 1.31-2.25 1.96-3.38.21-.36.19-.8-.01-1.12a1.1 1.1 0 0 0-.85-.53c-.52-.05-.94.31-1.05.54z"/></svg><span>Android</span></a>
+        <a data-dl="dl-windows" class="dlbtn primary" href="https://github.com/itsdestin/youcoded/releases"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3,12V6.75L9,5.43V11.91L3,12M20,3V11.75L10,11.9V5.21L20,3M3,13L9,13.09V19.9L3,18.75V13M20,13.25V22L10,20.09V13.1L20,13.25Z"/></svg><span>Windows</span></a>
+        <a data-dl="dl-macos" class="dlbtn" href="https://github.com/itsdestin/youcoded/releases"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg><span>macOS</span></a>
+        <a data-dl="dl-linux" class="dlbtn" href="https://github.com/itsdestin/youcoded/releases"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19,16C19,17.72 18.37,19.3 17.34,20.5C17.75,20.89 18,21.41 18,22H6C6,21.41 6.25,20.89 6.66,20.5C5.63,19.3 5,17.72 5,16H3C3,14.75 3.57,13.64 4.46,12.91L4.47,12.89C6,11.81 7,10 7,8V7A5,5 0 0,1 12,2A5,5 0 0,1 17,7V8C17,10 18,11.81 19.53,12.89L19.54,12.91C20.43,13.64 21,14.75 21,16H19M16,16A4,4 0 0,0 12,12A4,4 0 0,0 8,16A4,4 0 0,0 12,20A4,4 0 0,0 16,16Z"/></svg><span>Linux</span></a>
+        <a data-dl="dl-android" class="dlbtn" href="https://github.com/itsdestin/youcoded/releases"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.44 5.56c-.68 1.16-1.36 2.33-2.03 3.5-.04-.02-.08-.03-.11-.04-1.83-.7-3.49-.8-4.42-.79-1.86.02-3.36.46-4.26.82-.09-.15-1.76-3.02-2.03-3.49a1.15 1.15 0 0 0-.14-.19c-.33-.36-.9-.49-1.38-.2-.47.28-.71.94-.39 1.5 1.95 3.37-.1-.22 1.95 3.36.02.03-.5.26-1.4 1.02C2.9 12.18.45 14.77 0 18.99h24c-.12-1.11-.37-2.1-.75-3.07-.74-1.91-1.84-3.29-2.74-4.18a12.1 12.1 0 0 0-2.13-1.69c.66-1.12 1.31-2.25 1.96-3.38.21-.36.19-.8-.01-1.12a1.1 1.1 0 0 0-.85-.53c-.52-.05-.94.31-1.05.54z"/></svg><span>Android</span></a>
         <a data-dl="dl-ios" class="dlbtn" href="#"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg><span>iOS<sup>*</sup></span></a>
     </div>
     <div class="hero-app"><div class="frame embed"><div class="embed-stage">
@@ -1252,10 +2050,10 @@ body.cycler-static .lead-hold{display:none}
     <div class="dlfloat">
         <div class="dlpill">
           <span class="dl-legend">Download</span>
-          <a data-dl="dl-windows" class="dlchip primary" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3,12V6.75L9,5.43V11.91L3,12M20,3V11.75L10,11.9V5.21L20,3M3,13L9,13.09V19.9L3,18.75V13M20,13.25V22L10,20.09V13.1L20,13.25Z"/></svg><span>Windows</span></a>
-        <a data-dl="dl-macos" class="dlchip" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg><span>macOS</span></a>
-        <a data-dl="dl-linux" class="dlchip" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19,16C19,17.72 18.37,19.3 17.34,20.5C17.75,20.89 18,21.41 18,22H6C6,21.41 6.25,20.89 6.66,20.5C5.63,19.3 5,17.72 5,16H3C3,14.75 3.57,13.64 4.46,12.91L4.47,12.89C6,11.81 7,10 7,8V7A5,5 0 0,1 12,2A5,5 0 0,1 17,7V8C17,10 18,11.81 19.53,12.89L19.54,12.91C20.43,13.64 21,14.75 21,16H19M16,16A4,4 0 0,0 12,12A4,4 0 0,0 8,16A4,4 0 0,0 12,20A4,4 0 0,0 16,16Z"/></svg><span>Linux</span></a>
-        <a data-dl="dl-android" class="dlchip" href="https://github.com/itsdestin/youcoded/releases/latest"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.44 5.56c-.68 1.16-1.36 2.33-2.03 3.5-.04-.02-.08-.03-.11-.04-1.83-.7-3.49-.8-4.42-.79-1.86.02-3.36.46-4.26.82-.09-.15-1.76-3.02-2.03-3.49a1.15 1.15 0 0 0-.14-.19c-.33-.36-.9-.49-1.38-.2-.47.28-.71.94-.39 1.5 1.95 3.37-.1-.22 1.95 3.36.02.03-.5.26-1.4 1.02C2.9 12.18.45 14.77 0 18.99h24c-.12-1.11-.37-2.1-.75-3.07-.74-1.91-1.84-3.29-2.74-4.18a12.1 12.1 0 0 0-2.13-1.69c.66-1.12 1.31-2.25 1.96-3.38.21-.36.19-.8-.01-1.12a1.1 1.1 0 0 0-.85-.53c-.52-.05-.94.31-1.05.54z"/></svg><span>Android</span></a>
+          <a data-dl="dl-windows" class="dlchip primary" href="https://github.com/itsdestin/youcoded/releases"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3,12V6.75L9,5.43V11.91L3,12M20,3V11.75L10,11.9V5.21L20,3M3,13L9,13.09V19.9L3,18.75V13M20,13.25V22L10,20.09V13.1L20,13.25Z"/></svg><span>Windows</span></a>
+        <a data-dl="dl-macos" class="dlchip" href="https://github.com/itsdestin/youcoded/releases"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg><span>macOS</span></a>
+        <a data-dl="dl-linux" class="dlchip" href="https://github.com/itsdestin/youcoded/releases"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19,16C19,17.72 18.37,19.3 17.34,20.5C17.75,20.89 18,21.41 18,22H6C6,21.41 6.25,20.89 6.66,20.5C5.63,19.3 5,17.72 5,16H3C3,14.75 3.57,13.64 4.46,12.91L4.47,12.89C6,11.81 7,10 7,8V7A5,5 0 0,1 12,2A5,5 0 0,1 17,7V8C17,10 18,11.81 19.53,12.89L19.54,12.91C20.43,13.64 21,14.75 21,16H19M16,16A4,4 0 0,0 12,12A4,4 0 0,0 8,16A4,4 0 0,0 12,20A4,4 0 0,0 16,16Z"/></svg><span>Linux</span></a>
+        <a data-dl="dl-android" class="dlchip" href="https://github.com/itsdestin/youcoded/releases"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.44 5.56c-.68 1.16-1.36 2.33-2.03 3.5-.04-.02-.08-.03-.11-.04-1.83-.7-3.49-.8-4.42-.79-1.86.02-3.36.46-4.26.82-.09-.15-1.76-3.02-2.03-3.49a1.15 1.15 0 0 0-.14-.19c-.33-.36-.9-.49-1.38-.2-.47.28-.71.94-.39 1.5 1.95 3.37-.1-.22 1.95 3.36.02.03-.5.26-1.4 1.02C2.9 12.18.45 14.77 0 18.99h24c-.12-1.11-.37-2.1-.75-3.07-.74-1.91-1.84-3.29-2.74-4.18a12.1 12.1 0 0 0-2.13-1.69c.66-1.12 1.31-2.25 1.96-3.38.21-.36.19-.8-.01-1.12a1.1 1.1 0 0 0-.85-.53c-.52-.05-.94.31-1.05.54z"/></svg><span>Android</span></a>
         <a data-dl="dl-ios" class="dlchip" href="#"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg><span>iOS<sup>*</sup></span></a>
 <script>
 // Highlight the visitor's own platform as the primary download, on both the
@@ -1454,8 +2252,9 @@ body.cycler-static .lead-hold{display:none}
 
 <footer><div class="wrap"><div class="panel foot">
   <a href="#top" class="logo"><span class="mark">YC</span><span class="wm">You<b>Coded</b></span></a>
-  <div class="flinks"><a href="https://github.com/itsdestin/youcoded" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/itsdestin" target="_blank" rel="noopener">Built by Destin</a><a href="https://github.com/itsdestin/youcoded/blob/master/PRIVACY.md" target="_blank" rel="noopener">Privacy</a><a href="https://github.com/itsdestin/youcoded/blob/master/TERMS.md" target="_blank" rel="noopener">Terms</a><span class="badge">Open Source</span></div>
-  <p class="legal">MIT License &middot; YouCoded is an independent, community-built project. Not affiliated with, endorsed by, or officially supported by Anthropic.</p>
+  <span class="badge">Open Source</span>
+  <div class="flinks"><a href="https://github.com/itsdestin/youcoded" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/itsdestin" target="_blank" rel="noopener">Built by Destin</a><a href="https://github.com/itsdestin/youcoded/blob/master/PRIVACY.md" target="_blank" rel="noopener">Privacy</a><a href="https://github.com/itsdestin/youcoded/blob/master/TERMS.md" target="_blank" rel="noopener">Terms</a></div>
+  <p class="legal">MIT License &middot; YouCoded is an independent, community-built project. Not affiliated with, endorsed by, or officially supported by Anthropic, OpenAI, or OpenRouter.</p>
 </div></div></footer>
 
 <button class="topcta" id="topcta">&uarr; Download</button>
@@ -1470,7 +2269,7 @@ body.cycler-static .lead-hold{display:none}
     <div class="install-modal-body" id="install-modal-body"></div>
     <div class="install-modal-footer">
       <a class="install-modal-download-btn" id="install-modal-download-btn"
-         href="https://github.com/itsdestin/youcoded/releases/latest"
+         href="https://github.com/itsdestin/youcoded/releases"
          target="_blank" rel="noopener">Download Now</a>
     </div>
   </div>
@@ -1489,6 +2288,27 @@ function backdropCss(t){
 }
 function rgb(h){ h=(h||'#000').replace('#',''); if(h.length===3) h=h.split('').map(function(c){return c+c}).join('');
   return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)].join(','); }
+// The tab icon IS the nav mark: same rounded accent square, same built-in
+// mascot, re-tinted for whichever theme is showing (inset 72% not the header's
+// 60% -- a 16px tab needs the bigger glyph; see docs/favicon.svg). Built
+// as a data: URL rather than eight static files, so a theme added to THEMES gets
+// a matching favicon with nothing else to remember. Chrome re-reads the <link>
+// on href change; swapping the whole element is not needed and flickers.
+// MASCOT_PATHS is the one copy of the silhouette -- docs/favicon.svg (the
+// resting state a bookmark or a crawler gets) draws the identical paths.
+var MASCOT_PATHS =
+  '<path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>' +
+  '<path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/>' +
+  '<path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/>' +
+  '<rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/>' +
+  '<rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/>';
+function setFavicon(t){
+  var link = document.getElementById('favicon'); if (!link) return;
+  var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">' +
+    '<rect width="48" height="48" rx="16.6" fill="' + t.accent + '"/>' +
+    '<g transform="translate(6.72 6.72) scale(1.44)" fill="' + t.onAccent + '">' + MASCOT_PATHS + '</g></svg>';
+  link.setAttribute('href', 'data:image/svg+xml,' + encodeURIComponent(svg));
+}
 function applyTheme(slug){
   var t = THEMES[slug]; if(!t) return;
   var r = document.documentElement.style;
@@ -1529,14 +2349,40 @@ function applyTheme(slug){
     s.classList.toggle('on', on);
     s.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
+  setFavicon(t);
   try { localStorage.setItem('yc-mock-theme', slug); } catch(e){}
   // The demo is the real app's interface, and it keeps its theme under this
   // key (same origin, so we share storage): set it before boot, sync it after.
   currentTheme = slug;
   try { localStorage.setItem('youcoded-theme', slug); } catch(e){}
   syncEmbedTheme();
+  setEmbedPoster();
   if (typeof maskEmbed === 'function') maskEmbed();
 }
+
+// The still behind the "Start the demo" button, on a phone, is a picture of the
+// app IN THE THEME THE PAGE IS CURRENTLY WEARING (Destin 2026-09-03: "the
+// unstarted window should still be an image with the correct/current webpage
+// theme applied"). It matters more than it used to: on a phone the demo now
+// waits for a tap, so the still is what most visitors actually see, and a
+// picture of some other theme made the mascot picker look broken.
+//
+// One file per picker theme, shot 2:3 from this very embed so the still and the
+// live thing behind it are the same shape and the same app. Desktop keeps the
+// single wide embed.webp -- its box is a different shape and it boots on its own
+// anyway, so the still is barely on screen.
+var PHONE_POSTERS = ['cotton-candy-sky', 'meadow-mist', 'halftone-dimension', 'golden-sunbreak'];
+var posterPhoneMQ = matchMedia('(max-width: 760px)');
+function setEmbedPoster(){
+  var img = embed && embed.querySelector('.embed-poster');
+  if (!img) return;
+  var want = (posterPhoneMQ.matches && PHONE_POSTERS.indexOf(currentTheme) >= 0)
+    ? 'media/embed-phone-' + currentTheme + '.webp'
+    : 'media/embed.webp';
+  // Never re-assign the same src: that restarts the decode and flashes.
+  if (img.getAttribute('src') !== want) img.setAttribute('src', want);
+}
+addEventListener('resize', setEmbedPoster);
 
 // --- Gallery scroller: dissolve an end only while there is more that way.
 (function(){
@@ -1661,11 +2507,31 @@ function chainWheel(frame){
   }, { passive: false, capture: true });
 }
 
+// The demo is the desktop app, so its title bar carries the minimise / maximise
+// / close buttons Electron needs on a frameless window. On a phone they are
+// three controls for a window there is no window manager for, and Destin asked
+// for them gone (2026-09-03). Hidden here rather than in the app: nothing about
+// the product changes, only this marketing embed, and only on a phone -- on a
+// desktop the demo IS a desktop window and its chrome belongs to it.
+//
+// Matched on the buttons' own `title`, which is the one stable thing about them
+// (the cluster's class list is Tailwind utilities). If those titles are ever
+// reworded the buttons simply come back, which is visible rather than silent.
+var PHONE_EMBED_CSS = 'div:has(> button[title="Minimize"]){display:none !important}';
+function stripEmbedChrome(f){
+  if (!posterPhoneMQ.matches) return;
+  try {
+    var d = f.contentDocument; if (!d || d.getElementById('yc-phone-chrome')) return;
+    var st = d.createElement('style'); st.id = 'yc-phone-chrome';
+    st.textContent = PHONE_EMBED_CSS;
+    (d.head || d.documentElement).appendChild(st);
+  } catch (e) { /* cross-origin one day: leave the chrome alone */ }
+}
 function bootEmbed(){
   if (!embed || embedLive) return; embedLive = true;
   var f = embed.querySelector('.embed-iframe'), start = embed.querySelector('.embed-start'), inter = embed.querySelector('.embed-interact');
   start.hidden = true;
-  f.addEventListener('load', function(){ embed.classList.add('live'); inter.hidden = false; syncEmbedTheme(); chainWheel(f); });
+  f.addEventListener('load', function(){ embed.classList.add('live'); inter.hidden = false; syncEmbedTheme(); stripEmbedChrome(f); chainWheel(f); });
   f.src = f.dataset.src + '#t=' + currentTheme;
 }
 // --- The download pill: floats over the embed's dissolve, then docks to the
@@ -1677,7 +2543,22 @@ var demoRevealed = false, lastFz = null;
 // under the demo. The docked rule is `body.fade-d .dlfloat.docked`, which
 // OUTRANKS the media query's `position:static`, so without this guard a narrow
 // window turned the row into a fixed overlay the moment you scrolled.
-var wideMQ = matchMedia('(min-width: 821px)');
+// Docking the pill needs WIDTH for the five chips and HEIGHT to be worth the
+// screen it takes. A phone on its side is 844x390: wide enough for the old
+// width-only test, so the desktop's fixed translucent bar pinned itself over
+// two fifths of the window and page text scrolled visibly through it (found
+// 2026-09-03). 520px of height is the floor -- every laptop clears it, no
+// landscape phone does.
+var wideMQ = matchMedia('(min-width: 821px) and (min-height: 480px)');
+// The phone layout (see the <=760px block in the stylesheet). Anything
+// scroll-driven, anything that boots a megabyte, and anything that measures
+// a pill nobody can see is gated on this.
+var phoneMQ = matchMedia('(max-width: 760px)');
+// The narrow feature deck (see the <=1000px block in the stylesheet). Wider than
+// the phone line on purpose: the deck's scroll ladder assumes every card is the
+// same height, which stops being true the moment this page single-columns any of
+// them -- and it already does that at 1000.
+var narrowMQ = matchMedia('(max-width: 1000px)');
 function placeFloat(){
   if (!dlFloat || !heroApp || getComputedStyle(dlFloat).display === 'none') return;
   if (!wideMQ.matches) { dlFloat.classList.remove('docked', 'hidden'); return; }
@@ -1813,8 +2694,16 @@ if (tryPill && embed) {
 if (embed) {
   embed.querySelector('.embed-start').addEventListener('click', function(){ bootEmbed(); embed.classList.add('interactive'); });
   embed.querySelector('.embed-interact').addEventListener('click', function(){ embed.classList.add('interactive'); });
-  // Also boot once it scrolls into view, unless the visitor asked for less motion.
-  if (!matchMedia('(prefers-reduced-motion: reduce)').matches && 'IntersectionObserver' in window) {
+  // Also boot once it scrolls into view, unless the visitor asked for less
+  // motion -- or is on a phone, or has Data Saver on. The iframe is the REAL
+  // app: a 2.2MB script plus its wallpapers, about 3MB before anyone has asked
+  // for it. On a desktop that is a demo booting while you read the headline;
+  // on a phone on cellular it is a third of the page's whole weight spent on
+  // something the visitor may never touch. There it waits for the button.
+  var autoBoot = !matchMedia('(prefers-reduced-motion: reduce)').matches
+    && !phoneMQ.matches
+    && !(navigator.connection && navigator.connection.saveData);
+  if (autoBoot && 'IntersectionObserver' in window) {
     // A "most of the embed is visible" threshold never becomes true when the
     // embed is TALLER than the window (763px in an 813px viewport leaves it
     // just short at rest), so D1's demo sat on its dark poster until the
@@ -1836,6 +2725,175 @@ document.addEventListener('click', function(e){
   var b = e.target.closest('.sw, .mascot'); if (b) applyTheme(b.dataset.theme);
 });
 applyTheme("cotton-candy-sky");
+
+// ---------------------------------------------------------------------------
+// MASCOT BEHAVIOUR (2026-09-04). Each of the four picker chips has its own idle
+// turn and its own face, so the row reads as four characters rather than four
+// copies of one icon. All the motion is in CSS (see "RIGGED MASCOTS" above);
+// this only decides WHEN, and the "when" is deliberately staggered so the four
+// never fire together -- four simultaneous animations read as one twitch.
+//
+// Cheap on purpose: no requestAnimationFrame, no per-frame work. Timers set an
+// attribute; the compositor does the rest. The whole loop also stops while the
+// hero is off screen, because animating four SVGs nobody can see is pure cost.
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// MASCOT BEHAVIOUR (2026-09-04). Two layers, per Destin: every chip runs its own
+// LONG IDLE forever (float / breathe / scan / bob -- see the stylesheet), and
+// every few seconds it plays one of its two MINOR POSES over the top. The poses
+// are taken in ROTATION rather than at random, so a visitor who watches for ten
+// seconds sees both of a character's moves rather than the same one twice.
+//
+// Rarely, all four do the wave down the row instead.
+//
+// Cheap on purpose: no requestAnimationFrame, no per-frame work. Timers set an
+// attribute and the compositor does the rest. Everything stops while the row is
+// off screen or the tab is in the background, because animating four SVGs
+// nobody can see is pure cost.
+// ---------------------------------------------------------------------------
+(function mascotBehaviour(){
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.mascot[data-acts]'));
+  if (!chips.length) return;
+  var reduced = matchMedia('(prefers-reduced-motion: reduce)');
+  var visible = true, timers = [], turn = {};
+
+  // Which face a pose wears. Anything unlisted keeps the resting 'welcome'.
+  // Which face a pose wears. Straight from the film's actions: startle and the
+  // click both wear `shocked` (now the WARM shocked -- the same big sparkled
+  // eyes with raised brows, never the hollow black discs), think and shrug wear
+  // `curious`, the celebrations wear `happy`. Anything unlisted rests on
+  // `welcome`. RELAY is deliberately unlisted: not every rig has a happy face
+  // and Halftone dances too.
+  var POSE_FACE = { startle: 'shocked', pop: 'shocked', think: 'curious', shrug: 'curious' };
+  // The film's `happy` face IS in these rigs and is used there, but it is two
+  // thin closed arcs and at 45px it reads as "the eyes have gone missing", so
+  // the celebrations here keep the open welcome face. Not a port error -- a
+  // size decision, and the only one where the site departs from the film.
+
+  function actsOf(chip){ return (chip.getAttribute('data-acts') || '').split(' ').filter(Boolean); }
+
+  // Plays one pose to completion. Resolves when EVERY animation it started has
+  // finished -- not on the first `animationend`, which is what a naive version
+  // does and why a staggered pose (ARMWAVE offsets the right arm by .3s) got
+  // cut off half way through. Infinite animations are excluded: the long idle
+  // is one of them and it never finishes by design.
+  // Never ask a rig for a face it has not got: Halftone keeps its own visor
+  // faces and has no `happy`, and an unmatched data-face shows NO face group at
+  // all -- a blank head, which is worse than any expression.
+  function faceOn(chip, want){
+    return chip.querySelector('.rig-face-' + want) ? want : 'welcome';
+  }
+
+  function play(chip, run, thenFace){
+    chip.setAttribute('data-face', faceOn(chip, POSE_FACE[run] || 'welcome'));
+    chip.removeAttribute('data-run');
+    void chip.offsetWidth;                      // reflow, so re-running the same pose restarts it
+    chip.setAttribute('data-run', run);
+
+    var pending = [];
+    chip.querySelectorAll('.rig-idle *').forEach(function(el){
+      (el.getAnimations ? el.getAnimations() : []).forEach(function(a){
+        var t = a.effect && a.effect.getComputedTiming();
+        if (t && t.iterations !== Infinity) pending.push(a.finished.catch(function(){}));
+      });
+    });
+    var settle = function(){
+      // Guard: a click may have started a DIFFERENT pose while this one ran.
+      if (chip.getAttribute('data-run') !== run) return;
+      chip.removeAttribute('data-run');
+      chip.setAttribute('data-face', faceOn(chip, thenFace || 'welcome'));
+    };
+    if (!pending.length) { setTimeout(settle, 700); return; }   // no CSS matched; don't strand the face
+    Promise.all(pending).then(settle);
+  }
+
+  // A blink is a face swap with no animation at all -- 120ms of closed eyes.
+  function blink(chip){
+    if (chip.getAttribute('data-run')) return;   // never blink mid-pose
+    var was = chip.getAttribute('data-face') || 'welcome';
+    chip.setAttribute('data-face', 'blink');
+    setTimeout(function(){
+      if (chip.getAttribute('data-face') === 'blink') chip.setAttribute('data-face', was);
+    }, 120);
+  }
+
+  // The row-wide wave. chips are in DOM order, which IS left-to-right order
+  // (two on each side of the headline), so a flat delay per index is the whole
+  // choreography.
+  function relay(){
+    chips.forEach(function(chip, i){
+      timers.push(setTimeout(function(){
+        if (visible && !reduced.matches) play(chip, 'relay');
+      }, i * 150));
+    });
+  }
+
+  function schedule(){
+    timers.forEach(clearTimeout); timers = [];
+    if (reduced.matches || !visible) return;
+
+    chips.forEach(function(chip, i){
+      var acts = actsOf(chip);
+      if (!acts.length) return;
+      if (turn[i] === undefined) turn[i] = 0;
+      // Stagger the first pose by index, then jitter each following gap, so the
+      // four drift permanently out of phase instead of moving in unison.
+      var tick = function(first){
+        var wait = first ? (1100 + i * 1400) : (5200 * (0.75 + Math.random() * 0.6));
+        timers.push(setTimeout(function(){
+          if (!visible || reduced.matches) return;
+          play(chip, acts[turn[i]++ % acts.length]);
+          tick(false);
+        }, wait));
+      };
+      tick(true);
+
+      var blinkTick = function(){
+        timers.push(setTimeout(function(){
+          if (!visible || reduced.matches) return;
+          blink(chip); blinkTick();
+        }, 2600 + Math.random() * 4200));
+      };
+      blinkTick();
+    });
+
+    // Rare enough to be a surprise rather than a tic.
+    var relayTick = function(){
+      timers.push(setTimeout(function(){
+        if (!visible || reduced.matches) return;
+        relay(); relayTick();
+      }, 26000 + Math.random() * 16000));
+    };
+    relayTick();
+  }
+
+  // Clicking a chip re-skins the page; the mascot answers with a short squash
+  // and pop, then its own next pose -- so "I heard you" and "this is who I am"
+  // land in the same beat. Capture phase, so the pop starts on the same frame
+  // as the re-skin applyTheme's own document handler triggers.
+  document.addEventListener('click', function(e){
+    var chip = e.target.closest && e.target.closest('.mascot[data-acts]');
+    if (!chip || reduced.matches) return;
+    var i = chips.indexOf(chip), acts = actsOf(chip);
+    play(chip, 'pop');
+    timers.push(setTimeout(function(){
+      if (acts.length) play(chip, acts[turn[i]++ % acts.length]);
+    }, 430));
+  }, true);
+
+  // Nothing runs while the row is off screen or the tab is in the background.
+  if (typeof IntersectionObserver === 'function') {
+    new IntersectionObserver(function(entries){
+      visible = entries.some(function(en){ return en.isIntersecting; });
+      schedule();
+    }, { threshold: 0 }).observe(chips[0].closest('.flankrow') || chips[0]);
+  }
+  document.addEventListener('visibilitychange', function(){
+    visible = !document.hidden; schedule();
+  });
+  if (reduced.addEventListener) reduced.addEventListener('change', schedule);
+  schedule();
+})();
 
 // --- Sticky feature theater: the step nearest the middle owns the pinned stage.
 // --- "What you get": one shared show(i), four ways of choosing i ----------
@@ -1924,8 +2982,15 @@ function lockRate(v, desk){
 function warm(v){
   if (!v || v.dataset.warm) return;
   v.dataset.warm = '1';
+  // preload="auto" alone is enough: the element already ran resource
+  // selection and stopped, and raising preload resumes the fetch.
+  //
+  // load() used to follow it, and load() ABORTS whatever is in flight and
+  // re-runs resource selection from the top -- so the browser fetched the
+  // file once for warm() and a second time for play(). Measured 2026-09-03
+  // over the whole page: 7,381KB of video for 3,700KB of clips, every one of
+  // the nine downloaded twice, both full 200s. Costs a phone 3.7MB.
   v.preload = 'auto';
-  try { v.load(); } catch (e) {}
 }
 function show(i){
   if (i === cur) return;
@@ -1949,8 +3014,27 @@ var onShow = null;
 // The floating pill is a "back to the download buttons" control, and the
 // download buttons live in the hero -- so it pulls you to the top. Runs in
 // every style, which is why it is not inside any of the blocks below.
+var lastY = 0, ctaUp = false;
 addEventListener('scroll', function(){
-  document.getElementById('topcta').classList.toggle('show', scrollY > innerHeight * 0.9);
+  // Past the first screen, and NOT once the footer is on screen -- the footer
+  // carries the page's own download links, and a floating copy of the same
+  // call to action sitting on top of them reads as a bug. (Same rule the
+  // desktop's floating pill follows in placeFloat().) On a phone this pill is
+  // the only download control between the hero and the footer, so where it
+  // stops mattering is exactly where the real one starts.
+  var f = document.querySelector('footer');
+  var nearFoot = !!f && f.getBoundingClientRect().top < innerHeight - 40;
+  // Reading DOWN hides it; scrolling back UP brings it out. Pinned to the
+  // screen it covered body text at 10 of 17 scroll stops on a phone -- once on
+  // top of the "Create a GitHub account" link and once over a whole FAQ row
+  // (measured 2026-09-03). Scrolling up is also exactly when someone is looking
+  // for a way back, so this is not only a way to get it out of the way.
+  // 6px of slack, or a thumb's own wobble flickers it.
+  var y = scrollY;
+  if (y < lastY - 6) { ctaUp = true; lastY = y; }        // reading back up
+  else if (y > lastY + 6) { ctaUp = false; lastY = y; }  // reading on down
+  document.getElementById('topcta').classList.toggle('show',
+    y > innerHeight * 0.9 && !nearFoot && ctaUp);
 }, { passive: true });
 
 // --- THEATER (original): the step nearest the middle of the window wins.
@@ -1992,6 +3076,10 @@ if (document.querySelector('.demo-deck')) {
     var copy = document.createElement('div'); copy.className = 'deckcopy';
     while (st.firstChild) copy.appendChild(st.firstChild);
     var clip = document.createElement('div'); clip.className = 'deckclip';
+    // The last card's media is a drawn diagram, not a 16:10 clip. Tag its box
+    // so the phone layout can let it size to its own content instead of
+    // absolutely positioning a two-column diagram into a 16:10 hole.
+    if (slides[i] && slides[i].classList.contains('sketch')) clip.className += ' deckclip-sketch';
     if (slides[i]) clip.appendChild(slides[i]);
     var ph = document.querySelector('.deck-phone[data-phone-for="' + i + '"]');
     if (ph) clip.appendChild(ph);
@@ -2028,7 +3116,35 @@ if (document.querySelector('.demo-deck')) {
   if (window.ResizeObserver) new ResizeObserver(relayout).observe(flow);
   // The deck starts a clip on its OWN line, well before the card parks.
   deckDrivesVideo = true;
+
+  // ---- NARROW: the cards are a plain stack, so nothing here drives them ----
+  // Below 1000px the stylesheet takes the cards out of position:sticky and gives
+  // each one a single column. That leaves only one job: play the clip you are
+  // actually looking at, and pause the rest. One at a time, not the desktop's
+  // two -- narrow, there is rarely more than one card on screen, and a second
+  // decoding video is battery the visitor cannot see being spent.
+  var narrowStyled = false;
+  function narrowDeck(){
+    if (!narrowStyled) {
+      // Clear whatever the desktop driver last wrote, in case the window was
+      // resized (or rotated) across the breakpoint mid-scroll.
+      steps.forEach(function(s){ s.style.removeProperty('--d'); s.classList.remove('buried'); });
+      narrowStyled = true;
+    }
+    var mid = innerHeight / 2, best = -1, bd = 1e9;
+    steps.forEach(function(s, n){
+      var r = s.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > innerHeight) return;      // not on screen at all
+      var d = Math.abs(r.top + r.height / 2 - mid);
+      if (d < bd) { bd = d; best = n; }
+    });
+    if (best >= 0) show(best);
+    playSlides(best >= 0 ? [best] : []);
+  }
+
   var onDeck = function(){
+    if (narrowMQ.matches) return narrowDeck();
+    narrowStyled = false;
     // 'd' is how many card-lengths the scroll has travelled since this card
     // reached the top -- a CONTINUOUS number, not a count of cards on top of it.
     //
@@ -2154,20 +3270,33 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
 // The unauthenticated GitHub API allows 60 requests/hour per IP, so the
 // response is cached in localStorage for 1 hour; a stale cache is reused as a
 // fallback if the API ever fails or rate-limits. Until (or unless) it resolves,
-// every href still points at /releases/latest, so nothing 404s.
+// every href still points at the /releases list page, so nothing 404s.
+//
+// 2026-09-03: switched from /releases/latest to the /releases LIST while 1.3 is
+// in beta. /releases/latest returns the newest STABLE release and skips
+// pre-releases entirely -- so the site was serving v1.2.4 (18 May) months after
+// the 1.3 betas started. The list is newest-first and includes pre-releases.
+// This is temporary: when 1.3.0 ships, put /releases/latest back.
 (function() {
   var CACHE_KEY = 'youcoded-latest-release';
-  var CACHE_VERSION = 2;
+  var CACHE_VERSION = 3;
   var CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-  var API_URL = 'https://api.github.com/repos/itsdestin/youcoded/releases/latest';
+  var API_URL = 'https://api.github.com/repos/itsdestin/youcoded/releases?per_page=10';
   // Keys that match a data-dl button set that button's href too; the
-  // dl-linux-* keys have no button on purpose — they only populate
+  // dl-linux-* and dl-macos-* keys have no button on purpose — they only populate
   // __youcodedReleaseAssets so the Linux modal's distro picker can offer them.
   // Anything absent from the release is simply never recorded, and the picker
   // only offers what it finds.
   var matchers = {
     'dl-windows':      function(n) { return /\.exe$/i.test(n); },
+    // dl-macos has no single right answer -- a release carries an Apple
+    // silicon .dmg and an Intel one, and an Intel Mac cannot open the Apple
+    // silicon build at all. This key stays "first .dmg" only as the hero
+    // button's no-JS href; the install modal asks which Mac the visitor has
+    // and downloads dl-macos-arm64 / dl-macos-intel accordingly.
     'dl-macos':        function(n) { return /\.dmg$/i.test(n); },
+    'dl-macos-arm64':  function(n) { return /arm64\.dmg$/i.test(n); },
+    'dl-macos-intel':  function(n) { return /\.dmg$/i.test(n) && !/arm64/i.test(n); },
     'dl-linux':        function(n) { return /\.AppImage$/i.test(n); },
     'dl-linux-deb':    function(n) { return /\.deb$/i.test(n); },
     'dl-linux-rpm':    function(n) { return /\.rpm$/i.test(n); },
@@ -2221,8 +3350,17 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
 
   fetch(API_URL, { headers: { 'Accept': 'application/vnd.github+json' } })
     .then(function(r) { return r.ok ? r.json() : null; })
-    .then(function(release) {
-      if (!release || !release.assets) return;
+    .then(function(releases) {
+      // TEMPORARY (2026-09-03): the list endpoint is newest-first and includes
+      // pre-releases, so entry 0 is the current 1.3 beta. Drafts are invisible
+      // to anonymous visitors but filtered anyway; an entry with no attached
+      // files is skipped so a notes-only release can't blank every button.
+      // Revert to /releases/latest + `release` when 1.3.0 ships -- see
+      // docs/roadmap/desktop.md.
+      var release = Array.isArray(releases) ? releases.find(function(r) {
+        return r && !r.draft && r.assets && r.assets.length;
+      }) : null;
+      if (!release) return;
       // Slim down before caching — only the fields we actually use.
       var slim = release.assets.map(function(a) {
         return { name: a.name, browser_download_url: a.browser_download_url, size: a.size };
@@ -2293,9 +3431,18 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
           ],
           note: null
         },
+        // Mac ships two builds and the wrong one simply will not open, so this
+        // entry carries `variants` the same way Linux does. Before 2026-09-03
+        // there was no picker: the resolver took the first asset ending in
+        // .dmg, GitHub returns assets alphabetically, and "-arm64.dmg" sorts
+        // ahead of ".dmg" -- so every Intel Mac visitor was handed the Apple
+        // silicon build with no way to get the other one.
         'dl-macos': {
           platformLabel: 'Mac',
-          intro: 'YouCoded is open-source and isn\'t signed with an Apple Developer certificate yet (it costs $99/yr 😢). macOS will block it on first launch &mdash; this is expected. Here\'s how to get past it.',
+          intro: 'Macs come in two kinds and the installers are not interchangeable &mdash; pick yours below. YouCoded is also open-source and isn\'t signed with an Apple Developer certificate yet (it costs $99/yr 😢), so macOS will block it on first launch. That\'s expected, and the steps get you past it.',
+          variantLegend: 'Which Mac do you have?',
+          // Fallback for a release that carries no .dmg the picker can name:
+          // renderPlatform() reads these when no variant is available.
           steps: [
             'Open the file you just downloaded, then drag YouCoded into your <strong>Applications</strong> folder.',
             'Open your <strong>Applications</strong> folder and double-click YouCoded. macOS will show a warning: <em>"YouCoded can\'t be opened because Apple cannot check it for malicious software."</em> Click <strong>Done</strong>.',
@@ -2305,7 +3452,48 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
             'Go back to your Applications folder and double-click YouCoded one more time. A final dialog appears &mdash; click <strong>Open</strong>.',
             'You only have to do this the first time. After that, YouCoded opens normally.'
           ],
-          note: null
+          note: null,
+          // Preselected from the GPU string when the browser exposes one --
+          // see detectMacVariant. Apple silicon leads because it is both the
+          // majority and what every Mac visitor already got.
+          defaultVariantKey: function() { return detectMacVariant(); },
+          variants: [
+            {
+              key: 'dl-macos-arm64',
+              // Open-ended, not a list. M5 and M6 shipped after this label was
+              // written and a numbered list goes stale with every Apple launch
+              // (Destin, 2026-09-03). "M1 or newer" also tells an Intel owner
+              // they are NOT covered, which "all M-series chips" leaves open --
+              // and picking the wrong one here downloads a build that will not run.
+              label: 'Apple silicon &mdash; M1 or newer',
+              hint: 'Macs sold from late 2020 onward. Apple menu → About This Mac shows a <strong>Chip</strong> line beginning with <strong>Apple</strong>.',
+              steps: [
+            'Open the file you just downloaded, then drag YouCoded into your <strong>Applications</strong> folder.',
+            'Open your <strong>Applications</strong> folder and double-click YouCoded. macOS will show a warning: <em>"YouCoded can\'t be opened because Apple cannot check it for malicious software."</em> Click <strong>Done</strong>.',
+            'Open <strong>System Settings → Privacy &amp; Security</strong> (Apple menu → System Settings).',
+            'Scroll down to the <strong>Security</strong> section. You\'ll see a note: <em>"YouCoded was blocked to protect your Mac."</em> Click the <strong>Open Anyway</strong> button next to it.',
+            'Enter your password or use Touch ID to confirm.',
+            'Go back to your Applications folder and double-click YouCoded one more time. A final dialog appears &mdash; click <strong>Open</strong>.',
+            'You only have to do this the first time. After that, YouCoded opens normally.'
+              ],
+              note: null
+            },
+            {
+              key: 'dl-macos-intel',
+              label: 'Intel',
+              hint: 'Macs sold before late 2020. About This Mac shows a <strong>Processor</strong> line instead.',
+              steps: [
+            'Open the file you just downloaded, then drag YouCoded into your <strong>Applications</strong> folder.',
+            'Open your <strong>Applications</strong> folder and double-click YouCoded. macOS will show a warning: <em>"YouCoded can\'t be opened because Apple cannot check it for malicious software."</em> Click <strong>Done</strong>.',
+            'Open <strong>System Settings → Privacy &amp; Security</strong> (Apple menu → System Settings).',
+            'Scroll down to the <strong>Security</strong> section. You\'ll see a note: <em>"YouCoded was blocked to protect your Mac."</em> Click the <strong>Open Anyway</strong> button next to it.',
+            'Enter your password or use Touch ID to confirm.',
+            'Go back to your Applications folder and double-click YouCoded one more time. A final dialog appears &mdash; click <strong>Open</strong>.',
+            'You only have to do this the first time. After that, YouCoded opens normally.'
+              ],
+              note: null
+            }
+          ]
         },
         // Linux is the one platform where the right file depends on the
         // distro, and the browser can't tell us which one it is. So this entry
@@ -2356,6 +3544,7 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
               // Always last, always offered: the universal fallback for
               // distros we don't ship a native package for.
               key: 'dl-linux',
+              always: true,
               label: 'Something else',
               hint: 'AppImage &mdash; one file, runs on any distribution.',
               steps: [
@@ -2403,12 +3592,16 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
       // Variants whose asset actually exists in the latest release. The
       // AppImage entry is kept unconditionally: it's the universal fallback,
       // and if the release fetch failed we still want a working button
-      // (resetDownloadButton falls back to the /releases/latest page).
+      // (resetDownloadButton falls back to the /releases list page).
       function availableVariants(p) {
         if (!p.variants) return [];
         var have = window.__youcodedReleaseAssets || {};
         return p.variants.filter(function(v) {
-          return v.key === 'dl-linux' || (have[v.key] && have[v.key].url);
+          // `always` was the hardcoded 'dl-linux' check: the AppImage is the
+          // universal fallback and stays on offer even when the release fetch
+          // found nothing. Mac has no such entry -- if neither .dmg resolves
+          // the picker disappears and the modal falls back to p.steps.
+          return v.always || (have[v.key] && have[v.key].url);
         });
       }
 
@@ -2420,12 +3613,48 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
         for (var i = 0; i < vs.length; i++) {
           if (vs[i].key === chosenVariantKey) return vs[i];
         }
+        // Nothing picked yet. A platform may nominate one (Mac guesses the
+        // chip); anything unguessable falls through to the first available,
+        // which each variants list orders most-common-first.
+        if (p.defaultVariantKey) {
+          var want = p.defaultVariantKey();
+          for (var j = 0; j < vs.length; j++) {
+            if (vs[j].key === want) return vs[j];
+          }
+        }
         return vs[0];
       }
 
-      // Radio list of distro choices. Returns '' when there's nothing to
-      // choose between (e.g. a release with only an AppImage) so those users
-      // see exactly the modal they saw before this existed.
+      // Which Mac build to preselect, or null when we cannot tell.
+      // navigator.userAgent is no help: every Mac browser still reports
+      // "Intel Mac OS X", Apple silicon included. The GPU string is the one
+      // synchronous signal that differs -- Apple silicon renders through an
+      // "Apple" GPU, Intel Macs through Intel or AMD/Radeon. Safari 17 stopped
+      // exposing the real renderer, so this returns null there and the picker
+      // simply opens on Apple silicon, which is what every Mac visitor already
+      // got. A wrong guess costs one click, never a broken download.
+      var macVariantGuess;
+      function detectMacVariant() {
+        if (macVariantGuess !== undefined) return macVariantGuess;
+        macVariantGuess = null;
+        try {
+          var gl = document.createElement('canvas').getContext('webgl');
+          if (gl) {
+            var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+            var r = String((dbg && gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) ||
+                           gl.getParameter(gl.RENDERER) || '');
+            // Intel-family first: those strings never contain "Apple", while
+            // Safari's privacy-scrubbed string says "Apple GPU" on both chips.
+            if (/intel|radeon|\bamd\b/i.test(r)) macVariantGuess = 'dl-macos-intel';
+            else if (/apple/i.test(r)) macVariantGuess = 'dl-macos-arm64';
+          }
+        } catch (e) { /* no WebGL, or a privacy setting blocks the context */ }
+        return macVariantGuess;
+      }
+
+      // Radio list of variant choices. Returns '' when there's nothing to
+      // choose between (a release with only an AppImage, or only one .dmg) so
+      // those users see exactly the modal they saw before this existed.
       function renderVariantPicker(p, active) {
         var vs = availableVariants(p);
         if (vs.length < 2) return '';
@@ -2433,7 +3662,7 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
           var size = formatSize(((window.__youcodedReleaseAssets || {})[v.key] || {}).sizeBytes);
           return '' +
             '<label class="distro-option">' +
-              '<input type="radio" name="distro" value="' + v.key + '"' +
+              '<input type="radio" name="variant" value="' + v.key + '"' +
                 (v.key === active.key ? ' checked' : '') + '>' +
               '<span class="distro-option-text">' +
                 '<span class="distro-option-label">' + v.label + '</span>' +
@@ -2442,12 +3671,13 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
             '</label>';
         }).join('');
         return '<fieldset class="distro-picker">' +
-          '<legend>Which distribution do you use?</legend>' + opts + '</fieldset>';
+          '<legend>' + (p.variantLegend || 'Which distribution do you use?') +
+          '</legend>' + opts + '</fieldset>';
       }
 
       // Build the modal body HTML for a given platform, including the
       // "After install" collapsible and (for Android) the runtime-size note.
-      // Platforms with `variants` (Linux) take their steps/note from the
+      // Platforms with `variants` (Linux, Mac) take their steps/note from the
       // active variant and get a picker above them.
       function renderPlatform(platformKey) {
         var p = platforms[platformKey];
@@ -2472,7 +3702,7 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
       }
 
       // The asset key the Download Now button should point at: the chosen
-      // variant for Linux, the platform's own key everywhere else.
+      // variant on Linux and Mac, the platform's own key everywhere else.
       function downloadKeyFor(platformKey) {
         var p = platforms[platformKey];
         var active = p && p.variants ? activeVariant(p) : null;
@@ -2483,15 +3713,16 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
       // every openModal() so reopening the same platform's modal doesn't
       // leave a stale "Download Initiated" label.
       //
-      // `assetKey` is usually the platform/card id, but for Linux it's the
-      // chosen variant's key (dl-linux-deb/-rpm/-pacman) — see downloadKeyFor.
+      // `assetKey` is usually the platform/card id, but on Linux and Mac it's
+      // the chosen variant's key (dl-linux-deb/-rpm/-pacman,
+      // dl-macos-arm64/-intel) — see downloadKeyFor.
       function resetDownloadButton(assetKey, label) {
         downloadBtn.removeAttribute('data-initiated');
         downloadBtn.textContent = label;
 
         // Resolve href + size from whatever the latest-release fetch captured.
         // If the fetch hasn't completed yet (or failed), fall back to the
-        // generic /releases/latest page so the button is never broken.
+        // generic /releases list page so the button is never broken.
         var asset = (window.__youcodedReleaseAssets || {})[assetKey];
         if (asset && asset.url) {
           downloadBtn.href = asset.url;
@@ -2500,7 +3731,7 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
             downloadBtn.textContent = label + ' (' + sizeLabel + ')';
           }
         } else {
-          downloadBtn.href = 'https://github.com/itsdestin/youcoded/releases/latest';
+          downloadBtn.href = 'https://github.com/itsdestin/youcoded/releases';
         }
       }
 
@@ -2521,11 +3752,12 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
         document.body.style.overflow = 'hidden';
       }
 
-      // Picking a distro swaps the steps and repoints the download button.
-      // Delegated because the radios are re-created on every render.
+      // Picking a variant (distro on Linux, chip on Mac) swaps the steps and
+      // repoints the download button. Delegated because the radios are
+      // re-created on every render.
       body.addEventListener('change', function(e) {
         var t = e.target;
-        if (!t || t.name !== 'distro' || !openPlatformKey) return;
+        if (!t || t.name !== 'variant' || !openPlatformKey) return;
         chosenVariantKey = t.value;
         body.innerHTML = renderPlatform(openPlatformKey);
         resetDownloadButton(downloadKeyFor(openPlatformKey), 'Download Now');
@@ -2539,7 +3771,7 @@ document.getElementById('topcta').onclick = function(){ scrollTo({ top: 0, behav
 
       // Card click: intercept navigation and open the modal instead.
       // The card's own href still exists as a no-JS fallback — if JS is
-      // disabled, clicking just navigates to /releases/latest as before.
+      // disabled, clicking just navigates to the /releases list as before.
       ['dl-windows', 'dl-macos', 'dl-linux', 'dl-android', 'dl-ios'].forEach(function(id) {
         document.querySelectorAll('[data-dl="' + id + '"]').forEach(function(el) {
           el.addEventListener('click', function(e) {

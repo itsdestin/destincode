@@ -6,9 +6,14 @@ on:
   # 'feat/**' vs 'feature/**' gap left pushes unchecked, and letting
   # Dependabot's `dependabot/**` PRs run. `push: [master]` keeps the
   # post-merge run on master.
+  # docs/** is skipped for the same reason, and carries the same branch-
+  # protection caveat, as desktop-ci.yml -- the note there is the full one.
+  # Nothing under docs/ reaches a Gradle build.
   push:
     branches: [master]
+    paths-ignore: ['docs/**']
   pull_request:
+    paths-ignore: ['docs/**']
   workflow_dispatch:
 
 jobs:
