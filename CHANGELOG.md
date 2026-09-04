@@ -5,6 +5,7 @@ All notable changes to YouCoded are documented in this file.
 ## [Unreleased]
 
 ### Changed
+- Terms, Privacy and Security pages now name Destin's Adventures, LLC (Arizona) as the company behind YouCoded, and the contact address is support@youcoded.ai.
 - **Android app relicensed from GPLv3 to MIT** — The whole repository is now
   MIT. The GPL label on the Android app rested on a misreading of Termux's
   license: Termux's own LICENSE.md carves its terminal-emulator library (the

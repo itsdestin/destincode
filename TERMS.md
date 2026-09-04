@@ -2,7 +2,7 @@
 
 **Effective date:** September 3, 2026
 
-YouCoded ("YouCoded," "the app," "we," "our") is an independent, community-built project maintained by an individual developer in Arizona, United States. It is not a company. It is not affiliated with Anthropic. It is offered free of charge, on a hobbyist basis.
+YouCoded ("YouCoded," "the app") is made and published by **Destin's Adventures, LLC**, an Arizona limited liability company ("the Company," "we," "our"). It is not affiliated with Anthropic. The app is open source and offered free of charge.
 
 These Terms apply to your use of the YouCoded desktop and Android applications, the marketplace and theme registries (`wecoded-marketplace`, `wecoded-themes`), the marketplace Worker backend, the multiplayer game backend, and any other software or service distributed under the YouCoded name (collectively, the **"Services"**).
 
@@ -72,7 +72,7 @@ When you submit a plugin to `wecoded-marketplace` or a theme to `wecoded-themes`
 
 **License you grant to YouCoded and to users of the Services:** you grant a perpetual, worldwide, non-exclusive, royalty-free, irrevocable license to use, copy, modify, host, distribute, sublicense, and create derivative works of your User Content for the purpose of operating and distributing the Services and the open-source projects associated with them. The licensed terms attached to the registry repositories themselves (Apache 2.0 — see each repository's LICENSE) define the terms downstream users receive your contribution under.
 
-**You retain ownership of your User Content.** You can withdraw your contribution by opening an issue, opening a PR that removes it, or by emailing destinj101@gmail.com — and we will pull it from the registry within a reasonable time. Note that copies that have already been redistributed under Apache 2.0 to downstream users cannot be retroactively unlicensed; that's how open source works.
+**You retain ownership of your User Content.** You can withdraw your contribution by opening an issue, opening a PR that removes it, or by emailing support@youcoded.ai — and we will pull it from the registry within a reasonable time. Note that copies that have already been redistributed under Apache 2.0 to downstream users cannot be retroactively unlicensed; that's how open source works.
 
 **We do not pre-screen User Content** beyond automated CI checks (size limits, slug uniqueness, CSS-safety rules for themes, basic plugin-shape validation). The fact that a plugin or theme appears in the marketplace is not an endorsement of its quality, safety, or legality, and we do not warrant that user-submitted content is fit for any particular purpose.
 
@@ -82,7 +82,7 @@ When you submit a plugin to `wecoded-marketplace` or a theme to `wecoded-themes`
 
 If you believe content in the marketplace, theme registry, or any other part of the Services infringes your copyright or other rights, please send a notice to:
 
-- **Email:** destinj101@gmail.com
+- **Email:** support@youcoded.ai
 - **Subject line:** `[YouCoded Takedown] <short description>`
 
 A complete notice should include: identification of the work allegedly infringed; identification of the YouCoded content you want removed (URL or registry slug); your contact information; a statement that you have a good-faith belief the use is not authorized; a statement under penalty of perjury that the information is accurate and that you are authorized to act on the rights-owner's behalf; and your physical or electronic signature.
@@ -105,7 +105,7 @@ References to third-party trademarks (Anthropic, Claude, Claude Code, GitHub, Te
 
 THE SERVICES AND ALL SOFTWARE DISTRIBUTED UNDER THE YOUCODED NAME ARE PROVIDED **"AS IS"** AND **"AS AVAILABLE,"** WITHOUT WARRANTIES OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, ACCURACY, OR THAT THE SERVICES WILL BE UNINTERRUPTED, ERROR-FREE, OR SECURE.
 
-YouCoded is a hobbyist project run by one person. We make no promises about uptime, latency, support response times, or feature stability. Major versions may break compatibility. Backends may be retired with limited notice. Bugs may exist that we never get to.
+YouCoded is a small project run by one person. We make no promises about uptime, latency, support response times, or feature stability. Major versions may break compatibility. Backends may be retired with limited notice. Bugs may exist that we never get to.
 
 YOU USE THE SERVICES AT YOUR OWN RISK.
 
@@ -113,9 +113,9 @@ YOU USE THE SERVICES AT YOUR OWN RISK.
 
 ## 9. Limitation of liability
 
-TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT WILL YOUCODED, ITS MAINTAINER, OR ITS CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, GOODWILL, USE, DATA, OR OTHER INTANGIBLE LOSSES, ARISING FROM OR RELATING TO YOUR USE OF — OR INABILITY TO USE — THE SERVICES, EVEN IF WE HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+TO THE FULLEST EXTENT PERMITTED BY APPLICABLE LAW, IN NO EVENT WILL YOUCODED, DESTIN'S ADVENTURES, LLC, ITS MEMBERS, OR ITS CONTRIBUTORS BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, REVENUE, GOODWILL, USE, DATA, OR OTHER INTANGIBLE LOSSES, ARISING FROM OR RELATING TO YOUR USE OF — OR INABILITY TO USE — THE SERVICES, EVEN IF WE HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
 
-THE AGGREGATE LIABILITY OF YOUCODED, ITS MAINTAINER, AND ITS CONTRIBUTORS FOR ANY AND ALL CLAIMS RELATED TO THE SERVICES — WHETHER IN CONTRACT, TORT, OR ANY OTHER THEORY — IS LIMITED TO **ONE HUNDRED U.S. DOLLARS (US $100)**, OR THE AMOUNT YOU PAID US FOR THE SERVICES IN THE TWELVE MONTHS BEFORE THE CLAIM AROSE, WHICHEVER IS GREATER. (Because YouCoded is offered free of charge, this typically means $100.)
+THE AGGREGATE LIABILITY OF YOUCODED, DESTIN'S ADVENTURES, LLC, ITS MEMBERS, AND ITS CONTRIBUTORS FOR ANY AND ALL CLAIMS RELATED TO THE SERVICES — WHETHER IN CONTRACT, TORT, OR ANY OTHER THEORY — IS LIMITED TO **ONE HUNDRED U.S. DOLLARS (US $100)**, OR THE AMOUNT YOU PAID US FOR THE SERVICES IN THE TWELVE MONTHS BEFORE THE CLAIM AROSE, WHICHEVER IS GREATER. (Because YouCoded is offered free of charge, this typically means $100.)
 
 Some jurisdictions do not allow the exclusion or limitation of certain warranties or damages. To the extent any limitation in this Section is unenforceable in your jurisdiction, the remaining limitations remain in effect.
 
@@ -123,7 +123,7 @@ Some jurisdictions do not allow the exclusion or limitation of certain warrantie
 
 ## 10. Indemnification
 
-You agree to indemnify, defend, and hold harmless YouCoded, its maintainer, and its contributors from any claim, demand, loss, or damage — including reasonable attorney's fees — arising from (a) User Content you submit, (b) your violation of these Terms, or (c) your violation of any third party's rights through your use of the Services.
+You agree to indemnify, defend, and hold harmless YouCoded, Destin's Adventures, LLC, its members, and its contributors from any claim, demand, loss, or damage — including reasonable attorney's fees — arising from (a) User Content you submit, (b) your violation of these Terms, or (c) your violation of any third party's rights through your use of the Services.
 
 We reserve the right to assume the exclusive defense and control of any matter otherwise subject to indemnification by you, in which case you agree to cooperate with our defense.
 
@@ -165,14 +165,16 @@ If you are a consumer in a jurisdiction that grants you a non-waivable right to 
 
 - **Severability.** If any part of these Terms is found unenforceable, the remainder stays in effect, and the unenforceable part is replaced by the closest enforceable equivalent that reflects the original intent.
 - **No waiver.** Our failure to enforce any right under these Terms is not a waiver of that right.
-- **Assignment.** You may not assign these Terms without our written consent. We may assign these Terms to a successor (for example, if the project is transferred to another maintainer or to a non-profit organization).
+- **Assignment.** You may not assign these Terms without our written consent. We may assign these Terms to a successor entity (for example, if the project is transferred to another company or to a non-profit organization).
 - **Entire agreement.** These Terms, together with the Privacy Policy and the open-source licenses attached to the relevant repositories, constitute the entire agreement between you and YouCoded regarding the Services. They supersede any prior agreements on the same subject matter.
 
 ---
 
 ## 17. Contact
 
-- **Email:** destinj101@gmail.com
+Destin's Adventures, LLC, Arizona, United States.
+
+- **Email:** support@youcoded.ai
 - **Source:** https://github.com/itsdestin/youcoded
 - **Privacy questions:** see [PRIVACY.md](./PRIVACY.md)
 - **Security issues:** see [SECURITY.md](./SECURITY.md)
