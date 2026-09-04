@@ -27,12 +27,17 @@ DEFAULT_RIG_TS = 'desktop/src/renderer/components/mascot/default-buddy-rig.ts'
 THEME_RIG = 'docs/mascots/%s.rig.svg'
 
 # slug, display name, accent, dark face socket (only used by the fallback buddy;
-# a theme rig paints its own face), idle act
+# a theme rig paints its own face), LONG IDLE, and the minor poses it cycles.
+#
+# Two layers on purpose (Destin 2026-09-04: "a different default long pose with
+# 1-2 other minor poses they cycle through"). The long idle never stops and is
+# what gives each one a resting personality; the minor poses interrupt it every
+# few seconds, in rotation rather than at random so both actually get seen.
 PICKER = [
-    ('cotton-candy-sky',   'Cotton Candy Sky',   '#8B47B8', '#21152C', 'greet'),
-    ('meadow-mist',        'Meadow Mist',        '#2F7D55', '#041008', 'sway'),
-    ('halftone-dimension', 'Halftone Dimension', '#E51F48', None,      'look'),
-    ('golden-sunbreak',    'Golden Sunbreak',    '#ffc030', None,      'hop'),
+    ('cotton-candy-sky',   'Cotton Candy Sky',   '#8B47B8', '#21152C', 'float',  'wavehi cheer'),
+    ('meadow-mist',        'Meadow Mist',        '#2F7D55', '#041008', 'breathe', 'stretch sway'),
+    ('halftone-dimension', 'Halftone Dimension', '#E51F48', None,      'scan',    'look glitch'),
+    ('golden-sunbreak',    'Golden Sunbreak',    '#ffc030', None,      'bob',     'hop armwave'),
 ]
 
 # Dropped: the mittens that grip a screen edge (there is no screen edge in a
@@ -86,7 +91,7 @@ def drop_group(svg: str, gid: str) -> str:
     return svg[:open_m.start()] + svg[i:]
 
 
-def button(slug, name, accent, socket, act) -> str:
+def button(slug, name, accent, socket, idle, acts) -> str:
     body = load_rig(slug)
     for gid in DROP_GROUPS:
         body = drop_group(body, gid)
@@ -116,13 +121,22 @@ def button(slug, name, accent, socket, act) -> str:
         ref.endswith('-' + slug) for ref in re.findall(r'url\(#([^)]+)\)', body)), slug
 
     body = re.sub(r'\n\s+', '\n', body).strip()
+
+    # A SECOND transform layer, wrapping rig-root. The long idle rides here and
+    # the one-shot poses ride on rig-root, so an arm-wave can play THROUGH a
+    # breathing idle instead of replacing it -- one CSS animation per element is
+    # the whole reason this group exists. <defs> stays outside it: a transform on
+    # a gradient definition is meaningless and would only invite confusion.
+    defs_end = body.rindex('</defs>') + len('</defs>') if '</defs>' in body else 0
+    body = body[:defs_end] + '\n<g class="rig-idle">' + body[defs_end:] + '</g>'
+
     style = '--a:%s' % accent + (';--rig-on-accent:%s' % socket if socket else '')
     return (
-        '<button class="mascot" data-theme="%s" data-act="%s" data-face="welcome"\n'
+        '<button class="mascot" data-theme="%s" data-idle="%s" data-acts="%s" data-face="welcome"\n'
         '  aria-label="Use the %s look" style="%s"><span class="m-chip"></span>\n'
         '<svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">\n'
         '%s\n</svg><span class="m-name">%s</span></button>'
-    ) % (slug, act, name, style, body, name)
+    ) % (slug, idle, acts, name, style, body, name)
 
 
 def main():

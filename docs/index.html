@@ -22,7 +22,7 @@
      and Twitter all cache a preview image BY URL, for days, and a link Destin
      had already shared kept showing the old picture after the file was
      replaced. Bump the number whenever og-image.png is regenerated. -->
-<meta property="og:image" content="https://youcoded.ai/og-image.png?v=3">
+<meta property="og:image" content="https://youcoded.ai/og-image.png?v=4">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="The YouCoded Assistant website: the headline &quot;An Assistant That's Yours.&quot; between four theme mascots, above the app running a real conversation.">
@@ -30,7 +30,7 @@
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="YouCoded Assistant — Agentic AI for Everyone">
 <meta name="twitter:description" content="One app for Claude, hundreds of cloud models, or one that runs free on your own computer — working in your files, on every device you own. Windows, macOS, Linux, Android.">
-<meta name="twitter:image" content="https://youcoded.ai/og-image.png?v=3">
+<meta name="twitter:image" content="https://youcoded.ai/og-image.png?v=4">
 <meta name="twitter:image:alt" content="The YouCoded Assistant website: the headline &quot;An Assistant That's Yours.&quot; between four theme mascots, above the app running a real conversation.">
 <link rel="icon" type="image/svg+xml" href="favicon.svg" id="favicon">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -862,32 +862,78 @@ body:has(.hero-themefirst) .nav .swatches{display:none}
 .mascot[data-face="shocked"] .rig-face-shocked,
 .mascot[data-face="blink"]   .rig-face-blink{display:block}
 
-/* --- the four acts. Each runs ONCE when the script sets data-run, which it
-   clears on animationend, so an act can always be re-triggered by a click even
-   while its idle turn is mid-flight. --------------------------------------- */
+/* --- LAYER 1: the long idle. Infinite, never interrupted, one per character.
+   This is what makes a chip feel alive between poses, and it rides on
+   .rig-idle so a pose can play straight THROUGH it -- an element can only run
+   one CSS animation per property, so the two layers have to be two elements. */
+.mascot[data-idle="float"]   .rig-idle{animation:m-float   3.6s ease-in-out infinite}
+.mascot[data-idle="breathe"] .rig-idle{animation:m-breathe 5.2s ease-in-out infinite}
+.mascot[data-idle="scan"]    .rig-idle{animation:m-scan    5.4s ease-in-out infinite}
+.mascot[data-idle="bob"]     .rig-idle{animation:m-bob     2.6s cubic-bezier(.3,.7,.4,1) infinite}
+/* Cotton Candy hovers -- it never quite settles. */
+@keyframes m-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.2px)}}
+/* Meadow Mist breathes. Widest and slowest of the four, deliberately: a green
+   meadow theme that fidgets is selling the wrong feeling. */
+@keyframes m-breathe{0%,100%{transform:scale(1,1)}50%{transform:scale(.985,1.035) translateY(-.35px)}}
+/* Halftone slides side to side like something scanning. */
+@keyframes m-scan{0%,100%{transform:translateX(-1.1px)}50%{transform:translateX(1.1px)}}
+/* Golden can't hold still -- a springy double-beat, up fast, down slow. */
+@keyframes m-bob{0%,58%,100%{transform:translateY(0)}22%{transform:translateY(-1.5px)}76%{transform:translateY(-.5px)}}
 
-/* GREET (Cotton Candy Sky) — BOTH arms go up and shake, like a small cheer.
-   Not the app's one-armed wave: measured 2026-09-04, a single arm swung up at
-   this size is a 4px wedge floating beside a head, and the eye reads it as a
-   stray shape rather than a limb. Symmetry is what makes it legible — two
-   shapes moving the same way at the same time read as a gesture, one does not.
-   The body rises with them so the whole silhouette changes, which is the part
-   that survives at 45px. */
-.mascot[data-run="greet"] .rig-arm-left {animation:m-cheer-l 1.25s cubic-bezier(.3,.9,.4,1.2)}
-.mascot[data-run="greet"] .rig-arm-right{animation:m-cheer-r 1.25s cubic-bezier(.3,.9,.4,1.2)}
-.mascot[data-run="greet"] .rig-root{animation:m-cheer-body 1.25s cubic-bezier(.3,.9,.4,1.2)}
-@keyframes m-cheer-l{
-  0%,100%{transform:rotate(0)} 22%{transform:rotate(128deg)}
-  45%{transform:rotate(104deg)} 68%{transform:rotate(128deg)} 84%{transform:rotate(108deg)}}
-@keyframes m-cheer-r{
-  0%,100%{transform:rotate(0)} 22%{transform:rotate(-128deg)}
-  45%{transform:rotate(-104deg)} 68%{transform:rotate(-128deg)} 84%{transform:rotate(-108deg)}}
-@keyframes m-cheer-body{
-  0%,100%{transform:translateY(0)} 24%{transform:translateY(-1.6px)} 70%{transform:translateY(-1px)}}
+/* --- LAYER 2: the minor poses. One-shot, on .rig-root and the limbs, two per
+   character, taken in ROTATION by the script so both actually get seen. The
+   script clears data-run once every one of them has finished, which is what
+   lets a pose stagger its limbs (see ARMWAVE) instead of being cut off by the
+   first one to end. ------------------------------------------------------- */
 
-/* SWAY (Meadow Mist) — the whole body leans and comes back, arms trailing a
-   beat behind it. The calmest of the four on purpose: a green meadow theme
-   that jitters would be selling the wrong feeling. */
+/* AN ARM ONLY READS IF IT GROWS. Measured 2026-09-04 at the picker's real size:
+   a raised arm is a ~5px shape floating a pixel off a 25px body, and at EVERY
+   hold angle from -60 to -170 it reads as a stray dot rather than a limb --
+   angle was never the problem. Scaling it ~1.7-2x while it is up (from the
+   shoulder, since transform-origin is 50% 0%) turns the same shape into an
+   unmistakable raised arm. Every pose below that lifts an arm does this; it is
+   the difference between "waving" and "a smudge appeared".
+
+   The other rule the same measurements produced: HOLD arms near vertical (0 or
+   past ~120deg) or near horizontal (~90deg), never at a diagonal. A rounded
+   rectangle stopped at 45deg reads as a diamond, not an arm. */
+
+/* WAVE HI (Cotton Candy) — one arm up beside the head, waggling, with the body
+   leaning INTO it so the whole silhouette says hello rather than one corner. */
+.mascot[data-run="wavehi"] .rig-arm-right{animation:m-wavehi 1.35s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="wavehi"] .rig-root{animation:m-wavehi-lean 1.35s ease-in-out}
+@keyframes m-wavehi{
+  0%,100%{transform:rotate(0) scale(1)}
+  18%{transform:rotate(-132deg) scale(1.95)}
+  40%{transform:rotate(-114deg) scale(1.95)}
+  60%{transform:rotate(-140deg) scale(1.95)}
+  80%{transform:rotate(-118deg) scale(1.9)}}
+@keyframes m-wavehi-lean{0%,100%{transform:rotate(0)} 20%,80%{transform:rotate(6deg)}}
+
+/* CHEER (Cotton Candy) — both arms up. Symmetry makes it the loud one. */
+.mascot[data-run="cheer"] .rig-arm-left {animation:m-cheer-l 1.25s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="cheer"] .rig-arm-right{animation:m-cheer-r 1.25s cubic-bezier(.3,.9,.4,1.2)}
+.mascot[data-run="cheer"] .rig-root{animation:m-rise 1.25s cubic-bezier(.3,.9,.4,1.2)}
+@keyframes m-cheer-l{0%,100%{transform:rotate(0) scale(1)}
+  22%{transform:rotate(132deg) scale(1.8)} 45%{transform:rotate(112deg) scale(1.8)}
+  68%{transform:rotate(132deg) scale(1.8)} 84%{transform:rotate(116deg) scale(1.75)}}
+@keyframes m-cheer-r{0%,100%{transform:rotate(0) scale(1)}
+  22%{transform:rotate(-132deg) scale(1.8)} 45%{transform:rotate(-112deg) scale(1.8)}
+  68%{transform:rotate(-132deg) scale(1.8)} 84%{transform:rotate(-116deg) scale(1.75)}}
+@keyframes m-rise{0%,100%{transform:translateY(0)} 24%{transform:translateY(-1.6px)} 70%{transform:translateY(-1px)}}
+
+/* STRETCH (Meadow Mist) — arms straight OUT sideways and back, slow, like
+   waking up. Held at 88deg, not the 62deg it started at: at 62 both arms were
+   diamonds. */
+.mascot[data-run="stretch"] .rig-arm-left {animation:m-stretch-l 2.6s ease-in-out}
+.mascot[data-run="stretch"] .rig-arm-right{animation:m-stretch-r 2.6s ease-in-out}
+.mascot[data-run="stretch"] .rig-root{animation:m-stretch-body 2.6s ease-in-out}
+@keyframes m-stretch-l{0%,100%{transform:rotate(0) scale(1)} 38%,62%{transform:rotate(88deg) scale(1.7)}}
+@keyframes m-stretch-r{0%,100%{transform:rotate(0) scale(1)} 38%,62%{transform:rotate(-88deg) scale(1.7)}}
+@keyframes m-stretch-body{0%,100%{transform:translateY(0) scale(1,1)}
+  38%,62%{transform:translateY(-.8px) scale(.97,1.05)}}
+
+/* SWAY (Meadow Mist) — one long lean, arms trailing a beat behind the body. */
 .mascot[data-run="sway"] .rig-root{animation:m-sway 2.2s ease-in-out}
 .mascot[data-run="sway"] .rig-arm-left{animation:m-trail-l 2.2s ease-in-out}
 .mascot[data-run="sway"] .rig-arm-right{animation:m-trail-r 2.2s ease-in-out}
@@ -895,13 +941,9 @@ body:has(.hero-themefirst) .nav .swatches{display:none}
 @keyframes m-trail-l{0%,100%{transform:rotate(0)} 36%{transform:rotate(13deg)} 76%{transform:rotate(-9deg)}}
 @keyframes m-trail-r{0%,100%{transform:rotate(0)} 36%{transform:rotate(9deg)} 76%{transform:rotate(-13deg)}}
 
-/* LOOK (Halftone Dimension) — a glance left, then right, HELD at each side.
-   On .rig-root, not .rig-body: this character's head and torso are one shape,
-   so tilting the body alone slid it off its own arms and legs and read as the
-   head coming loose (seen 2026-09-04). The whole character turns instead.
-   What separates it from SWAY, which also tips the body, is the timing and the
-   face: sway is one slow continuous breath, look SNAPS and holds, wearing the
-   curious face the script pairs with it. */
+/* LOOK (Halftone) — a glance left, then right, HELD at each side. On .rig-root,
+   not .rig-body: this character's head and torso are one shape, so tilting the
+   body alone slid it off its own arms and read as the head coming loose. */
 .mascot[data-run="look"] .rig-root{animation:m-look 2.4s cubic-bezier(.3,.8,.35,1)}
 @keyframes m-look{
   0%,100%{transform:translateX(0) rotate(0)}
@@ -910,21 +952,54 @@ body:has(.hero-themefirst) .nav .swatches{display:none}
   62%{transform:translateX(1.4px) rotate(9deg)}
   86%{transform:translateX(1.4px) rotate(9deg)}}
 
-/* HOP (Golden Sunbreak) — two little jumps, legs tucking under. */
+/* GLITCH (Halftone) — a hard horizontal stutter. The theme is built on
+   chromatic aberration and misregistration, so the one pose that is pure
+   digital fault belongs to this character and no other. Steps, not easing:
+   a smooth glitch is not a glitch. */
+.mascot[data-run="glitch"] .rig-root{animation:m-glitch .62s steps(1,end)}
+@keyframes m-glitch{
+  0%,100%{transform:translate(0,0)}
+  10%{transform:translate(-1.6px,.4px)} 22%{transform:translate(1.4px,-.3px)}
+  34%{transform:translate(-.9px,0)}     46%{transform:translate(1.7px,.5px)}
+  58%{transform:translate(-1.2px,-.4px)} 72%{transform:translate(.7px,0)}
+  86%{transform:translate(-.4px,.2px)}}
+
+/* HOP (Golden) — two jumps, legs tucking under. */
 .mascot[data-run="hop"] .rig-root{animation:m-hop 1.1s cubic-bezier(.3,.7,.4,1)}
 .mascot[data-run="hop"] .rig-leg-left{animation:m-tuck-l 1.1s ease-in-out}
 .mascot[data-run="hop"] .rig-leg-right{animation:m-tuck-r 1.1s ease-in-out}
-@keyframes m-hop{
-  0%,46%,100%{transform:translateY(0)}
+@keyframes m-hop{0%,46%,100%{transform:translateY(0)}
   20%{transform:translateY(-2.4px)} 68%{transform:translateY(-1.6px)}}
 @keyframes m-tuck-l{0%,46%,100%{transform:rotate(0)} 20%{transform:rotate(22deg)} 68%{transform:rotate(15deg)}}
 @keyframes m-tuck-r{0%,46%,100%{transform:rotate(0)} 20%{transform:rotate(-22deg)} 68%{transform:rotate(-15deg)}}
 
+/* ARMWAVE (Golden) — "the wave", inside one body: the left arm goes up and
+   comes down, and the right follows a beat later, so the motion travels across
+   the character. Same keyframes on both arms, offset by a NEGATIVE delay so the
+   right arm starts already part-way in and both still finish inside the run. */
+.mascot[data-run="armwave"] .rig-arm-left {animation:m-armwave 1.5s ease-in-out}
+.mascot[data-run="armwave"] .rig-arm-right{animation:m-armwave-r 1.5s ease-in-out .3s}
+.mascot[data-run="armwave"] .rig-root{animation:m-armwave-body 1.8s ease-in-out}
+@keyframes m-armwave{0%,58%,100%{transform:rotate(0) scale(1)} 24%,38%{transform:rotate(126deg) scale(1.9)}}
+@keyframes m-armwave-r{0%,58%,100%{transform:rotate(0) scale(1)} 24%,38%{transform:rotate(-126deg) scale(1.9)}}
+@keyframes m-armwave-body{0%,100%{transform:translateY(0)} 30%{transform:translateY(-.7px)}}
+
+/* RELAY — the row-wide version of the same idea, and the only pose all four
+   share. Every so often the script fires it left to right down the row, so the
+   four chips do a stadium wave at each other. Short and both-armed, because at
+   this size a travelling gesture only reads if each step is unmistakable. */
+.mascot[data-run="relay"] .rig-arm-left {animation:m-relay-l .9s cubic-bezier(.3,.9,.4,1.3)}
+.mascot[data-run="relay"] .rig-arm-right{animation:m-relay-r .9s cubic-bezier(.3,.9,.4,1.3)}
+.mascot[data-run="relay"] .rig-root{animation:m-relay-body .9s cubic-bezier(.3,.9,.4,1.3)}
+@keyframes m-relay-l{0%,100%{transform:rotate(0) scale(1)} 30%,58%{transform:rotate(134deg) scale(2)}}
+@keyframes m-relay-r{0%,100%{transform:rotate(0) scale(1)} 30%,58%{transform:rotate(-134deg) scale(2)}}
+@keyframes m-relay-body{0%,100%{transform:translateY(0)} 34%,56%{transform:translateY(-2.2px)}}
+
 /* --- the click reaction. Shared shape (a quick squash and pop) so the row
-   answers a tap consistently; the act that runs alongside it is the mascot's
-   own, so the four still feel like four characters. It has to be SHORT: the
-   click also re-skins the entire page, and a long mascot animation running
-   under a full-page crossfade reads as lag. ------------------------------- */
+   answers a tap consistently; the pose that follows is the mascot's own next
+   one in rotation, so the four still feel like four characters. It has to be
+   SHORT: the click also re-skins the entire page, and a long mascot animation
+   running under a full-page crossfade reads as lag. ----------------------- */
 .mascot[data-run="pop"] .rig-root{animation:m-pop .42s cubic-bezier(.2,.9,.3,1.5)}
 @keyframes m-pop{
   0%{transform:scale(1)} 26%{transform:scale(.84,1.14) translateY(-1.4px)}
@@ -1642,7 +1717,7 @@ html{-webkit-tap-highlight-color:transparent}
     <p class="kicker">Free &middot; Open source &middot; BYO model</p>
     <div class="flankrow">
       <div class="mrow mrow-l">
-<button class="mascot" data-theme="cotton-candy-sky" data-act="greet" data-face="welcome"
+<button class="mascot" data-theme="cotton-candy-sky" data-idle="float" data-acts="wavehi cheer" data-face="welcome"
   aria-label="Use the Cotton Candy Sky look" style="--a:#8B47B8;--rig-on-accent:#21152C"><span class="m-chip"></span>
 <svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <defs>
@@ -1666,6 +1741,7 @@ html{-webkit-tap-highlight-color:transparent}
 <feGaussianBlur stdDeviation="0.45"/>
 </filter>
 </defs>
+<g class="rig-idle">
 <g class="rig-root">
 <g class="rig-arm-left" data-pivot="2.5 9">
 <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
@@ -1722,9 +1798,9 @@ html{-webkit-tap-highlight-color:transparent}
 <g id="slot-eyewear-cotton-candy-sky"/>
 </g>
 <g id="slot-hat-cotton-candy-sky"/>
-</g>
+</g></g>
 </svg><span class="m-name">Cotton Candy Sky</span></button>
-<button class="mascot" data-theme="meadow-mist" data-act="sway" data-face="welcome"
+<button class="mascot" data-theme="meadow-mist" data-idle="breathe" data-acts="stretch sway" data-face="welcome"
   aria-label="Use the Meadow Mist look" style="--a:#2F7D55;--rig-on-accent:#041008"><span class="m-chip"></span>
 <svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <defs>
@@ -1748,6 +1824,7 @@ html{-webkit-tap-highlight-color:transparent}
 <feGaussianBlur stdDeviation="0.45"/>
 </filter>
 </defs>
+<g class="rig-idle">
 <g class="rig-root">
 <g class="rig-arm-left" data-pivot="2.5 9">
 <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="var(--rig-accent, #f0a828)"/>
@@ -1804,7 +1881,7 @@ html{-webkit-tap-highlight-color:transparent}
 <g id="slot-eyewear-meadow-mist"/>
 </g>
 <g id="slot-hat-meadow-mist"/>
-</g>
+</g></g>
 </svg><span class="m-name">Meadow Mist</span></button>
 </div>
       <h1>An Assistant That's <span class="word-cycler" aria-label="Useful., Fun., Yours.">
@@ -1816,7 +1893,7 @@ html{-webkit-tap-highlight-color:transparent}
         </span>
       </span></h1>
       <div class="mrow mrow-r">
-<button class="mascot" data-theme="halftone-dimension" data-act="look" data-face="welcome"
+<button class="mascot" data-theme="halftone-dimension" data-idle="scan" data-acts="look glitch" data-face="welcome"
   aria-label="Use the Halftone Dimension look" style="--a:#E51F48"><span class="m-chip"></span>
 <svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <!--
@@ -1855,6 +1932,7 @@ Contract: ../README.md
 <feGaussianBlur stdDeviation="0.45"/>
 </filter>
 </defs>
+<g class="rig-idle">
 <g class="rig-root">
 <g class="rig-arm-left" data-pivot="2.5 9">
 <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#hd-limb-halftone-dimension)" stroke="#00b8ff" stroke-width="0.14" stroke-opacity="0.5"/>
@@ -1915,9 +1993,9 @@ Contract: ../README.md
 </g>
 </g>
 <g id="slot-hat-halftone-dimension"/>
-</g>
+</g></g>
 </svg><span class="m-name">Halftone Dimension</span></button>
-<button class="mascot" data-theme="golden-sunbreak" data-act="hop" data-face="welcome"
+<button class="mascot" data-theme="golden-sunbreak" data-idle="bob" data-acts="hop armwave" data-face="welcome"
   aria-label="Use the Golden Sunbreak look" style="--a:#ffc030"><span class="m-chip"></span>
 <svg class="m-art m-rig" viewBox="-3 -5 30 30" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
 <!--
@@ -1951,6 +2029,7 @@ Contract: ../README.md
 <feGaussianBlur stdDeviation="0.45"/>
 </filter>
 </defs>
+<g class="rig-idle">
 <g class="rig-root">
 <g class="rig-arm-left" data-pivot="2.5 9">
 <path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z" fill="url(#gs-limb-golden-sunbreak)"/>
@@ -2003,7 +2082,7 @@ Contract: ../README.md
 <g id="slot-eyewear-golden-sunbreak"/>
 </g>
 <g id="slot-hat-golden-sunbreak"/>
-</g>
+</g></g>
 </svg><span class="m-name">Golden Sunbreak</span></button>
 </div>
     </div>
@@ -2711,40 +2790,62 @@ applyTheme("cotton-candy-sky");
 // attribute; the compositor does the rest. The whole loop also stops while the
 // hero is off screen, because animating four SVGs nobody can see is pure cost.
 // ---------------------------------------------------------------------------
-var MASCOT_ACTS = {
-  // period  = seconds between idle turns (jittered, so they drift apart)
-  // face    = the face worn while the act plays; resting face is 'welcome'
-  greet: { period: 6.5, face: 'welcome' },   // waves at you
-  sway:  { period: 8.0, face: 'welcome' },   // leans, arms trailing
-  look:  { period: 5.5, face: 'curious' },   // glances left, then right
-  hop:   { period: 4.5, face: 'welcome' },   // two little jumps
-};
+// ---------------------------------------------------------------------------
+// MASCOT BEHAVIOUR (2026-09-04). Two layers, per Destin: every chip runs its own
+// LONG IDLE forever (float / breathe / scan / bob -- see the stylesheet), and
+// every few seconds it plays one of its two MINOR POSES over the top. The poses
+// are taken in ROTATION rather than at random, so a visitor who watches for ten
+// seconds sees both of a character's moves rather than the same one twice.
+//
+// Rarely, all four do the wave down the row instead.
+//
+// Cheap on purpose: no requestAnimationFrame, no per-frame work. Timers set an
+// attribute and the compositor does the rest. Everything stops while the row is
+// off screen or the tab is in the background, because animating four SVGs
+// nobody can see is pure cost.
+// ---------------------------------------------------------------------------
 (function mascotBehaviour(){
-  var chips = Array.prototype.slice.call(document.querySelectorAll('.mascot[data-act]'));
+  var chips = Array.prototype.slice.call(document.querySelectorAll('.mascot[data-acts]'));
   if (!chips.length) return;
   var reduced = matchMedia('(prefers-reduced-motion: reduce)');
-  var visible = true, timers = [];
+  var visible = true, timers = [], turn = {};
 
-  // One act, once. Clearing data-run on animationend is what lets a click
-  // interrupt an idle turn already in flight -- without it the browser sees the
-  // same animation-name still set and does not restart it.
-  function play(chip, run, face, thenFace){
-    chip.setAttribute('data-face', face);
+  // Which face a pose wears. Anything unlisted keeps the resting 'welcome'.
+  var POSE_FACE = { look: 'curious', glitch: 'shocked', pop: 'shocked' };
+
+  function actsOf(chip){ return (chip.getAttribute('data-acts') || '').split(' ').filter(Boolean); }
+
+  // Plays one pose to completion. Resolves when EVERY animation it started has
+  // finished -- not on the first `animationend`, which is what a naive version
+  // does and why a staggered pose (ARMWAVE offsets the right arm by .3s) got
+  // cut off half way through. Infinite animations are excluded: the long idle
+  // is one of them and it never finishes by design.
+  function play(chip, run, thenFace){
+    chip.setAttribute('data-face', POSE_FACE[run] || 'welcome');
     chip.removeAttribute('data-run');
-    void chip.offsetWidth;                 // force a reflow so the next set restarts it
+    void chip.offsetWidth;                      // reflow, so re-running the same pose restarts it
     chip.setAttribute('data-run', run);
-    var art = chip.querySelector('.m-rig');
-    var done = function(){
-      art.removeEventListener('animationend', done);
-      if (chip.getAttribute('data-run') === run) chip.removeAttribute('data-run');
+
+    var pending = [];
+    chip.querySelectorAll('.rig-idle *').forEach(function(el){
+      (el.getAnimations ? el.getAnimations() : []).forEach(function(a){
+        var t = a.effect && a.effect.getComputedTiming();
+        if (t && t.iterations !== Infinity) pending.push(a.finished.catch(function(){}));
+      });
+    });
+    var settle = function(){
+      // Guard: a click may have started a DIFFERENT pose while this one ran.
+      if (chip.getAttribute('data-run') !== run) return;
+      chip.removeAttribute('data-run');
       chip.setAttribute('data-face', thenFace || 'welcome');
     };
-    art.addEventListener('animationend', done);
+    if (!pending.length) { setTimeout(settle, 700); return; }   // no CSS matched; don't strand the face
+    Promise.all(pending).then(settle);
   }
 
   // A blink is a face swap with no animation at all -- 120ms of closed eyes.
   function blink(chip){
-    if (chip.getAttribute('data-run')) return;   // never blink mid-act
+    if (chip.getAttribute('data-run')) return;   // never blink mid-pose
     var was = chip.getAttribute('data-face') || 'welcome';
     chip.setAttribute('data-face', 'blink');
     setTimeout(function(){
@@ -2752,23 +2853,37 @@ var MASCOT_ACTS = {
     }, 120);
   }
 
+  // The row-wide wave. chips are in DOM order, which IS left-to-right order
+  // (two on each side of the headline), so a flat delay per index is the whole
+  // choreography.
+  function relay(){
+    chips.forEach(function(chip, i){
+      timers.push(setTimeout(function(){
+        if (visible && !reduced.matches) play(chip, 'relay');
+      }, i * 150));
+    });
+  }
+
   function schedule(){
     timers.forEach(clearTimeout); timers = [];
     if (reduced.matches || !visible) return;
+
     chips.forEach(function(chip, i){
-      var act = MASCOT_ACTS[chip.getAttribute('data-act')];
-      if (!act) return;
-      // Stagger the first turn by index, then jitter every following one, so
-      // the four drift permanently out of phase instead of re-syncing.
+      var acts = actsOf(chip);
+      if (!acts.length) return;
+      if (turn[i] === undefined) turn[i] = 0;
+      // Stagger the first pose by index, then jitter each following gap, so the
+      // four drift permanently out of phase instead of moving in unison.
       var tick = function(first){
-        var wait = first ? (900 + i * 1300) : (act.period * 1000 * (0.75 + Math.random() * 0.5));
+        var wait = first ? (1100 + i * 1400) : (5200 * (0.75 + Math.random() * 0.6));
         timers.push(setTimeout(function(){
           if (!visible || reduced.matches) return;
-          play(chip, chip.getAttribute('data-act'), act.face);
+          play(chip, acts[turn[i]++ % acts.length]);
           tick(false);
         }, wait));
       };
       tick(true);
+
       var blinkTick = function(){
         timers.push(setTimeout(function(){
           if (!visible || reduced.matches) return;
@@ -2777,19 +2892,29 @@ var MASCOT_ACTS = {
       };
       blinkTick();
     });
+
+    // Rare enough to be a surprise rather than a tic.
+    var relayTick = function(){
+      timers.push(setTimeout(function(){
+        if (!visible || reduced.matches) return;
+        relay(); relayTick();
+      }, 26000 + Math.random() * 16000));
+    };
+    relayTick();
   }
 
   // Clicking a chip re-skins the page; the mascot answers with a short squash
-  // and pop, then its own act -- so "I heard you" and "this is who I am" land
-  // in the same beat. Capture phase, because applyTheme's own click handler is
-  // on document and we want the pop to start on the same frame as the re-skin.
+  // and pop, then its own next pose -- so "I heard you" and "this is who I am"
+  // land in the same beat. Capture phase, so the pop starts on the same frame
+  // as the re-skin applyTheme's own document handler triggers.
   document.addEventListener('click', function(e){
-    var chip = e.target.closest && e.target.closest('.mascot[data-act]');
+    var chip = e.target.closest && e.target.closest('.mascot[data-acts]');
     if (!chip || reduced.matches) return;
-    var act = MASCOT_ACTS[chip.getAttribute('data-act')] || { face: 'welcome' };
-    play(chip, 'pop', 'shocked', act.face);
-    // The character's own move follows the pop rather than fighting it.
-    setTimeout(function(){ play(chip, chip.getAttribute('data-act'), act.face); }, 420);
+    var i = chips.indexOf(chip), acts = actsOf(chip);
+    play(chip, 'pop');
+    timers.push(setTimeout(function(){
+      if (acts.length) play(chip, acts[turn[i]++ % acts.length]);
+    }, 430));
   }, true);
 
   // Nothing runs while the row is off screen or the tab is in the background.
