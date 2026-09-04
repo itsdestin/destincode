@@ -12,6 +12,18 @@ mac:
         - x64
         - arm64
   category: public.app-category.developer-tools
+  # WHY: without this the Mac build ships with NO signature of its own, and macOS
+  # rejects it as a BROKEN app rather than an unverified one — which removes the
+  # "Open Anyway" button from System Settings and leaves users with no way in at all.
+  #
+  # We have no Apple certificate, so "-" means "sign it as ourselves, unverified".
+  # electron-builder used to do this automatically: up to 26.8.1 it fell back to an
+  # ad-hoc signature when it found no certificate. 26.15.3 (Dependabot, 2026-07-23,
+  # c2dac26b) deleted that fallback and now silently skips signing, which is how
+  # v1.2.4 shipped correctly sealed and 1.3.0-beta.72 shipped unopenable.
+  # This line restores exactly what v1.2.4 had. Replace it with a real Developer ID
+  # + notarization when the Apple Developer account exists.
+  identity: '-'
 linux:
   # AppImage runs on any distro but stays a loose file. deb / rpm / pacman are
   # real installers (Debian-Ubuntu / Fedora / Arch) that install to a fixed
