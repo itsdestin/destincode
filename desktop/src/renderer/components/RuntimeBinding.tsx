@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
 import { PRESETS } from '../../shared/harness-manifest';
-import { Button, Checkbox, StatusStrip } from './ui';
+import { Button, SettingRow, StatusStrip, Toggle } from './ui';
 
 // The two built-in native harness presets (personality profiles, not capability
 // tiers). A native session is stamped with one at create time; it drives the
@@ -276,20 +276,23 @@ export function NativeExtras({ nb, preset, onPreset }: {
               </Button>
             )}
             detail={nb.memDetailOpen ? (
-              // Round-2 P-15 (Destin): the reason unfolds INSIDE the same container, and
-              // the remembered "don't warn again" stays with it.
-              <span className="block mt-1 space-y-1.5">
+              // Round-3 P-18 (Destin): far fewer words, and no bare checkbox — the
+              // remembered choice is the app's toggle row, like every other boolean.
+              <span className="block mt-1.5 space-y-1.5">
                 <span className="block text-fg-2">{nb.memVerdict.headline}</span>
-                <span className="block leading-snug">{nb.memVerdict.detail}</span>
                 {nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <Checkbox
-                      checked={nb.memDismissed}
-                      onChange={(next) => nb.dismissMemoryWarning?.(next)}
-                      aria-label="Don't warn me again for this model"
-                    />
-                    Don&rsquo;t warn me again for this model at this context length
-                  </label>
+                  <SettingRow
+                    variant="item"
+                    title="Warn me about this model"
+                    description="Off skips this next time."
+                    control={(
+                      <Toggle
+                        checked={!nb.memDismissed}
+                        aria-label="Warn me about this model"
+                        onChange={(next) => nb.dismissMemoryWarning?.(!next)}
+                      />
+                    )}
+                  />
                 )}
               </span>
             ) : undefined}

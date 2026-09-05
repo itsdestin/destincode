@@ -844,8 +844,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       ? {
         // S-2 phrasing: the two numbers the verdict is made of, not a bare adjective.
         verdict: 'tight' as const,
-        headline: '9.5 GB model + 15.6 GB for 128k context may not fit beside what is loaded.',
-        detail: 'About 9.5 GB of models are loaded already. YouCoded keeps at most 2 in memory, so an older one is unloaded to make room; if things still do not fit, replies slow down. Lowering this model\u2019s context length in its Settings shrinks the second number.',
+        // Two short lines is the whole budget (round-3 P-18): the numbers, then the consequence.
+        headline: '9.5 GB model + 15.6 GB for 128k context, with 8.9 GB already loaded.',
+        detail: 'It should still run, just slower.',
       }
       : { verdict: 'ok' as const, headline: '', detail: '' }),
 
