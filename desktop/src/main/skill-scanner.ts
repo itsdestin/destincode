@@ -12,14 +12,16 @@ import { SkillEntry } from '../shared/types';
  *   2. `~/.claude/plugins/installed_plugins.json` — Claude Code CLI-installed plugins
  *      that may live at non-cache `installPath`s
  *   3. `~/.claude/skills/` — USER-authored local skills (source: 'self')
- *   4. `<project>/.claude/skills/` — project-local skills (source: 'project')
+ *
+ * Project-local `.claude/skills/` are scanned separately by scanProjectSkills().
+ * A project cwd must never enter this global, cacheable installed-skills inventory.
  *
  * Curated metadata (`skill-registry.json`) is consulted ONLY to enrich entries
  * already discovered on disk — never to inject fake "installed" entries.
  * That earlier behavior caused the marketplace UI to badge uninstalled
  * decomposed packages as "Installed".
  */
-export function scanSkills(_projectCwd?: string): SkillEntry[] {
+export function scanSkills(): SkillEntry[] {
   const registry = loadCuratedRegistry();
   const discoveredIds = new Set<string>();
   const skills: SkillEntry[] = [];
