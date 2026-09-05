@@ -120,6 +120,25 @@ export class EngineManager extends EventEmitter {
     return this.acquisition.installed(readEngineConfig(this.home).backend ?? undefined);
   }
 
+  /** The compute devices the installed engine reported at install time, exactly
+   *  as its `.complete` marker recorded them (design §A2: `llama-server
+   *  --list-devices`). The memory estimator scores a model against the FIRST
+   *  GPU device's pool, which is the only number that says what this machine's
+   *  graphics chip will really hold.
+   *
+   *  Null for an install whose marker predates that field — which is every
+   *  install until the acquisition change ships. That is a fallback, not an
+   *  error: fit-estimator.ts then scores against detected VRAM or total RAM and
+   *  never claims a model "fits on your GPU" on evidence it does not have. */
+  installedDevices(): unknown {
+    const inst = this.currentInstall();
+    if (!inst) return null;
+    try {
+      const marker = JSON.parse(fs.readFileSync(path.join(inst.dir, '.complete'), 'utf8'));
+      return marker?.devices ?? null;
+    } catch { return null; }
+  }
+
   status(): EngineStatus {
     const cfg = readEngineConfig(this.home);
     const inst = this.currentInstall();

@@ -57,6 +57,14 @@ export interface FitEstimate {
     contextBytes: number;
     contextLength: number;
     visionBytes?: number;
+    /** Present when the verdict is 'tight' or 'too-large': the one thing the user
+     *  can do about it, in their own settings (R8). The bubble ends with this line. */
+    advice?: string;
+    /** True when contextBytes is a CEILING, not a reading — the model's header could
+     *  not be fully understood (an architecture, or a metadata type, gguf-header.ts
+     *  does not handle). The bubble then says "up to N GB", because printing an
+     *  estimate as an exact figure is the fake precision R1-25 forbids. */
+    contextBytesIsUpperBound?: boolean;
   };
 }
 
