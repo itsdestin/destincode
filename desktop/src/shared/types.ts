@@ -31,10 +31,18 @@ export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
 // 'claude'  = Claude Code CLI over PTY (the original path).
 // 'native'  = YouCoded's first-party harness (Phase 1+ of the platform
 //             roadmap; dormant until window.claude.native.supported is true).
+// 'shell'   = a plain terminal — the user's own $SHELL (Windows:
+//             powershell.exe) with NO AI in it at all: no hook pipe, no
+//             transcript watcher, no model. It exists so the app can offer
+//             "Run in terminal" for a set-up command (engine:run-in-terminal)
+//             instead of sending the user off to find a terminal themselves.
+//             Never offered in the new-session form — only that button makes
+//             one, and it selects the session it made, so every renderer branch
+//             that reads a provider CAN see 'shell'.
 // 'gemini' was removed 2026-07-10 — Google discontinued the Gemini CLI
 // (June 2026); Gemini models are reachable through the native runtime via
 // OpenRouter or a direct Google key instead.
-export type SessionProvider = 'claude' | 'native';
+export type SessionProvider = 'claude' | 'native' | 'shell';
 
 // A model reference portable ACROSS devices — persisted on a Conversation Store
 // record (conversations/store-core.ts) so the resume selector can pre-fill
@@ -74,8 +82,13 @@ export interface SessionInfo {
   skipPermissions: boolean;
   status: 'active' | 'idle' | 'destroyed';
   createdAt: number;
-  /** Which runtime backend this session runs — 'claude' (default) or 'native' */
+  /** Which runtime backend this session runs — 'claude' (default), 'native' or 'shell' */
   provider: SessionProvider;
+  /** provider='shell' only: the shell that was actually spawned, already
+   *  display-shaped ('fish', 'zsh', 'powershell'). The session strip and the
+   *  header label the session with this — a shell session has no model and no
+   *  harness preset, so it would otherwise wear Claude Code's runtime label. */
+  shellName?: string;
   /** Native runtime only: the RESOLVED harness preset id ('assistant' | 'coder',
    *  post legacy-mapping — a stored 'chat' header resolves to 'assistant'). Drives
    *  the renderer's preset badge. Absent for Claude sessions. */
@@ -1774,6 +1787,11 @@ export const IPC = {
   // ---- Native runtime Plan C (Phase 1): model manager ----
   ENGINE_SET_BACKEND: 'engine:set-backend',
   ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
+  // Open a plain-shell session (SessionProvider 'shell') in the folder the
+  // calling window is working in and TYPE the command onto its prompt —
+  // invoke(command) → { sessionId }. Nothing is executed: the user presses
+  // Enter. The renderer that made the call selects the session it gets back.
+  ENGINE_RUN_IN_TERMINAL: 'engine:run-in-terminal',
   MODELS_CURATED: 'models:curated',
   MODELS_SEARCH: 'models:search',
   MODELS_QUANTS: 'models:quants',

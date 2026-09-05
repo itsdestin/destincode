@@ -16,6 +16,10 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { SessionManager } from './session-manager';
+// Value import (not type-only): the "Run in terminal" case below runs the SAME
+// validation the desktop handler runs — a remote client's payload is the least
+// trusted input either of them sees.
+import { prepareRunInTerminal, shellDisplayName } from './session-manager';
 import type { HookRelay } from './hook-relay';
 import type { RemoteConfig } from './remote-config';
 import type { LocalSkillProvider } from './skill-provider';
@@ -882,6 +886,23 @@ export class RemoteServer {
     switch (type) {
       // --- Request/response ---
       case 'session:create': {
+        // This payload is passed to createSession unfiltered, so without this
+        // guard a remote browser could ask for `{provider:'shell', cwd:'/'}`.
+        //
+        // BE PRECISE ABOUT WHAT THIS BUYS. It does NOT stop an authenticated
+        // remote client from reaching a shell: engine:run-in-terminal below is
+        // open to remote clients too, and session:input is unconditional. What
+        // it removes is the two things that payload alone would carry — an
+        // attacker-chosen cwd, and an initialCommand nothing validated. It is
+        // not a privilege boundary: an authenticated remote client already had
+        // equivalent reach before the shell provider existed, through this same
+        // unfiltered path into Claude Code, and a remote client is a human
+        // pressing keys. The property that matters — the APP never runs a
+        // command for anyone — is enforced by prepareRunInTerminal, not here.
+        if (payload?.provider === 'shell') {
+          this.respond(client.ws, type, id, { ok: false, error: 'A terminal session can only be opened from the app itself.' });
+          break;
+        }
         const info = this.sessionManager.createSession(payload);
         this.respond(client.ws, type, id, info);
         // session:created broadcast is handled by the onSessionCreated event listener
@@ -1313,6 +1334,37 @@ export class RemoteServer {
         try {
           if (this.nativeRuntime) await this.nativeRuntime.engineManager.setContext((payload.contextSize ?? payload) as number);
           this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      // "Run in terminal" over the remote link. The shell runs on the HOST — a
+      // remote client is a browser and has no terminal of its own — so this is
+      // the same plain-shell session the desktop button makes, and the client
+      // sees it appear through the session:created broadcast.
+      case 'engine:run-in-terminal': {
+        try {
+          // This payload arrives over the network. A `\r` anywhere inside the
+          // string would make the host RUN the command with nobody at the
+          // keyboard, so the same validator the desktop handler uses runs here
+          // — see prepareRunInTerminal in session-manager.ts.
+          const checked = prepareRunInTerminal(payload?.command ?? payload);
+          // The host's newest live session names the folder the user is working
+          // in; with none, createSession falls back to the home folder.
+          let cwd = '';
+          for (const s of this.sessionManager.listSessions()) {
+            if (s.status !== 'destroyed') cwd = s.cwd;
+          }
+          const info = this.sessionManager.createSession({
+            name: shellDisplayName(checked.shell),
+            cwd,
+            skipPermissions: false,
+            provider: 'shell',
+            initialCommand: checked.command,
+            shellToken: checked.shellToken,
+          });
+          this.respond(client.ws, type, id, { sessionId: info.id });
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
         }

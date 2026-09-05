@@ -205,6 +205,10 @@ export function routeSlashResult(provider: string | undefined, result: Dispatche
   // Anything not explicitly native is treated as Claude Code. Routing to a
   // harness a session may not have would strand the input entirely.
   const isNative = provider === 'native';
+  // A shell session is neither: it has a PTY, but the thing on the other end is
+  // the user's shell, not Claude Code. It is grouped with native here so a
+  // command's PTY text is REPORTED as unavailable rather than typed into it.
+  const noClaudeCode = isNative || provider === 'shell';
 
   // BEFORE the `handled` check on purpose — see the WHY above.
   if (isNative && result.nativeAction) return { via: 'native', action: result.nativeAction };
@@ -213,7 +217,7 @@ export function routeSlashResult(provider: string | undefined, result: Dispatche
     // A native session has no PTY, and this command has no harness equivalent
     // yet. Return the command so the caller can TELL the user — the pre-M3
     // behavior was `guardedPtySend` returning false into a discarded value.
-    if (isNative) return { via: 'none-native-no-pty', command: result.alsoSendToPty.trim() };
+    if (noClaudeCode) return { via: 'none-native-no-pty', command: result.alsoSendToPty.trim() };
     return { via: 'pty', text: result.alsoSendToPty };
   }
   return { via: 'none' };

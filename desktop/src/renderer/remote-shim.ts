@@ -226,6 +226,20 @@ function handleMessage(data: string): void {
       entry.reject(new Error(`remote-unsupported: ${channel}`));
       return;
     }
+    // A handler that answered `{ ok:false, error }` is a FAILURE, and resolving
+    // it hands the caller a success. On desktop the same failure is a thrown
+    // Error the caller catches; a remote client would see the click do nothing
+    // — no message, no retry, no clue. Only channels whose SUCCESS shape can
+    // never be an `ok:false` object are listed here, so this cannot swallow a
+    // legitimate `{ok:false}` result some other channel means as data.
+    const REJECT_ON_NOT_OK = new Set(['engine:run-in-terminal']);
+    if (
+      payload && typeof payload === 'object' && (payload as any).ok === false &&
+      REJECT_ON_NOT_OK.has(String(type).replace(/:response$/, ''))
+    ) {
+      entry.reject(new Error(String((payload as any).error ?? 'The request failed.')));
+      return;
+    }
     entry.resolve(payload);
     return;
   }
@@ -1710,6 +1724,11 @@ export function installShim(): void {
       // Plan C context-length knob. Object payload matches remote-server's
       // WS case read (payload.contextSize).
       setContext: (contextSize: number) => invoke('engine:set-context', { contextSize }),
+      // Opens a plain-shell session on the HOST machine and types the command
+      // onto its prompt (never runs it). The remote client selects the returned
+      // session the same way the desktop renderer does — through the
+      // session:created broadcast that follows.
+      runInTerminal: (command: string) => invoke('engine:run-in-terminal', { command }) as Promise<{ sessionId: string }>,
       onInstallProgress: (cb: (p: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
         addListener('engine:install-progress', handler);

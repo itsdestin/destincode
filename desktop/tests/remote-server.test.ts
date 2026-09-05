@@ -128,6 +128,82 @@ describe('RemoteServer', () => {
   });
 });
 
+// A remote client is a browser on the network. Before the shell provider
+// existed, the worst a hostile `session:create` payload could reach was Claude
+// Code's own TUI, which asks before it acts; a shell asks nothing.
+describe('RemoteServer and the shell provider', () => {
+  let shellSessionManager: any;
+  let shellHookRelay: any;
+  let shellConfig: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listenBehavior.mode = 'ok';
+    shellSessionManager = Object.assign(new EventEmitter(), {
+      listSessions: vi.fn(() => []),
+      createSession: vi.fn(() => ({ id: '1', name: 'fish', cwd: '/tmp', status: 'active' })),
+      destroySession: vi.fn(() => true),
+      sendInput: vi.fn(),
+      resizeSession: vi.fn(),
+    });
+    shellHookRelay = Object.assign(new EventEmitter(), { respond: vi.fn(() => true) });
+    shellConfig = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+  });
+
+  /** Drive handleMessage directly with a fake authenticated client. */
+  function drive(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  it('refuses session:create for a shell, which would be a bare shell on the host', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(shellSessionManager, shellHookRelay, shellConfig);
+    const sent = await drive(server, {
+      type: 'session:create', id: 'c1',
+      payload: { name: 'x', cwd: '/', skipPermissions: false, provider: 'shell' },
+    });
+    expect(shellSessionManager.createSession).not.toHaveBeenCalled();
+    expect(sent[0].payload.ok).toBe(false);
+    expect(sent[0].payload.error).toMatch(/only be opened from the app itself/);
+  });
+
+  it('still creates an ordinary session', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(shellSessionManager, shellHookRelay, shellConfig);
+    await drive(server, { type: 'session:create', id: 'c2', payload: { name: 'x', cwd: '/tmp', skipPermissions: false } });
+    expect(shellSessionManager.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a run-in-terminal command carrying a carriage return', async () => {
+    // The whole property: the app does not APPEND a carriage return, but a `\r`
+    // already inside the string is the same keypress — measured on real bash,
+    // zsh and fish, this runs both halves with nobody at the keyboard.
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(shellSessionManager, shellHookRelay, shellConfig);
+    const sent = await drive(server, {
+      type: 'engine:run-in-terminal', id: 'r1', payload: { command: 'echo a\recho b' },
+    });
+    expect(shellSessionManager.createSession).not.toHaveBeenCalled();
+    expect(sent[0].payload.ok).toBe(false);
+    expect(sent[0].payload.error).toMatch(/carriage return/);
+  });
+
+  it('accepts an ordinary install command, semicolon and all', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(shellSessionManager, shellHookRelay, shellConfig);
+    const sent = await drive(server, {
+      type: 'engine:run-in-terminal', id: 'r2', payload: { command: 'sudo pacman -S rocm; echo done' },
+    });
+    expect(shellSessionManager.createSession).toHaveBeenCalledTimes(1);
+    const opts = shellSessionManager.createSession.mock.calls[0][0];
+    expect(opts.provider).toBe('shell');
+    expect(opts.initialCommand).toBe('sudo pacman -S rocm; echo done');
+    expect(sent[0].payload).toEqual({ sessionId: '1' });
+  });
+});
+
 describe('RemoteServer auth flow', () => {
   it('can be created with null password (rejects connections at auth time)', async () => {
     const mockSessionManager = Object.assign(new EventEmitter(), {

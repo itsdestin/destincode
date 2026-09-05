@@ -373,8 +373,11 @@ declare global {
         // backend (mock-only.ts lists them until main serves them).
         /** What a faster backend needs before it can be installed (Linux ROCm). */
         prereqs: (backend: string) => Promise<import('../../shared/engine-types').EnginePrereqs>;
-        /** Paste an install command into the app's own terminal session (Q-1 pick a). */
-        runInTerminal: (command: string) => Promise<void>;
+        /** Open a plain-shell session in the app and TYPE an install command onto
+         *  its prompt — nothing is run; the user presses Enter. Resolves with the
+         *  session it made, which the renderer then selects (App.tsx's
+         *  session-created handler already focuses a new session). */
+        runInTerminal: (command: string) => Promise<{ sessionId: string }>;
         /** The two engine-wide speed switches; restarts the engine. */
         setSpeed: (patch: Partial<import('../../shared/engine-types').EngineSpeedSettings>) => Promise<any>;
       };

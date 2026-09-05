@@ -74,7 +74,7 @@ import SkillEditor from './components/SkillEditor';
 import ShareSheet from './components/ShareSheet';
 import { ProjectView } from './components/project-view/ProjectView';
 
-import type { SkillEntry, PermissionMode, AttentionState, CommandEntry } from '../shared/types';
+import type { SkillEntry, PermissionMode, AttentionState, CommandEntry, SessionProvider } from '../shared/types';
 import type { NativePermissionMode } from '../shared/permission-types';
 import { RESUMING_NATIVE, RESUMING_CLAUDE } from '../shared/session-title';
 
@@ -594,7 +594,12 @@ function AppInner() {
         // Was a silent drop: guardedPtySend refuses for native sessions and its
         // own toast only fires for the pending-interaction case, so a native user
         // choosing this command got no feedback at all (handoff §2.3).
-        setToast(`${route.command} isn't available in YouCoded-runtime sessions yet.`);
+        setToast(provider === 'shell'
+          // A shell session is a plain terminal — the command would have been
+          // typed into the user's shell, which is not what they asked for. Say
+          // that, rather than the native-runtime sentence, which would be a lie.
+          ? `${route.command} isn't available in a terminal session — it's a Claude Code command.`
+          : `${route.command} isn't available in YouCoded-runtime sessions yet.`);
         return true;
       case 'none':
         return true;
@@ -958,15 +963,23 @@ function AppInner() {
       // Native harness sessions (roadmap Phase 1+) are chat-first — they have
       // no PTY, so 'terminal' would be an empty pane. Claude sessions also
       // default to chat. (Gemini, the old terminal-only provider, is gone.)
-      const defaultView = 'chat';
+      // A shell session is the opposite: it IS a terminal and has no chat at
+      // all, so it opens on the terminal (and stays there — see currentViewMode).
+      const defaultView = info.provider === 'shell' ? 'terminal' : 'chat';
       setViewModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, defaultView));
       setPermissionModes((prev) => prev.has(info.id) ? prev : new Map(prev).set(info.id, matchPermissionMode(info.permissionMode)));
       setSessionModels((prev) => {
         if (prev.has(info.id)) return prev;
         return new Map(prev).set(info.id, matchModelAlias(info.model));
       });
+      // A shell session is made by Settings' "Run in terminal" button, which sits
+      // on top of the app — without closing Settings the user would never see the
+      // terminal that just opened with their command typed into it.
+      if (info.provider === 'shell') setSettingsOpen(false);
       // Native harness sessions (roadmap Phase 1+) have no hook relay, so they'd
-      // never trigger the "first hook = initialized" gate. Mark them ready immediately.
+      // never trigger the "first hook = initialized" gate. Mark them ready
+      // immediately. A shell session has no hook relay either (it is spawned with
+      // no pipe), so this already covers it.
       if (info.provider && info.provider !== 'claude') {
         setInitializedSessions((prev) => {
           if (prev.has(info.id)) return prev;
@@ -2616,7 +2629,13 @@ function AppInner() {
     return () => window.removeEventListener('youcoded:resume-session', onResume);
   }, [handleResumeSession]);
 
-  const currentViewMode = sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat';
+  // A shell session has no chat side — no transcript, no model, nothing to show
+  // in the chat pane — so its view is FORCED to the terminal here rather than
+  // merely defaulted. Forcing (not seeding) is what makes the header's toggle
+  // and the Ctrl+` shortcut unable to strand the user on an empty chat pane.
+  const activeSessionProvider = sessionId ? sessions.find((s) => s.id === sessionId)?.provider : undefined;
+  const isShellSession = activeSessionProvider === 'shell';
+  const currentViewMode = isShellSession ? 'terminal' : (sessionId ? (viewModes.get(sessionId) || 'chat') : 'chat');
 
   // Mirror the active view mode onto <html data-view-mode="..."> so CSS can
   // react to it. Needed on Android to hide the wallpaper layer over the native
@@ -2636,6 +2655,12 @@ function AppInner() {
   const handleToggleView = useCallback(
     (mode: ViewMode) => {
       if (!sessionId) return;
+      // A shell session is terminal-only. The header hides its toggle, but Ctrl+`
+      // still lands here, so refuse rather than trust the callers. (A remote or
+      // Android `switch-view` does NOT come through here — it writes viewModes
+      // directly, up in the uiAction handler — and is neutralised instead by
+      // currentViewMode forcing the terminal for a shell session.)
+      if (sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'shell') return;
       setViewModes((prev) => new Map(prev).set(sessionId, mode));
       // On Android, tell the native side to switch views
       if (getPlatform() === 'android') {
@@ -2666,7 +2691,9 @@ function AppInner() {
   const escPassthroughStateRef = useRef<{
     activeSessionId: string;
     viewMode: 'chat' | 'terminal';
-    provider: 'claude' | 'native' | undefined;
+    // Widened for the 'shell' provider (2026-09-05). ESC into a shell session is
+    // correct — it reaches the PTY, which is what ESC does in any terminal.
+    provider: SessionProvider | undefined;
   }>({ activeSessionId: '', viewMode: 'chat', provider: 'claude' });
   escPassthroughStateRef.current = {
     activeSessionId: sessionId ?? '',
@@ -2811,6 +2838,16 @@ function AppInner() {
     // ModelAlias union that has access). On other models, CC's Shift+Tab won't
     // surface auto, so showing it would create a click-but-nothing-happens
     // state. The PTY watcher above corrects mismatches within ~1 tick anyway.
+    // A shell session has no permission modes to cycle, and the write below is a
+    // RAW sendInput that bypasses guardedPtySend/canPtySend entirely — its only
+    // other shield is isTypingTarget, which is false whenever xterm does not
+    // hold focus. Open Run in terminal, click the header pill, press Shift+Tab,
+    // and the app types \x1b[Z at the user's own prompt. Inert on a default
+    // bash/zsh/fish, but a bound shift-tab (oh-my-zsh reverse-menu-complete,
+    // fish complete-and-search) edits the line they are about to run. This is
+    // the guard that makes pty-input-gate's "exactly once, at creation, and
+    // never again" true.
+    if (sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'shell') return;
     const canAuto = currentModel === 'opus[1m]';
     const cycle: PermissionMode[] = [
       'normal',
@@ -3050,7 +3087,10 @@ function AppInner() {
                   <ErrorBoundary name="Chat">
                     <ChatView
                       sessionId={s.id}
-                      visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'chat'}
+                      // currentViewMode, not the raw map: a shell session FORCES
+                      // the terminal, and reading the map here would show the
+                      // chat pane for a session whose map entry was never seeded.
+                      visible={s.id === sessionId && currentViewMode === 'chat'}
                       // Drives content-visibility so INACTIVE sessions leave the
                       // layout tree entirely — see ChatView's root style block.
                       // Deliberately not folded into `visible`: the two hide
@@ -3074,7 +3114,7 @@ function AppInner() {
                   <ErrorBoundary name="Terminal">
                     <TerminalView
                       sessionId={s.id}
-                      visible={s.id === sessionId && (viewModes.get(s.id) || 'chat') === 'terminal'}
+                      visible={s.id === sessionId && currentViewMode === 'terminal'}
                     />
                   </ErrorBoundary>
                 </React.Fragment>
@@ -3172,9 +3212,15 @@ function AppInner() {
                inert disables focus/keyboard/paste when hidden so keystrokes
                reach xterm instead of the buried textarea. */}
               <div ref={bottomBarRef} className={`chrome-wrapper chrome-wrapper--bottom bg-canvas${currentViewMode === 'chat' ? ' bottom-float' : ''}`} {...(currentViewMode !== 'chat' && getPlatform() === 'electron' ? { inert: true, style: { position: 'absolute', width: 0, height: 0, overflow: 'hidden' } as React.CSSProperties } : {})}>
-                {/* TerminalToolbar (Esc/Tab/Ctrl/arrows) now renders inside
+                {/* A shell session draws NONE of the bottom chrome: no composer
+                    (there is nothing to send a message to), and so no Stop
+                    button, no model chip and no way into the model picker — all
+                    three live inside these two children. The wrapper itself stays
+                    mounted because useChromeMeasurements measures it.
+                    TerminalToolbar (Esc/Tab/Ctrl/arrows) now renders inside
                     ChatInputBar when minimal={isTerminalTouch}, slotted in
                     the QuickChips position so both modes share one container. */}
+                {!isShellSession && (<>
                 <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => setToast(msg)} onSendBlocked={(retry) => setToast({ message: 'Claude is waiting for your response — answer the prompt first.', durationMs: 8000, action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } })} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
                   statusData={{
@@ -3241,6 +3287,7 @@ function AppInner() {
                   turnsWithUsage={turnsWithUsage}
                   nativeTotals={sessionTotals}
                 />
+                </>)}
               </div>
           </>
         ) : (
@@ -3542,10 +3589,20 @@ function AppInner() {
           // pending, "/config\r" would answer CC's live Ink menu instead.
           setTimeout(() => guardedPtySend(sessionId, '/config\r'), 50);
         }}
-        showAdvanced={currentSession?.provider !== 'native'}
+        // "Advanced" opens Claude Code's own /config screen by typing into the
+        // PTY. A native session has no PTY; a shell session has one, but it is
+        // the user's shell — /config there is just a wrong command typed at
+        // their prompt. Both hide the button.
+        showAdvanced={currentSession?.provider !== 'native' && currentSession?.provider !== 'shell'}
       />
       <ModelPickerPopup
-        open={modelPickerOpen}
+        // A shell session has no model, so it must never open the picker — the
+        // popup would offer Claude Code aliases whose only effect would be
+        // typing "/model sonnet" at the user's shell prompt. Its two entry
+        // points (the composer and the status bar) are already gone for a shell
+        // session; this closes the third — a /model typed into a command list
+        // while Settings is open.
+        open={modelPickerOpen && !isShellSession}
         onClose={() => setModelPickerOpen(false)}
         sessionId={sessionId}
         // The popup only knows real ModelAlias values (highlights the active

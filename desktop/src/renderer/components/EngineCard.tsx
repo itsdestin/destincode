@@ -84,6 +84,11 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   const [setupOpen, setSetupOpen] = useState(false);
   const [prereqs, setPrereqs] = useState<EnginePrereqs | null>(null);
   const [copied, setCopied] = useState(false);
+  // Its own error, NOT the card-wide `error`: that one renders in the card body,
+  // a couple of hundred pixels above the Run-in-terminal button, which lives
+  // inside an expanded Callout. A message the user has to scroll to find is a
+  // message they do not read.
+  const [terminalError, setTerminalError] = useState<string | null>(null);
 
   // Shared runner for install/restart/setContext/setBackend: sets busy,
   // surfaces any thrown error, and clears the transient progress line when the
@@ -93,6 +98,31 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
     try { setStatus(await fn()); }
     catch (e: any) { setError(e?.message ?? String(e)); }
     finally { setBusy(false); setProgress(null); }
+  };
+
+  // "Run in terminal": open a plain-shell session with the install command
+  // already typed onto its prompt. The app does not press Enter — the user
+  // reads the command and runs it themselves, in their own terminal, where the
+  // password an installer asks for is typed.
+  //
+  // Nothing selects the session here: main forwards session:created to this
+  // window and App.tsx's handler focuses a newly created session and closes
+  // Settings, which is the same path every other new session takes.
+  const openTerminalWithCommand = async (command: string) => {
+    // busy also disables the button — without it a double-click opens two
+    // terminals, and the second one steals focus from the first.
+    setBusy(true); setTerminalError(null);
+    try { await window.claude.engine.runInTerminal(command); }
+    // The real reason, not a guess — the terminal failing to open is the only
+    // thing the user can act on here (Copy is right beside this button).
+    // Electron wraps every rejected invoke as "Error invoking remote method
+    // 'engine:run-in-terminal': Error: <the real message>", which is machinery,
+    // not something a non-developer can act on. Strip it down to the sentence.
+    catch (e: any) {
+      const raw = e?.message ?? String(e);
+      setTerminalError(raw.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, ''));
+    }
+    finally { setBusy(false); }
   };
 
   // Commit the context-length knob. Reverts an invalid value (< 1024 or NaN)
@@ -307,13 +337,14 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                         </Button>
                       </div>
                       <div className="flex gap-1.5">
-                        <Button size="sm" onClick={() => void window.claude.engine.runInTerminal(prereqs.command!)}>
+                        <Button size="sm" disabled={busy} onClick={() => void openTerminalWithCommand(prereqs.command!)}>
                           Run in terminal
                         </Button>
                         <Button size="sm" variant="secondary" onClick={() => void recheck(opt.backend)} disabled={busy}>
                           Check again
                         </Button>
                       </div>
+                      {terminalError && <FieldError as="p">{terminalError}</FieldError>}
                     </div>
                   )}
                   {prereqs && !prereqs.satisfied && !prereqs.command && (

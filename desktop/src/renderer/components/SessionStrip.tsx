@@ -110,16 +110,19 @@ interface SessionEntry {
   name: string;
   cwd: string;
   permissionMode: string;
-  // Which runtime backend this session runs — 'claude' (default) or 'native'.
-  // With harnessId and model, drives the "Claude Code · Sonnet" /
-  // "YouCoded Coder · DeepSeek R1" line under the name in the All Sessions
-  // menu (session-runtime-label.ts). Nothing on the pill itself.
+  // Which runtime backend this session runs — 'claude' (default), 'native' or
+  // 'shell'. With harnessId and model, drives the "Claude Code · Sonnet" /
+  // "YouCoded Coder · DeepSeek R1" / "Terminal · fish" line under the name in
+  // the All Sessions menu (session-runtime-label.ts). Nothing on the pill itself.
   provider?: string;
   // Resolved native preset id ('assistant' | 'coder', post legacy-mapping).
   // Absent for Claude sessions.
   harnessId?: string;
   // Model id the session runs on — a Claude alias or a native model id.
   model?: string;
+  // provider='shell' only — the shell that was spawned ('fish'), which the
+  // All Sessions menu shows where a model would otherwise go.
+  shellName?: string;
 }
 
 interface Props {

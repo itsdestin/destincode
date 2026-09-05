@@ -363,6 +363,7 @@ const IPC = {
   // ---- Native runtime Plan C (Phase 1): model manager ----
   ENGINE_SET_BACKEND: 'engine:set-backend',
   ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
+  ENGINE_RUN_IN_TERMINAL: 'engine:run-in-terminal',  // plain-shell session + typed command
   MODELS_CURATED: 'models:curated',
   MODELS_SEARCH: 'models:search',
   MODELS_QUANTS: 'models:quants',
@@ -1359,6 +1360,11 @@ contextBridge.exposeInMainWorld('claude', {
     restart: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_RESTART),
     // Plan C context-length knob — persists -c and reboots the engine.
     setContext: (contextSize: number): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_SET_CONTEXT, contextSize),
+    // Opens a plain-shell session in the folder this window is working in and
+    // types `command` onto its prompt. It is NOT run — the user presses Enter.
+    // The returned id is the session the caller then selects.
+    runInTerminal: (command: string): Promise<{ sessionId: string }> =>
+      ipcRenderer.invoke(IPC.ENGINE_RUN_IN_TERMINAL, command),
     onInstallProgress: (cb: (p: unknown) => void) => {
       const listener = (_e: unknown, p: unknown) => cb(p);
       ipcRenderer.on(IPC.ENGINE_INSTALL_PROGRESS, listener);
