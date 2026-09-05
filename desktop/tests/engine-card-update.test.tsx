@@ -83,3 +83,59 @@ describe('EngineCard — engine update route', () => {
     expect(queryByText('Update')).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// T19 — the fact line's two live numbers.
+// ---------------------------------------------------------------------------
+describe('EngineCard — the live hardware fact line', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { cleanup(); });
+
+  const running = (extra: Record<string, unknown>) => ({
+    installed: true,
+    installedVersion: 'b10665',
+    pinnedVersion: 'b10665',
+    backend: 'vulkan',
+    state: 'running' as const,
+    cacheDir: '/cache',
+    contextSize: 32768,
+    ...extra,
+  });
+
+  async function line(status: Record<string, unknown>) {
+    mountClaude(status);
+    const { container } = render(<EngineCard />);
+    await flush();
+    return container.textContent ?? '';
+  }
+
+  it('shows both rates from a real b10665 reading, rounded', async () => {
+    // The captured b10665 numbers: 84.057… reading, 37.821… writing.
+    expect(await line(running({
+      deviceName: 'AMD Radeon 8060S Graphics',
+      loadedModelsBytes: 9_527_502_048,
+      lastReply: { promptPerSecond: 84.05715886803026, generatePerSecond: 37.821109441135555 },
+    }))).toContain('8.9 GB loaded · last reply 84 read / 38 write per second');
+  });
+
+  it('shows the write rate alone when the prompt came out of the cache', async () => {
+    // A fully-cached prompt has no reading work to time. The card must not
+    // print "0 read", and must not drop the write rate it does have.
+    const text = await line(running({ lastReply: { generatePerSecond: 37.821109441135555 } }));
+    expect(text).toContain('last reply 38 write per second');
+    expect(text).not.toContain('read');
+    expect(text).not.toContain('NaN');
+  });
+
+  it('says nothing about speed or memory before either has been measured', async () => {
+    // Absent, not zero: no reply has been sent and the engine has not been
+    // polled, so the card must not assert "nothing loaded" or a speed.
+    const text = await line(running({}));
+    expect(text).not.toContain('last reply');
+    expect(text).not.toContain('nothing loaded');
+  });
+
+  it('says "nothing loaded" only when the engine was actually asked', async () => {
+    expect(await line(running({ loadedModelsBytes: 0 }))).toContain('nothing loaded');
+  });
+});

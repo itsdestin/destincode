@@ -494,20 +494,32 @@ describe('parseTimingsChunk — reads b10665\'s real final frame', () => {
     expect(parseTimingsChunk({ prompt_progress: REAL_SEQUENCE[0] })).toBeNull();
   });
 
-  it('reports nothing rather than half a reading', () => {
-    // The card prints BOTH numbers. One of them alone is not a reading.
+  it('KEEPS the rate it has when the other one is missing or degenerate', () => {
+    // A prompt served entirely from the prefix cache has no reading work to
+    // time, so the engine can report a zero prompt rate for a reply whose write
+    // rate is perfectly good. Dropping the pair would blank the card's speed
+    // line for a reply that really did run — keep the half we measured.
     const { prompt_per_second, ...noPrompt } = REAL_FINAL_FRAME_WITH_USAGE.timings;
-    expect(parseTimingsChunk({ timings: noPrompt })).toBeNull();
+    expect(parseTimingsChunk({ timings: noPrompt })).toEqual({ generatePerSecond: 37.821109441135555 });
     const { predicted_per_second, ...noPredicted } = REAL_FINAL_FRAME_WITH_USAGE.timings;
-    expect(parseTimingsChunk({ timings: noPredicted })).toBeNull();
+    expect(parseTimingsChunk({ timings: noPredicted })).toEqual({ promptPerSecond: 84.05715886803026 });
+    // Zero is the value b10665's own arithmetic (prompt_n/prompt_ms*1000) yields
+    // for a fully-cached prompt — the realistic case for this rule.
+    expect(parseTimingsChunk({ timings: { ...REAL_FINAL_FRAME_WITH_USAGE.timings, prompt_per_second: 0 } }))
+      .toEqual({ generatePerSecond: 37.821109441135555 });
   });
 
-  it('reports nothing for a zero or a divide-by-zero, never that number', () => {
-    // A fully-cached prompt could hand us 0 or Infinity here. "0 read per
-    // second" is a lie about the machine; Infinity renders as "Infinity".
+  it('never reports a zero or a divide-by-zero AS a speed', () => {
+    // "0 read per second" is a false claim about the machine; Infinity (which
+    // needs prompt_ms === 0) renders as the word "Infinity". Each bad value must
+    // drop its OWN number and leave the other standing.
     for (const bad of [0, -1, Infinity, NaN, null, 'fast']) {
-      expect(parseTimingsChunk({ timings: { ...REAL_FINAL_FRAME_WITH_USAGE.timings, prompt_per_second: bad } })).toBeNull();
-      expect(parseTimingsChunk({ timings: { ...REAL_FINAL_FRAME_WITH_USAGE.timings, predicted_per_second: bad } })).toBeNull();
+      expect(parseTimingsChunk({ timings: { ...REAL_FINAL_FRAME_WITH_USAGE.timings, prompt_per_second: bad } }))
+        .toEqual({ generatePerSecond: 37.821109441135555 });
+      expect(parseTimingsChunk({ timings: { ...REAL_FINAL_FRAME_WITH_USAGE.timings, predicted_per_second: bad } }))
+        .toEqual({ promptPerSecond: 84.05715886803026 });
+      // Both bad is no reading at all — there is nothing left to show.
+      expect(parseTimingsChunk({ timings: { prompt_per_second: bad, predicted_per_second: bad } })).toBeNull();
     }
   });
 
@@ -546,15 +558,30 @@ describe('scanPrefillProgress — the reply reading, once per completion', () =>
   it('says nothing when the stream ABORTS mid-reply', async () => {
     // The user pressed stop. An interrupted reply has no honest speed, and the
     // last one we did measure beats blanking the line.
+    //
+    // THE FIXTURE HAS TO LET THE FRAME THROUGH FIRST. The obvious version of
+    // this test — enqueue then `c.error()` synchronously inside start() — is
+    // VACUOUS: per the streams spec `error()` RESETS the queue, so the frame is
+    // thrown away, the first read() rejects, and the scan never even learns
+    // this was a completion stream. It then passes whether or not the code
+    // under test reports on the abort path, which is the one thing it exists to
+    // check. Yielding a real tick between the enqueue and the error is what
+    // makes the assertion reach the branch it is about. ("The assertion is
+    // right" and "the assertion runs" are different claims — this was the ninth
+    // hollow guard found in this feature.)
     const enc = new TextEncoder();
+    let ctrl!: ReadableStreamDefaultController<Uint8Array>;
     const body = new ReadableStream<Uint8Array>({
       start(c) {
+        ctrl = c;
         c.enqueue(enc.encode(`data: ${JSON.stringify(REAL_CONTENT_FRAME)}\n\n`));
-        c.error(new Error('aborted'));
       },
     });
     const seen: unknown[] = [];
-    await scanPrefillProgress(body, undefined, (t) => seen.push(t));
+    const scan = scanPrefillProgress(body, undefined, (t) => seen.push(t));
+    await new Promise((r) => setTimeout(r, 5));   // the frame is consumed here
+    ctrl.error(new Error('aborted'));
+    await scan;
     expect(seen).toEqual([]);
   });
 

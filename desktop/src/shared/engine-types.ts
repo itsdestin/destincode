@@ -49,10 +49,17 @@ export interface EngineSpeedSettings {
 /** How fast one finished reply ran, read off llama-server's final streamed
  *  frame (`timings.prompt_per_second` / `timings.predicted_per_second`).
  *  'prompt' is how fast it READ the conversation, 'generate' how fast it WROTE
- *  the answer — the two numbers the engine card's fact line shows. */
+ *  the answer — the two numbers the engine card's fact line shows.
+ *
+ *  EITHER may be absent, and the card then shows only the other. A prompt that
+ *  came entirely out of the prefix cache has no reading work to time, so the
+ *  engine can report a prompt rate of zero for a reply whose WRITE rate is
+ *  perfectly good — throwing that away would blank the whole line over the half
+ *  we could not measure. A reading with neither number is not a reading at all
+ *  and never reaches here. */
 export interface ReplyTimings {
-  promptPerSecond: number;
-  generatePerSecond: number;
+  promptPerSecond?: number;
+  generatePerSecond?: number;
 }
 
 export interface EngineStatus {

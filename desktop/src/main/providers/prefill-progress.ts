@@ -124,18 +124,27 @@ export function parseProgressChunk(json: unknown): PrefillProgress | null {
  * it does not; both were captured, so this reads the block wherever it lands
  * rather than keying off either neighbour.
  *
- * BOTH numbers are required, and both must be a real positive rate. The card
- * prints "last reply N read / M write per second" — half a reading, a zero or an
- * Infinity (which is what a divide-by-zero on a fully-cached prompt would give)
- * is a number no one can stand behind, so it is reported as no reading at all.
+ * Each rate must be a real POSITIVE number to be reported. A zero is what a
+ * fully-cached prompt would give (`prompt_per_second` is prompt_n/prompt_ms*1000,
+ * so no reading work means zero), and an Infinity is what a zero `prompt_ms`
+ * would give; neither is a speed anyone can stand behind, and "0 read per second"
+ * on the card is a false claim about the machine.
+ *
+ * But a bad rate only drops ITS OWN number. The two halves are measured
+ * separately, and discarding a perfectly good WRITE rate because the prompt came
+ * out of the cache would blank the card's whole speed line for a reply that
+ * really did run. Only a frame with neither usable rate is "no reading".
  */
 export function parseTimingsChunk(json: unknown): ReplyTimings | null {
   const t = (json as any)?.timings;
   if (!t || typeof t !== 'object') return null;
-  const promptPerSecond = Number(t.prompt_per_second);
-  const generatePerSecond = Number(t.predicted_per_second);
-  if (!Number.isFinite(promptPerSecond) || promptPerSecond <= 0) return null;
-  if (!Number.isFinite(generatePerSecond) || generatePerSecond <= 0) return null;
+  const rate = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  };
+  const promptPerSecond = rate(t.prompt_per_second);
+  const generatePerSecond = rate(t.predicted_per_second);
+  if (promptPerSecond === undefined && generatePerSecond === undefined) return null;
   return { promptPerSecond, generatePerSecond };
 }
 
