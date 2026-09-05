@@ -232,6 +232,21 @@ describe('MarkdownContent file paths', () => {
     expect(writes).toEqual(['cat /home/destin/plan.md\n']);
   });
 
+  it('makes media, archive and script paths clickable, not just readable documents', () => {
+    // Before 2026-09-05 only a short list of viewable types pilled, so a path
+    // to an .mp3 or a .zip could not be clicked at all.
+    for (const [md, label] of [
+      ['play /home/d/song.mp3', 'song.mp3'],
+      ['watch /home/d/clip.mp4', 'clip.mp4'],
+      ['unzip /home/d/bundle.zip', 'bundle.zip'],
+      ['run scripts/deploy.sh', 'deploy.sh'],
+    ] as const) {
+      const { container, unmount } = render(<MarkdownContent content={md} sessionId="s1" />);
+      expect(paths(container), md).toEqual([label]);
+      unmount();
+    }
+  });
+
   it('leaves paths alone when there is no session to resolve them against', () => {
     const { container } = render(<MarkdownContent content={'open /home/destin/plan.md'} />);
     expect(paths(container)).toEqual([]);
