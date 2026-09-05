@@ -143,7 +143,7 @@ describe('ModelDownloader', () => {
   }) as typeof fetch;
   const MANIFEST = 'M-UD-Q4_K_XL-00001-of-00002.gguf.download.json';
 
-  it('writes the manifest BEFORE the first byte, and removes it on clean completion', async () => {
+  it('writes the manifest BEFORE the first byte, and STAMPS it on clean completion', async () => {
     const seen: string[] = [];
     const watching: typeof fetch = (async (url: any, init?: any) => {
       // Record whether the manifest already exists at the moment of each fetch.
@@ -154,7 +154,59 @@ describe('ModelDownloader', () => {
     const id = dl.start('unsloth/M-GGUF', quantOpt(), () => {});
     await dl.wait(id);
     expect(seen).toEqual(['yes', 'yes']);   // present for every part's fetch
-    expect(fs.existsSync(path.join(dir, MANIFEST))).toBe(false);
+    // Was: the manifest was DELETED here. It now survives, carrying the repo
+    // and (later) the vision projector a finished model still needs — and
+    // completedAt is what marks it finished.
+    expect(fs.existsSync(path.join(dir, MANIFEST))).toBe(true);
+    const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8'));
+    expect(typeof m.completedAt).toBe('number');
+    expect(m.repo).toBe('unsloth/M-GGUF');
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('a re-download of a FINISHED model keeps its vision file and is in flight again', async () => {
+    const dl = new ModelDownloader(dir, fetchServing(bodies));
+    await dl.wait(dl.start('unsloth/M-GGUF', quantOpt(), () => {}));
+    // Stand in for the vision projector §E1 will record on the finished download.
+    const done = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8'));
+    done.visionFile = { path: 'mmproj-F16.gguf', size: 900, sha256: null };
+    fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify(done));
+    // Delete the published parts, the way the user would before fetching again.
+    for (const n of Object.keys(bodies)) fs.rmSync(path.join(dir, n));
+
+    await dl.wait(dl.start('unsloth/M-GGUF', quantOpt(), () => {}));
+    const after = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8'));
+    expect(after.visionFile).toEqual({ path: 'mmproj-F16.gguf', size: 900, sha256: null });
+    expect(typeof after.completedAt).toBe('number');   // it finished again
+  });
+
+  it('a FINISHED download from another repo is not "already partly downloaded"', async () => {
+    // The old guard fired on the manifest's mere presence. A stamped manifest
+    // means the bytes on disk are WHOLE, so there is no half-fetched file to
+    // protect — the user may take the same filename from a different publisher.
+    const dl = new ModelDownloader(dir, fetchServing(bodies));
+    await dl.wait(dl.start('unsloth/M-GGUF', quantOpt(), () => {}));
+    let second = '';
+    expect(() => { second = dl.start('bartowski/M-GGUF', quantOpt(), () => {}); }).not.toThrow();
+    await dl.wait(second);
+    const m = JSON.parse(fs.readFileSync(path.join(dir, MANIFEST), 'utf8'));
+    expect(m.repo).toBe('bartowski/M-GGUF');
+    expect(m.visionFile).toBeUndefined();   // and it inherits nothing from unsloth
+  });
+
+  it('an untraceable record (repo: null) blocks nothing', async () => {
+    // §E3 writes this when it cannot work out where a pre-existing model came
+    // from. It is not a rival publisher, so the same-filename guard must ignore it.
+    fs.writeFileSync(path.join(dir, MANIFEST), JSON.stringify({
+      v: 1, repo: null, quant: 'UD-Q4_K_XL', files: quantOpt().files,
+      totalSizeBytes: 30, sha256ByFile: {}, startedAt: 1,
+    }));
+    const dl = new ModelDownloader(dir, fetchServing(bodies));
+    let id = '';
+    expect(() => { id = dl.start('unsloth/M-GGUF', quantOpt(), () => {}); }).not.toThrow();
+    // Awaited, not fire-and-forget: the fixture dir is deleted in afterEach, and
+    // a download still writing into it fails as an unhandled rejection.
+    await dl.wait(id);
   });
 
   it('keeps the manifest when the download is cancelled — that is what makes resume possible', async () => {

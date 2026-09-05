@@ -127,6 +127,13 @@ describe('EngineManager — local downloads', () => {
   const manifest = (repo: string, files: string[], totalSizeBytes: number) => JSON.stringify({
     v: 1, repo, quant: 'UD-Q4_K_XL', files, totalSizeBytes, sha256ByFile: {}, startedAt: 1,
   });
+  /** A manifest for a download that FINISHED — the state every completed
+   *  download is left in since 2026-09-05. */
+  const doneManifest = (repo: string, files: string[], totalSizeBytes: number) => JSON.stringify({
+    v: 1, repo, quant: 'UD-Q4_K_XL', files, totalSizeBytes, sha256ByFile: {},
+    startedAt: 1, completedAt: 2,
+    visionFile: { path: 'mmproj-F16.gguf', size: 900, sha256: null },
+  });
 
   it('reports a complete model, an unfinished one with its manifest, and an untraceable one', async () => {
     fs.writeFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf'), Buffer.alloc(50));
@@ -169,13 +176,57 @@ describe('EngineManager — local downloads', () => {
     expect(fs.existsSync(path.join(cacheDir, 'Junk-Q4_K_M.gguf.download.json'))).toBe(false);
   });
 
-  it('removes a stale manifest left beside a COMPLETE set', async () => {
+  // Was: 'removes a stale manifest left beside a COMPLETE set'. The manifest now
+  // OUTLIVES the download — it is the only record of the repo a finished model
+  // came from — so a complete set keeps it, and completedAt (not presence) is
+  // what says the download is over.
+  it('KEEPS a finished manifest beside a complete set, and never calls it unfinished', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf'), Buffer.alloc(50));
+    fs.writeFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf.download.json'),
+      doneManifest('a/b', ['Whole-Q4_K_M.gguf'], 50));
+    const rows = await manager.installedModels();
+    expect(rows[0].status).toBe('complete');
+    expect(fs.existsSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf.download.json'))).toBe(true);
+    const kept = JSON.parse(fs.readFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf.download.json'), 'utf8'));
+    expect(kept.completedAt).toBe(2);                       // untouched
+    expect(kept.visionFile.path).toBe('mmproj-F16.gguf');   // what §E needs later
+  });
+
+  it('a complete set whose manifest was never stamped is HEALED, not thrown away', async () => {
+    // The crash window: the last part published, the app died before the stamp.
     fs.writeFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf'), Buffer.alloc(50));
     fs.writeFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf.download.json'),
       manifest('a/b', ['Whole-Q4_K_M.gguf'], 50));
     const rows = await manager.installedModels();
     expect(rows[0].status).toBe('complete');
-    expect(fs.existsSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf.download.json'))).toBe(false);
+    const healed = JSON.parse(fs.readFileSync(path.join(cacheDir, 'Whole-Q4_K_M.gguf.download.json'), 'utf8'));
+    expect(typeof healed.completedAt).toBe('number');
+    expect(healed.repo).toBe('a/b');
+  });
+
+  it("keeps §E3's repo: null miss record — sweeping it would make the lookup repeat forever", async () => {
+    // "We searched Hugging Face for this model and found nothing" is a REAL
+    // record: it is what stops the search running again on every render.
+    fs.writeFileSync(path.join(cacheDir, 'Mystery-Q4_K_M.gguf'), Buffer.alloc(50));
+    fs.writeFileSync(path.join(cacheDir, 'Mystery-Q4_K_M.gguf.download.json'), JSON.stringify({
+      v: 1, repo: null, quant: 'Q4_K_M', files: ['Mystery-Q4_K_M.gguf'],
+      totalSizeBytes: 50, sha256ByFile: {}, startedAt: 1, completedAt: 2,
+    }));
+    const rows = await manager.installedModels();
+    expect(rows[0]).toMatchObject({ id: 'Mystery-Q4_K_M', status: 'complete', repo: null });
+    expect(fs.existsSync(path.join(cacheDir, 'Mystery-Q4_K_M.gguf.download.json'))).toBe(true);
+    const kept = JSON.parse(fs.readFileSync(path.join(cacheDir, 'Mystery-Q4_K_M.gguf.download.json'), 'utf8'));
+    expect(kept.repo).toBeNull();
+    expect(kept.completedAt).toBe(2);   // not re-stamped either
+  });
+
+  it('a stamped manifest with no bytes at all is a leftover, not an unfinished row', async () => {
+    // The files were deleted from under a finished download: nothing to resume,
+    // nothing to show, so the record goes with them.
+    fs.writeFileSync(path.join(cacheDir, 'Gone-Q4_K_M.gguf.download.json'),
+      doneManifest('a/b', ['Gone-Q4_K_M.gguf'], 50));
+    expect(await manager.installedModels()).toEqual([]);
+    expect(fs.existsSync(path.join(cacheDir, 'Gone-Q4_K_M.gguf.download.json'))).toBe(false);
   });
 
   it('deleteModel removes the manifest along with the parts', async () => {

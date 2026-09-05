@@ -9,12 +9,14 @@
 //   - sha256 (from HF lfs.oid) verifies each part when available; a mismatch
 //     deletes the bad bytes and errors — never publishes.
 //   - cancel keeps .partial files (resume later); a later delete cleans up.
+//   - the manifest sidecar SURVIVES completion, stamped with completedAt — see
+//     download-manifest.ts for why a finished model still needs it.
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { ulid } from 'ulid';
 import { hfResolveUrl } from './hf-client';
-import { writeManifest, readManifest, removeManifest } from './download-manifest';
+import { writeManifest, readManifest, markManifestComplete, isManifestComplete } from './download-manifest';
 import type { DownloadProgress, QuantOption } from '../../shared/model-manager-types';
 
 const PROGRESS_INTERVAL_MS = 250;
@@ -44,7 +46,12 @@ export class ModelDownloader {
     // mkdir here (not only in run()) because the manifest lands in the same dir.
     fs.mkdirSync(this.cacheDir, { recursive: true });
     const prior = readManifest(this.cacheDir, firstFile);
-    if (prior && prior.repo !== repo) {
+    // WHY isManifestComplete: a manifest now stays behind after the download
+    // finishes, and a FINISHED download is not "partly downloaded" — only an
+    // unstamped manifest means there are half-fetched bytes on disk to protect.
+    // prior.repo === null is an untraceable record (§E3's "not found" marker),
+    // never a rival publisher — it must not block anything.
+    if (prior && !isManifestComplete(prior) && prior.repo !== null && prior.repo !== repo) {
       // Same filename, different publisher: the .partial on disk holds ANOTHER
       // build's bytes, and Range-continuing it would fail the integrity check
       // only after the whole remainder was fetched. The prior download has a
@@ -122,10 +129,13 @@ export class ModelDownloader {
         fs.renameSync(partialPath, finalPath);
         doneBytes += received;
       }
-      // Clean completion of the WHOLE set — the trail is no longer needed.
-      // Deliberately NOT in a finally: cancel and error must keep it, because
-      // that is exactly when the user will want to resume.
-      removeManifest(this.cacheDir, path.basename(quant.files[0]));
+      // Clean completion of the WHOLE set. The manifest is STAMPED, not deleted:
+      // the finished model still needs its repo and its vision projector, and
+      // `completedAt` is what tells every reader this is a record rather than an
+      // interrupted download. Deliberately NOT in a finally: cancel and error
+      // must leave it unstamped, because that is exactly when the user will
+      // want to resume.
+      markManifestComplete(this.cacheDir, path.basename(quant.files[0]), Date.now());
       onProgress({ ...base, state: 'done', receivedBytes: doneBytes, currentPart: parts });
     } catch (e: any) {
       if (entry.cancelled) {

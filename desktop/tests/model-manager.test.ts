@@ -63,4 +63,26 @@ describe('ModelManager.resume', () => {
     await expect(manager().resume('Old-Q4_K_M')).rejects.toThrow(/where it came from/i);
     expect(urls).toEqual([]);
   });
+
+  it('refuses a manifest whose repo was never found — repo: null is untraceable', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'Mystery-Q4_K_M.gguf.partial'), Buffer.alloc(10));
+    fs.writeFileSync(path.join(cacheDir, 'Mystery-Q4_K_M.gguf.download.json'), JSON.stringify({
+      v: 1, repo: null, quant: 'Q4_K_M', files: ['Mystery-Q4_K_M.gguf'],
+      totalSizeBytes: 50, sha256ByFile: {}, startedAt: 1,
+    }));
+    await expect(manager().resume('Mystery-Q4_K_M')).rejects.toThrow(/where it came from/i);
+    expect(urls).toEqual([]);
+  });
+
+  it('refuses a FINISHED download — a surviving manifest is not something to resume', async () => {
+    // The manifest outlives the download now, so its presence alone must not be
+    // read as "there is more to fetch". completedAt is the test.
+    fs.writeFileSync(path.join(cacheDir, 'Done-Q4_K_M.gguf'), Buffer.alloc(50));
+    fs.writeFileSync(path.join(cacheDir, 'Done-Q4_K_M.gguf.download.json'), JSON.stringify({
+      v: 1, repo: 'unsloth/Done-GGUF', quant: 'Q4_K_M', files: ['a/Done-Q4_K_M.gguf'],
+      totalSizeBytes: 50, sha256ByFile: {}, startedAt: 1, completedAt: 2,
+    }));
+    await expect(manager().resume('Done-Q4_K_M')).rejects.toThrow(/already finished/i);
+    expect(urls).toEqual([]);   // no bytes asked for, no Hugging Face call
+  });
 });
