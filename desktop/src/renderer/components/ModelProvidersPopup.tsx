@@ -240,7 +240,10 @@ function ClaudeCodeBlock({
   // would still call .find on undefined.
   const claudePrereq = state?.prerequisites?.find((p) => p.name === 'claude');
   const installed = claudePrereq?.status === 'installed';
-  const signedIn = state?.authComplete === true;
+  // authComplete is set by ANY finished sign-in, ChatGPT included, so on its
+  // own it would make this Claude row claim a Claude account that does not
+  // exist — and draw Claude plan-usage bars under it. (fix 3, 2026-09-05)
+  const signedIn = state?.authComplete === true && state?.authMode !== 'chatgpt';
 
   // Plain-word status line (no ●◐○ glyphs), in the same grey as every other row.
   let statusText: string;
@@ -300,7 +303,7 @@ function ClaudeCodeBlock({
 // honest sentence about the footing (Q-6a): OpenAI welcomes this out loud but
 // has not written it into its terms.
 
-/** Reads the account state through the (still MOCK_ONLY) `chatgpt` namespace —
+/** Reads the account state through the real `chatgpt` namespace —
  *  reached with a cast like `firstRun`, until it joins the typed bridge. */
 function chatGptApi(): {
   status: () => Promise<ChatGptAccountStatus>;

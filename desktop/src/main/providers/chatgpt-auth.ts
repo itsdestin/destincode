@@ -188,6 +188,14 @@ export interface ChatGptAuthDeps {
   appVersion: string;
   /** `shell.openExternal` in production. */
   openExternal: (url: string) => Promise<void>;
+  /** WHY this exists: the kill switch (YOUCODED_CHATGPT=0) must leave the
+   *  feature genuinely inert, and the launch-time setup check still needs this
+   *  object to READ the account file. Without a gate here the constructor would
+   *  keep polling OpenAI every five minutes with a switched-off feature — and
+   *  because that poll refreshes the token, a rejection would run clearAccount()
+   *  and DELETE the user's saved sign-in. The switch is meant to be a fast
+   *  revert, never a sign-out (review T4 F1). Defaults to on. */
+  pollUsage?: boolean;
   fetch?: typeof fetch;
   listen?: ListenFn;
   isEncryptionAvailable?: () => boolean;
@@ -396,6 +404,8 @@ export class ChatGptAuth {
   private lastUsagePollAt = Number.NEGATIVE_INFINITY;
   private modelsRefresh: Promise<void> | null = null;
   private lastModelsAttemptAt = 0;
+  /** False under the kill switch: no background traffic, no token refresh. */
+  private readonly pollUsage: boolean;
   private disposed = false;
 
   constructor(deps: ChatGptAuthDeps) {
@@ -411,12 +421,15 @@ export class ChatGptAuth {
     this.randomBytes = deps.randomBytes ?? ((n) => nodeRandomBytes(n));
     this.log = deps.log ?? defaultLog;
 
+    this.pollUsage = deps.pollUsage ?? true;
+
     this.account = this.readAccountSync();
     // §4.4: the poll starts with the process when an account is already
     // signed in, and the first poll runs at once (through the debounce, which
     // has nothing to wait for yet) so the bars are today's within seconds of
-    // launch rather than in five minutes.
-    if (this.isSignedIn()) {
+    // launch rather than in five minutes. Not under the kill switch: see
+    // `pollUsage` above.
+    if (this.pollUsage && this.isSignedIn()) {
       this.startPoll();
       this.schedulePollSoon();
     }
@@ -996,7 +1009,10 @@ export class ChatGptAuth {
   }
 
   private startPoll(): void {
-    if (this.pollTimer || this.disposed) return;
+    // The gate lives HERE as well as in the constructor: the sign-in callback
+    // and the first-run arm both start the poll, so a single constructor check
+    // would not make the kill switch airtight (review T4 F1/F3).
+    if (!this.pollUsage || this.pollTimer || this.disposed) return;
     // Through the debounce, so an interval tick seconds after a reply-driven
     // poll waits for the minute instead of spending a second request.
     this.pollTimer = this.unref(this.timers.setInterval(() => this.schedulePollSoon(), USAGE_POLL_MS));
@@ -1009,6 +1025,7 @@ export class ChatGptAuth {
 
   /** The per-reply trigger, debounced: a ten-step turn costs one poll. */
   private schedulePollSoon(): void {
+    if (!this.pollUsage) return;   // kill switch: no background traffic at all
     if (this.debounceTimer || this.disposed || !this.isSignedIn()) return;
     const wait = Math.max(0, USAGE_DEBOUNCE_MS - (this.now() - this.lastUsagePollAt));
     this.debounceTimer = this.unref(this.timers.setTimeout(() => {

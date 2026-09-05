@@ -34,7 +34,7 @@ import { VITE_DEV_PORT } from '../shared/ports';
 import { MOUNT_PROBE_JS } from './dev-mount-probe';
 import { log, rotateLog } from './logger';
 import { registerThemeProtocol } from './theme-protocol';
-import { FirstRunManager } from './first-run';
+import { FirstRunManager, markSetupCompleted, setupIsUsable } from './first-run';
 import type { FirstRunState } from '../shared/first-run-types';
 // Sign in with ChatGPT (backend design 2026-09-05 §1): the account object is
 // built HERE, inside createWindow, and handed to the IPC layer and both
@@ -446,15 +446,10 @@ function registerFirstRunIpc(
   });
 
   ipcMain.handle(IPC.FIRST_RUN_SKIP, async () => {
-    try {
-      const stateDir = path.join(os.homedir(), '.claude', 'toolkit-state');
-      fs.mkdirSync(stateDir, { recursive: true });
-      const configPath = path.join(stateDir, 'config.json');
-      let config: any = {};
-      try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
-      config.setup_completed = true;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    } catch (e) { log('ERROR', 'FirstRun', 'Skip failed', { error: String(e) }); }
+    // One writer for the setup-completed flag (first-run.ts). WHY: it is the
+    // only place that knows WHERE the wizard's files live, so a dev instance
+    // pointed at a scratch folder cannot write the installed app's config.
+    markSetupCompleted();
     // Transition the state machine so the renderer's onStateChanged fires
     firstRunManager.skip();
   });
@@ -917,6 +912,8 @@ function createWindow(firstRunManager?: FirstRunManager) {
   // Sign in with ChatGPT (backend design 2026-09-05 §1, §6). Built HERE, right
   // before registerIpcHandlers — i.e. AFTER the dev-profile userData override
   // near the top of this file — and never beside `remoteServer`, which is
+  // The kill switch, read once: YOUCODED_CHATGPT=0 turns the whole feature off.
+  const chatgptEnabled = process.env.YOUCODED_CHATGPT !== '0';
   // constructed before that override: an instance built there would read and
   // write the BUILT app's native-secrets.json and chatgpt-account.json from a
   // dev instance (the live-app rule broken through a file). Constructed even
@@ -928,6 +925,11 @@ function createWindow(firstRunManager?: FirstRunManager) {
     secrets: new SecretsStore(app.getPath('userData')),
     appVersion: app.getVersion(),
     openExternal: (url) => shell.openExternal(url),
+    // The object still exists under the kill switch (the launch check reads the
+    // account file through it), but it must not talk to OpenAI: the poll
+    // refreshes the token, and a rejected refresh deletes the saved sign-in.
+    // Turning the feature off must never sign anyone out (review T4 F1).
+    pollUsage: chatgptEnabled,
   });
 
   const ipcWiring = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
@@ -971,13 +973,24 @@ function createWindow(firstRunManager?: FirstRunManager) {
             // chatgptAuth is read directly (not via the registry row) so the
             // kill switch, which removes the row, cannot lock anyone out either.
             const { detectAuth } = require('./prerequisite-installer');
-            const usable = chatgptAuth!.isSignedIn()
-              || (await hasUsableProvider())
-              || (await detectAuth()).installed;
+            const usable = await setupIsUsable({
+              isSignedIn: () => chatgptAuth!.isSignedIn(),
+              hasUsableProvider,
+              detectAuth,
+            });
             if (usable) return { currentStep: 'COMPLETE' };
 
             // Auth missing — spin up first-run at the auth step
             log('WARN', 'Main', 'Setup complete but auth missing — showing auth screen');
+            // Record that setup itself is DONE before demoting the wizard's
+            // saved step. WHY: forceStep() overwrites the saved step (COMPLETE)
+            // with AUTHENTICATE and writes it to disk. If the user closes the
+            // window without signing in, the next launch sees a state file that
+            // no longer says COMPLETE and treats this months-old install as a
+            // brand-new machine — re-running the Node/Git/Claude installers and,
+            // with the Skip link gone, stranding them on a "Try Again" screen.
+            // With the flag set, the next launch comes back through THIS check.
+            markSetupCompleted();
             lateFirstRunManager = new FirstRunManager();
             lateFirstRunManager.forceStep('AUTHENTICATE');
 
@@ -997,19 +1010,16 @@ function createWindow(firstRunManager?: FirstRunManager) {
             ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: FirstRunState['authMode']) => {
               try {
                 if (mode === 'oauth') await lateFirstRunManager!.handleOAuthLogin();
-                else if (mode === 'chatgpt') await lateFirstRunManager!.handleChatGptLogin(chatgptAuth!);
+                // Gated on the switch as well as on the renderer's hidden button:
+                // an ungated arm would still open a browser tab and bind port
+                // 1455 with the feature turned off (review T4 F3).
+                else if (mode === 'chatgpt' && chatgptEnabled) await lateFirstRunManager!.handleChatGptLogin(chatgptAuth!);
                 else if (mode === 'openrouter') lateFirstRunManager!.handleOpenRouterNotBuilt();
               } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_SUBMIT_API_KEY, async (_event, key: string) => { try { await lateFirstRunManager!.handleApiKeySubmit(key); } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_DEV_MODE_DONE, async () => { try { await lateFirstRunManager!.handleDevModeDone(); } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_SKIP, async () => {
-              try {
-                const stateDir = path.join(os.homedir(), '.claude', 'toolkit-state');
-                fs.mkdirSync(stateDir, { recursive: true });
-                const cp = path.join(stateDir, 'config.json');
-                let c: any = {}; try { c = JSON.parse(fs.readFileSync(cp, 'utf8')); } catch {}
-                c.setup_completed = true; fs.writeFileSync(cp, JSON.stringify(c, null, 2));
-              } catch {}
+              markSetupCompleted(); // same one writer as above
               lateFirstRunManager?.skip();
             });
 
@@ -2173,7 +2183,7 @@ async function runShutdown(): Promise<void> {
   const engineStopped = cleanupIpcHandlers ? cleanupIpcHandlers() : Promise.resolve();
   // Sign in with ChatGPT: stop the usage poll and close any lingering sign-in
   // listener on 1455. Best-effort like the other teardowns here.
-  chatgptAuth?.dispose().catch(() => {});
+  const chatgptDisposed = chatgptAuth?.dispose().catch(() => {}) ?? Promise.resolve();
   destroySocialHandlers(); // tear down the presence WebSocket + its timers
   sessionManager.destroyAll();
   hookRelay.stop();
@@ -2196,8 +2206,11 @@ async function runShutdown(): Promise<void> {
   // race the teardown against a 4s cap (supervisor's own SIGTERM→SIGKILL bound is ~3s).
   // Returned (not `void`-ed) so the callers below can sequence app.quit()/exit()
   // after it — this function no longer decides on its own when to quit.
+  // chatgptDisposed joins the race: dispose() promises that every write in
+  // flight lands, and a poll's read-modify-write cut off half-way is exactly the
+  // torn account file the lock exists to prevent (review T4 F5). Same 4s cap.
   await Promise.race([
-    engineStopped,
+    Promise.all([engineStopped, chatgptDisposed]),
     new Promise<void>((r) => setTimeout(r, 4_000)),
   ]).catch(() => {});
 }

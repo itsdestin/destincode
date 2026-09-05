@@ -543,7 +543,16 @@ export function classifyErrorBody(input: ClassifyErrorInput): ClassifiedError {
   }
   if (status === 401) return { kind: 'expired' };
   if (status === 403) {
-    const reason = asString(err?.message) ?? asString(json?.detail) ?? asString(json?.message) ?? (text || `HTTP ${status}`);
+    // WHY the raw body is only used when it looks like a sentence: a 403 does not
+    // always come from OpenAI. A proxy or Cloudflare in front of chatgpt.com answers
+    // with a whole HTML error page, and this string is what the card shows the user
+    // AND what gets saved into the account file — so an unfiltered body would put a
+    // wall of markup where the reason should be, and keep it there. OpenAI's own
+    // JSON fields are always preferred; anything else falls back to a general,
+    // non-committal line rather than a guess at the cause.
+    const fromOpenAi = asString(err?.message) ?? asString(json?.detail) ?? asString(json?.message);
+    const looksLikeProse = text.length > 0 && text.length <= 300 && !/[<>]/.test(text);
+    const reason = fromOpenAi ?? (looksLikeProse ? text : `OpenAI refused this account's requests (HTTP ${status}).`);
     return { kind: 'blocked', reason: reason.trim() };
   }
   return { kind: 'other' };

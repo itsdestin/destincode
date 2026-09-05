@@ -383,7 +383,17 @@ describe('chatgpt-oauth: classifyErrorBody', () => {
     expect(classifyErrorBody({ status: 403, body: { detail: 'Plan does not include Codex.' }, now: NOW }))
       .toEqual({ kind: 'blocked', reason: 'Plan does not include Codex.' });
     expect(classifyErrorBody({ status: 403, body: '  Forbidden by policy \n', now: NOW })).toEqual({ kind: 'blocked', reason: 'Forbidden by policy' });
-    expect(classifyErrorBody({ status: 403, body: '', now: NOW })).toEqual({ kind: 'blocked', reason: 'HTTP 403' });
+    const GENERAL = "OpenAI refused this account's requests (HTTP 403).";
+    expect(classifyErrorBody({ status: 403, body: '', now: NOW })).toEqual({ kind: 'blocked', reason: GENERAL });
+    // A 403 does not always come from OpenAI. A proxy or Cloudflare answers with a
+    // whole HTML page, and this reason is shown on the card AND saved to the account
+    // file — so markup and novel-length bodies fall back to the general line instead
+    // of being rendered verbatim. OpenAI's own JSON always wins over both.
+    const CLOUDFLARE = '<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body>…</body></html>';
+    expect(classifyErrorBody({ status: 403, body: CLOUDFLARE, now: NOW })).toEqual({ kind: 'blocked', reason: GENERAL });
+    expect(classifyErrorBody({ status: 403, body: 'x'.repeat(301), now: NOW })).toEqual({ kind: 'blocked', reason: GENERAL });
+    expect(classifyErrorBody({ status: 403, body: JSON.stringify({ detail: 'Plan does not include Codex.', extra: '<b>' }), now: NOW }))
+      .toEqual({ kind: 'blocked', reason: 'Plan does not include Codex.' });
     expect(classifyErrorBody({ status: 400, body: { detail: 'Stream must be set to true' }, now: NOW })).toEqual({ kind: 'other' });
     expect(classifyErrorBody({ status: 500, body: 'oops', now: NOW })).toEqual({ kind: 'other' });
   });

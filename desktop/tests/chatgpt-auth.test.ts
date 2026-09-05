@@ -686,6 +686,27 @@ describe('ChatGptAuth: the account on disk', () => {
     expect(h.logs.filter((l) => /usage poll/.test(l.message))).toEqual([]);
   });
 
+  // Review T4 F1: the kill switch has to make the feature INERT. Before this,
+  // `YOUCODED_CHATGPT=0` still polled OpenAI at launch and every five minutes
+  // for a signed-in user — and because that poll refreshes the token, a
+  // rejection ran clearAccount() and DELETED the saved sign-in. Turning the
+  // feature off must never sign anyone out.
+  it('pollUsage:false (the kill switch) starts no timer and makes no request, but still reads the account', async () => {
+    await h.seedSignedIn();
+    const auth = h.build({ pollUsage: false });
+    // The launch-time setup check still needs the account to be readable.
+    expect(auth.status()).toMatchObject({ state: 'signed-in', email: 'd@example.com' });
+    expect(auth.isSignedIn()).toBe(true);
+    expect(h.clock.intervals()).toHaveLength(0);
+    expect(h.clock.timeouts()).toHaveLength(0);
+    await h.clock.advance(USAGE_POLL_MS * 3);
+    expect(usageCalls()).toHaveLength(0);
+    // Nothing reached the network at all — no usage, and so no token refresh,
+    // which is the leg that could have deleted the secret.
+    expect(h.fetch.calls).toHaveLength(0);
+    expect(fs.existsSync(h.file)).toBe(true);
+  });
+
   it('a blocked file reads blocked with the verbatim reason, is not signed in, and starts no poll', async () => {
     await h.seedSignedIn({ blocked: { reason: 'Your workspace admin has disabled Codex.', at: new Date(T0).toISOString() } });
     const auth = h.build();
