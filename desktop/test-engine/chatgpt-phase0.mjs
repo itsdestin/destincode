@@ -1,0 +1,155 @@
+// Phase 0 probe for Sign in with ChatGPT (design: youcoded-dev
+// docs/active/specs/2026-09-05-chatgpt-signin-backend-design.md §0).
+//
+// Run under the ELECTRON binary, not node, so the sign-in is exercised in the
+// same process environment the app's main process has (sandbox, shell.openExternal,
+// the bundled Node's fetch and http):
+//
+//   cd desktop && npx electron test-engine/chatgpt-phase0.mjs [--out <dir>]
+//
+// What it does, in order, printing a line per step:
+//   1. binds 127.0.0.1:1455 and opens the browser on OpenAI's authorize URL (PKCE)
+//   2. takes the callback, exchanges the code, decodes the token claims (REDACTED)
+//   3. GETs /wham/usage, /codex/models?client_version=…, /wham/accounts/check and
+//      writes each raw JSON body to <out>/ (no secrets are in those bodies)
+//   4. makes one tiny /codex/responses call and records every x-codex-* / ratelimit
+//      response header, plus the first SSE event names
+//
+// It never writes a token to disk and never prints one. Tokens live in this
+// process's memory and die with it. Throwaway: not imported by the app.
+import { app, shell } from 'electron';
+import http from 'node:http';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
+const AUTH_BASE = 'https://auth.openai.com';
+const REDIRECT = 'http://localhost:1455/auth/callback';
+const SCOPE = 'openid profile email offline_access';
+const BACKEND = 'https://chatgpt.com/backend-api';
+
+const argv = process.argv.slice(2);
+const outIdx = argv.indexOf('--out');
+const OUT = outIdx >= 0 ? argv[outIdx + 1] : path.join(os.tmpdir(), 'chatgpt-phase0');
+fs.mkdirSync(OUT, { recursive: true });
+
+const say = (s) => console.log(`[phase0] ${s}`);
+const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const decodeJwt = (t) => { try { return JSON.parse(Buffer.from(t.split('.')[1], 'base64url').toString('utf8')); } catch { return null; } };
+const redact = (v) => {
+  if (v == null) return v;
+  if (typeof v === 'string') {
+    if (v.includes('@')) return v[0] + '***@***';
+    return v.length > 8 ? `${v.slice(0, 4)}…(${v.length} chars)` : v;
+  }
+  if (Array.isArray(v)) return v.map(redact);
+  if (typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, redact(x)]));
+  return v;
+};
+const save = (name, body) => { const p = path.join(OUT, name); fs.writeFileSync(p, body); say(`wrote ${p}`); };
+
+async function main() {
+  await app.whenReady();
+  say(`electron ${process.versions.electron} node ${process.versions.node} sandbox=${process.sandboxed ?? 'n/a'}`);
+
+  // 1. PKCE + listener + browser
+  const verifier = b64url(crypto.randomBytes(32));
+  const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+  const state = crypto.randomBytes(16).toString('hex');
+  const url = new URL(`${AUTH_BASE}/oauth/authorize`);
+  for (const [k, v] of Object.entries({
+    response_type: 'code', client_id: CLIENT_ID, redirect_uri: REDIRECT, scope: SCOPE,
+    code_challenge: challenge, code_challenge_method: 'S256', state,
+    // pi sends these two; harmless if ignored.
+    id_token_add_organizations: 'true', codex_cli_simplified_flow: 'true',
+  })) url.searchParams.set(k, v);
+
+  const code = await new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const u = new URL(req.url, 'http://localhost:1455');
+      if (u.pathname !== '/auth/callback') { res.statusCode = 404; res.end('not the callback'); return; }
+      const gotState = u.searchParams.get('state');
+      const gotCode = u.searchParams.get('code');
+      const err = u.searchParams.get('error');
+      say(`callback: received state=${gotState === state ? 'ok' : 'MISMATCH'} code=${gotCode ? 'present' : 'absent'} error=${err ?? 'none'} ${err ? u.searchParams.get('error_description') : ''}`);
+      if (gotState !== state || !gotCode) { res.statusCode = 400; res.end('Sign-in failed. You can close this tab.'); server.close(); reject(new Error('callback failed')); return; }
+      res.setHeader('content-type', 'text/html'); res.end('<p>Phase 0: you can close this tab and return to the terminal.</p>');
+      server.close(); resolve(gotCode);
+    });
+    server.on('error', (e) => { say(`listener error: ${e.code} ${e.message}`); reject(e); });
+    server.listen(1455, '127.0.0.1', () => {
+      say('listener: bound 127.0.0.1:1455');
+      // PHASE0_NO_BROWSER=1 skips the browser so the listener leg can be checked
+      // alone (curl the callback with a bad state and expect MISMATCH).
+      if (process.env.PHASE0_NO_BROWSER === '1') say('browser: skipped (PHASE0_NO_BROWSER=1)');
+      else shell.openExternal(url.toString()).then(() => say('browser: openExternal resolved'), (e) => say(`browser: openExternal FAILED ${e.message}`));
+      say(`if no browser opened, paste this URL yourself:\n${url.toString()}`);
+    });
+    setTimeout(() => { say('timeout: no callback in 10 minutes'); server.close(); reject(new Error('timeout')); }, 600_000);
+  });
+
+  // 2. exchange
+  const tokRes = await fetch(`${AUTH_BASE}/oauth/token`, {
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ grant_type: 'authorization_code', client_id: CLIENT_ID, code, code_verifier: verifier, redirect_uri: REDIRECT }),
+  });
+  say(`token exchange: HTTP ${tokRes.status}`);
+  const tok = await tokRes.json();
+  if (!tokRes.ok) { save('token-error.json', JSON.stringify(tok, null, 2)); throw new Error('exchange failed'); }
+  say(`token fields: ${Object.keys(tok).join(', ')} expires_in=${tok.expires_in}`);
+  const access = decodeJwt(tok.access_token) ?? {};
+  const idc = decodeJwt(tok.id_token ?? '') ?? {};
+  say(`access claims (redacted): ${JSON.stringify(redact(access))}`);
+  say(`id claims (redacted): ${JSON.stringify(redact(idc))}`);
+  const auth = access['https://api.openai.com/auth'] ?? {};
+  const accountId = auth.chatgpt_account_id;
+  say(`account: id=${accountId ? 'present' : 'ABSENT'} plan_type=${auth.chatgpt_plan_type ?? 'ABSENT'} email=${idc.email ? 'present' : 'ABSENT'}`);
+  save('claims.redacted.json', JSON.stringify({ access: redact(access), id: redact(idc) }, null, 2));
+
+  const H = { authorization: `Bearer ${tok.access_token}`, 'chatgpt-account-id': accountId ?? '', accept: 'application/json', originator: 'youcoded-phase0' };
+
+  // 3. the three GETs
+  for (const [name, u] of [
+    ['usage', `${BACKEND}/wham/usage`],
+    ['models', `${BACKEND}/codex/models?client_version=${encodeURIComponent(process.env.CLIENT_VERSION ?? '0.130.0')}`],
+    ['accounts-check', `${BACKEND}/wham/accounts/check`],
+    ['profile', `${BACKEND}/wham/profiles/me`],
+  ]) {
+    try {
+      const r = await fetch(u, { headers: H });
+      const text = await r.text();
+      say(`${name}: HTTP ${r.status} content-type=${r.headers.get('content-type')} bytes=${text.length}`);
+      save(`${name}.${r.ok ? 'json' : `http${r.status}.txt`}`, text);
+    } catch (e) { say(`${name}: FAILED ${e.message}`); }
+  }
+
+  // 4. one tiny responses call, headers only
+  try {
+    const r = await fetch(`${BACKEND}/codex/responses`, {
+      method: 'POST',
+      headers: { ...H, 'content-type': 'application/json', 'OpenAI-Beta': 'responses=experimental', accept: 'text/event-stream' },
+      body: JSON.stringify({
+        model: process.env.PHASE0_MODEL ?? 'gpt-5.5', store: false, stream: true,
+        instructions: 'Reply with the single word: ok', input: [{ role: 'user', content: [{ type: 'input_text', text: 'ok?' }] }],
+        include: ['reasoning.encrypted_content'], prompt_cache_key: 'phase0',
+      }),
+    });
+    const hdrs = {};
+    r.headers.forEach((v, k) => { if (/codex|ratelimit|rate-limit|retry|plan|window|usage/i.test(k)) hdrs[k] = v; });
+    say(`responses: HTTP ${r.status} interesting headers: ${JSON.stringify(hdrs)}`);
+    const allKeys = []; r.headers.forEach((_, k) => allKeys.push(k));
+    save('responses-headers.json', JSON.stringify({ status: r.status, interesting: hdrs, allHeaderNames: allKeys }, null, 2));
+    const text = await r.text();
+    const events = [...text.matchAll(/^event: (.+)$/gm)].map((m) => m[1]);
+    say(`responses: ${events.length} SSE events; first: ${events.slice(0, 6).join(', ')}`);
+    if (!r.ok) save(`responses.http${r.status}.txt`, text);
+    else save('responses.sse.txt', text.replace(/"encrypted_content":"[^"]+"/g, '"encrypted_content":"…"'));
+  } catch (e) { say(`responses: FAILED ${e.message}`); }
+
+  say(`done — findings in ${OUT}`);
+  app.exit(0);
+}
+
+main().catch((e) => { say(`FAILED: ${e?.stack ?? e}`); app.exit(1); });
