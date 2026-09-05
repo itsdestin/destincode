@@ -109,6 +109,13 @@ export type SettingRowProps = {
    * the title is user data of unbounded length (a chosen sound file's name).
    */
   truncateTitle?: boolean;
+  /**
+   * G-22 (design guide, 2026-09-05): a section that opens below its row is a
+   * navigating row whose chevron turns to point down while open. Set on an
+   * `onClick` row; `undefined` keeps the plain right-pointing chevron. Never a
+   * leading "›" glyph beside a word, never a bare text toggle.
+   */
+  expanded?: boolean;
   /** Accessible name for the radio when the title is not a plain string. */
   radioLabel?: string;
   disabled?: boolean;
@@ -131,6 +138,7 @@ export function SettingRow({
   radioTabIndex,
   radioLabel,
   truncateTitle,
+  expanded,
   disabled,
   descriptionClassName,
   className = '',
@@ -202,7 +210,7 @@ export function SettingRow({
         ))}
       {isButton && (
         <svg
-          className="w-4 h-4 text-fg-muted shrink-0"
+          className={`w-4 h-4 text-fg-muted shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"
@@ -218,7 +226,7 @@ export function SettingRow({
 
   if (isButton) {
     return (
-      <button type="button" onClick={onClick} disabled={disabled} className={`${cls} ${FOCUS_RING}`}>
+      <button type="button" onClick={onClick} disabled={disabled} aria-expanded={expanded} className={`${cls} ${FOCUS_RING}`}>
         {body}
       </button>
     );

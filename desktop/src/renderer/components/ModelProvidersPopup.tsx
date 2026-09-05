@@ -6,136 +6,18 @@ import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
 import { chatGptPlanLabel, type ChatGptAccountStatus } from '../../shared/chatgpt-types';
-import { AnchorTip, Button, Dialog, InputGroup, TextInput, SettingRow } from './ui';
+import { AnchorTip, Button, Dialog, InputGroup, TextInput } from './ui';
 import BrailleSpinner from './BrailleSpinner';
 import { PlanWindows, type PlanUsage } from './plan-windows';
 
-// Settings → Model Providers. One settings row that opens an L2 popup gathering
-// every engine/provider surface in one place: Claude Code (the default engine),
-// OpenRouter (cloud models via YouCoded's native harness), and Local Models
-// (models that run on this computer). Replaces the two standalone settings
-// sections (Providers, Local Models) with a single organized popup.
-//
-// Gated on window.claude.native.supported, so — like the sections it replaces —
-// it renders NOTHING in production until Phase 2 ungates the native runtime.
-// Desktop-authoritative; not mounted in AndroidSettings.
-//
-// Pattern mirrors AccountSection/AboutPopup: a row-button in the settings stack
-// that opens a centered, portaled L2 overlay where the real controls live. The
-// (i) AnchorTips carry the plain-language "what is this?" explanations so the
-// section bodies stay focused on the actual settings.
-
-export default function ModelProvidersSection({
-  onOpenClaudePreferences,
-  autoOpen,
-  onAutoOpenHandled,
-}: {
-  // Opens Claude Code's preferences popup (/config). Threaded from App, which
-  // owns that popup's open state — undefined on surfaces that lack it.
-  onOpenClaudePreferences?: () => void;
-  // Deep-link: when true, open the popup immediately on mount (mirrors
-  // SyncSection). Used by the provider-error bubble's "Open Settings" jump so
-  // the user lands directly on the Model Providers controls, not the row.
-  autoOpen?: boolean;
-  onAutoOpenHandled?: () => void;
-}) {
-  // Gate on native support — invisible in production (same as the sections it
-  // replaces). Static boolean, no IPC round-trip.
-  const supported = window.claude?.native?.supported === true;
-  const [open, setOpen] = useState(false);
-
-  // Auto-open when deep-linked, then clear the flag so it doesn't reopen after
-  // the user closes it (same one-shot handshake SyncSection uses).
-  useEffect(() => {
-    if (autoOpen && !open) {
-      setOpen(true);
-      onAutoOpenHandled?.();
-    }
-  }, [autoOpen, open, onAutoOpenHandled]);
-
-  if (!supported) return null;
-
-  return (
-    <>
-      <SettingRow
-        // Simple stacked-layers glyph — "choose your engine".
-        icon={
-          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M12 3l9 5-9 5-9-5 9-5z" />
-            <path d="M3 13l9 5 9-5" />
-          </svg>
-        }
-        title="Model Providers"
-        description="Claude Code, ChatGPT, OpenRouter, local models"
-        onClick={() => setOpen(true)}
-      />
-
-      {open && (
-        <ModelProvidersPopupInner
-          onClose={() => setOpen(false)}
-          onOpenClaudePreferences={onOpenClaudePreferences}
-        />
-      )}
-    </>
-  );
-}
-
-// ── The popup ────────────────────────────────────────────────────────────────
-
-function ModelProvidersPopupInner({
-  onClose,
-  onOpenClaudePreferences,
-}: {
-  onClose: () => void;
-  onOpenClaudePreferences?: () => void;
-}) {
-  useEscClose(true, onClose);
-
-  return createPortal(
-    <>
-      <Dialog open onClose={onClose} title="Model Providers" size="panel">
-            <p className="text-2xs text-fg-dim leading-relaxed">
-              Choose which AI engine powers your sessions. Claude Code is the default; a ChatGPT plan,
-              OpenRouter and local models are optional alternatives.
-            </p>
-
-            {/* Round 4 (2026-09-05, P-1 note): two group headings — Cloud Models
-                and Local Models — and no per-provider eyebrow. The three cloud
-                cards sit two units apart inside one group. */}
-            <section>
-              <SectionHeader
-                title="Cloud Models"
-                info={{
-                  label: 'About cloud models',
-                  body: (
-                    <>
-                      <p>
-                        Cloud models run on a company's servers. Sign in with a plan you already pay for
-                        (Claude, ChatGPT), or connect OpenRouter or your own API key and pay per use.
-                      </p>
-                      <p>
-                        Each card shows how you're connected and, for a plan, how much of its limits is
-                        left. Your conversations use whichever model you pick in the model picker.
-                      </p>
-                    </>
-                  ),
-                }}
-              />
-              <div className="space-y-2">
-                <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
-                <ChatGptBlock />
-                <OpenRouterBlock />
-              </div>
-            </section>
-
-            <LocalModelsBlock />
-
-            <SearchProvidersBlock />
-      </Dialog>
-    </>,
-    document.body,
-  );
-}
+// The provider blocks of Settings → Assistant settings (2026-09-05). This file
+// was the Model Providers popup — one row opening one dialog with four
+// sections. That row and dialog are gone: the panel in assistant-settings/
+// hosts each block on its own page (Claude Code · ChatGPT · OpenRouter · Local
+// models · Web search), so the blocks are exported here and nothing else
+// changed — same cards, same copy, same (i) explainers, only the frame around
+// them. The file keeps its name so the ChatGPT sign-in branch, which reshapes
+// these cards, merges without a rename conflict.
 
 // Shared header for each section: bold name + an (i) explainer.
 function SectionHeader({ title, info }: { title: string; info: { label: string; body: React.ReactNode } }) {
@@ -204,7 +86,7 @@ function useClaudePlanUsage(): PlanUsage | null {
 
 // ── 1. Claude Code ───────────────────────────────────────────────────────────
 
-function ClaudeCodeBlock({
+export function ClaudeCodeBlock({
   onOpenClaudePreferences,
   onCloseParent,
 }: {
@@ -303,7 +185,7 @@ function chatGptApi(): {
   return (window as any).claude.chatgpt;
 }
 
-function ChatGptBlock() {
+export function ChatGptBlock() {
   const [status, setStatus] = useState<ChatGptAccountStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -417,7 +299,7 @@ function ChatGptBlock() {
 
 // ── 2. OpenRouter ────────────────────────────────────────────────────────────
 
-function OpenRouterBlock() {
+export function OpenRouterBlock({ keysHeading }: { keysHeading?: string } = {}) {
   // The OpenRouter builtin provider (stable id 'openrouter'). undefined = still
   // loading; null = not found (shouldn't happen — it's builtin).
   const [openrouter, setOpenrouter] = useState<ProviderStatus | null | undefined>(undefined);
@@ -493,7 +375,12 @@ function OpenRouterBlock() {
       </div>
 
       {/* Other API providers — direct keys (Anthropic/OpenAI/Google) + custom
-          endpoints. Embedded hides the openrouter + local-engine rows. */}
+          endpoints. Embedded hides the openrouter + local-engine rows.
+          `keysHeading`: the Assistant settings page names the list, because
+          there the OpenRouter card is the only thing above it. */}
+      {keysHeading && (
+        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-4 mb-2">{keysHeading}</h3>
+      )}
       <ProvidersSection embedded="cloud" />
 
       {connectOpen && openrouter && (
@@ -611,27 +498,28 @@ function ConnectOpenRouterModal({
 
 // ── 3. Local Models ──────────────────────────────────────────────────────────
 
-function LocalModelsBlock() {
+export const LOCAL_MODELS_INFO = {
+  label: 'About local models',
+  body: (
+    <>
+      <p>
+        Local models run entirely on this computer — no internet, no account, and no per-use cost.
+        YouCoded downloads the model file and runs it with a bundled engine.
+      </p>
+      <p>
+        Bigger, smarter models need more memory (RAM), and a good graphics card (GPU) makes them
+        faster. Each model below shows whether it should run well on your hardware.
+      </p>
+    </>
+  ),
+};
+
+// `withHeader`: the page that hosts this block already names it in its title
+// line (with the same (i)), so the eyebrow is dropped there.
+export function LocalModelsBlock({ withHeader = true }: { withHeader?: boolean } = {}) {
   return (
     <section>
-      <SectionHeader
-        title="Local Models"
-        info={{
-          label: 'About local models',
-          body: (
-            <>
-              <p>
-                Local models run entirely on this computer — no internet, no account, and no per-use cost.
-                YouCoded downloads the model file and runs it with a bundled engine.
-              </p>
-              <p>
-                Bigger, smarter models need more memory (RAM), and a good graphics card (GPU) makes them
-                faster. Each model below shows whether it should run well on your hardware.
-              </p>
-            </>
-          ),
-        }}
-      />
+      {withHeader && <SectionHeader title="Local Models" info={LOCAL_MODELS_INFO} />}
 
       {/* Embedded: no standalone header (this section supplies it). */}
       <LocalModelsSection embedded />
@@ -662,7 +550,24 @@ const SEARCH_BACKEND_META: Record<SearchBackendId, { hint: string; url: string }
   exa: { hint: 'Neural search for AI — a key upgrades the keyless free tier.', url: 'https://exa.ai' },
 };
 
-function SearchProvidersBlock() {
+export const WEB_SEARCH_INFO = {
+  label: 'About web search',
+  body: (
+    <>
+      <p>
+        When Claude searches the web, YouCoded runs the search itself — no extra account needed.
+        It works for free out of the box using open search backends.
+      </p>
+      <p>
+        Adding a free Tavily or Exa API key is optional. It makes web search faster and more
+        reliable, especially when the free backends are busy. Your key is stored encrypted on this
+        computer and never leaves it.
+      </p>
+    </>
+  ),
+};
+
+export function SearchProvidersBlock({ withHeader = true }: { withHeader?: boolean } = {}) {
   const [rows, setRows] = useState<Array<{ id: SearchBackendId; label: string; hasKey: boolean }>>([]);
   // Which backend's key input is open (only one at a time).
   const [editing, setEditing] = useState<SearchBackendId | null>(null);
@@ -727,25 +632,7 @@ function SearchProvidersBlock() {
 
   return (
     <section>
-      <SectionHeader
-        title="Web Search"
-        info={{
-          label: 'About web search',
-          body: (
-            <>
-              <p>
-                When Claude searches the web, YouCoded runs the search itself — no extra account needed.
-                It works for free out of the box using open search backends.
-              </p>
-              <p>
-                Adding a free Tavily or Exa API key is optional. It makes web search faster and more
-                reliable, especially when the free backends are busy. Your key is stored encrypted on this
-                computer and never leaves it.
-              </p>
-            </>
-          ),
-        }}
-      />
+      {withHeader && <SectionHeader title="Web Search" info={WEB_SEARCH_INFO} />}
 
       <p className="text-3xs text-fg-muted mb-2.5 leading-relaxed">
         Web search works for free with no setup. Add an optional key to make it faster and more reliable.
