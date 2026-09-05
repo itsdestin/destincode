@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
 import { PRESETS } from '../../shared/harness-manifest';
+import { Callout, Checkbox } from './ui';
 
 // The two built-in native harness presets (personality profiles, not capability
 // tiers). A native session is stamped with one at create time; it drives the
@@ -122,6 +123,10 @@ export interface NativeBinding {
   memVerdict: MemVerdict | null;
   memDetailOpen: boolean;
   setMemDetailOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  /** S-2: "don't warn me again" for the selected model (remembered in main per model +
+   *  context length). Undefined when the bridge has no such channel (older main). */
+  memDismissed: boolean;
+  dismissMemoryWarning?: (next: boolean) => void;
 }
 
 // All derived binding state. Pure derivation (no state writes) apart from the one
@@ -195,13 +200,25 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
     return () => { cancelled = true; };
   }, [isLocalEngine, resolvedModelId]);
   const memBlocked = memVerdict?.verdict === 'too-large';
+  // S-2: the checkbox state; main remembers the choice per model at the current
+  // context length. Optimistic — the warning stays visible until the picker
+  // re-opens, which is when the remembered answer takes effect.
+  const [memDismissed, setMemDismissed] = useState(false);
+  useEffect(() => { setMemDismissed(false); }, [resolvedModelId]);
+  // Optional-chained: the SessionStrip unit tests' bridge stub has no `models` at all.
+  const dismissMemoryWarning = typeof (window.claude.models as any)?.dismissMemoryWarning === 'function' && resolvedModelId
+    ? (next: boolean) => {
+      setMemDismissed(next);
+      if (next) void (window.claude.models as any).dismissMemoryWarning(resolvedModelId);
+    }
+    : undefined;
 
   const nativeCreateBlocked = runtime === 'native' && (readyProviders.length === 0 || !effectiveBinding || memBlocked);
 
   return {
     nativeSupported, readyProviders, modelCatalog, selectedProviderId, selectedProvider,
     providerModels, needsFreeformModel, selectedModelId, effectiveBinding, nativeCreateBlocked,
-    memVerdict, memDetailOpen, setMemDetailOpen, setBinding,
+    memVerdict, memDetailOpen, setMemDetailOpen, setBinding, memDismissed, dismissMemoryWarning,
   };
 }
 
@@ -242,32 +259,40 @@ export function NativeExtras({ nb, preset, onPreset }: {
 
       {/* Memory guard (#2): block only when clearly too large; otherwise a
           warning with a "Show more" detail (overflow + LRU eviction).
-          local-engine models only. */}
+          local-engine models only.
+          2026-09-05 (deck S-2): the shared Callout replaces the hand-rolled box
+          and its ⚠️/⛔ glyphs (the app's no-status-glyph rule); a 'tight' warning
+          carries "Don't warn me again for this model" — remembered per model at
+          the context length it was answered for, so the same warning does not
+          return every time the model is picked. A 'too-large' block has no such
+          box: it is not a choice. */}
       {nb.memVerdict && nb.memVerdict.verdict !== 'ok' && (
-        <div
-          className={`text-2xs rounded-sm px-2 py-1.5 border ${
-            nb.memVerdict.verdict === 'too-large'
-              ? 'border-[var(--destructive)] text-fg-2'
-              : 'border-edge bg-well text-fg-dim'
-          }`}
+        <Callout
+          tone={nb.memVerdict.verdict === 'too-large' ? 'danger' : 'warning'}
+          title={nb.memVerdict.headline}
+          className="text-2xs"
         >
-          <div className="flex items-start gap-1.5">
-            <span aria-hidden>{nb.memVerdict.verdict === 'too-large' ? '⛔' : '⚠️'}</span>
-            <div className="flex-1 min-w-0">
-              <span>{nb.memVerdict.headline}</span>{' '}
-              <button
-                type="button"
-                onClick={() => nb.setMemDetailOpen((o) => !o)}
-                className="underline text-fg-muted hover:text-fg whitespace-nowrap"
-              >
-                {nb.memDetailOpen ? 'Show less' : 'Show more'}
-              </button>
-              {nb.memDetailOpen && (
-                <p className="mt-1 text-fg-muted leading-snug">{nb.memVerdict.detail}</p>
-              )}
-            </div>
-          </div>
-        </div>
+          <button
+            type="button"
+            onClick={() => nb.setMemDetailOpen((o) => !o)}
+            className="underline text-fg-muted hover:text-fg whitespace-nowrap"
+          >
+            {nb.memDetailOpen ? 'Show less' : 'Show more'}
+          </button>
+          {nb.memDetailOpen && (
+            <p className="mt-1 text-fg-muted leading-snug">{nb.memVerdict.detail}</p>
+          )}
+          {nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
+            <label className="mt-2 flex items-center gap-2 text-3xs text-fg-muted cursor-pointer">
+              <Checkbox
+                checked={nb.memDismissed}
+                onChange={(next) => nb.dismissMemoryWarning?.(next)}
+                aria-label="Don't warn me again for this model"
+              />
+              Don&rsquo;t warn me again for this model at this context length
+            </label>
+          )}
+        </Callout>
       )}
     </>
   );

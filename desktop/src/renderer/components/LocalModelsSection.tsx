@@ -11,10 +11,10 @@
 // consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
-import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip } from './ui';
+import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip, Toggle, TextInput, Badge, Select, SettingRow } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
-  InstalledLocalModel, DetectedEndpoint, HFSearchHit,
+  InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettings,
 } from '../../shared/model-manager-types';
 import { stripSplitSuffix } from '../../shared/gguf-split';
 import { matchesQuery } from '../../shared/text-match';
@@ -39,6 +39,24 @@ function gbNum(bytes: number): string {
 // straight from the estimator.
 function fitColor(fit: FitEstimate['fit']): string {
   return fit === 'fits' ? 'text-green-600' : fit === 'tight' ? 'text-amber-500' : 'text-red-500';
+}
+
+/** The size line under a downloadable model (deck S-2, Q-3 pick c). With a
+ *  breakdown from main it reads "4.8 GB model + 1.6 GB for 32k context + 0.9 GB
+ *  for images" — the two (or three) numbers the verdict is made of, so "tight"
+ *  is no longer a mystery. An older main sends no breakdown and the line falls
+ *  back to today's "4.8 GB · Q8_0". Context is shown in k because that is how
+ *  every model card on the internet writes it. */
+function sizeLine(q: { totalSizeBytes: number; quant: string; fit: FitEstimate; visionBytes?: number | null }): string {
+  const b = q.fit.breakdown;
+  if (!b) {
+    const vision = q.visionBytes ? ` + ${gb(q.visionBytes)} for images` : '';
+    return `${gb(q.totalSizeBytes)} · ${q.quant}${vision}`;
+  }
+  const parts = [`${gb(b.modelBytes)} model`, `${gb(b.contextBytes)} for ${Math.round(b.contextLength / 1024)}k context`];
+  const vision = b.visionBytes ?? q.visionBytes;
+  if (vision) parts.push(`${gb(vision)} for images`);
+  return `${parts.join(' + ')} · ${q.quant}`;
 }
 
 // The few quants a non-technical user should see first (spec §4 — a raw 15–24
@@ -399,8 +417,8 @@ function RepoCard({
               <p className="text-3xs text-fg-muted mt-0.5">Checking size…</p>
             )}
             {chosen && (
-              <p className="text-3xs mt-0.5">
-                <span className="text-fg-dim">{gb(chosen.totalSizeBytes)} · {chosen.quant}</span>
+              <p className="text-3xs mt-0.5" data-testid="repo-size-line">
+                <span className="text-fg-dim">{sizeLine(chosen)}</span>
                 {' · '}
                 <span className={fitColor(chosen.fit.fit)}>{chosen.fit.label}</span>
               </p>
@@ -581,6 +599,20 @@ export function LocalModelRow({
   const [busy, setBusy] = useState(false);
   // Failures of the buttons on this row (resume refused, delete failed).
   const [actionError, setActionError] = useState<string | null>(null);
+  // Per-model Settings disclosure (deck Q-2 pick a) — collapsed by default so a
+  // non-developer sees the row exactly as before; the controls inside each carry
+  // an (i). Only a complete model has settings to offer.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  // S-3: fetch the vision file for a model whose family has one. Progress then
+  // arrives on the same download stream as any other download for this row.
+  const addVision = async () => {
+    setBusy(true);
+    setActionError(null);
+    try { await window.claude.models.addVision(model.id); await onRefresh(); }
+    catch (e) { setActionError(e instanceof Error ? e.message : 'Could not add vision to this model.'); }
+    finally { setBusy(false); }
+  };
 
   const live = progress && (progress.state === 'downloading' || progress.state === 'verifying')
     ? progress : undefined;
@@ -725,15 +757,48 @@ export function LocalModelRow({
                 buttons beside it, and the tail is what tells two builds apart.
                 Native title is the app's documented tool for a plain hover hint
                 (ui/AnchorTip.tsx header). */}
-            <p className="text-xs text-fg font-medium truncate" title={model.id}>{displayName(model)}</p>
+            <p className="text-xs text-fg font-medium truncate flex items-center gap-1.5" title={model.id}>
+              <span className="truncate">{displayName(model)}</span>
+              {/* S-3: a model that can see images says so — a tag, not a glyph. */}
+              {model.vision === 'ready' && <Badge>Sees images</Badge>}
+            </p>
             {subtitle && <p className="text-3xs text-fg-muted">{subtitle}</p>}
             {/* Its own line, in full — Destin, 2026-08-27 (A3). It is free to wrap;
                 the room came from the detail line above, which handed its state
                 word ("Downloading…") to the banner. */}
             {quality && <p className="text-3xs text-fg-muted">{quality}</p>}
+            {/* S-3: "Add vision (0.9 GB)" — the projector this download never fetched.
+                One step: download it and move the model into its own folder so the
+                engine pairs the two. A text line under the name rather than a third
+                button: three buttons beside the name squeezed it to one letter at
+                the dialog's width (seen in the first workbench capture). */}
+            {model.status === 'complete' && model.vision === 'available' && !live && !confirming && (
+              <p className="text-3xs text-fg-muted">
+                Can see images once its vision file is added ·{' '}
+                <button
+                  type="button"
+                  onClick={() => void addVision()}
+                  disabled={busy}
+                  className="underline text-fg-2 hover:text-fg disabled:opacity-50"
+                >
+                  {busy ? 'Adding…' : `Add vision${model.visionBytes ? ` (${gb(model.visionBytes)})` : ''}`}
+                </button>
+              </p>
+            )}
           </div>
           {!confirming && (
             <div className="flex items-center gap-1.5 shrink-0">
+              {model.status === 'complete' && !live && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setSettingsOpen((o) => !o)}
+                  aria-expanded={settingsOpen}
+                  aria-label={`Settings for ${displayName(model)}`}
+                >
+                  Settings
+                </Button>
+              )}
               {model.status === 'unfinished' && !live && (
                 <Button variant="secondary" size="sm" onClick={() => void resume()} disabled={busy}>
                   Resume
@@ -797,7 +862,153 @@ export function LocalModelRow({
           </div>
         )}
         {error && <FieldError as="p" className="mt-1">{error}</FieldError>}
+
+        {settingsOpen && !confirming && <ModelSettingsPanel modelId={model.id} />}
       </div>
+    </div>
+  );
+}
+
+// ── Per-model settings (deck Q-2, pick a) ─────────────────────────────────────
+
+const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'] as const;
+
+/** Four controls, each with a "use the default" state and an (i) that explains
+ *  the concept in plain words (Destin, Q-2 note: non-developers first, anything
+ *  confusing behind Advanced with explainers). Changes save on blur/toggle; the
+ *  engine reloads THIS model with its new values on the next message. */
+function ModelSettingsPanel({ modelId }: { modelId: string }) {
+  const [settings, setSettings] = useState<ModelSettings | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [ctxDraft, setCtxDraft] = useState('');
+  const [flagsDraft, setFlagsDraft] = useState('');
+  const [advanced, setAdvanced] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    window.claude.models.settings(modelId)
+      .then((st) => { if (alive) { setSettings(st); setCtxDraft(st.contextLength == null ? '' : String(st.contextLength)); setFlagsDraft(st.extraFlags); } })
+      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : 'Could not read this model\u2019s settings.'); });
+    return () => { alive = false; };
+  }, [modelId]);
+
+  const save = async (patch: Partial<ModelSettings>) => {
+    setError(null);
+    try { setSettings(await window.claude.models.setSettings(modelId, patch)); }
+    catch (e) { setError(e instanceof Error ? e.message : 'Could not save.'); }
+  };
+
+  const commitContext = () => {
+    if (!settings) return;
+    const raw = ctxDraft.trim();
+    if (raw === '') { if (settings.contextLength != null) void save({ contextLength: null }); return; }
+    const n = Math.floor(Number(raw));
+    if (!Number.isFinite(n) || n < 1024) { setCtxDraft(settings.contextLength == null ? '' : String(settings.contextLength)); return; }
+    if (n !== settings.contextLength) void save({ contextLength: n });
+  };
+
+  if (error && !settings) return <FieldError as="p" className="mt-2">{error}</FieldError>;
+  if (!settings) return <p className="mt-2 text-3xs text-fg-muted">Loading settings…</p>;
+
+  const gpuValue = settings.gpuLayers === 'auto' ? 'auto' : String(settings.gpuLayers);
+
+  return (
+    <div className="mt-2 pt-2 border-t border-edge-dim space-y-2" data-testid="model-settings">
+      {/* Context length — blank means "same as the engine". */}
+      <div className="flex items-center justify-between gap-3">
+        <label htmlFor={`ctx-${modelId}`} className="text-2xs text-fg-dim flex items-center gap-1 min-w-0">
+          Context length
+          <AnchorTip label="About this model's context length" title="Context length for this model" widthClass="w-72">
+            How much conversation this model keeps in mind at once. Blank uses the
+            engine&rsquo;s setting under Advanced. Smaller saves memory; a 2B helper model
+            rarely needs more than 16k, and a big model at 128k can need tens of gigabytes.
+          </AnchorTip>
+        </label>
+        <TextInput
+          id={`ctx-${modelId}`}
+          type="number"
+          size="sm"
+          min={1024}
+          step={1024}
+          placeholder="Same as engine"
+          value={ctxDraft}
+          onChange={(e) => setCtxDraft(e.target.value)}
+          onBlur={commitContext}
+          onKeyDown={(e) => { if (e.key === 'Enter') commitContext(); }}
+          className="w-32"
+        />
+      </div>
+
+      {/* Keep loaded — the shared SettingRow (design guide 4.6; guard setting-row-authority). */}
+      <SettingRow
+        variant="item"
+        title={(
+          <span className="flex items-center gap-1">
+            Keep loaded
+            <AnchorTip label="About keeping a model loaded" title="Keep loaded" widthClass="w-72">
+              Normally a model is put to sleep after five idle minutes and woken on the
+              next message, which costs a few seconds. Keep loaded skips the nap — instant
+              replies, at the price of holding its memory the whole time the engine runs.
+            </AnchorTip>
+          </span>
+        )}
+        description="Never put this model to sleep. Instant replies, memory held."
+        control={<Toggle checked={settings.keepLoaded} aria-label="Keep loaded" onChange={(next) => void save({ keepLoaded: next })} />}
+      />
+
+      {/* Advanced: GPU layers + extra flags — power users only, behind one more click. */}
+      <button
+        type="button"
+        onClick={() => setAdvanced((o) => !o)}
+        aria-expanded={advanced}
+        className="flex items-center gap-1.5 text-2xs text-fg-dim hover:text-fg"
+      >
+        <svg className={`w-3 h-3 transition-transform ${advanced ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+        </svg>
+        Advanced
+      </button>
+      {advanced && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <span id={`ngl-${modelId}`} className="text-2xs text-fg-dim flex items-center gap-1 min-w-0">
+              Layers on graphics chip
+              <AnchorTip label="About GPU layers" title="Layers on graphics chip" widthClass="w-72">
+                A model is a stack of layers. Auto puts as many on the graphics chip as fit
+                and runs the rest on the processor. Set a number only when Auto guesses
+                wrong — for example to leave room for a second model.
+              </AnchorTip>
+            </span>
+            <Select
+              size="sm"
+              value={gpuValue}
+              onChange={(v) => void save({ gpuLayers: v === 'auto' ? 'auto' : Number(v) })}
+              options={GPU_LAYER_CHOICES.map((c) => ({ value: c === 'all' ? '999' : c, label: c === 'auto' ? 'Auto' : c === 'all' ? 'All' : c }))}
+              className="w-28"
+            />
+          </div>
+          <div>
+            <label htmlFor={`flags-${modelId}`} className="text-2xs text-fg-dim flex items-center gap-1">
+              Extra engine flags
+              <AnchorTip label="About extra engine flags" title="Extra engine flags" widthClass="w-72">
+                Anything else the llama.cpp engine accepts on its command line, passed
+                through as written when this model loads. A mistyped flag stops the model
+                from loading — the engine&rsquo;s own message appears here when that happens.
+              </AnchorTip>
+            </label>
+            <TextInput
+              id={`flags-${modelId}`}
+              size="sm"
+              placeholder="e.g. --temp 0.6 --repeat-penalty 1.1"
+              value={flagsDraft}
+              onChange={(e) => setFlagsDraft(e.target.value)}
+              onBlur={() => { if (flagsDraft !== settings.extraFlags) void save({ extraFlags: flagsDraft }); }}
+              className="w-full mt-1 font-mono"
+            />
+          </div>
+        </div>
+      )}
+      {error && <FieldError as="p">{error}</FieldError>}
     </div>
   );
 }
@@ -824,7 +1035,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
           <p className="text-2xs text-fg font-medium">{q.quant}</p>
           <p className="text-3xs text-fg-muted">{q.description}</p>
           <p className="text-3xs mt-0.5">
-            <span className="text-fg-dim">{gb(q.totalSizeBytes)}</span>
+            <span className="text-fg-dim">{sizeLine(q)}</span>
             {' · '}
             <span className={fitColor(q.fit.fit)}>{q.fit.label}</span>
           </p>

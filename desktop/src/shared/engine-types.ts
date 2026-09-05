@@ -1,9 +1,41 @@
 // Engine-layer shapes — Phase 1 Plan B (spec 2026-07-10-phase1-engine-providers-design.md §3).
 // Shared between main and renderer; keep free of Node/Electron imports.
 
-export type EngineBackend = 'vulkan' | 'cpu' | 'metal' | 'cuda';
+// 'rocm' added 2026-09-05 (local-engine upgrades, questions deck Q-1): upstream ships
+// ROCm builds for Linux x64 and Windows x64 since b10665.
+export type EngineBackend = 'vulkan' | 'cpu' | 'metal' | 'cuda' | 'rocm';
 
 export type EngineRunState = 'not-installed' | 'stopped' | 'starting' | 'running' | 'error';
+
+/** A faster engine build the card may offer (S-1: shown ONLY when the matching
+ *  graphics chip was detected in main — never a blind "Switch to CUDA" on every
+ *  Windows PC). `needs-prereqs` = the chip is there but the system software the
+ *  build loads at runtime is not (Linux ROCm); the card then shows the install
+ *  guide (Q-1 pick a) instead of switching. */
+export interface BackendOption {
+  backend: EngineBackend;
+  label: string;                     // 'Switch to ROCm (faster on AMD)'
+  state: 'ready' | 'needs-prereqs';
+}
+
+/** What is missing before a backend can be installed, and how to get it.
+ *  `command` is the one line for THIS Linux flavour (null when the distro is
+ *  unknown — the card then shows docsUrl only). */
+export interface EnginePrereqs {
+  backend: EngineBackend;
+  satisfied: boolean;
+  distro: string | null;             // 'Arch Linux', 'Ubuntu 24.04', …
+  command: string | null;            // 'sudo pacman -S rocm-hip-runtime hipblas rocblas'
+  docsUrl: string;
+  explainer: string;                 // one plain sentence: what the software is
+}
+
+/** The two engine-wide speed features (Q-4 pick a: visible under Advanced, on by
+ *  default). Changing either restarts the engine. */
+export interface EngineSpeedSettings {
+  speculative: boolean;              // --spec-default
+  compressCache: boolean;            // --cache-type-k q8_0
+}
 
 export interface EngineStatus {
   installed: boolean;
@@ -15,6 +47,17 @@ export interface EngineStatus {
   cacheDir: string;                  // where GGUF models live (LLAMA_CACHE)
   contextSize: number;               // configured -c (Plan C context-length knob reads this)
   port: number;
+  // ---- 2026-09-05 local-engine upgrades (all optional: an older main omits them) ----
+  /** The device the engine reports it will run on ('AMD Radeon 8060S Graphics'),
+   *  from `llama-server --list-devices` at install/verify time. Null = CPU only. (S-4) */
+  deviceName?: string | null;
+  /** Σ bytes of models currently resident (loaded or sleeping). (S-4) */
+  loadedModelsBytes?: number;
+  /** Speed of the most recent reply: prompt reading and generation, per second. (S-4) */
+  lastReply?: { promptPerSecond: number; generatePerSecond: number } | null;
+  /** Faster builds this machine could switch to. Empty = nothing to offer. (S-1) */
+  backendOptions?: BackendOption[];
+  speed?: EngineSpeedSettings;
 }
 
 export type EngineInstallProgress =

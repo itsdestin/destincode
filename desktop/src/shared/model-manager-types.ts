@@ -27,6 +27,10 @@ export interface QuantOption {
   files: string[];            // repo-relative paths, multi-part sets in order
   totalSizeBytes: number;
   sha256ByFile: Record<string, string | null>; // from lfs.oid; null when HF omits it
+  /** The repo's vision projector (`mmproj-*.gguf`), downloaded WITH the model into a
+   *  folder of its own so the engine pairs them (deck Q-3, pick c — always; S-3 for
+   *  models already on disk). Null/absent = a text-only model. Size is the F16 file. */
+  visionBytes?: number | null;
 }
 
 export type FitLabel = 'fits' | 'tight' | 'too-large';
@@ -37,6 +41,18 @@ export interface FitEstimate {
   // fully-GPU-offloaded fit ("Runs fast — fits on your GPU") vs a GPU+RAM split
   // vs a RAM-only machine. See fit-estimator.ts for the exact strings.
   label: string;
+  /** 2026-09-05 (deck S-2): the two numbers behind the verdict, so the label can read
+   *  "9 GB model + 16 GB for 128k context" instead of a bare verdict. contextBytes is
+   *  computed from the model file's own header (layers × kv-heads × head size) at the
+   *  context length that will be used for THIS model — the per-model setting when there
+   *  is one, else the engine's. visionBytes is the projector file, when the model has one.
+   *  Absent from an older main → the UI shows the verdict alone. */
+  breakdown?: {
+    modelBytes: number;
+    contextBytes: number;
+    contextLength: number;
+    visionBytes?: number;
+  };
 }
 
 /** Best-effort dedicated-GPU probe result (gpu-detector.ts). Both null when no
@@ -88,6 +104,22 @@ export interface InstalledLocalModel {
   // A denominator we cannot know would be a fabricated number in a shipping UI.
   totalSizeBytes: number | null;
   repo: string | null;        // e.g. 'unsloth/Qwen3.8-Flash-Next-GGUF'
+  /** 2026-09-05 (deck S-3). 'ready' = model + projector sit in their own folder and the
+   *  engine reports image input; 'available' = the repo has a projector this download
+   *  never fetched (the row offers "Add vision"); 'none' = a text-only model. Absent from
+   *  an older main → treated as 'none'. */
+  vision?: 'ready' | 'available' | 'none';
+  visionBytes?: number | null;
+}
+
+/** Per-model engine settings (deck Q-2, pick a) — written to the router's preset file
+ *  so each model loads with its own values. Every field has a "use the engine's
+ *  default" state so an untouched model behaves exactly as today. */
+export interface ModelSettings {
+  contextLength: number | null;   // null = the engine-wide context length
+  keepLoaded: boolean;            // true = never auto-sleep this model
+  gpuLayers: number | 'auto';     // how many layers live on the graphics chip
+  extraFlags: string;             // raw llama-server flags, power users only
 }
 
 /** Written next to a download BEFORE its first byte, so a leftover .partial can

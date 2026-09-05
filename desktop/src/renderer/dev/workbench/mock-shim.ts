@@ -2,7 +2,7 @@ import { MARKETPLACE_API_HOST } from '../../state/marketplace-api-client';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
-import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
+import type { InstalledLocalModel, DownloadProgress, ModelSettings } from '../../../shared/model-manager-types';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
@@ -85,6 +85,12 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'models.detectEndpoints',
   'engine.status', 'engine.models', 'engine.install', 'engine.restart', 'engine.setContext',
   'engine.onInstallProgress', 'engine.onStatusChanged', 'engine.onModelsChanged',
+  // Local-engine upgrades (2026-09-05, docs/active/design/2026-09-04-local-engine-upgrades).
+  // Real channels given fixture data so the redesigned panel has something to show:
+  'models.quants', 'models.search', 'models.download', 'models.setBackend',
+  // No backend yet — registered in mock-only.ts; the fakes below are the spec of what to build.
+  'engine.prereqs', 'engine.runInTerminal', 'engine.setSpeed',
+  'models.settings', 'models.setSettings', 'models.addVision', 'models.dismissMemoryWarning',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
@@ -778,6 +784,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // GGUF stranded at part 3 — so the sheets show realistic numbers rather than
   // round ones that hide formatting bugs. NOTE the app's gb() divides by 1024^3:
   // 79_674_559_677 renders as 74.2 GB, 121_334_654_784 as 113.0 GB.
+  // Q-2: per-model settings the panel reads and writes during a workbench session.
+  const DEFAULT_MODEL_SETTINGS: ModelSettings = { contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '' };
+  const modelSettings: Record<string, ModelSettings> = {};
   const LOCAL_MODELS: InstalledLocalModel[] = [
     {
       id: 'Qwen3.5-9B-Q8_0',
@@ -792,6 +801,25 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
       parts: 4, status: 'unfinished', partsPresent: 2,
       totalSizeBytes: 121_334_654_784, repo: 'unsloth/Qwen3.8-Flash-Next-GGUF',
+    },
+    {
+      // S-3: a vision-capable family downloaded before the app fetched projectors —
+      // the row offers "Add vision (0.9 GB)".
+      id: 'gemma-4-E2B-it-Q8_0',
+      sizeBytes: 5_048_350_848,
+      quant: 'Q8_0', quantDescription: 'Highest quality quantization — near-original output',
+      parts: 1, status: 'complete', partsPresent: 1,
+      totalSizeBytes: null, repo: 'unsloth/gemma-4-E2B-it-GGUF',
+      vision: 'available', visionBytes: 985_654_080,
+    },
+    {
+      // S-3: model + projector already in their own folder — the row wears "Sees images".
+      id: 'gemma-4-12b-it-UD-Q4_K_XL',
+      sizeBytes: 7_900_000_000,
+      quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
+      parts: 1, status: 'complete', partsPresent: 1,
+      totalSizeBytes: null, repo: 'unsloth/gemma-4-12b-it-GGUF',
+      vision: 'ready', visionBytes: 1_050_000_000,
     },
     {
       id: 'Older-Model-UD-Q4_K_XL-00001-of-00002',
@@ -814,14 +842,55 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // verdict union is checked by the compiler — useIpc.ts:329.
     memoryCheck: async (modelId: string) => (modelId.includes('14b')
       ? {
+        // S-2 phrasing: the two numbers the verdict is made of, not a bare adjective.
         verdict: 'tight' as const,
-        headline: 'This model is a tight fit.',
-        detail: 'Loading it may evict another resident model.',
+        headline: '9.5 GB model + 15.6 GB for 128k context may not fit beside what is loaded.',
+        detail: 'About 9.5 GB of models are loaded already. YouCoded keeps at most 2 in memory, so an older one is unloaded to make room; if things still do not fit, replies slow down. Lowering this model\u2019s context length in its Settings shrinks the second number.',
       }
       : { verdict: 'ok' as const, headline: '', detail: '' }),
 
     installed: async () => LOCAL_MODELS,
-    curated: async () => [],
+    // Two recommended cards so the redesigned size line (S-2) and the vision line
+    // (Q-3) can be photographed: one text-only model, one that sees images.
+    curated: async () => [
+      { id: 'qwen35-4b', label: 'Qwen3.5 4B', tier: 'small', hfRepo: 'unsloth/Qwen3.5-4B-GGUF', quantDefault: 'UD-Q4_K_XL', notes: 'Fast all-rounder for chat and quick questions.' },
+      { id: 'gemma4-e4b', label: 'Gemma 4 E4B', tier: 'small', hfRepo: 'unsloth/gemma-4-E4B-it-GGUF', quantDefault: 'UD-Q4_K_XL', notes: 'Strong small model from Google — sees images.' },
+    ],
+    quants: async (repo: string) => {
+      const vision = /gemma/i.test(repo) ? 985_654_080 : null;
+      // Breakdown numbers follow the real formula (layers × kv-heads × head size × 2 bytes ×
+      // context) for a 4B-class model at the engine's 32k default, so the label reads true.
+      const ctx = 32_768;
+      const row = (quant: string, description: string, modelBytes: number, fit: 'fits' | 'tight' | 'too-large', label: string) => ({
+        quant, description, files: [`${quant}.gguf`], totalSizeBytes: modelBytes, sha256ByFile: {}, visionBytes: vision,
+        fit: { fit, label, breakdown: { modelBytes, contextBytes: 1_744_830_464, contextLength: ctx, ...(vision ? { visionBytes: vision } : {}) } },
+      });
+      return [
+        row('UD-Q4_K_XL', 'Balanced quality and size — recommended', 2_580_000_000, 'fits', 'Runs fast — fits on your GPU'),
+        row('Q8_0', 'Highest quality quantization — near-original output', 4_280_000_000, 'fits', 'Runs fast — fits on your GPU'),
+        row('F16', 'Full precision — largest, slowest', 8_050_000_000, 'tight', 'Will be tight — close other apps first'),
+      ];
+    },
+    search: async () => [],
+    download: async () => ({ downloadId: 'wb-download-1' }),
+    // S-1: the switch is refused, WITH the engine's own words, when no matching graphics
+    // chip answers — this fake always refuses so the refusal state can be photographed.
+    setBackend: async (backend: string) => {
+      throw new Error(`Kept the current engine: the ${backend.toUpperCase()} build found no graphics chip it can use — "ggml_cuda_init: no ROCm-capable device is detected". Nothing was changed.`);
+    },
+    // Q-2: per-model settings, held in memory for the session.
+    settings: async (modelId: string) => ({ ...(modelSettings[modelId] ?? DEFAULT_MODEL_SETTINGS) }),
+    setSettings: async (modelId: string, patch: Partial<ModelSettings>) => {
+      modelSettings[modelId] = { ...(modelSettings[modelId] ?? DEFAULT_MODEL_SETTINGS), ...patch };
+      return { ...modelSettings[modelId] };
+    },
+    // S-3: after a moment the model "has" its vision file.
+    addVision: async (modelId: string) => {
+      const m = LOCAL_MODELS.find((x) => x.id === modelId);
+      if (m) setTimeout(() => { m.vision = 'ready'; }, 800);
+      return { downloadId: 'wb-vision-1' };
+    },
+    dismissMemoryWarning: async () => undefined,
     delete: async () => true,
     onDownloadProgress: (cb: (p: DownloadProgress) => void) => {
       progressListeners.add(cb);
@@ -867,15 +936,40 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // rendered "Installed undefined · undefined" — which the landing-page loop
   // for the builders row (row8) filmed verbatim on 2026-08-27. Shape:
   // shared/engine-types.ts EngineStatus.
+  // Local-engine upgrades (2026-09-05): the `stress` scenario shows the engine RUNNING on an
+  // AMD laptop with a ROCm switch on offer — the states the design deck photographs. Every
+  // other scenario keeps the quiet stopped card the landing-page loop (row8) films.
+  let speed = { speculative: true, compressCache: true };
+  let prereqChecks = 0;
+  const engineStatus = () => ({
+    installed: true, installedVersion: 'b10665', pinnedVersion: 'b10665', backend: 'vulkan' as const,
+    state: (activeScenario === 'stress' ? 'running' : 'stopped') as 'running' | 'stopped',
+    cacheDir: '/home/you/.cache/llama.cpp', contextSize: 32768, port: 8080,
+    deviceName: 'AMD Radeon 8060S Graphics',
+    loadedModelsBytes: activeScenario === 'stress' ? 9_527_502_048 : 0,
+    lastReply: activeScenario === 'stress' ? { promptPerSecond: 383, generatePerSecond: 16.4 } : null,
+    backendOptions: [{ backend: 'rocm' as const, label: 'Switch to ROCm (faster on AMD)', state: 'needs-prereqs' as const }],
+    speed: { ...speed },
+  });
   const engine: Ns<'engine'> = {
-    status: async () => ({
-      installed: true, installedVersion: 'b9986', pinnedVersion: 'b9986', backend: 'vulkan' as const,
-      state: 'stopped' as const, cacheDir: '/home/you/.youcoded/models', contextSize: 32768, port: 8080,
-    }),
+    status: async () => engineStatus(),
     models: async () => [],
     install: async () => undefined,
     restart: async () => undefined,
     setContext: async () => undefined,
+    // Q-1: first check says what is missing (with this machine's command); "Check again"
+    // reports it present, so the flow can be walked end to end in the workbench.
+    prereqs: async (backend: string) => {
+      prereqChecks += 1;
+      return {
+        backend: backend as 'rocm', satisfied: prereqChecks > 1, distro: 'Arch Linux',
+        command: 'sudo pacman -S --needed rocm-hip-runtime hipblas rocblas',
+        docsUrl: 'https://rocm.docs.amd.com/projects/install-on-linux/en/latest/',
+        explainer: 'The faster ROCm engine loads AMD\u2019s ROCm libraries from this computer, and they are not installed yet.',
+      };
+    },
+    runInTerminal: async () => undefined,
+    setSpeed: async (patch: Partial<typeof speed>) => { speed = { ...speed, ...patch }; return engineStatus(); },
     onInstallProgress: () => () => {},
     onStatusChanged: () => () => {},
     onModelsChanged: () => () => {},

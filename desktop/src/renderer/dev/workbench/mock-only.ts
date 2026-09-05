@@ -32,4 +32,16 @@
 // the workbench can still show the you-alone, empty and stale-board states
 // without a live leaderboard. `no MOCK_ONLY entry has since gained a real
 // channel` in workbench-mock-contract.test.ts is what forces this cleanup.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];
+//
+// 2026-09-05 — local-engine upgrades (docs/active/design/2026-09-04-local-engine-upgrades):
+// six channels designed in the workbench ahead of main. Each comes off this list when its
+// real handler lands on all surfaces (ipc-handlers + preload + remote-shim + SessionService.kt).
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
+  { channel: 'engine.prereqs', feature: 'local-engine-upgrades: ROCm prerequisite check + install command (Q-1)' },
+  { channel: 'engine.runInTerminal', feature: 'local-engine-upgrades: paste the install command into the app terminal (Q-1)' },
+  { channel: 'engine.setSpeed', feature: 'local-engine-upgrades: speculative decoding / cache compression switches (Q-4)' },
+  { channel: 'models.settings', feature: 'local-engine-upgrades: per-model settings read (Q-2)' },
+  { channel: 'models.setSettings', feature: 'local-engine-upgrades: per-model settings write (Q-2)' },
+  { channel: 'models.addVision', feature: 'local-engine-upgrades: add the vision file to a downloaded model (S-3)' },
+  { channel: 'models.dismissMemoryWarning', feature: 'local-engine-upgrades: remember the load warning answer per model (S-2)' },
+];

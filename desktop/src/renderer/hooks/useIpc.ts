@@ -369,6 +369,14 @@ declare global {
         // Live per-model residency (2026-07-14).
         models: () => Promise<import('../../shared/engine-types').EngineModel[]>;
         onModelsChanged: (cb: (models: import('../../shared/engine-types').EngineModel[]) => void) => () => void;
+        // 2026-09-05 local-engine upgrades — designed in the workbench ahead of their
+        // backend (mock-only.ts lists them until main serves them).
+        /** What a faster backend needs before it can be installed (Linux ROCm). */
+        prereqs: (backend: string) => Promise<import('../../shared/engine-types').EnginePrereqs>;
+        /** Paste an install command into the app's own terminal session (Q-1 pick a). */
+        runInTerminal: (command: string) => Promise<void>;
+        /** The two engine-wide speed switches; restarts the engine. */
+        setSpeed: (patch: Partial<import('../../shared/engine-types').EngineSpeedSettings>) => Promise<any>;
       };
       // Model manager (Plan C) — curated catalog, HF search, downloads, endpoint
       // detectors, engine backend switch. Task 9's Local Models panel consumes
@@ -390,6 +398,14 @@ declare global {
         // Create-time / swap memory guard + [Reload Model] (2026-07-14).
         memoryCheck: (modelId: string) => Promise<{ verdict: 'ok' | 'tight' | 'too-large'; headline: string; detail: string }>;
         load: (modelId: string) => Promise<boolean>;
+        // 2026-09-05 local-engine upgrades (workbench-first; see mock-only.ts).
+        /** Per-model engine settings (deck Q-2). */
+        settings: (modelId: string) => Promise<import('../../shared/model-manager-types').ModelSettings>;
+        setSettings: (modelId: string, patch: Partial<import('../../shared/model-manager-types').ModelSettings>) => Promise<import('../../shared/model-manager-types').ModelSettings>;
+        /** Fetch the vision projector for a model already on disk and move both into a folder (S-3). */
+        addVision: (modelId: string) => Promise<{ downloadId: string }>;
+        /** Remember "don't warn me again" for this model at this context length (S-2). */
+        dismissMemoryWarning: (modelId: string) => Promise<void>;
       };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState
