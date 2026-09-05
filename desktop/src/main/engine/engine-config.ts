@@ -29,7 +29,14 @@ export function defaultCacheDir(homedir: string = os.homedir()): string {
   return path.join(homedir, '.cache', 'llama.cpp');
 }
 
-const BACKENDS: ReadonlySet<string> = new Set(['vulkan', 'cpu', 'metal', 'cuda']);
+// Every member of EngineBackend, and the reason this list has to be complete:
+// readEngineConfig drops a backend that is not in it and reports `null`, which
+// the rest of the app reads as "on the platform default". So a backend missing
+// here does not fail loudly — the user picks it, it saves, and the next launch
+// silently runs Vulkan again. Kept honest by engine-config.test.ts, which
+// round-trips one saved value per member and will not compile if a member is
+// added to the type and not to that test.
+const BACKENDS: ReadonlySet<string> = new Set(['vulkan', 'cpu', 'metal', 'cuda', 'rocm']);
 
 export function readEngineConfig(home: NativeHome): EngineConfig {
   const cfg = home.readJson(FILE) as any;

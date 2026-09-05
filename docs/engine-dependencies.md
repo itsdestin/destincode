@@ -28,14 +28,22 @@ default_generation_settings.n_ctx: 0}` — the documented case `effectiveContext
 already falls back to the configured `-c` for.
 
 **Bump procedure** (same discipline as a Claude Code bump):
-1. `node desktop/scripts/generate-engine-pin.mjs <new-tag>` → paste rows into
-   `desktop/src/main/engine/engine-pin.ts`, bump `ENGINE_VERSION`.
+1. `node desktop/scripts/generate-engine-pin.mjs <new-tag> --binary <path-to-the-new-llama-server>`
+   → paste the rows AND the `ARG_ALIASES` block into
+   `desktop/src/main/engine/engine-pin.ts`, bump `ENGINE_VERSION`. Without
+   `--binary` the alias table is not regenerated and the script says so.
 2. Re-verify archive layouts (`binaryRelPath`) — Windows `.zip` is flat, macOS/
    Linux `.tar.gz` nest under `llama-<tag>/` (the generator templates the tag in;
    confirm it still holds).
-3. Re-run `desktop/test-engine/probe-{health,models,chat}.mjs --binary <path>`
+3. **Re-check the ROCm target list.** `gfxTargets` on the two ROCm rows is read
+   out of upstream's `.github/workflows/release.yml` at the tag (`gpu_targets:`
+   in the `ubuntu-24-rocm` and `windows-rocm` matrices) and the two platforms do
+   NOT share a list. Upstream edits these between builds; a chip that drops off
+   still gets offered ROCm and then dies with no kernel image at the first
+   token. The generator refuses to emit a ROCm row it cannot read targets for.
+4. Re-run `desktop/test-engine/probe-{health,models,chat}.mjs --binary <path>`
    with a small GGUF in `test-engine/cache/`. All three must PASS.
-4. Update this file with anything that changed.
+5. Update this file with anything that changed.
 
 **How a bump REACHES users:** `EngineManager.autoUpdateOnLaunch()`, fired
 fire-and-forget from `registerIpcHandlers`. It updates an existing install to the
