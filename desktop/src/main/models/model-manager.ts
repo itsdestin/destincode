@@ -8,7 +8,7 @@ import * as path from 'path';
 import { NativeHome } from '../native-home';
 import { EngineManager } from '../engine/engine-manager';
 import { readEngineConfig } from '../engine/engine-config';
-import { readManifest, isManifestComplete } from './download-manifest';
+import { readManifest, isManifestComplete, downloadDirFor, installedDirFor } from './download-manifest';
 import { CuratedCatalog } from './curated-catalog';
 import { HfClient, hfResolveUrl } from './hf-client';
 import { ModelDownloader } from './model-downloader';
@@ -21,6 +21,7 @@ import {
   type GgufHeader,
 } from './gguf-header';
 import { detectGpu } from './gpu-detector';
+import { scanLocalDownloads } from '../engine/cache-scan';
 import type { EngineModel } from '../../shared/engine-types';
 import type {
   CuratedModel, DownloadProgress, FitEstimate, HFSearchHit, QuantOption,
@@ -56,6 +57,11 @@ export class ModelManager extends EventEmitter {
       fetchImpl?: typeof fetch; totalMemBytes?: number; totalVramBytes?: number | null;
       /** Test seam: what the machine reports it has free right now. */
       availableMemBytes?: number;
+      /** Test seam: bytes free on the volume holding the cache dir. `statfsSync`
+       *  is an ESM export and cannot be spied on, so the disk guard — which has
+       *  a refusal message with real numbers in it — would otherwise be
+       *  untestable. */
+      freeDiskBytes?: number;
     } = {}
   ) {
     super();
@@ -112,6 +118,20 @@ export class ModelManager extends EventEmitter {
     return this.opts.availableMemBytes ?? availableMemoryBytes();
   }
 
+  /** How many bytes of vision projector each installed model carries, by model
+   *  id. A projector is loaded WITH its model (`--mmproj`) and is up to ~2.6 GB
+   *  on Qwen2.5-Omni, so leaving it out under-states what loading that model
+   *  costs. Read off the same scan as the model list, so the two can never
+   *  disagree. Costs a readdir plus a stat per file, so callers that need it
+   *  more than once pass the result down rather than asking again. */
+  private visionBytesByModel(): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const d of scanLocalDownloads(this.cacheDir())) {
+      if (d.visionBytes > 0) out.set(d.modelId, d.visionBytes);
+    }
+    return out;
+  }
+
   /** `config.json`'s `engine.models` section — the per-model settings, read raw
    *  and validated where it is used. Read defensively because the settings
    *  dialog that writes it may never have run: an absent section means every
@@ -143,7 +163,11 @@ export class ModelManager extends EventEmitter {
    *  means the KV cache is estimated from the fallback and reported as "up to",
    *  never that the panel fails. */
   private async localHeader(modelId: string): Promise<GgufHeader | null> {
-    const filePath = path.join(this.cacheDir(), `${modelId}.gguf`);
+    // A vision model's weights sit in a folder of its own (design §E2), so the
+    // flat path is not where the file is. Reading the wrong path is silent —
+    // the catch below turns it into "header unknown" and every such model's
+    // context memory would quietly become an upper-bound guess.
+    const filePath = path.join(installedDirFor(this.cacheDir(), modelId), `${modelId}.gguf`);
     try {
       const stamp = localHeaderStamp(fs.statSync(filePath).mtimeMs);
       const cached = this.headers.get(`local:${filePath}`, stamp);
@@ -184,7 +208,9 @@ export class ModelManager extends EventEmitter {
    *  reserve memory nothing is using. 'loading' rows ARE counted: that memory is
    *  being taken this second, and leaving it out is the under-count that tells a
    *  user a second model fits while the first is still arriving. */
-  private async loadedBytes(models: EngineModel[], excludeId: string | null): Promise<number> {
+  private async loadedBytes(
+    models: EngineModel[], excludeId: string | null, vision = this.visionBytesByModel()
+  ): Promise<number> {
     const cfg = readEngineConfig(this.home);
     const settings = this.modelSettings();
     const cache = this.cacheTypes();
@@ -194,7 +220,10 @@ export class ModelManager extends EventEmitter {
       if (!isResident(m.state)) continue;
       const ctx = contextLengthFor(m.id, settings, cfg.contextSize);
       const header = await this.localHeader(m.id);
-      sum += (m.sizeBytes ?? 0) + kvCacheBytes(header, ctx, cache, m.sizeBytes ?? 0).bytes;
+      // + its projector: a resident vision model is holding that too, and
+      // `sizeBytes` is the weights file alone (cache-scan keeps them apart).
+      sum += (m.sizeBytes ?? 0) + (vision.get(m.id) ?? 0)
+        + kvCacheBytes(header, ctx, cache, m.sizeBytes ?? 0).bytes;
     }
     return sum;
   }
@@ -258,6 +287,9 @@ export class ModelManager extends EventEmitter {
     const chosenBytes = chosen?.sizeBytes ?? 0;
     if (chosenBytes <= 0) return { verdict: 'ok', headline: '', detail: '' };
     const settings = this.modelSettings();
+    // ONE scan, shared with loadedBytes below — it is a readdir plus a stat per
+    // file, and this method would otherwise run it twice for the same answer.
+    const vision = this.visionBytesByModel();
     // An installed model uses ITS OWN context length when it has one (§D3) —
     // the whole point of the per-model setting is that this model is the one
     // running at 128k, and scoring it at the engine-wide 32k would under-count
@@ -266,16 +298,16 @@ export class ModelManager extends EventEmitter {
     const [header, pool, loadedBytes] = await Promise.all([
       this.localHeader(modelId),
       this.pool(),
-      this.loadedBytes(models, modelId),
+      this.loadedBytes(models, modelId, vision),
     ]);
     const kv = kvCacheBytes(header, contextLength, this.cacheTypes(), chosenBytes);
     return checkMemoryForLoad({
       modelBytes: chosenBytes,
-      // HANDOFF (T15/T17): no `visionBytes` here, because an installed model's
-      // row does not yet report its projector's size — the cache scan learns
-      // about the folder layout in T15. A projector is up to ~2.6 GB, so this
-      // guard under-counts a vision model until that field exists. Pass it the
-      // moment `InstalledLocalModel.visionBytes` is populated.
+      // T15: the cache scan now reports an installed model's projector, so the
+      // create-time guard counts it like the download-time one does. A
+      // projector is up to ~2.6 GB — five times the working-memory cushion —
+      // so it can flip this verdict on its own.
+      visionBytes: vision.get(modelId) ?? 0,
       kvBytes: kv.bytes,
       kvIsUpperBound: kv.isUpperBound,
       contextLength,
@@ -294,6 +326,7 @@ export class ModelManager extends EventEmitter {
    *  old code skipped the guard entirely on a fresh cache dir). null = couldn't
    *  determine (guard skipped). */
   private freeBytesNear(dir: string): number | null {
+    if (this.opts.freeDiskBytes !== undefined) return this.opts.freeDiskBytes;
     let d = dir;
     for (let i = 0; i < 40; i++) {
       try { const s = fs.statfsSync(d); return s.bavail * s.bsize; } catch { /* try parent */ }
@@ -317,9 +350,13 @@ export class ModelManager extends EventEmitter {
   /** Bytes of THIS download's file set already on disk — published parts plus
    *  the .partial. Feeds the disk guard so a resume is judged on what is left. */
   private bytesOnDiskFor(quant: QuantOption): number {
-    const dir = this.cacheDir();
+    // The download's OWN directory — a vision model's is its folder, and
+    // charging a resume the full size because we looked in the wrong place is
+    // the 2026-08-26 "delete the partial to make room" trap all over again.
+    const dir = downloadDirFor(this.cacheDir(), quant);
     let sum = 0;
-    for (const filePath of quant.files) {
+    const paths = quant.visionFile ? [...quant.files, quant.visionFile.path] : quant.files;
+    for (const filePath of paths) {
       const base = path.basename(filePath);
       for (const candidate of [base, `${base}.partial`]) {
         try { sum += fs.statSync(path.join(dir, candidate)).size; } catch { /* absent */ }
@@ -334,7 +371,13 @@ export class ModelManager extends EventEmitter {
     const free = this.freeBytesNear(this.cacheDir());
     if (free != null) {
       const refusal = checkDiskSpace(
-        quant.totalSizeBytes,
+        // The projector is fetched by the SAME job, so the guard has to reserve
+        // it too. `QuantOption.totalSizeBytes` deliberately excludes it (it is
+        // the size of one quant's split set), which left this check short by
+        // the projector's size — ~175 MB on gemma-4-12b, ~2.6 GB on
+        // Qwen2.5-Omni. A user with just enough space passed the check and then
+        // ran out mid-download (design §E2, T15 handoff 2).
+        quant.totalSizeBytes + (quant.visionFile?.size ?? 0),
         Math.max(0, free - this.reservedBytes()),
         this.bytesOnDiskFor(quant),
       );
@@ -359,7 +402,7 @@ export class ModelManager extends EventEmitter {
    *  network itself. The downloader skips published parts and Range-continues
    *  the .partial, so this is the original download(repo, quant) call replayed. */
   async resume(modelId: string): Promise<{ downloadId: string }> {
-    const manifest = readManifest(this.cacheDir(), `${modelId}.gguf`);
+    const manifest = readManifest(installedDirFor(this.cacheDir(), modelId), `${modelId}.gguf`);
     // A null repo is the same situation as no manifest at all: the record
     // exists, but it says "we never found out where this came from".
     if (!manifest || manifest.repo === null) {
@@ -384,6 +427,12 @@ export class ModelManager extends EventEmitter {
       files: manifest.files,
       totalSizeBytes: manifest.totalSizeBytes,
       sha256ByFile: manifest.sha256ByFile,
+      // Carried forward, or the resumed job would decide this model is
+      // text-only and write its remaining parts FLAT — beside the folder that
+      // already holds the rest of them, where the engine would serve neither.
+      ...(manifest.visionFile
+        ? { visionFile: manifest.visionFile, visionBytes: manifest.visionFile.size }
+        : {}),
     });
   }
 }

@@ -396,14 +396,11 @@ export interface FitInputs {
   /** The model's weights on disk. */
   modelBytes: number;
   /** The vision projector that downloads with it, when the model has one.
-   *
-   *  HANDOFF, for whoever lands the folder layout (T15) and Add-vision (T17):
-   *  the DOWNLOAD side passes this (models.quants), the CREATE-TIME guard does
-   *  NOT — `ModelManager.memoryCheck` has no way to learn an installed model's
-   *  projector size until the cache scan reports one. Qwen2.5-Omni's projector
-   *  is ~2.6 GB, five times the working-memory cushion below, so it can flip a
-   *  verdict on its own. When `InstalledLocalModel` starts carrying
-   *  `visionBytes`, pass it here from `memoryCheck` too. */
+   *  BOTH callers pass it: `models.quants` before the download (the size the
+   *  row shows and the label beside it are then the same number), and
+   *  `memoryCheck` at create time, off the cache scan's folder reading (T15).
+   *  Qwen2.5-Omni's projector is ~2.6 GB, five times the working-memory cushion
+   *  below, so it can flip a verdict on its own. */
   visionBytes?: number;
   /** From kvCacheBytes(), at the context length this model will run with. */
   kvBytes: number;

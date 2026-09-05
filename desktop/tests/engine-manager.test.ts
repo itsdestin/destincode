@@ -301,7 +301,9 @@ describe('EngineManager', () => {
       id: 'M-UD-Q4_K_XL-00001-of-00002', sizeBytes: 5,
       quant: 'UD-Q4_K_XL', quantDescription: expect.stringMatching(/unsloth/i),
       parts: 2, partsPresent: 2, status: 'complete',
-      totalSizeBytes: null, repo: null,
+      // No manifest at all, so nothing knows this model's repo — and a flat set
+      // with no projector beside it is text-only (T15).
+      totalSizeBytes: null, repo: null, vision: 'none', visionBytes: null,
     }]);
   });
 
@@ -434,6 +436,90 @@ describe('EngineManager — local downloads', () => {
       doneManifest('a/b', ['Gone-Q4_K_M.gguf'], 50));
     expect(await manager.installedModels()).toEqual([]);
     expect(fs.existsSync(path.join(cacheDir, 'Gone-Q4_K_M.gguf.download.json'))).toBe(false);
+  });
+
+  // ── The three vision states (design §E2) ─────────────────────────────────
+  // 'ready'     — the projector is on disk beside the weights, so the engine
+  //               loads this model with --mmproj and it can look at images.
+  // 'available' — the repo HAS a projector this copy does not: the download's
+  //               second leg failed, or the app died between the two. Same row,
+  //               same fix ("Add vision"), so the same state.
+  // 'none'      — this model family has no projector at all.
+  const visionFolder = (id: string, opts: { projector: boolean }) => {
+    const folder = path.join(cacheDir, id);
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, `${id}.gguf`), Buffer.alloc(60));
+    if (opts.projector) fs.writeFileSync(path.join(folder, 'mmproj-F16.gguf'), Buffer.alloc(7));
+    fs.writeFileSync(path.join(folder, `${id}.gguf.download.json`), JSON.stringify({
+      v: 1, repo: 'unsloth/V-GGUF', quant: 'Q4_K_M', files: [`${id}.gguf`],
+      totalSizeBytes: 60, sha256ByFile: {}, startedAt: 1, completedAt: 2,
+      visionFile: { path: 'mmproj-F16.gguf', size: 900, sha256: null },
+    }));
+    return folder;
+  };
+
+  it("vision 'ready': the projector is on disk, and the row's size admits to it", async () => {
+    visionFolder('V-Q4_K_M', { projector: true });
+    const rows = await manager.installedModels();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'V-Q4_K_M', status: 'complete', vision: 'ready',
+      // The projector's REAL size on disk, not the manifest's remote figure.
+      visionBytes: 7,
+      // Weights + projector: this is what deleting the folder gives back.
+      sizeBytes: 67,
+      // Flipped by T15 — the row needs it to match its own download's progress.
+      repo: 'unsloth/V-GGUF',
+    });
+  });
+
+  it('a complete row admits to a projector still arriving, because Delete removes it too', async () => {
+    // deleteModel removes the folder recursively — .partial files included — so
+    // a complete row that reported published bytes only understated what the
+    // confirmation was about to throw away.
+    const folder = visionFolder('V-Q4_K_M', { projector: false });
+    fs.writeFileSync(path.join(folder, 'mmproj-F16.gguf.partial'), Buffer.alloc(11));
+    const rows = await manager.installedModels();
+    expect(rows[0]).toMatchObject({ id: 'V-Q4_K_M', status: 'complete', sizeBytes: 71 });
+  });
+
+  it("vision 'available': the manifest names a projector that is not on disk", async () => {
+    // Both the failed-second-leg case and the crash-recovery case (R1-11).
+    visionFolder('V-Q4_K_M', { projector: false });
+    const rows = await manager.installedModels();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'V-Q4_K_M', status: 'complete', vision: 'available',
+      // The size the row's "Add vision (0.9 GB)" label has to quote, which can
+      // only come from the manifest — nothing of it is on disk.
+      visionBytes: 900,
+      sizeBytes: 60,
+    });
+  });
+
+  it("vision 'none': a model whose repo ships no projector", async () => {
+    fs.writeFileSync(path.join(cacheDir, 'Plain-Q4_K_M.gguf'), Buffer.alloc(50));
+    fs.writeFileSync(path.join(cacheDir, 'Plain-Q4_K_M.gguf.download.json'),
+      manifest('a/b', ['Plain-Q4_K_M.gguf'], 50));
+    const rows = await manager.installedModels();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: 'Plain-Q4_K_M', vision: 'none', visionBytes: null });
+  });
+
+  it('deleteModel removes the whole folder AND the model\'s own settings', async () => {
+    visionFolder('V-Q4_K_M', { projector: true });
+    fs.writeFileSync(path.join(cacheDir, 'V-Q4_K_M', 'mmproj-F16.gguf.partial'), Buffer.alloc(3));
+    await home.mutateJson('config.json', (cur: any) => ({
+      ...cur,
+      engine: { ...(cur?.engine ?? {}), models: { 'V-Q4_K_M': { contextLength: 4096 }, 'Other': { keepLoaded: true } } },
+    }));
+    await manager.deleteModel('V-Q4_K_M');
+    expect(fs.existsSync(path.join(cacheDir, 'V-Q4_K_M'))).toBe(false);
+    expect(fs.readdirSync(cacheDir)).toEqual([]);
+    // Pruned — a section for a model that no longer exists renders a ghost row
+    // in the router's preset file, and a re-download would inherit its context.
+    const cfg = home.readJson('config.json') as any;
+    expect(Object.keys(cfg.engine.models)).toEqual(['Other']);
   });
 
   it('deleteModel removes the manifest along with the parts', async () => {

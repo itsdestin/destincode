@@ -15,7 +15,7 @@ import { EngineSupervisor, SLEEP_IDLE_SECONDS } from './engine-supervisor';
 import type { EngineSpawnConfig } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
-import { readEngineConfig, updateEngineConfig, updateEngineSpeed } from './engine-config';
+import { readEngineConfig, updateEngineConfig, updateEngineSpeed, removeModelSettings } from './engine-config';
 import { presetFilePath, renderPresetFile, writePresetFile } from './model-presets';
 import { contextLengthFor } from '../models/fit-estimator';
 import { readManifest, removeManifest, markManifestComplete, isManifestComplete } from '../models/download-manifest';
@@ -1314,7 +1314,11 @@ export class EngineManager extends EventEmitter {
     const rows: InstalledLocalModel[] = [];
     for (const d of scanLocalDownloads(cacheDir)) {
       const complete = isComplete(d);
-      const manifest = d.hasManifest ? readManifest(cacheDir, d.firstFileName) : null;
+      // A vision model's files AND its manifest live in the model's own folder
+      // (design §E2), so every manifest call here is against the download's own
+      // directory, not the cache dir.
+      const dir = d.subdir === null ? cacheDir : path.join(cacheDir, d.subdir);
+      const manifest = d.hasManifest ? readManifest(dir, d.firstFileName) : null;
       if (complete && d.hasManifest) {
         // WHY this no longer deletes: the manifest OUTLIVES the download now, so
         // one sitting beside a complete set is the normal, wanted state. Two
@@ -1324,29 +1328,34 @@ export class EngineManager extends EventEmitter {
         // healed here rather than thrown away — it holds the only record of the
         // repo this model came from.
         if (!manifest) {
-          try { removeManifest(cacheDir, d.firstFileName); } catch { /* best-effort */ }
+          try { removeManifest(dir, d.firstFileName); } catch { /* best-effort */ }
         } else if (!isManifestComplete(manifest)) {
-          // CAREFUL, for whoever adds files to a download job (T15): "complete"
-          // here is isComplete(d) — the part count read off the FILENAMES
-          // (…-00002-of-00003.gguf), not the manifest's own `files` list. That
-          // is safe only while `files` holds exactly one quant's split parts,
-          // which is all quant-parser.ts ever puts there today. Add a vision
-          // projector to the same download job and a Local Models render that
-          // lands between the last weight part and the projector would stamp
-          // this manifest complete while the job is still running. If `files`
-          // grows beyond the split set, this test has to read `files` too.
-          try { markManifestComplete(cacheDir, d.firstFileName, Date.now()); } catch { /* best-effort */ }
+          // "complete" here is isComplete(d) — the part count read off the
+          // FILENAMES (…-00002-of-00003.gguf), not the manifest's own `files`
+          // list. That stays safe because `files` still holds exactly one
+          // quant's split parts: T15 added the vision projector as a SECOND LEG
+          // of the download job, never as a member of `files`, and the cache
+          // scan keeps it out of `partsPresent` for the same reason. A render
+          // that lands mid-projector therefore stamps this manifest complete —
+          // deliberately: the weights ARE complete, and a missing projector is
+          // the `vision: 'available'` state, not an interrupted download.
+          try { markManifestComplete(dir, d.firstFileName, Date.now()); } catch { /* best-effort */ }
         }
       }
       // The row's "unfinished" facts come only from a manifest that is still
       // in flight; a stamped one describes a download that already landed.
       const unfinished = !complete && manifest != null && !isManifestComplete(manifest);
-      const bytesOnDisk = d.bytesPublished + d.bytesPartial;
+      // Everything this download occupies: published weights, the projector, and
+      // any .partial. All three are what a delete removes, so all three are what
+      // the delete confirmation has to name — including on a COMPLETE row, which
+      // used to report published bytes only and therefore understated a model
+      // whose projector was still sitting as a .partial beside it.
+      const bytesOnDisk = d.bytesPublished + d.bytesPartial + d.visionBytes;
       if (!complete && bytesOnDisk === 0 && !unfinished) {
         // Only an unreadable manifest — or one stamped complete whose files are
         // gone — and no bytes: nothing to resume, nothing to delete, nothing to
         // show. Remove the leftover so it cannot accumulate.
-        try { removeManifest(cacheDir, d.firstFileName); } catch { /* best-effort */ }
+        try { removeManifest(dir, d.firstFileName); } catch { /* best-effort */ }
         continue;
       }
       const parsed = parseGgufName(d.firstFileName);
@@ -1354,7 +1363,7 @@ export class EngineManager extends EventEmitter {
         id: d.modelId,
         // Bytes on disk. For an unfinished set that includes the .partial, so
         // the delete confirmation names what the user actually gives up.
-        sizeBytes: complete ? d.bytesPublished : bytesOnDisk,
+        sizeBytes: bytesOnDisk,
         // The manifest's quant is the exact string Hugging Face used — the one
         // live progress events carry, so the renderer can match them to this row.
         quant: (unfinished ? manifest?.quant : undefined) ?? parsed?.quant ?? null,
@@ -1363,14 +1372,32 @@ export class EngineManager extends EventEmitter {
         status: complete ? 'complete' : unfinished ? 'unfinished' : 'untraceable',
         partsPresent: d.partsPresent,
         totalSizeBytes: unfinished ? manifest!.totalSizeBytes : null,
-        // A COMPLETE row still reports no repo, exactly as before this change —
-        // the manifest surviving does not by itself change what the screen
-        // shows. T14/T15 must flip this, because Add vision needs the repo, and
-        // the flip is NOT free: LocalModelsSection matches a live download's
-        // progress events to a row on repo + quant, so a finished model that
-        // starts reporting a repo can absorb progress belonging to a different,
-        // still-running download of the same repo and quant.
-        repo: unfinished ? manifest!.repo : null,
+        // T15 FLIPS THIS: a complete row now reports its repo too, where it
+        // used to report null. WHY it has to: a vision model's download has a
+        // second leg (the projector), and the weights are complete before that
+        // leg finishes — so for those seconds the row is 'complete' AND its
+        // projector is still arriving. LocalModelsSection matches a live
+        // download to a row on repo + quant; with null it matched nothing, so
+        // the row showed no progress bar and offered "Add vision" for the very
+        // file being fetched, and Delete would not have cancelled first.
+        //
+        // WHY the flip is safe here, which it would NOT have been on its own:
+        // repo + quant determines the file set, hence the filename, hence the
+        // model id — so a live download of this repo+quant IS this row. The one
+        // layout that could have produced two rows sharing them (the same model
+        // once flat and once in a folder) is refused where it would be created,
+        // in ModelDownloader.start.
+        repo: manifest?.repo ?? null,
+        // The three vision states (design §E2). 'ready' is read off the DISK —
+        // a published projector beside the weights is exactly what makes the
+        // engine load this model with `--mmproj`. 'available' is read off the
+        // MANIFEST — the repo ships a projector this copy does not have, which
+        // is both "the download's second leg failed" and the crash-recovery
+        // state, and both are answered by the same "Add vision" link.
+        vision: d.hasProjector ? 'ready' : manifest?.visionFile ? 'available' : 'none',
+        // What that eye costs: the projector on disk when it is here, else the
+        // size the row's "Add vision (0.9 GB)" label has to quote.
+        visionBytes: d.hasProjector ? d.visionBytes : manifest?.visionFile?.size ?? null,
       });
     }
     return rows;
@@ -1393,18 +1420,32 @@ export class EngineManager extends EventEmitter {
         });
       } catch { /* best-effort */ }
     }
-    // A multi-part id points at part 00001 — delete every sibling part.
-    const partMatch = /-(\d{5})-of-(\d{5})$/.exec(id);
-    const names = partMatch
-      ? Array.from({ length: Number(partMatch[2]) }, (_, i) =>
-          `${id.replace(/-\d{5}-of-\d{5}$/, '')}-${String(i + 1).padStart(5, '0')}-of-${partMatch[2]}.gguf`)
-      : [`${id}.gguf`];
-    for (const name of names) {
-      fs.rmSync(path.join(cfg.cacheDir, name), { force: true });
-      fs.rmSync(path.join(cfg.cacheDir, `${name}.partial`), { force: true });
+    // A vision model IS its folder — weights, projector, manifest and any
+    // .partial all live inside it, and the engine names the model by that
+    // folder (design §E2). So one recursive remove is the whole delete, and it
+    // needs no guesses about what is in there.
+    const folder = path.join(cfg.cacheDir, id);
+    let isFolderModel = false;
+    try { isFolderModel = fs.statSync(folder).isDirectory(); } catch { /* flat model */ }
+    if (isFolderModel) {
+      fs.rmSync(folder, { recursive: true, force: true });
+    } else {
+      // A multi-part id points at part 00001 — delete every sibling part.
+      const partMatch = /-(\d{5})-of-(\d{5})$/.exec(id);
+      const names = partMatch
+        ? Array.from({ length: Number(partMatch[2]) }, (_, i) =>
+            `${id.replace(/-\d{5}-of-\d{5}$/, '')}-${String(i + 1).padStart(5, '0')}-of-${partMatch[2]}.gguf`)
+        : [`${id}.gguf`];
+      for (const name of names) {
+        fs.rmSync(path.join(cfg.cacheDir, name), { force: true });
+        fs.rmSync(path.join(cfg.cacheDir, `${name}.partial`), { force: true });
+      }
+      // The manifest describes files that no longer exist — remove it with them.
+      removeManifest(cfg.cacheDir, `${id}.gguf`);
     }
-    // The manifest describes files that no longer exist — remove it with them.
-    removeManifest(cfg.cacheDir, `${id}.gguf`);
+    // The model's own settings go with it, or they would be inherited by a
+    // re-download and meanwhile name a model that no longer exists.
+    try { await removeModelSettings(this.home, id); } catch { /* best-effort — the files are already gone */ }
     // Tell the router the file is gone, or it keeps advertising a model that
     // 400s on use — the delete-side twin of the post-download refresh.
     await this.refreshModels();

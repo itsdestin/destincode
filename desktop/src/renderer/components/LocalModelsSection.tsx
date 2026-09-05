@@ -224,9 +224,14 @@ function ModelBrowser({
   // Installed (filtered) + in-progress / partial downloads.
   const installedFiltered = (installed ?? []).filter((m) => matches(m.id, m.quant, m.quantDescription));
   // A download and its disk row are ONE row — matched on repo + quant, both of
-  // which a resumable row carries from its manifest (spec §3.5a). The NEWEST
-  // event wins, in any state: ulids sort by creation time, so after Resume the
-  // fresh attempt's events replace the failed attempt's error line.
+  // which a row carries from its manifest (spec §3.5a). The NEWEST event wins,
+  // in any state: ulids sort by creation time, so after Resume the fresh
+  // attempt's events replace the failed attempt's error line.
+  //
+  // COMPLETE rows are matched too, since T15: a vision model's weights finish
+  // before its projector does, so the row that has to show that second leg's
+  // progress is a complete one. The pair can only ever name one row — repo +
+  // quant fixes the filenames, and so the model id.
   const progressFor = (m: InstalledLocalModel): DownloadProgress | undefined =>
     m.repo
       ? Object.values(downloads)
