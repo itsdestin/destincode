@@ -110,7 +110,17 @@ export function MascotRig({
       const el = svg.querySelector<SVGGElement>(`#${id}`);
       if (!el) continue;
       byId.set(id, el);
-      if (id === 'rig-body') continue;
+      if (id === 'rig-body') {
+        // BOTTOM-CENTRE on purpose: a body that settles or squashes must do it
+        // downward, standing on the same spot. Scaling about the middle makes
+        // him shrink into the air, which reads as flying away, not sitting.
+        try {
+          const b = el.getBBox();
+          (el.style as unknown as Record<string, string>).transformBox = 'view-box';
+          el.style.transformOrigin = `${b.x + b.width / 2}px ${b.y + b.height}px`;
+        } catch { /* jsdom has no getBBox; the body simply stays put */ }
+        continue;
+      }
       const pivot = parsePivot(el.getAttribute('data-pivot'))
         ?? (() => { try { return defaultPivot(id, el.getBBox()); } catch { return null; } })();
       if (pivot) {
@@ -171,6 +181,10 @@ export function MascotRig({
     if (!parts) return;
     applyFace(parts, pose, blinking);
     applyLimbVisibility(parts, pose);
+    // The body is never spring-driven, so unlike the limbs it has no other
+    // writer — it has to be written here on EVERY pose change, not only in the
+    // reduced-effects branch below.
+    applyBody(parts, pose, false);
     // Reduced effects: springs don't run — write pose transforms directly.
     if (reducedEffects) applyPose(parts, pose, blinking, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -391,6 +405,32 @@ export function MascotRig({
   );
 }
 
+/**
+ * The body's own transform, plus the pose's dim.
+ *
+ * Separate from the spring loop by design: springs are the carried-soft-toy
+ * limb wobble, and a body that overshoots on its way into a nap reads as a
+ * flinch rather than a settle. A plain eased transition is the right motion —
+ * and it is the ONLY thing that moves the body, which no pose could do before
+ * 2026-09-04 (`applyPose` skipped `rig-body` by name).
+ */
+function applyBody(parts: Parts, pose: PoseName, instant: boolean): void {
+  const def = POSES[pose];
+  const el = parts.byId.get('rig-body');
+  if (el) {
+    const p = def.parts['rig-body'] ?? {};
+    el.style.transition = instant ? 'none' : 'transform 520ms cubic-bezier(.22,.61,.36,1)';
+    el.style.transform =
+      `translate(${p.tx ?? 0}px, ${p.ty ?? 0}px) rotate(${p.rotate ?? 0}deg) scale(${p.scale ?? 1})`;
+  }
+  // Dim the WHOLE rig, not the body alone — half a faded mascot is a bug, and
+  // the limbs are siblings of the body, not children of it.
+  if (parts.root) {
+    parts.root.style.transition = instant ? 'none' : 'opacity 520ms ease-out';
+    parts.root.style.opacity = String(def.dim ?? 1);
+  }
+}
+
 /** Direct (non-spring) pose write — initial mount and reduced-effects mode. */
 function applyPose(parts: Parts, pose: PoseName, blinking: boolean, instant: boolean): void {
   const def = POSES[pose];
@@ -400,6 +440,7 @@ function applyPose(parts: Parts, pose: PoseName, blinking: boolean, instant: boo
     el.style.transition = instant ? 'none' : 'transform 180ms ease-out';
     el.style.transform = `translate(${p.tx ?? 0}px, ${p.ty ?? 0}px) rotate(${p.rotate ?? 0}deg)`;
   }
+  applyBody(parts, pose, instant);
   applyFace(parts, pose, blinking);
 }
 
@@ -418,6 +459,8 @@ function applyLimbVisibility(parts: Parts, pose: PoseName): void {
 function applyFace(parts: Parts, pose: PoseName, blinking: boolean): void {
   const def = POSES[pose];
   // Blink overlays whichever face is showing (except eyes-wide states).
+  // A pose whose OWN face is 'blink' (sleep) already holds the eyes shut; the
+  // momentary blink scheduler has nothing to add and must not fight it.
   const want: FaceName | 'blink' =
     blinking && parts.faces.blink && def.face !== 'shocked' && def.face !== 'dizzy' ? 'blink' : def.face;
   for (const [name, el] of Object.entries(parts.faces)) {

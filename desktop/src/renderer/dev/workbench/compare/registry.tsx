@@ -72,6 +72,10 @@ import type { CompareSurface } from './types';
 // differed only in a data-motion / data-arrival attribute the host set — a
 // review scaffold in globals.css, since deleted — never in code.
 import { SessionStripMotionDemo } from '../mockups/SessionStripMotion';
+// buddy-sleep: the REAL MascotRig on the app's own default rig, running the
+// actual settle → breathe → wake. A sleep pose cannot be judged from a still —
+// two thirds of it is motion.
+import { BuddySleepDemo } from '../mockups/BuddySleep';
 // The REAL derivation the shipping card will use — a candidate that hardcoded
 // its options would be comparing wording against something that cannot happen.
 import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
@@ -4350,6 +4354,42 @@ function PresentRefTable() {
 
 const ALL_SURFACES: CompareSurface[] = [
   {
+    id: 'buddy-sleep',
+    label: 'Buddy — falling asleep',
+    question: 'After a few quiet minutes the buddy goes to sleep. Which way of going under reads best at his real size?',
+    frame: 'canvas',
+    // FIXED at his real window width plus a little air. A sleep pose that only
+    // reads when the pane is stretched has not been judged at all — he is 112px
+    // in the corner of a screen, always.
+    paneWidth: 150,
+    rounds: [
+      {
+        n: 1,
+        basis: "Destin, 2026-09-04: \"i didn't entirely love the shut down pose as written.\" A is that pose, ported as faithfully as this rig allows, so the other three are judged against the thing he is reacting to rather than against nothing. The ten candidates drawn during the promo (docs/archive/prototypes/promo-2026-09/storyboard-v3/power-down-poses{,-2}.png) were judged for the END OF A FILM at large size beside the wordmark; these are judged for 112px in a screen corner, where he may also be docked half-off an edge. Every pane loops settle → breathe → wake by itself and has a Wake him button, because the wake is half of whether a sleep reads as sleep or as a glitch.",
+        candidates: [
+          {
+            id: 'loaf',
+            label: 'Loaf',
+            note: "The film's own pose: he squats down and his arms swing under to the bottom corners.",
+            render: () => <BuddySleepDemo pose="sleep-loaf" />,
+          },
+          {
+            id: 'slump',
+            label: 'Slump',
+            note: 'Dozed off where he stood — he leans, sinks a little, arms go slack. Barely changes his outline.',
+            render: () => <BuddySleepDemo pose="sleep-slump" />,
+          },
+          {
+            id: 'deflate',
+            label: 'Deflate + dim',
+            note: 'Shrinks a touch and fades. Says "powered down" with brightness instead of posture.',
+            render: () => <BuddySleepDemo pose="sleep-deflate" />,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: 'session-strip-motion',
     label: 'Session strip — motion',
     question: 'How fast, and on what curve, should a click open a name, a hover peek it, and a drag move a pill?',
@@ -5366,7 +5406,7 @@ const ALL_SURFACES: CompareSurface[] = [
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'session-strip-motion';
+const ACTIVE_FIRST = 'buddy-sleep';
 
 export const COMPARE_SURFACES: CompareSurface[] = [
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),

@@ -14,10 +14,42 @@ export type LimbId = (typeof LIMB_IDS)[number];
 // pose entries of its own today, so it stays out of LIMB_IDS.
 export type RigPartId = LimbId | 'rig-tail' | 'rig-body';
 export type FaceName = 'idle' | 'welcome' | 'curious' | 'shocked' | 'dizzy';
-export type PoseName = 'idle' | 'pressed' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'flap' | 'peek' | 'peek-right' | 'peek-left';
+export type PoseName =
+  | 'idle' | 'pressed' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'flap'
+  | 'peek' | 'peek-right' | 'peek-left'
+  // REVIEW CANDIDATES ONLY (2026-09-04) — four ways the buddy could fall
+  // asleep, up for Destin to pick between. THE LOSERS GET DELETED; do not
+  // build anything on one of these until the pick is recorded. The winner
+  // keeps its parts and is renamed `sleep`.
+  | 'sleep-loaf' | 'sleep-slump' | 'sleep-deflate';
 
-export interface PartPose { rotate?: number; tx?: number; ty?: number; hidden?: boolean; }
-export interface PoseDef { parts: Partial<Record<RigPartId, PartPose>>; face: FaceName; wave?: boolean; }
+/**
+ * `scale` and the body:
+ *
+ * WHY these were added (2026-09-04). Every way of falling asleep starts with
+ * the body settling — sinking, squashing, or shrinking — and until now a pose
+ * could not move `rig-body` AT ALL: the type allowed it, `applyPose` skipped
+ * it by name, and the spring loop only ever drove limbs. So the film's own
+ * power-down (`sitTuck`: squat onto folded legs, arms turn under) was not
+ * reproducible by the shipped app on any theme, which is worth knowing before
+ * anyone tries to "just port it".
+ *
+ * The body is deliberately NOT spring-driven. Springs exist for the carried-
+ * soft-toy limb wobble; a body that overshoots on the way into a nap reads as
+ * a flinch. It gets a plain eased transition instead.
+ */
+export interface PartPose { rotate?: number; tx?: number; ty?: number; scale?: number; hidden?: boolean; }
+export interface PoseDef {
+  parts: Partial<Record<RigPartId, PartPose>>;
+  /** `blink` is allowed here so a pose can hold the eyes CLOSED — the blink
+   *  scheduler owns momentary blinks, a pose owns a sustained one (sleep). */
+  face: FaceName | 'blink';
+  wave?: boolean;
+  /** Dim the whole rig, 0-1. Sleep candidates use it to say "powered down"
+   *  through brightness rather than posture — the part that still reads when
+   *  the buddy is 112px in a screen corner. */
+  dim?: number;
+}
 
 // Rotation values assume limbs drawn HANGING DOWN from their pivot (the
 // rig-contract convention, wecoded-themes/mascots/README.md).
@@ -60,6 +92,52 @@ export const POSES: Record<PoseName, PoseDef> = {
   // arms themselves are the grip, no mittens.)
   'peek-right': { parts: { 'rig-arm-left': { hidden: true }, 'rig-arm-right': { hidden: true }, 'rig-leg-left': { rotate: -10 } }, face: 'curious' },
   'peek-left':  { parts: { 'rig-arm-left': { hidden: true }, 'rig-arm-right': { hidden: true }, 'rig-leg-right': { rotate: 10 } }, face: 'curious' },
+
+  // ── Sleep candidates, 2026-09-04. See PoseName's note: three of these four
+  // are going to be deleted. Every one closes the eyes and drops the arms; they
+  // differ in what the BODY does, because that is the half Destin is judging.
+  //
+  // A · Loaf — the film's `sitTuck`, as close as this rig can get: the body
+  // squats and the arms swing under to the bottom corners. Here so the winner
+  // is judged against the thing he half-remembers, not against nothing.
+  'sleep-loaf': {
+    parts: {
+      'rig-body': { ty: 2.2, scale: 0.94 },
+      'rig-arm-left': { ty: 4.2, rotate: 12 },
+      'rig-arm-right': { ty: 4.2, rotate: -12 },
+      'rig-leg-left': { hidden: true },
+      'rig-leg-right': { hidden: true },
+    },
+    face: 'blink',
+  },
+  // B · Slump — dozed off where he stood. The body leans and sinks a little,
+  // the arms go slack and drift outward, one leg cocks. Barely changes the
+  // silhouette, which is the point: it is the one that still reads at 112px
+  // WITHOUT the viewer having to work out what happened to his legs.
+  'sleep-slump': {
+    parts: {
+      'rig-body': { ty: 1.1, rotate: 6 },
+      'rig-arm-left': { rotate: 16, ty: 0.9 },
+      'rig-arm-right': { rotate: -9, ty: 0.9 },
+      'rig-leg-right': { rotate: 8 },
+    },
+    face: 'blink',
+  },
+  // C · Deflate — says "powered down" with BRIGHTNESS instead of posture: he
+  // shrinks a touch, settles, and dims. The only candidate whose message
+  // survives being small, docked, or half-behind a window edge, because it does
+  // not depend on you being able to read his legs.
+  'sleep-deflate': {
+    parts: {
+      'rig-body': { ty: 1.4, scale: 0.88 },
+      'rig-arm-left': { rotate: 8, ty: 1.4 },
+      'rig-arm-right': { rotate: -8, ty: 1.4 },
+      'rig-leg-left': { ty: 0.6 },
+      'rig-leg-right': { ty: 0.6 },
+    },
+    face: 'blink',
+    dim: 0.55,
+  },
 };
 
 /** Parse a data-pivot="x y" attribute (viewBox coordinates). */
