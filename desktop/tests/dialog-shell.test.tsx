@@ -175,6 +175,11 @@ const NOT_DIALOGS: Record<string, string> = {
   // viewer's own relative box. Corner-anchored, no scrim, never centered, never
   // modal — the same shape as ZoomOverlay above, which it shares its look with.
   'ZoomPill.tsx': 'in-pane zoom control anchored to a corner by its caller, no scrim',
+  // Evidence, not a class string: the wrapper's top/left come from
+  // getBoundingClientRect() of the [data-view-toggle] element, there is no
+  // translate(-50%, -50%) anywhere in the file, and it renders no <Scrim>. Same
+  // shape as AnchorTip above — a bubble pinned to a control it points at.
+  'ViewToggleHint.tsx': 'coach mark anchored to the chat/terminal toggle via computed coordinates',
 };
 
 describe('dialog shell adoption', () => {

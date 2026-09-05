@@ -17,6 +17,7 @@ import { isPlaceholderModelId } from '../shared/model-ids';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import { AnchorTip, Button, Dialog, Toast, Toggle } from './components/ui';
+import ViewToggleHint from './components/ViewToggleHint';
 import { takeoverDialogCopy } from './components/takeover-dialog-copy';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
@@ -2625,6 +2626,13 @@ function AppInner() {
     document.documentElement.dataset.viewMode = currentViewMode;
   }, [currentViewMode]);
 
+  // Auto-dismiss: the hint has done its job the moment the user is back in chat.
+  // Keyed on the view rather than on the toggle's own click so the keyboard
+  // shortcut and a remote switch clear it too.
+  useEffect(() => {
+    if (currentViewMode === 'chat') setBackToChatHint(false);
+  }, [currentViewMode]);
+
   const handleToggleView = useCallback(
     (mode: ViewMode) => {
       if (!sessionId) return;
@@ -2862,6 +2870,9 @@ function AppInner() {
   // Show a "something may be wrong" hint after 15s of waiting on initialization.
   // Resets whenever the active session changes or the session becomes initialized.
   const [initSlowWarning, setInitSlowWarning] = useState(false);
+  // The init warning's button is a one-way door: switching to terminal view also
+  // hides the overlay that named the toggle. This coach mark is the way back.
+  const [backToChatHint, setBackToChatHint] = useState(false);
   useEffect(() => {
     if (sessionInitialized) { setInitSlowWarning(false); return; }
     setInitSlowWarning(false);
@@ -3099,12 +3110,15 @@ function AppInner() {
                       {/* Fix: the old copy told the user to go find the chat/terminal toggle
                          themselves. This does it in one tap — and because the overlay is
                          hidden in terminal view, switching also clears it. */}
-                      <Button variant="secondary" size="sm" onClick={() => handleToggleView('terminal')}>
+                      <Button variant="secondary" size="sm" onClick={() => { setBackToChatHint(true); handleToggleView('terminal'); }}>
                         Check terminal view
                       </Button>
                     </div>
                   )}
                 </div>
+              )}
+              {backToChatHint && currentViewMode === 'terminal' && (
+                <ViewToggleHint onDismiss={() => setBackToChatHint(false)} />
               )}
               {trustGateActive && sessionId && <TrustGate sessionId={sessionId} />}
               {/* Plan 2b Moved Gate — covers the content area for a taken-over

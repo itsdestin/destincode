@@ -326,6 +326,13 @@ describe('WideViewToggle', () => {
     expect(screen.getAllByRole('button')).toHaveLength(2);
   });
 
+  // ViewToggleHint anchors to this attribute. Drop it and the coach mark that
+  // sends a stuck user back to chat silently never renders — nothing else fails.
+  it('carries the coach-mark anchor', () => {
+    const { container } = renderToggle('terminal');
+    expect(container.querySelector('[data-view-toggle]')).toBeTruthy();
+  });
+
   it('uses the latest view when geometry changes during rapid mode updates', () => {
     const { container, rerender, onToggleView } = renderToggle('chat');
     const nodes = makeReady(container);
