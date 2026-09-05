@@ -8,7 +8,7 @@
 // the app does not control, so "waiting" is a real, visible state the user sits
 // in for a while — the Settings row and the first-run screen both draw it.
 
-import { formatTime12, formatDayShort, formatMonthDay } from './time-format';
+import { formatTime12, formatDayLong, formatMonthDay } from './time-format';
 
 /** One rolling usage window of the ChatGPT plan, as OpenAI reports it. Same
  *  shape as the Claude subscription windows (`SubscriptionUsage` in
@@ -63,9 +63,13 @@ export type ChatGptAccountStatus =
  *  How the reset is written (words deck W-1, answer a, 2026-09-05):
  *  - 5-hour: the clock time only — "Resets @ 6:43pm". This is Destin's exact
  *    approved wording and must stay byte-identical.
- *  - weekly (and any window up to 7 days): the day too — "Resets Tue @ 6:43pm",
- *    matching the 7-day chip beside it, because a clock time alone for a reset
- *    that is next Tuesday would have the user waiting until 6:43pm today.
+ *  - weekly (and any window up to 7 days): the day too — "Resets Tuesday @
+ *    6:43pm", because a clock time alone for a reset that is next Tuesday would
+ *    have the user waiting until 6:43pm today. The day is SPELLED OUT to match
+ *    the 7-day chip beside it: the W-1 deck showed "Tue" and said the chip
+ *    already agreed, which was wrong — the chip has always said "Tuesday", and
+ *    Destin chose the long form on 2026-09-05 rather than change a string every
+ *    existing Claude subscriber already sees.
  *  - longer than 7 days (the free plan's 30-day window): month and day —
  *    "Resets Oct 3 @ 6:43pm" — since a weekday name is ambiguous over a month. */
 export function chatGptLimitMessage(windowLabel: string, resetsAt: string): string {
@@ -78,15 +82,21 @@ export function chatGptLimitMessage(windowLabel: string, resetsAt: string): stri
   return `You have reached ChatGPT's ${windowLabel} session limit (Resets ${resetDayPrefix(windowLabel, t)}@ ${when}).`;
 }
 
-/** The "Tue " / "Oct 3 " part in front of "@ 6:43pm", or '' for the 5-hour
- *  window and for an unparsable reset (where "Resets Tue @ later" would be
- *  nonsense). Kept separate so the 5-hour path above is literally the old code. */
+/** The "Tuesday " / "Oct 3 " part in front of "@ 6:43pm", or '' for the 5-hour
+ *  window and for an unparsable reset (where "Resets Tuesday @ later" would be
+ *  nonsense). Kept separate so the 5-hour path above is literally the old code.
+ *
+ *  WHY the day is spelled out in full: the 7-day CHIP in the status bar has
+ *  always said "Resets Thursday", and this card sits right beside it. The W-1
+ *  deck said the two already matched and they did not — Destin chose the long
+ *  form on 2026-09-05, so the chip is left exactly as every existing Claude
+ *  subscriber already sees it and the card comes into line with it instead. */
 function resetDayPrefix(windowLabel: string, t: number): string {
   if (windowLabel === '5-hour' || !Number.isFinite(t)) return '';
   const d = new Date(t);
   const days = /^(\d+)-day$/.exec(windowLabel);
   if (days && Number(days[1]) > 7) return `${formatMonthDay(d)} `;
-  return `${formatDayShort(d)} `;
+  return `${formatDayLong(d)} `;
 }
 
 export function isChatGptLimitMessage(message: string | null | undefined): boolean {

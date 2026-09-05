@@ -18,18 +18,12 @@ export function formatTime12(d: Date): string {
   return `${h}:${m.toString().padStart(2, '0')}${ampm}`;
 }
 
-/** Full day names — what the status bar's 7-day chip shows today
- *  ("Resets Tuesday @ 6:43pm"). Unchanged here; T6 decides the chip. */
+/** Full day names. Used by BOTH the status bar's 7-day chip and the ChatGPT
+ *  limit card, so the two read identically side by side — the three-letter
+ *  variant was removed on 2026-09-05 when Destin chose the long form. */
 export const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 export function formatDayLong(d: Date): string {
   return DAY_NAMES[d.getDay()];
-}
-
-/** Three-letter day — what Destin approved for the ChatGPT limit card on
- *  words deck W-1 ("Resets Tue @ 6:43pm"). */
-export const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-export function formatDayShort(d: Date): string {
-  return DAY_NAMES_SHORT[d.getDay()];
 }
 
 /** "Oct 3" — for a reset more than a week away, where a weekday alone is ambiguous. */

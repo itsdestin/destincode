@@ -20,6 +20,7 @@ import {
   type ParsedUsage,
 } from '../src/main/providers/chatgpt-oauth';
 import { chatGptLimitMessage, isChatGptLimitMessage } from '../src/shared/chatgpt-types';
+import { formatDayLong } from '../src/shared/time-format';
 import { describeProviderError } from '../src/main/harness/harness-session';
 
 const FIXTURES = path.join(__dirname, 'fixtures', 'chatgpt');
@@ -290,10 +291,16 @@ describe('chatgpt-oauth: the limit sentence (words deck W-1, answer a)', () => {
     expect(bar).not.toMatch(/function formatTime12/);
   });
 
-  it('the weekly sentence names the day like the 7-day chip; longer windows name month and day', () => {
-    expect(chatGptLimitMessage('weekly', tue)).toBe("You have reached ChatGPT's weekly session limit (Resets Tue @ 6:43pm).");
+  // The day is spelled out in full so the card and the 7-day chip beside it read
+  // the SAME way. The W-1 deck offered "Tue" on the claim that the chip already
+  // said "Tue"; it never has. Destin picked the long form on 2026-09-05, which
+  // leaves the chip every existing Claude subscriber sees completely untouched.
+  it('the weekly sentence names the day in full, like the 7-day chip; longer windows name month and day', () => {
+    expect(chatGptLimitMessage('weekly', tue)).toBe("You have reached ChatGPT's weekly session limit (Resets Tuesday @ 6:43pm).");
     expect(chatGptLimitMessage('30-day', oct3)).toBe("You have reached ChatGPT's 30-day session limit (Resets Oct 3 @ 6:43pm).");
-    // An unparsable reset never produces "Resets Tue @ later".
+    // The card and the chip must not drift apart again.
+    expect(chatGptLimitMessage('weekly', tue)).toContain(formatDayLong(new Date(tue)));
+    // An unparsable reset never produces "Resets Tuesday @ later".
     expect(chatGptLimitMessage('weekly', '')).toBe("You have reached ChatGPT's weekly session limit (Resets @ later).");
     for (const label of ['5-hour', 'weekly', '30-day']) expect(isChatGptLimitMessage(chatGptLimitMessage(label, tue))).toBe(true);
   });
