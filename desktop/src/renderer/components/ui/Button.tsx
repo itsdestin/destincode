@@ -13,8 +13,8 @@ import React from 'react';
  * don't get reintroduced as "improvements".
  */
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-outline';
-export type ButtonSize = 'sm' | 'md' | 'lg' | 'icon';
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-outline' | 'on-accent';
+export type ButtonSize = 'sm' | 'md' | 'lg' | 'icon' | 'icon-sm';
 
 /** The one focus ring — every interactive control shares it (design rule 4),
  *  so it lives here and Toggle/Checkbox/Radio/Select/SegmentedTabs import it.
@@ -59,23 +59,35 @@ const BUTTON_VARIANT: Record<ButtonVariant, string> = {
   ghost: 'text-fg-dim hover:text-fg hover:bg-inset',
   danger: 'bg-destructive text-on-destructive hover:bg-destructive/90',
   'danger-outline': 'border border-destructive/50 text-destructive-fg hover:bg-destructive/10',
+  // ghost, but for a control sitting ON an accent-filled surface (ViewToggleHint's
+  // ✕). Added 2026-09-04: ghost there was wrong twice over — its hover fill is
+  // --inset, a panel colour that reads as a foreign patch on accent, and its
+  // hover TEXT is --fg, which on Light's near-black accent turns the glyph
+  // black-on-black. Both roles derive from --on-accent instead, so the whole
+  // control tracks whatever a theme pack sets the accent to.
+  'on-accent': 'text-on-accent/80 hover:text-on-accent hover:bg-on-accent/15',
 };
 
 /** sm  — inline row actions (EngineCard, provider rows, chips)
  *  md  — forms, popup footers, most actions
  *  lg  — page-level CTAs (sign-in, marketplace hero)
- *  icon— icon-only square; aria-label is required by the type signature */
+ *  icon— icon-only square; aria-label is required by the type signature
+ *  icon-sm — the same, on a chip-height bar where a 28px square would set the
+ *      bar's height instead of sitting inside it (ViewToggleHint). The glyph
+ *      shrinks with it, so the rounded hover fill still reads as a container
+ *      around the glyph rather than a tile behind it. */
 const BUTTON_SIZE: Record<ButtonSize, string> = {
   sm: 'text-2xs px-2.5 py-1',
   md: 'text-xs px-3 py-1.5',
   lg: 'text-sm px-4 py-2',
   icon: 'w-7 h-7 p-0',
+  'icon-sm': 'w-5 h-5 p-0',
 };
 
 /** sm (~22px tall) and icon (28px) are under the ~44dp touch guideline, and this
  *  renderer is also the Android UI. `.coarse-hit` expands the tap target on
  *  touch devices only — no visual change. See globals.css. */
-const NEEDS_COARSE_HIT: ReadonlySet<ButtonSize> = new Set<ButtonSize>(['sm', 'icon']);
+const NEEDS_COARSE_HIT: ReadonlySet<ButtonSize> = new Set<ButtonSize>(['sm', 'icon', 'icon-sm']);
 
 type NativeButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement>;
 
@@ -86,8 +98,8 @@ type CommonProps = NativeButtonProps & {
 /** Icon buttons have no text, so aria-label isn't optional — the type enforces
  *  what a lint rule otherwise would (design rule 16). */
 type SizeProps =
-  | { size?: Exclude<ButtonSize, 'icon'> }
-  | { size: 'icon'; 'aria-label': string };
+  | { size?: Exclude<ButtonSize, 'icon' | 'icon-sm'> }
+  | { size: 'icon' | 'icon-sm'; 'aria-label': string };
 
 export type ButtonProps = CommonProps & SizeProps;
 

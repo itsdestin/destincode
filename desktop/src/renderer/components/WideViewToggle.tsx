@@ -209,9 +209,12 @@ export default function WideViewToggle({
   const activeEndpoint = endpoints?.[viewMode] ?? null;
 
   return (
+    // data-view-toggle: what ViewToggleHint's coach mark points at. Both toggle
+    // variants carry it so the hint follows the narrow-breakpoint swap.
     <div
       ref={containerRef}
       data-testid="wide-view-toggle"
+      data-view-toggle
       data-geometry-syncing={geometrySyncing ? 'true' : undefined}
       className={`${CONTAINER_CLASS} wide-view-toggle`}
     >

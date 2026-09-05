@@ -27,7 +27,9 @@ export default function NarrowViewToggle({ viewMode, onToggleView }: Props) {
   const label = nextView === 'terminal' ? 'Switch to terminal' : 'Switch to chat';
 
   return (
-    <div className="bg-inset rounded-md p-0.5 shrink-0">
+    // data-view-toggle: what ViewToggleHint's coach mark points at. Both
+    // toggle variants carry it so the hint follows the breakpoint switch.
+    <div data-view-toggle className="bg-inset rounded-md p-0.5 shrink-0">
       <button
         onClick={() => onToggleView(nextView)}
         className="coarse-hit px-2 py-1 rounded-[var(--radius-toggle)] transition-colors flex items-center text-fg-dim hover:text-fg-2"
