@@ -4020,6 +4020,17 @@ class SessionService : Service() {
             "provider:test",
             "provider:set-key",
             "provider:catalog",
+            // Sign in with ChatGPT (backend design 2026-09-05 §5). The account,
+            // its encrypted tokens and the 127.0.0.1:1455 sign-in listener all
+            // live in the DESKTOP main process; Android has no native runtime to
+            // hold any of that until M8. Reply not-implemented so the shared
+            // React UI degrades to a "desktop only" state instead of timing out
+            // (the card is hidden here anyway — chatgpt.supported is false off
+            // the desktop preload).
+            "chatgpt:status",
+            "chatgpt:sign-in",
+            "chatgpt:cancel-sign-in",
+            "chatgpt:sign-out",
             // WebSearch providers (Phase 2 Plan B) — keyed Tavily/Exa upgrades.
             // Desktop-only; no Android runtime yet. Reply not-implemented so the
             // shared React UI degrades to a "desktop only" state instead of timing out.

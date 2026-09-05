@@ -2068,3 +2068,48 @@ describe('HarnessSession — empty final step recovery', () => {
     expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('empty_response');
   });
 });
+
+// The session id must reach the model factory as `cacheKey` on EVERY path that
+// builds a model. It becomes the ChatGPT endpoint's prompt_cache_key: the
+// endpoint remembers the shared opening of a conversation under that key and
+// bills the remembered part at a discount. Drop the key and nothing breaks
+// loudly — every step of every ChatGPT session re-pays for the whole
+// conversation so far against the user's plan allowance, and each turn is
+// slower. Nothing else in the suite passes through these two lines, so before
+// this test they could both be deleted with the suite still green.
+describe('HarnessSession — the model factory always gets the session id as cacheKey', () => {
+  function recordingFactory(sink: Array<{ cacheKey?: string }>, model: any) {
+    return async (_binding: any, o?: { cacheKey?: string }) => { sink.push({ ...o }); return model as any; };
+  }
+
+  it('the turn path passes cacheKey === sessionId', async () => {
+    const seen: Array<{ cacheKey?: string }> = [];
+    const model = scriptModel([{ text: 'done' }]);
+    const session = new HarnessSession(
+      makeOpts({ sessionId: 'sess-abc', tools: [], decide: async () => ALLOW }),
+      recordingFactory(seen, model),
+    );
+    await session.send('go');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].cacheKey).toBe('sess-abc');
+  });
+
+  it('the compaction path passes cacheKey === sessionId too', async () => {
+    const seen: Array<{ cacheKey?: string }> = [];
+    const model = scriptModel([{ text: 'SUMMARY: ok' }]);
+    const session = new HarnessSession(
+      makeOpts({ sessionId: 'sess-xyz', contextLength: 4096, tools: [], decide: async () => ALLOW }),
+      recordingFactory(seen, model),
+    );
+    // Two user-delimited turns so compactNow finds a span it can condense.
+    session.seedHistory([
+      { role: 'assistant', content: 'a1' } as any,
+      { role: 'user', content: 'u1' } as any,
+      { role: 'assistant', content: 'a2' } as any,
+      { role: 'user', content: 'u2' } as any,
+    ]);
+    expect(await session.compactNow()).toEqual({ ok: true });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].cacheKey).toBe('sess-xyz');
+  });
+});

@@ -28,6 +28,9 @@ import { nativeStoreSlug, ccProjectSlug } from './slug-encoding';
 import { NativeHome } from './native-home';
 import { SecretsStore } from './providers/secrets-store';
 import { ProviderRegistry } from './providers/provider-registry';
+// Sign in with ChatGPT (backend design 2026-09-05 §1): constructed by main.ts
+// (it needs the post-dev-profile userData) and passed IN; this file only wires it.
+import type { ChatGptAuth } from './providers/chatgpt-auth';
 // Task 7: native auto-title generation over the AI SDK — the SAME `ai`
 // package harness-session.ts already depends on (never through
 // HarnessSession.send(), which hard-throws on re-entrancy).
@@ -104,7 +107,7 @@ import { SavedFolder, readFolders, writeFolders } from './saved-folders';
 // registry's limit (project-registry.ts uses the same constant).
 import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
-import type { PerformanceConfigSnapshot } from '../shared/types';
+import type { PerformanceConfigSnapshot, SessionInfo } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
 // 2026-08-27 OOM fix: read-only handlers (list, get, save, check-existence,
 // the binary-roots pass) go through readSidecarShared — one parsed copy per
@@ -226,6 +229,14 @@ export function registerIpcHandlers(
     deviceId: string;
     machineId: string;
   },
+  // Sign in with ChatGPT (backend design 2026-09-05 §1, §6): the account object
+  // main.ts built inside createWindow. Optional so the tests that call this with
+  // four args keep working. It is ALWAYS handed over when it exists — the kill
+  // switch (YOUCODED_CHATGPT=0) is applied HERE, not by omitting the argument:
+  // under the switch the registry, the catalog and the four handlers get null
+  // (no virtual row, no models, answers signed-out/false) while the object
+  // itself stays alive as the file reader main.ts's launch check needs.
+  chatgptAuth?: ChatGptAuth | null,
 ) {
   // Broadcast a non-session-scoped event to every renderer. Status data, UI
   // actions, and similar globals must reach every window — not just window 1.
@@ -740,6 +751,9 @@ export function registerIpcHandlers(
         // preset badge + resume rows can read it. getHarnessId is authoritative
         // after create/resume awaited above.
         info.harnessId = nativeHost.getHarnessId(info.id) ?? undefined;
+        // Same stamp as SESSION_LIST, so the very first render of a brand-new
+        // session already knows whose plan it is spending (review T6 F1).
+        info.providerType = bindingToPortableModel(nativeHost.getBinding(info.id), await providerRegistry.list())?.providerType;
 
         // Native sessions emit NO CC SessionStart hook, so the CC lease path
         // (sessionIdMap + acquire at the SessionStart listener) never fires for
@@ -857,7 +871,16 @@ export function registerIpcHandlers(
   // so remote clients still see everything. RemoteServer uses its own path
   // and doesn't go through this handler.
   ipcMain.handle(IPC.SESSION_LIST, async (event) => {
-    const all = sessionManager.listSessions();
+    // Stamp each native session with the TYPE of the provider it is bound to.
+    // WHY: the renderer decides whose usage numbers to show from the session's
+    // model id alone otherwise, and two providers can list the same id — a user
+    // with both an OpenAI API key and the ChatGPT plan has `gpt-5.5` twice. The
+    // session itself knows which one it is bound to; the model id does not.
+    // (Review T6 F1 / design §4.9.) resolvePortableModel returns null for a
+    // non-native session or a provider that has left the registry — never a
+    // guess, so the renderer falls back to "unknown" rather than to the wrong
+    // plan.
+    const all = await stampProviderTypes(sessionManager.listSessions());
     if (!windowRegistry) return all;
     const callerId = event.sender.id;
     const primaryId = windowRegistry.getLeaderId();
@@ -2124,7 +2147,14 @@ export function registerIpcHandlers(
     // (The background bulk-conversations pull + its restore-progress chip were
     // removed in sync-legacy-demolition — the pull path no longer exists.)
 
-    return { usage, announcement, updateStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
+    // Sign in with ChatGPT (§4.4): the plan's usage windows ride the same 10 s
+    // push the Claude usage does, so the status-bar chips and /usage draw either
+    // plan with one recipe — on desktop AND on remote browsers (this payload is
+    // forwarded verbatim by broadcastStatusData). Pruned by usageForStatus();
+    // null when signed out, never polled, or under the kill switch.
+    const chatgptUsage = chatgptForUi?.usageForStatus() ?? null;
+
+    return { usage, announcement, updateStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap, chatgptUsage };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -2312,10 +2342,20 @@ export function registerIpcHandlers(
   // keeps serving whatever version is on disk, so a model needing a newer llama.cpp
   // just looks like a broken app.
   void engineManager.autoUpdateOnLaunch();
-  const providerRegistry = new ProviderRegistry(nativeHome, secretsStore, engineManager.registryHook());
+  // Sign in with ChatGPT — the kill switch (§6). `chatgptForUi` is what the
+  // registry, the catalog, the four handlers and the remote WS cases see: null
+  // under YOUCODED_CHATGPT=0 so the plan's row and models vanish and every
+  // surface answers signed-out, while `chatgptAuth` itself (main.ts's file
+  // reader) is untouched. Stored tokens are left alone — the flag is a fast
+  // revert, not a sign-out.
+  const chatgptForUi: ChatGptAuth | null = process.env.YOUCODED_CHATGPT !== '0' ? (chatgptAuth ?? null) : null;
+  const providerRegistry = new ProviderRegistry(nativeHome, secretsStore, engineManager.registryHook(), chatgptForUi);
   void providerRegistry.init();
   const modelCatalog = new ModelCatalog(app.getPath('userData'), undefined, {
     localModels: () => engineManager.catalogModels(),
+    // The plan's models come from ChatGptAuth's manifest cache (§4.2); absent
+    // under the kill switch so the catalog contributes nothing for 'chatgpt'.
+    ...(chatgptForUi ? { chatgptModels: () => chatgptForUi.models() } : {}),
   });
   // WebSearch stack (Phase 2 Plan B): keys live in SecretsStore, the ref map in
   // ~/.youcoded/search-providers.json (via NativeHome). SearchChain caches the
@@ -2479,6 +2519,18 @@ export function registerIpcHandlers(
   const resolvePortableModel = async (sessionId: string): Promise<PortableModelRef | null> =>
     bindingToPortableModel(nativeHost.getBinding(sessionId), await providerRegistry.list());
 
+  // One registry read for a whole listing (§4.9, review T6 F1). Returns copies:
+  // SessionInfo objects are owned by SessionManager and must not be mutated here.
+  const stampProviderTypes = async (rows: SessionInfo[]): Promise<SessionInfo[]> => {
+    if (!rows.some((s) => s.provider === 'native')) return rows;
+    const providers = await providerRegistry.list();
+    return rows.map((s) => {
+      if (s.provider !== 'native') return s;
+      const ref = bindingToPortableModel(nativeHost.getBinding(s.id), providers);
+      return ref ? { ...s, providerType: ref.providerType } : s;
+    });
+  };
+
   // Task 7: native auto-title feeder. CC sessions get titled by the topic
   // watcher below (~/.claude/topics, fed by the Auto-Title hook); native
   // sessions have no such feed, so this generates one from the bound model
@@ -2617,7 +2669,9 @@ export function registerIpcHandlers(
   // SAME catalog instance the desktop handler below reads — a second instance
   // would fingerprint-cache independently and could answer a re-read with
   // stale data relative to whichever surface wrote last.
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore, specialistCatalog });
+  // chatgptAuth (Sign in with ChatGPT §5): the remote chatgpt:* WS cases read
+  // the SAME account object, already kill-switched (null → signed-out/false).
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore, specialistCatalog, chatgptAuth: chatgptForUi });
 
   // Plan 2b Task 11: give the remote server the SAME lease client/requester +
   // deviceId so its WS clients reach the identical lease/device state the
@@ -2868,6 +2922,17 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.PROVIDER_TEST, async (_e, id: string) => providerRegistry.testConnection(id));
   ipcMain.handle(IPC.PROVIDER_SET_KEY, async (_e, id: string, key: string) => { await providerRegistry.setKey(id, key); return true; });
   ipcMain.handle(IPC.PROVIDER_CATALOG, async () => modelCatalog.get(await providerRegistry.list()));
+  // Sign in with ChatGPT (backend design 2026-09-05 §3, §5, §6). status is a
+  // cheap sync read (the card polls it every second while waiting). The verbs
+  // resolve boolean; signIn() is allowed to THROW its two verbatim sentences
+  // (port 1455 held by another program, keychain unavailable) — nothing here
+  // catches them, so Electron rejects the renderer's promise and preload's
+  // unwrapInvokeError strips the transport prefix before the card shows
+  // e.message. Under the kill switch chatgptForUi is null: signed-out / false.
+  ipcMain.handle(IPC.CHATGPT_STATUS, async () => chatgptForUi ? chatgptForUi.status() : { state: 'signed-out' as const });
+  ipcMain.handle(IPC.CHATGPT_SIGN_IN, async () => chatgptForUi ? chatgptForUi.signIn() : false);
+  ipcMain.handle(IPC.CHATGPT_CANCEL_SIGN_IN, async () => chatgptForUi ? chatgptForUi.cancelSignIn() : false);
+  ipcMain.handle(IPC.CHATGPT_SIGN_OUT, async () => chatgptForUi ? chatgptForUi.signOut() : false);
   // WebSearch key management (Settings → Providers → Search). list returns the
   // fixed Tavily/Exa rows with hasKey flags; set/remove manage the encrypted key;
   // test is never-throws ({ ok, message } is the result, not an exception).
@@ -4551,11 +4616,24 @@ export function registerIpcHandlers(
     return { ok: true, missingIds: results.filter((x): x is string => x !== null) };
   });
 
-  // Return cleanup function for use during app shutdown. It returns the engine-stop
-  // promise so main's quit handler can AWAIT the llama-server teardown before
-  // app.quit() — the old fire-and-forget `void` let quit win the race and orphaned
-  // the engine, which kept the port bound for the next instance to wrongly adopt.
-  return function cleanup(): Promise<void> {
+  // Return shape (Sign in with ChatGPT, backend design 2026-09-05 §5 / review
+  // R3-2): `cleanup` for app shutdown — it returns the engine-stop promise so
+  // main's quit handler can AWAIT the llama-server teardown before app.quit()
+  // (the old fire-and-forget `void` let quit win the race and orphaned the
+  // engine, which kept the port bound for the next instance to wrongly adopt) —
+  // plus `hasUsableProvider`, which main.ts's launch-time auth check reads
+  // BEFORE spawning `claude auth status`. WHY: this branch removes the wizard's
+  // Skip link, so an install running on an OpenRouter key (or any ready native
+  // provider) with no Claude login would otherwise be locked at a sign-in
+  // screen on its first launch after upgrading. "Usable" = any `ready` row in
+  // the registry, which for the ChatGPT row means signed in — but main.ts also
+  // asks chatgptAuth.isSignedIn() directly, so the kill switch (no row) cannot
+  // lock a ChatGPT-only install out either.
+  const hasUsableProvider = async (): Promise<boolean> => {
+    try { return (await providerRegistry.list()).some((p) => p.ready); }
+    catch { return false; }
+  };
+  const cleanup = function cleanup(): Promise<void> {
     stopThemeWatcher();
     clearInterval(statusInterval);
     transcriptWatcher.stopAll();
@@ -4578,4 +4656,5 @@ export function registerIpcHandlers(
     sessionIdMap.clear();
     return engineStopped;
   };
+  return { cleanup, hasUsableProvider };
 }

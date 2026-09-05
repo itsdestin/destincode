@@ -59,6 +59,13 @@ export interface LoadOptions {
    * default view is the same conversation, just not parked.
    */
   includeStalled?: boolean;
+  /** Replay `{"type":"session_error", "optIn":"planLimit", …}` lines — the
+   *  used-up-ChatGPT-plan card (design 2026-09-04). Off by default for the same
+   *  reason as `includeStalled`: the chatgpt fixture is the shared ChatGPT
+   *  session, and an error card over it belongs to one review, not every one.
+   *  `?planLimit=1` turns it on. A session_error line with no `optIn` always
+   *  replays. */
+  includePlanLimit?: boolean;
 }
 
 // Fixed base timestamp, not Date.now(): fixtures must replay identically on
@@ -186,6 +193,14 @@ export function loadFixture(
           sessionId,
           stalled: true,
         };
+        state = chatReducer(state, action);
+        actions.push(action);
+      } else if (parsed.type === 'session_error' && typeof parsed.text === 'string') {
+        // The provider failed the turn: same action App dispatches for a
+        // 'session-error' transcript event, replayed through the real reducer
+        // so the error banner (and its plan-limit variant) is reviewable.
+        if (parsed.optIn === 'planLimit' && !opts.includePlanLimit) continue;
+        const action: ChatAction = { type: 'NATIVE_SESSION_ERROR', sessionId, message: parsed.text };
         state = chatReducer(state, action);
         actions.push(action);
       } else if (parsed.type === 'tool_use') {

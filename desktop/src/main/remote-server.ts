@@ -32,6 +32,7 @@ import type { ModelManager } from './models/model-manager';
 import type { PermissionStore } from './harness/permission-store';
 import type { PermissionRule } from '../shared/permission-types';
 import type { SpecialistCatalog } from './harness/specialists/catalog';
+import type { ChatGptAuth } from './providers/chatgpt-auth';
 import { toListResult } from './harness/specialists/catalog';
 import { detectEndpoints } from './models/endpoint-detectors';
 import { BrowserWindow } from 'electron';
@@ -125,7 +126,7 @@ export class RemoteServer {
   // field (Plan 2b) — both were added independently on master and this branch.
   // permissionStore (M5 2a) is carried for the READ side only — permissions:list.
   // The two revokes go through nativeHost, which also clears live in-memory state.
-  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore; specialistCatalog: SpecialistCatalog } | null = null;
+  private nativeRuntime: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore; specialistCatalog: SpecialistCatalog; chatgptAuth: ChatGptAuth | null } | null = null;
   // Plan 2b Task 11: conversation-lease + device wiring, injected by ipc-handlers
   // via setLeaseWiring() AFTER main.ts builds the lease client/requester (they
   // live in the whenReady scope, not reachable at RemoteServer construction).
@@ -164,7 +165,7 @@ export class RemoteServer {
   /** Injected by ipc-handlers after it constructs the native stack, so remote
    *  WS clients reach the SAME nativeHost / providerRegistry / modelCatalog the
    *  Electron IPC handlers use (mirrors setLastTopic / broadcastStatusData). */
-  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore; specialistCatalog: SpecialistCatalog }): void {
+  setNativeRuntime(rt: { nativeHost: NativeSessionHost; providerRegistry: ProviderRegistry; modelCatalog: ModelCatalog; engineManager: EngineManager; modelManager: ModelManager; searchKeyStore: SearchKeyStore; searchService: SearchService; permissionStore: PermissionStore; specialistCatalog: SpecialistCatalog; chatgptAuth: ChatGptAuth | null }): void {
     this.nativeRuntime = rt;
   }
 
@@ -1022,6 +1023,48 @@ export class RemoteServer {
             ? await this.nativeRuntime.modelCatalog.get(await this.nativeRuntime.providerRegistry.list())
             : [];
           this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      // Sign in with ChatGPT (backend design 2026-09-05 §5) — the four cases exist
+      // for the five-surface parity test and answer honestly. Remote clients never
+      // see the card (the whole Model Providers section is gated on native.supported,
+      // false on remote — review R1-7); the only remote-visible ChatGPT surface is
+      // status:data.chatgptUsage, which broadcastStatusData already carries.
+      // status / cancel / sign-out are real against the SAME account object the
+      // desktop handlers use (kill-switched to null by ipc-handlers → signed-out /
+      // false). sign-in answers false: the browser and the 127.0.0.1:1455 listener
+      // live on the desktop, so a phone cannot complete the round-trip. Each case
+      // try/catches → { ok: false, error } like the provider cases above, so a
+      // thrown sentence resolves the request id instead of hanging it to timeout.
+      case 'chatgpt:status': {
+        try {
+          const auth = this.nativeRuntime?.chatgptAuth ?? null;
+          this.respond(client.ws, type, id, auth ? auth.status() : { state: 'signed-out' });
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'chatgpt:sign-in': {
+        this.respond(client.ws, type, id, false);
+        break;
+      }
+      case 'chatgpt:cancel-sign-in': {
+        try {
+          const auth = this.nativeRuntime?.chatgptAuth ?? null;
+          this.respond(client.ws, type, id, auth ? await auth.cancelSignIn() : false);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'chatgpt:sign-out': {
+        try {
+          const auth = this.nativeRuntime?.chatgptAuth ?? null;
+          this.respond(client.ws, type, id, auth ? await auth.signOut() : false);
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
         }
