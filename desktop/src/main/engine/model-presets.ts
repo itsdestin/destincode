@@ -54,16 +54,81 @@ const INI_KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 // `-1` as an option name would refuse a perfectly good flag.
 const FLAG_TOKEN_RE = /^--[A-Za-z_][A-Za-z0-9_.-]*$/;
 
-/** Options YouCoded manages itself; a user override would fight the app or the
- *  router and lose in a way nothing on screen could explain (design §C2, R1-13).
- *  `host`/`port`/`alias` are rewritten by the router for every child, `model`/
- *  `mmproj`/`models-*` are how the app points the engine at its own files, and
- *  the last three are exactly what the Context length / GPU layers / Keep loaded
- *  controls write. */
-export const RESERVED_KEYS: ReadonlySet<string> = new Set([
-  'host', 'port', 'model', 'models-dir', 'models-preset', 'models-max', 'mmproj',
-  'alias', 'ctx-size', 'n-gpu-layers', 'sleep-idle-seconds',
+/** Why an option cannot be typed into the extra-flags box. Each kind carries one
+ *  sentence that is true of EVERY key filed under it — read off llama-server's
+ *  own `--help` for b10665, never inferred. */
+type ReservedReason = 'managed' | 'network' | 'writes' | 'runs' | 'exposes' | 'connection';
+
+const RESERVED: ReadonlyMap<string, ReservedReason> = new Map<string, ReservedReason>([
+  // --- Managed by the app (design §C2, R1-13) -------------------------------
+  // `host`/`port`/`alias` are rewritten by the router for every child, `model`/
+  // `mmproj`/`models-*` are how the app points the engine at its own files, and
+  // the last three are what the Context length / GPU layers / Keep loaded
+  // controls write.
+  ['host', 'managed'], ['port', 'managed'], ['model', 'managed'],
+  ['models-dir', 'managed'], ['models-preset', 'managed'], ['models-max', 'managed'],
+  ['mmproj', 'managed'], ['alias', 'managed'], ['ctx-size', 'managed'],
+  ['n-gpu-layers', 'managed'], ['sleep-idle-seconds', 'managed'],
+
+  // --- Fetches over the network --------------------------------------------
+  // llama.cpp strips `models-dir/max/preset/autoload`, `api-key` and the two
+  // `ssl-*-file` options from every per-model preset itself
+  // (`unset_reserved_args(preset, false)` in server-models.cpp) — but it does
+  // NOT strip these, and it does not strip `model`, `mmproj`, `alias` or
+  // `hf-repo` either. So a user could point one model at a Hugging Face repo,
+  // a URL or Docker Hub and the engine would start a multi-gigabyte transfer
+  // the app never showed them, on whatever connection they are on. That is not
+  // a power-user option, it is a trap: the contract offers "extra engine
+  // options", not "every option llama.cpp has".
+  ['hf-repo', 'network'], ['hf-file', 'network'], ['hf-token', 'network'],
+  ['hf-repo-draft', 'network'], ['model-url', 'network'], ['docker-repo', 'network'],
+  ['mmproj-url', 'network'],
+  // The eleven one-word model presets. Each replaces the model the user picked
+  // AND, in llama-server's own words, "can download weights from the internet".
+  ['embd-gemma-default', 'network'], ['fim-qwen-1.5b-default', 'network'],
+  ['fim-qwen-3b-default', 'network'], ['fim-qwen-7b-default', 'network'],
+  ['fim-qwen-7b-spec', 'network'], ['fim-qwen-14b-spec', 'network'],
+  ['fim-qwen-30b-default', 'network'], ['gpt-oss-20b-default', 'network'],
+  ['gpt-oss-120b-default', 'network'], ['vision-gemma-4b-default', 'network'],
+  ['vision-gemma-12b-default', 'network'],
+
+  // --- Writes outside the model folder --------------------------------------
+  // Files the app does not manage, never cleans up, and cannot show the user —
+  // `log-prompts-dir` in particular writes everything they type to disk.
+  ['log-file', 'writes'], ['log-prompts-dir', 'writes'], ['slot-save-path', 'writes'],
+  ['lookup-cache-dynamic', 'writes'],
+
+  // --- Starts other programs -------------------------------------------------
+  // `--tools` includes `exec_shell_command`, `write_file` and `edit_file`;
+  // `--tools-runtime` accepts `docker:`, `podman:` and `ssh:<target>`; `--agent`
+  // turns the whole set on at once; the MCP options spawn servers from a JSON
+  // file; `--video-ffmpeg-dir` names a folder the engine executes binaries from.
+  ['tools', 'runs'], ['tools-runtime', 'runs'], ['agent', 'runs'],
+  ['mcp-servers-config', 'runs'], ['mcp-servers-json', 'runs'],
+  ['video-ffmpeg-dir', 'runs'],
+
+  // --- Opens a way in for something that is not YouCoded ---------------------
+  // `--media-path` lets a chat message read that folder through `file://` URLs,
+  // `--path` serves a folder over HTTP, `--ui-mcp-proxy` forwards requests to
+  // other servers.
+  ['media-path', 'exposes'], ['path', 'exposes'], ['ui-mcp-proxy', 'exposes'],
+
+  // --- Breaks the app's own connection to the model --------------------------
+  // Not stripped by llama.cpp (only the inline `api-key` is), so the child would
+  // demand a key the app does not send and answer every message with 401.
+  ['api-key-file', 'connection'],
 ]);
+
+export const RESERVED_KEYS: ReadonlySet<string> = new Set(RESERVED.keys());
+
+const RESERVED_SENTENCE: Record<ReservedReason, string> = {
+  managed: 'is set by YouCoded from this model\'s own settings. Remove it and use the controls above.',
+  network: 'is not allowed here: it would make the engine fetch files from the internet on its own.',
+  writes: 'is not allowed here: it would make the engine write files outside your models folder.',
+  runs: 'is not allowed here: it would let the engine start other programs on this computer.',
+  exposes: 'is not allowed here: it would open a way for something other than YouCoded to read or reach files through the engine.',
+  connection: 'is not allowed here: it would change how YouCoded connects to this model.',
+};
 
 /** Collapse any spelling of an option onto its canonical long name: `c`,
  *  `ctx-size` and `LLAMA_ARG_CTX_SIZE` are all the same option to llama-server,
@@ -79,14 +144,18 @@ export function normaliseArgKey(rawKey: string): string {
   return typeof canonical === 'string' ? canonical : key;
 }
 
-/** Is this canonical key one of ours?
+/** Why this canonical key is refused, or null if a user may type it.
  *
  *  The `no-` strip is not cosmetic. A negative spelling keeps its OWN canonical
  *  name (`--no-mmap` → `no-mmap`, `-nkvo` → `no-kv-offload`), so without this
  *  every reserved option has a negative twin that walks straight past the list —
- *  `--no-host`, for one, is a real llama-server flag. */
+ *  `--no-host` and `--no-agent`, for two, are real llama-server flags. */
+export function reservedReason(canonicalKey: string): ReservedReason | null {
+  return RESERVED.get(canonicalKey) ?? RESERVED.get(canonicalKey.replace(/^no-/, '')) ?? null;
+}
+
 export function isReservedKey(canonicalKey: string): boolean {
-  return RESERVED_KEYS.has(canonicalKey) || RESERVED_KEYS.has(canonicalKey.replace(/^no-/, ''));
+  return reservedReason(canonicalKey) !== null;
 }
 
 /** Can this model id be written as `[id]` and read back as the SAME id?
@@ -148,12 +217,12 @@ export function parseExtraFlags(raw: string): ExtraFlagsResult {
       if (!INI_KEY_RE.test(canonical)) {
         return { ok: false, message: `"${token}" cannot be saved — the engine's settings file has no way to write it.` };
       }
-      if (isReservedKey(canonical)) {
+      const reason = reservedReason(canonical);
+      if (reason) {
+        // Name the canonical option too when the user typed an alias, so the
+        // sentence is about an option they can actually find in the docs.
         const via = canonical === token.slice(2) ? '' : ` (another name for --${canonical})`;
-        return {
-          ok: false,
-          message: `${token}${via} is set by YouCoded from this model's own settings. Remove it and use the controls above.`,
-        };
+        return { ok: false, message: `${token}${via} ${RESERVED_SENTENCE[reason]}` };
       }
       pendingKey = canonical;
       pendingToken = token;
@@ -162,9 +231,11 @@ export function parseExtraFlags(raw: string): ExtraFlagsResult {
     if (pendingKey === null) {
       return { ok: false, message: `"${token}" does not follow an option. Write each one as --name or --name value.` };
     }
-    // Probed: llama.cpp cuts a value at the first `#` or `;` and reports nothing,
-    // so `--chat-template a#b` quietly becomes `a`. Refusing it is the only way
-    // the user ever learns their setting was not the one that took effect.
+    // WHY a VALUE is constrained when the design only constrained KEYS: probed,
+    // llama.cpp cuts a value at the first `#` or `;` and reports NOTHING, so
+    // `--chat-template a#b` quietly becomes `a`. The engine starts, the setting
+    // is wrong, and there is no error anywhere to trace it back to. Refusing it
+    // at save time is the only moment the user can still be told.
     if (/[#;]/.test(token)) {
       return {
         ok: false,
@@ -259,6 +330,11 @@ export function renderPresetFile(input: PresetFileInput): string {
     if (written.has(id) || !isWritableSectionName(id)) continue;
     written.add(id);
     const entries = modelSectionEntries(lookupSettings(input.settings, id));
+    // WHY a model on all defaults gets NO section rather than an empty one: the
+    // mere presence of a section flips that model's `source` to `preset` in
+    // GET /models and marks it a custom preset in the engine's own log (probed).
+    // That is a visible change of state bought for nothing, on every model the
+    // user never touched.
     if (entries.length === 0) continue;
     lines.push(`[${id}]`);
     for (const { key, value } of entries) lines.push(`${key} = ${value}`);

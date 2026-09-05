@@ -38,11 +38,21 @@ const gguf = fs.existsSync(cacheDir) && fs.readdirSync(cacheDir).find((f) => f.e
 if (!gguf) { console.error('FAIL: put a small .gguf in test-engine/cache/ first'); process.exit(1); }
 const modelId = gguf.replace(/\.gguf$/i, '');
 
-// Mirrors model-presets.ts's RESERVED_KEYS. Kept as a literal so a key removed
-// there without thought fails here rather than agreeing with itself.
+// Mirrors model-presets.ts's RESERVED list. Kept as a LITERAL, not an import, so
+// a key that is renamed or mistyped there fails here rather than agreeing with
+// itself — and so this probe proves every one of them is a real option on the
+// pinned build. A phantom entry would refuse the user a flag that never existed
+// and, worse, would mean the real option's name moved and is no longer covered.
 const RESERVED_KEYS = [
-  'host', 'port', 'model', 'models-dir', 'models-preset', 'models-max', 'mmproj',
-  'alias', 'ctx-size', 'n-gpu-layers', 'sleep-idle-seconds',
+  'host', 'port', 'model', 'models-dir', 'models-preset', 'models-max', 'mmproj', 'alias',
+  'ctx-size', 'n-gpu-layers', 'sleep-idle-seconds', 'hf-repo', 'hf-file', 'hf-token',
+  'hf-repo-draft', 'model-url', 'docker-repo', 'mmproj-url', 'embd-gemma-default',
+  'fim-qwen-1.5b-default', 'fim-qwen-3b-default', 'fim-qwen-7b-default', 'fim-qwen-7b-spec',
+  'fim-qwen-14b-spec', 'fim-qwen-30b-default', 'gpt-oss-20b-default', 'gpt-oss-120b-default',
+  'vision-gemma-4b-default', 'vision-gemma-12b-default', 'log-file', 'log-prompts-dir',
+  'slot-save-path', 'lookup-cache-dynamic', 'tools', 'tools-runtime', 'agent',
+  'mcp-servers-config', 'mcp-servers-json', 'video-ffmpeg-dir', 'media-path', 'path',
+  'ui-mcp-proxy', 'api-key-file',
 ];
 
 let ok = true;

@@ -1,5 +1,16 @@
 // Guards for the router's per-model settings file (design §C2).
 //
+// READ THIS BEFORE DELETING A GUARD THAT "LOOKS REDUNDANT". Every assertion here
+// was broken deliberately and watched go red (36 mutations, 2026-09-05) — but
+// FIVE of them only went red once BOTH of a pair of defences were broken. A NaN
+// context length is stopped by `Number.isFinite` and again by `> 0`; the
+// alias-table prototype hazard by the table's null prototype and again by a
+// `typeof === 'string'` check; a settings key read through a prototype by
+// `hasOwnProperty` and again by a type check downstream. So: removing one guard
+// of a pair leaves this suite GREEN. That is not evidence the guard was dead —
+// it is evidence the second one caught you. Break both before you conclude
+// anything.
+//
 // Everything asserted here about llama.cpp's INI grammar was MEASURED against
 // the pinned binary (b10665) on 2026-09-05 and cross-read against its own
 // `common/preset.cpp`; test-engine/probe-presets.mjs is the half that re-proves
@@ -13,7 +24,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   renderPresetFile, writePresetFile, presetFilePath, parseExtraFlags, normaliseArgKey,
-  isReservedKey, isWritableSectionName, modelSectionEntries, checkFlagsAgainstBinary,
+  isReservedKey, isWritableSectionName, modelSectionEntries, checkFlagsAgainstBinary, reservedReason,
   engineErrorLine, RESERVED_KEYS,
 } from '../src/main/engine/model-presets';
 import type { ModelSettings } from '../src/shared/model-manager-types';
@@ -211,12 +222,69 @@ describe('model-presets — alias normalisation and the reserved list', () => {
     expect(parseExtraFlags('--valueOf 1')).toEqual({ ok: true, entries: [{ key: 'valueOf', value: '1' }] });
   });
 
+  it('keeps the whole reserved list accounted for, by reason', () => {
+    // A count, so the list cannot quietly shrink. Every one of these 43 is
+    // verified to be a REAL llama-server option by probe-presets.mjs — a
+    // phantom entry would refuse a flag that never existed and would mean the
+    // real option's name had moved out from under the guard.
+    const byReason = new Map<string, number>();
+    for (const key of RESERVED_KEYS) {
+      const reason = reservedReason(key);
+      expect(reason, key).not.toBeNull();
+      byReason.set(reason!, (byReason.get(reason!) ?? 0) + 1);
+    }
+    expect(Object.fromEntries(byReason)).toEqual({
+      managed: 11,     // the design's signed list
+      network: 18,     // anything that fetches: hf-*, model-url, docker-repo, mmproj-url, 11 model presets
+      writes: 4,       // log-file, log-prompts-dir, slot-save-path, lookup-cache-dynamic
+      runs: 6,         // tools, tools-runtime, agent, the two mcp-servers-*, video-ffmpeg-dir
+      exposes: 3,      // media-path, path, ui-mcp-proxy
+      connection: 1,   // api-key-file
+    });
+  });
+
   it('rejects every reserved option, including through an alias', () => {
     for (const key of RESERVED_KEYS) expect(isReservedKey(key)).toBe(true);
     for (const raw of ['--ctx-size 8192', '--c 8192', '--LLAMA_ARG_CTX_SIZE 8192', '--ngl 20', '--m /tmp/x.gguf', '--alias x']) {
       const r = parseExtraFlags(raw);
       expect(r.ok).toBe(false);
       expect(r.ok === false && r.message).toContain('YouCoded');
+    }
+  });
+
+  it('refuses every option that would make the engine reach the network, the disk or another program', () => {
+    // The list is 43 keys, all verified to be real options on b10665 by
+    // probe-presets.mjs. These are one per REASON, with the sentence the user
+    // reads — the sentence must describe what the option does, never guess at
+    // why they typed it.
+    const cases: Array<[string, string]> = [
+      ['--hf-repo unsloth/x-GGUF', 'fetch files from the internet'],
+      ['--hfd unsloth/x-GGUF', 'fetch files from the internet'],          // through an alias
+      ['--model-url https://example.com/x.gguf', 'fetch files from the internet'],
+      ['--gpt-oss-20b-default', 'fetch files from the internet'],         // a one-word model preset
+      ['--log-prompts-dir /tmp/p', 'write files outside your models folder'],
+      ['--tools all', 'start other programs'],
+      ['--video-ffmpeg-dir /tmp/bin', 'start other programs'],
+      ['--media-path /home/me', 'read or reach files through the engine'],
+      ['--api-key-file /tmp/keys', 'how YouCoded connects to this model'],
+    ];
+    for (const [raw, expected] of cases) {
+      const r = parseExtraFlags(raw);
+      expect(r.ok, raw).toBe(false);
+      expect(r.ok === false && r.message, raw).toContain(expected);
+    }
+  });
+
+  it('still allows the options that only read one local file the user named', () => {
+    // Deliberately available: each reads a file the user typed the path to, and
+    // its effect stays inside that one model's own generation — no fetch, no
+    // write, nothing started. A power user with an unusual GGUF needs these.
+    for (const raw of [
+      '--lora /tmp/a.gguf', '--control-vector /tmp/v.gguf', '--spec-draft-model /tmp/d.gguf',
+      '--chat-template-file /tmp/t.jinja', '--grammar-file /tmp/g.gbnf',
+      '--json-schema-file /tmp/s.json', '--lookup-cache-static /tmp/l.bin', '--offline',
+    ]) {
+      expect(parseExtraFlags(raw).ok, raw).toBe(true);
     }
   });
 
@@ -233,6 +301,11 @@ describe('model-presets — alias normalisation and the reserved list', () => {
     // normalised, which is the other half of why the order matters.
     expect(normaliseArgKey('--nkvo')).toBe('no-kv-offload');
     expect(parseExtraFlags('--nkvo')).toEqual({ ok: true, entries: [{ key: 'no-kv-offload', value: '1' }] });
+    // The strip covers the new safety entries too: `--no-agent` is a real flag.
+    expect(parseExtraFlags('--no-agent').ok).toBe(false);
+    // …and `--no-mmproj` still is not `mmproj`: it normalises to `no-mmproj-auto`,
+    // whose stripped form is `mmproj-auto`, which nobody manages.
+    expect(parseExtraFlags('--no-mmproj')).toEqual({ ok: true, entries: [{ key: 'no-mmproj-auto', value: '1' }] });
   });
 
   it('drops an unsaveable extra-flags string rather than writing it into the file', () => {
