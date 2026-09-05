@@ -26,8 +26,8 @@ export interface ChatGptUsage {
    *  The parser files anything that is not 300 or 10080 minutes here; whether
    *  the renderer draws these bars (labelled by length) or drops them is the
    *  words-deck W-2 decision, and `five_hour` / `seven_day` are untouched.
-   *  NOTE: the renderer's pruneExpiredUsage (state/usage-snapshot.ts) only
-   *  prunes `five_hour` / `seven_day` today; T6 extends it to `other`. */
+   *  The renderer's pruneExpiredUsage (state/usage-snapshot.ts) ages these
+   *  out on the same rule as `five_hour` / `seven_day`. */
   other?: Array<ChatGptUsageWindow & { minutes: number }>;
 }
 

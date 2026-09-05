@@ -22,7 +22,7 @@ import type { SessionTotals } from '../state/session-totals';
 import { selectCacheReuse, selectReuseDisplay } from '../state/cache-reuse';
 import { CLAUDE_ALIASES, type ClaudeAlias } from '../../shared/model-ids';
 import { formatTime12, formatDayLong, formatMonthDay } from '../../shared/time-format';
-import { windowLengthLabel } from './plan-windows';
+import { usableOtherWindows, windowLengthLabel } from './plan-windows';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -1155,8 +1155,8 @@ export default function StatusBar({
       {/* Odd-length windows ride on the Customize toggle of the approved chip
           they most resemble: a multi-day window follows "7d Usage", a
           sub-day one follows "5h Usage" — there is no per-length toggle. */}
-      {usage?.other?.map((w, i) => (
-        w && typeof w.minutes === 'number' && show(w.minutes >= 1440 ? 'usage-7d' : 'usage-5h') ? (
+      {usableOtherWindows(usage?.other).map((w, i) => (
+        show(w.minutes >= 1440 ? 'usage-7d' : 'usage-5h') ? (
           <UsageChip key={`${w.minutes}-${i}`} label={windowLengthLabel(w.minutes)} utilization={w.utilization}
             reset={formatWindowReset(w.minutes, w.resets_at)} onClick={openUsage} title={usageTitle} />
         ) : null

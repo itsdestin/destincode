@@ -107,7 +107,7 @@ import { SavedFolder, readFolders, writeFolders } from './saved-folders';
 // registry's limit (project-registry.ts uses the same constant).
 import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
-import type { PerformanceConfigSnapshot } from '../shared/types';
+import type { PerformanceConfigSnapshot, SessionInfo } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
 // 2026-08-27 OOM fix: read-only handlers (list, get, save, check-existence,
 // the binary-roots pass) go through readSidecarShared — one parsed copy per
@@ -751,6 +751,9 @@ export function registerIpcHandlers(
         // preset badge + resume rows can read it. getHarnessId is authoritative
         // after create/resume awaited above.
         info.harnessId = nativeHost.getHarnessId(info.id) ?? undefined;
+        // Same stamp as SESSION_LIST, so the very first render of a brand-new
+        // session already knows whose plan it is spending (review T6 F1).
+        info.providerType = bindingToPortableModel(nativeHost.getBinding(info.id), await providerRegistry.list())?.providerType;
 
         // Native sessions emit NO CC SessionStart hook, so the CC lease path
         // (sessionIdMap + acquire at the SessionStart listener) never fires for
@@ -868,7 +871,16 @@ export function registerIpcHandlers(
   // so remote clients still see everything. RemoteServer uses its own path
   // and doesn't go through this handler.
   ipcMain.handle(IPC.SESSION_LIST, async (event) => {
-    const all = sessionManager.listSessions();
+    // Stamp each native session with the TYPE of the provider it is bound to.
+    // WHY: the renderer decides whose usage numbers to show from the session's
+    // model id alone otherwise, and two providers can list the same id — a user
+    // with both an OpenAI API key and the ChatGPT plan has `gpt-5.5` twice. The
+    // session itself knows which one it is bound to; the model id does not.
+    // (Review T6 F1 / design §4.9.) resolvePortableModel returns null for a
+    // non-native session or a provider that has left the registry — never a
+    // guess, so the renderer falls back to "unknown" rather than to the wrong
+    // plan.
+    const all = await stampProviderTypes(sessionManager.listSessions());
     if (!windowRegistry) return all;
     const callerId = event.sender.id;
     const primaryId = windowRegistry.getLeaderId();
@@ -2506,6 +2518,18 @@ export function registerIpcHandlers(
   // provider has vanished from the registry — never guess.
   const resolvePortableModel = async (sessionId: string): Promise<PortableModelRef | null> =>
     bindingToPortableModel(nativeHost.getBinding(sessionId), await providerRegistry.list());
+
+  // One registry read for a whole listing (§4.9, review T6 F1). Returns copies:
+  // SessionInfo objects are owned by SessionManager and must not be mutated here.
+  const stampProviderTypes = async (rows: SessionInfo[]): Promise<SessionInfo[]> => {
+    if (!rows.some((s) => s.provider === 'native')) return rows;
+    const providers = await providerRegistry.list();
+    return rows.map((s) => {
+      if (s.provider !== 'native') return s;
+      const ref = bindingToPortableModel(nativeHost.getBinding(s.id), providers);
+      return ref ? { ...s, providerType: ref.providerType } : s;
+    });
+  };
 
   // Task 7: native auto-title feeder. CC sessions get titled by the topic
   // watcher below (~/.claude/topics, fed by the Auto-Title hook); native

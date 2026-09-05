@@ -76,7 +76,10 @@ export function pruneExpiredUsage(
   // The odd-length windows (W-2 = a) age out the same way; the key is dropped
   // outright when none survive so `other: []` never reads as "has windows".
   if (Array.isArray(usage.other)) {
-    const rest = usage.other.filter((w) => w && typeof w.minutes === 'number' && live(w));
+    // Number.isFinite, not `typeof === 'number'`: NaN is a number, and a
+    // window whose length failed to parse used to survive pruning and paint a
+    // chip reading "NaNh".
+    const rest = usage.other.filter((w) => w && Number.isFinite(w.minutes) && w.minutes > 0 && live(w));
     if (rest.length) out.other = rest;
   }
   return Object.keys(out).length ? out : null;

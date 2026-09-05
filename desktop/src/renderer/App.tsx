@@ -33,7 +33,7 @@ import { runNativeSlashAction, routeSlashResult } from './state/native-slash-act
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
 import { buildUsageSnapshot, pruneExpiredUsage, type SubscriptionUsage } from './state/usage-snapshot';
-import { resolveProviderType, useModelProviderType } from './hooks/use-provider-type';
+import { invalidateProviderTypeCache, resolveProviderType, useModelProviderType } from './hooks/use-provider-type';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
@@ -808,6 +808,17 @@ function AppInner() {
   // when nothing changed; without this guard the unconditional setStatusData
   // re-rendered the whole app tree at idle, forever.
   const lastStatusJsonRef = useRef<string | null>(null);
+  // Did the last status push carry ChatGPT plan usage? Main starts (and stops)
+  // that usage poll the moment the browser sign-in completes or the user signs
+  // out, so this yes/no answer flipping is a reliable, app-wide "the ChatGPT
+  // account just changed" signal. WHY we need one at all: the only other place
+  // that notices a sign-in is the card inside the Settings popup, and the
+  // sign-in happens in a BROWSER TAB — close Settings on the way back from the
+  // browser and the card is gone before the sign-in lands, so a conversation on
+  // a plan model would show no usage chips and no plan on /usage until the app
+  // was restarted. For anyone who never signs in with ChatGPT this value is
+  // `false` on every push forever and nothing below ever runs.
+  const hadChatGptUsageRef = useRef(false);
   useEffect(() => {
     const prev = prevStatusSoundRef.current;
     for (const [id, color] of sessionStatuses) {
@@ -1456,11 +1467,21 @@ function AppInner() {
       const json = JSON.stringify(data);
       if (json === lastStatusJsonRef.current) return;
       lastStatusJsonRef.current = json;
+      const chatgptUsage = pruneExpiredUsage(data.chatgptUsage);
+      // Signed in or signed out since the last push → the list of providers and
+      // models has changed, so anything showing "which plan is this session on"
+      // has to look again. See hadChatGptUsageRef above for why the Settings
+      // card cannot be relied on to notice this itself.
+      const hasChatGptUsage = chatgptUsage != null;
+      if (hasChatGptUsage !== hadChatGptUsageRef.current) {
+        hadChatGptUsageRef.current = hasChatGptUsage;
+        invalidateProviderTypeCache();
+      }
       setStatusData((prev) => ({
         ...prev,
         // A window past its reset time is stale, not current — see pruneExpiredUsage.
         usage: pruneExpiredUsage(data.usage),
-        chatgptUsage: pruneExpiredUsage(data.chatgptUsage),
+        chatgptUsage,
         announcement: data.announcement,
         updateStatus: data.updateStatus,
         syncWarnings: Array.isArray(data.syncWarnings) ? data.syncWarnings : [],
@@ -2259,7 +2280,9 @@ function AppInner() {
       const info = sessionsRef.current.find((x) => x.id === sid);
       // A session bound to the ChatGPT plan reports THAT plan's windows on the
       // card (questions deck Q-4a); every other session keeps Claude's.
-      const onChatGpt = info?.provider === 'native' && resolveProviderType(info.model) === 'chatgpt';
+      // info.providerType is what the session itself says it is billed to; the
+      // model-id lookup is only the fallback (see hooks/use-provider-type.ts).
+      const onChatGpt = info?.provider === 'native' && resolveProviderType(info.model, info.providerType) === 'chatgpt';
       return buildUsageSnapshot({
         sessionId: sid,
         now: Date.now(),
@@ -2722,7 +2745,10 @@ function AppInner() {
   const isNativeSession = currentSession?.provider === 'native';
   // Sign in with ChatGPT (2026-09-04): which provider the bound model runs on,
   // and what to offer when its plan window runs out (the plan-limit card).
-  const activeProviderType = useModelProviderType(isNativeSession ? currentSession?.model : null);
+  const activeProviderType = useModelProviderType(
+    isNativeSession ? currentSession?.model : null,
+    isNativeSession ? currentSession?.providerType : null,
+  );
   const onChatGptPlan = activeProviderType === 'chatgpt';
   // What the StatusBar model chip renders — see model-chip.ts for why native
   // sessions bypass the Claude Code alias matcher entirely.

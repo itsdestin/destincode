@@ -21,19 +21,47 @@ export interface PlanUsage {
   other?: OtherPlanWindow[] | null;
 }
 
+/** Hours in a window, never rounded down to zero. WHY the floor of one: a
+ *  window shorter than half an hour would otherwise be drawn as "0h" beside a
+ *  card that says "You have reached ChatGPT's 1-hour session limit" — main
+ *  already clamps the same way (providers/chatgpt-oauth.ts windowLabel), and
+ *  the chip and the card have to agree. */
+function hoursOf(minutes: number): number {
+  return Math.max(1, Math.round(minutes / 60));
+}
+
 /** The short name of a window by its length — "30d" for a month, "5h" for
  *  five hours. Whole days round to days, anything shorter to hours. Used for
  *  the status-bar chip label; the bar label below is the long form of it. */
 export function windowLengthLabel(minutes: number): string {
   if (minutes >= 1440) return `${Math.round(minutes / 1440)}d`;
-  return `${Math.round(minutes / 60)}h`;
+  return `${hoursOf(minutes)}h`;
 }
 
 /** "30-day limit" — the bar's label for an odd-length window, in the same
  *  shape as the approved "5-hour limit" / "7-day limit". */
 export function windowBarLabel(minutes: number): string {
   if (minutes >= 1440) return `${Math.round(minutes / 1440)}-day limit`;
-  return `${Math.round(minutes / 60)}-hour limit`;
+  return `${hoursOf(minutes)}-hour limit`;
+}
+
+/** The odd-length windows worth drawing, shortest first.
+ *
+ *  WHY the filter is `Number.isFinite` and not `typeof === 'number'`: NaN is a
+ *  number, so a window whose length failed to parse used to sail through and
+ *  paint a chip reading "NaNh".
+ *
+ *  WHY we sort: main appends whichever window it just refreshed to the end of
+ *  the list, so two odd windows would trade places in the status bar between
+ *  polls — chips silently swapping under the user's cursor. Shortest first
+ *  also continues the approved 5-hour-then-7-day order instead of fighting it. */
+export function usableOtherWindows<T extends { minutes: number }>(
+  other: ReadonlyArray<T | null | undefined> | null | undefined,
+): T[] {
+  return (other ?? [])
+    .filter((w): w is T => !!w && Number.isFinite(w.minutes) && w.minutes > 0)
+    .slice()
+    .sort((a, b) => a.minutes - b.minutes);
 }
 
 /** "resets in 2h 9m" / "resets in 4d" / "resetting". Empty for no date. */
@@ -78,7 +106,7 @@ function WindowRow({ label, win }: { label: string; win: PlanWindow }) {
  *  never has to check before rendering. Order: 5-hour, 7-day, then the odd
  *  lengths as reported. A plan with no windows draws no empty bars. */
 export function PlanWindows({ usage, className = '' }: { usage: PlanUsage | null | undefined; className?: string }) {
-  const other = usage?.other?.filter((w) => w && typeof w.minutes === 'number') ?? [];
+  const other = usableOtherWindows(usage?.other);
   if (!usage?.five_hour && !usage?.seven_day && other.length === 0) return null;
   return (
     <div className={`space-y-2 ${className}`}>

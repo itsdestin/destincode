@@ -242,6 +242,13 @@ describe('pruneExpiredUsage', () => {
     };
     expect(pruneExpiredUsage(u, NOW)).toEqual({ five_hour: u.five_hour, other: [u.other[0]] });
   });
+  it('drops a window whose length did not parse, instead of letting it paint "NaNh"', () => {
+    // typeof NaN === 'number', so the first guard here let a broken window
+    // through and the status bar drew a chip labelled "NaNh".
+    const broken = { minutes: NaN, utilization: 12, resets_at: '2026-10-01T12:00:00Z' } as any;
+    const zero = { minutes: 0, utilization: 12, resets_at: '2026-10-01T12:00:00Z' } as any;
+    expect(pruneExpiredUsage({ other: [broken, zero] } as any, NOW)).toBeNull();
+  });
   it('drops the `other` key when every entry has expired, and returns null when nothing is left', () => {
     const expired = { minutes: 43200, utilization: 3, resets_at: '2026-09-03T09:00:00Z' };
     expect(pruneExpiredUsage({ five_hour: { utilization: 42, resets_at: '2026-09-03T13:00:00Z' }, other: [expired] }, NOW))

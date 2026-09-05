@@ -135,14 +135,55 @@ describe('a free plan — one 30-day window', () => {
   });
 
   it('StatusBar resets read like the 7d chip up to a week, and like the 5h chip under a day', () => {
+    // Fed in longest-first on purpose: main appends whichever window it just
+    // refreshed to the end of the list, so without a sort two chips would trade
+    // places between polls under the user's cursor. Shortest first, always —
+    // the same short-to-long order as the approved 5h-then-7d pair.
     const { container } = renderBar({ other: [
       { minutes: 3 * 1440, utilization: 10, resets_at: new Date(NOW + 2 * D).toISOString() },
       { minutes: 120, utilization: 55, resets_at: new Date(NOW + H).toISOString() },
     ] });
     expect(chipsOf(container).map((b) => b.textContent)).toEqual([
-      '3d:10%Resets Monday @ 3:00pm',
       '2h:55%Resets @ 4:00pm',
+      '3d:10%Resets Monday @ 3:00pm',
     ]);
+  });
+
+  it('PlanWindows draws the odd-length bars shortest first too', () => {
+    rtlRender(<PlanWindows usage={{ other: [
+      { minutes: 43200, utilization: 3, resets_at: new Date(NOW + 26 * D).toISOString() },
+      { minutes: 120, utilization: 55, resets_at: new Date(NOW + H).toISOString() },
+    ] }} />);
+    expect(screen.getAllByRole('progressbar').map((el) => el.getAttribute('aria-label')))
+      .toEqual(['2-hour limit', '30-day limit']);
+  });
+
+  it('hides the 30d chip when the user has switched off the toggle it rides on', () => {
+    // The free plan's ONE chip has no toggle of its own — it rides on "7d
+    // Usage" in Customize widgets. Deleting that check used to pass every test
+    // while silently ignoring a user who had turned the chip off.
+    (window as any).localStorage.setItem('youcoded-statusbar-widgets', JSON.stringify(['usage-5h']));
+    const { container } = renderBar(free);
+    expect(chipsOf(container)).toHaveLength(0);
+    cleanup();
+    // …and it comes back when that toggle is on.
+    (window as any).localStorage.setItem('youcoded-statusbar-widgets', JSON.stringify(['usage-7d']));
+    const back = renderBar(free);
+    expect(chipsOf(back.container).map((b) => b.textContent)).toEqual(['30d:0%Resets Oct 3 @ 3:00pm']);
+  });
+
+  it('never paints a "NaNh" chip or bar for a window whose length did not parse', () => {
+    // typeof NaN === 'number', so the old guard let it straight through.
+    const broken = { other: [{ minutes: NaN, utilization: 12, resets_at: new Date(NOW + D).toISOString() }] } as any;
+    const { container } = renderBar(broken);
+    expect(chipsOf(container)).toHaveLength(0);
+    expect(renderToStaticMarkup(<PlanWindows usage={broken} />)).toBe('');
+  });
+
+  it('a window under half an hour reads as "1h", never "0h"', () => {
+    // main clamps the same way, so the chip and the limit card agree.
+    expect(windowLengthLabel(20)).toBe('1h');
+    expect(windowBarLabel(20)).toBe('1-hour limit');
   });
 
   it('StatusBar shows the 30d chip for a native session on the ChatGPT plan', () => {

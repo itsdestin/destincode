@@ -1,11 +1,10 @@
 // Which provider a native session's model belongs to (Sign in with ChatGPT,
-// design 2026-09-04).
+// design 2026-09-04 §4.9).
 //
-// WHY a hook rather than a field on SessionInfo: a native session records its
-// bound MODEL id; the provider is only known through the catalog. The status
-// bar already accepts a `modelProviderType` prop that nothing filled — this is
-// what fills it, so the usage chips and the /usage card can tell a ChatGPT-plan
-// session from an OpenRouter one.
+// WHY this exists: a native session records its bound MODEL id; the provider
+// behind it decides whose plan the status-bar chips and the /usage card
+// report. The status bar already accepted a `modelProviderType` prop that
+// nothing filled — this is what fills it.
 import { useEffect, useState } from 'react';
 
 interface ProviderRow { id: string; type: string; label: string; ready: boolean }
@@ -16,12 +15,21 @@ interface CatalogRow { id: string; providerId: string; label: string }
 // a session started right after signing in to ChatGPT resolved to null — no
 // chips, no plan on /usage — until the whole app reloaded, because the lists
 // were captured before the sign-in added the plan's rows (design review
-// R3-4, 2026-09-05). The ChatGPT card and the providers screen now call
-// invalidateProviderTypeCache() after every change they make, and every
-// mounted hook re-resolves from the fresh lists.
+// R3-4, 2026-09-05). The ChatGPT card, the providers screen and App's
+// status feed now call invalidateProviderTypeCache() after every change they
+// see, and every mounted hook re-resolves from the fresh lists.
 type Lists = { providers: ProviderRow[]; catalog: CatalogRow[] };
 let cache: Lists | null = null;
 let inflight: Promise<Lists> | null = null;
+// Counts how many times the answer has been declared obsolete. WHY: one
+// sign-in fires three invalidations in about a second and `providers.catalog`
+// does a real network fetch when its 24h cache has lapsed, so three reads can
+// be in the air at once. Without this counter the SLOWEST reply wins — and if
+// that is the one started BEFORE the sign-in, the app quietly restores the
+// pre-sign-in lists and the user sees no plan chips and no plan on /usage
+// until they restart the app. Each read remembers the count it started at and
+// throws its own answer away if the world moved on.
+let generation = 0;
 // Mounted hooks, told to re-read after an invalidation.
 const listeners = new Set<() => void>();
 // Model ids that already earned their one miss-triggered refetch (below).
@@ -33,44 +41,78 @@ const refetchedMisses = new Set<string>();
 export function invalidateProviderTypeCache(): void {
   cache = null;
   inflight = null;
+  generation++;
   // A fresh sign-in may have just added the rows an earlier miss was about,
   // so every id gets its one refetch back.
   refetchedMisses.clear();
   for (const fn of Array.from(listeners)) fn();
 }
 
+/** Read both lists once, and keep the answer ONLY if nothing invalidated the
+ *  world while it was in the air (see `generation` above). */
+function fetchLists(): Promise<Lists> {
+  const startedAt = generation;
+  return Promise.all([
+    window.claude.providers.list().catch(() => []),
+    window.claude.providers.catalog().catch(() => []),
+  ]).then(([providers, catalog]) => {
+    const next: Lists = {
+      providers: Array.isArray(providers) ? providers as ProviderRow[] : [],
+      catalog: Array.isArray(catalog) ? catalog as CatalogRow[] : [],
+    };
+    // A late reply from before the last invalidation is stale by definition —
+    // return it to whoever awaited it, but never let it become the cache.
+    if (startedAt === generation) cache = next;
+    return next;
+  });
+}
+
 async function load(): Promise<Lists> {
   if (cache) return cache;
-  if (!inflight) {
-    inflight = Promise.all([
-      window.claude.providers.list().catch(() => []),
-      window.claude.providers.catalog().catch(() => []),
-    ]).then(([providers, catalog]) => {
-      cache = {
-        providers: Array.isArray(providers) ? providers as ProviderRow[] : [],
-        catalog: Array.isArray(catalog) ? catalog as CatalogRow[] : [],
-      };
-      return cache;
-    });
-  }
+  if (!inflight) inflight = fetchLists();
+  return inflight;
+}
+
+/** Re-read the lists WITHOUT throwing away the ones we already have. WHY the
+ *  distinction matters: the old code blanked the cache before refetching, so
+ *  for one round trip every /usage card opened in that window fell back to
+ *  Claude's numbers for a ChatGPT session. The old answer is stale at worst;
+ *  no answer is wrong on screen. */
+function refetch(): Promise<Lists> {
+  generation++;
+  inflight = fetchLists();
   return inflight;
 }
 
 /** Synchronous read for callers outside React (the /usage snapshot factory).
- *  Null until the hook below has loaded the lists once. */
-export function resolveProviderType(modelId: string | null | undefined): string | null {
+ *  Null until the hook below has loaded the lists once.
+ *
+ *  `providerType` is the session's OWN provider type when main has stamped it
+ *  on SessionInfo — always preferred, because it is the only answer that
+ *  cannot be wrong. The catalog lookup underneath is a fallback for sessions
+ *  that carry no stamp. */
+export function resolveProviderType(
+  modelId: string | null | undefined,
+  providerType?: string | null,
+): string | null {
+  if (providerType) return providerType;
   if (!modelId || !cache) return null;
-  // INTERIM RULE for an id several providers share: the ChatGPT plan's row
-  // wins. models.dev's `openai` list carries the same ids the plan uses
-  // (`gpt-5.5`, …), so with an OpenAI-key provider AND the plan configured a
-  // plain first-match could call a plan session "openai" — wrong chips, wrong
-  // /usage plan, wrong limit card. The registry appends the plan's row FIRST
-  // for the same reason. This stays until the session carries its own
-  // providerType from main (a later task); then the lookup is a fallback only.
   const rows = cache.catalog.filter((m) => m.id === modelId);
-  const row = rows.find((m) => m.providerId === 'chatgpt') ?? rows[0];
-  const p = row && cache.providers.find((x) => x.id === row.providerId);
-  return p?.type ?? null;
+  // WHY we refuse to pick when several providers offer the same model id:
+  // models.dev's `openai` list carries the very ids the ChatGPT plan uses
+  // (`gpt-5.5`, …). With BOTH an OpenAI-key provider and the plan signed in,
+  // the old rule handed every such session to the plan — so a conversation
+  // spending API credit showed the plan's usage chips and told the user on
+  // /usage that it was "Measured across your whole ChatGPT plan". Wrong
+  // numbers on screen are worse than no numbers, so an ambiguous id reads as
+  // unknown (exactly like an OpenRouter session) until the session's own
+  // providerType settles it.
+  const types = new Set<string>();
+  for (const r of rows) {
+    const t = cache.providers.find((x) => x.id === r.providerId)?.type;
+    if (t) types.add(t);
+  }
+  return types.size === 1 ? [...types][0] : null;
 }
 
 /** True when the lists are loaded and the id is genuinely not in them —
@@ -81,11 +123,20 @@ function isMiss(modelId: string | null | undefined): boolean {
 }
 
 /** The provider type ('chatgpt', 'openrouter', 'local-engine', …) behind a
- *  native session's bound model id; null for Claude Code sessions, unknown ids,
- *  and until the lists have loaded. */
-export function useModelProviderType(modelId: string | null | undefined): string | null {
-  const [type, setType] = useState<string | null>(() => resolveProviderType(modelId));
+ *  native session's bound model id; null for Claude Code sessions, unknown or
+ *  ambiguous ids, and until the lists have loaded.
+ *
+ *  Pass the session's own `providerType` (SessionInfo.providerType) whenever
+ *  it is known — it short-circuits the whole lookup. */
+export function useModelProviderType(
+  modelId: string | null | undefined,
+  providerType?: string | null,
+): string | null {
+  const [type, setType] = useState<string | null>(() => resolveProviderType(modelId, providerType));
   useEffect(() => {
+    // The session told us who it belongs to: nothing to look up, and no
+    // listener to register (a stamped session can never be re-answered).
+    if (providerType) { setType(providerType); return; }
     let alive = true;
     const read = () => {
       void load().then(() => {
@@ -95,9 +146,7 @@ export function useModelProviderType(modelId: string | null | undefined): string
         // render. The guard is per id and resets only on an invalidation.
         if (isMiss(modelId) && !refetchedMisses.has(modelId!)) {
           refetchedMisses.add(modelId!);
-          cache = null;
-          inflight = null;
-          void load().then(() => { if (alive) setType(resolveProviderType(modelId)); });
+          void refetch().then(() => { if (alive) setType(resolveProviderType(modelId)); });
           return;
         }
         setType(resolveProviderType(modelId));
@@ -105,7 +154,11 @@ export function useModelProviderType(modelId: string | null | undefined): string
     };
     listeners.add(read);
     read();
+    // Dropping the listener is load-bearing: without it every destroyed
+    // session leaves a callback behind that every future invalidation still
+    // calls, so a long session of opening and closing chats makes each
+    // sign-in do more and more pointless work.
     return () => { alive = false; listeners.delete(read); };
-  }, [modelId]);
-  return type;
+  }, [modelId, providerType]);
+  return providerType ?? type;
 }

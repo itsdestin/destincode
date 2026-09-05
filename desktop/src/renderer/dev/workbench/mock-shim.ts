@@ -508,10 +508,29 @@ function mergeMeta(
 // EVERY scenario — App only reads them for a session bound to a 'chatgpt'
 // provider (wb-3), so Claude Code and OpenRouter sessions are untouched.
 function chatgptUsageFixture() {
+  // `?chatgpt=free` draws the FREE plan instead of Plus. WHY it has to exist:
+  // OpenAI's free plan reports ONE 30-day window and no 5-hour or 7-day one, so
+  // the screens for it are a single chip and a single bar — a shape Destin
+  // approved from a written description with no picture of it. Without this pin
+  // the workbench, the review rig and the acceptance deck all show Plus, and the
+  // first sight of the free screens would be the live walk on his own account.
+  // Numbers match tests/fixtures/chatgpt/usage.free.json (a 30-day window, barely
+  // used), with the reset four days into the window.
+  if (chatgptPlanPin() === 'free') {
+    return {
+      other: [{ minutes: 43_200, utilization: 3, resets_at: new Date(Date.now() + 26 * 86_400_000).toISOString() }],
+    };
+  }
   return {
     five_hour: { utilization: 34, resets_at: new Date(Date.now() + 2 * 3_600_000 + 10 * 60_000).toISOString() },
     seven_day: { utilization: 12, resets_at: new Date(Date.now() + 5 * 86_400_000).toISOString() },
   };
+}
+
+/** The `?chatgpt=` pin, read fresh so both the account state and the status:data
+ *  usage fixture answer from the same URL. */
+function chatgptPlanPin(): string | null {
+  return (typeof location !== 'undefined' && new URLSearchParams(location.search).get('chatgpt')) || null;
 }
 
 function statusBarFixtureFor(scenario: string): { usage: unknown; sessionStatsMap: Record<string, unknown> } | null {
@@ -768,22 +787,28 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   // ── Sign in with ChatGPT ───────────────────────────────────────────────────
   // The account state machine (shared/chatgpt-types.ts), pinned by `?chatgpt=`
-  // (signed-out | waiting | signed-in | blocked; default signed-in so the
-  // model picker shows the plan's models). Without a pin, Sign in walks
+  // (signed-out | waiting | signed-in | free | blocked; default signed-in on a
+  // Plus plan so the model picker shows the plan's models, and `free` for the
+  // one-30-day-window plan). Without a pin, Sign in walks
   // signed-out → waiting → signed-in on its own after ~2.5s, which is what a
   // reviewer clicking through the Settings row should see.
-  const chatgptPin = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('chatgpt')) || null;
+  const chatgptPin = chatgptPlanPin();
   const CHATGPT_SIGNED_IN: ChatGptAccountStatus = {
     state: 'signed-in', email: 'destin@example.com', plan: 'plus',
-    usage: {
-      five_hour: { utilization: 34, resets_at: new Date(Date.now() + 2 * 3_600_000 + 10 * 60_000).toISOString() },
-      seven_day: { utilization: 12, resets_at: new Date(Date.now() + 5 * 86_400_000).toISOString() },
-    },
+    usage: chatgptUsageFixture(),
+  };
+  // `?chatgpt=free` — the same signed-in card, but on the plan that reports one
+  // 30-day window (see chatgptUsageFixture). This is the only way to see the
+  // free plan's single-chip / single-bar screens without a real free account.
+  const CHATGPT_SIGNED_IN_FREE: ChatGptAccountStatus = {
+    state: 'signed-in', email: 'destin@example.com', plan: 'free',
+    usage: chatgptUsageFixture(),
   };
   let chatgptStatus: ChatGptAccountStatus =
     chatgptPin === 'signed-out' ? { state: 'signed-out' }
     : chatgptPin === 'waiting' ? { state: 'waiting' }
     : chatgptPin === 'blocked' ? { state: 'blocked', email: 'destin@example.com', reason: 'Your workspace admin has turned off Codex for this account.' }
+    : chatgptPin === 'free' ? CHATGPT_SIGNED_IN_FREE
     : CHATGPT_SIGNED_IN;
   let chatgptTimer: ReturnType<typeof setTimeout> | null = null;
   const chatgpt = {
