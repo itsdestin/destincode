@@ -90,7 +90,8 @@ async function main() {
       else shell.openExternal(url.toString()).then(() => say('browser: openExternal resolved'), (e) => say(`browser: openExternal FAILED ${e.message}`));
       say(`if no browser opened, paste this URL yourself:\n${url.toString()}`);
     });
-    setTimeout(() => { say('timeout: no callback in 10 minutes'); server.close(); reject(new Error('timeout')); }, 600_000);
+    const timer = setTimeout(() => { say('timeout: no callback in 10 minutes'); server.close(); reject(new Error('timeout')); }, 600_000);
+    server.on('close', () => clearTimeout(timer));
   });
 
   // 2. exchange
@@ -129,7 +130,7 @@ async function main() {
     try {
       const r = await fetch(u, { headers: H });
       const text = await r.text();
-      say(`${name}: GET ${u.replace(/\?.*$/, (q) => q)} → HTTP ${r.status} content-type=${r.headers.get('content-type')} bytes=${text.length}`);
+      say(`${name}: GET ${u} → HTTP ${r.status} content-type=${r.headers.get('content-type')} bytes=${text.length}`);
       save(`${name}.${r.ok ? 'json' : `http${r.status}.txt`}`, text);
     } catch (e) { say(`${name}: FAILED ${e.message}`); }
   }
@@ -162,7 +163,8 @@ async function main() {
   try {
     const r = await fetch(`${BACKEND}/codex/responses`, {
       method: 'POST', headers: { ...H, 'content-type': 'application/json', 'OpenAI-Beta': 'responses=experimental' },
-      body: JSON.stringify({ model: process.env.PHASE0_MODEL ?? 'gpt-5.5', store: false, stream: false, instructions: 'Reply with the single word: ok', input: [{ role: 'user', content: [{ type: 'input_text', text: 'ok?' }] }] }),
+      // The SDK's generateText body carries NO `stream` key at all (review R3-7) — send that exact shape.
+      body: JSON.stringify({ model: process.env.PHASE0_MODEL ?? 'gpt-5.5', store: false, instructions: 'Reply with the single word: ok', input: [{ role: 'user', content: [{ type: 'input_text', text: 'ok?' }] }] }),
     });
     const text = await r.text();
     say(`non-streaming: HTTP ${r.status} bytes=${text.length}`);
