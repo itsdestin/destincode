@@ -1710,6 +1710,11 @@ export function installShim(): void {
       // Plan C context-length knob. Object payload matches remote-server's
       // WS case read (payload.contextSize).
       setContext: (contextSize: number) => invoke('engine:set-context', { contextSize }),
+      // Opens a plain-shell session on the HOST machine and types the command
+      // onto its prompt (never runs it). The remote client selects the returned
+      // session the same way the desktop renderer does — through the
+      // session:created broadcast that follows.
+      runInTerminal: (command: string) => invoke('engine:run-in-terminal', { command }) as Promise<{ sessionId: string }>,
       onInstallProgress: (cb: (p: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
         addListener('engine:install-progress', handler);

@@ -972,7 +972,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         explainer: 'The faster ROCm engine loads AMD\u2019s ROCm libraries from this computer, and they are not installed yet.',
       };
     },
-    runInTerminal: async () => undefined,
+    // The workbench has no main process and so no PTY — hand back a fixture id
+    // so the caller's shape matches the real channel's { sessionId }.
+    runInTerminal: async () => ({ sessionId: 'shell-mock' }),
     setSpeed: async (patch: Partial<typeof speed>) => { speed = { ...speed, ...patch }; return engineStatus(); },
     onInstallProgress: () => () => {},
     onStatusChanged: () => () => {},

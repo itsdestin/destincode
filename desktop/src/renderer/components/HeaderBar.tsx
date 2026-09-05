@@ -3,6 +3,7 @@ import React, { useRef, useLayoutEffect, useEffect, useState } from 'react';
 import { GamepadIcon } from './Icons';
 import SessionStrip from './SessionStrip';
 import type { SessionStatusColor } from './StatusDot';
+import type { SessionProvider } from '../../shared/types';
 import { isAndroid, isRemoteMode } from '../platform';
 // Artifact drawer trigger — reads session artifact count for the badge.
 import { useArtifact } from '../state/ArtifactContext';
@@ -181,11 +182,14 @@ interface SessionEntry {
   cwd: string;
   permissionMode: string;
   /** Runtime backend — mirrors SessionInfo.provider. */
-  provider?: 'claude' | 'native';
+  provider?: SessionProvider;
   /** Native preset and model — mirror SessionInfo; SessionStrip's All Sessions
    *  menu shows them under the name ("YouCoded Coder · DeepSeek R1"). */
   harnessId?: string;
   model?: string;
+  /** provider='shell' only — the shell that was spawned, so the All Sessions
+   *  menu can read "Terminal · fish" instead of a Claude Code label. */
+  shellName?: string;
 }
 
 
@@ -355,9 +359,11 @@ export default function HeaderBar({
   const narrow = useNarrowViewport();
 
   // Native harness sessions have no PTY — the chat/terminal toggle would show
-  // an empty terminal pane. Hide it for them.
+  // an empty terminal pane. Hide it for them. A shell session is the mirror
+  // image: it is nothing BUT a terminal, and switching it to chat would show an
+  // empty chat pane, so it has no toggle either.
   const activeSessionProvider = sessions.find(s => s.id === activeSessionId)?.provider;
-  const showToggle = activeSessionProvider !== 'native';
+  const showToggle = activeSessionProvider !== 'native' && activeSessionProvider !== 'shell';
 
   // Measure whether the header has room for the toggle labels. The labels
   // are the first things to drop; below that threshold, flex still has

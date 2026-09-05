@@ -36,6 +36,27 @@ export interface CreateSessionOpts {
   /** Optional text to prefill into the input bar after the session is selected.
    *  Forwarded into SessionInfo so the renderer can pick it up on session-created. */
   initialInput?: string;
+  /** provider='shell' only: a command to TYPE onto the shell's prompt. It is
+   *  never run for the user — no trailing carriage return is written, so the
+   *  line just sits there and the user presses Enter (or edits it, or clears
+   *  it). Written after the PTY's first output; see the flush below. */
+  initialCommand?: string;
+}
+
+/** Which shell a `provider: 'shell'` session spawns.
+ *  WHY $SHELL and not a hardcoded bash: this session exists so the user can run
+ *  a command in THEIR terminal, and a command they'd paste into fish should
+ *  behave the way it does in fish. Windows has no $SHELL, so PowerShell — the
+ *  shell every supported Windows build ships — is the fixed answer there. */
+export function resolveShellCommand(): string {
+  if (process.platform === 'win32') return 'powershell.exe';
+  return process.env.SHELL || '/bin/sh';
+}
+
+/** 'fish' from '/usr/bin/fish', 'powershell' from 'powershell.exe'.
+ *  The session strip and header show this, so it has to read like a name. */
+export function shellDisplayName(command: string): string {
+  return path.basename(command).replace(/\.(exe|cmd|bat)$/i, '');
 }
 
 interface ManagedSession {
@@ -115,6 +136,14 @@ export class SessionManager extends EventEmitter {
 
     const id = randomUUID();
 
+    // A shell session is the plain terminal: the user's own shell, no args, and
+    // none of the Claude Code wiring below (no --resume/--model flags, no
+    // SendUserLink MCP config, and — set at the spawn message — no hook pipe and
+    // no session id for hooks to correlate, so nothing watches a transcript for
+    // it because there is no transcript).
+    const isShell = provider === 'shell';
+    const shellCommand = isShell ? resolveShellCommand() : '';
+
     // Always use system Node.js — Electron's binary can't load node-pty.
     // Resolve via which() for Windows where Electron's PATH may differ.
     // Resolved HERE, ahead of the args, because the SendUserLink MCP config
@@ -122,26 +151,29 @@ export class SessionManager extends EventEmitter {
     let nodePath = 'node';
     try { if (whichSync) nodePath = whichSync('node'); } catch { /* use bare 'node' */ }
 
-    // Build Claude CLI args.
+    // Build Claude CLI args. A shell session takes none of them — `$SHELL`
+    // spawns bare.
     const args: string[] = [];
-    if (opts.skipPermissions) {
-      args.push('--dangerously-skip-permissions');
-    }
-    if (opts.resumeSessionId) {
-      args.push('--resume', opts.resumeSessionId);
-    }
-    if (opts.model) {
-      args.push('--model', opts.model);
-    }
-    // Give this session YouCoded's SendUserLink tool (claude-code-mcp.ts) —
-    // Claude Code has no link deliverable of its own. Best-effort: if the
-    // deploy throws (read-only userData, disk full) the session still starts,
-    // just without the link tool. Pushing a --mcp-config path that does not
-    // exist would instead be a hard startup failure for the whole session.
-    try {
-      args.push(...deployClaudeCodeLinkMcp(app.getPath('userData'), nodePath).args);
-    } catch (err) {
-      log('WARN', 'SessionManager', 'SendUserLink MCP deploy failed — this session starts without the link tool', { error: String(err) });
+    if (!isShell) {
+      if (opts.skipPermissions) {
+        args.push('--dangerously-skip-permissions');
+      }
+      if (opts.resumeSessionId) {
+        args.push('--resume', opts.resumeSessionId);
+      }
+      if (opts.model) {
+        args.push('--model', opts.model);
+      }
+      // Give this session YouCoded's SendUserLink tool (claude-code-mcp.ts) —
+      // Claude Code has no link deliverable of its own. Best-effort: if the
+      // deploy throws (read-only userData, disk full) the session still starts,
+      // just without the link tool. Pushing a --mcp-config path that does not
+      // exist would instead be a hard startup failure for the whole session.
+      try {
+        args.push(...deployClaudeCodeLinkMcp(app.getPath('userData'), nodePath).args);
+      } catch (err) {
+        log('WARN', 'SessionManager', 'SendUserLink MCP deploy failed — this session starts without the link tool', { error: String(err) });
+      }
     }
 
     // Spawn a separate Node.js process for node-pty so it uses Node's
@@ -173,10 +205,14 @@ export class SessionManager extends EventEmitter {
       status: 'active',
       createdAt: Date.now(),
       provider,
-      model: opts.model,
+      // A shell session has no model — nothing in it talks to one.
+      model: isShell ? undefined : opts.model,
       // Carry initialInput through so the renderer can prefill the input bar.
       // Omit the key entirely when undefined to keep the object clean.
       ...(opts.initialInput !== undefined ? { initialInput: opts.initialInput } : {}),
+      // The shell's own name is how the strip and header label this session —
+      // it has no model alias and no harness preset to label it with.
+      ...(isShell ? { shellName: shellDisplayName(shellCommand) } : {}),
     };
 
     const session: ManagedSession = { info, worker };
@@ -199,10 +235,36 @@ export class SessionManager extends EventEmitter {
       log('ERROR', 'SessionManager', 'Worker stderr', { sessionId: id, output: chunk.toString() });
     });
 
+    // The command a "Run in terminal" shell session was created for. It waits
+    // here until the shell has produced its FIRST OUTPUT.
+    //
+    // WHY not write it at spawn time: a shell that is still starting up may
+    // never see input typed before its line editor exists, and the terminal
+    // then opens empty with no sign of what the user was meant to run. Writing
+    // on spawn only works because the kernel's tty buffer happens to hold the
+    // bytes until the shell reads them — luck, not a guarantee, and a shell
+    // that flushes its input at startup would silently swallow it.
+    // Waiting for output costs nothing and does not depend on that.
+    // (The first frame is usually the shell's terminal-capability QUERY rather
+    // than its prompt; by the time it lands, the shell is reading input.
+    // Measured on fish, zsh and bash by test-engine/probe-shell-command.mjs,
+    // which also carries the fallback to reach for if a shell ever fails:
+    // wait for output to go quiet, not just to start.)
+    let pendingCommand: string | null =
+      isShell && opts.initialCommand ? opts.initialCommand : null;
+
     worker.on('message', (msg: any) => {
       switch (msg.type) {
         case 'data':
           this.emit('pty-output', id, msg.data);
+          // Type the command onto the prompt, exactly once, with NO trailing
+          // carriage return: the app never runs a set-up command for the user.
+          // The line sits on the prompt for them to read, edit or Enter.
+          if (pendingCommand !== null) {
+            const command = pendingCommand;
+            pendingCommand = null;
+            this.sendInput(id, command);
+          }
           break;
         case 'exit':
           if (!this.sessions.has(id)) return;
@@ -230,14 +292,18 @@ export class SessionManager extends EventEmitter {
     try {
       worker.send({
         type: 'spawn',
-        command: 'claude',
+        command: isShell ? shellCommand : 'claude',
         args,
         cwd: resolvedCwd,
         cols: opts.cols || 80,
         rows: opts.rows || 24,
-        // Session ID + pipe name for hook event correlation
-        sessionId: id,
-        pipeName: this.pipeName,
+        // Session ID + pipe name for hook event correlation. Both are blanked
+        // for a shell session: there is no hook pipe for it, so if the user
+        // happens to start Claude Code inside this terminal it must not report
+        // its hooks as if they belonged to this session (which would attach a
+        // transcript, and a chat view, to a plain shell).
+        sessionId: isShell ? '' : id,
+        pipeName: isShell ? '' : this.pipeName,
       });
     } catch {
       // The 'error' handler above will clean up the session asynchronously.
@@ -312,7 +378,10 @@ export class SessionManager extends EventEmitter {
   broadcastReloadPlugins(delayMs: number = 1500): void {
     setTimeout(() => {
       for (const s of this.listSessions()) {
-        if (s.status === 'active') this.sendReloadWhenClear(s.id, 0);
+        // Only Claude Code understands /reload-plugins. A shell session has a
+        // real PTY, so without this guard the literal text "/reload-plugins"
+        // plus an Enter would be typed into — and RUN by — the user's shell.
+        if (s.status === 'active' && s.provider !== 'shell') this.sendReloadWhenClear(s.id, 0);
       }
     }, delayMs);
   }

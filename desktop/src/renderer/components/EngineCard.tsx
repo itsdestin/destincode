@@ -95,6 +95,22 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
     finally { setBusy(false); setProgress(null); }
   };
 
+  // "Run in terminal": open a plain-shell session with the install command
+  // already typed onto its prompt. The app does not press Enter — the user
+  // reads the command and runs it themselves, in their own terminal, where the
+  // password an installer asks for is typed.
+  //
+  // Nothing selects the session here: main forwards session:created to this
+  // window and App.tsx's handler focuses a newly created session and closes
+  // Settings, which is the same path every other new session takes.
+  const openTerminalWithCommand = async (command: string) => {
+    setError(null);
+    try { await window.claude.engine.runInTerminal(command); }
+    // The real reason, not a guess — the terminal failing to open is the only
+    // thing the user can act on here (Copy is right beside this button).
+    catch (e: any) { setError(e?.message ?? String(e)); }
+  };
+
   // Commit the context-length knob. Reverts an invalid value (< 1024 or NaN)
   // and no-ops when unchanged, so a blur/Enter can't needlessly reboot the
   // engine (setContext restarts a running server).
@@ -307,7 +323,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                         </Button>
                       </div>
                       <div className="flex gap-1.5">
-                        <Button size="sm" onClick={() => void window.claude.engine.runInTerminal(prereqs.command!)}>
+                        <Button size="sm" onClick={() => void openTerminalWithCommand(prereqs.command!)}>
                           Run in terminal
                         </Button>
                         <Button size="sm" variant="secondary" onClick={() => void recheck(opt.backend)} disabled={busy}>

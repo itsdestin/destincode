@@ -8,7 +8,7 @@ import { resolveConversations, readConversation } from './chatsearch-index/refs-
 import type { ChatsearchReadRequest } from '../shared/chatsearch-refs';
 import https from 'https';
 import { execFile } from 'child_process';
-import { SessionManager } from './session-manager';
+import { SessionManager, resolveShellCommand, shellDisplayName } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { IPC, PERMISSION_OVERRIDES_DEFAULT, SESSION_FLAG_NAMES, type SessionFlagName, type SessionProvider, type TranscriptEvent, type TranscriptPageRequest, type TranscriptPageResult, type HookEvent, type SpecialistsEvent, type ShellEvent } from '../shared/types';
 import { isPlaceholderModelId } from '../shared/model-ids';
@@ -2964,6 +2964,49 @@ export function registerIpcHandlers(
   });
   ipcMain.handle(IPC.ENGINE_SET_BACKEND, async (_e, backend: string) => { await engineManager.setBackend(backend as any); return engineManager.status(); });
   ipcMain.handle(IPC.ENGINE_SET_CONTEXT, async (_e, contextSize: number) => { await engineManager.setContext(contextSize); return engineManager.status(); });
+  // "Run in terminal" (§F): open a plain-shell session and TYPE the set-up
+  // command onto its prompt. Nothing runs — the user presses Enter, and the
+  // password an installer asks for is typed into their own terminal, not into
+  // a dialog of ours.
+  ipcMain.handle(IPC.ENGINE_RUN_IN_TERMINAL, async (event, command: string) => {
+    // Surface the real reason, never a guess: an empty command would open a
+    // terminal with nothing on its prompt and look like the button did nothing.
+    if (typeof command !== 'string' || !command.trim()) {
+      throw new Error('engine:run-in-terminal was given no command to type.');
+    }
+    // WHY the folder comes from the calling window's own sessions: the button
+    // lives in Settings, which has no folder of its own, and the project the
+    // user is working in is whatever their live sessions are open on. The
+    // newest one wins; with no session at all (a fresh install setting up its
+    // first engine) createSession falls back to the home folder.
+    let cwd = '';
+    for (const sid of windowRegistry?.sessionsForWindow(event.sender.id) ?? []) {
+      const s = sessionManager.getSession(sid);
+      if (s && s.status !== 'destroyed') cwd = s.cwd;
+    }
+    const info = sessionManager.createSession({
+      name: shellDisplayName(resolveShellCommand()),
+      cwd,
+      skipPermissions: false,
+      provider: 'shell',
+      initialCommand: command,
+    });
+    // Same ownership handshake SESSION_CREATE does, and for the same reason:
+    // session-created is forwarded one nextTick later, so without an owner
+    // registered here the new session would appear in the FIRST window instead
+    // of the one whose Settings the user is standing in. A buddy window can't
+    // own a session, so its leader takes it.
+    if (windowRegistry) {
+      let targetId = event.sender.id;
+      if (windowRegistry.getKind(event.sender.id) === 'buddy') {
+        const leader = windowRegistry.getLeaderId();
+        if (leader != null) targetId = leader;
+      }
+      try { windowRegistry.assignSession(info.id, targetId); }
+      catch (e) { log('WARN', 'IPC', 'assignSession failed for the shell session', { error: String(e) }); }
+    }
+    return { sessionId: info.id };
+  });
   ipcMain.handle(IPC.MODELS_CURATED, async () => modelManager.curatedList());
   ipcMain.handle(IPC.MODELS_SEARCH, async (_e, query: string) => modelManager.search(query));
   ipcMain.handle(IPC.MODELS_QUANTS, async (_e, repo: string) => modelManager.quants(repo));

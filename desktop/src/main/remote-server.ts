@@ -16,6 +16,9 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { SessionManager } from './session-manager';
+// Value import (not type-only): the "Run in terminal" case below needs the same
+// $SHELL resolution and display name the desktop handler uses.
+import { resolveShellCommand, shellDisplayName } from './session-manager';
 import type { HookRelay } from './hook-relay';
 import type { RemoteConfig } from './remote-config';
 import type { LocalSkillProvider } from './skill-provider';
@@ -1313,6 +1316,35 @@ export class RemoteServer {
         try {
           if (this.nativeRuntime) await this.nativeRuntime.engineManager.setContext((payload.contextSize ?? payload) as number);
           this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      // "Run in terminal" over the remote link. The shell runs on the HOST — a
+      // remote client is a browser and has no terminal of its own — so this is
+      // the same plain-shell session the desktop button makes, and the client
+      // sees it appear through the session:created broadcast.
+      case 'engine:run-in-terminal': {
+        try {
+          const command = (payload?.command ?? payload) as string;
+          if (typeof command !== 'string' || !command.trim()) {
+            throw new Error('engine:run-in-terminal was given no command to type.');
+          }
+          // The host's newest live session names the folder the user is working
+          // in; with none, createSession falls back to the home folder.
+          let cwd = '';
+          for (const s of this.sessionManager.listSessions()) {
+            if (s.status !== 'destroyed') cwd = s.cwd;
+          }
+          const info = this.sessionManager.createSession({
+            name: shellDisplayName(resolveShellCommand()),
+            cwd,
+            skipPermissions: false,
+            provider: 'shell',
+            initialCommand: command,
+          });
+          this.respond(client.ws, type, id, { sessionId: info.id });
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
         }

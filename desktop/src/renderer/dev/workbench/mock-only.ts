@@ -36,9 +36,12 @@
 // 2026-09-05 — local-engine upgrades (docs/active/design/2026-09-04-local-engine-upgrades):
 // six channels designed in the workbench ahead of main. Each comes off this list when its
 // real handler lands on all surfaces (ipc-handlers + preload + remote-shim + SessionService.kt).
+// `engine.runInTerminal` came off on 2026-09-05: `engine:run-in-terminal` is real on
+// ipc-handlers + preload + remote-shim + remote-server (it opens a plain-shell session and
+// types the command onto its prompt). Its fake above stays so the workbench can still show
+// the ROCm set-up box without a PTY.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
   { channel: 'engine.prereqs', feature: 'local-engine-upgrades: ROCm prerequisite check + install command (Q-1)' },
-  { channel: 'engine.runInTerminal', feature: 'local-engine-upgrades: paste the install command into the app terminal (Q-1)' },
   { channel: 'engine.setSpeed', feature: 'local-engine-upgrades: speculative decoding / cache compression switches (Q-4)' },
   { channel: 'models.settings', feature: 'local-engine-upgrades: per-model settings read (Q-2)' },
   { channel: 'models.setSettings', feature: 'local-engine-upgrades: per-model settings write (Q-2)' },
