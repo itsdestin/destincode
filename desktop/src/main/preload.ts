@@ -364,6 +364,7 @@ const IPC = {
   ENGINE_SET_BACKEND: 'engine:set-backend',
   ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
   ENGINE_RUN_IN_TERMINAL: 'engine:run-in-terminal',  // plain-shell session + typed command
+  ENGINE_PREREQS: 'engine:prereqs',           // faster-engine prerequisites (2026-09-05)
   MODELS_CURATED: 'models:curated',
   MODELS_SEARCH: 'models:search',
   MODELS_QUANTS: 'models:quants',
@@ -1365,6 +1366,9 @@ contextBridge.exposeInMainWorld('claude', {
     // The returned id is the session the caller then selects.
     runInTerminal: (command: string): Promise<{ sessionId: string }> =>
       ipcRenderer.invoke(IPC.ENGINE_RUN_IN_TERMINAL, command),
+    // What a faster engine build needs on this machine before it can be
+    // installed (Linux ROCm). The card's "Check again" re-invokes this.
+    prereqs: (backend: string): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_PREREQS, backend),
     onInstallProgress: (cb: (p: unknown) => void) => {
       const listener = (_e: unknown, p: unknown) => cb(p);
       ipcRenderer.on(IPC.ENGINE_INSTALL_PROGRESS, listener);

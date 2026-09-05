@@ -33,6 +33,11 @@
 // without a live leaderboard. `no MOCK_ONLY entry has since gained a real
 // channel` in workbench-mock-contract.test.ts is what forces this cleanup.
 //
+// `engine.prereqs` came off this list on 2026-09-05 when the real check landed
+// (main/engine/rocm-prereqs.ts on all five surfaces). Its fake in mock-shim.ts
+// stays, so the workbench can still walk the "missing, then present" flow
+// without a machine that is actually missing the libraries.
+//
 // 2026-09-05 — local-engine upgrades (docs/active/design/2026-09-04-local-engine-upgrades):
 // six channels designed in the workbench ahead of main. Each comes off this list when its
 // real handler lands on all surfaces (ipc-handlers + preload + remote-shim + SessionService.kt).
@@ -41,7 +46,6 @@
 // types the command onto its prompt). Its fake above stays so the workbench can still show
 // the ROCm set-up box without a PTY.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  { channel: 'engine.prereqs', feature: 'local-engine-upgrades: ROCm prerequisite check + install command (Q-1)' },
   { channel: 'engine.setSpeed', feature: 'local-engine-upgrades: speculative decoding / cache compression switches (Q-4)' },
   { channel: 'models.settings', feature: 'local-engine-upgrades: per-model settings read (Q-2)' },
   { channel: 'models.setSettings', feature: 'local-engine-upgrades: per-model settings write (Q-2)' },

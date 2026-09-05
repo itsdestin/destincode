@@ -41,6 +41,143 @@ describe('selectInstallAsset (Fix: platforms without the preferred backend)', ()
   });
 });
 
+// The graphics-chip probe runs OFF the first status() call, so `backendOptions`
+// arrives on a 'status-changed' push rather than in the answer that triggered
+// it. That push is the only delivery there is — if it can be missed, the card
+// waits forever for a second status that never comes. Everything that CAN
+// change during a run is recomputed on every status() instead of cached.
+// (2026-09-05 local-engine upgrades §A3.)
+describe('EngineManager — the deferred chip probe and the live device line', () => {
+  const settled = () => new Promise((r) => setTimeout(r, 0));
+  const AMD_CHIP = { vendor: 'amd' as const, gfxTarget: 'gfx1151' };
+  // The real two-device reading from this machine (engine-acquisition.test.ts):
+  // the software renderer reports 124406 MiB of system RAM and is not a GPU.
+  const REAL_DEVICES = [
+    { backend: 'Vulkan0', name: 'AMD Radeon 8060S Graphics (RADV STRIX_HALO)', totalMiB: 86016, freeMiB: 83633, isGpu: true },
+    { backend: 'Vulkan1', name: 'llvmpipe (LLVM 22.1.6, 256 bits)', totalMiB: 124406, freeMiB: 80073, isGpu: false },
+  ];
+
+  /** Plant an install whose marker carries a device list, the way T2 writes it. */
+  function plantInstallWithDevices(backend: string, devices: unknown) {
+    const dir = path.join(userData, 'engine', `${ENGINE_VERSION}-${backend}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'llama-server.exe'), 'fake');
+    fs.writeFileSync(path.join(dir, '.complete'),
+      JSON.stringify({ version: ENGINE_VERSION, backend, binaryRelPath: 'llama-server.exe', devices }));
+  }
+
+  it('status() answers immediately without backendOptions, then pushes them', async () => {
+    plantInstall('vulkan');
+    const mgr = new EngineManager(home, userData, 9999, { probeChip: async () => AMD_CHIP });
+    let pushes = 0;
+    mgr.on('status-changed', () => { pushes += 1; });
+
+    // The first answer must not block on the probe, so it cannot carry it.
+    expect(mgr.status().backendOptions).toBeUndefined();
+
+    await settled();
+    expect(pushes).toBe(1);
+    expect(mgr.status().backendOptions?.map((o) => o.backend)).toEqual(['rocm']);
+  });
+
+  it('a probe that THROWS still pushes, and settles on "nothing to offer"', async () => {
+    plantInstall('vulkan');
+    const mgr = new EngineManager(home, userData, 9999, {
+      probeChip: async () => { throw new Error('nvidia-smi wedged'); },
+    });
+    let pushes = 0;
+    mgr.on('status-changed', () => { pushes += 1; });
+
+    mgr.status();
+    await settled();
+    // The push fired on the failure path — this is what keeps the card from
+    // hanging when a graphics driver misbehaves.
+    expect(pushes).toBe(1);
+    expect(mgr.status().backendOptions).toEqual([]);
+  });
+
+  it('asks the machine ONCE, however many times status() is called', async () => {
+    plantInstall();
+    let calls = 0;
+    const mgr = new EngineManager(home, userData, 9999, {
+      probeChip: async () => { calls += 1; return { vendor: null, gfxTarget: null }; },
+    });
+    mgr.status(); mgr.status(); mgr.status();
+    await settled();
+    mgr.status();
+    await settled();
+    expect(calls).toBe(1);
+  });
+
+  // The path every new user walks: the Local Models panel is where the Install
+  // button lives, so the panel — and the first status() — happens BEFORE there
+  // is any engine. An answer computed then and cached would say "Processor
+  // only" forever on a machine that is using its graphics chip.
+  it('the device name appears on the FIRST status after an install, not the next app run', async () => {
+    const mgr = new EngineManager(home, userData, 9999, { probeChip: async () => AMD_CHIP });
+    // Nothing installed yet: not known, which is NOT the same as "no GPU".
+    expect(mgr.status().deviceName).toBeUndefined();
+    await settled();
+    expect(mgr.status().deviceName).toBeUndefined();
+
+    plantInstallWithDevices('vulkan', REAL_DEVICES);
+    expect(mgr.status().deviceName).toBe('AMD Radeon 8060S Graphics');
+  });
+
+  it('a switch to another backend shows THAT build\'s device, not the old one\'s', async () => {
+    plantInstallWithDevices('vulkan', REAL_DEVICES);
+    const mgr = new EngineManager(home, userData, 9999, { probeChip: async () => AMD_CHIP });
+    mgr.status();          // kicks the probe
+    await settled();
+    expect(mgr.status().deviceName).toBe('AMD Radeon 8060S Graphics');
+    // A ROCm install names its device differently, and the config now prefers it.
+    plantInstallWithDevices('rocm', [{ backend: 'ROCm0', name: 'AMD Radeon Graphics (gfx1151)', totalMiB: 65536, freeMiB: 60000, isGpu: true }]);
+    await updateEngineConfig(home, { backend: 'rocm' });
+    const s = mgr.status();
+    expect(s.backend).toBe('rocm');
+    expect(s.deviceName).toBe('AMD Radeon Graphics');
+    // …and the switch it is already on is no longer offered.
+    expect(s.backendOptions).toEqual([]);
+  });
+
+  it('an engine that reports only a software renderer says "no GPU", not "not known"', () => {
+    plantInstallWithDevices('vulkan', [REAL_DEVICES[1]]);
+    const mgr = new EngineManager(home, userData, 9999, { probeChip: async () => AMD_CHIP });
+    expect(mgr.status().deviceName).toBeNull();
+  });
+
+  it('a marker with no device list at all is "not known", never "no GPU"', () => {
+    // Every install made before the device list existed. T2 backfills these
+    // lazily; until it does, the card must not claim the processor is the answer.
+    plantInstall('vulkan');
+    const mgr = new EngineManager(home, userData, 9999, { probeChip: async () => AMD_CHIP });
+    expect(mgr.status().deviceName).toBeUndefined();
+  });
+
+  it('a corrupt marker degrades to "not known" rather than throwing', () => {
+    const dir = path.join(userData, 'engine', `${ENGINE_VERSION}-vulkan`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'llama-server.exe'), 'fake');
+    fs.writeFileSync(path.join(dir, '.complete'),
+      JSON.stringify({ version: ENGINE_VERSION, backend: 'vulkan', binaryRelPath: 'llama-server.exe' }));
+    const mgr = new EngineManager(home, userData, 9999, { probeChip: async () => AMD_CHIP });
+    // Corrupt it AFTER the install is discovered, so we exercise the read path.
+    fs.writeFileSync(path.join(dir, '.complete'), '{not json');
+    expect(() => mgr.status()).not.toThrow();
+    expect(mgr.status().deviceName).toBeUndefined();
+  });
+
+  it('a machine with no AMD or NVIDIA chip is offered nothing', async () => {
+    plantInstall('vulkan');
+    const mgr = new EngineManager(home, userData, 9999, {
+      probeChip: async () => ({ vendor: 'intel' as const, gfxTarget: null }),
+    });
+    mgr.status();          // kicks the probe — nothing asks the machine unprompted
+    await settled();
+    expect(mgr.status().backendOptions).toEqual([]);
+  });
+});
+
 describe('EngineManager', () => {
   it('status(): not-installed before any install; installed afterwards', () => {
     const mgr = new EngineManager(home, userData, 9999);

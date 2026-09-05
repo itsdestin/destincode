@@ -60,12 +60,30 @@ export interface FitEstimate {
   };
 }
 
+/** Which company made the graphics chip. Only the first two have a faster
+ *  engine build to offer (CUDA / ROCm); 'apple' and 'intel' are recorded so the
+ *  gate can say "we know what this is and there is nothing faster for it"
+ *  rather than "unknown". (2026-09-05 local-engine upgrades §A3) */
+export type GpuVendor = 'nvidia' | 'amd' | 'apple' | 'intel';
+
 /** Best-effort dedicated-GPU probe result (gpu-detector.ts). Both null when no
  *  dedicated GPU is confidently detected — the estimator then falls back to
- *  RAM-only. Integrated GPUs report null vram on purpose (shared system RAM). */
+ *  RAM-only. Integrated GPUs report null vram on purpose (shared system RAM).
+ *
+ *  `vendor` / `gfxTarget` are a SEPARATE question from `totalVramBytes` and are
+ *  filled in even when the VRAM probe deliberately returns null: an AMD APU has
+ *  no dedicated VRAM to report, but it is still an AMD chip that the ROCm build
+ *  may well be compiled for. */
 export interface GpuInfo {
   name: string | null;             // e.g. 'NVIDIA GeForce RTX 4090' — captured for diagnostics/future display (not shown in v1)
   totalVramBytes: number | null;   // dedicated VRAM; null = unknown/none → RAM-only fit
+  vendor: GpuVendor | null;        // null = nothing recognisable was found
+  /** AMD/Linux only: the chip's ROCm compute-target name ('gfx1151'), read from
+   *  the kernel's kfd topology. This is the string that has to appear in the
+   *  ROCm build's compiled-target list, or the build has no machine code for
+   *  this chip and dies at the first token. Null everywhere else — Windows does
+   *  not publish it, and no other vendor has the concept. */
+  gfxTarget: string | null;
 }
 
 export interface HFSearchHit { repo: string; downloads: number; likes: number; }

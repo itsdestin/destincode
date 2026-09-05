@@ -1792,6 +1792,9 @@ export const IPC = {
   // invoke(command) → { sessionId }. Nothing is executed: the user presses
   // Enter. The renderer that made the call selects the session it gets back.
   ENGINE_RUN_IN_TERMINAL: 'engine:run-in-terminal',
+  // What a faster engine build needs installed before it can be offered
+  // (Linux ROCm) — 2026-09-05 local-engine upgrades §A3/§A5.
+  ENGINE_PREREQS: 'engine:prereqs',
   MODELS_CURATED: 'models:curated',
   MODELS_SEARCH: 'models:search',
   MODELS_QUANTS: 'models:quants',

@@ -32,6 +32,7 @@ import type { ModelCatalog } from './providers/model-catalog';
 import type { SearchKeyStore } from './harness/search/search-key-store';
 import type { SearchService } from './harness/search/search-service';
 import type { EngineManager } from './engine/engine-manager';
+import { enginePrereqs } from './engine/rocm-prereqs';
 import type { ModelManager } from './models/model-manager';
 import type { PermissionStore } from './harness/permission-store';
 import type { PermissionRule } from '../shared/permission-types';
@@ -1365,6 +1366,18 @@ export class RemoteServer {
             shellToken: checked.shellToken,
           });
           this.respond(client.ws, type, id, { sessionId: info.id });
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      // What a faster engine build needs installed (2026-09-05 §A5). Reads THIS
+      // machine — the one running the server — which is the right answer: the
+      // remote browser is only a window onto it, and the engine that would be
+      // switched runs here.
+      case 'engine:prereqs': {
+        try {
+          this.respond(client.ws, type, id, enginePrereqs((payload.backend ?? payload) as string, { refresh: true }));
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
         }

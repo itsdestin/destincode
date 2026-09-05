@@ -4053,6 +4053,9 @@ class SessionService : Service() {
             "engine:install",
             "engine:restart",
             "engine:set-context",   // Plan C context-length knob — desktop-only
+            // Faster-engine prerequisites (2026-09-05) — reads the DESKTOP machine's
+            // graphics libraries; a phone has no engine to switch, so it stubs out.
+            "engine:prereqs",
             // Model manager (Plan C) — curated catalog, HF search, downloads,
             // endpoint detectors, backend switch. Desktop-only; no Android runtime.
             "engine:set-backend",

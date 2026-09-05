@@ -1729,6 +1729,8 @@ export function installShim(): void {
       // session the same way the desktop renderer does — through the
       // session:created broadcast that follows.
       runInTerminal: (command: string) => invoke('engine:run-in-terminal', { command }) as Promise<{ sessionId: string }>,
+      // Object payload matches remote-server's WS case read (payload.backend).
+      prereqs: (backend: string) => invoke('engine:prereqs', { backend }),
       onInstallProgress: (cb: (p: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
         addListener('engine:install-progress', handler);
