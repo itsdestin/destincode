@@ -141,6 +141,16 @@ describe('a shell session in the renderer', () => {
       expect(canPtySend({ provider: 'native' }, undefined)).toBe(false);
     });
 
+    it('the permission cycle refuses a shell session', () => {
+      // cyclePermission calls session.sendInput RAW — it does not ask
+      // canPtySend — and its only other shield is isTypingTarget, which is
+      // false whenever xterm does not hold focus. Click the header pill in a
+      // shell session, press Shift+Tab, and \x1b[Z lands at the user's prompt.
+      const cycle = appSrc.slice(appSrc.indexOf('const cyclePermission ='));
+      const guard = "if (sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'shell') return;";
+      expect(cycle.slice(0, cycle.indexOf("sendInput(sessionId, '\\x1b[Z')"))).toContain(guard);
+    });
+
     it("reports a slash command as unavailable instead of typing it", () => {
       const r = routeSlashResult('shell', { handled: true, alsoSendToPty: '/cost\r' });
       expect(r).toEqual({ via: 'none-native-no-pty', command: '/cost' });

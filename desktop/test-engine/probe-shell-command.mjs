@@ -31,6 +31,11 @@
 //                       the fallback to reach for if a shell ever fails the row
 //                       above — it waits for the prompt itself rather than for
 //                       the first capability query.
+// A fourth row, embedded-CR, is the THREAT rather than a rule: it types the
+// same command with a carriage return inside it and shows that it RUNS ITSELF,
+// with nobody touching the keyboard. That is why prepareRunInTerminal refuses a
+// command containing one; this row is the measurement behind that refusal, and
+// it is expected to report "ran on its own = true".
 //
 // HOW ARRIVAL IS MEASURED — by an EFFECT ON DISK, not by reading the output.
 // Reading the output does not work: fish repaints its prompt line with bare
@@ -43,6 +48,12 @@
 // user — then presses Enter ITSELF, standing in for the user, and requires the
 // file to appear. The file can only appear if the whole command reached the
 // prompt, in order, uncorrupted.
+//
+// KNOWN LIMIT: this probe RE-IMPLEMENTS the write rule against a bare node-pty
+// rather than driving SessionManager, so it proves the rule works on real
+// shells, NOT that the app still follows it. tests/shell-session.test.ts is what
+// pins the app to the rule; if that test is ever weakened, this probe would
+// still pass. Both are needed.
 //
 // Usage: node test-engine/probe-shell-command.mjs [--shell /usr/bin/fish]...
 // With no --shell it probes fish, zsh, bash and PowerShell, and SAYS which of
@@ -115,7 +126,10 @@ function run(shell, rule) {
   return new Promise((resolve) => {
     // A fresh flag path per run, so one run can never be credited to another.
     const flag = `${RUN_FLAG}-${flagSeq++}`;
-    const COMMAND = `echo ran > ${flag}`;
+    // The embedded-CR row types the SAME command with a carriage return in the
+    // middle of it — the app appends none, and this shows why that is not
+    // enough on its own.
+    const COMMAND = rule === 'embedded-CR' ? `echo ran > ${flag}\r:` : `echo ran > ${flag}`;
     try { fs.rmSync(flag, { force: true }); } catch { /* nothing there */ }
     let raw = '';
     let wrote = false;
@@ -136,7 +150,7 @@ function run(shell, rule) {
       const chunk = typeof d === 'string' ? d : String(d);
       raw += chunk;
       reply(child, chunk);
-      if (rule === 'first-output') typeIt();
+      if (rule === 'first-output' || rule === 'embedded-CR') typeIt();
       if (rule === 'first-output+quiet' && !wrote) {
         clearTimeout(quietTimer);
         quietTimer = setTimeout(typeIt, QUIET_MS);
@@ -165,7 +179,7 @@ const argv = process.argv.slice(2);
 const explicit = [];
 for (let i = 0; i < argv.length; i++) if (argv[i] === '--shell') explicit.push(argv[++i]);
 const candidates = explicit.length ? explicit : ['fish', 'zsh', 'bash', 'pwsh', 'powershell.exe'];
-const RULES = ['on-spawn', 'first-output', 'first-output+quiet'];
+const RULES = ['on-spawn', 'first-output', 'first-output+quiet', 'embedded-CR'];
 
 let failures = 0;
 let probed = 0;
@@ -177,13 +191,18 @@ for (const candidate of candidates) {
   console.log(`\n${candidate}  (${shell})`);
   for (const rule of RULES) {
     const r = await run(shell, rule);
-    const ok = !r.ranBeforeEnter && r.ranAfterEnter;
+    // For the three rules, healthy = it waited for the user. For the threat row,
+    // healthy = it did NOT wait, which is the whole point of showing it.
+    const ok = rule === 'embedded-CR'
+      ? r.ranBeforeEnter
+      : !r.ranBeforeEnter && r.ranAfterEnter;
+    const tag = rule === 'embedded-CR' ? (ok ? 'THREAT CONFIRMED' : 'not reproduced ') : (ok ? 'ok  ' : 'BAD ');
     console.log(
-      `  ${ok ? 'ok  ' : 'BAD '} ${rule.padEnd(19)} typed at ${String(r.writtenAtMs).padStart(5)}ms · ` +
+      `  ${tag} ${rule.padEnd(19)} typed at ${String(r.writtenAtMs).padStart(5)}ms · ` +
       `ran on its own=${r.ranBeforeEnter} · ran when the user pressed Enter=${r.ranAfterEnter}` +
       (ok ? '' : `\n         tail: ${JSON.stringify(r.tail)}`)
     );
-    // Only the shipped rule is a pass/fail; the other two are the evidence.
+    // Only the shipped rule is a pass/fail; the other rows are evidence.
     if (rule === 'first-output' && !ok) failures++;
   }
 }

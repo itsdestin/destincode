@@ -104,11 +104,14 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   // window and App.tsx's handler focuses a newly created session and closes
   // Settings, which is the same path every other new session takes.
   const openTerminalWithCommand = async (command: string) => {
-    setError(null);
+    // busy also disables the button — without it a double-click opens two
+    // terminals, and the second one steals focus from the first.
+    setBusy(true); setError(null);
     try { await window.claude.engine.runInTerminal(command); }
     // The real reason, not a guess — the terminal failing to open is the only
     // thing the user can act on here (Copy is right beside this button).
     catch (e: any) { setError(e?.message ?? String(e)); }
+    finally { setBusy(false); }
   };
 
   // Commit the context-length knob. Reverts an invalid value (< 1024 or NaN)
@@ -323,7 +326,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                         </Button>
                       </div>
                       <div className="flex gap-1.5">
-                        <Button size="sm" onClick={() => void openTerminalWithCommand(prereqs.command!)}>
+                        <Button size="sm" disabled={busy} onClick={() => void openTerminalWithCommand(prereqs.command!)}>
                           Run in terminal
                         </Button>
                         <Button size="sm" variant="secondary" onClick={() => void recheck(opt.backend)} disabled={busy}>

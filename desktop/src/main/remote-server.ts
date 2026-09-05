@@ -16,9 +16,10 @@ import os from 'os';
 import { randomUUID } from 'crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { SessionManager } from './session-manager';
-// Value import (not type-only): the "Run in terminal" case below needs the same
-// $SHELL resolution and display name the desktop handler uses.
-import { resolveShellCommand, shellDisplayName } from './session-manager';
+// Value import (not type-only): the "Run in terminal" case below runs the SAME
+// validation the desktop handler runs — a remote client's payload is the least
+// trusted input either of them sees.
+import { prepareRunInTerminal, shellDisplayName } from './session-manager';
 import type { HookRelay } from './hook-relay';
 import type { RemoteConfig } from './remote-config';
 import type { LocalSkillProvider } from './skill-provider';
@@ -885,6 +886,18 @@ export class RemoteServer {
     switch (type) {
       // --- Request/response ---
       case 'session:create': {
+        // A remote client may not mint a raw shell. This payload is passed
+        // through to createSession unfiltered, so without this guard a remote
+        // browser could ask for `{provider:'shell', cwd:'/'}` and then drive it
+        // with session:input — a bare shell on the host with no permission
+        // system, no prompt and no transcript in front of it. Before the shell
+        // provider existed the worst that payload could reach was Claude Code's
+        // own TUI, which asks before it acts. "Run in terminal" (below) is the
+        // only sanctioned way to make one, and it decides the command itself.
+        if (payload?.provider === 'shell') {
+          this.respond(client.ws, type, id, { ok: false, error: 'A terminal session can only be opened from the app itself.' });
+          break;
+        }
         const info = this.sessionManager.createSession(payload);
         this.respond(client.ws, type, id, info);
         // session:created broadcast is handled by the onSessionCreated event listener
@@ -1327,10 +1340,11 @@ export class RemoteServer {
       // sees it appear through the session:created broadcast.
       case 'engine:run-in-terminal': {
         try {
-          const command = (payload?.command ?? payload) as string;
-          if (typeof command !== 'string' || !command.trim()) {
-            throw new Error('engine:run-in-terminal was given no command to type.');
-          }
+          // This payload arrives over the network. A `\r` anywhere inside the
+          // string would make the host RUN the command with nobody at the
+          // keyboard, so the same validator the desktop handler uses runs here
+          // — see prepareRunInTerminal in session-manager.ts.
+          const checked = prepareRunInTerminal(payload?.command ?? payload);
           // The host's newest live session names the folder the user is working
           // in; with none, createSession falls back to the home folder.
           let cwd = '';
@@ -1338,11 +1352,11 @@ export class RemoteServer {
             if (s.status !== 'destroyed') cwd = s.cwd;
           }
           const info = this.sessionManager.createSession({
-            name: shellDisplayName(resolveShellCommand()),
+            name: shellDisplayName(checked.shell),
             cwd,
             skipPermissions: false,
             provider: 'shell',
-            initialCommand: command,
+            initialCommand: checked.command,
           });
           this.respond(client.ws, type, id, { sessionId: info.id });
         } catch (err: any) {

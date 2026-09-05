@@ -104,6 +104,11 @@ export function canPtySend(
   // skill invocation) and would type — and, with its trailing Enter, RUN — that
   // text in the user's own shell. The app types into a shell session exactly
   // once, at creation, and never again.
+  //
+  // This gate is not the whole of that promise: App.tsx's cyclePermission calls
+  // session.sendInput RAW, without asking here, so it carries its own shell
+  // check. Any new raw sendInput must do the same — the ones that route through
+  // guardedPtySend are covered by this line.
   if (session.provider === 'shell') return false;
   if (chat?.attentionState === 'session-died') return false;
   return true;

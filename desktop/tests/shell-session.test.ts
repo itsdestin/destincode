@@ -8,7 +8,9 @@
 // Claude Code session, or the app typing "/reload-plugins" at someone's prompt.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'os';
-import { SessionManager, resolveShellCommand, shellDisplayName } from '../src/main/session-manager';
+import fs from 'fs';
+import path from 'path';
+import { SessionManager, resolveShellCommand, shellDisplayName, prepareRunInTerminal } from '../src/main/session-manager';
 
 const tmpDir = os.tmpdir();
 
@@ -169,6 +171,134 @@ describe('shell sessions', () => {
         // text "/reload-plugins" plus an Enter would be typed into — and run by
         // — the user's shell.
         expect(inputMessages()).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  // THE property this feature rests on. The app deliberately does not APPEND a
+  // carriage return, because pressing Enter is the user's decision — but "we
+  // didn't add one" is not the same as "there isn't one". Measured on real
+  // bash, zsh and fish: a \r ALREADY INSIDE the command runs it with nobody at
+  // the keyboard. The command reaches this validator from a WebSocket frame a
+  // remote browser controls, and (in future) from a prerequisite table that
+  // could be CRLF-shaped on Windows.
+  // The validator only protects what routes through it. This is the assertion
+  // that nothing builds a shell session around it.
+  describe('every way to open a shell goes through the validator', () => {
+    const mainSrc = (f: string) => fs.readFileSync(path.join(__dirname, '..', 'src', 'main', f), 'utf8');
+
+    it('both entry points call it', () => {
+      expect(mainSrc('ipc-handlers.ts')).toContain('prepareRunInTerminal(command)');
+      expect(mainSrc('remote-server.ts')).toContain('prepareRunInTerminal(payload?.command ?? payload)');
+    });
+
+    it('and there is no third way to build one', () => {
+      // `provider: 'shell'` in main/ must appear exactly twice — once per entry
+      // point. A third occurrence is a path that skipped the checks.
+      const files = ['ipc-handlers.ts', 'remote-server.ts', 'session-manager.ts'];
+      // Whole lines only, so a mention inside a comment is not miscounted as a
+      // call site.
+      const sites = files.flatMap((f) =>
+        mainSrc(f).split('\n')
+          .filter((l) => l.trim() === "provider: 'shell',")
+          .map(() => f));
+      expect(sites).toEqual(['ipc-handlers.ts', 'remote-server.ts']);
+    });
+
+    it('a long command cannot be half-typed onto the prompt', () => {
+      // pty-worker's passthrough path (everything not ending in \r — which is
+      // exactly what a run-in-terminal command is) used to be ONE unchunked
+      // write. Windows ConPTY silently truncates a write over ~600 chars, which
+      // is why the two submit paths beside it chunk at 56. A truncated command
+      // would sit half-typed on the prompt for the user to press Enter on.
+      const worker = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'pty-worker.js'), 'utf8');
+      const passthrough = worker.slice(worker.indexOf('if (!endsCR) {'));
+      expect(passthrough.slice(0, passthrough.indexOf('return;'))).toContain('await writeChunked(text);');
+    });
+
+    it('the remote session:create case refuses a client-supplied shell provider', () => {
+      // Pinned behaviourally in tests/remote-server.test.ts; pinned here as the
+      // shape, because this file is where someone looks when adding a caller.
+      expect(mainSrc('remote-server.ts')).toContain("if (payload?.provider === 'shell')");
+    });
+  });
+
+  describe('refusing a command that would run itself', () => {
+    it('refuses a carriage return, and says so', () => {
+      expect(() => prepareRunInTerminal('echo a\recho b'))
+        .toThrow(/carriage return at position 6/);
+    });
+
+    it('refuses every other control character too', () => {
+      // \n and ; are NOT here on purpose — a line editor accepts on CR, not LF,
+      // and a real install command can contain a semicolon. \n is refused only
+      // because a multi-line command has no business on a single prompt.
+      expect(() => prepareRunInTerminal('echo a\necho b')).toThrow(/line feed/);
+      expect(() => prepareRunInTerminal('echo a\techo b')).toThrow(/tab/);
+      expect(() => prepareRunInTerminal('echo \x1b[31m')).toThrow(/control character \(U\+001B\)/);
+      expect(() => prepareRunInTerminal('echo \x00')).toThrow(/control character \(U\+0000\)/);
+      expect(() => prepareRunInTerminal('echo \x7f')).toThrow(/control character \(U\+007F\)/);
+    });
+
+    it('refuses nothing at all', () => {
+      expect(() => prepareRunInTerminal('')).toThrow(/no command/);
+      expect(() => prepareRunInTerminal('   ')).toThrow(/no command/);
+      expect(() => prepareRunInTerminal(undefined)).toThrow(/no command/);
+      expect(() => prepareRunInTerminal({ command: 'x' })).toThrow(/no command/);
+    });
+
+    it('accepts a real install command, semicolons and quotes and all', () => {
+      const cmd = 'sudo pacman -S --needed rocm-hip-runtime hipblas; echo "done"';
+      expect(prepareRunInTerminal(cmd).command).toBe(cmd);
+      expect(prepareRunInTerminal(cmd).shell).toBe(resolveShellCommand());
+    });
+
+    it('refuses when the resolved shell is not installed, naming the path', () => {
+      // Otherwise createSession returns before the spawn is confirmed, the IPC
+      // call RESOLVES, and the user sees a pill flash and vanish with no error.
+      if (process.platform === 'win32') return;   // Windows spawns a bare name
+      const realShell = process.env.SHELL;
+      process.env.SHELL = '/definitely/not/a/shell';
+      try {
+        expect(() => prepareRunInTerminal('echo hi')).toThrow(/\/definitely\/not\/a\/shell.*does not exist/);
+      } finally {
+        if (realShell === undefined) delete process.env.SHELL;
+        else process.env.SHELL = realShell;
+      }
+    });
+  });
+
+  describe('a shell that never says anything', () => {
+    it('types the command anyway after the fallback wait', async () => {
+      // A $SHELL that reads input before it writes would otherwise leave the
+      // command untyped and the terminal blank forever.
+      vi.useFakeTimers();
+      try {
+        manager.createSession({
+          name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+          initialCommand: 'echo hi',
+        });
+        expect(inputMessages()).toEqual([]);
+        await vi.advanceTimersByTimeAsync(3100);
+        expect(inputMessages()).toHaveLength(1);
+        expect(inputMessages()[0].data).toBe('echo hi');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('does not type it twice when output arrives after the fallback fired', async () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({
+          name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+          initialCommand: 'echo hi',
+        });
+        await vi.advanceTimersByTimeAsync(3100);
+        handlers.message({ type: 'data', data: '$ ' });
+        expect(inputMessages()).toHaveLength(1);
       } finally {
         vi.useRealTimers();
       }

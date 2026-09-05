@@ -167,9 +167,18 @@ async function handleInput(text) {
   trace('IN', `len=${inLen} endsCR=${endsCR} head=${tracePreview(text, 40)} tail=${tracePreview(typeof text === 'string' ? text.slice(-20) : '', 60)}`);
 
   // Path 1: Passthrough — anything not ending in \r (single bytes, raw
-  // escapes, in-progress typing). Pass through unchanged.
+  // escapes, in-progress typing). Pass through unchanged, but CHUNKED.
+  //
+  // WHY chunked (2026-09-05): Windows ConPTY silently truncates a single write
+  // of more than ~600 chars — the same fact Paths 2 and 3 below are built
+  // around. This path used to be one unbounded write because everything taking
+  // it was a keystroke or a short escape. A shell session's "Run in terminal"
+  // command also takes it (it deliberately carries no trailing \r), and a long
+  // one would land HALF-TYPED on the user's prompt for them to press Enter on.
+  // writeChunked is a single direct write for anything under CHUNK_SIZE, so
+  // every keystroke and escape sequence behaves exactly as before.
   if (!endsCR) {
-    ptyProcess.write(text);
+    await writeChunked(text);
     trace('PASSTHROUGH', `len=${inLen}`);
     return;
   }

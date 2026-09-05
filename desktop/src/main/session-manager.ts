@@ -59,6 +59,60 @@ export function shellDisplayName(command: string): string {
   return path.basename(command).replace(/\.(exe|cmd|bat)$/i, '');
 }
 
+// Characters that must never appear in a command the app types onto a shell
+// prompt. TAB is in the set too: at a prompt it triggers completion, which can
+// rewrite the very line the user is about to press Enter on.
+const CONTROL_CHARS = /[\r\n\t\x00-\x08\x0b-\x1f\x7f]/;
+const CONTROL_CHAR_NAMES: Record<string, string> = {
+  '\r': 'a carriage return',
+  '\n': 'a line feed',
+  '\t': 'a tab',
+};
+
+/**
+ * Resolve the shell for a "Run in terminal" session and refuse anything that
+ * must not be typed into it. THROWS with the real reason; both entry points
+ * (the Electron handler and the remote WebSocket case) go through here so
+ * neither can skip a check the other makes.
+ *
+ * WHY a carriage return is the whole point of this function: the command is
+ * written to the PTY verbatim and the app deliberately does not append a
+ * carriage return, because pressing Enter is the user's decision. But a `\r`
+ * ALREADY INSIDE the string is the same keypress — measured on real bash, zsh
+ * and fish, `echo a\recho b` runs on its own with nobody touching the keyboard.
+ * "We didn't add one" is not the same property as "there isn't one", and the
+ * command reaches here from a WebSocket frame an authenticated remote browser
+ * controls, and (in future) from a prerequisite table that could be CRLF-shaped
+ * on Windows. `\n` and `;` are safe — a line editor accepts on CR, not LF —
+ * and are deliberately still allowed, because a legitimate install command can
+ * contain a semicolon.
+ */
+export function prepareRunInTerminal(command: unknown): { shell: string; command: string } {
+  if (typeof command !== 'string' || !command.trim()) {
+    throw new Error('Run in terminal was given no command to type.');
+  }
+  const found = CONTROL_CHARS.exec(command);
+  if (found) {
+    const ch = found[0];
+    const name = CONTROL_CHAR_NAMES[ch] ?? `a control character (U+${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')})`;
+    throw new Error(
+      `Run in terminal refused this command: it contains ${name} at position ${found.index}, ` +
+      `which would run it without you pressing Enter. Copy the command instead.`
+    );
+  }
+  const shell = resolveShellCommand();
+  // A $SHELL pointing at a shell that is no longer installed would otherwise
+  // spawn-fail asynchronously, AFTER this call has already resolved — the user
+  // would see Settings close, a session pill flash and vanish, and no error at
+  // all. Name the actual path so the message is actionable.
+  // Only absolute paths are checked: Windows spawns the bare name
+  // 'powershell.exe' and lets the PTY worker resolve it through PATH.
+  if (path.isAbsolute(shell) && !fs.existsSync(shell)) {
+    throw new Error(`Run in terminal could not start a terminal: your shell (${shell}) does not exist on this computer.`);
+  }
+  return { shell, command };
+}
+
 interface ManagedSession {
   info: SessionInfo;
   // Native sessions have NO PTY worker — their turn loop lives in a
@@ -252,21 +306,32 @@ export class SessionManager extends EventEmitter {
     // wait for output to go quiet, not just to start.)
     let pendingCommand: string | null =
       isShell && opts.initialCommand ? opts.initialCommand : null;
+    const flushCommand = () => {
+      if (pendingCommand === null) return;
+      const command = pendingCommand;
+      pendingCommand = null;
+      clearTimeout(commandFallbackTimer);
+      // NO trailing carriage return: the app never runs a set-up command for
+      // the user. The line sits on the prompt for them to read, edit or Enter.
+      this.sendInput(id, command);
+    };
+    // Backstop for a shell that reads input before it writes anything: without
+    // it the command would never be typed and the terminal would sit blank
+    // forever with no hint of what the user was meant to run. Waiting is still
+    // the rule; this only decides how long "waiting" lasts.
+    const commandFallbackTimer = pendingCommand === null
+      ? undefined
+      : setTimeout(flushCommand, SessionManager.COMMAND_FALLBACK_MS);
 
     worker.on('message', (msg: any) => {
       switch (msg.type) {
         case 'data':
           this.emit('pty-output', id, msg.data);
-          // Type the command onto the prompt, exactly once, with NO trailing
-          // carriage return: the app never runs a set-up command for the user.
-          // The line sits on the prompt for them to read, edit or Enter.
-          if (pendingCommand !== null) {
-            const command = pendingCommand;
-            pendingCommand = null;
-            this.sendInput(id, command);
-          }
+          // Type the command onto the prompt, exactly once.
+          flushCommand();
           break;
         case 'exit':
+          clearTimeout(commandFallbackTimer);
           if (!this.sessions.has(id)) return;
           const exitingSession = this.sessions.get(id)!;
           exitingSession.info.status = 'destroyed';
@@ -360,6 +425,13 @@ export class SessionManager extends EventEmitter {
   setReloadPluginsGate(gate: (sessionId: string) => boolean): void {
     this.reloadPluginsGate = gate;
   }
+
+  /** How long a shell session waits for its first output before typing the
+   *  command anyway. Measured (test-engine/probe-shell-command.mjs): fish, the
+   *  slowest of the three shells here, produces its first frame in ~50 ms even
+   *  when it then blocks on a terminal query, so this only fires for a shell
+   *  that writes nothing at all. */
+  private static readonly COMMAND_FALLBACK_MS = 3000;
 
   private static readonly RELOAD_RETRY_MS = 5000;
   private static readonly RELOAD_MAX_RETRIES = 24; // ~2 minutes of deferral

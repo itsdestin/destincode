@@ -2656,8 +2656,10 @@ function AppInner() {
     (mode: ViewMode) => {
       if (!sessionId) return;
       // A shell session is terminal-only. The header hides its toggle, but Ctrl+`
-      // and a remote client's switch-view can still land here, so refuse at the
-      // one place both go through instead of trusting the callers.
+      // still lands here, so refuse rather than trust the callers. (A remote or
+      // Android `switch-view` does NOT come through here — it writes viewModes
+      // directly, up in the uiAction handler — and is neutralised instead by
+      // currentViewMode forcing the terminal for a shell session.)
       if (sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'shell') return;
       setViewModes((prev) => new Map(prev).set(sessionId, mode));
       // On Android, tell the native side to switch views
@@ -2836,6 +2838,16 @@ function AppInner() {
     // ModelAlias union that has access). On other models, CC's Shift+Tab won't
     // surface auto, so showing it would create a click-but-nothing-happens
     // state. The PTY watcher above corrects mismatches within ~1 tick anyway.
+    // A shell session has no permission modes to cycle, and the write below is a
+    // RAW sendInput that bypasses guardedPtySend/canPtySend entirely — its only
+    // other shield is isTypingTarget, which is false whenever xterm does not
+    // hold focus. Open Run in terminal, click the header pill, press Shift+Tab,
+    // and the app types \x1b[Z at the user's own prompt. Inert on a default
+    // bash/zsh/fish, but a bound shift-tab (oh-my-zsh reverse-menu-complete,
+    // fish complete-and-search) edits the line they are about to run. This is
+    // the guard that makes pty-input-gate's "exactly once, at creation, and
+    // never again" true.
+    if (sessionsRef.current.find((x) => x.id === sessionId)?.provider === 'shell') return;
     const canAuto = currentModel === 'opus[1m]';
     const cycle: PermissionMode[] = [
       'normal',
