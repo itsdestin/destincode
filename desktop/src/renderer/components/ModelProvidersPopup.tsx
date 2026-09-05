@@ -99,11 +99,34 @@ function ModelProvidersPopupInner({
               OpenRouter and local models are optional alternatives.
             </p>
 
-            <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
-
-            <ChatGptBlock />
-
-            <OpenRouterBlock />
+            {/* Round 4 (2026-09-05, P-1 note): two group headings — Cloud Models
+                and Local Models — and no per-provider eyebrow. The three cloud
+                cards sit two units apart inside one group. */}
+            <section>
+              <SectionHeader
+                title="Cloud Models"
+                info={{
+                  label: 'About cloud models',
+                  body: (
+                    <>
+                      <p>
+                        Cloud models run on a company's servers. Sign in with a plan you already pay for
+                        (Claude, ChatGPT), or connect OpenRouter or your own API key and pay per use.
+                      </p>
+                      <p>
+                        Each card shows how you're connected and, for a plan, how much of its limits is
+                        left. Your conversations use whichever model you pick in the model picker.
+                      </p>
+                    </>
+                  ),
+                }}
+              />
+              <div className="space-y-2">
+                <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
+                <ChatGptBlock />
+                <OpenRouterBlock />
+              </div>
+            </section>
 
             <LocalModelsBlock />
 
@@ -227,7 +250,7 @@ function ClaudeCodeBlock({
   const claudeUsage = useClaudePlanUsage();
 
   return (
-    <section>
+    <>
       {/* P-1 (2026-09-05): no eyebrow heading — the card's own name is the
           label, and the (i) sits beside it. Same row as ChatGPT and OpenRouter. */}
       <ProviderRow
@@ -257,7 +280,7 @@ function ClaudeCodeBlock({
       >
         {signedIn && state?.authMode !== 'apikey' && <PlanWindows usage={claudeUsage} />}
       </ProviderRow>
-    </section>
+    </>
   );
 }
 
@@ -358,7 +381,7 @@ function ChatGptBlock() {
   );
 
   return (
-    <section>
+    <>
       <ProviderRow
         title="ChatGPT"
         info={{
@@ -388,7 +411,7 @@ function ChatGptBlock() {
       >
         {status?.state === 'signed-in' && <PlanWindows usage={status.usage} />}
       </ProviderRow>
-    </section>
+    </>
   );
 }
 
@@ -425,33 +448,30 @@ function OpenRouterBlock() {
   };
 
   return (
-    <section>
-      <SectionHeader
-        title="OpenRouter/API"
-        info={{
-          label: 'About OpenRouter',
-          body: (
-            <>
-              <p>
-                OpenRouter is a single gateway to hundreds of AI models — GPT, Gemini, Llama, and many
-                more — from different companies.
-              </p>
-              <p>
-                Instead of making a separate account with each one, you get one API key and YouCoded routes
-                your sessions through it. You pay OpenRouter directly for what you use. You can also add your
-                own direct provider keys or a custom endpoint below.
-              </p>
-            </>
-          ),
-        }}
-      />
-
+    <>
       {/* OpenRouter connect state — the "To connect…" instructions + key entry
           now live inside the Connect modal, not an always-on banner. */}
-      {/* Same row as Claude Code and ChatGPT above (P-1, 2026-09-05). */}
-      <div className="mb-3">
+      {/* Same row as Claude Code and ChatGPT above (P-1, 2026-09-05); its (i)
+          moved into the card with the OPENROUTER/API eyebrow's removal (round 4). */}
+      <div>
         <ProviderRow
           title="OpenRouter"
+          info={{
+            label: 'About OpenRouter',
+            body: (
+              <>
+                <p>
+                  OpenRouter is a single gateway to hundreds of AI models — GPT, Gemini, Llama, and many
+                  more — from different companies.
+                </p>
+                <p>
+                  Instead of making a separate account with each one, you get one API key and YouCoded routes
+                  your sessions through it. You pay OpenRouter directly for what you use. You can also add your
+                  own direct provider keys or a custom endpoint below.
+                </p>
+              </>
+            ),
+          }}
           status={openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
           detail={testNote ? { text: testNote.text, tone: testNote.tone === 'ok' ? 'muted' : 'bad' } : null}
           action={connected ? (
@@ -484,7 +504,7 @@ function OpenRouterBlock() {
           onSaved={refresh}
         />
       )}
-    </section>
+    </>
   );
 }
 
