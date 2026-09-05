@@ -33,3 +33,53 @@ export function buildCleanupPrompt(selected: Checkout[]): string {
     + "needs saving or pushing first. Don't remove anything until I say so.\n"
   );
 }
+
+/** Everything a fresh session needs to deal with one branch's unsaved work.
+ *  Carries the file list because "40 uncommitted files" is not something anyone
+ *  can act on, and the kinds because whether it is notes or code changes what to
+ *  do with it. */
+export function buildSaveWorkPrompt(
+  checkout: Checkout,
+  detail: { byKind: Record<string, Array<{ file: string; state: string }>>; commits: Array<{ subject: string }>; lastCommitRel: string | null },
+): string {
+  const groups = Object.entries(detail.byKind)
+    .map(([kind, files]) => `${kind} (${files.length}):\n${files.map((f) => `  ${f.file} — ${f.state}`).join('\n')}`)
+    .join('\n\n');
+
+  const about = detail.commits.length
+    ? `\nWhat the branch was doing, from its most recent changes:\n${detail.commits.slice(0, 5).map((c) => `  ${c.subject}`).join('\n')}\n`
+    : '\nThe branch has no commits of its own beyond master.\n';
+
+  return (
+    `The worktree ${checkout.name} (branch ${checkout.branch ?? 'detached'}) at ${checkout.path} `
+    + `has ${checkout.dirty} uncommitted file(s). Git has no copy of them, so this folder is the `
+    + 'only place they exist.\n\n'
+    + `${groups}\n${about}`
+    + `\nLast commit there was ${detail.lastCommitRel ?? 'unknown'}.\n\n`
+    + 'Please look at what is actually in these files and tell me, in plain terms, what this '
+    + 'work is and whether it is worth keeping. Then recommend what to do with it — finish it, '
+    + 'commit and push it as-is, or discard it. Do not discard anything until I say so.\n'
+  );
+}
+
+/** For a branch that is already saved: what is it, and what is left to do. */
+export function buildReviewPrompt(
+  checkout: Checkout,
+  detail: { commits: Array<{ subject: string }>; lastCommitRel: string | null; pr: { number?: number; state?: string } | null },
+): string {
+  const commits = detail.commits.length
+    ? `Its changes beyond master:\n${detail.commits.map((c) => `  ${c.subject}`).join('\n')}\n`
+    : 'It has no commits beyond master.\n';
+
+  const pr = detail.pr?.number
+    ? `It has pull request #${detail.pr.number} (${detail.pr.state?.toLowerCase()}).\n`
+    : 'It has no pull request.\n';
+
+  return (
+    `Tell me about the branch ${checkout.branch ?? checkout.name} at ${checkout.path}.\n\n`
+    + `${commits}${pr}`
+    + `Last commit ${detail.lastCommitRel ?? 'unknown'}.\n\n`
+    + 'In plain terms: what was this for, is it finished, and what would it take to close it '
+    + 'out? Check the branch itself rather than trusting the summary above.\n'
+  );
+}

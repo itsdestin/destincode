@@ -10,6 +10,8 @@ import { ConfirmDialog } from './ConfirmDialog';
 import { buildCleanupPrompt } from './cleanup-prompt';
 import { WorkspaceBanner } from './WorkspaceBanner';
 import { CopyButton } from './CopyButton';
+import { CheckoutDetail } from './CheckoutDetail';
+import { ResultsPanel } from './ResultsPanel';
 
 /** Most-fragile first. A page sorted alphabetically buries the one row that
  *  matters among twenty-three that don't. */
@@ -22,6 +24,9 @@ export function DevDashboard() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [checkingWorkspace, setCheckingWorkspace] = useState(true);
+  const [runsDir, setRunsDir] = useState<string>('');
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [resultsOpen, setResultsOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -71,7 +76,7 @@ export function DevDashboard() {
     const tick = async () => {
       try {
         const [i, r] = await Promise.all([fetchInstances(), fetchRuns()]);
-        if (!cancelled) { setInstances(i); setRuns(r); }
+        if (!cancelled) { setInstances(i); setRuns(r.runs); setRunsDir(r.runsDir); }
       } catch {
         // The helper is down or restarting. Keep the last known state rather than
         // blanking rows the user is reading; the next tick recovers.
@@ -103,7 +108,9 @@ export function DevDashboard() {
     try {
       await fn();
       setInstances(await fetchInstances());
-      setRuns(await fetchRuns());
+      const r = await fetchRuns();
+      setRuns(r.runs);
+      setRunsDir(r.runsDir);
     } catch (e) {
       say(e instanceof Error ? e.message : String(e));
     }
@@ -117,6 +124,8 @@ export function DevDashboard() {
     if (suite.paid) { setPendingPaid({ id, suite }); return; }
     void act(() => runCheck(id, suiteKey));
   }, [suites, act]);
+
+  const failedCount = useMemo(() => runs.filter((r) => r.status === 'failed').length, [runs]);
 
   const riskyCount = useMemo(
     () => (checkouts ?? []).filter(
@@ -134,7 +143,10 @@ export function DevDashboard() {
       <div className="mx-auto max-w-5xl pb-2">
         <header className="mb-4 flex items-center gap-3">
           <h1 className="flex-1 text-base text-fg">Dev dashboard</h1>
-          {notice && <span className="text-3xs text-fg-muted">{notice}</span>}
+          {notice && <span className="max-w-xl truncate text-3xs text-fg-muted">{notice}</span>}
+          <Button variant="secondary" size="sm" onClick={() => setResultsOpen((v) => !v)}>
+            {resultsOpen ? 'Hide results' : `Results${failedCount ? ` · ${failedCount} failed` : ''}`}
+          </Button>
           <Button
             variant="secondary"
             size="sm"
@@ -146,6 +158,16 @@ export function DevDashboard() {
 
         <WorkspaceBanner state={workspace} checking={checkingWorkspace} onError={say} />
 
+        {resultsOpen && (
+          <ResultsPanel
+            runs={runs}
+            suites={suites}
+            runsDir={runsDir}
+            onNotice={say}
+            onClose={() => setResultsOpen(false)}
+          />
+        )}
+
         <div className="layer-surface overflow-hidden rounded-lg border border-edge-dim">
           {error && (
             <div className="p-3">
@@ -154,8 +176,8 @@ export function DevDashboard() {
           )}
           {!error && sorted === null && <LoadingState what="branch copies" />}
           {!error && sorted?.map((c) => (
+            <div key={c.id}>
             <CheckoutRow
-              key={c.id}
               checkout={c}
               instance={instances.find((i) => i.id === c.id)}
               suites={suites}
@@ -169,7 +191,14 @@ export function DevDashboard() {
               onStart={(id) => void act(() => startInstance(id))}
               onStop={(id) => void act(() => stopInstance(id))}
               onRun={doRun}
+              expanded={expanded === c.id}
+              onExpand={() => setExpanded(expanded === c.id ? null : c.id)}
+              onOpenResults={() => setResultsOpen(true)}
             />
+            {expanded === c.id && (
+              <CheckoutDetail checkout={c} onNotice={say} onChanged={() => void load()} />
+            )}
+            </div>
           ))}
         </div>
 

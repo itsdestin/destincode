@@ -12,6 +12,7 @@ import { readAppearance, listThemes, readTheme, resolveAssetFile, MIME, assetExi
 import * as instances from './instances.mjs';
 import * as suites from './suites.mjs';
 import { workspaceState, verdict } from './workspace.mjs';
+import { checkoutDetail, backupWork } from './detail.mjs';
 
 /** Returns a refusal reason, or null to allow.
  *  WHY both checks: a Host header naming a domain that resolves to 127.0.0.1 would
@@ -146,14 +147,52 @@ export function createServer(opts) {
       }
 
       // ---- check suites ---------------------------------------------------
+      // What is actually IN a checkout. On demand, not in the list: this runs a
+      // diff and shells out to `gh`, far too slow to do 24 times on every load.
+      if (url.pathname.startsWith('/api/checkout/') && url.pathname.endsWith('/detail') && req.method === 'GET') {
+        const id = url.pathname.slice('/api/checkout/'.length, -'/detail'.length);
+        const checkout = await checkoutById(id);
+        if (!checkout) { json(res, 404, { error: `no checkout with id ${id}` }); return; }
+        json(res, 200, { detail: await checkoutDetail(checkout) });
+        return;
+      }
+
+      // The one action the page performs rather than prompts for. Purely additive:
+      // it records the files on a new branch using a throwaway index, so the
+      // working tree, the real index and HEAD are left exactly as found.
+      if (url.pathname === '/api/checkout/backup' && req.method === 'POST') {
+        const { id } = await readBody(req);
+        const checkout = await checkoutById(id);
+        if (!checkout) { json(res, 404, { error: `no checkout with id ${id}` }); return; }
+        json(res, 200, { result: await backupWork(checkout) });
+        return;
+      }
+
       if (url.pathname === '/api/suites' && req.method === 'GET') {
         json(res, 200, {
-          suites: suites.SUITES.map(({ key, label, weight, paid }) => ({ key, label, weight, paid })),
+          suites: suites.SUITES.map(({ key, label, weight, paid, does, covers }) => ({
+            key, label, weight, paid, does, covers,
+          })),
         });
         return;
       }
       if (url.pathname === '/api/checks/runs' && req.method === 'GET') {
-        json(res, 200, { runs: suites.listRuns() });
+        // `full=0` drops the captured output, which is what the polling list wants
+        // — sending 512 KB of build log every two seconds is not a status poll.
+        const full = url.searchParams.get('full') !== '0';
+        const all = suites.listRuns();
+        json(res, 200, {
+          runsDir: suites.runsDir(),
+          runs: full ? all : all.map(({ output, ...rest }) => ({ ...rest, outputBytes: output?.length ?? 0 })),
+        });
+        return;
+      }
+
+      if (url.pathname.startsWith('/api/checks/run/') && req.method === 'GET') {
+        const runId = url.pathname.slice('/api/checks/run/'.length);
+        const run = suites.getRun(runId);
+        if (!run) { json(res, 404, { error: `no run with id ${runId}` }); return; }
+        json(res, 200, { run });
         return;
       }
       if (url.pathname === '/api/checks/run' && req.method === 'POST') {

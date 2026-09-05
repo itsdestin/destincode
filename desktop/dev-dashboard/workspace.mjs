@@ -36,6 +36,18 @@ function fetchAgeSeconds(dir) {
   return null;
 }
 
+async function gitRaw(dir, args, timeoutMs = 15000) {
+  try {
+    const { stdout } = await run('git', ['-C', dir, ...args], {
+      maxBuffer: 8 * 1024 * 1024,
+      timeout: timeoutMs,
+    });
+    return stdout.replace(/\n$/, '');
+  } catch {
+    return null;
+  }
+}
+
 async function repoState(dir, name, { fetch }) {
   if (!fs.existsSync(path.join(dir, '.git'))) return null;
 
@@ -61,7 +73,10 @@ async function repoState(dir, name, { fetch }) {
     }
   }
 
-  const dirtyOut = await git(dir, ['status', '--porcelain']);
+  // Strip ONLY the trailing newline: status encodes state in the first two
+  // columns, and an unstaged edit is " M path", so trim() would eat the leading
+  // space of the first line and that one filename would lose a character.
+  const dirtyOut = await gitRaw(dir, ['status', '--porcelain']);
   const dirtyFiles = dirtyOut ? dirtyOut.split('\n').filter(Boolean) : [];
 
   // Which dirty files would actually STOP a pull. A file merely untracked or

@@ -51,15 +51,47 @@ export interface Suite {
   label: string;
   weight: string;
   paid: boolean;
+  does?: string;
+  covers?: string;
 }
+
+export interface DetailFile {
+  file: string;
+  kind: string;
+  state: string;
+  added: number | null;
+  removed: number | null;
+}
+
+export interface CheckoutDetailData {
+  id: string;
+  files: DetailFile[];
+  byKind: Record<string, DetailFile[]>;
+  commits: Array<{ sha: string; subject: string; when: string; author: string }>;
+  lastCommitIso: string | null;
+  lastCommitRel: string | null;
+  pr: { number?: number; title?: string; state?: string; url?: string; isDraft?: boolean; unavailable?: boolean } | null;
+  totals: { files: number; added: number; removed: number };
+}
+
+/** A union, not a bag of optionals: a backup either happened and has a note, or
+ *  it did not and has a reason. Declaring both as always-present was a type that
+ *  lied about the value, and every caller had to guess which field was real. */
+export type BackupResult =
+  | { ok: true; branch: string; sha: string; pushed: boolean; filesBackedUp: number; note: string }
+  | { ok: false; error: string };
 
 export interface Run {
   runId: string;
   suiteKey: string;
   checkoutId: string;
+  checkoutName?: string;
+  checkoutBranch?: string | null;
+  command?: string;
   status: 'running' | 'passed' | 'failed';
   exitCode: number | null;
   output: string;
+  outputBytes?: number;
   startedAt: number;
   endedAt: number | null;
 }
@@ -103,14 +135,25 @@ export const stopInstance = async (id: string): Promise<boolean> =>
 export const fetchSuites = async (): Promise<Suite[]> =>
   (await get<{ suites: Suite[] }>('/api/suites')).suites;
 
-export const fetchRuns = async (): Promise<Run[]> =>
-  (await get<{ runs: Run[] }>('/api/checks/runs')).runs;
+/** `full` false drops the captured output — sending 512 KB of build log on a
+ *  two-second poll is not a status check. The results panel fetches one run whole. */
+export const fetchRuns = async (full = false): Promise<{ runs: Run[]; runsDir: string }> =>
+  get<{ runs: Run[]; runsDir: string }>(`/api/checks/runs${full ? '' : '?full=0'}`);
 
 /** `fetch` false skips the network hop for a fast first paint; the page then asks
  *  again with the fetch, so a number on screen is never a remembered one passed
  *  off as current. */
 export const fetchWorkspace = async (doFetch = true): Promise<WorkspaceState> =>
   get<WorkspaceState>(`/api/workspace${doFetch ? '' : '?fetch=0'}`);
+
+export const fetchDetail = async (id: string): Promise<CheckoutDetailData> =>
+  (await get<{ detail: CheckoutDetailData }>(`/api/checkout/${encodeURIComponent(id)}/detail`)).detail;
+
+export const backupCheckout = async (id: string): Promise<BackupResult> =>
+  (await post<{ result: BackupResult }>('/api/checkout/backup', { id })).result;
+
+export const fetchRun = async (runId: string): Promise<Run> =>
+  (await get<{ run: Run }>(`/api/checks/run/${encodeURIComponent(runId)}`)).run;
 
 export const runCheck = async (id: string, suite: string, confirmSpend = false): Promise<Run> =>
   (await post<{ run: Run }>('/api/checks/run', { id, suite, confirmSpend })).run;

@@ -34,6 +34,59 @@ An offline check reports "could not check for updates". It never reports a
 remembered number as current — that would be a lie with the same shape as the bug
 the banner exists to catch.
 
+## What each row can actually do
+
+Click a row's name to open it. That is where "it says Unsaved work — so what?" gets
+answered:
+
+- **Which files**, grouped by what they ARE (notes, code, pictures, settings) with
+  each one marked new or edited, because "40 uncommitted files" is not something
+  anyone can act on. `site-themes` turned out to be mostly regenerated build output
+  plus four brand-new theme packs that existed nowhere else.
+- **What the branch was for** — its own commit subjects, so a name like
+  `leu-t13-manifest` stops being a mystery.
+- **How long it has sat**, and whether it has a pull request.
+- **Back this up to GitHub** — the one action the page performs rather than
+  prompts for. See below.
+- **A copyable prompt** carrying the full file list, ready to paste into a new
+  conversation.
+
+## The one thing it does, and why only this one
+
+**Back this up to GitHub** records the uncommitted files as a new `wip/` branch and
+pushes it. It is the only action here that changes anything, because it is the only
+one that cannot lose anything: it is purely additive.
+
+It builds the commit with git plumbing against a **throwaway index**, so the working
+tree, the real index, HEAD and the current branch are left byte-for-byte as found.
+The files stay on disk, still uncommitted, exactly where a session working in that
+folder expects them — and a copy now also exists on GitHub.
+
+The obvious implementation (`checkout -b`, `add`, `commit`, `checkout` back) is
+WRONG and was written first: committing and then switching back removes those files
+from the working tree, so a session editing that folder would watch its work
+disappear. `tests/dev-dashboard-detail.test.ts` pins the working tree before and
+after; that test is why it is not shipped that way.
+
+Everything destructive — removing worktrees, deleting branches, discarding files —
+stays a copyable prompt. A judgement about whether some work matters is not
+something a button should make.
+
+## Where check results go
+
+They are written to `~/.youcoded/dev-dashboard/runs/` as one JSON file per run, and
+the **Results** button in the header opens them. They survive restarting this tool,
+which they did not before — a check you ran an hour ago is exactly what you want
+when something breaks.
+
+Each result carries what ran, its exit code, how long it took, and everything it
+printed. A failed one offers **Copy a prompt to fix this**, which carries the tail
+of the output (where every one of our tools puts its verdict) plus a plain-language
+note on what that check actually does.
+
+The suite menu states each check's weight, and the results panel states in plain
+words what each one is for — the labels alone were jargon.
+
 ## Three pieces
 
 | Piece | Where | What it is |

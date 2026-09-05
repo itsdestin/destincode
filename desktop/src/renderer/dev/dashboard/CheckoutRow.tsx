@@ -1,6 +1,6 @@
 import { Button, Checkbox, Select } from '../../components/ui';
-import type { Checkout, Instance, Run, Suite } from './api';
 import { Disclosure } from './Disclosure';
+import type { Checkout, Instance, Run, Suite } from './api';
 import { StatusPill, pillDetail } from './StatusPill';
 
 const VERDICT: Record<Run['status'], (r: Run) => string> = {
@@ -13,7 +13,7 @@ const VERDICT: Record<Run['status'], (r: Run) => string> = {
 
 export function CheckoutRow({
   checkout, instance, suites, run, selected,
-  onToggle, onStart, onStop, onRun,
+  onToggle, onStart, onStop, onRun, expanded, onExpand, onOpenResults,
 }: {
   checkout: Checkout;
   instance?: Instance;
@@ -24,6 +24,9 @@ export function CheckoutRow({
   onStart: (id: string) => void;
   onStop: (id: string) => void;
   onRun: (id: string, suiteKey: string) => void;
+  expanded: boolean;
+  onExpand: () => void;
+  onOpenResults: () => void;
 }) {
   const live = instance && instance.status !== 'exited';
 
@@ -36,17 +39,27 @@ export function CheckoutRow({
           ? <span className="w-4 shrink-0" aria-hidden="true" />
           : <Checkbox checked={selected} onChange={() => onToggle(checkout.id)} />}
 
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm text-fg">{checkout.name}</div>
+        {/* The name is the disclosure. "Unsaved work" with nowhere to click is a
+            dead end — this is where "so what?" gets answered. */}
+        <button
+          type="button"
+          className="min-w-0 flex-1 text-left"
+          aria-expanded={expanded}
+          onClick={onExpand}
+        >
+          <div className="truncate text-sm text-fg">
+            <span className="mr-1 inline-block w-2 text-fg-faint">{expanded ? '▾' : '▸'}</span>
+            {checkout.name}
+          </div>
           {/* The measurements are VISIBLE, not in a tooltip. Destin drives this
               machine by touch, where `title=` never fires — load-bearing copy in a
               hover is copy he can never read (.claude/rules/narrow-viewport.md). */}
-          <div className="truncate text-3xs text-fg-muted">
+          <div className="truncate pl-3 text-3xs text-fg-muted">
             {checkout.missing
               ? 'folder is gone — registered but not on disk'
               : `${checkout.branch ?? 'no branch (detached)'} · ${pillDetail(checkout)}`}
           </div>
-        </div>
+        </button>
 
         <StatusPill status={checkout.status} isMain={checkout.isMain} />
 
@@ -94,13 +107,15 @@ export function CheckoutRow({
       )}
 
       {run && (
-        <div className="mt-1.5 flex items-baseline gap-3 pl-8">
-          <span className="shrink-0 text-3xs text-fg-2">
+        <div className="mt-1.5 flex items-baseline gap-3 pl-8 text-3xs">
+          <span className="shrink-0 text-fg-2">
             {suites.find((s) => s.key === run.suiteKey)?.label ?? run.suiteKey}: {VERDICT[run.status](run)}
           </span>
-          {run.status !== 'running' && run.output && (
-            <Disclosure summary="Show details">{run.output}</Disclosure>
-          )}
+          {/* The verdict points at the results panel rather than repeating the
+              output inline. One place holds every run, and it survives a restart. */}
+          <button type="button" className="text-fg-muted underline decoration-dotted underline-offset-2 hover:text-fg-2" onClick={onOpenResults}>
+            see the output
+          </button>
         </div>
       )}
     </div>
