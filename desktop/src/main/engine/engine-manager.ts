@@ -22,7 +22,7 @@ import { detectGpu, backendOptions, gpuDeviceName } from '../models/gpu-detector
 import type { GpuVendor } from '../../shared/model-manager-types';
 import { checkRocmPrereqs } from './rocm-prereqs';
 import type {
-  EngineBackend, EngineInstallProgress, EngineStatus, EngineModel, BackendOption,
+  EngineBackend, EngineInstallProgress, EngineStatus, EngineModel, BackendOption, ReplyTimings,
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
 import type { InstalledLocalModel } from '../../shared/model-manager-types';
@@ -35,6 +35,11 @@ export interface LocalEngineHook {
   fetchImpl(): typeof fetch;          // supervisor.trackedFetch — idle accounting sees every request
   /** Can the router actually SERVE this model right now? Fails OPEN. */
   ensureServable(modelId: string): Promise<boolean>;
+  /** Report how fast a finished reply ran, straight off the engine's final
+   *  streamed frame — or `null` when that frame carried no timings, which
+   *  CLEARS the reading rather than leaving the previous reply's number
+   *  standing under a newer one. Feeds the engine card's fact line. */
+  recordReply(timings: ReplyTimings | null): void;
 }
 
 /** Pick the asset to install: the preferred backend if it ships an asset for
@@ -266,6 +271,20 @@ export class EngineManager extends EventEmitter {
     } catch { return null; }
   }
 
+  /** The last reply we could actually measure. `undefined`, never a zero, until
+   *  one has been: "0 read / 0 write per second" is a claim about the machine,
+   *  and it would be on screen for every user who has not sent a message yet. */
+  private lastReply: ReplyTimings | undefined;
+
+  /** Called by ProviderRegistry's local fetch tap at the end of every local
+   *  reply. The push is the whole point — status() is pull-only, so without it
+   *  the card would keep last week's number until some unrelated engine event
+   *  happened to refetch. */
+  recordReply(timings: ReplyTimings | null): void {
+    this.lastReply = timings ?? undefined;
+    this.emit('status-changed');
+  }
+
   status(): EngineStatus {
     const cfg = readEngineConfig(this.home);
     const inst = this.currentInstall();
@@ -277,6 +296,11 @@ export class EngineManager extends EventEmitter {
       // switching backend is reflected in the very next status.
       backendOptions: this.currentBackendOptions(inst),
       deviceName: deviceNameOf(inst),
+      // Both `undefined` until they have an answer, for the same reason
+      // deviceName is: the card must not assert "nothing loaded" or a speed
+      // about an engine it has not asked yet.
+      loadedModelsBytes: this.supervisor?.loadedModelsBytes(),
+      lastReply: this.lastReply,
       installed: inst !== null,
       installedVersion: inst?.version ?? null,
       pinnedVersion: ENGINE_VERSION,
@@ -532,6 +556,7 @@ export class EngineManager extends EventEmitter {
         return this.supervisor!.ensureRunning();
       },
       ensureServable: async (modelId: string) => this.ensureServable(modelId),
+      recordReply: (timings) => this.recordReply(timings),
       // Bound lazily: the supervisor may not exist yet when the registry is
       // constructed; by the time the AI SDK fetches, ensureRunning built it.
       fetchImpl: () => (input: any, init?: any) => {

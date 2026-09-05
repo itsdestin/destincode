@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseProgressChunk,
+  parseTimingsChunk,
   scanPrefillProgress,
   withPrefillProgress,
   toReport,
@@ -400,5 +401,190 @@ describe('prefillLabel — 100% is reserved for actually finished', () => {
 
   it('over-reporting still clamps to 100, not 103', () => {
     expect(prefillLabel({ promptTokens: 100, processed: 130, source: 'prompt' })).toContain('100% of 100 tokens');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T19 — the reply-speed reading behind the engine card's fact line.
+//
+// The two payloads below are REAL, captured 2026-09-05 from the PINNED b10665
+// build (`llama-server --models-dir … -c 4096 -ngl 0`, Qwen3.5-2B-Q8_0, one
+// streamed /v1/chat/completions). They are pasted verbatim, not reconstructed:
+// the `timings` block is a contract with an external server, and a fixture
+// invented to agree with the parser would prove nothing about b10665.
+//
+// Both request shapes were captured because the block MOVES between them:
+//   - with `stream_options: {include_usage: true}` (what provider-registry
+//     always sends) it rides a separate `"choices":[]` usage frame;
+//   - without it, it rides the last content frame, the one with finish_reason.
+// ---------------------------------------------------------------------------
+
+/** Verbatim final frame, b10665, WITH include_usage (our production shape). */
+const REAL_FINAL_FRAME_WITH_USAGE = {
+  choices: [],
+  created: 1788649092,
+  id: 'chatcmpl-J3Ct4l2uk0HGAbkBS3dffqtfbBgngzdI',
+  model: 'Qwen3.5-2B-Q8_0',
+  system_fingerprint: 'b10665-ca3d5a3e1',
+  object: 'chat.completion.chunk',
+  usage: { completion_tokens: 24, prompt_tokens: 15, total_tokens: 39, prompt_tokens_details: { cached_tokens: 0 } },
+  timings: {
+    cache_n: 0,
+    prompt_n: 15,
+    prompt_ms: 178.45,
+    prompt_per_token_ms: 11.896666666666667,
+    prompt_per_second: 84.05715886803026,
+    predicted_n: 24,
+    predicted_ms: 608.126,
+    predicted_per_token_ms: 26.440260869565215,
+    predicted_per_second: 37.821109441135555,
+  },
+};
+
+/** Verbatim final frame, b10665, WITHOUT include_usage (warm prefix cache). */
+const REAL_FINAL_FRAME_NO_USAGE = {
+  choices: [{ finish_reason: 'length', index: 0, delta: {} }],
+  created: 1788649100,
+  id: 'chatcmpl-FYnVqUd943P9V4R0wH0FCS069Mlff2DW',
+  model: 'Qwen3.5-2B-Q8_0',
+  system_fingerprint: 'b10665-ca3d5a3e1',
+  object: 'chat.completion.chunk',
+  timings: {
+    cache_n: 11,
+    prompt_n: 4,
+    prompt_ms: 81.064,
+    prompt_per_token_ms: 20.266,
+    prompt_per_second: 49.34372841211882,
+    predicted_n: 24,
+    predicted_ms: 623.098,
+    predicted_per_token_ms: 27.091217391304347,
+    predicted_per_second: 36.91233160754809,
+  },
+};
+
+/** A mid-stream content frame from the same capture — carries no timings. */
+const REAL_CONTENT_FRAME = {
+  choices: [{ finish_reason: null, index: 0, delta: { content: 'pong' } }],
+  created: 1788649092,
+  model: 'Qwen3.5-2B-Q8_0',
+  object: 'chat.completion.chunk',
+};
+
+describe('parseTimingsChunk — reads b10665\'s real final frame', () => {
+  it('reads the exact rates off the include_usage frame', () => {
+    // EXACT values, not a range and not a substring: the two fields sit next to
+    // three other per-second-ish numbers (prompt_per_token_ms, predicted_ms,
+    // predicted_per_token_ms), and reading the wrong one is the mistake this
+    // pins. 84.057… is prompt_per_second; 37.821… is predicted_per_second.
+    expect(parseTimingsChunk(REAL_FINAL_FRAME_WITH_USAGE)).toEqual({
+      promptPerSecond: 84.05715886803026,
+      generatePerSecond: 37.821109441135555,
+    });
+  });
+
+  it('reads the same block off the finish_reason frame when usage was not asked for', () => {
+    expect(parseTimingsChunk(REAL_FINAL_FRAME_NO_USAGE)).toEqual({
+      promptPerSecond: 49.34372841211882,
+      generatePerSecond: 36.91233160754809,
+    });
+  });
+
+  it('reports nothing for a frame with no timings block', () => {
+    expect(parseTimingsChunk(REAL_CONTENT_FRAME)).toBeNull();
+    expect(parseTimingsChunk({ prompt_progress: REAL_SEQUENCE[0] })).toBeNull();
+  });
+
+  it('reports nothing rather than half a reading', () => {
+    // The card prints BOTH numbers. One of them alone is not a reading.
+    const { prompt_per_second, ...noPrompt } = REAL_FINAL_FRAME_WITH_USAGE.timings;
+    expect(parseTimingsChunk({ timings: noPrompt })).toBeNull();
+    const { predicted_per_second, ...noPredicted } = REAL_FINAL_FRAME_WITH_USAGE.timings;
+    expect(parseTimingsChunk({ timings: noPredicted })).toBeNull();
+  });
+
+  it('reports nothing for a zero or a divide-by-zero, never that number', () => {
+    // A fully-cached prompt could hand us 0 or Infinity here. "0 read per
+    // second" is a lie about the machine; Infinity renders as "Infinity".
+    for (const bad of [0, -1, Infinity, NaN, null, 'fast']) {
+      expect(parseTimingsChunk({ timings: { ...REAL_FINAL_FRAME_WITH_USAGE.timings, prompt_per_second: bad } })).toBeNull();
+      expect(parseTimingsChunk({ timings: { ...REAL_FINAL_FRAME_WITH_USAGE.timings, predicted_per_second: bad } })).toBeNull();
+    }
+  });
+
+  it('never throws on junk', () => {
+    for (const junk of [null, undefined, 42, 'x', [], { timings: 'soon' }, { timings: null }]) {
+      expect(parseTimingsChunk(junk)).toBeNull();
+    }
+  });
+});
+
+describe('scanPrefillProgress — the reply reading, once per completion', () => {
+  it('reports the reading from a real captured stream exactly once', async () => {
+    const seen: unknown[] = [];
+    await scanPrefillProgress(
+      sseBody([REAL_CONTENT_FRAME, REAL_CONTENT_FRAME, REAL_FINAL_FRAME_WITH_USAGE]),
+      undefined,
+      (t) => seen.push(t),
+    );
+    expect(seen).toEqual([{ promptPerSecond: 84.05715886803026, generatePerSecond: 37.821109441135555 }]);
+  });
+
+  it('reports null for a completion whose final frame carried no timings — clearing a stale number', async () => {
+    const seen: unknown[] = [];
+    await scanPrefillProgress(sseBody([REAL_CONTENT_FRAME, REAL_CONTENT_FRAME]), undefined, (t) => seen.push(t));
+    expect(seen).toEqual([null]);
+  });
+
+  it('says NOTHING about a body that was never a completion stream', async () => {
+    // A /models GET (or any non-completion response) goes through the same
+    // fetch. Reporting null for it would blank a perfectly good reading.
+    const seen: unknown[] = [];
+    await scanPrefillProgress(sseBody([{ data: [{ id: 'a', status: { value: 'loaded' } }] }]), undefined, (t) => seen.push(t));
+    expect(seen).toEqual([]);
+  });
+
+  it('says nothing when the stream ABORTS mid-reply', async () => {
+    // The user pressed stop. An interrupted reply has no honest speed, and the
+    // last one we did measure beats blanking the line.
+    const enc = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode(`data: ${JSON.stringify(REAL_CONTENT_FRAME)}\n\n`));
+        c.error(new Error('aborted'));
+      },
+    });
+    const seen: unknown[] = [];
+    await scanPrefillProgress(body, undefined, (t) => seen.push(t));
+    expect(seen).toEqual([]);
+  });
+
+  it('takes the LAST reading when a stream somehow carries two', async () => {
+    const seen: unknown[] = [];
+    await scanPrefillProgress(
+      sseBody([REAL_FINAL_FRAME_NO_USAGE, REAL_FINAL_FRAME_WITH_USAGE]),
+      undefined,
+      (t) => seen.push(t),
+    );
+    expect(seen).toEqual([{ promptPerSecond: 84.05715886803026, generatePerSecond: 37.821109441135555 }]);
+  });
+});
+
+describe('withPrefillProgress — the reply tap rides the same tee', () => {
+  it('delivers the reading while the caller drains its own branch', async () => {
+    const frames = [REAL_CONTENT_FRAME, REAL_FINAL_FRAME_WITH_USAGE];
+    const base = async () => new Response(sseBody(frames), { status: 200 });
+    const seen: unknown[] = [];
+    const wrapped = withPrefillProgress(base as any, undefined, (t) => seen.push(t));
+    const res = await wrapped('http://x/v1/chat/completions' as any);
+    expect(await res.text()).toBe(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join('') + 'data: [DONE]\n\n');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual([{ promptPerSecond: 84.05715886803026, generatePerSecond: 37.821109441135555 }]);
+  });
+
+  it('does not tee at all when nobody is listening', async () => {
+    // Both taps absent → the wrapper must hand back the original fetch, not a
+    // wrapper that copies every byte of every response for an audience of none.
+    const base = (async () => new Response('x', { status: 200 })) as any;
+    expect(withPrefillProgress(base)).toBe(base);
   });
 });

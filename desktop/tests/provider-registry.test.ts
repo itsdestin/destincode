@@ -172,6 +172,7 @@ describe('ProviderRegistry', () => {
         ensureRunning: async () => 'http://127.0.0.1:9999/v1',
         fetchImpl: () => fetch,
         ensureServable: async () => true, // fails OPEN in production too
+        recordReply: () => {},              // T19: the engine card's speed line
         ...overrides,
       };
     }
@@ -244,6 +245,38 @@ describe('ProviderRegistry', () => {
       expect(body.parallel_tool_calls).toBe(false);
       // The hook is additive — it must not drop the rest of the request body.
       expect(body.model).toBe('m');
+    });
+
+    // T19: the fetch handed to the SDK for a local send must report the finished
+    // reply's speed back to the engine, so the card's fact line can show it.
+    // Reaches through `.config.fetch` (same seam the transformRequestBody tests
+    // use) and drives a REAL captured b10665 stream through it.
+    it('languageModel(local): the SDK\'s fetch reports the reply speed back to the engine', async () => {
+      // Verbatim frames from the pinned b10665 capture (2026-09-05) — see the
+      // same payload in prefill-progress.test.ts.
+      const finalFrame = {
+        choices: [], created: 1788649092, model: 'Qwen3.5-2B-Q8_0',
+        object: 'chat.completion.chunk',
+        usage: { completion_tokens: 24, prompt_tokens: 15, total_tokens: 39 },
+        timings: {
+          cache_n: 0, prompt_n: 15, prompt_ms: 178.45, prompt_per_token_ms: 11.896666666666667,
+          prompt_per_second: 84.05715886803026, predicted_n: 24, predicted_ms: 608.126,
+          predicted_per_token_ms: 26.440260869565215, predicted_per_second: 37.821109441135555,
+        },
+      };
+      const sse = `data: ${JSON.stringify(finalFrame)}\n\ndata: [DONE]\n\n`;
+      const recorded: unknown[] = [];
+      const reg = new ProviderRegistry(new NativeHome(root), secrets, makeHook({
+        fetchImpl: () => (async () => new Response(sse, { status: 200 })) as any,
+        recordReply: (t) => recorded.push(t),
+      }));
+      await reg.init();
+      const model = await reg.languageModel({ providerId: 'local', modelId: 'm' });
+      const res = await (model as any).config.fetch('http://127.0.0.1:9999/v1/chat/completions');
+      // The SDK's branch must still see the bytes the server sent.
+      expect(await res.text()).toBe(sse);
+      await vi.waitFor(() => { expect(recorded).toHaveLength(1); });
+      expect(recorded[0]).toEqual({ promptPerSecond: 84.05715886803026, generatePerSecond: 37.821109441135555 });
     });
 
     it('languageModel(local): WITHOUT serialToolCalls attaches no transformRequestBody hook', async () => {
