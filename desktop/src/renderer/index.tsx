@@ -241,6 +241,27 @@ function Root() {
 // existing buddyMode branches, so <App/> falls through to the main app.
 const __mount = createRoot(document.getElementById('root')!);
 // @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
+// Dev dashboard: a dev-only surface served in a plain browser by
+// dev-dashboard/run.sh. Same shape as the workbench branch below — a URL-query
+// fork inside the one real entry — so it needs no vite.config change, and any
+// production build tree-shakes it away because import.meta.env.DEV is statically
+// false there.
+if (import.meta.env.DEV && __buddyMode === 'dev-dashboard') {
+  void (async () => {
+    const [{ installHttpBridge }, { DevDashboard }, { ThemeProvider }, { ThemeBg }] = await Promise.all([
+      import('./dev/dashboard/http-bridge'),
+      import('./dev/dashboard/DevDashboard'),
+      import('./state/theme-context'),
+      import('./components/ThemeBg'),
+    ]);
+    // The bridge MUST install before ThemeProvider mounts: the provider reads
+    // claude.appearance.get() on mount to learn which theme is active, and with
+    // no bridge it would silently settle for a built-in one.
+    installHttpBridge();
+    __mount.render(<ThemeProvider><ThemeBg /><DevDashboard /></ThemeProvider>);
+  })();
+} else
+// @ts-ignore TS1343 — import.meta is intercepted by Vite at build time
 // Site mode: the landing page embeds the workbench as a live demo, built with
 // `npm run build:site` (VITE_WORKBENCH=1). Any other production build still
 // tree-shakes this whole branch — VITE_WORKBENCH is unset, so the condition is

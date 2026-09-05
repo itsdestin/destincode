@@ -25,7 +25,11 @@
     // Writes). They are real entry points and the only consumer of
     // @xterm/headless — omitting them made that a phantom "unused dependency".
     "test-conpty/**/*.mjs",
-    "test-engine/**/*.mjs"
+    "test-engine/**/*.mjs",
+    // The dev dashboard's helper — run by hand via dev-dashboard/run.sh, never
+    // imported by the app and never packaged (electron-builder.yml's `files:`
+    // allowlist excludes it). Same standing as test-engine/ above.
+    "dev-dashboard/**/*.mjs"
   ],
 
   // .css is in `project` so knip follows CSS `@import "tailwindcss"` etc. —
