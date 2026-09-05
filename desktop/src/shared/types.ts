@@ -620,8 +620,19 @@ export interface PlanStepView {
   done?: number;
   /** Spent by this step so far, summed over its children. */
   usedTokens?: number;
-  /** The live children, one line each while the step runs. */
-  children?: SpecialistRunView[];
+  /** The live children. Each renders as the app's ordinary specialist card —
+   *  Briefing / Activity / Report — nested under this step (Destin, review
+   *  round 1, P-5: "keep our current agent/specialist cards"). */
+  children?: PlanChildView[];
+}
+
+/** One specialist inside a plan step: its run record plus the same three things
+ *  a hired specialist's card shows — the brief it was given, its own events
+ *  (thinking, tool calls, output) and its report. */
+export interface PlanChildView extends SpecialistRunView {
+  prompt?: string;
+  segments?: SubagentSegment[];
+  report?: SpecialistReportView;
 }
 
 export interface PlanView {

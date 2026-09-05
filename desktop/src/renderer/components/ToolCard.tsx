@@ -3,7 +3,7 @@ import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
 import { useSpecialistDefinition, useSpecialistRunByChild } from '../hooks/useSpecialists';
 import { TaskConsentBlock } from './SpecialistEnvelope';
-import { PlanBlock, planDisplay, planIcon } from './plans/PlanCard';
+import { PlanBlock, PlanWritingDetail, planDisplay, planIcon } from './plans/PlanCard';
 import { hasNestedAsk } from '../utils/specialist-cards';
 import { useArtifactOptional } from '../state/ArtifactContext';
 import { Button, Radio, RadioGroup, Textarea } from './ui';
@@ -1370,7 +1370,11 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
         {tool.specialist && tool.status === 'awaiting-approval' ? `${tool.specialist.title} wants to: ` : ''}
         {display.label}
       </span>
-      {display.detail && (
+      {/* A plan being written shows a ticking clock here instead of a static
+          detail, so the card stays ONE line while it works (Destin, P-4). */}
+      {tool.plan?.status === 'writing' ? (
+        <PlanWritingDetail plan={tool.plan} />
+      ) : display.detail && (
         <span className="text-xs text-fg-muted truncate flex-1 min-w-0">{display.detail}</span>
       )}
       {run?.stale && run.status === 'running' && (

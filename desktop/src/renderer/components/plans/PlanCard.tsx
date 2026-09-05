@@ -1,11 +1,15 @@
-import { useEffect, useState } from 'react';
-import type { PlanView, PlanStepView, SpecialistRunView } from '../../../shared/types';
+import { useEffect, useMemo, useState } from 'react';
+import type { PlanView, PlanStepView, PlanChildView, ToolCallState } from '../../../shared/types';
 import { useChatDispatch } from '../../state/chat-context';
 import { Button, Textarea, TextInput } from '../ui';
 import { CheckIcon, FailIcon, StoppedIcon, ChevronIcon } from '../Icons';
 import BrailleSpinner from '../BrailleSpinner';
 import { SpecialistActions } from '../specialists/SpecialistActions';
 import { RunStatusLine, formatElapsed } from '../specialists/RunStatusLine';
+// The Briefing / Activity / Report sections a hired specialist's card already
+// renders. Reused verbatim so a specialist inside a plan looks and behaves like
+// one outside it (Destin, review round 1, P-5).
+import { AgentSections } from '../tool-views/ToolBody';
 import { asString } from '../../utils/tool-input';
 
 /**
@@ -41,7 +45,10 @@ export function planDisplay(input: Record<string, unknown>, plan?: PlanView): { 
   const total = plan.steps.length;
   const done = plan.steps.filter((s) => s.status === 'done').length;
   const detail =
-    plan.status === 'writing' ? 'writing the plan…'
+    // The writing clock is live, so the header renders <PlanWritingDetail>
+    // instead of this static string (Destin, round 1, P-4: one line, like every
+    // other collapsed tool card).
+    plan.status === 'writing' ? ''
     : plan.status === 'proposed' ? 'waiting for your approval'
     : plan.status === 'running' ? `step ${Math.min(done + 1, total)} of ${total}`
     : plan.status === 'paused' ? 'paused — reached its limit'
@@ -138,9 +145,7 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
 
   return (
     <div className={`px-3 pb-2.5 pt-1.5 space-y-2 ${revised ? 'opacity-60' : ''}`} data-testid="plan-block" data-plan-status={plan.status}>
-      {plan.status === 'writing' ? (
-        <WritingLine plan={plan} />
-      ) : (
+      {plan.status === 'writing' ? null : (
         <>
           <ol className="space-y-1" data-testid="plan-steps">
             {plan.steps.map((step, i) => (
@@ -168,7 +173,7 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
             // Amber: the same tone the held-ask and stale-run lines use — a
             // stop that needs a person, not an error.
             <div className="text-xs text-amber-500" data-testid="plan-paused-reason">
-              Paused — {plan.paused.reason} Nothing is spent past the limit you approved.
+              Paused — {plan.paused.reason}
             </div>
           )}
 
@@ -208,30 +213,33 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
               </div>
             </div>
           )}
+          {/* Destin, round 1 (P-5/P-7/P-9): every action row sits bottom-RIGHT,
+              Stop wears the app's red outline, and Stop is LEFT of the button
+              that moves the plan forward. */}
           {plan.status === 'running' && (
-            <div className="flex items-center gap-2">
-              <Button size="sm" variant="secondary" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop the plan'}</Button>
+            <div className="flex items-center justify-end gap-2">
+              <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop the plan'}</Button>
             </div>
           )}
           {plan.status === 'paused' && !adding && (
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center justify-end gap-2 flex-wrap">
+              <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
               <Button size="sm" variant="primary" onClick={() => setAdding(true)} disabled={busy !== null}>Add budget</Button>
-              <Button size="sm" variant="ghost" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
             </div>
           )}
           {plan.status === 'paused' && adding && (
-            <div className="flex items-center gap-2 flex-wrap" data-testid="plan-add-budget">
-              <span className="text-xs text-fg-dim">Allow</span>
+            <div className="flex items-center justify-end gap-2 flex-wrap" data-testid="plan-add-budget">
+              <span className="text-xs text-fg-dim mr-auto">Allow</span>
               <TextInput size="sm" inputMode="numeric" value={Number(extra) ? Number(extra).toLocaleString() : extra} onChange={(e) => setExtra(e.target.value.replace(/[^0-9]/g, ''))} className="w-24" aria-label="More tokens to allow" />
               <span className="text-xs text-fg-dim">more tokens{plan.ceilingUsd != null && plan.ceilingTokens > 0 ? ` (about ${usd((Number(extra) || 0) * (plan.ceilingUsd / plan.ceilingTokens))})` : ''}</span>
-              <Button size="sm" variant="primary" onClick={addBudget} disabled={busy !== null || !(Number(extra) > 0)}>{busy === 'budget' ? 'Continuing…' : 'Continue'}</Button>
               <Button size="sm" variant="ghost" onClick={() => setAdding(false)} disabled={busy !== null}>Cancel</Button>
+              <Button size="sm" variant="primary" onClick={addBudget} disabled={busy !== null || !(Number(extra) > 0)}>{busy === 'budget' ? 'Continuing…' : 'Continue'}</Button>
             </div>
           )}
           {plan.status === 'interrupted' && (
-            <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center justify-end gap-2 flex-wrap">
+              <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
               <Button size="sm" variant="primary" onClick={cont} disabled={busy !== null}>{busy === 'continue' ? 'Continuing…' : 'Continue'}</Button>
-              <Button size="sm" variant="ghost" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
             </div>
           )}
           {error && <div className="text-xs text-destructive-fg">{error}</div>}
@@ -241,16 +249,17 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
   );
 }
 
-/** "Writing the plan… 1m 12s" — a visible state, not a spinner that looks
- *  hung: a local model reasons for 40 s to 4 min before it writes (probe 3). */
-function WritingLine({ plan }: { plan: PlanView }) {
+/** The header's own detail while the plan is being written: a live clock, so the
+ *  card is ONE line like every other collapsed tool card (Destin, round 1, P-4)
+ *  and still visibly alive — a local model reasons 40 s to 4 min first (probe 3). */
+export function PlanWritingDetail({ plan }: { plan: PlanView }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
   const elapsed = formatElapsed(Math.max(0, now - (plan.startedAt ?? now)));
   return (
-    <div className="text-xs text-fg-dim" data-testid="plan-writing">
-      Writing the plan · {elapsed}{plan.ceilingUsd == null ? ' — a model on your computer can take a few minutes.' : '.'}
-    </div>
+    <span className="text-xs text-fg-muted truncate flex-1 min-w-0" data-testid="plan-writing">
+      writing the plan · {elapsed}{plan.ceilingUsd == null ? ' · can take a few minutes on your computer' : ''}
+    </span>
   );
 }
 
@@ -295,7 +304,7 @@ function StepRow({ step, index, plan, sessionId }: { step: PlanStepView; index: 
       {open && (
         <div className="ml-7 mt-1 space-y-1">
           {step.children && step.children.length > 0 ? (
-            step.children.map((c) => <ChildLine key={c.childId} run={c} sessionId={sessionId} />)
+            step.children.map((c) => <PlanSpecialistCard key={c.childId} child={c} sessionId={sessionId} />)
           ) : (
             <div className="text-2xs text-fg-muted">
               Each {step.specialist} stops at its {tokens(step.budgetTokens)} limit.
@@ -307,14 +316,48 @@ function StepRow({ step, index, plan, sessionId }: { step: PlanStepView; index: 
   );
 }
 
-/** One specialist inside a step: name, its status line, Note / Stop while it runs. */
-function ChildLine({ run, sessionId }: { run: SpecialistRunView; sessionId?: string }) {
+/**
+ * One specialist inside a plan step — the SAME card a hired specialist gets in
+ * chat: a collapsed header (glyph · name · status) that opens onto Briefing,
+ * Activity (its thinking, tool calls and output) and Report, with Send-a-note
+ * and Stop while it runs. Destin, review round 1 (P-5): "keep our current
+ * agent/specialist cards … Plan → Step → Specialist".
+ *
+ * Built from the plan's own child record rather than a Task tool call, because
+ * a plan's children are spawned by the step — the model never calls Task once
+ * per specialist, so there is no tool card to hang them on.
+ */
+function PlanSpecialistCard({ child, sessionId }: { child: PlanChildView; sessionId?: string }) {
+  const [open, setOpen] = useState(false);
+  const tool = useMemo<ToolCallState>(() => ({
+    toolUseId: child.childId,
+    toolName: 'Task',
+    input: { agent: child.agentType, description: child.description, prompt: child.prompt },
+    status: child.status === 'running' ? 'running' : 'complete',
+    specialistRun: child,
+    specialistReport: child.report,
+    subagentSegments: child.segments,
+  }), [child]);
+  const glyph = child.status === 'running' ? <BrailleSpinner size="sm" />
+    : child.status === 'completed' ? <CheckIcon className="w-3 h-3 text-fg-dim" />
+    : child.status === 'failed' ? <FailIcon className="w-3 h-3 text-destructive-fg" />
+    : <StoppedIcon className="w-3 h-3 text-fg-muted" />;
   return (
-    <div className="flex items-start gap-2 flex-wrap" data-testid="plan-child">
-      <span className="text-xs text-fg-2 shrink-0">{run.title}</span>
-      <div className="min-w-0"><RunStatusLine run={run} /></div>
-      {run.status === 'running' && sessionId && (
-        <div className="basis-full"><SpecialistActions sessionId={sessionId} run={run} /></div>
+    <div className="border border-edge rounded-md overflow-hidden bg-inset/60" data-testid="plan-child">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className="w-full flex items-center gap-1.5 px-2 py-1 text-left hover:bg-inset transition-colors">
+        <span className="shrink-0 inline-flex w-3 justify-center">{glyph}</span>
+        <span aria-hidden="true" className="w-px h-3 bg-edge shrink-0" />
+        <span className="text-xs font-medium text-fg-2 shrink-0">{child.title}</span>
+        <div className="min-w-0 flex-1 truncate"><RunStatusLine run={child} report={child.report} /></div>
+        <ChevronIcon className="w-3 h-3 text-fg-muted shrink-0" expanded={open} />
+      </button>
+      {open && (
+        <div className="px-2 py-1.5 border-t border-edge-dim space-y-1">
+          <AgentSections tool={tool} sessionId={sessionId}>
+            {child.status === 'running' && sessionId && <SpecialistActions sessionId={sessionId} run={child} />}
+          </AgentSections>
+        </div>
       )}
     </div>
   );
