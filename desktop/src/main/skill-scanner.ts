@@ -12,13 +12,14 @@ import { SkillEntry } from '../shared/types';
  *   2. `~/.claude/plugins/installed_plugins.json` — Claude Code CLI-installed plugins
  *      that may live at non-cache `installPath`s
  *   3. `~/.claude/skills/` — USER-authored local skills (source: 'self')
+ *   4. `<project>/.claude/skills/` — project-local skills (source: 'project')
  *
  * Curated metadata (`skill-registry.json`) is consulted ONLY to enrich entries
  * already discovered on disk — never to inject fake "installed" entries.
  * That earlier behavior caused the marketplace UI to badge uninstalled
  * decomposed packages as "Installed".
  */
-export function scanSkills(): SkillEntry[] {
+export function scanSkills(_projectCwd?: string): SkillEntry[] {
   const registry = loadCuratedRegistry();
   const discoveredIds = new Set<string>();
   const skills: SkillEntry[] = [];
@@ -28,7 +29,7 @@ export function scanSkills(): SkillEntry[] {
     id: string,
     fallbackName: string,
     fallbackDesc: string,
-    inferredSource: 'youcoded-core' | 'self' | 'plugin',
+    inferredSource: 'youcoded-core' | 'self' | 'project' | 'plugin',
     pluginName?: string,
     // The directory holding this skill's SKILL.md. Every call site already
     // computed it to find the skill at all; keeping it lets the native harness
@@ -193,6 +194,33 @@ export function scanSkills(): SkillEntry[] {
     }
   } catch {}
 
+  return skills;
+}
+
+/** Scan one project's skills separately: they are a session-scoped capability,
+ * not app-wide installed inventory. This prevents the Skills screen / remote
+ * client from borrowing workflows from whichever project was active last. */
+export function scanProjectSkills(projectCwd: string): SkillEntry[] {
+  const projectSkillsDir = path.join(projectCwd, '.claude', 'skills');
+  const skills: SkillEntry[] = [];
+  for (const entry of readdirSafe(projectSkillsDir)) {
+    if (!entry.isDirectory()) continue;
+    const skillDir = path.join(projectSkillsDir, entry.name);
+    const skillFile = path.join(skillDir, 'SKILL.md');
+    if (!fs.existsSync(skillFile)) continue;
+    const meta = readSkillMeta(skillFile);
+    skills.push({
+      id: entry.name,
+      displayName: meta.name || entry.name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' '),
+      description: meta.description || '',
+      category: 'other',
+      prompt: `/${entry.name}`,
+      source: 'project',
+      type: 'plugin',
+      visibility: 'private',
+      skillDir,
+    });
+  }
   return skills;
 }
 

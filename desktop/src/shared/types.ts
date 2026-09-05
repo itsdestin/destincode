@@ -825,7 +825,7 @@ export interface SkillEntry {
   description: string;
   category: 'personal' | 'work' | 'development' | 'admin' | 'other';
   prompt: string;
-  source: 'youcoded-core' | 'self' | 'plugin' | 'marketplace';
+  source: 'youcoded-core' | 'self' | 'project' | 'plugin' | 'marketplace';
   pluginName?: string;
 
   // New — marketplace fields
