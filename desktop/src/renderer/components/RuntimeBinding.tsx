@@ -269,9 +269,13 @@ export function NativeExtras({ nb, preset, onPreset }: {
         // Settings screen uses (G-22): the sentence is the row title, the chevron on
         // the right flips down, and what it reveals is one numbers line plus the
         // "Warn me about this model" toggle row. No status dot, no Less button.
-        <div className="space-y-1.5">
+        // Round-5 note (Destin): the toggle is a SUB-CARD inside the expanded warning card,
+        // not a sibling row — so the card is one container that grows, and the toggle row's
+        // own tint reads as nested inside it.
+        <div className="rounded-lg bg-inset/50">
           <SettingRow
             variant="item"
+            className="bg-transparent"
             title={(
               <span className={nb.memVerdict.verdict === 'too-large' ? 'text-destructive-fg' : 'text-amber-400'}>
                 {nb.memVerdict.verdict === 'too-large' ? 'This model is too large for this computer' : 'This model may not fit in available memory'}
@@ -282,18 +286,21 @@ export function NativeExtras({ nb, preset, onPreset }: {
             expanded={nb.memDetailOpen}
           />
           {nb.memDetailOpen && nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
-            <SettingRow
-              variant="item"
-              title="Warn me about this model"
-              description="Off skips this next time."
-              control={(
-                <Toggle
-                  checked={!nb.memDismissed}
-                  aria-label="Warn me about this model"
-                  onChange={(next) => nb.dismissMemoryWarning?.(!next)}
-                />
-              )}
-            />
+            <div className="px-1.5 pb-1.5">
+              <SettingRow
+                variant="item"
+                className="bg-inset"
+                title="Warn me about this model"
+                description="Off skips this next time."
+                control={(
+                  <Toggle
+                    checked={!nb.memDismissed}
+                    aria-label="Warn me about this model"
+                    onChange={(next) => nb.dismissMemoryWarning?.(!next)}
+                  />
+                )}
+              />
+            </div>
           )}
         </div>
       )}
