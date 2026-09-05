@@ -354,15 +354,36 @@ describe('helperStatus', () => {
   it('is unsupported, with a reason, on Plasma 5', async () => {
     const r = rig({ readKdeSession: () => Promise.resolve({ kwinMajor: 5, wayland: true, screens: [] }) });
     const status = await r.helper.status();
-    expect(status).toMatchObject({ needed: true, supported: false, installed: false });
-    expect(status.reason).toContain('KWin 5');
+    expect(status).toMatchObject({ needed: true, supported: false });
+    // The reason is read by a person in the buddy's settings, so it names the
+    // thing they can recognise — their Plasma version — not an internal one.
+    expect(status.reason).toContain('Plasma 5');
   });
 
   it('is unsupported on a KDE X11 session', async () => {
     const r = rig({ readKdeSession: () => Promise.resolve({ kwinMajor: 6, wayland: false, screens: [] }) });
     const status = await r.helper.status();
     expect(status.supported).toBe(false);
-    expect(status.reason).toContain('Wayland');
+    expect(status.reason).toContain('does not need the helper');
+  });
+
+  it('still reports an installed helper on a real KDE X11 session', async () => {
+    // R10, and the case §4's second row was actually written for. KWin answers
+    // on X11 and says Operation Mode: X11, so `supported` is false — but the
+    // script the user installed on Wayland is STILL in ~/.local/share/kwin and
+    // still enabled. Forcing installed:false here made the Remove helper action
+    // unreachable, leaving hand-editing kwinrc as the only way out.
+    const r = rig({
+      ozonePlatform: 'x11',
+      readKdeSession: () => Promise.resolve({ kwinMajor: 6, wayland: false, screens: [] }),
+    });
+    const status = await r.helper.status();
+    expect(status).toMatchObject({ needed: false, supported: false, installed: true });
+  });
+
+  it('does not claim a helper is installed when KDE never answered', async () => {
+    const r = rig({ readKdeSession: () => Promise.resolve(null) });
+    expect((await r.helper.status()).installed).toBe(false);
   });
 
   it('is unsupported, non-committally, when KWin does not answer', async () => {
@@ -435,7 +456,7 @@ describe('install', () => {
     const r = rig({ readKdeSession: () => Promise.resolve({ kwinMajor: 5, wayland: true, screens: [] }) });
     const res = await r.helper.install();
     expect(res.ok).toBe(false);
-    expect(res.error).toContain('KWin 5');
+    expect(res.error).toContain('Plasma 5');
     expect(fs.readdirSync(r.scriptsDir)).toEqual([]);
   });
 });

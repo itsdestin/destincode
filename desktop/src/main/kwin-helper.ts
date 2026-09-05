@@ -243,26 +243,37 @@ export class KwinHelper {
     return this.io.platform === 'linux' && this.io.ozonePlatform === 'wayland';
   }
 
-  private async supportGate(): Promise<{ supported: boolean; reason?: string }> {
+  /**
+   * `kdeAnswered` is separate from `supported` on purpose: KDE can answer
+   * clearly and still be a desktop the helper cannot run on (an X11 session, or
+   * KWin 5). We still need to ask whether OUR script is loaded there — see
+   * status() — because a helper installed on Wayland is still installed after
+   * the user logs into X11.
+   *
+   * Every reason here is read by a person in the buddy's settings, so it says
+   * what happened in plain words and never guesses a cause.
+   */
+  private async supportGate(): Promise<{ supported: boolean; reason?: string; kdeAnswered: boolean }> {
     const session = await this.io.readKdeSession();
     if (!session) {
       // Two different failures with two different meanings, so neither message
-      // guesses: either the tool is missing, or KWin did not answer.
+      // guesses: either the tool is missing, or KDE did not answer.
       const bin = await qdbusPath();
       return {
         supported: false,
+        kdeAnswered: false,
         reason: bin
-          ? 'KWin did not answer over DBus, so this desktop could not be checked.'
-          : 'no qdbus6 or qdbus binary was found on PATH',
+          ? "KDE didn't answer, so this desktop couldn't be checked. Restarting YouCoded usually clears it."
+          : "A KDE command-line tool the helper needs (qdbus) isn't installed on this system.",
       };
     }
     if (session.kwinMajor < 6) {
-      return { supported: false, reason: `KWin ${session.kwinMajor} is older than the KWin 6 scripting API the helper uses.` };
+      return { supported: false, kdeAnswered: true, reason: `This is KDE Plasma ${session.kwinMajor}; the helper needs Plasma 6 or newer.` };
     }
     if (!session.wayland) {
-      return { supported: false, reason: 'KWin is not running a Wayland session.' };
+      return { supported: false, kdeAnswered: true, reason: 'This KDE session does not need the helper — the buddy can already be moved here.' };
     }
-    return { supported: true };
+    return { supported: true, kdeAnswered: true };
   }
 
   /** installed = isScriptLoaded. Files-plus-config would report true when KWin
@@ -289,11 +300,18 @@ export class KwinHelper {
     // the whole helper section there would take away the Remove helper action
     // and break R10's promise — "you can remove it again any time, from the
     // buddy's own settings" — leaving hand-editing kwinrc as the only way out.
-    const installed = gate.supported ? await this.isLoaded() : false;
+    // Ask whenever KDE answered at all — NOT only when the helper is supported
+    // here (B5 review, F3). On a real KDE **X11** session KWin answers, reports
+    // Operation Mode: X11, and `supported` is false — so gating the question on
+    // `supported` forced installed:false and the Remove helper action never
+    // rendered. That is precisely the "installed on Wayland, then logged into
+    // X11" case §4's second row was written for, with hand-editing kwinrc as
+    // the only way out. The script is still there; say so.
+    const installed = gate.kdeAnswered ? await this.isLoaded() : false;
 
     if (!needed) return { needed: false, supported: gate.supported, installed };
     if (!gate.supported) {
-      return { needed: true, supported: false, installed: false, reason: gate.reason };
+      return { needed: true, supported: false, installed, reason: gate.reason };
     }
     return { needed: true, supported: true, installed };
   }

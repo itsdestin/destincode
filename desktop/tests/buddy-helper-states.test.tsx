@@ -47,6 +47,15 @@ type ShowResult = { ok: boolean; reason?: string };
 const NO_HELPER_WANTED: Helper = { needed: false, supported: false, installed: false };
 /** Row 2 — added on Wayland, now logged into X11. Still in KDE's settings. */
 const LEFTOVER_HELPER: Helper = { needed: false, supported: false, installed: true };
+/**
+ * Row 1 again, and the shape that was MISSING — the one probe Round 7 exists
+ * for. A KDE Plasma 6 Wayland desktop where Electron is quietly running through
+ * XWayland: KWin says Wayland, so `supported` is TRUE, but the app can move its
+ * own windows, so `needed` is false. Every other row-1 fixture happens to carry
+ * supported:false, which meant the `needed &&` half of the consent gate could
+ * have been deleted with every test still green (B5 review, F4).
+ */
+const XWAYLAND: Helper = { needed: false, supported: true, installed: false };
 /** Row 3 — GNOME, wlroots, Plasma 5. */
 const UNSUPPORTED: Helper = { needed: true, supported: false, installed: false };
 /** Row 4, before consent. */
@@ -252,5 +261,37 @@ describe('the app refuses to show the buddy (design §5)', () => {
     fireEvent.click(toggleSwitch()!);
 
     await waitFor(() => expect(screen.getByText(reason)).toBeInTheDocument());
+  });
+});
+
+describe('the two gates that would otherwise survive deletion', () => {
+  it('asks no question on XWayland, where KDE supports a helper but none is needed', async () => {
+    // If the consent gate lost its `needed &&` half, THIS is the user who would
+    // suddenly be asked to change their desktop settings for a buddy that
+    // already works — and be refused one if they said no.
+    const calls = fakeClaude(XWAYLAND);
+    render(<BuddyButton />);
+    fireEvent.click(screen.getByRole('button', { name: /buddy floater/i }));
+    await waitFor(() => expect(screen.getByRole('switch')).toBeTruthy());
+    expect(screen.queryByText(/Let the buddy be moved/i)).toBeNull();
+    fireEvent.click(screen.getByRole('switch'));
+    expect(screen.queryByText(/Let the buddy be moved/i)).toBeNull();
+    await waitFor(() => expect(calls.show).toBe(1));
+    expect(calls.install).toBe(0);
+  });
+
+  it('switches the buddy off when the helper it depends on is removed', async () => {
+    // R10's threshold is "Remove helper takes it out of KDE's settings AND the
+    // buddy switches off". Only the negative half (row 2, a buddy that never
+    // needed a helper is left alone) was pinned.
+    localStorage.setItem('youcoded-buddy-enabled', '1');
+    const calls = fakeClaude(HELPER_IN_PLACE);
+    render(<BuddyButton />);
+    fireEvent.click(screen.getByRole('button', { name: /buddy floater/i }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /remove helper/i })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /remove helper/i }));
+    await waitFor(() => expect(calls.remove).toBe(1));
+    await waitFor(() => expect(calls.hide).toBe(1));
+    expect(localStorage.getItem('youcoded-buddy-enabled')).toBe('0');
   });
 });

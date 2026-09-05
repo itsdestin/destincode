@@ -788,6 +788,11 @@ export function BuddyButton() {
   const [enabled, setEnabled] = useState<boolean>(() =>
     localStorage.getItem('youcoded-buddy-enabled') === '1',
   );
+  // The preference is the single source of truth, and this row is not its only
+  // writer — see the status-broadcast effect below for the full list.
+  const syncEnabledToPreference = useCallback(() => {
+    setEnabled(localStorage.getItem('youcoded-buddy-enabled') === '1');
+  }, []);
   // "Hidden until restart": the bar's hide button dismisses the buddy for
   // this run only (localStorage preference untouched). Main broadcasts
   // buddy:status-changed so this row updates live, with an inline Show-now
@@ -795,14 +800,10 @@ export function BuddyButton() {
   const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  // Task 8: KDE-only "pin above other windows" toggle. Gated on the real OS
-  // platform (not the app-shell 'electron'/'android'/'browser' axis in
-  // ../platform) since it must not render on Windows/macOS desktop builds.
+  // Gates the KDE helper lookup below. The real OS platform, not the app-shell
+  // 'electron'/'android'/'browser' axis in ../platform, because it must not fire
+  // on Windows or macOS desktop builds.
   const platform = useCurrentPlatform();
-  // Transient, non-persisted: set when a toggle action's setKeepAbove
-  // resolves false (KWin unreachable right now), cleared on the next
-  // successful apply or when the popup is reopened. Never a guessed cause —
-  // see toggleKeepAbove below for why this specific copy is accurate.
 
   // The Linux/KDE helper (docs/active/design/2026-09-04-linux-buddy-helper/ §4).
   // THREE facts, not two:
@@ -829,26 +830,50 @@ export function BuddyButton() {
   // here. Cleared on the next attempt.
   const [showError, setShowError] = useState<string | null>(null);
 
+  // Re-asked every time the popup opens, not once at launch (B5 review, F2).
+  // `supported` is not a stable fact: a DBus timeout during a busy boot comes
+  // back as "not supported", and asking once would then read "Not yet supported
+  // on this desktop" with a dead switch for the rest of the session, on a
+  // desktop the helper fully supports. The row is mounted for the whole session,
+  // so "once" really did mean "once, at app launch". One DBus call per open.
   useEffect(() => {
-    if (!isDesktopShell() || platform !== 'linux') return;
+    if (!isDesktopShell() || platform !== 'linux' || !open) return;
     let alive = true;
     window.claude.buddy?.helperStatus?.()
       .then((h: BuddyHelperStatus) => { if (alive) setHelper(h); })
       .catch(() => {});
     return () => { alive = false; };
-  }, [platform]);
+  }, [platform, open]);
 
   useEffect(() => {
     if (!isDesktopShell()) return;
     let alive = true;
     window.claude.buddy?.getStatus?.()
-      .then((s: { dismissed: boolean }) => {
+      .then((s: { dismissed: boolean; visible?: boolean }) => {
         if (!alive) return;
         setDismissed(!!s?.dismissed);
+        syncEnabledToPreference();
       })
       .catch(() => {});
     const off = window.claude.buddy?.onStatusChanged?.(
-      (s: { dismissed: boolean }) => setDismissed(!!s?.dismissed),
+      (s: { dismissed: boolean; visible?: boolean }) => {
+        setDismissed(!!s?.dismissed);
+        // WHY re-read the preference on every broadcast (B5 review, F1): this
+        // row is mounted for the whole session and seeded its switch ONCE, from
+        // localStorage, during the first render — before three other things can
+        // turn the buddy off. The one-shot "hidden after the update" migration
+        // writes the preference from App.tsx; so does a refused show() on the
+        // launch path; and main puts the buddy away by itself if the KDE script
+        // stops running mid-session. None of them could reach this switch.
+        //
+        // The user-visible cost was the headline flow of the whole feature:
+        // update, buddy correctly gone, open Settings — and the row says "On —
+        // floating on your desktop" with the switch on. The first click reads as
+        // "turn off" and does nothing visible; only the second offers the
+        // helper. A switch that says on while nothing is on screen is a switch
+        // that lies, which is the standard the refusal path already meets.
+        syncEnabledToPreference();
+      },
     );
     return () => { alive = false; off?.(); };
   }, []);
@@ -875,7 +900,16 @@ export function BuddyButton() {
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
+  // WHY a generation counter (B5 review, F7): switching on now AWAITS main,
+  // which itself awaits a DBus round trip before creating the window. Two quick
+  // clicks — on, then off — let the hide land first, after which the pending
+  // show() resolves and puts the buddy on screen with the switch reading Off.
+  // A stale resolution is ignored rather than allowed to overwrite the newer
+  // intent.
+  const applyGeneration = useRef(0);
+
   const applyEnabled = useCallback(async (next: boolean) => {
+    const generation = ++applyGeneration.current;
     setEnabled(next);
     setShowError(null);
     localStorage.setItem('youcoded-buddy-enabled', next ? '1' : '0');
@@ -892,6 +926,7 @@ export function BuddyButton() {
     let refusal: { ok: boolean; reason?: string } | void;
     try {
       refusal = await window.claude.buddy?.show?.();
+      if (generation !== applyGeneration.current) return; // the user changed their mind
     } catch {
       // A throwing bridge (remote/Android stubs) is not a refusal, and this
       // control does not render there anyway — leave the switch as the user set
