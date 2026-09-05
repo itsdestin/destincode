@@ -8,6 +8,8 @@
 // the app does not control, so "waiting" is a real, visible state the user sits
 // in for a while — the Settings row and the first-run screen both draw it.
 
+import { formatTime12, formatDayShort, formatMonthDay } from './time-format';
+
 /** One rolling usage window of the ChatGPT plan, as OpenAI reports it. Same
  *  shape as the Claude subscription windows (`SubscriptionUsage` in
  *  usage-snapshot.ts) on purpose, so the /usage card and the status-bar chips
@@ -17,6 +19,16 @@ export interface ChatGptUsageWindow { utilization: number; resets_at: string }
 export interface ChatGptUsage {
   five_hour?: ChatGptUsageWindow;
   seven_day?: ChatGptUsageWindow;
+  /** Windows that are neither 5 hours nor 7 days long, each tagged with its
+   *  length in minutes. WHY this exists: Phase 0 (2026-09-05, a free account)
+   *  showed OpenAI reports ONE 30-day window on the free plan and nothing
+   *  else, so drawing only the two keys above would show two empty bars.
+   *  The parser files anything that is not 300 or 10080 minutes here; whether
+   *  the renderer draws these bars (labelled by length) or drops them is the
+   *  words-deck W-2 decision, and `five_hour` / `seven_day` are untouched.
+   *  NOTE: the renderer's pruneExpiredUsage (state/usage-snapshot.ts) only
+   *  prunes `five_hour` / `seven_day` today; T6 extends it to `other`. */
+  other?: Array<ChatGptUsageWindow & { minutes: number }>;
 }
 
 export type ChatGptAccountStatus =
@@ -40,15 +52,41 @@ export type ChatGptAccountStatus =
  *  OpenAI answers with a specific `usage_limit_reached` code and a reset time,
  *  so this is specific-and-accurate per docs/error-message-standards.md — and
  *  the renderer's plan-limit card keys on it (isChatGptLimitMessage), the same
- *  way the provider-config bubble keys on "Settings → Providers". */
-export function chatGptLimitMessage(windowLabel: '5-hour' | 'weekly', resetsAt: string): string {
+ *  way the provider-config bubble keys on "Settings → Providers".
+ *
+ *  `windowLabel` is whatever `windowLabel()` in main/providers/chatgpt-oauth.ts
+ *  produced: '5-hour', 'weekly', or '<n>-day' (a free plan has one 30-day
+ *  window — Phase 0, 2026-09-05). It used to be typed as just the first two;
+ *  it is a plain string now so a window OpenAI adds later still reads as a
+ *  sentence rather than failing to compile.
+ *
+ *  How the reset is written (words deck W-1, answer a, 2026-09-05):
+ *  - 5-hour: the clock time only — "Resets @ 6:43pm". This is Destin's exact
+ *    approved wording and must stay byte-identical.
+ *  - weekly (and any window up to 7 days): the day too — "Resets Tue @ 6:43pm",
+ *    matching the 7-day chip beside it, because a clock time alone for a reset
+ *    that is next Tuesday would have the user waiting until 6:43pm today.
+ *  - longer than 7 days (the free plan's 30-day window): month and day —
+ *    "Resets Oct 3 @ 6:43pm" — since a weekday name is ambiguous over a month. */
+export function chatGptLimitMessage(windowLabel: string, resetsAt: string): string {
   const t = Date.parse(resetsAt);
-  // "6:43pm", the status bar's own reset format, so the card and the chip agree.
-  const when = Number.isFinite(t)
-    ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(' ', '').toLowerCase()
-    : 'later';
+  // "6:43pm" from the SAME hand-rolled formatter as the status bar chip, so the
+  // card and the chip agree on every machine. (A locale-following call printed
+  // "18:43" on UK/EU/JP machines — T1 review, 2026-09-05.)
+  const when = Number.isFinite(t) ? formatTime12(new Date(t)) : 'later';
   // Wording is Destin's (review round 2, P-9).
-  return `You have reached ChatGPT's ${windowLabel} session limit (Resets @ ${when}).`;
+  return `You have reached ChatGPT's ${windowLabel} session limit (Resets ${resetDayPrefix(windowLabel, t)}@ ${when}).`;
+}
+
+/** The "Tue " / "Oct 3 " part in front of "@ 6:43pm", or '' for the 5-hour
+ *  window and for an unparsable reset (where "Resets Tue @ later" would be
+ *  nonsense). Kept separate so the 5-hour path above is literally the old code. */
+function resetDayPrefix(windowLabel: string, t: number): string {
+  if (windowLabel === '5-hour' || !Number.isFinite(t)) return '';
+  const d = new Date(t);
+  const days = /^(\d+)-day$/.exec(windowLabel);
+  if (days && Number(days[1]) > 7) return `${formatMonthDay(d)} `;
+  return `${formatDayShort(d)} `;
 }
 
 export function isChatGptLimitMessage(message: string | null | undefined): boolean {

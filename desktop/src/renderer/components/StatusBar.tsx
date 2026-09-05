@@ -21,6 +21,7 @@ import { ProviderIcon } from './ProviderIcon';
 import type { SessionTotals } from '../state/session-totals';
 import { selectCacheReuse, selectReuseDisplay } from '../state/cache-reuse';
 import { CLAUDE_ALIASES, type ClaudeAlias } from '../../shared/model-ids';
+import { formatTime12, formatDayLong } from '../../shared/time-format';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -243,15 +244,10 @@ function contextColor(pct: number): string {
   return 'text-[#4CAF50]';
 }
 
-const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-function formatTime12(d: Date): string {
-  let h = d.getHours();
-  const m = d.getMinutes();
-  const ampm = h >= 12 ? 'pm' : 'am';
-  h = h % 12 || 12;
-  return `${h}:${m.toString().padStart(2, '0')}${ampm}`;
-}
+// formatTime12 / formatDayLong moved to shared/time-format.ts (2026-09-05) so
+// the ChatGPT limit card formats its reset with the SAME hand-rolled clock as
+// these chips — it used to call toLocaleTimeString, which prints "18:43" on a
+// UK/EU machine while the chip beside it said "6:43pm". Chip output unchanged.
 
 function format5hReset(iso: string): string {
   try {
@@ -265,7 +261,7 @@ function format5hReset(iso: string): string {
 function format7dReset(iso: string): string {
   try {
     const d = new Date(iso);
-    return `Resets ${DAYS[d.getDay()]} @ ${formatTime12(d)}`;
+    return `Resets ${formatDayLong(d)} @ ${formatTime12(d)}`;
   } catch {
     return '';
   }
