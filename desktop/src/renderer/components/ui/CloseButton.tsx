@@ -18,6 +18,9 @@ export type CloseButtonProps = Omit<
 > & {
   /** Override when "Close" is ambiguous — e.g. "Close settings", "Dismiss toast". */
   label?: string;
+  /** 'icon-sm' on a chip-height bar, where the default 28px square would set the
+   *  bar's own height. The glyph shrinks with it. */
+  size?: 'icon' | 'icon-sm';
   /** Only reason to change it: the ✕ sits on an accent fill, not a panel
    *  ("on-accent"). Passing a className instead does NOT work — ghost's own
    *  hover classes still ship, and two competing hover backgrounds resolve by
@@ -26,11 +29,13 @@ export type CloseButtonProps = Omit<
 };
 
 export const CloseButton = React.forwardRef<HTMLButtonElement, CloseButtonProps>(
-  function CloseButton({ label, variant = 'ghost', ...rest }, ref) {
+  function CloseButton({ label, variant = 'ghost', size = 'icon', ...rest }, ref) {
     return (
-      <Button ref={ref} size="icon" variant={variant} aria-label={label ?? 'Close'} {...rest}>
+      <Button ref={ref} size={size} variant={variant} aria-label={label ?? 'Close'} {...rest}>
         <svg
-          className="w-4 h-4"
+          // 12px in a 20px box leaves 4px of padding all round, which is what
+          // turns the hover fill into a container AROUND the glyph.
+          className={size === 'icon-sm' ? 'w-3 h-3' : 'w-4 h-4'}
           fill="none"
           viewBox="0 0 24 24"
           stroke="currentColor"

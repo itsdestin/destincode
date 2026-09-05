@@ -144,9 +144,10 @@ export default function ViewToggleHint({ onDismiss }: Props) {
         </span>
         <CloseButton
           label="Dismiss hint"
+          size="icon-sm"
           variant="on-accent"
           onClick={onDismiss}
-          className="shrink-0 w-5 h-5"
+          className="shrink-0"
         />
       </OverlayPanel>
       {/* AFTER the bubble on purpose: a rotated square painted BELOW it left the
