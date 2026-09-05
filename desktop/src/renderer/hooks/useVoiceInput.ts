@@ -17,7 +17,7 @@
 // one call to the phone and nothing here goes looking for hardware.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { VoiceEvent, VoiceReadiness } from '../../shared/voice-types';
-import { isWorkbenchMode } from '../workbench-mode';
+import { isWorkbenchDocument } from '../workbench-mode';
 import { meterLevel, open as openCapture, probe as probeMic, type CaptureHandle } from '../voice-capture';
 
 export type VoicePhase = 'idle' | 'listening' | 'finishing';
@@ -82,9 +82,11 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
   //    permission prompt over the mock-up, or, in the headless screenshot rig
   //    (a machine with no microphone at all), report "No microphone was found on
   //    this computer." across every review shot. The workbench identifies itself
-  //    by its URL, and `isWorkbenchMode()` is the app's one existing test for it.
+  //    by its URL. `isWorkbenchDocument()` — NOT `isWorkbenchMode()`, which is
+  //    compiled out of a production build and would leave this gate wide open in
+  //    the landing page's live demo, the one build a stranger can click.
   const [canCapture] = useState(
-    () => !!bridge && typeof bridge.sendAudio === 'function' && typeof bridge.micAccess === 'function' && !isWorkbenchMode(),
+    () => !!bridge && typeof bridge.sendAudio === 'function' && typeof bridge.micAccess === 'function' && !isWorkbenchDocument(),
   );
 
   const [readiness, setReadiness] = useState<VoiceReadiness | null>(null);
@@ -135,10 +137,16 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
       closeCapture();
       setPhaseBoth('idle');
       setLevel(0);
+      // Tell the host too. Without this it keeps the session open and refuses the
+      // NEXT tap with "already listening in this window" — about a window where
+      // nothing is listening — so one watchdog fire used to break the mic until
+      // the app restarted. (Its own deadline may still deliver a late `final`,
+      // which is why this cancels and continues rather than tearing down.)
+      void bridge?.cancel().catch(() => {});
       // Specific and true: this is exactly what we observed, and nothing more.
       setError(`Voice stopped responding — nothing came back for ${Math.round(WATCHDOG_MS / 1000)} seconds. The microphone was closed.`);
     }, WATCHDOG_MS);
-  }, [canCapture, clearWatchdog, closeCapture, setPhaseBoth]);
+  }, [bridge, canCapture, clearWatchdog, closeCapture, setPhaseBoth]);
 
   // One place every event is handled, whether it came from the host or from our
   // own microphone. The loudness meter runs through here too — see `start()`.
@@ -154,6 +162,11 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
         if (!idle) setLevel(e.value);
         break;
       case 'heartbeat':
+        // Dropped while idle for the same reason `level` is: the host goes on
+        // heartbeating through a session this side has already abandoned, and an
+        // armed clock with nobody listening puts an error card on screen out of
+        // nowhere, every twelve seconds, forever.
+        if (idle) break;
         armWatchdog();
         break;
       case 'partial':
@@ -259,7 +272,13 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
 
       // Only now: the strip says "Listening" when something is actually listening.
       setPhaseBoth('listening');
-      armWatchdog();
+      // NOT armed here. This clock measures "the engine went quiet AFTER answering",
+      // so it can only start once something has answered. Arming it at `start` made
+      // it a load timer instead — and at twelve seconds it was five times shorter
+      // than the minute the host allows for loading the speech model, so the first
+      // dictation after an idle unload, on a perfectly healthy machine, ended in
+      // "Voice stopped responding". The host's own load deadline covers a start
+      // that never answers at all; this one covers a start that stops answering.
     } finally {
       startingRef.current = false;
     }
@@ -271,7 +290,9 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
     closeCapture();
     setPhaseBoth('finishing');
     setLevel(0);
-    armWatchdog();
+    // Not armed here either, for the same reason: the last pass is variable-length
+    // and the host defends its own deadline against it. If the engine is alive it
+    // is heartbeating, and a heartbeat arms this.
     try { await bridge.stop(); } catch (err) { clearWatchdog(); setPhaseBoth('idle'); setError(describe(err)); }
   }, [armWatchdog, bridge, clearWatchdog, closeCapture, setPhaseBoth]);
 

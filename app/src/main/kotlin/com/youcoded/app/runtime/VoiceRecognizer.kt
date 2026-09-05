@@ -241,8 +241,13 @@ class VoiceRecognizer(
             deliverFinal()
             return
         }
-        emit(JSONObject().put("type", "error").put("message", voiceErrorMessage(code)))
+        // FINAL FIRST, then the error. WHY the order is load-bearing: the composer
+        // returns itself to idle the instant it sees an `error`, and then drops any
+        // `final` that arrives afterwards — so emitting the error first threw away
+        // the words the user had already watched appear. Found reviewing T8,
+        // 2026-09-05.
         deliverFinal()
+        emit(JSONObject().put("type", "error").put("message", voiceErrorMessage(code)))
     }
 
     private fun deliverFinal() {

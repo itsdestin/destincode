@@ -14,6 +14,8 @@
 //    long sentence is never cut off — and if the words turn up after we gave up,
 //    they still land in the box.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { renderHook, act } from '@testing-library/react';
 import type { VoiceEvent, VoiceReadiness } from '../src/shared/voice-types';
 
@@ -231,12 +233,60 @@ describe('useVoiceInput — the give-up clock', () => {
     expect(cap.closes).toBe(1);
   });
 
+  // WHY: this clock used to start at `start()`, before anything could possibly have
+  // answered — which made it a LOAD timer, and at twelve seconds it was five times
+  // shorter than the minute the host allows to load the speech model. The first
+  // dictation after an idle unload, on a healthy machine, ended in "Voice stopped
+  // responding". Found reviewing T6, 2026-09-05.
+  it('does not fire while the engine is still loading, before it has answered once', async () => {
+    vi.useFakeTimers();
+    installBridge({ desktop: true });
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    // Far past the clock, but nothing has answered yet, so nothing has gone quiet.
+    act(() => { vi.advanceTimersByTime(45_000); });
+    expect(result.current.error).toBeNull();
+    expect(result.current.phase).toBe('listening');
+  });
+
+  // WHY: without this the host keeps the session and refuses the NEXT tap with
+  // "already listening in this window" — about a window where nothing is listening
+  // — so one give-up used to break the mic until the app restarted.
+  it('tells the host it gave up, so the next tap is not refused', async () => {
+    vi.useFakeTimers();
+    const { emit, bridge } = installBridge({ desktop: true });
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    act(() => { emit({ type: 'heartbeat' }); });
+    act(() => { vi.advanceTimersByTime(13_000); });
+    expect(result.current.error).toContain('Voice stopped responding');
+    expect(bridge.cancel).toHaveBeenCalled();
+  });
+
+  // WHY: the host goes on heartbeating through a session this side has abandoned.
+  // An armed clock with nobody listening put an error card on screen out of
+  // nowhere, every twelve seconds, forever.
+  it('a heartbeat while nothing is listening arms nothing', async () => {
+    vi.useFakeTimers();
+    const { emit } = installBridge({ desktop: true });
+    const { result } = mount();
+    await settle();
+    act(() => { emit({ type: 'heartbeat' }); });
+    act(() => { vi.advanceTimersByTime(30_000); });
+    expect(result.current.error).toBeNull();
+    expect(result.current.phase).toBe('idle');
+  });
+
   it('words that arrive after we gave up still land in the box', async () => {
     vi.useFakeTimers();
     const { emit } = installBridge({ desktop: true });
     const { result, onFinal } = mount();
     await settle();
     await act(async () => { await result.current.start(); });
+    // One sign of life first: the clock measures "went quiet AFTER answering".
+    act(() => { emit({ type: 'heartbeat' }); });
     act(() => { vi.advanceTimersByTime(13_000); });
     expect(result.current.error).toContain('Voice stopped responding');
 
@@ -272,5 +322,28 @@ describe('useVoiceInput — events while the mic is closed', () => {
     expect(onFinal).not.toHaveBeenCalled();
     expect(result.current.level).toBe(0);
     expect(result.current.phase).toBe('idle');
+  });
+});
+
+// A SOURCE guard, because no runtime test in this suite can see the bug it stops.
+// Under vitest `import.meta.env.DEV` is always true, so `isWorkbenchMode()` behaves
+// exactly like the safe predicate here and every runtime assertion passes either
+// way. The bug only exists in the built landing-page bundle, where Vite folds the
+// dev-only predicate to `false` and the microphone gate disappears — the marketing
+// page would have asked visitors for their microphone. Found by reading that
+// bundle, 2026-09-05. This is the cheapest thing that fails if someone swaps the
+// predicate back.
+describe('the microphone gate uses the predicate that survives a production build', () => {
+  it('useVoiceInput gates on isWorkbenchDocument, never isWorkbenchMode', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'renderer', 'hooks', 'useVoiceInput.ts'), 'utf8');
+    expect(src).toContain('isWorkbenchDocument');
+    // `isWorkbenchMode` is dev-only by design and is compiled out of the site build.
+    expect(src.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '')).not.toContain('isWorkbenchMode');
+  });
+
+  it('isWorkbenchDocument checks VITE_WORKBENCH, which is what the site build sets', () => {
+    const src = readFileSync(join(__dirname, '..', 'src', 'renderer', 'workbench-mode.ts'), 'utf8');
+    const fn = src.slice(src.indexOf('export function isWorkbenchDocument'));
+    expect(fn.slice(0, fn.indexOf('}'))).toContain('VITE_WORKBENCH');
   });
 });

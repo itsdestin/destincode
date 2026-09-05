@@ -181,12 +181,20 @@ class VoiceRecognizerTest {
     fun `an error carries the name Android gave it, never a guessed cause`() {
         val h = Harness()
         h.recognizer.start()
+        // Words the user has already watched appear on screen.
+        h.recognizer.onPartialText("hello there")
         h.recognizer.onEngineError(SpeechRecognizer.ERROR_NETWORK)
 
-        assertEquals(listOf("error", "final"), h.types())
-        val message = h.events[0].getString("message")
+        // FINAL FIRST. The composer returns itself to idle the moment it sees an
+        // error and drops any final after it, so this order is what decides whether
+        // the user keeps the words they already watched appear. Reviewing T8 found
+        // the opposite order shipping, and this assertion is what pins it.
+        assertEquals(listOf("partial", "final", "error"), h.types())
+        val message = h.events[2].getString("message")
         assertTrue("the SpeechRecognizer error name must appear in the message: $message",
             message.contains("ERROR_NETWORK"))
+        assertEquals("the words already shown must survive a non-fatal error",
+            "hello there", h.events[1].getString("text"))
     }
 
     @Test

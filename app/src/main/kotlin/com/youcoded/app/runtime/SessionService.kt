@@ -4093,7 +4093,7 @@ class SessionService : Service() {
                     MicPermission.GRANTED -> {
                         // The recogniser is main-thread-only and this runs on the
                         // web-socket thread, so hop before touching it.
-                        startVoiceRecognizer()
+                        mainHandler.post { startVoiceRecognizer() }
                         msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                             org.json.JSONObject().put("ok", true)) }
                     }
@@ -4104,6 +4104,15 @@ class SessionService : Service() {
                         broadcastVoiceEvent(org.json.JSONObject()
                             .put("type", "readiness")
                             .put("readiness", voiceReadiness()))
+                        // And PUSH it as an error too. WHY both: this bridge has no
+                        // error channel — the shim resolves every reply, so an
+                        // `ok:false` payload reads to the composer as a SUCCESSFUL
+                        // start, and the phone would sit saying "Listening…" over a
+                        // microphone that was never opened, with no clock to end it.
+                        // The pushed `error` is what returns the box to idle.
+                        broadcastVoiceEvent(org.json.JSONObject()
+                            .put("type", "error")
+                            .put("message", "Microphone permission was not granted."))
                         msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                             org.json.JSONObject().put("ok", false)
                                 .put("error", "Microphone permission was not granted.")) }
@@ -4112,6 +4121,10 @@ class SessionService : Service() {
                         // Nobody could show the prompt (the app window is not on
                         // screen). Say exactly that — do NOT record this as a refusal,
                         // because the user was never asked.
+                        // Pushed as an error for the same reason as the DENIED branch.
+                        broadcastVoiceEvent(org.json.JSONObject()
+                            .put("type", "error")
+                            .put("message", "The YouCoded window is not open, so the microphone permission could not be requested."))
                         msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                             org.json.JSONObject().put("ok", false)
                                 .put("error", "The YouCoded window is not open, so the microphone permission could not be requested.")) }
@@ -4121,14 +4134,14 @@ class SessionService : Service() {
 
             /** Close the microphone and keep the words. */
             "voice:stop" -> {
-                voiceRecognizer?.stop()
+                mainHandler.post { voiceRecognizer?.stop() }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", true)) }
             }
 
             /** Close the microphone and throw the words away. */
             "voice:cancel" -> {
-                voiceRecognizer?.cancel()
+                mainHandler.post { voiceRecognizer?.cancel() }
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", true)) }
             }
