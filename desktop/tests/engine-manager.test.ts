@@ -91,7 +91,9 @@ describe('EngineManager — the deferred chip probe and the live device line', (
   }
 
   it('status() answers immediately without backendOptions, then pushes them', async () => {
-    plantInstall('vulkan');
+    // A marker that ALREADY carries devices, so T2's lazy backfill does not run
+    // and emit a second 'status-changed' — this test counts the chip probe's push.
+    plantInstallWithDevices('vulkan', REAL_DEVICES);
     const mgr = new EngineManager(home, userData, 9999, { probeChip: async () => AMD_CHIP });
     let pushes = 0;
     mgr.on('status-changed', () => { pushes += 1; });
@@ -105,7 +107,8 @@ describe('EngineManager — the deferred chip probe and the live device line', (
   });
 
   it('a probe that THROWS still pushes, and settles on "nothing to offer"', async () => {
-    plantInstall('vulkan');
+    // Devices already in the marker, for the same reason as above.
+    plantInstallWithDevices('vulkan', REAL_DEVICES);
     const mgr = new EngineManager(home, userData, 9999, {
       probeChip: async () => { throw new Error('nvidia-smi wedged'); },
     });
@@ -118,6 +121,23 @@ describe('EngineManager — the deferred chip probe and the live device line', (
     // hanging when a graphics driver misbehaves.
     expect(pushes).toBe(1);
     expect(mgr.status().backendOptions).toEqual([]);
+  });
+
+  // Both halves of this feature push independently: the chip probe (T3) and the
+  // lazy device backfill (T2), which fills in a marker written before devices
+  // were recorded. A user upgrading from an older install gets BOTH, and the
+  // card must end up with the chip AND the device name. This is the case the
+  // two tests above deliberately exclude so their counts stay meaningful.
+  it('an older install with no device list gets both pushes, and ends up complete', async () => {
+    plantInstall('vulkan'); // no `devices` key — every install made before T2
+    const mgr = new EngineManager(home, userData, 9999, { probeChip: async () => AMD_CHIP });
+    let pushes = 0;
+    mgr.on('status-changed', () => { pushes += 1; });
+
+    mgr.status();
+    await settled();
+    expect(pushes).toBeGreaterThanOrEqual(1);
+    expect(mgr.status().backendOptions?.map((o) => o.backend)).toEqual(['rocm']);
   });
 
   it('asks the machine ONCE, however many times status() is called', async () => {
