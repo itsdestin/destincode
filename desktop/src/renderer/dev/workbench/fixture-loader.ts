@@ -333,6 +333,29 @@ export function loadFixture(
         const action: ChatAction = { type: 'SPECIALIST_RUN_CHANGED', sessionId, run };
         state = chatReducer(state, action);
         actions.push(action);
+      } else if (parsed.type === 'plan' && parsed.plan) {
+        // Specialists stage two (design mockup): the plan record for a
+        // `propose_plan` card. Like specialist_run, a plan that is still
+        // moving (writing / running) is anchored to load time through
+        // `elapsedMs` so its clock reads naturally whenever the gallery opens;
+        // settled plans keep their fixed timestamps. Children inside a running
+        // step get the same treatment.
+        const live = parsed.plan.status === 'writing' || parsed.plan.status === 'running';
+        const plan = live
+          ? { ...parsed.plan, startedAt: Date.now() - (parsed.plan.elapsedMs ?? 90_000) }
+          : { ...parsed.plan };
+        delete plan.elapsedMs;
+        plan.steps = (plan.steps ?? []).map((st: any) => ({
+          ...st,
+          children: st.children?.map((c: any) => {
+            const child = c.status === 'running' ? { ...c, startedAt: Date.now() - (c.elapsedMs ?? 60_000) } : { ...c };
+            delete child.elapsedMs;
+            return child;
+          }),
+        }));
+        const action: ChatAction = { type: 'PLAN_CHANGED', sessionId, plan };
+        state = chatReducer(state, action);
+        actions.push(action);
       } else if (parsed.type === 'shell_run') {
         // Background Bash (G-1): the live run record for a Bash card. The
         // fixture gives `startedAgoMs` / `ranForMs` so the elapsed time reads

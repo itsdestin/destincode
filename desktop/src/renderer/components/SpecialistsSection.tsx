@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { SpecialistDefinitionView, DelegatedModelsView, SpecialistsListResult } from '../../shared/types';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
-import { Button, EmptyState, ErrorState, FieldError, LoadingState } from './ui';
+import { Button, EmptyState, ErrorState, FieldError, LoadingState, SettingRow, TextInput, Toggle } from './ui';
 import type { ExplainerSection } from './SettingsExplainer';
 import { refreshSpecialistRoster, useSpecialistRoster, provenanceWithinGroup, NOT_IMPLEMENTED_ON_MOBILE } from '../hooks/useSpecialists';
 
@@ -247,6 +247,16 @@ export default function SpecialistsSection({ cwd }: {
         </div>
       </div>
 
+      {/* ── Plans (specialists stage two, design mockup 2026-09-05) ─────────── */}
+      {/* Q-4 on the questions deck: OFF until the user turns it on — every plan
+          asks until they decide they trust the card. The amount is the one
+          number a plan card prints (its ceiling), so the row speaks in the same
+          unit the card does. */}
+      <div>
+        <h3 className={SECTION_LABEL}>Plans</h3>
+        <PlansAutoApproveRow />
+      </div>
+
       {/* ── 2. The roster ─────────────────────────────────────────────────── */}
       <div>
         <h3 className={SECTION_LABEL}>
@@ -308,6 +318,60 @@ export default function SpecialistsSection({ cwd }: {
         </div>
       </div>
     </section>
+  );
+}
+
+/** "Run plans without asking when under N tokens" — the auto-approve limit.
+ *  Reads/writes the MOCK_ONLY plans.getAutoApprove / setAutoApprove pair. */
+function PlansAutoApproveRow() {
+  const [under, setUnder] = useState<number | null>(null);
+  const [draft, setDraft] = useState('20000');
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (window as any).claude?.plans?.getAutoApprove?.().then((r: { underTokens: number }) => {
+      if (!alive) return;
+      setUnder(r.underTokens);
+      if (r.underTokens > 0) setDraft(String(r.underTokens));
+    }).catch((e: Error) => alive && setError(e.message));
+    return () => { alive = false; };
+  }, []);
+  const save = async (n: number) => {
+    const prev = under;
+    setUnder(n); setError(null);
+    try {
+      const res = await (window as any).claude.plans.setAutoApprove(n);
+      if (res && res.ok === false) { setUnder(prev); setError(res.error); }
+    } catch (e) { setUnder(prev); setError((e as Error).message); }
+  };
+  const on = (under ?? 0) > 0;
+  // SettingRow variant="item" + Toggle: the one shape every boolean setting
+  // takes (design guide §4.6; setting-row-authority guards it).
+  return (
+    <div className="space-y-1.5" data-testid="plans-auto-approve">
+      <SettingRow
+        variant="item"
+        title="Run small plans without asking"
+        description="A plan under the limit starts on its own; its card still shows the ceiling. Bigger plans always ask."
+        control={<Toggle checked={on} onChange={(next) => void save(next ? (Number(draft) || 20000) : 0)} disabled={under === null} aria-label="Run small plans without asking" />}
+      />
+      {on && (
+        <div className="flex items-center gap-2 flex-wrap px-3">
+          <span className="text-2xs text-fg-dim">when the plan's ceiling is under</span>
+          <TextInput
+            size="sm"
+            inputMode="numeric"
+            className="w-24"
+            value={draft}
+            aria-label="Token limit for plans that run without asking"
+            onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
+            onBlur={() => { const n = Number(draft); if (n > 0 && n !== under) void save(n); }}
+          />
+          <span className="text-2xs text-fg-dim">tokens</span>
+        </div>
+      )}
+      {error && <div className="px-3"><FieldError>{error}</FieldError></div>}
+    </div>
   );
 }
 

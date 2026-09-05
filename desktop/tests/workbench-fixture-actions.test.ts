@@ -25,6 +25,9 @@ const KNOWN_KINDS = new Set([
   // (fixture-loader.ts dispatches it as SHELL_RUN_CHANGED). Landed with the
   // card mockup in 69d066a3; this allowlist was missed, leaving the branch red.
   'shell_run',
+  // Specialists stage two (design mockup, 2026-09-05): the plan record a
+  // `propose_plan` card renders from (dispatched as PLAN_CHANGED).
+  'plan',
 ]);
 
 function fixtureFiles(dir: string): Array<{ name: string; raw: string }> {

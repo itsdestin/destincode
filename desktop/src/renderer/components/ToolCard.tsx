@@ -3,6 +3,7 @@ import { ToolCallState } from '../../shared/types';
 import { useChatDispatch } from '../state/chat-context';
 import { useSpecialistDefinition, useSpecialistRunByChild } from '../hooks/useSpecialists';
 import { TaskConsentBlock } from './SpecialistEnvelope';
+import { PlanBlock, planDisplay, planIcon } from './plans/PlanCard';
 import { hasNestedAsk } from '../utils/specialist-cards';
 import { useArtifactOptional } from '../state/ArtifactContext';
 import { Button, Radio, RadioGroup, Textarea } from './ui';
@@ -292,6 +293,11 @@ export function friendlyToolDisplay(
     // Worker ↳ Run the release checklist" — once the run record names the
     // child; before that, "Hiring a worker". `task_id` calls read as the
     // management verb they are.
+    // Specialists stage two (design mockup): the plan card's header — "Plan:
+    // <goal>" plus a status word, read off the plan record once it lands.
+    case 'propose_plan':
+      return planDisplay(input, tool.plan);
+
     case 'Task':
       return taskDisplay(input, {
         title: tool.specialistRun?.title,
@@ -1296,8 +1302,10 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
   // G-1: a Bash card with a shell-run record shows the RUN's state the same
   // way — its tool result is only the launch acknowledgment.
   const shell = tool.toolName === 'Bash' ? tool.shellRun : undefined;
-  const runIcon: 'spinner' | 'check' | 'fail' | 'stopped' | null =
+  const runIcon: 'spinner' | 'check' | 'fail' | 'stopped' | 'question' | 'paused' | null =
     tool.status === 'awaiting-approval' ? null
+    // Specialists stage two (design mockup): a plan card shows the PLAN's state.
+    : tool.plan ? planIcon(tool.plan)
     : shell ? (shell.status === 'running' ? 'spinner' : shell.status === 'stopped' ? 'stopped' : shell.exitCode === 0 ? 'check' : 'fail')
     : !run ? null
     : run.status === 'running' ? 'spinner'
@@ -1325,6 +1333,8 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
       {runIcon === 'check' && <CheckIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
       {runIcon === 'fail' && <FailIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
       {runIcon === 'stopped' && <StoppedIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
+      {runIcon === 'question' && <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />}
+      {runIcon === 'paused' && <StoppedIcon className="w-3.5 h-3.5 shrink-0 text-amber-500" />}
       {runIcon === null && tool.status === 'running' && (
         <BrailleSpinner size="sm" />
       )}
@@ -1395,6 +1405,12 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
       {tool.status === 'awaiting-approval' && tool.requestId && tool.toolName === 'Task' && (
         <TaskConsentBlock tool={tool} sessionId={sessionId} />
       )}
+
+      {/* Specialists stage two (design mockup, 2026-09-05): the plan itself —
+          steps, ceiling, and the buttons for whatever state it is in — is the
+          card's face, visible without expanding, because approving a fan-out
+          you have not seen is the thing the card exists to prevent. */}
+      {tool.plan && <PlanBlock plan={tool.plan} sessionId={sessionId} />}
 
       {/* Permission / AskUserQuestion / ExitPlanMode UI */}
       {tool.status === 'awaiting-approval' && tool.requestId && (() => {

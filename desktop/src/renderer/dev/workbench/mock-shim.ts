@@ -3,7 +3,7 @@ import type { TranscriptEvent } from '../../../shared/types';
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
 import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
-import type { DelegatedModelsView } from '../../../shared/types';
+import type { DelegatedModelsView, PlanView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
 import { previewKind } from '../../../shared/artifacts/categorization';
@@ -18,6 +18,7 @@ import { resolveFixture, CS_ERR_READ } from './fixtures/chatsearch';
 import { SHEET_BEFORE, SHEET_AFTER } from './fixtures/sheets';
 import type { MockState, MockSessionMeta } from './scenarios';
 import { specialistRoster, delegatedModels as seedDelegatedModels } from './fixtures/specialists';
+import { PLANS } from './specialist-runs';
 import { MARKETPLACE_PLUGINS, MARKETPLACE_THEMES, INSTALLED_SKILLS, INSTALLED_PACKAGES, FEATURED } from './fixtures/marketplace/registry';
 // Scripted replies (site scenario / phase-2 play-through): a typed message
 // gets a fixture-driven answer instead of being swallowed by the catch-all.
@@ -98,6 +99,8 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // fixture data to serve instead of a real filesystem/ledger.
   'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
   'specialists.steer', 'specialists.interrupt', 'on.specialistEvent',
+  'plans.approve', 'plans.comment', 'plans.addBudget', 'plans.resume', 'plans.stop',
+  'plans.getAutoApprove', 'plans.setAutoApprove',
   'shell.openPath',
   // Chatsearch session references — real backend too, same reason for the fake:
   // the tool gallery needs an index that shows every row state on demand.
@@ -944,6 +947,57 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   let tiers = seedDelegatedModels();
   const specialistSubs = new Set<(e: any) => void>();
   const shellSubs = new Set<(e: any) => void>();   // G-1: background command run records
+  // Specialists stage two — plans (design mockup, 2026-09-05; MOCK_ONLY). The
+  // card hands each button to one of these and lands whatever comes back, so
+  // the fake only has to answer with the plan's NEXT record. PLANS is keyed by
+  // planId and filled by seed-chat/fixture-loader as `plan` lines replay —
+  // the same arrangement RUNS uses for hires. The transitions here are the
+  // approved behaviour, not invention: Approve → running (first step opens
+  // with its specialists), Comment → the old card greys out and a revised
+  // plan is NOT posted by the mock (that is the assistant's turn, which the
+  // workbench cannot fake honestly), Add budget → running again with a
+  // higher ceiling, Continue → running with finished steps kept, Stop →
+  // stopped.
+  const plansAutoApprove = { underTokens: 0 };
+  const nextPlan = (planId: string, mutate: (p: PlanView) => PlanView) => {
+    const cur = PLANS.get(planId);
+    if (!cur) return { ok: false as const, error: 'That plan is no longer on this conversation.' };
+    const next = mutate({ ...cur, seq: (cur.seq ?? 0) + 1 });
+    PLANS.set(planId, next);
+    return { ok: true as const, plan: next };
+  };
+  const plans = {
+    approve: async (_sessionId: string, planId: string) => nextPlan(planId, (p) => ({
+      ...p, status: 'running', startedAt: Date.now(),
+      steps: p.steps.map((st, i) => i === 0
+        ? { ...st, status: 'running', done: 0, usedTokens: 0,
+            children: Array.from({ length: st.fanOut }, (_, k) => ({
+              childId: `${p.planId}-${st.id}-${k}`, parentToolCallId: p.toolUseId, agentType: st.specialist,
+              title: `${['Wren', 'Idris', 'Mara', 'Tobin'][k % 4]} the ${st.specialist}`, background: true,
+              status: 'running' as const, startedAt: Date.now(),
+            })) }
+        : st),
+    })),
+    comment: async (_sessionId: string, planId: string, _text: string) => nextPlan(planId, (p) => ({
+      ...p, status: 'stopped', revisedBy: `${p.planId}-r2`,
+    })),
+    addBudget: async (_sessionId: string, planId: string, tokens: number) => nextPlan(planId, (p) => ({
+      ...p, status: 'running', paused: undefined, ceilingTokens: p.ceilingTokens + tokens,
+      ceilingUsd: p.ceilingUsd == null ? null : p.ceilingUsd * ((p.ceilingTokens + tokens) / p.ceilingTokens),
+      steps: p.steps.map((st) => st.status === 'paused' ? { ...st, status: 'running', budgetTokens: st.budgetTokens + Math.ceil(tokens / Math.max(1, st.fanOut)) } : st),
+    })),
+    resume: async (_sessionId: string, planId: string) => nextPlan(planId, (p) => {
+      const idx = p.steps.findIndex((st) => st.status !== 'done');
+      return { ...p, status: 'running', steps: p.steps.map((st, i) => i === idx ? { ...st, status: 'running', done: 0, usedTokens: 0 } : st) };
+    }),
+    stop: async (_sessionId: string, planId: string) => nextPlan(planId, (p) => ({
+      ...p, status: 'stopped', endedAt: Date.now(),
+      steps: p.steps.map((st) => st.status === 'running' || st.status === 'paused' ? { ...st, status: 'skipped', children: st.children?.map((c) => ({ ...c, status: 'interrupted' as const, endedAt: Date.now() })) } : st),
+    })),
+    getAutoApprove: async () => ({ ...plansAutoApprove }),
+    setAutoApprove: (underTokens: number) => write(() => { plansAutoApprove.underTokens = Math.max(0, Math.floor(underTokens)); }),
+  };
+
   const specialists = {
     // Task 10: real shape is { definitions, skipped, folders } — the roster
     // hook keys its cache on cwd and the definedBy() provenance line needs
@@ -1955,7 +2009,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       },
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
-    terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
+    terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, plans, shell,
     skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
 }

@@ -17,7 +17,7 @@ import { serializeChatState, type ChatState, type SerializedChatState } from '..
 import { loadFixture } from './fixture-loader';
 import type { SessionTotals } from '../../state/session-totals';
 import type { ScenarioId } from './scenarios';
-import { RUNS } from './specialist-runs';
+import { RUNS, PLANS } from './specialist-runs';
 
 // @ts-ignore TS1343 — Vite rewrites import.meta.glob statically at build time.
 const convos = import.meta.glob('./fixtures/conversations/*.jsonl', {
@@ -177,6 +177,9 @@ export function buildHydratePayload(): SerializedChatState {
       // Specialists 1c: remember each declared run so the mock's stop action
       // can flip the right record (mock-shim.ts `specialists.interrupt`).
       if (action.type === 'SPECIALIST_RUN_CHANGED') RUNS.set(action.run.childId, action.run);
+      // Specialists stage two (design mockup): same registration for plans, so
+      // the mock plans.* calls can find the record a card's button names.
+      if (action.type === 'PLAN_CHANGED') PLANS.set(action.plan.planId, action.plan);
     }
   }
 

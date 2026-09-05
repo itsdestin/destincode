@@ -584,6 +584,77 @@ export interface SpecialistRunView {
  *  two event kinds to know what a hire's note history looks like. */
 export type SpecialistsEvent = { kind: 'run'; sessionId: string; run: SpecialistRunView };
 
+/**
+ * Specialists stage two — a PLAN as the renderer sees it (design mockup,
+ * 2026-09-05; the backend does not exist yet). The model proposes a plan with
+ * the `propose_plan` tool; this record lands on that card the way
+ * `SpecialistRunView` lands on a Task card, and drives every state the card
+ * can be in. WHY a separate record and not the tool result: the plan lives
+ * for minutes to days (approval, running, a pause for budget, a restart) and
+ * its card must keep updating long after the tool call itself returned.
+ */
+export type PlanStatus =
+  | 'writing'      // the model is still composing it (40 s – 4 min on a local model)
+  | 'proposed'     // waiting for Approve / Comment
+  | 'running'
+  | 'paused'       // a budget ceiling was reached — Add budget / Stop
+  | 'interrupted'  // the app restarted mid-plan — Continue / Stop
+  | 'completed'
+  | 'stopped'
+  | 'failed';
+
+export interface PlanStepView {
+  id: string;
+  /** Spec §4 building blocks. */
+  kind: 'map' | 'verify' | 'combine' | 'repeat';
+  /** "Review 6 files" — what the step does, in the model's words. */
+  title: string;
+  /** Definition id of the specialist each child runs as (explorer / reviewer / …). */
+  specialist: string;
+  /** How many children this step fans out to. */
+  fanOut: number;
+  /** The ENFORCED per-child cap — a hard stop, never an estimate (spec §4). */
+  budgetTokens: number;
+  status: 'pending' | 'running' | 'done' | 'paused' | 'failed' | 'skipped';
+  /** Children finished so far (≤ fanOut). */
+  done?: number;
+  /** Spent by this step so far, summed over its children. */
+  usedTokens?: number;
+  /** The live children, one line each while the step runs. */
+  children?: SpecialistRunView[];
+}
+
+export interface PlanView {
+  planId: string;
+  /** The `propose_plan` tool call this plan renders on. */
+  toolUseId: string;
+  /** "Review the auth module for the release" — the plan's own one-line goal. */
+  title: string;
+  status: PlanStatus;
+  steps: PlanStepView[];
+  /** Σ(step budget × fan-out): the worst case, honest because budgets are caps. */
+  ceilingTokens: number;
+  /** Priced per model; null when the model has no published price — the card
+   *  then shows the ceiling in tokens only (never a false $0.00). */
+  ceilingUsd: number | null;
+  model: { label: string };
+  usedTokens?: number;
+  usedUsd?: number | null;
+  /** Set when the plan ran without asking because it fell under the user's limit. */
+  autoApproved?: boolean;
+  /** Why it is paused, in plain words, plus the step that hit its cap. */
+  paused?: { stepId: string; reason: string };
+  /** The plan this one revises (after a Comment) — the old card greys out. */
+  revisionOf?: string;
+  /** Set on the OLD plan once a Comment produced a new one: the card greys out
+   *  and points below. */
+  revisedBy?: string;
+  startedAt?: number;
+  endedAt?: number;
+  /** Ordering stamp, same role as SpecialistRunView.seq. */
+  seq?: number;
+}
+
 /** A background specialist's delivered report, folded into its Task card. */
 export interface SpecialistReportView {
   text: string;
@@ -732,6 +803,12 @@ export interface ToolCallState {
    * Bash calls and on CC cards.
    */
   shellRun?: ShellRunView;
+  /**
+   * Specialists stage two (design mockup, 2026-09-05): the plan a
+   * `propose_plan` call proposed. Drives the card's real state the way
+   * `specialistRun` does for a hire — the tool result is only the proposal ack.
+   */
+  plan?: PlanView;
 }
 
 /** Why a background command is no longer running — the card names it. */

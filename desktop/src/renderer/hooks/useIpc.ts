@@ -355,6 +355,20 @@ declare global {
         steer: (sessionId: string, childId: string, text: string) => Promise<{ ok: true } | { ok: false; error: string }>;
         interrupt: (sessionId: string, childId: string) => Promise<{ ok: true } | { ok: false; error: string }>;
       };
+      // Specialists stage two (design mockup, 2026-09-05). NO backend yet — every
+      // member is a MOCK_ONLY channel (dev/workbench/mock-only.ts), which is
+      // the backend to-do list once the design is approved. Each call answers
+      // with the plan's NEXT record, which the card lands via PLAN_CHANGED.
+      plans: {
+        approve: (sessionId: string, planId: string) => Promise<{ ok: true; plan: import('../../shared/types').PlanView } | { ok: false; error: string }>;
+        comment: (sessionId: string, planId: string, text: string) => Promise<{ ok: true; plan: import('../../shared/types').PlanView } | { ok: false; error: string }>;
+        addBudget: (sessionId: string, planId: string, tokens: number) => Promise<{ ok: true; plan: import('../../shared/types').PlanView } | { ok: false; error: string }>;
+        resume: (sessionId: string, planId: string) => Promise<{ ok: true; plan: import('../../shared/types').PlanView } | { ok: false; error: string }>;
+        stop: (sessionId: string, planId: string) => Promise<{ ok: true; plan: import('../../shared/types').PlanView } | { ok: false; error: string }>;
+        /** Settings → Specialists: run plans without asking when under this many tokens (0 = off). */
+        getAutoApprove: () => Promise<{ underTokens: number }>;
+        setAutoApprove: (underTokens: number) => Promise<{ ok: true } | { ok: false; error: string }>;
+      };
       // Local llama.cpp engine (Plan B). install() streams progress via
       // onInstallProgress; onStatusChanged pushes state transitions
       // (not-installed → starting → running / error). EngineCard consumes these.

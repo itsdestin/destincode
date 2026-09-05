@@ -32,4 +32,16 @@
 // the workbench can still show the you-alone, empty and stale-board states
 // without a live leaderboard. `no MOCK_ONLY entry has since gained a real
 // channel` in workbench-mock-contract.test.ts is what forces this cleanup.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
+  // Specialists stage two — plans (design mockup, 2026-09-05). The plan card
+  // and its Settings row are built against these; the backend (the
+  // `propose_plan` tool, schema + validator, executor + journal, budgets as
+  // hard stops, resume across restarts) is the work this list describes.
+  { channel: 'plans.approve', feature: 'specialists stage two — plans' },
+  { channel: 'plans.comment', feature: 'specialists stage two — plans' },
+  { channel: 'plans.addBudget', feature: 'specialists stage two — plans' },
+  { channel: 'plans.resume', feature: 'specialists stage two — plans' },
+  { channel: 'plans.stop', feature: 'specialists stage two — plans' },
+  { channel: 'plans.getAutoApprove', feature: 'specialists stage two — plans' },
+  { channel: 'plans.setAutoApprove', feature: 'specialists stage two — plans' },
+];

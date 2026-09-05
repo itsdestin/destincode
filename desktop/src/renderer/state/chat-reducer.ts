@@ -2329,6 +2329,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return next;
     }
 
+    case 'PLAN_CHANGED': {
+      // Specialists stage two (design mockup, 2026-09-05): the plan record
+      // lands on the `propose_plan` card that proposed it, keyed by toolUseId
+      // — the same contract SHELL_RUN_CHANGED uses. A record for an unknown
+      // card is dropped, and a stale push (older `seq`) never rewinds a card
+      // that already moved on, the lesson ROADMAP L259 taught the hire card.
+      const session = next.get(action.sessionId);
+      if (!session) return state;
+      const card = session.toolCalls.get(action.plan.toolUseId);
+      if (!card) return state;
+      const cur = card.plan;
+      if (cur?.seq !== undefined && action.plan.seq !== undefined && action.plan.seq < cur.seq) return state;
+      const toolCalls = new Map(session.toolCalls);
+      toolCalls.set(card.toolUseId, { ...card, plan: action.plan });
+      next.set(action.sessionId, { ...session, toolCalls });
+      return next;
+    }
+
     case 'SHELL_RUN_CHANGED': {
       // Background Bash (G-1): the run record lands on the Bash card that
       // started it, keyed by toolUseId. The card must already exist (the tool
