@@ -48,6 +48,12 @@ const WORK_FULL = (o: DoctrineOpts) => [
     ? 'Do not use Edit, Write or Bash to change anything unless the user unambiguously expects you to. An open-ended question or an investigation ends in findings, not action, unless the user has said they want you to act on what you find or you are working toward a clear task they set.'
     : null,
   'Never answer from memory what a tool can tell you: arithmetic, dates and times, file contents and sizes, git history, system state, and anything current such as versions, prices or news. Use Bash, Read, Grep or WebSearch and report what came back.',
+  // Destin, 2026-09-05: the failure this prevents is the model talking itself out
+  // of a job it could have done. It answers "I don't have access to your email"
+  // when a script, a command-line tool the user already has, or an MCP server
+  // would have got there. When the marketplace search tool ships (roadmap:
+  // native-harness > tools), this line gains "look there first".
+  'Assume you can do whatever the user asks until something actually proves you cannot. If a request needs a capability you were not handed — reading their email, say — work out how you could get it, with a script, a command-line tool already on this machine, or an MCP server, and check what the app can already do. Only say you cannot after you have looked.',
   o.audience === 'user'
     ? 'Plan multi-step work with TodoWrite and keep the items current as you go. Skip the plan for small jobs, and never make a one-item plan.'
     : null,
@@ -94,6 +100,7 @@ const ENVELOPES = (o: DoctrineOpts) => [
 const WORK_COMPACT = (o: DoctrineOpts) => [
   'Keep going until the task is done or you need something only the user can give. Never end a turn by saying what you will do next — do it now.',
   'Never answer from memory what a tool can tell you (dates, file contents, git state, current facts). Use the tool and report what came back.',
+  'Assume you can do what the user asks until something proves you cannot. If you have no tool for it, work out how you could get one — a script, a command already on this machine — before saying no.',
   'Change nothing unless the user clearly expects it. A question ends in an answer, not an edit.',
   'Prefer dedicated tools over shell: Read/Glob/Grep instead of cat/find/grep, Edit instead of sed. Use absolute paths.',
   'Approval is the app\'s job: it shows the user a card when needed. Do not also ask in chat.',
