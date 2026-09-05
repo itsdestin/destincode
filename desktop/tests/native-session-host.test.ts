@@ -2237,13 +2237,16 @@ describe('NativeSessionHost', () => {
       });
     });
 
-    it("an external-directory Read is declined instantly, factually, by the wired ask router — not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
+    it("an external-directory Write is declined instantly, factually, by the wired ask router — not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {
       // Important review fix: the Task 5.5 Step 4 pin (stepCap, below) exercises
       // askUser only through the max_steps gate, which short-circuits identically
       // whether `askUser: childAskRouter(...)` is wired or deleted from createChild
       // — so that pin alone cannot catch the wiring being dropped. This drives a
       // DIFFERENT askUser call site: the external-directory forced ask
-      // (harness-session.ts checkPathGuard 'external' verdict, ~:1830-1852). With
+      // (harness-session.ts checkPathGuard 'external' verdict). The vehicle is a
+      // WRITE, and must stay one: since 2026-09-05 a read outside the workspace
+      // raises no ask at all (READ_ONLY_PATH_TOOLS), so a Read here would pin
+      // nothing — it would pass with the router wired OR deleted. With
       // the router wired, it denies this instantly (never reaching the broker —
       // see child-ask-router.ts) with FACTUAL copy naming the real constraint —
       // Task 8 deliberately dropped the old "user declined" wording here since no
@@ -2254,15 +2257,16 @@ describe('NativeSessionHost', () => {
       // router's copy AND the absence of the config-error copy discriminates
       // router-wired from router-missing.
       const external = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-external-'));
-      const outsideFile = path.join(external, 'secret.txt');
-      fs.writeFileSync(outsideFile, 'outside the jail');
-      const readOutside = () => scriptedModel([
-        stream(toolCallChunk('c1', 'Read', { file_path: outsideFile }), finishChunk('tool-calls')),
+      const outsideFile = path.join(external, 'planted.txt');
+      const writeOutside = () => scriptedModel([
+        stream(toolCallChunk('c1', 'Write', { file_path: outsideFile, content: 'x' }), finishChunk('tool-calls')),
         stream(...textChunks('t', 'done'), finishChunk('stop')),
       ]) as any;
-      const { h } = await withParent(async () => readOutside());
+      const { h } = await withParent(async () => writeOutside());
       const { childId } = await h.createChild('root-1', {
-        specialist: EXPLORER, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
+        // WORKER, not EXPLORER: the read-only charter does not attach Write at all,
+        // so the call would die as an unknown tool before reaching the ask router.
+        specialist: resolveSpecialist('worker')!, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
       });
       const asks: any[] = [];
       h.on('hook-event', (e) => asks.push(e));
@@ -3798,9 +3802,13 @@ describe('NativeSessionHost', () => {
   // transcript .jsonl AND the delegation ledger sidecars, not just the
   // specialist-report spill files it exists for. Narrowed to a dedicated
   // sessions/<slug>/specialist-reports/ subdirectory both writeSessionArtifact
-  // writes into and toolWiring exempts — nothing else in a project's harness
-  // storage should ever be Read/Grep/Glob-able without the external_directory
-  // ask a genuinely foreign path requires.
+  // writes into and toolWiring exempts.
+  //
+  // These cases assert checkPathGuard's VERDICT, which 2026-09-05 did not
+  // change. What changed is the price of an 'external' verdict: for Read/Grep/
+  // Glob it is now zero (READ_ONLY_PATH_TOOLS in harness-session.ts), so the
+  // scoping below no longer keeps another conversation's transcript unreadable
+  // — it keeps the exemption honest, and keeps a write-shaped tool fenced.
   describe('specialist report spill scoping (Important 5, final review)', () => {
     it('the wired internalReadRoots is the specialist-reports subdirectory, not the whole per-project sessions dir', async () => {
       const home = new NativeHome(root);
@@ -3863,7 +3871,9 @@ describe('NativeSessionHost', () => {
       const slug = nativeStoreSlug(root);
       // A DIFFERENT conversation's own transcript, living in the SAME
       // per-project sessions/<slug>/ directory the old (too-wide) exemption
-      // covered — this must still require the external_directory ask.
+      // covered — this must still come back 'external', i.e. outside the jail
+      // and never silently exempt. (A Read of it no longer costs a card; a
+      // write-shaped tool still does. See the describe comment above.)
       const otherTranscript = path.join(home.root, 'sessions', slug, 'some-other-session-id.jsonl');
       const { checkPathGuard } = await import('../src/main/harness/tools/guards');
       const session = (h as any).live.get('root-1').session;
