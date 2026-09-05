@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FirstRunState, PrerequisiteState } from '../../shared/first-run-types';
 import type { CatalogModel } from '../../shared/provider-types';
 import BrailleSpinner from './BrailleSpinner';
-import { describeStep } from './first-run/describe-step';
+import { canRetry, describeStep } from './first-run/describe-step';
 import { persistLastBinding, persistRuntimeDefault } from './RuntimeBinding';
 import { Button, TextInput } from './ui';
 
@@ -326,6 +326,10 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
     (p) => p.status === 'installing' || p.status === 'checking',
   );
 
+  // One predicate, shared with describeStep(), so the button and the
+  // "something went wrong" headline always appear together or not at all.
+  const retryable = !!state?.lastError && canRetry(state);
+
   const handleRetry = useCallback(() => {
     if (busy) return;
     (window as any).claude.firstRun.retry();
@@ -415,13 +419,22 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
             <DevModeScreen onEnable={handleDevMode} />
           )}
 
-          {/* Error display */}
+          {/* Error display. The message is always shown; the Try Again button
+              only when a PREREQUISITE actually failed. WHY: "Try Again" here
+              re-runs the whole Node/Git/Claude install pass, and one click on
+              "Log in with OpenRouter" sets an error message ("coming in a later
+              update") without anything having failed — offering to reinstall
+              the app's plumbing in answer to that is both confusing and slow.
+              The sign-in failures (ChatGPT timed out, Claude login timed out)
+              DO mark the 'auth' prerequisite failed, so they keep their
+              button — and the three sign-in buttons are back on screen too. */}
           {state?.lastError && (
             <div className="flex flex-col items-center gap-2 mt-2">
               {/* Status colors stay theme-independent per CLAUDE.md. */}
               <p className="text-xs text-destructive-fg text-center max-w-md">
                 {state.lastError}
               </p>
+              {retryable && (
               <button
                 onClick={handleRetry}
                 disabled={busy}
@@ -429,6 +442,7 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
               >
                 {busy ? 'Working…' : 'Try Again'}
               </button>
+              )}
             </div>
           )}
         </div>

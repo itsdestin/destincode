@@ -40,9 +40,71 @@ export const CHATGPT_FIRST_RUN_TIMEOUT_MS = 300_000;
 // Constants
 // ---------------------------------------------------------------------------
 
-const STATE_DIR = path.join(os.homedir(), '.claude', 'toolkit-state');
+// WHY the env var: this folder lives under the user's HOME, not under
+// Electron's userData, so a dev instance and the real installed app share it.
+// `scripts/run-dev.sh` shifts userData but cannot shift HOME — so without this
+// escape hatch, walking the setup wizard in a dev window overwrites the
+// installed app's setup state, and Destin's real app opens on the setup wizard
+// at its next launch. The default is unchanged, so existing installs move
+// nothing; only a caller that sets YOUCODED_TOOLKIT_STATE_DIR is redirected.
+const STATE_DIR = process.env.YOUCODED_TOOLKIT_STATE_DIR
+  || path.join(os.homedir(), '.claude', 'toolkit-state');
 const STATE_FILE = path.join(STATE_DIR, 'first-run-state.json');
 const CONFIG_FILE = path.join(STATE_DIR, 'config.json');
+
+/**
+ * Write `setup_completed: true` into the wizard's config file, merging into
+ * whatever is already there.
+ *
+ * WHY it exists: `isFirstRun()` answers "show the setup wizard from scratch?"
+ * and it says yes unless this flag is set OR the state file happens to sit at
+ * COMPLETE. Anything that moves the state file off COMPLETE on an install that
+ * already works — the launch-time "sign in again" nudge, the skip button —
+ * must set this flag first, or the NEXT launch treats a months-old install as
+ * a brand-new machine and re-runs the Node/Git/Claude installers.
+ */
+export function markSetupCompleted(): void {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    let config: Record<string, unknown> = {};
+    try { config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch { /* no config yet */ }
+    config.setup_completed = true;
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+  } catch (err) {
+    log('WARN', 'first-run', 'Failed to mark setup completed', { error: String(err) });
+  }
+}
+
+/**
+ * "Can this install actually start a session?" — the launch-time check that
+ * decides whether an established install is dropped back onto the sign-in
+ * screen (design 2026-09-05 §5, review R3-2).
+ *
+ * WHY it is a separate, injectable function rather than three `||`s inside
+ * main.ts: this branch removed the wizard's Skip link, so answering `false`
+ * locks the user out of their own app until they sign in — and the answer has
+ * to be right for FOUR kinds of install, not just Claude's. Kept out here it
+ * can be tested with all three inputs faked; inside main.ts it could not be
+ * tested at all, and a silent revert to the Claude-only question would lock a
+ * ChatGPT-only install out on every launch with nothing green on the screen.
+ *
+ * ORDER IS LOAD-BEARING: the two local reads first, the `claude auth status`
+ * subprocess last, so a signed-in ChatGPT account never pays for a spawn.
+ */
+export async function setupIsUsable(io: {
+  /** Signed in to a ChatGPT plan. Read straight off ChatGptAuth (not the
+   *  provider registry) so the kill switch, which removes the registry row,
+   *  cannot lock a ChatGPT-only install out either. */
+  isSignedIn: () => boolean;
+  /** Any `ready` provider row — an OpenRouter key, a local model, etc. */
+  hasUsableProvider: () => Promise<boolean>;
+  /** `claude auth status`. Reports not-installed on any throw. */
+  detectAuth: () => Promise<{ installed: boolean }>;
+}): Promise<boolean> {
+  if (io.isSignedIn()) return true;
+  if (await io.hasUsableProvider()) return true;
+  return (await io.detectAuth()).installed;
+}
 
 // ---------------------------------------------------------------------------
 // FirstRunManager
@@ -439,7 +501,10 @@ export class FirstRunManager extends EventEmitter {
       // Same closing moves as handleOAuthLogin's success path. authMode stays
       // 'chatgpt' on purpose: the renderer's completion path reads it to make
       // the next new session default to the ChatGPT plan (design §5).
-      this.updateState({ authComplete: true });
+      // lastError is cleared here: a failed first attempt (a timeout, or the
+      // OpenRouter "not built yet" line) must not leave its red message on
+      // screen under a sign-in that then worked.
+      this.updateState({ authComplete: true, lastError: undefined });
       this.updatePrereq('auth', { status: 'installed' });
       log('INFO', 'first-run', 'ChatGPT sign-in succeeded');
       this.advanceTo('LAUNCH_WIZARD');

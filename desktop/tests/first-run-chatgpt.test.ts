@@ -16,10 +16,19 @@
 //     model only when the catalog already has one (review R2-12) — and never
 //     blocks the hand-off to the app on the catalog.
 //   - The ChatGPT button vanishes under the kill switch (chatgpt.supported).
-//
-// The late launch-time auth check (main.ts) is pinned elsewhere — not here.
+//   - setupIsUsable: the launch-time "can this install start a session?" test
+//     that main.ts asks on every launch after setup. It used to live inline in
+//     main.ts where nothing could reach it; reverting it to the Claude-only
+//     question would lock a ChatGPT-only install out of its own app on EVERY
+//     launch, and this branch removed the Skip link, so there is no way out.
+//   - markSetupCompleted: forcing the wizard back to AUTHENTICATE must not
+//     demote an established install to "brand new machine" on the next launch.
+//   - The wizard's state folder honours YOUCODED_TOOLKIT_STATE_DIR, so a dev
+//     instance cannot overwrite the installed app's setup state.
+//   - Settings' Claude Code row does not claim a Claude account after a
+//     ChatGPT-only first run.
 import React from 'react';
-import { existsSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
@@ -46,9 +55,12 @@ vi.mock('../src/main/prerequisite-installer', () => ({
   checkDiskSpace: vi.fn(), checkWindowsDevMode: vi.fn(), enableWindowsDevMode: vi.fn(),
 }));
 
-import { FirstRunManager, CHATGPT_FIRST_RUN_TIMEOUT_MS } from '../src/main/first-run';
+import {
+  FirstRunManager, CHATGPT_FIRST_RUN_TIMEOUT_MS, markSetupCompleted, setupIsUsable,
+} from '../src/main/first-run';
 import type { ChatGptSignInAuth } from '../src/main/first-run';
 import FirstRunView from '../src/renderer/components/FirstRunView';
+import ModelProvidersSection from '../src/renderer/components/ModelProvidersPopup';
 
 const SCRATCH_HOME = join(tmpdir(), `first-run-chatgpt-test-home-${process.pid}`);
 
@@ -114,6 +126,10 @@ describe('FirstRunManager.handleChatGptLogin', () => {
     const launched = vi.fn();
     m.on('launch-wizard', launched);
     const auth = fakeAuth('signed-in');
+    // A failed first attempt leaves a red line on screen; the sign-in that
+    // then works must take it away with it (fix 7).
+    m.handleOpenRouterNotBuilt();
+    expect(m.getState().lastError).toBe('OpenRouter sign-in is coming in a later update.');
 
     await m.handleChatGptLogin(auth);
 
@@ -189,6 +205,128 @@ describe('FirstRunManager.handleOpenRouterNotBuilt', () => {
     expect(s.lastError).toBe('OpenRouter sign-in is coming in a later update.');
     expect(s.authMode).toBe('none');
     expect(s.currentStep).toBe('AUTHENTICATE');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// setupIsUsable — the launch-time lock-out test (main.ts calls this on every
+// launch after setup). Answering `false` puts the user back on the sign-in
+// screen, and this branch removed the Skip link, so `false` means locked out.
+// ---------------------------------------------------------------------------
+
+describe('setupIsUsable', () => {
+  /** The three inputs, each defaulting to "no". */
+  function io(over: Partial<{ signedIn: boolean; ready: boolean; claude: boolean }> = {}) {
+    return {
+      isSignedIn: vi.fn(() => over.signedIn === true),
+      hasUsableProvider: vi.fn(async () => over.ready === true),
+      detectAuth: vi.fn(async () => ({ installed: over.claude === true })),
+    };
+  }
+
+  it('a ChatGPT-only install is usable — even with the Claude CLI not logged in, and without spawning it', async () => {
+    const deps = io({ signedIn: true });
+    expect(await setupIsUsable(deps)).toBe(true);
+    // The `claude auth status` subprocess is the expensive one; a signed-in
+    // ChatGPT account must never pay for it on launch.
+    expect(deps.hasUsableProvider).not.toHaveBeenCalled();
+    expect(deps.detectAuth).not.toHaveBeenCalled();
+  });
+
+  it('an install running on another provider (an OpenRouter key, a local model) is usable', async () => {
+    const deps = io({ ready: true });
+    expect(await setupIsUsable(deps)).toBe(true);
+    expect(deps.detectAuth).not.toHaveBeenCalled();
+  });
+
+  it('a Claude install with no ChatGPT and no other provider is usable', async () => {
+    const deps = io({ claude: true });
+    expect(await setupIsUsable(deps)).toBe(true);
+    expect(deps.detectAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('nothing signed in anywhere → not usable, which is what sends the user to the sign-in screen', async () => {
+    const deps = io();
+    expect(await setupIsUsable(deps)).toBe(false);
+    expect(deps.isSignedIn).toHaveBeenCalledTimes(1);
+    expect(deps.hasUsableProvider).toHaveBeenCalledTimes(1);
+    expect(deps.detectAuth).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markSetupCompleted — forcing the wizard back to AUTHENTICATE must not turn
+// an install that has worked for months into a "brand new machine".
+// ---------------------------------------------------------------------------
+
+describe('markSetupCompleted and isFirstRun', () => {
+  it('forceStep alone demotes a finished install back to first-run on the next launch', () => {
+    const m = new FirstRunManager();
+    m.skip(); // reaches COMPLETE, which is what a finished setup looks like
+    expect(FirstRunManager.isFirstRun()).toBe(false);
+
+    m.forceStep('AUTHENTICATE'); // the launch-time "sign in again" nudge
+    // This is the bug the flag exists to stop: the wizard would re-run the
+    // Node/Git/Claude installers against a working install.
+    expect(FirstRunManager.isFirstRun()).toBe(true);
+  });
+
+  it('marking setup completed first keeps the next launch out of the wizard', () => {
+    const m = new FirstRunManager();
+    m.skip();
+    markSetupCompleted();
+    m.forceStep('AUTHENTICATE');
+    expect(FirstRunManager.isFirstRun()).toBe(false);
+  });
+
+  it('merges into an existing config rather than replacing it', () => {
+    const configPath = join(SCRATCH_HOME, '.claude', 'toolkit-state', 'config.json');
+    mkdirSync(join(SCRATCH_HOME, '.claude', 'toolkit-state'), { recursive: true });
+    writeFileSync(configPath, JSON.stringify({ something_else: 'kept' }));
+    markSetupCompleted();
+    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
+      something_else: 'kept', setup_completed: true,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Where the wizard's state file lives. `scripts/run-dev.sh` shifts Electron's
+// userData but cannot shift HOME, so without this override a dev instance
+// walking the setup wizard overwrites the INSTALLED app's setup state — and
+// Destin's real app opens on the setup wizard at its next launch.
+// ---------------------------------------------------------------------------
+
+describe('YOUCODED_TOOLKIT_STATE_DIR', () => {
+  const ENV_DIR = join(tmpdir(), `first-run-state-dir-${process.pid}`);
+  afterEach(() => {
+    delete process.env.YOUCODED_TOOLKIT_STATE_DIR;
+    rmSync(ENV_DIR, { recursive: true, force: true });
+    vi.resetModules();
+  });
+
+  it('writes to the folder the env var names, and nothing under ~/.claude', async () => {
+    process.env.YOUCODED_TOOLKIT_STATE_DIR = ENV_DIR;
+    vi.resetModules();
+    const mod = await import('../src/main/first-run');
+    const m = new mod.FirstRunManager();
+    m.forceStep('AUTHENTICATE');
+    mod.markSetupCompleted();
+
+    expect(existsSync(join(ENV_DIR, 'first-run-state.json'))).toBe(true);
+    expect(existsSync(join(ENV_DIR, 'config.json'))).toBe(true);
+    expect(existsSync(join(SCRATCH_HOME, '.claude', 'toolkit-state'))).toBe(false);
+  });
+
+  it('defaults to ~/.claude/toolkit-state when the env var is unset — existing installs move nothing', async () => {
+    delete process.env.YOUCODED_TOOLKIT_STATE_DIR;
+    vi.resetModules();
+    const mod = await import('../src/main/first-run');
+    const m = new mod.FirstRunManager();
+    m.forceStep('AUTHENTICATE');
+
+    expect(existsSync(join(SCRATCH_HOME, '.claude', 'toolkit-state', 'first-run-state.json'))).toBe(true);
+    expect(existsSync(join(ENV_DIR, 'first-run-state.json'))).toBe(false);
   });
 });
 
@@ -343,5 +481,155 @@ describe('FirstRunView — the ChatGPT button and the kill switch', () => {
     const button = await screen.findByText('Log in with ChatGPT');
     button.click();
     expect(firstRun.startAuth).toHaveBeenCalledWith('chatgpt');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The wizard's error line and its Try Again button
+// ---------------------------------------------------------------------------
+
+describe('FirstRunView — Try Again is offered only when something actually failed', () => {
+  afterEach(() => { cleanup(); delete (window as any).claude; });
+
+  it('the OpenRouter "not built yet" line shows the message with no Try Again button', async () => {
+    // One click reaches this state and nothing broke. "Try Again" here would
+    // re-run the whole Node/Git/Claude install pass against a working machine.
+    stubClaude({ state: viewState({
+      currentStep: 'AUTHENTICATE',
+      lastError: 'OpenRouter sign-in is coming in a later update.',
+    }) });
+    render(React.createElement(FirstRunView, { onComplete: vi.fn() }));
+
+    await waitFor(() => expect(screen.getByText('OpenRouter sign-in is coming in a later update.')).toBeTruthy());
+    expect(screen.queryByText('Try Again')).toBeNull();
+    // …and the headline stays the step's own line, not "Something went wrong".
+    expect(screen.queryByText(/Something went wrong/)).toBeNull();
+    expect(screen.getByText('Sign in with your Claude, ChatGPT or OpenRouter account to finish setup.')).toBeTruthy();
+  });
+
+  it('a ChatGPT sign-in that timed out keeps its Try Again button', async () => {
+    // handleChatGptLogin marks the 'auth' prerequisite failed, which is the
+    // signal the button reads.
+    const prerequisites = INITIAL_PREREQUISITES.map((p) => (
+      p.name === 'auth' ? { ...p, status: 'failed' as const, error: 'Timed out' } : { ...p, status: 'installed' as const }
+    ));
+    stubClaude({ state: viewState({
+      currentStep: 'AUTHENTICATE',
+      prerequisites,
+      lastError: 'Sign-in timed out. Try again?',
+    }) });
+    render(React.createElement(FirstRunView, { onComplete: vi.fn() }));
+
+    await waitFor(() => expect(screen.getByText('Sign-in timed out. Try again?')).toBeTruthy());
+    expect(screen.getByText('Try Again')).toBeTruthy();
+    expect(screen.getByText('Something went wrong. You can retry the last step.')).toBeTruthy();
+  });
+
+  it('an error with no failed prerequisite and no other control (no disk space) keeps its Try Again button', async () => {
+    // On the install step there are no sign-in buttons — Try Again is the only
+    // way forward, so removing it would strand the user.
+    stubClaude({ state: viewState({
+      currentStep: 'INSTALL_PREREQUISITES',
+      lastError: 'Insufficient disk space: 210 MB available (need >= 500 MB)',
+    }) });
+    render(React.createElement(FirstRunView, { onComplete: vi.fn() }));
+
+    await waitFor(() => expect(screen.getByText(/Insufficient disk space/)).toBeTruthy());
+    expect(screen.getByText('Try Again')).toBeTruthy();
+  });
+
+  it('a failed prerequisite install keeps its Try Again button', async () => {
+    const prerequisites = INITIAL_PREREQUISITES.map((p) => (
+      p.name === 'node' ? { ...p, status: 'failed' as const, error: 'network' } : { ...p }
+    ));
+    stubClaude({ state: viewState({
+      currentStep: 'INSTALL_PREREQUISITES',
+      prerequisites,
+      lastError: 'Could not download Node.js',
+    }) });
+    render(React.createElement(FirstRunView, { onComplete: vi.fn() }));
+
+    await waitFor(() => expect(screen.getByText('Could not download Node.js')).toBeTruthy());
+    expect(screen.getByText('Try Again')).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The runtime seeding must wait for the sign-in to FINISH
+// ---------------------------------------------------------------------------
+
+describe('FirstRunView — a ChatGPT sign-in still in progress seeds nothing', () => {
+  beforeEach(() => { localStorage.clear(); });
+  afterEach(() => { cleanup(); localStorage.clear(); delete (window as any).claude; });
+
+  it("authMode 'chatgpt' at AUTHENTICATE writes neither key and never asks for the catalog", async () => {
+    // authMode flips to 'chatgpt' the instant the browser opens, minutes before
+    // the outcome is known. Seeding here would switch someone who then gives up
+    // and signs in with Claude onto the wrong engine for their first session.
+    const { catalog } = stubClaude({
+      state: viewState({ currentStep: 'AUTHENTICATE', authMode: 'chatgpt' }),
+      catalog: async () => [{ id: 'gpt-5-codex', providerId: 'chatgpt', label: 'GPT-5 Codex' }],
+      chatgptSupported: true,
+    });
+    render(React.createElement(FirstRunView, { onComplete: vi.fn() }));
+
+    // The screen is mid-sign-in: the spinner line, not the three buttons.
+    await waitFor(() => expect(screen.getByText(/A browser window should have opened/)).toBeTruthy());
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(localStorage.getItem('youcoded-runtime-default')).toBeNull();
+    expect(localStorage.getItem('youcoded-last-binding')).toBeNull();
+    expect(catalog).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Settings → Model Providers: the Claude Code row after a ChatGPT-only setup
+// ---------------------------------------------------------------------------
+
+describe('ModelProvidersPopup — the Claude Code row after a ChatGPT-only first run', () => {
+  afterEach(() => { cleanup(); delete (window as any).claude; });
+
+  /** Just enough window.claude for the popup to mount. `firstRun.getState`
+   *  is the only input the Claude Code row's status line reads. */
+  function stubSettings(firstRunState: Partial<FirstRunState>) {
+    (window as any).claude = {
+      native: { supported: true },
+      chatgpt: { supported: false }, // keeps the ChatGPT card (and its IPC) out of this test
+      providers: { list: async () => [], catalog: async () => [], test: async () => ({ ok: true, message: '' }) },
+      models: { installed: async () => [], curated: async () => [], onDownloadProgress: () => () => {} },
+      engine: { status: async () => null, onInstallProgress: () => () => {}, onStatusChanged: () => () => {} },
+      on: { statusData: () => () => {} },
+      off: () => {},
+      firstRun: { getState: async () => ({
+        currentStep: 'COMPLETE',
+        prerequisites: INITIAL_PREREQUISITES.map((p) => ({ ...p, status: 'installed' as const })),
+        overallProgress: 100, statusMessage: '', authMode: 'none', authComplete: false, needsDevMode: false,
+        ...firstRunState,
+      }) },
+      search: { list: async () => [] },
+      shell: { openExternal: () => {} },
+    };
+  }
+
+  it('does not claim a Claude account when setup finished through ChatGPT', async () => {
+    stubSettings({ authMode: 'chatgpt', authComplete: true });
+    render(React.createElement(ModelProvidersSection, { autoOpen: true }));
+
+    // The row is there, and it tells the truth: Claude Code is installed but
+    // this user never signed in to it.
+    expect(await screen.findByText('Installed — not signed in yet')).toBeTruthy();
+    expect(screen.queryByText('Signed in with your Claude account')).toBeNull();
+  });
+
+  it('still says signed in for a Claude first run', async () => {
+    stubSettings({ authMode: 'oauth', authComplete: true });
+    render(React.createElement(ModelProvidersSection, { autoOpen: true }));
+    expect(await screen.findByText('Signed in with your Claude account')).toBeTruthy();
+  });
+
+  it('still says connected for an Anthropic API key', async () => {
+    stubSettings({ authMode: 'apikey', authComplete: true });
+    render(React.createElement(ModelProvidersSection, { autoOpen: true }));
+    expect(await screen.findByText('Connected with an Anthropic API key')).toBeTruthy();
   });
 });
