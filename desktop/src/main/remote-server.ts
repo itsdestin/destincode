@@ -886,14 +886,19 @@ export class RemoteServer {
     switch (type) {
       // --- Request/response ---
       case 'session:create': {
-        // A remote client may not mint a raw shell. This payload is passed
-        // through to createSession unfiltered, so without this guard a remote
-        // browser could ask for `{provider:'shell', cwd:'/'}` and then drive it
-        // with session:input — a bare shell on the host with no permission
-        // system, no prompt and no transcript in front of it. Before the shell
-        // provider existed the worst that payload could reach was Claude Code's
-        // own TUI, which asks before it acts. "Run in terminal" (below) is the
-        // only sanctioned way to make one, and it decides the command itself.
+        // This payload is passed to createSession unfiltered, so without this
+        // guard a remote browser could ask for `{provider:'shell', cwd:'/'}`.
+        //
+        // BE PRECISE ABOUT WHAT THIS BUYS. It does NOT stop an authenticated
+        // remote client from reaching a shell: engine:run-in-terminal below is
+        // open to remote clients too, and session:input is unconditional. What
+        // it removes is the two things that payload alone would carry — an
+        // attacker-chosen cwd, and an initialCommand nothing validated. It is
+        // not a privilege boundary: an authenticated remote client already had
+        // equivalent reach before the shell provider existed, through this same
+        // unfiltered path into Claude Code, and a remote client is a human
+        // pressing keys. The property that matters — the APP never runs a
+        // command for anyone — is enforced by prepareRunInTerminal, not here.
         if (payload?.provider === 'shell') {
           this.respond(client.ws, type, id, { ok: false, error: 'A terminal session can only be opened from the app itself.' });
           break;
@@ -1357,6 +1362,7 @@ export class RemoteServer {
             skipPermissions: false,
             provider: 'shell',
             initialCommand: checked.command,
+            shellToken: checked.shellToken,
           });
           this.respond(client.ws, type, id, { sessionId: info.id });
         } catch (err: any) {

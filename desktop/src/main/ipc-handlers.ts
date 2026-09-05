@@ -2990,6 +2990,9 @@ export function registerIpcHandlers(
       skipPermissions: false,
       provider: 'shell',
       initialCommand: checked.command,
+      // Proof the command went through the validator — createSession refuses a
+      // shell session without it.
+      shellToken: checked.shellToken,
     });
     // Same ownership handshake SESSION_CREATE does, and for the same reason:
     // session-created is forwarded one nextTick later, so without an owner

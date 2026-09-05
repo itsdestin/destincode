@@ -112,6 +112,18 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 // Write a body in CHUNK_SIZE pieces with small inter-chunk gaps. Returns
 // once all bytes have been handed to ptyProcess.write — does NOT wait for
 // CC to consume them.
+// A chunk boundary must never fall BETWEEN the two halves of a surrogate pair —
+// slice() cuts UTF-16 code units, so a boundary inside an emoji or a non-BMP
+// path character would send two broken halves and the child would render
+// garbage. Backing off by one keeps the pair whole; every chunk stays <=
+// CHUNK_SIZE units, which is what the ConPTY thresholds are measured in.
+function safeEnd(body, end) {
+  if (end <= 0 || end >= body.length) return end;
+  const code = body.charCodeAt(end - 1);
+  const isHighSurrogate = code >= 0xd800 && code <= 0xdbff;
+  return isHighSurrogate ? end - 1 : end;
+}
+
 async function writeChunked(body) {
   if (body.length <= CHUNK_SIZE) {
     if (!ptyProcess) return;
@@ -124,7 +136,7 @@ async function writeChunked(body) {
   let chunkIdx = 0;
   while (offset < body.length) {
     if (!ptyProcess) return;
-    const end = Math.min(offset + CHUNK_SIZE, body.length);
+    const end = safeEnd(body, Math.min(offset + CHUNK_SIZE, body.length));
     ptyProcess.write(body.slice(offset, end));
     chunkIdx++;
     trace('CHUNK', `k=${chunkIdx}/${total} len=${end - offset}`);
@@ -167,18 +179,16 @@ async function handleInput(text) {
   trace('IN', `len=${inLen} endsCR=${endsCR} head=${tracePreview(text, 40)} tail=${tracePreview(typeof text === 'string' ? text.slice(-20) : '', 60)}`);
 
   // Path 1: Passthrough — anything not ending in \r (single bytes, raw
-  // escapes, in-progress typing). Pass through unchanged, but CHUNKED.
+  // escapes, in-progress typing). Pass through unchanged, in ONE write.
   //
-  // WHY chunked (2026-09-05): Windows ConPTY silently truncates a single write
-  // of more than ~600 chars — the same fact Paths 2 and 3 below are built
-  // around. This path used to be one unbounded write because everything taking
-  // it was a keystroke or a short escape. A shell session's "Run in terminal"
-  // command also takes it (it deliberately carries no trailing \r), and a long
-  // one would land HALF-TYPED on the user's prompt for them to press Enter on.
-  // writeChunked is a single direct write for anything under CHUNK_SIZE, so
-  // every keystroke and escape sequence behaves exactly as before.
+  // Do NOT chunk this path. A terminal paste ends in ESC[201~, not \r, so it
+  // comes through here: chunking made a 10 KB paste 179 writes 30 ms apart —
+  // 5.4 s with the input queue blocked behind it — which is a visible
+  // regression in ordinary terminal use. The one caller that genuinely needs
+  // chunking without a trailing \r is a shell session's initial command, and
+  // it asks for it explicitly via the 'input-chunked' message below.
   if (!endsCR) {
-    await writeChunked(text);
+    ptyProcess.write(text);
     trace('PASSTHROUGH', `len=${inLen}`);
     return;
   }
@@ -323,6 +333,19 @@ process.on('message', (msg) => {
       // defense if echo somehow doesn't arrive within ECHO_TIMEOUT_MS.
       if (!ptyProcess) break;
       inputQueue = inputQueue.then(() => handleInput(msg.data)).catch((e) => {
+        trace('INPUT_ERROR', e && e.message ? e.message : String(e));
+      });
+      break;
+    }
+    case 'input-chunked': {
+      // The ONE write that needs chunking without a trailing \r: a shell
+      // session's initial "Run in terminal" command, which is deliberately left
+      // unsubmitted for the user to press Enter on. Windows ConPTY silently
+      // truncates a single write over ~600 chars, and a truncated command would
+      // sit HALF-TYPED on the prompt for the user to run. Queued behind the same
+      // inputQueue as 'input' so ordering with real keystrokes is preserved.
+      if (!ptyProcess) break;
+      inputQueue = inputQueue.then(() => writeChunked(msg.data)).catch((e) => {
         trace('INPUT_ERROR', e && e.message ? e.message : String(e));
       });
       break;

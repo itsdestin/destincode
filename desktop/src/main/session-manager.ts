@@ -36,6 +36,11 @@ export interface CreateSessionOpts {
   /** Optional text to prefill into the input bar after the session is selected.
    *  Forwarded into SessionInfo so the renderer can pick it up on session-created. */
   initialInput?: string;
+  /** provider='shell' only: proof that this session was built by
+   *  prepareRunInTerminal() and its command was therefore validated. A module
+   *  -private Symbol, so it cannot be forged from a JSON payload or written by
+   *  a caller that did not import it — see the check in createSession. */
+  shellToken?: symbol;
   /** provider='shell' only: a command to TYPE onto the shell's prompt. It is
    *  never run for the user — no trailing carriage return is written, so the
    *  line just sits there and the user presses Enter (or edits it, or clears
@@ -58,6 +63,13 @@ export function resolveShellCommand(): string {
 export function shellDisplayName(command: string): string {
   return path.basename(command).replace(/\.(exe|cmd|bat)$/i, '');
 }
+
+// Minted only by prepareRunInTerminal below, and demanded by createSession for
+// every provider:'shell' session. This is what makes "the validator cannot be
+// skipped" a fact rather than a convention: a second creation site written any
+// other way — a different quoting style, a const, a spread, a whole new file —
+// throws instead of opening an unvalidated shell.
+const RUN_IN_TERMINAL_TOKEN = Symbol('run-in-terminal');
 
 // Characters that must never appear in a command the app types onto a shell
 // prompt. TAB is in the set too: at a prompt it triggers completion, which can
@@ -83,11 +95,16 @@ const CONTROL_CHAR_NAMES: Record<string, string> = {
  * "We didn't add one" is not the same property as "there isn't one", and the
  * command reaches here from a WebSocket frame an authenticated remote browser
  * controls, and (in future) from a prerequisite table that could be CRLF-shaped
- * on Windows. `\n` and `;` are safe — a line editor accepts on CR, not LF —
- * and are deliberately still allowed, because a legitimate install command can
- * contain a semicolon.
+ * on Windows.
+ *
+ * A LINE FEED SUBMITS TOO, and is refused for exactly the same reason: GNU
+ * readline binds C-j to accept-line just as it binds C-m, so `\n` runs the
+ * line on bash and zsh (measured, both). Do not "relax" this to allow it.
+ * What IS allowed, deliberately, is everything a real install command needs —
+ * `;`, `&&`, `|`, `$( )`, quotes, spaces and non-ASCII all pass, because none
+ * of them submits a line.
  */
-export function prepareRunInTerminal(command: unknown): { shell: string; command: string } {
+export function prepareRunInTerminal(command: unknown): { shell: string; command: string; shellToken: symbol } {
   if (typeof command !== 'string' || !command.trim()) {
     throw new Error('Run in terminal was given no command to type.');
   }
@@ -95,8 +112,12 @@ export function prepareRunInTerminal(command: unknown): { shell: string; command
   if (found) {
     const ch = found[0];
     const name = CONTROL_CHAR_NAMES[ch] ?? `a control character (U+${ch.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')})`;
+    // Counted the way a person counts: characters, starting at 1. found.index is
+    // a UTF-16 offset, which is off by one from that and wrong again for every
+    // astral character (an emoji in a path) sitting before the offender.
+    const position = [...command.slice(0, found.index)].length + 1;
     throw new Error(
-      `Run in terminal refused this command: it contains ${name} at position ${found.index}, ` +
+      `Run in terminal refused this command: it contains ${name} at character ${position}, ` +
       `which would run it without you pressing Enter. Copy the command instead.`
     );
   }
@@ -110,7 +131,7 @@ export function prepareRunInTerminal(command: unknown): { shell: string; command
   if (path.isAbsolute(shell) && !fs.existsSync(shell)) {
     throw new Error(`Run in terminal could not start a terminal: your shell (${shell}) does not exist on this computer.`);
   }
-  return { shell, command };
+  return { shell, command, shellToken: RUN_IN_TERMINAL_TOKEN };
 }
 
 interface ManagedSession {
@@ -196,6 +217,14 @@ export class SessionManager extends EventEmitter {
     // no session id for hooks to correlate, so nothing watches a transcript for
     // it because there is no transcript).
     const isShell = provider === 'shell';
+    // The validator cannot be skipped. Every shell session must carry the token
+    // prepareRunInTerminal mints, so there is no second way to open one: a
+    // remote client's JSON payload cannot contain a Symbol, and a new call site
+    // in main that forgets the validator fails here instead of handing the user
+    // an unchecked command — or an attacker-chosen cwd — at a live prompt.
+    if (isShell && opts.shellToken !== RUN_IN_TERMINAL_TOKEN) {
+      throw new Error('SessionManager: a shell session must be created through prepareRunInTerminal().');
+    }
     const shellCommand = isShell ? resolveShellCommand() : '';
 
     // Always use system Node.js — Electron's binary can't load node-pty.
@@ -313,7 +342,15 @@ export class SessionManager extends EventEmitter {
       clearTimeout(commandFallbackTimer);
       // NO trailing carriage return: the app never runs a set-up command for
       // the user. The line sits on the prompt for them to read, edit or Enter.
-      this.sendInput(id, command);
+      //
+      // 'input-chunked', not sendInput: this is the one write with no trailing
+      // \r that can be long, and Windows ConPTY silently truncates a single
+      // write over ~600 chars — a truncated command would sit half-typed on the
+      // prompt for the user to run. Ordinary typing and paste keep the single
+      // unchunked write they have always had.
+      const session = this.sessions.get(id);
+      try { session?.worker?.send({ type: 'input-chunked', data: command }); }
+      catch { /* worker IPC already closed — the session is gone */ }
     };
     // Backstop for a shell that reads input before it writes anything: without
     // it the command would never be typed and the terminal would sit blank
@@ -342,6 +379,7 @@ export class SessionManager extends EventEmitter {
     });
 
     worker.on('exit', () => {
+      clearTimeout(commandFallbackTimer);
       if (!this.sessions.has(id)) return;
       const exitingSession = this.sessions.get(id)!;
       exitingSession.info.status = 'destroyed';

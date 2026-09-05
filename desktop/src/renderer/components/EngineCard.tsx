@@ -84,6 +84,11 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   const [setupOpen, setSetupOpen] = useState(false);
   const [prereqs, setPrereqs] = useState<EnginePrereqs | null>(null);
   const [copied, setCopied] = useState(false);
+  // Its own error, NOT the card-wide `error`: that one renders in the card body,
+  // a couple of hundred pixels above the Run-in-terminal button, which lives
+  // inside an expanded Callout. A message the user has to scroll to find is a
+  // message they do not read.
+  const [terminalError, setTerminalError] = useState<string | null>(null);
 
   // Shared runner for install/restart/setContext/setBackend: sets busy,
   // surfaces any thrown error, and clears the transient progress line when the
@@ -106,11 +111,17 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   const openTerminalWithCommand = async (command: string) => {
     // busy also disables the button — without it a double-click opens two
     // terminals, and the second one steals focus from the first.
-    setBusy(true); setError(null);
+    setBusy(true); setTerminalError(null);
     try { await window.claude.engine.runInTerminal(command); }
     // The real reason, not a guess — the terminal failing to open is the only
     // thing the user can act on here (Copy is right beside this button).
-    catch (e: any) { setError(e?.message ?? String(e)); }
+    // Electron wraps every rejected invoke as "Error invoking remote method
+    // 'engine:run-in-terminal': Error: <the real message>", which is machinery,
+    // not something a non-developer can act on. Strip it down to the sentence.
+    catch (e: any) {
+      const raw = e?.message ?? String(e);
+      setTerminalError(raw.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, ''));
+    }
     finally { setBusy(false); }
   };
 
@@ -333,6 +344,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                           Check again
                         </Button>
                       </div>
+                      {terminalError && <FieldError as="p">{terminalError}</FieldError>}
                     </div>
                   )}
                   {prereqs && !prereqs.satisfied && !prereqs.command && (

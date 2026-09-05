@@ -39,9 +39,17 @@ vi.mock('electron', () => ({
 function spawnMessage() {
   return mockWorker.send.mock.calls.map((c) => c[0]).find((m: any) => m?.type === 'spawn');
 }
-/** Every 'input' message, in order. */
+/** Every write to the PTY, in order — ordinary input AND the chunked channel the
+ *  initial run-in-terminal command uses. */
 function inputMessages() {
-  return mockWorker.send.mock.calls.map((c) => c[0]).filter((m: any) => m?.type === 'input');
+  return mockWorker.send.mock.calls.map((c) => c[0])
+    .filter((m: any) => m?.type === 'input' || m?.type === 'input-chunked');
+}
+
+/** The token createSession demands for a shell session. Minting it through the
+ *  real validator is the point: these tests take the same path the app does. */
+function shellGate() {
+  return { shellToken: prepareRunInTerminal('echo placeholder').shellToken };
 }
 
 describe('shell sessions', () => {
@@ -58,7 +66,7 @@ describe('shell sessions', () => {
 
   describe('what gets spawned', () => {
     it('spawns the user\'s own shell with no arguments', () => {
-      manager.createSession({ name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell' });
+      manager.createSession({ name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate() });
       const msg = spawnMessage();
       expect(msg.command).toBe(resolveShellCommand());
       expect(msg.command).not.toBe('claude');
@@ -69,7 +77,7 @@ describe('shell sessions', () => {
       // If these carried real values and the user started Claude Code inside the
       // terminal, its hooks would report against THIS session — attaching a
       // transcript, and a chat view, to a plain shell.
-      manager.createSession({ name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell' });
+      manager.createSession({ name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate() });
       const msg = spawnMessage();
       expect(msg.pipeName).toBe('');
       expect(msg.sessionId).toBe('');
@@ -88,7 +96,7 @@ describe('shell sessions', () => {
 
     it('takes none of the Claude CLI flags', () => {
       manager.createSession({
-        name: 'fish', cwd: tmpDir, skipPermissions: true, provider: 'shell',
+        name: 'fish', cwd: tmpDir, skipPermissions: true, provider: 'shell', ...shellGate(),
         model: 'claude-sonnet-4-6', resumeSessionId: 'abc',
       });
       expect(spawnMessage().args).toEqual([]);
@@ -96,7 +104,7 @@ describe('shell sessions', () => {
 
     it('carries no model and labels itself with the shell name', () => {
       const info = manager.createSession({
-        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', model: 'claude-sonnet-4-6',
+        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate(), model: 'claude-sonnet-4-6',
       });
       expect(info.provider).toBe('shell');
       expect(info.model).toBeUndefined();
@@ -112,14 +120,14 @@ describe('shell sessions', () => {
       // the shell before its line editor is ready, and the terminal then opens
       // empty with no sign of what the user was meant to run.
       manager.createSession({
-        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', initialCommand: COMMAND,
+        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate(), initialCommand: COMMAND,
       });
       expect(inputMessages()).toEqual([]);
     });
 
     it('writes it on the first output, with NO trailing carriage return', () => {
       manager.createSession({
-        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', initialCommand: COMMAND,
+        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate(), initialCommand: COMMAND,
       });
       handlers.message({ type: 'data', data: '$ ' });
       const inputs = inputMessages();
@@ -133,7 +141,7 @@ describe('shell sessions', () => {
 
     it('writes it exactly once, however much output follows', () => {
       manager.createSession({
-        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', initialCommand: COMMAND,
+        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate(), initialCommand: COMMAND,
       });
       handlers.message({ type: 'data', data: 'welcome\r\n' });
       handlers.message({ type: 'data', data: '$ ' });
@@ -142,7 +150,7 @@ describe('shell sessions', () => {
     });
 
     it('writes nothing when no command was given', () => {
-      manager.createSession({ name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell' });
+      manager.createSession({ name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate() });
       handlers.message({ type: 'data', data: '$ ' });
       expect(inputMessages()).toEqual([]);
     });
@@ -161,7 +169,7 @@ describe('shell sessions', () => {
       vi.useFakeTimers();
       try {
         const shell = manager.createSession({
-          name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+          name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate(),
         });
         expect(shell.provider).toBe('shell');
         mockWorker.send.mockClear();
@@ -194,28 +202,55 @@ describe('shell sessions', () => {
       expect(mainSrc('remote-server.ts')).toContain('prepareRunInTerminal(payload?.command ?? payload)');
     });
 
-    it('and there is no third way to build one', () => {
-      // `provider: 'shell'` in main/ must appear exactly twice — once per entry
-      // point. A third occurrence is a path that skipped the checks.
-      const files = ['ipc-handlers.ts', 'remote-server.ts', 'session-manager.ts'];
-      // Whole lines only, so a mention inside a comment is not miscounted as a
-      // call site.
-      const sites = files.flatMap((f) =>
-        mainSrc(f).split('\n')
-          .filter((l) => l.trim() === "provider: 'shell',")
-          .map(() => f));
-      expect(sites).toEqual(['ipc-handlers.ts', 'remote-server.ts']);
+    it('and there is no third way to build one — the gate is the token, not a grep', () => {
+      // This used to be a source scan for the exact string `provider: 'shell',`,
+      // which two evasions walked straight past while staying green: a whole new
+      // file in main/, and a second site in this same file written as
+      // `const SHELL_PROVIDER = 'shell' as const; … provider: SHELL_PROVIDER`.
+      // Different quoting, no trailing comma, a one-line object or a spread
+      // evaded it identically. createSession now DEMANDS a Symbol only
+      // prepareRunInTerminal mints, so however the call is written, a site that
+      // skipped the validator throws instead of opening an unchecked shell.
+      expect(() => manager.createSession({
+        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+        initialCommand: 'echo hi',
+      })).toThrow(/must be created through prepareRunInTerminal/);
+
+      // A Symbol cannot survive JSON, so a remote payload cannot carry one...
+      expect(() => manager.createSession(JSON.parse(JSON.stringify({
+        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+        shellToken: 'run-in-terminal',
+      })))).toThrow(/must be created through prepareRunInTerminal/);
+      // ...and neither does a look-alike Symbol minted anywhere else.
+      expect(() => manager.createSession({
+        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+        shellToken: Symbol('run-in-terminal'),
+      })).toThrow(/must be created through prepareRunInTerminal/);
+
+      // The real path still works.
+      const ok = prepareRunInTerminal('echo hi');
+      expect(manager.createSession({
+        name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+        initialCommand: ok.command, shellToken: ok.shellToken,
+      }).provider).toBe('shell');
     });
 
-    it('a long command cannot be half-typed onto the prompt', () => {
-      // pty-worker's passthrough path (everything not ending in \r — which is
-      // exactly what a run-in-terminal command is) used to be ONE unchunked
-      // write. Windows ConPTY silently truncates a write over ~600 chars, which
-      // is why the two submit paths beside it chunk at 56. A truncated command
-      // would sit half-typed on the prompt for the user to press Enter on.
-      const worker = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'pty-worker.js'), 'utf8');
+    it('the initial command goes out on the chunked channel, not ordinary input', () => {
+      // Windows ConPTY silently truncates a single write over ~600 chars, which
+      // is why the two submit paths in pty-worker chunk at 56. A run-in-terminal
+      // command carries no trailing \r, so it would otherwise take the plain
+      // passthrough and could land HALF-TYPED on the prompt for the user to run.
+      expect(mainSrc('session-manager.ts')).toContain("send({ type: 'input-chunked', data: command })");
+    });
+
+    it('...and ordinary typing and paste keep their single unchunked write', () => {
+      // The regression this replaced: chunking the general passthrough made a
+      // 10 KB terminal paste 179 writes 30 ms apart. Behaviour pinned for real
+      // in tests/pty-worker-writes.test.ts; this is the shape, here because this
+      // is the file someone reads when changing how the command is written.
+      const worker = mainSrc('pty-worker.js');
       const passthrough = worker.slice(worker.indexOf('if (!endsCR) {'));
-      expect(passthrough.slice(0, passthrough.indexOf('return;'))).toContain('await writeChunked(text);');
+      expect(passthrough.slice(0, passthrough.indexOf('return;'))).toContain('ptyProcess.write(text);');
     });
 
     it('the remote session:create case refuses a client-supplied shell provider', () => {
@@ -228,14 +263,18 @@ describe('shell sessions', () => {
   describe('refusing a command that would run itself', () => {
     it('refuses a carriage return, and says so', () => {
       expect(() => prepareRunInTerminal('echo a\recho b'))
-        .toThrow(/carriage return at position 6/);
+        .toThrow(/carriage return at character 7/);
+    });
+
+    it('refuses a line feed, which submits the line just like a carriage return', () => {
+      // NOT a formatting nicety: GNU readline binds C-j to accept-line exactly
+      // as it binds C-m, so `\n` RUNS the line on bash and zsh (measured on
+      // both). An earlier comment here claimed LF was safe; it is not, and that
+      // claim is precisely what would talk someone into allowing it.
+      expect(() => prepareRunInTerminal('echo a\necho b')).toThrow(/line feed/);
     });
 
     it('refuses every other control character too', () => {
-      // \n and ; are NOT here on purpose — a line editor accepts on CR, not LF,
-      // and a real install command can contain a semicolon. \n is refused only
-      // because a multi-line command has no business on a single prompt.
-      expect(() => prepareRunInTerminal('echo a\necho b')).toThrow(/line feed/);
       expect(() => prepareRunInTerminal('echo a\techo b')).toThrow(/tab/);
       expect(() => prepareRunInTerminal('echo \x1b[31m')).toThrow(/control character \(U\+001B\)/);
       expect(() => prepareRunInTerminal('echo \x00')).toThrow(/control character \(U\+0000\)/);
@@ -249,10 +288,22 @@ describe('shell sessions', () => {
       expect(() => prepareRunInTerminal({ command: 'x' })).toThrow(/no command/);
     });
 
-    it('accepts a real install command, semicolons and quotes and all', () => {
-      const cmd = 'sudo pacman -S --needed rocm-hip-runtime hipblas; echo "done"';
-      expect(prepareRunInTerminal(cmd).command).toBe(cmd);
-      expect(prepareRunInTerminal(cmd).shell).toBe(resolveShellCommand());
+    it('accepts everything a real install command needs', () => {
+      // None of these submits a line, and refusing them would make the feature
+      // useless for the commands it exists to run.
+      const commands = [
+        'sudo pacman -S --needed rocm-hip-runtime hipblas; echo "done"',
+        'sudo apt-get update && sudo apt-get install -y rocm-hip-runtime',
+        'curl -fsSL https://example.com/key | sudo gpg --dearmor -o /etc/keyring.gpg',
+        'echo "deb [arch=$(dpkg --print-architecture)] https://repo.example.com jammy main"',
+        "sudo dnf install -y 'rocm-hip*'",
+        'cd "/home/user/My Documents/setup" && ./install.sh',
+        'echo naïve —  ✅',
+      ];
+      for (const cmd of commands) {
+        expect(prepareRunInTerminal(cmd).command).toBe(cmd);
+      }
+      expect(prepareRunInTerminal(commands[0]).shell).toBe(resolveShellCommand());
     });
 
     it('refuses when the resolved shell is not installed, naming the path', () => {
@@ -277,7 +328,7 @@ describe('shell sessions', () => {
       vi.useFakeTimers();
       try {
         manager.createSession({
-          name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+          name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate(),
           initialCommand: 'echo hi',
         });
         expect(inputMessages()).toEqual([]);
@@ -293,7 +344,7 @@ describe('shell sessions', () => {
       vi.useFakeTimers();
       try {
         manager.createSession({
-          name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell',
+          name: 'fish', cwd: tmpDir, skipPermissions: false, provider: 'shell', ...shellGate(),
           initialCommand: 'echo hi',
         });
         await vi.advanceTimersByTimeAsync(3100);

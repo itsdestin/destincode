@@ -226,6 +226,20 @@ function handleMessage(data: string): void {
       entry.reject(new Error(`remote-unsupported: ${channel}`));
       return;
     }
+    // A handler that answered `{ ok:false, error }` is a FAILURE, and resolving
+    // it hands the caller a success. On desktop the same failure is a thrown
+    // Error the caller catches; a remote client would see the click do nothing
+    // — no message, no retry, no clue. Only channels whose SUCCESS shape can
+    // never be an `ok:false` object are listed here, so this cannot swallow a
+    // legitimate `{ok:false}` result some other channel means as data.
+    const REJECT_ON_NOT_OK = new Set(['engine:run-in-terminal']);
+    if (
+      payload && typeof payload === 'object' && (payload as any).ok === false &&
+      REJECT_ON_NOT_OK.has(String(type).replace(/:response$/, ''))
+    ) {
+      entry.reject(new Error(String((payload as any).error ?? 'The request failed.')));
+      return;
+    }
     entry.resolve(payload);
     return;
   }
