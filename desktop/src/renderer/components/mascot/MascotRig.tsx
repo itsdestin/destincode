@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { sanitizeRigSvg } from './sanitize-rig-svg';
 import { DEFAULT_BUDDY_RIG } from './default-buddy-rig';
 import {
-  POSES, LIMB_IDS, BLINK_CFG, IDLE_LOOP_CLASS, parsePivot, defaultPivot,
+  POSES, LIMB_IDS, BLINK_CFG, FACE_FALLBACK, IDLE_LOOP_CLASS, parsePivot, defaultPivot,
   stepSpring, isSettled, dragTargets, idleSway, waveSway,
   type PoseName, type FaceName, type SpringState, type RigPartId, type MotionStyle,
 } from './mascot-poses';
@@ -133,7 +133,7 @@ export function MascotRig({
       }
     }
     const faces: Parts['faces'] = {};
-    for (const name of ['idle', 'welcome', 'curious', 'shocked', 'dizzy', 'blink'] as const) {
+    for (const name of ['idle', 'welcome', 'curious', 'shocked', 'dizzy', 'blink', 'happy', 'shutdown'] as const) {
       const el = svg.querySelector<SVGGElement>(`#rig-face-${name}`);
       if (el) faces[name] = el;
     }
@@ -513,10 +513,21 @@ function applyLimbVisibility(parts: Parts, pose: PoseName): void {
 function applyFace(parts: Parts, pose: PoseName, blinking: boolean): void {
   const def = POSES[pose];
   // Blink overlays whichever face is showing (except eyes-wide states).
-  // A pose whose OWN face is 'blink' (sleep) already holds the eyes shut; the
-  // momentary blink scheduler has nothing to add and must not fight it.
-  const want: FaceName | 'blink' =
+  // A pose whose OWN face holds the eyes shut (sleep) needs nothing from the
+  // momentary blink scheduler, and must not be fought by it.
+  const asked: FaceName | 'blink' =
     blinking && parts.faces.blink && def.face !== 'shocked' && def.face !== 'dizzy' ? 'blink' : def.face;
+  // RESOLVE AGAINST WHAT THE RIG ACTUALLY HAS. A rig drawn before `happy` and
+  // `shutdown` existed has no group for them, and showing "the one that matches"
+  // when nothing matches hides every face — a blank-faced buddy on somebody's
+  // installed theme (see FACE_FALLBACK). Last resort is any face at all, because
+  // a face that is not quite the right feeling beats no face.
+  // NOT a type predicate: narrowing `asked` to `never` in the false branch is
+  // what TS does with one, and then the fallback lookup below cannot be typed.
+  const has = (n: FaceName | 'blink'): boolean => !!parts.faces[n];
+  const want: FaceName | 'blink' | undefined = has(asked)
+    ? asked
+    : FACE_FALLBACK[asked].find(has) ?? (Object.keys(parts.faces)[0] as FaceName | 'blink' | undefined);
   for (const [name, el] of Object.entries(parts.faces)) {
     (el as SVGGElement).style.display = name === want ? '' : 'none';
   }

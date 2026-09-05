@@ -65,9 +65,9 @@ describe('a pose that moves the body', () => {
 
   it('holds the eyes shut for the whole sleep, not for a blink', async () => {
     const c = mount('sleep');
-    await waitFor(() => expect(c.querySelector('#rig-face-blink')).toBeTruthy());
+    await waitFor(() => expect(c.querySelector('#rig-face-shutdown')).toBeTruthy());
     await waitFor(() => {
-      expect(c.querySelector<SVGGElement>('#rig-face-blink')!.style.display).toBe('');
+      expect(c.querySelector<SVGGElement>('#rig-face-shutdown')!.style.display).toBe('');
       expect(c.querySelector<SVGGElement>('#rig-face-welcome')!.style.display).toBe('none');
     });
   });

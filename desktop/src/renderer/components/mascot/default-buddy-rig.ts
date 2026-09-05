@@ -2,7 +2,7 @@
  * First-party default buddy (spec §3.6) — the capsule character in the
  * approved 2.5D-soft skin, ported from wecoded-themes/mascots/skins/
  * 2-5d-soft.svg. Ships as a rig so every user gets the full experience
- * (trailing limbs, six faces, peek hands) out of the box, and doubles as
+ * (trailing limbs, eight faces, peek hands) out of the box, and doubles as
  * the rig contract's reference implementation.
  *
  * Tinting: body/limbs use var(--rig-accent), face/sockets var(--rig-on-accent)
@@ -63,42 +63,28 @@ export const DEFAULT_BUDDY_RIG = `<svg xmlns="http://www.w3.org/2000/svg" viewBo
       <ellipse cx="9.6" cy="6.4" rx="3.4" ry="1.9" fill="url(#g-spec)" transform="rotate(-14 9.6 6.4)"/>
       <path d="M5 10.5 L5 8 A4 4 0 0 1 9 4 L11 4" fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="0.32" filter="url(#f-soft)"/>
       <g id="rig-face-idle">
-        <path fill="var(--rig-on-accent, #2a1004)" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
-        <path fill="var(--rig-on-accent, #2a1004)" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+        <path d="M8 10.2 Q9.3 9.1 10.6 10.2" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><path d="M13.4 9.95 Q14.7 8.85 16 9.95" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><ellipse cx="12" cy="13.35" rx="0.5" ry="0.42" fill="var(--rig-on-accent, #2a1004)"/>
       </g>
       <g id="rig-face-welcome" style="display:none">
-        <ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
-        <ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="var(--rig-on-accent, #2a1004)"/>
-        <circle cx="10" cy="10.25" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.3" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
-        <circle cx="15.4" cy="9.95" r="0.28" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.2" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.65" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/>
-        <g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+        <ellipse cx="9.3" cy="9.55" rx="1.60" ry="2.20" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.00" cy="10.25" r="0.30" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.20" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.30" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g><ellipse cx="14.7" cy="9.25" rx="1.60" ry="2.20" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.40" cy="9.95" r="0.30" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.20" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.70" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
       </g>
       <g id="rig-face-curious" style="display:none">
-        <ellipse cx="9.3" cy="9.55" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
-        <ellipse cx="14.7" cy="9.25" rx="1.7" ry="2.3" fill="var(--rig-on-accent, #2a1004)"/>
-        <g class="pupil"><circle cx="9.75" cy="9.2" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="9" cy="10.3" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="9.95" cy="10.15" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
-        <g class="pupil"><circle cx="15.15" cy="8.9" r="0.42" fill="var(--rig-accent, #ffc030)"/><circle cx="14.4" cy="10" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.35" cy="9.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g>
-        <path d="M13.5 6.1 Q14.7 5.55 15.9 6.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.45" stroke-linecap="round"/>
-        <ellipse cx="12.1" cy="13.1" rx="0.55" ry="0.65" fill="var(--rig-on-accent, #2a1004)"/>
+        <ellipse cx="9.3" cy="9.55" rx="1.60" ry="2.20" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.00" cy="10.25" r="0.30" fill="var(--rig-accent, #ffc030)"/><circle cx="9.35" cy="10.85" r="0.20" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.30" cy="10.85" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g><ellipse cx="14.7" cy="9.25" rx="1.60" ry="2.20" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.40" cy="9.95" r="0.30" fill="var(--rig-accent, #ffc030)"/><circle cx="14.75" cy="10.55" r="0.20" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.70" cy="10.55" r="0.14" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g><path d="M8 7.1 L10.6 6.9" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.35 6.6 Q14.7 5.7 16.05 6" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12.05" cy="13.35" rx="0.45" ry="0.5" fill="var(--rig-on-accent, #2a1004)"/>
       </g>
       <g id="rig-face-shocked" style="display:none">
-        <circle cx="9.3" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
-        <circle cx="14.7" cy="9.8" r="2.1" fill="var(--rig-on-accent, #2a1004)"/>
-        <circle cx="9.9" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/><circle cx="15.3" cy="9.2" r="0.5" fill="var(--rig-accent, #ffe090)"/>
-        <ellipse cx="12" cy="13.6" rx="1" ry="1.25" fill="var(--rig-on-accent, #2a1004)"/>
+        <ellipse cx="9.3" cy="9.7" rx="1.79" ry="2.46" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="10.08" cy="10.48" r="0.34" fill="var(--rig-accent, #ffc030)"/><circle cx="9.36" cy="11.16" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="10.42" cy="11.16" r="0.16" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g><ellipse cx="14.7" cy="9.4" rx="1.79" ry="2.46" fill="var(--rig-on-accent, #2a1004)"/><g class="pupil"><circle cx="15.48" cy="10.18" r="0.34" fill="var(--rig-accent, #ffc030)"/><circle cx="14.76" cy="10.86" r="0.22" fill="var(--rig-accent, #ffe090)" fill-opacity="0.8"/><circle cx="15.82" cy="10.86" r="0.16" fill="var(--rig-accent, #ffd060)" fill-opacity="0.65"/></g><path d="M7.950000000000001 6.5 Q9.3 5.9 10.65 6.5" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><path d="M13.35 6.2 Q14.7 5.6000000000000005 16.05 6.2" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/><ellipse cx="12" cy="13.6" rx="0.7" ry="0.85" fill="var(--rig-on-accent, #2a1004)"/>
       </g>
       <g id="rig-face-dizzy" style="display:none">
-        <g stroke="var(--rig-on-accent, #2a1004)" stroke-width="1" stroke-linecap="round">
-          <line x1="8" y1="8.6" x2="10.6" y2="11.4"/><line x1="10.6" y1="8.6" x2="8" y2="11.4"/>
-          <line x1="13.4" y1="8.6" x2="16" y2="11.4"/><line x1="16" y1="8.6" x2="13.4" y2="11.4"/>
-        </g>
-        <path d="M10.4 13.6 L11.2 13 L12 13.6 L12.8 13 L13.6 13.6" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round"/>
-        <path d="M5.4 3.6 Q6.4 2.6 7.4 3.6 Q6.4 4.6 5.4 3.6" fill="none" stroke="var(--rig-accent, #ffc030)" stroke-width="0.5" stroke-linecap="round"/>
-        <path d="M16.6 3.6 Q17.6 2.6 18.6 3.6 Q17.6 4.6 16.6 3.6" fill="none" stroke="var(--rig-accent, #ffc030)" stroke-width="0.5" stroke-linecap="round"/>
+        <path d="M9.3 9.8 a0.3 0.3 0 0 1 0.3 0.3 a0.6 0.6 0 0 1 -0.6 0.6 a0.9 0.9 0 0 1 -0.9 -0.9 a1.2 1.2 0 0 1 1.2 -1.2 a1.3 1.3 0 0 1 1.3 1.3" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.6" stroke-linecap="round"/><path d="M14.7 9.6 a0.3 0.3 0 0 1 0.3 0.3 a0.6 0.6 0 0 1 -0.6 0.6 a0.9 0.9 0 0 1 -0.9 -0.9 a1.2 1.2 0 0 1 1.2 -1.2 a1.3 1.3 0 0 1 1.3 1.3" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.6" stroke-linecap="round"/><path d="M10.4 13.6 L11.2 13 L12 13.6 L12.8 13 L13.6 13.6" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M16.2 2.15 Q16.2 2.9 16.95 2.9 Q16.2 2.9 16.2 3.65 Q16.2 2.9 15.45 2.9 Q16.2 2.9 16.2 2.15 Z" fill="var(--rig-accent, #ffc030)"/><path d="M18.4 4.05 Q18.4 4.6 18.95 4.6 Q18.4 4.6 18.4 5.1499999999999995 Q18.4 4.6 17.849999999999998 4.6 Q18.4 4.6 18.4 4.05 Z" fill="var(--rig-accent, #ffc030)"/><path d="M17.9 1.1 Q17.9 1.5 18.299999999999997 1.5 Q17.9 1.5 17.9 1.9 Q17.9 1.5 17.5 1.5 Q17.9 1.5 17.9 1.1 Z" fill="var(--rig-accent, #ffc030)"/>
       </g>
       <g id="rig-face-blink" style="display:none">
-        <path d="M8 10 Q9.3 11 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
-        <path d="M13.4 10 Q14.7 11 16 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/>
+        <path d="M8 10 Q9.3 10.5 10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><path d="M13.4 9.8 Q14.7 10.3 16 9.8" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.85" stroke-linecap="round"/><g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="var(--rig-on-accent, #2a1004)"/></g>
+      </g>
+      <g id="rig-face-happy" style="display:none">
+        <path d="M8 10.4 Q9.3 8.6 10.6 10.4" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M13.4 10.1 Q14.7 8.3 16 10.1" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.9" stroke-linecap="round"/><path d="M10.3 13 Q10.3 12.7 12 12.7 Q13.7 12.7 13.7 13 A1.7 1.5 0 0 1 10.3 13 Z" fill="var(--rig-on-accent, #2a1004)"/>
+      </g>
+      <g id="rig-face-shutdown" style="display:none">
+        <path d="M8 10 L10.6 10" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.8" stroke-linecap="round"/><path d="M13.4 9.8 L16 9.8" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.8" stroke-linecap="round"/><path d="M11.3 13.3 L12.7 13.3" fill="none" stroke="var(--rig-on-accent, #2a1004)" stroke-width="0.5" stroke-linecap="round"/>
       </g>
       <g id="slot-eyewear"/>
     </g>

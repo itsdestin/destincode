@@ -13,7 +13,36 @@ export type LimbId = (typeof LIMB_IDS)[number];
 // The tail springs like a limb (drag target = left-leg lean × 0.8) but has no
 // pose entries of its own today, so it stays out of LIMB_IDS.
 export type RigPartId = LimbId | 'rig-tail' | 'rig-body';
-export type FaceName = 'idle' | 'welcome' | 'curious' | 'shocked' | 'dizzy';
+export type FaceName = 'idle' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'happy' | 'shutdown';
+
+/**
+ * What to show when a rig has no group for the face a pose wants.
+ *
+ * WHY THIS HAS TO EXIST (2026-09-05): `happy` and `shutdown` are new, and the
+ * four community rigs — Halftone, Kuromi, Strawberry Kitty, Golden Sunbreak —
+ * do not have them until they are redrawn. The face swap hides every group and
+ * shows the one that matches, so a missing group used to mean NO FACE AT ALL:
+ * a blank-faced buddy on somebody's installed theme, from an app update they
+ * did not ask for.
+ *
+ * Ordered nearest-first. Everything ends at `welcome`, which every rig in the
+ * contract has, and the swap falls through to whatever the rig does have if
+ * even that is missing.
+ */
+export const FACE_FALLBACK: Record<FaceName | 'blink', ReadonlyArray<FaceName | 'blink'>> = {
+  idle: ['welcome'],
+  welcome: ['idle'],
+  curious: ['welcome', 'idle'],
+  shocked: ['welcome', 'idle'],
+  dizzy: ['shocked', 'welcome', 'idle'],
+  blink: ['welcome', 'idle'],
+  // Pleased. A rig without it looks merely awake rather than pleased — a
+  // smaller loss than a blank face.
+  happy: ['welcome', 'idle'],
+  // Eyes shut for a whole sleep. `blink` is the closest thing every rig
+  // already ships, and it is closed eyes, which is the half that matters.
+  shutdown: ['blink', 'idle', 'welcome'],
+};
 export type PoseName =
   | 'idle' | 'pressed' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'flap'
   | 'peek' | 'peek-right' | 'peek-left' | 'sleep';
@@ -107,7 +136,10 @@ export const POSES: Record<PoseName, PoseDef> = {
       'rig-leg-left': { hidden: true },
       'rig-leg-right': { hidden: true },
     },
-    face: 'blink',
+    // `shutdown` is what Destin added this face FOR — eyes closed, and on a rig
+    // that has not drawn it yet FACE_FALLBACK lands on `blink`, which is the
+    // same closed eyes with a smile. No theme has to be redrawn to sleep.
+    face: 'shutdown',
   },
 };
 

@@ -33,7 +33,7 @@ describe('POSES', () => {
     // SUSTAINED closed eye, which is what sleeping is. Every rig already ships
     // a rig-face-blink group, so this costs no theme any new artwork.
     for (const pose of Object.values(POSES)) {
-      expect(['idle', 'welcome', 'curious', 'shocked', 'dizzy', 'blink']).toContain(pose.face);
+      expect(['idle', 'welcome', 'curious', 'shocked', 'dizzy', 'blink', 'happy', 'shutdown']).toContain(pose.face);
       for (const id of Object.keys(pose.parts)) {
         expect([...LIMB_IDS, 'rig-tail', 'rig-body']).toContain(id);
       }
@@ -54,7 +54,7 @@ describe('POSES', () => {
       expect(body, `${name} must move the body`).toBeTruthy();
       // Downward. Up is flying away, not falling asleep.
       expect(body!.ty!, `${name} settles downward`).toBeGreaterThan(0);
-      expect(pose.face, `${name} closes his eyes`).toBe('blink');
+      expect(['shutdown', 'blink'], `${name} closes his eyes`).toContain(pose.face);
     }
   });
   // SIGN-CONVENTION PINS (2026-07-16 workbench): limbs hang down from their
