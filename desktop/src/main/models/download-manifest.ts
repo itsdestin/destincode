@@ -5,8 +5,10 @@
 // model still needs the facts in here — the Hugging Face repo it came from,
 // and whether that repo ships a vision projector. Completion stamps
 // `completedAt` instead, so "a manifest exists" no longer means "this download
-// is unfinished"; `completedAt` is the test. The only deletions left are the
-// model being deleted and an unreadable fragment being swept.
+// is unfinished"; `completedAt` is the test. Three deletions are left, and
+// only three: the model itself being deleted, an unreadable fragment being
+// swept, and a manifest whose files have all vanished from under it
+// (engine-manager's installedModels — a record of nothing).
 //
 // A sidecar beside the files rather than a central registry: it travels with
 // the download, so it cannot drift out of sync with the cache dir, and it
@@ -44,7 +46,12 @@ export function writeManifest(cacheDir: string, repo: string, quant: QuantOption
     totalSizeBytes: quant.totalSizeBytes,
     sha256ByFile: quant.sha256ByFile,
     startedAt,
-    ...(prior?.visionFile ? { visionFile: prior.visionFile } : {}),
+    // Same publisher ONLY. Six-plus Hugging Face accounts publish byte-identical
+    // GGUF filenames, so a same-named download from a DIFFERENT account would
+    // otherwise inherit the previous account's projector path — which §E4 would
+    // then fetch from the wrong repo, 404ing or pairing a projector with weights
+    // it does not match.
+    ...(prior?.visionFile && prior.repo === repo ? { visionFile: prior.visionFile } : {}),
   };
   writeAtomic(manifestPathFor(cacheDir, firstFileBasename), manifest);
 }
@@ -52,7 +59,15 @@ export function writeManifest(cacheDir: string, repo: string, quant: QuantOption
 /** Stamp a manifest as finished — the download's LAST step, in place of the
  *  delete it used to do (see the header). A missing or unreadable manifest is a
  *  no-op: there is nothing to stamp, and completion must not fail over it.
- *  Idempotent — an already-stamped manifest keeps its original `completedAt`. */
+ *  Idempotent — an already-stamped manifest keeps its original `completedAt`.
+ *
+ *  KNOWN, not a blocker: this is a read-modify-write, where the file previously
+ *  only ever saw a whole-file write or a delete. Two app instances sharing one
+ *  cache dir (the dev instance and the built app do) can therefore lose an
+ *  update here — the loser's fields are overwritten by the winner's snapshot.
+ *  The window is one file read wide and both writers are writing the same
+ *  facts, so nothing has been seen to go wrong; widen the fix if a future field
+ *  is written by one instance and read by the other. */
 export function markManifestComplete(
   cacheDir: string, firstFileBasename: string, completedAt: number
 ): void {
@@ -92,7 +107,12 @@ export function readManifest(cacheDir: string, firstFileBasename: string): Downl
     return null;
   }
   if (raw?.v !== 1) return null;
-  if (typeof raw.repo !== 'string' || !raw.repo) return null;
+  // null is a REAL, wanted value: §E3's backfill records "I looked this model's
+  // repo up on Hugging Face and found nothing" as `repo: null`, so the lookup
+  // costs one search per model ever rather than one per Local Models render.
+  // Rejecting it here would make that record unreadable — and an unreadable
+  // manifest gets swept, which is exactly the loop it exists to stop.
+  if (raw.repo !== null && (typeof raw.repo !== 'string' || !raw.repo)) return null;
   if (typeof raw.quant !== 'string' || !raw.quant) return null;
   if (!Array.isArray(raw.files) || raw.files.length === 0) return null;
   if (!raw.files.every((f: unknown) => typeof f === 'string')) return null;

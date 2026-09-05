@@ -128,6 +128,44 @@ describe('a manifest that outlives its download', () => {
     expect(got?.startedAt).toBe(3);
   });
 
+  it('a re-download from a DIFFERENT publisher does NOT inherit the old projector', () => {
+    // Byte-identical GGUF filenames are published by many Hugging Face accounts.
+    // Carrying the projector across would point Add vision at a path that does
+    // not exist in the new repo — or at weights it does not match.
+    fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({
+      v: 1, repo: 'unsloth/M-GGUF', quant: 'UD-Q4_K_XL', files: quant.files,
+      totalSizeBytes: 1234, sha256ByFile: quant.sha256ByFile, startedAt: 1,
+      completedAt: 2, visionFile: { path: 'unsloth-mmproj-F16.gguf', size: 900, sha256: null },
+    }));
+
+    writeManifest(dir, 'bartowski/M-GGUF', quant, 3);
+
+    const got = readManifest(dir, FIRST);
+    expect(got?.repo).toBe('bartowski/M-GGUF');
+    expect(got?.visionFile).toBeUndefined();
+  });
+
+  it('round-trips repo: null — §E3 records a failed repo lookup that way', () => {
+    fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({
+      v: 1, repo: null, quant: 'Q4_K_M', files: [FIRST],
+      totalSizeBytes: 10, sha256ByFile: {}, startedAt: 1, completedAt: 2,
+    }));
+    const got = readManifest(dir, FIRST);
+    expect(got).not.toBeNull();       // NOT rejected — a miss is a real record
+    expect(got?.repo).toBeNull();
+    expect(isManifestComplete(got)).toBe(true);
+  });
+
+  it('still rejects a repo that is neither a name nor null', () => {
+    const base = {
+      v: 1, quant: 'Q4_K_M', files: [FIRST], totalSizeBytes: 10, sha256ByFile: {}, startedAt: 1,
+    };
+    for (const repo of ['', 7, {}]) {
+      fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({ ...base, repo }));
+      expect(readManifest(dir, FIRST)).toBeNull();
+    }
+  });
+
   it('reads a manifest with no completedAt or visionFile — every manifest written before this', () => {
     fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({
       v: 1, repo: 'a/b', quant: 'Q4_K_M', files: [FIRST],

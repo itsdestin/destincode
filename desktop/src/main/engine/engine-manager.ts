@@ -542,6 +542,15 @@ export class EngineManager extends EventEmitter {
         if (!manifest) {
           try { removeManifest(cacheDir, d.firstFileName); } catch { /* best-effort */ }
         } else if (!isManifestComplete(manifest)) {
+          // CAREFUL, for whoever adds files to a download job (T15): "complete"
+          // here is isComplete(d) — the part count read off the FILENAMES
+          // (…-00002-of-00003.gguf), not the manifest's own `files` list. That
+          // is safe only while `files` holds exactly one quant's split parts,
+          // which is all quant-parser.ts ever puts there today. Add a vision
+          // projector to the same download job and a Local Models render that
+          // lands between the last weight part and the projector would stamp
+          // this manifest complete while the job is still running. If `files`
+          // grows beyond the split set, this test has to read `files` too.
           try { markManifestComplete(cacheDir, d.firstFileName, Date.now()); } catch { /* best-effort */ }
         }
       }
@@ -570,6 +579,13 @@ export class EngineManager extends EventEmitter {
         status: complete ? 'complete' : unfinished ? 'unfinished' : 'untraceable',
         partsPresent: d.partsPresent,
         totalSizeBytes: unfinished ? manifest!.totalSizeBytes : null,
+        // A COMPLETE row still reports no repo, exactly as before this change —
+        // the manifest surviving does not by itself change what the screen
+        // shows. T14/T15 must flip this, because Add vision needs the repo, and
+        // the flip is NOT free: LocalModelsSection matches a live download's
+        // progress events to a row on repo + quant, so a finished model that
+        // starts reporting a repo can absorb progress belonging to a different,
+        // still-running download of the same repo and quant.
         repo: unfinished ? manifest!.repo : null,
       });
     }

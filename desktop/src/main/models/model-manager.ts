@@ -163,7 +163,9 @@ export class ModelManager extends EventEmitter {
    *  the .partial, so this is the original download(repo, quant) call replayed. */
   async resume(modelId: string): Promise<{ downloadId: string }> {
     const manifest = readManifest(this.cacheDir(), `${modelId}.gguf`);
-    if (!manifest) {
+    // A null repo is the same situation as no manifest at all: the record
+    // exists, but it says "we never found out where this came from".
+    if (!manifest || manifest.repo === null) {
       // Specific and accurate, per docs/error-message-standards.md — this names
       // the real cause and what the user can do instead. The UI never offers
       // Resume on such a row; this guards the IPC and remote surfaces.

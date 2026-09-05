@@ -145,7 +145,11 @@ export interface ManifestVisionFile {
  *  longer means "this download is unfinished" — `completedAt` is the test. */
 export interface DownloadManifest {
   v: 1;
-  repo: string;
+  // null = "we looked and could not find which Hugging Face repo this came
+  // from" (§E3's backfill records the miss so it never repeats the search).
+  // A null repo is untraceable: it cannot be resumed and never blocks a
+  // download of the same filename from a named publisher.
+  repo: string | null;
   quant: string;
   files: string[];                              // repo-relative paths, part 1 first
   totalSizeBytes: number;

@@ -49,7 +49,9 @@ export class ModelDownloader {
     // WHY isManifestComplete: a manifest now stays behind after the download
     // finishes, and a FINISHED download is not "partly downloaded" — only an
     // unstamped manifest means there are half-fetched bytes on disk to protect.
-    if (prior && !isManifestComplete(prior) && prior.repo !== repo) {
+    // prior.repo === null is an untraceable record (§E3's "not found" marker),
+    // never a rival publisher — it must not block anything.
+    if (prior && !isManifestComplete(prior) && prior.repo !== null && prior.repo !== repo) {
       // Same filename, different publisher: the .partial on disk holds ANOTHER
       // build's bytes, and Range-continuing it would fail the integrity check
       // only after the whole remainder was fetched. The prior download has a

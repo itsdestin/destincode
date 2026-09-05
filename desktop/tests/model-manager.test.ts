@@ -64,6 +64,16 @@ describe('ModelManager.resume', () => {
     expect(urls).toEqual([]);
   });
 
+  it('refuses a manifest whose repo was never found — repo: null is untraceable', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'Mystery-Q4_K_M.gguf.partial'), Buffer.alloc(10));
+    fs.writeFileSync(path.join(cacheDir, 'Mystery-Q4_K_M.gguf.download.json'), JSON.stringify({
+      v: 1, repo: null, quant: 'Q4_K_M', files: ['Mystery-Q4_K_M.gguf'],
+      totalSizeBytes: 50, sha256ByFile: {}, startedAt: 1,
+    }));
+    await expect(manager().resume('Mystery-Q4_K_M')).rejects.toThrow(/where it came from/i);
+    expect(urls).toEqual([]);
+  });
+
   it('refuses a FINISHED download — a surviving manifest is not something to resume', async () => {
     // The manifest outlives the download now, so its presence alone must not be
     // read as "there is more to fetch". completedAt is the test.
