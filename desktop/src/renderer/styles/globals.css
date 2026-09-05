@@ -2573,3 +2573,31 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
   100% { box-shadow: 0 0 0 0 transparent; }
 }
 .specialist-jump-flash { animation: specialist-jump-flash 1.5s ease-out; }
+
+/* Voice prompting — the mic while it listens (deck Q-3: "an obvious glowing state").
+   A soft ring breathes out of the accent-filled button once every 1.4 s. The ring is a
+   box-shadow (compositor-friendly, no layout). Reduced Effects and the OS preference
+   both replace the breathing with one still ring — the state must stay obvious, only
+   the motion goes. Keep the two bodies identical when editing either. */
+@keyframes voice-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); }
+  100% { box-shadow: 0 0 0 12px color-mix(in srgb, var(--accent) 0%, transparent); }
+}
+/* steps(10): a smooth ring would make Chromium present a frame at the full refresh
+   rate the whole time the mic is open (~30% of a core at 180 Hz, measured 2026-07-30);
+   ten discrete ring sizes read as a breath and cost a tenth of the frames. Pinned by
+   tests/animation-frame-budget.test.ts. */
+.voice-mic-on { animation: voice-pulse 1.4s steps(10) infinite; }
+[data-reduced-effects] .voice-mic-on {
+  animation: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+@media (prefers-reduced-motion: reduce) {
+  .voice-mic-on {
+    animation: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent);
+  }
+}
+/* The four loudness bars beside the listening mic. Height follows the level a few
+   times a second; the short transition smooths the steps without lagging speech. */
+.voice-bar { transition: height 90ms linear; }

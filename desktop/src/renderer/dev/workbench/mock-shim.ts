@@ -26,6 +26,7 @@ import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns, 
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
 import { arcadeStatusFor, arcadeBoardFor, arcadeRecordsFor, arcadeVersusIsDown, type ArcadeScenario } from './arcade-fixtures';
+import type { VoiceEvent, VoiceReadiness } from '../../../shared/voice-types';
 import { buildCatalog } from './fixtures/marketplace/catalog';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
@@ -98,6 +99,9 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // fixture data to serve instead of a real filesystem/ledger.
   'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
   'specialists.steer', 'specialists.interrupt', 'on.specialistEvent',
+  // Voice prompting (2026-09-05) — no real backend yet, registered in
+  // mock-only.ts. Listed so the contract test covers the fake.
+  'voice.status', 'voice.download', 'voice.start', 'voice.stop', 'voice.cancel', 'voice.onEvent',
   'shell.openPath',
   // Chatsearch session references — real backend too, same reason for the fake:
   // the tool gallery needs an index that shows every row state on demand.
@@ -316,7 +320,7 @@ const NAMESPACES = [
   'session', 'skills', 'on', 'dialog', 'shell', 'terminal', 'update', 'remote',
   'account', 'social', 'marketplaceApi', 'detach', 'defaults', 'analytics', 'dev',
   'performance', 'app', 'native', 'providers', 'engine', 'models', 'theme',
-  'commands', 'tags', 'artifacts', 'firstRun', 'clipboard', 'window',
+  'commands', 'tags', 'artifacts', 'firstRun', 'clipboard', 'window', 'voice',
 ];
 
 export function createMockShim(store: MockStore): Window['claude'] {
@@ -880,6 +884,16 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     onStatusChanged: () => () => {},
     onModelsChanged: () => () => {},
   };
+
+  // Voice prompting (deck 2026-09-05) — NO real backend yet (mock-only.ts).
+  // `?voice=<state>` picks the readiness the mic starts in: ready (default),
+  // needs-download, downloading, unavailable. The fake "hears" one scripted
+  // sentence a word at a time — the same sentence the speech bench used — so
+  // the live-words treatment (deck Q-2: a grey tail that settles) and the
+  // first-run card (Q-5) can be judged in the workbench without a microphone.
+  const voice = createVoiceMock(
+    typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('voice'),
+  );
 
   const defaults: Ns<'defaults'> = {
     get: async () => store.getState().defaults,
@@ -1956,6 +1970,65 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, ...(remote ? { remote } : {}),
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, voice, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
+}
+
+const VOICE_SCRIPT = "Can you look at the budget spreadsheet I sent yesterday? Row 14 is wrong: it says $2,300 but Sarah's invoice was $2,030. Fix it and draft a short reply to her.".split(' ');
+
+/** A self-contained fake of `window.claude.voice`. Exported so the compare view
+ *  can mount one composer per readiness state on ONE page (each pane swaps its
+ *  own instance in before its InputBar mounts — see registry.tsx `voice-mic`). */
+export function createVoiceMock(initial: string | null): NonNullable<Window['claude']['voice']> {
+  const engine = 'Parakeet';
+  let readiness: VoiceReadiness =
+    initial === 'needs-download' ? { state: 'needs-download', engine, sizeMb: 464 }
+    : initial === 'downloading' ? { state: 'downloading', engine, sizeMb: 464, percent: 42 }
+    : initial === 'unavailable' ? { state: 'unavailable', reason: 'No microphone was found on this computer.' }
+    : { state: 'ready', engine };
+  const subs = new Set<(e: VoiceEvent) => void>();
+  const emit = (e: VoiceEvent) => subs.forEach((cb) => cb(e));
+  let timers: number[] = [];
+  let words = 0;
+  const later = (fn: () => void, ms: number) => { timers.push(window.setTimeout(fn, ms)); };
+  const clear = () => { timers.forEach((t) => window.clearTimeout(t)); timers = []; };
+  const finish = () => {
+    clear();
+    const text = VOICE_SCRIPT.slice(0, words).join(' ');
+    words = 0;
+    emit({ type: 'level', value: 0 });
+    emit({ type: 'final', text });
+  };
+  return {
+    status: async () => readiness,
+    download: async () => {
+      let pct = readiness.state === 'downloading' ? readiness.percent : 0;
+      const tick = () => {
+        pct = Math.min(100, pct + 3);
+        readiness = pct < 100 ? { state: 'downloading', engine, sizeMb: 464, percent: pct } : { state: 'ready', engine };
+        emit({ type: 'readiness', readiness });
+        if (pct < 100) later(tick, 90);
+      };
+      tick();
+    },
+    start: async () => {
+      clear();
+      words = 0;
+      // Loudness ticks independent of the words, so the meter moves between them.
+      const level = () => { emit({ type: 'level', value: 0.2 + Math.random() * 0.7 }); later(level, 90); };
+      later(level, 60);
+      const step = () => {
+        words += 1;
+        const heard = VOICE_SCRIPT.slice(0, words);
+        const tailN = Math.min(2, heard.length);
+        emit({ type: 'partial', committed: heard.slice(0, heard.length - tailN).join(' '), tail: heard.slice(heard.length - tailN).join(' ') });
+        // The silence stop (Q-3): the script ends, two quiet seconds pass, the mic closes itself.
+        if (words < VOICE_SCRIPT.length) later(step, 300 + Math.random() * 160); else later(finish, 2000);
+      };
+      later(step, 450);
+    },
+    stop: async () => { finish(); },
+    cancel: async () => { clear(); words = 0; emit({ type: 'level', value: 0 }); emit({ type: 'final', text: '' }); },
+    onEvent: (cb) => { subs.add(cb); return () => { subs.delete(cb); }; },
+  };
 }

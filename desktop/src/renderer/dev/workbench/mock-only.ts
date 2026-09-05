@@ -32,4 +32,15 @@
 // the workbench can still show the you-alone, empty and stale-board states
 // without a live leaderboard. `no MOCK_ONLY entry has since gained a real
 // channel` in workbench-mock-contract.test.ts is what forces this cleanup.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
+  // Voice prompting (design deck 2026-09-05) — the composer's mic is drawn and
+  // reviewed against a fake that "hears" a scripted sentence. The real backend
+  // is Parakeet TDT 0.6B v3 through sherpa-onnx (desktop main) and the phone's
+  // own recogniser (Android): docs/active/design/2026-09-05-voice-prompting/.
+  { channel: 'voice.status', feature: 'voice-prompting' },
+  { channel: 'voice.download', feature: 'voice-prompting' },
+  { channel: 'voice.start', feature: 'voice-prompting' },
+  { channel: 'voice.stop', feature: 'voice-prompting' },
+  { channel: 'voice.cancel', feature: 'voice-prompting' },
+  { channel: 'voice.onEvent', feature: 'voice-prompting' },
+];

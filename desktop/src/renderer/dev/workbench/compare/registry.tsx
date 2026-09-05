@@ -45,6 +45,11 @@ import { PRIORITY_TAG, PRIORITY_HINT } from '../../../components/tags/built-in-t
 // app does, or the comparison is against something that doesn't exist.
 import { TagGlyph, NotePageGlyph, PencilGlyph } from '../../../components/tags/glyphs';
 import type { TagRecord } from '../../../../shared/tags';
+// voice-mic: the REAL composer against a per-pane fake of window.claude.voice.
+import InputBar from '../../../components/InputBar';
+import { ChatProvider } from '../../../state/chat-context';
+import { SkillProvider } from '../../../state/skill-context';
+import { createVoiceMock } from '../mock-shim';
 // chatsearch-present Round 6: the real label→color resolver ChatsearchFindCard
 // uses — reused (not re-derived) so a tag rendered here can never disagree
 // with a tag rendered on the search-result row about what color it gets, and
@@ -5368,7 +5373,68 @@ const ALL_SURFACES: CompareSurface[] = [
 // visit starts with a dropdown hunt for the round actually being worked on.
 const ACTIVE_FIRST = 'session-strip-motion';
 
+// ── voice-mic ────────────────────────────────────────────────────────────────
+// The real InputBar, compact (no quick chips), each pane born against its own
+// voice fake. WHY the swap happens in THIS component's render body: React walks
+// the tree depth-first, so the InputBar below mounts (and its useVoiceInput
+// captures window.claude.voice ONCE, via a useState initializer) before the
+// next sibling pane's demo renders and swaps the next fake in. Dev-only; the
+// workbench page's own fake is restored by the last pane that mounts. A short
+// assistant turn sits above the composer so the mic is judged in its context.
+function VoiceComposerDemo({ state }: { state: 'ready' | 'needs-download' | 'unavailable' }) {
+  const mockRef = React.useRef<ReturnType<typeof createVoiceMock> | null>(null);
+  if (!mockRef.current) mockRef.current = createVoiceMock(state);
+  window.claude.voice = mockRef.current;
+  return (
+    <ChatProvider>
+      <SkillProvider>
+        <div className="flex flex-col gap-3">
+          <div className="px-3">
+            <div className="bg-inset rounded-xl px-3 py-2 text-sm text-fg max-w-[85%]">
+              Sure — which spreadsheet, and what should I change?
+            </div>
+          </div>
+          <InputBar sessionId="voice-demo" compact />
+        </div>
+      </SkillProvider>
+    </ChatProvider>
+  );
+}
+
 export const COMPARE_SURFACES: CompareSurface[] = [
+  {
+    id: 'voice-mic',
+    label: 'Message box — the mic',
+    question: 'Tap the mic (or hold Space in the empty box), watch the words land, open the first-run card: does the composer with a mic feel right?',
+    frame: 'canvas',
+    // The composer is wide and short: judged at the width the page can give it.
+    paneWidth: { min: 440, max: 760 },
+    rounds: [
+      {
+        n: 1,
+        candidates: [
+          {
+            id: 'ready',
+            label: 'Ready',
+            note: 'The engine is installed. Tap the mic, or hold Space in the empty box: a scripted sentence lands live, the last two words grey until they settle, then the mic closes itself after two quiet seconds and the text waits for Send.',
+            render: () => <VoiceComposerDemo state="ready" />,
+          },
+          {
+            id: 'first-run',
+            label: 'First tap',
+            note: 'Nothing downloaded yet. The first tap opens the card: what the mic does, that your voice stays on this computer, the 464 MB one-time download. Download runs a fake progress and the mic wakes up with a toast.',
+            render: () => <VoiceComposerDemo state="needs-download" />,
+          },
+          {
+            id: 'no-mic',
+            label: 'No microphone',
+            note: 'What the tap shows on a computer with no microphone: the specific reason and a Check again.',
+            render: () => <VoiceComposerDemo state="unavailable" />,
+          },
+        ],
+      },
+    ],
+  },
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),
   ...ALL_SURFACES.filter((s) => s.id !== ACTIVE_FIRST),
 ];

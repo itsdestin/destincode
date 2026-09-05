@@ -5,6 +5,8 @@ import TerminalToolbar from './TerminalToolbar';
 import { Button } from './ui';
 import { AttachmentChip } from './AttachmentChip';
 import { AttachIcon, CompassIcon } from './Icons';
+import { VoiceButton } from './VoiceButton';
+import { useVoiceInput } from '../hooks/useVoiceInput';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
 import StopButton from './StopButton';
@@ -110,6 +112,51 @@ function sendFailureCopy(result: NativeSendResult | undefined): string {
 const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+
+  // Voice prompting (deck 2026-09-05). The draft stays the one source of truth:
+  // `text` holds what was typed plus the words the engine has SETTLED on;
+  // `voiceTail` is the engine's newest few words, still liable to change, drawn
+  // grey in the mirror layer and appended to the textarea value so both layers
+  // measure the same height (Q-2: "the newest few in grey until they settle").
+  // `voiceBaseRef` is the draft as it stood when the mic opened — every partial
+  // replaces everything after it, so a rewritten word never leaves a stale copy.
+  const [voiceTail, setVoiceTail] = useState('');
+  const voiceBaseRef = useRef('');
+  const textRef = useRef('');
+  const voice = useVoiceInput({
+    onPartial: (committed, tail) => {
+      setText(voiceBaseRef.current + committed);
+      setVoiceTail(tail ? (committed ? ' ' : '') + tail : '');
+    },
+    onFinal: (final) => {
+      setVoiceTail('');
+      // Q-4: the text waits in the box with the caret at the end — nothing is
+      // sent until the user presses Send.
+      const next = voiceBaseRef.current + final + (final ? ' ' : '');
+      setText(next);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(next.length, next.length);
+      });
+    },
+  });
+  const startVoice = useCallback(() => {
+    const cur = textRef.current;
+    // Dictation continues the draft: a typed half-sentence keeps its place and
+    // the spoken words follow after one space.
+    voiceBaseRef.current = cur.trim() ? cur.replace(/\s*$/, ' ') : '';
+    setText(voiceBaseRef.current);
+    void voice.start();
+  }, [voice.start]); // eslint-disable-line react-hooks/exhaustive-deps -- reads the draft through textRef on purpose
+  // Q-3 note (Destin): "press and hold the spacebar in a bare input box for
+  // walkie-talkie mode". Hold Space for 250 ms in an EMPTY box to start, let go
+  // to stop; a quick tap does nothing (a leading space in an empty box is
+  // useless anyway, so it is swallowed either way).
+  const spaceHoldTimer = useRef<number | null>(null);
+  const spaceHeld = useRef(false);
+  const voiceCanStart = voice.supported && voice.readiness?.state === 'ready' && voice.phase === 'idle';
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Drive the same fade-edge treatment on the textarea itself. The mask fades
   // wrapped text that sits above/below the 3-line max-height viewport.
@@ -651,6 +698,8 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     e.preventDefault();
   }, []);
 
+  textRef.current = text;
+
   return (
     <div
       className="input-bar-container shrink-0"
@@ -720,13 +769,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                 className="input-bar-mirror-content text-sm text-fg leading-snug whitespace-pre-wrap break-words"
               >
                 <FlowingKeywordsText text={text} />
+                {voiceTail && <span className="text-fg-muted">{voiceTail}</span>}
                 {/* Zero-width char keeps a trailing newline visible in the mirror */}
                 {'\u200B'}
               </div>
             </div>
           <textarea
             ref={inputRef}
-            value={text}
+            value={text + voiceTail}
             rows={1}
             // Disable spellcheck — with transparent text + mirror overlay, the
             // red/blue squiggles render on top of the mirror and look like bugs.
@@ -740,6 +790,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             }}
             onChange={(e) => {
               const val = e.target.value;
+              // Typing while the mic is open ends dictation: what you type
+              // wins, the unsettled grey words are dropped.
+              if (voice.phase !== 'idle') { void voice.cancel(); setVoiceTail(''); }
               setText(val);
               // Detect "/" typed as first character — open drawer in search mode
               if (val === '/' && text === '') {
@@ -754,6 +807,21 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               }
             }}
             onKeyDown={(e) => {
+              // Hold Space in an empty box = walkie-talkie (see spaceHoldTimer).
+              if (e.key === ' ' && !minimal) {
+                if (spaceHeld.current) { e.preventDefault(); return; }
+                if (voiceCanStart && !text.trim() && !voiceTail) {
+                  e.preventDefault();
+                  if (!e.repeat && spaceHoldTimer.current === null) {
+                    spaceHoldTimer.current = window.setTimeout(() => {
+                      spaceHoldTimer.current = null;
+                      spaceHeld.current = true;
+                      startVoice();
+                    }, 250);
+                  }
+                  return;
+                }
+              }
               // Enter sends, Shift+Enter inserts newline
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
@@ -773,8 +841,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                 }
               }
             }}
+            onKeyUp={(e) => {
+              if (e.key !== ' ') return;
+              if (spaceHoldTimer.current !== null) { window.clearTimeout(spaceHoldTimer.current); spaceHoldTimer.current = null; }
+              if (spaceHeld.current) { spaceHeld.current = false; void voice.stop(); }
+            }}
             onPaste={handlePaste}
-            placeholder={disabled ? 'Waiting for approval...' : 'Message Claude...'}
+            placeholder={disabled ? 'Waiting for approval...' : voice.phase === 'listening' ? 'Listening…' : 'Message Claude...'}
             disabled={disabled}
             // Text color is transparent so the mirror div behind it shows
             // through (with animated keyword spans). caret-color keeps the
@@ -807,6 +880,25 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               stall warning and the red parked card, because those turns are
               still running and that is precisely when a user with no ESC key
               needs a way out. See useStreamingGate.ts. */}
+          {/* Voice prompting: the mic sits where the eye already goes to
+              send. Hidden entirely when the host has no speech engine
+              (remote browser, older builds) and in terminal view. */}
+          {!minimal && voice.supported && (
+            <VoiceButton
+              phase={voice.phase}
+              readiness={voice.readiness}
+              level={voice.level}
+              seconds={voice.seconds}
+              error={voice.error}
+              disabled={disabled}
+              onStart={startVoice}
+              onStop={() => { void voice.stop(); }}
+              onDownload={() => { void voice.download(); }}
+              onRecheck={() => { void voice.recheck(); }}
+              onClearError={voice.clearError}
+              onReady={() => onToast?.('Voice is ready — tap the mic to talk.')}
+            />
+          )}
           <StopButton sessionId={sessionId} provider={provider} visible={showStop} />
           {/* The app's most-used control. Geometry is unchanged — 28x28 is exactly
               what size="icon" emits — and it keeps `bg-accent`, which matters:
