@@ -74,6 +74,10 @@ export type KwinHelperIo = {
   readKdeSession: () => Promise<KdeSession | null>;
   /** Runs a plain binary (kwriteconfig6). Rejects on failure. */
   runBinary: (bin: string, args: string[]) => Promise<string>;
+  /** Waits. Injected so the load wait below runs instantly in tests. */
+  sleep: (ms: number) => Promise<void>;
+  /** Date.now. Injected with sleep, so the wait's budget is drivable too. */
+  now: () => number;
 };
 
 // The package name, and the prefix every install of it shares. The full plugin
@@ -101,6 +105,18 @@ const KWRITECONFIG = 'kwriteconfig6';
 const CALL_TIMEOUT_MS = 4000;
 
 const RECONFIGURE = ['org.kde.KWin', '/KWin', 'org.kde.KWin.reconfigure'];
+
+// How long to wait for KWin to actually START the script after `reconfigure`,
+// and how often to ask. MEASURED 2026-09-04 on KWin 6.7.3 (three consecutive
+// unload+reconfigure cycles): isScriptLoaded answered `false` at 3ms and only
+// flipped to `true` at 199ms, 199ms and 205ms. `reconfigure` returns void the
+// instant KWin accepts it and tells us nothing about the load, so without this
+// wait every install reported success while the script was not running yet —
+// which is exactly what made "Add helper" turn the buddy on and then straight
+// back off with "the helper is not running" (Destin, 2026-09-04). 5s is ~25x
+// the measured figure.
+const LOAD_WAIT_MS = 5000;
+const LOAD_POLL_MS = 50;
 const scriptingCall = (method: string, id: string): string[] => [
   'org.kde.KWin',
   '/Scripting',
@@ -283,6 +299,27 @@ export class KwinHelper {
     return res.ok && res.stdout.trim() === 'true';
   }
 
+  /**
+   * Poll until KWin reports the script running, or give up.
+   *
+   * Returns true the moment it is loaded. Never throws: a DBus failure mid-wait
+   * is just another "not yet" until the budget runs out.
+   */
+  private async waitForLoad(pluginId: string): Promise<boolean> {
+    // The budget is WALL-CLOCK, not a poll count. Every poll is a DBus call with
+    // its own 4s timeout of its own, so counting polls would let a compositor
+    // that answers slowly hold this for a hundred times the intended budget —
+    // and this runs on the launch path, ahead of the buddy's IPC handlers.
+    const deadline = this.io.now() + LOAD_WAIT_MS;
+    for (;;) {
+      const res = await this.io.kdeCall(scriptingCall('isScriptLoaded', pluginId));
+      if (res.ok && res.stdout.trim() === 'true') return true;
+      // Ask first, sleep second: never pay a wait for an answer nobody reads.
+      if (this.io.now() >= deadline) return false;
+      await this.io.sleep(LOAD_POLL_MS);
+    }
+  }
+
   async status(): Promise<HelperStatus> {
     // Off Linux there is no KDE to ask and never anything installed, so this is
     // the one short-circuit that asks the desktop nothing at all.
@@ -430,6 +467,21 @@ export class KwinHelper {
       // launch repairs it rather than finding "files present, versions equal,
       // nothing to do".
       return { ok: false, error: reconfigured.error };
+    }
+
+    // KWin loads the script ASYNCHRONOUSLY: `reconfigure` returns as soon as the
+    // compositor accepts the request, ~200ms before the script is running (see
+    // LOAD_WAIT_MS). Step 3 above unloaded it, so `isScriptLoaded` is false
+    // right now and flipping back to true is unambiguous proof that KWin
+    // re-read the package and started THIS copy — which also closes the gap the
+    // old comment here described, where nothing could tell a reload from the
+    // stale script still running.
+    if (!(await this.waitForLoad(pluginId))) {
+      // Deliberately NOT rolled back: the files are written and the config key
+      // is set, so this is a KWin that has not got to it yet rather than a
+      // failed install, and the next launch's syncOnLaunch repairs it. No
+      // version is recorded, so that repair will re-run the whole sequence.
+      return { ok: false, error: 'KDE has not started the helper yet.' };
     }
 
     // ONLY NOW. The marker records WHAT WE DID, not what KWin is running —
@@ -625,6 +677,8 @@ function helper(): KwinHelper {
     kdeVoidCall,
     readKdeSession,
     runBinary: (bin, args) => execQdbus(bin, args, { timeoutMs: CALL_TIMEOUT_MS }),
+    sleep: (ms) => new Promise((resolve) => { setTimeout(resolve, ms); }),
+    now: () => Date.now(),
   });
   return instance;
 }

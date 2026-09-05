@@ -1871,8 +1871,14 @@ void app.whenReady().then(async () => {
   // Windows Electron implements it via WM_NCHITTEST → HTCAPTION, which makes
   // the OS consume all pointer events for window dragging — the renderer
   // never gets pointerup, so click-to-toggle-chat never fires.
-  ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, target: { targetX: number; targetY: number }) => {
-    buddyManager.moveMascot(target.targetX, target.targetY);
+  // The payload is WINDOW-LOCAL on purpose — how far the cursor has strayed
+  // from the pixel it grabbed him by, inside the mascot's own window. A
+  // renderer's screen coordinates are a lie on Wayland (probe Round 8:
+  // window.screenX stayed 0 through three real moves), and feeding them back
+  // made the buddy bounce between two points every frame. See
+  // BuddyWindowManager.moveMascotFromPointer.
+  ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, target: { localDx: number; localDy: number }) => {
+    buddyManager.moveMascotFromPointer(target.localDx, target.localDy);
   });
   // Drag release → edge-snap detection against the window's final bounds.
   ipcMain.on(IPC.BUDDY_DRAG_ENDED, () => buddyManager.dragEnded());

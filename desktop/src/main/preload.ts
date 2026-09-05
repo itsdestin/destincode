@@ -1103,7 +1103,7 @@ contextBridge.exposeInMainWorld('claude', {
     getViewedSession: () => ipcRenderer.invoke(IPC.BUDDY_GET_VIEWED_SESSION),
     // Fire-and-forget: pointer drag fires ~60 events/sec; invoke() round-trips
     // would starve the renderer. Main clamps target to visible workArea.
-    moveMascot: (target: { targetX: number; targetY: number }) => ipcRenderer.send(IPC.BUDDY_MOVE_MASCOT, target),
+    moveMascot: (target: { localDx: number; localDy: number }) => ipcRenderer.send(IPC.BUDDY_MOVE_MASCOT, target),
     onAttentionSummary: (cb: (summary: AttentionSummary) => void) => {
       const listener = (_: unknown, summary: AttentionSummary) => cb(summary);
       ipcRenderer.on(IPC.SESSION_ATTENTION_SUMMARY, listener);

@@ -217,6 +217,11 @@ function makeRig(overrides: Partial<KwinHelperIo> = {}) {
   fs.mkdirSync(scriptsDir, { recursive: true });
 
   const calls: LoggedCall[] = [];
+  const slept: number[] = [];
+  // A fake clock, advanced only by things that really take time: the waits
+  // below, and `dbusCostMs` for a test about a compositor that answers slowly.
+  let clock = 0;
+  const cost = { dbusMs: 0 };
   const present = (): string[] => {
     try { return fs.readdirSync(scriptsDir).sort(); } catch { return []; }
   };
@@ -224,6 +229,9 @@ function makeRig(overrides: Partial<KwinHelperIo> = {}) {
   // Defaults are the happy path; a test overrides the one answer it is about.
   const replies = {
     isScriptLoaded: 'true',
+    // Answers isScriptLoaded in order, one per call, then falls back to
+    // `isScriptLoaded` above. Lets a test say "false, false, then true".
+    loadedSequence: null as string[] | null,
     unloadScript: { ok: true as const, stdout: 'false\n' } as
       | { ok: true; stdout: string }
       | { ok: false; reason: string },
@@ -239,8 +247,10 @@ function makeRig(overrides: Partial<KwinHelperIo> = {}) {
     scriptsDir,
     kdeCall: (args) => {
       calls.push({ kind: 'dbus', args, dirsPresent: present() });
+      clock += cost.dbusMs;
       if (args.some((a) => a.endsWith('isScriptLoaded'))) {
-        return Promise.resolve({ ok: true as const, stdout: replies.isScriptLoaded });
+        const next = replies.loadedSequence?.shift();
+        return Promise.resolve({ ok: true as const, stdout: next ?? replies.isScriptLoaded });
       }
       return Promise.resolve(replies.unloadScript);
     },
@@ -254,6 +264,10 @@ function makeRig(overrides: Partial<KwinHelperIo> = {}) {
       if (replies.kwriteconfigError) return Promise.reject(new Error(replies.kwriteconfigError));
       return Promise.resolve('');
     },
+    // Instant, so the load wait costs the suite nothing. `slept` records what
+    // the real one would have waited, which is what the budget test reads.
+    sleep: (ms: number) => { slept.push(ms); clock += ms; return Promise.resolve(); },
+    now: () => clock,
     ...overrides,
   };
 
@@ -262,6 +276,8 @@ function makeRig(overrides: Partial<KwinHelperIo> = {}) {
     scriptsDir,
     userDataDir,
     calls,
+    slept,
+    cost,
     replies,
     io,
     helper: new KwinHelper(io),
@@ -443,6 +459,61 @@ describe('install', () => {
     const r = rig();
     await r.helper.install();
     expect(r.settings().helperLoadedVersion).toBe(r.helper.bundledVersion());
+  });
+
+  // ── the load wait ───────────────────────────────────────────────────────
+  // MEASURED on KWin 6.7.3, 2026-09-04: `reconfigure` returns void immediately
+  // and isScriptLoaded stays false for ~200ms (199/199/205 over three runs).
+  // Without a wait, install reported success while the script was not running,
+  // so the settings screen turned the buddy on and the app refused it in the
+  // same breath — "goes back to disabled and says the helper isn't active"
+  // (Destin, 2026-09-04), working only on a second try.
+
+  it('waits for KWin to actually start the script before reporting success', async () => {
+    const r = rig();
+    // Answer 1 is consumed by install's own status() check before anything is
+    // written; the wait after reconfigure then sees false, false, true.
+    r.replies.loadedSequence = ['false', 'false', 'false', 'true'];
+    const res = await r.helper.install();
+    expect(res).toEqual({ ok: true });
+
+    const trace = r.trace();
+    const afterReconfigure = trace.slice(trace.findIndex((t) => t.includes('reconfigure')));
+    expect(afterReconfigure.filter((t) => t.includes('isScriptLoaded'))).toHaveLength(3);
+    expect(r.slept).toEqual([50, 50]);
+  });
+
+  it('fails, and records no version, when KWin never starts the script', async () => {
+    const r = rig();
+    r.replies.isScriptLoaded = 'false';
+    const res = await r.helper.install();
+    expect(res.ok).toBe(false);
+    // No version marker, so the next launch repairs it instead of finding
+    // "files present, versions equal, nothing to do".
+    expect(r.settings().helperLoadedVersion).toBeUndefined();
+    // Bounded: it gives up rather than waiting on a wedged compositor forever.
+    expect(r.slept.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(5000);
+  });
+
+  it('gives up on the clock, not on a count of tries', async () => {
+    // Every try is a DBus call with its own 4s timeout. Budgeting by number of
+    // tries would let a compositor that answers slowly hold the launch path for
+    // a hundred times the intended wait — 400 seconds, not 5.
+    const r = rig();
+    r.replies.isScriptLoaded = 'false';
+    r.cost.dbusMs = 4000;   // a compositor answering at its timeout
+    await r.helper.install();
+    expect(r.slept.length).toBeLessThanOrEqual(2);
+  });
+
+  it('leaves the package in place when only the load wait timed out', async () => {
+    // The files are written and the config key is set — this is a KWin that has
+    // not got to it yet, not a failed install. Deleting the package here would
+    // throw away a helper that is about to start.
+    const r = rig();
+    r.replies.isScriptLoaded = 'false';
+    await r.helper.install();
+    expect(fs.existsSync(path.join(r.scriptsDir, r.helper.pluginId(), 'metadata.json'))).toBe(true);
   });
 
   it('refuses when this desktop needs no helper', async () => {

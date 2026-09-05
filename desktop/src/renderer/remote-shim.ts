@@ -1545,7 +1545,7 @@ export function installShim(): void {
       // the pointer; throwing would spam the console on any platform where
       // the buddy mascot window somehow loaded remote-shim (shouldn't happen,
       // but the cost of being defensive is one line).
-      moveMascot: (_t: { targetX: number; targetY: number }) => { /* desktop-only */ },
+      moveMascot: (_t: { localDx: number; localDy: number }) => { /* desktop-only */ },
       onAttentionSummary: () => () => { /* no-op unsubscribe */ },
       // ── Buddy upgrades — same desktop-only contract as the methods above.
       // dragEnded is a no-op (not a throw): it fires from a pointer handler and

@@ -784,19 +784,52 @@ export class BuddyWindowManager implements BuddyManager {
   }
 
   /**
-   * Place the mascot at an anchor-based target position from the renderer
-   * (cursor screenX/Y minus the grab offset captured on pointerdown). Clamps
-   * to the visible workArea. Replaces CSS -webkit-app-region: drag, which on
-   * Windows consumes all pointer events via WM_NCHITTEST → HTCAPTION and
-   * breaks click detection.
+   * Place the mascot at an absolute screen position, already resolved by
+   * moveMascotFromPointer (or by a test). Clamps to the visible workArea.
+   * Replaces CSS -webkit-app-region: drag, which on Windows consumes all
+   * pointer events via WM_NCHITTEST → HTCAPTION and breaks click detection.
    *
-   * Anchor-based (not delta-based): per-move rounding on HiDPI displays
-   * cannot accumulate drift between cursor and mascot, because every move
-   * recomputes the absolute target from the current cursor position. A
-   * previous delta-based implementation caused "slides under my cursor" on
-   * fractional-scale displays (125 / 150%): Math.round of each tiny dx
-   * systematically over- or under-shot, and the residual compounded.
+   * Still anchor-based, not delta-based: the caller recomputes the whole
+   * offset from the grab point every frame and NOTHING accumulates, so the
+   * per-move rounding that made the mascot "slide under my cursor" on
+   * fractional-scale displays (125 / 150%) has nothing to compound into.
    */
+  /**
+   * The drag entry point the renderer actually calls.
+   *
+   * `localDx/localDy` is how far the cursor has moved from the pixel it grabbed
+   * him by, MEASURED INSIDE THE MASCOT'S OWN WINDOW. That is the only cursor
+   * coordinate that is true on every platform, so the conversion to a screen
+   * position happens here, where the app's own idea of where the window sits is
+   * authoritative:  target = where he is now + how far the finger has strayed.
+   *
+   * WHY NOT the cursor's screen position, which is what the renderer used to
+   * send (Destin, 2026-09-04 — "the buddy flickers all over the screen when
+   * dragging"): a renderer's screen coordinates are its window's origin plus
+   * the cursor's position inside it, and ON WAYLAND THAT ORIGIN IS FROZEN AT
+   * 0,0 FOREVER — measured in probe Round 8: KWin moved the window to 500,300,
+   * then 900,600, then 200,150, and window.screenX read 0 every single time.
+   * So the "screen" position the renderer reported changed by the SAME amount
+   * the window had just been moved, in the opposite direction. Every frame
+   * therefore undid the last one and the buddy bounced between two points as
+   * fast as the pointer fired. Window-local coordinates cannot do that: they
+   * are measured against wherever the window actually is at that instant, so
+   * the loop closes instead of oscillating, and it stays exact when the mascot
+   * is pinned at an edge and cannot follow the finger at all.
+   *
+   * The arithmetic is identical to the old one on Windows, macOS and X11
+   * (there, position + offset-inside-window IS the cursor's screen position),
+   * so nothing changes for them — this is one path, not a Linux branch.
+   */
+  moveMascotFromPointer(localDx: number, localDy: number): void {
+    if (!this.mascot || this.mascot.isDestroyed()) return;
+    // Refuse a non-finite offset here rather than letting it become a NaN
+    // target: same reasoning as place(), one step earlier.
+    if (!Number.isFinite(localDx) || !Number.isFinite(localDy)) return;
+    const here = this.rectOf(this.mascot);
+    this.moveMascot(here.x + localDx, here.y + localDy);
+  }
+
   moveMascot(targetX: number, targetY: number): void {
     if (!this.mascot || this.mascot.isDestroyed()) return;
     // A live drag cancels any in-flight snap glide.

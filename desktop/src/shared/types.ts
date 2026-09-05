@@ -1217,7 +1217,7 @@ export interface BuddyApi {
   // places the mascot at the supplied target (clamped to visible workArea).
   // Anchor-based, not delta-based, so per-move rounding on HiDPI displays
   // cannot accumulate drift between the cursor and the mascot.
-  moveMascot(target: { targetX: number; targetY: number }): void;
+  moveMascot(target: { localDx: number; localDy: number }): void;
   onAttentionSummary(cb: (summary: AttentionSummary) => void): () => void;
   // Pre-existing preload methods that were missing from this interface —
   // added while typing the buddy-upgrades members so call sites don't need
