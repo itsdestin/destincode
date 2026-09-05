@@ -376,11 +376,114 @@ describe('parseGgufHeader — refuses bytes that are not a GGUF v3 header', () =
     expect(() => parseGgufHeader(bad)).toThrow(/expected the magic "GGUF", found "NOPE"/);
   });
   it('names the version it actually found', () => {
-    const bad = buildGguf([{ key: 'general.architecture', type: T.string, value: 'llama' }], { version: 2 });
-    expect(() => parseGgufHeader(bad)).toThrow(/Unsupported GGUF version 2/);
+    const bad = buildGguf([{ key: 'general.architecture', type: T.string, value: 'llama' }], { version: 1 });
+    expect(() => parseGgufHeader(bad)).toThrow(/Unsupported GGUF version 1/);
+  });
+
+  it('ACCEPTS v2 — its KV table is laid out exactly like v3', () => {
+    // TheBloke's Llama-2 GGUFs are v2 and still among the most-downloaded on
+    // the Hub. Refusing them would show an error on that card where every other
+    // model shows a memory line. Only v1 used 32-bit lengths, which this reader
+    // genuinely cannot walk. Verified 2026-09-05 against
+    // TheBloke/Llama-2-7B-GGUF's real header.
+    const v2 = buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'llama' },
+      { key: 'llama.block_count', type: T.u32, value: 32 },
+      { key: 'llama.context_length', type: T.u32, value: 4096 },
+      { key: 'llama.embedding_length', type: T.u32, value: 4096 },
+      { key: 'llama.attention.head_count', type: T.u32, value: 32 },
+    ], { version: 2 });
+    const { header } = parseGgufHeader(v2);
+    expect(header.blockCount).toBe(32);
+    expect(header.headCountKv).toBe(32);
+    expect(header.keyLength).toBe(128);
+    expect(header.contextBytesIsUpperBound).toBe(false);
   });
   it('names how few bytes it was given', () => {
     expect(() => parseGgufHeader(Buffer.from('GG'))).toThrow(/only 2 bytes/);
+  });
+});
+
+describe('parseGgufHeader — hostile or corrupt bytes never crash the app', () => {
+  it('a NESTED array is refused instead of blowing the call stack', () => {
+    // GGUF defines no array-of-arrays, but a crafted file can nest one at
+    // twelve bytes per level. The parser used to recurse per level and die with
+    // a raw "Maximum call stack size exceeded" — a message the user can do
+    // nothing with, in front of a model they merely searched for.
+    const head = buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'llama' },
+      { key: 'llama.block_count', type: T.u32, value: 32 },
+    ]);
+    // One array whose ELEMENT type is itself an array, 50,000 deep.
+    const depth = 50_000;
+    const nest: Buffer[] = [];
+    for (let i = 0; i < depth; i++) nest.push(u32(T.array), u64(1));
+    nest.push(u32(T.u32), u64(1), u32(7));
+    const withNested = Buffer.concat([head, str('llama.nested'), u32(T.array), ...nest]);
+    withNested.writeBigUInt64LE(BigInt(3), 16); // kv count 2 -> 3
+
+    const { header } = parseGgufHeader(withNested); // must NOT throw
+    expect(header.blockCount).toBe(32);             // what came before still counts
+    expect(header.contextBytesIsUpperBound).toBe(true);
+  });
+
+  it('a per-layer head-count array that is shorter than the model is dropped', () => {
+    // The estimator indexes headCountKvLayers per layer; a short array would
+    // give it undefined -> NaN -> a nonsense number on the card.
+    const { header } = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'gemma4' },
+      { key: 'gemma4.block_count', type: T.u32, value: 48 },
+      { key: 'gemma4.attention.head_count_kv', type: T.array, elemType: T.i32, value: [8, 1, 8] },
+    ]));
+    expect(header.headCountKvLayers).toBeNull();
+    expect(header.headCountKv).toBe(8); // the array's maximum — an over-count
+    expect(header.contextBytesIsUpperBound).toBe(true);
+  });
+
+  it('the per-head width fallback divides by the SMALLEST head count, not the largest', () => {
+    // Dividing by the max gives the narrowest head, i.e. an UNDER-count of the
+    // cache — the one direction that can turn "tight" into a wrong "fits".
+    const { header } = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'gemma4' },
+      { key: 'gemma4.block_count', type: T.u32, value: 4 },
+      { key: 'gemma4.embedding_length', type: T.u32, value: 1024 },
+      { key: 'gemma4.attention.head_count', type: T.array, elemType: T.i32, value: [8, 2, 8, 2] },
+    ]));
+    expect(header.headCount).toBe(8);   // the max, safe as a multiplier
+    expect(header.keyLength).toBe(512); // 1024 / 2, not 1024 / 8
+    expect(header.valueLength).toBe(512);
+    // One width for a model whose heads vary per layer is an estimate.
+    expect(header.contextBytesIsUpperBound).toBe(true);
+  });
+});
+
+describe('parseGgufHeader — the architectures llama.cpp overrides or gates', () => {
+  it('phi3 has NO sliding layers even when its file advertises a window and a pattern', () => {
+    // phi3.cpp turns SWA back OFF when it finds a window (swa_type = NONE,
+    // n_swa = 0, set_swa_pattern(1)) — a deliberate upstream workaround for
+    // converters that fill the key in wrongly. Believing the file's pattern of
+    // 4 would say three layers in four slide, under-counting the cache.
+    const { header } = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'phi3' },
+      { key: 'phi3.block_count', type: T.u32, value: 32 },
+      { key: 'phi3.attention.sliding_window', type: T.u32, value: 2048 },
+      { key: 'phi3.attention.sliding_window_pattern', type: T.u32, value: 4 },
+    ]));
+    expect(header.slidingLayers).toEqual(new Array(32).fill(false));
+    expect(header.slidingLayers!.some(Boolean)).toBe(false);
+    expect(header.contextBytesIsUpperBound).toBe(false);
+  });
+
+  it('exaone4 slides only at 64 layers — llama.cpp gates the whole block on it', () => {
+    const exaone = (layers: number) => parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'exaone4' },
+      { key: 'exaone4.block_count', type: T.u32, value: layers },
+      { key: 'exaone4.attention.sliding_window', type: T.u32, value: 4096 },
+    ])).header;
+    expect(exaone(64).slidingLayers).toEqual(swaPatternMask(64, 4, false));
+    // A 30-layer EXAONE 4 carries the same key and still has no sliding layers.
+    expect(exaone(30).slidingLayers).toBeNull();
+    expect(exaone(30).contextBytesIsUpperBound).toBe(false);
   });
 });
 
@@ -410,8 +513,23 @@ describe('the 1 MB early stop', () => {
     expect(complete).toBe(false);
     expect(header.blockCount).toBe(35);
     expect(header.slidingWindowPatternLayers).toBeNull(); // not reached yet
-    // …and a half-read header never claims precision it does not have.
-    expect(header.contextBytesIsUpperBound).toBe(true);
+  });
+
+  it('a half-read header is ALWAYS an upper bound, whatever architecture it is', () => {
+    // gemma3 IS in SWA_PATTERN_DEFAULTS, so no layer-map condition can fire
+    // here: the flag has to come from the truncation itself. (The gemma4 case
+    // above would pass either way, which is why this fixture exists.)
+    const full = buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'gemma3' },
+      { key: 'gemma3.block_count', type: T.u32, value: 48 },
+      { key: 'gemma3.attention.sliding_window', type: T.u32, value: 1024 },
+      { key: 'gemma3.attention.sliding_window_pattern', type: T.u32, value: 6 },
+      { key: 'gemma3.attention.head_count_kv', type: T.u32, value: 8 },
+    ]);
+    expect(parseGgufHeader(full).header.contextBytesIsUpperBound).toBe(false);
+    const cut = parseGgufHeader(full.subarray(0, full.length - 4));
+    expect(cut.complete).toBe(false);
+    expect(cut.header.contextBytesIsUpperBound).toBe(true);
   });
 });
 
@@ -489,6 +607,32 @@ describe('fetchRemoteGgufHeader', () => {
     });
     await expect(fetchRemoteGgufHeader('https://example.invalid/m.gguf', fetchImpl as any))
       .rejects.toThrow(/ignored the range request \(HTTP 200, 5048350848 bytes\)/);
+  });
+
+  it('refuses the same way when the response has NO content-length at all', async () => {
+    // A chunked 200 advertises no length. The old guard read that as 0, decided
+    // 0 was small, and buffered the whole file into the Electron main process —
+    // a freeze or an OOM kill for any mirror that answers this way, on a repo
+    // the user merely searched for. The body must never be read.
+    let bodyRead = 0;
+    const fetchImpl = async () => ({
+      ok: true, status: 200,
+      headers: { get: () => null },
+      arrayBuffer: async () => { bodyRead++; return new ArrayBuffer(8 * 1024 * 1024); },
+    });
+    await expect(fetchRemoteGgufHeader('https://example.invalid/m.gguf', fetchImpl as any))
+      .rejects.toThrow(/ignored the range request \(HTTP 200, no content-length\)/);
+    expect(bodyRead).toBe(0);
+  });
+
+  it('refuses an unparseable content-length too', async () => {
+    const fetchImpl = async () => ({
+      ok: true, status: 200,
+      headers: { get: () => 'lots' },
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    await expect(fetchRemoteGgufHeader('https://example.invalid/m.gguf', fetchImpl as any))
+      .rejects.toThrow(/ignored the range request \(HTTP 200, lots bytes\)/);
   });
 });
 

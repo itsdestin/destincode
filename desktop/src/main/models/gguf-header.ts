@@ -7,21 +7,52 @@
 // WHY it must read from the network as well as disk: the "will this fit?"
 // question is answered on the model CARD, before a single byte is downloaded.
 // The remote loader therefore walks the file in 1 MB HTTP Range steps and stops
-// the moment the architecture keys are behind it — measured on Destin's three
-// local GGUFs, every architecture key sits inside the first 2 KB, while the
-// tokenizer arrays that follow them run past 4 MB. probe-headers.mjs pins that
-// against the curated repos on every engine bump.
+// the moment the keys it wants are behind it — measured on the five GGUFs in
+// ~/.cache/llama.cpp and on all eleven curated repos, every key below sits
+// inside the first 2.2 KB, while the tokenizer arrays that follow run past
+// 4 MB. probe-headers.mjs pins that against the live repos on every bump.
 //
 // WHY the honesty flag: `contextBytesIsUpperBound` is set whenever the reader
 // could not fully understand the header — an unknown architecture, a key in a
 // type it does not handle, or a truncated read. The caller then says "up to
 // N GB" rather than stating a precise number it cannot stand behind (§D2's "no
 // fake precision" rule).
+//
+// ---------------------------------------------------------------------------
+// TWO KNOWN GAPS, FOR WHOEVER BUILDS THE ESTIMATOR ON TOP OF THIS (§D2 / T11)
+// ---------------------------------------------------------------------------
+// Both were found in review on 2026-09-05, both push the estimate the SAFE way
+// (too big, never too small), and neither is fixed here.
+//
+// 1. `attention.recurrent_layers` is NOT collected. llama.cpp's qwen35.cpp:21
+//    reads that per-layer array IN PREFERENCE TO `full_attention_interval`, and
+//    only falls back to an interval of 4 when neither key is present. A Qwen
+//    file that uses the array form therefore hands this reader nothing, and an
+//    estimator that sees `fullAttentionInterval === null` counts EVERY layer as
+//    attention — roughly a 4x over-count on that family. Nothing in the curated
+//    list does this today (all eleven write the scalar; probe-headers.mjs
+//    prints which), so the fix is to add the key to WANTED here the day one
+//    does, not to guess around it in the estimator.
+//
+// 2. A sliding layer's real cache is BIGGER than `min(context, slidingWindow)`.
+//    llama-kv-cache-iswa.cpp:52 allocates
+//    `GGML_PAD(min(size_base, n_swa + n_ubatch), 256)`, and `n_ubatch` defaults
+//    to 512 — so every sliding layer holds 512 extra tokens' worth, rounded up
+//    to a multiple of 256. Measured against the curated headers that is about
+//    170 MB unaccounted on gemma-4-12b and 105 MB on gemma-4-26B-A4B. Small
+//    beside a 12 GB model, but it lands on the wrong side of the fits/tight
+//    boundary, which is the one place a small error changes what the user sees.
+// ---------------------------------------------------------------------------
 import * as fs from 'fs';
 import * as path from 'path';
 
 const MAGIC = 'GGUF';
-const SUPPORTED_VERSION = 3;
+// v2 and v3 lay the metadata table out identically — only v1 used 32-bit
+// lengths, which this reader would mis-walk. Refusing v2 would refuse
+// TheBloke's Llama-2 GGUFs, still among the most-downloaded on the Hub, whose
+// headers this exact parser reads correctly (verified 2026-09-05:
+// arch=llama layers=32 kv_heads=32 dK/dV=128/128 ctx=4096, exact).
+const SUPPORTED_VERSIONS = [2, 3];
 
 /** One HTTP Range step / one local read step. */
 export const CHUNK_BYTES = 1024 * 1024;
@@ -102,12 +133,23 @@ export const SWA_PATTERN_DEFAULTS: Record<string, number> = {
   smallthinker: 4,
 };
 
-/** Architectures where llama.cpp hard-codes the period and IGNORES the file's
- *  own `sliding_window_pattern` key. phi3 calls `set_swa_pattern(1)` with no
- *  lookup, and a period of 1 means every layer is dense. Believing a phi3
- *  file's key instead would under-count KV, which is the one direction that
- *  can turn a "tight" verdict into a wrong "fits". */
+/** Architectures where llama.cpp overrides the file's own
+ *  `sliding_window_pattern`. phi3.cpp does the opposite of what its file asks:
+ *  when it FINDS a sliding window it logs a warning and turns SWA back off
+ *  (`swa_type = NONE; n_swa = 0; set_swa_pattern(1)`) — a deliberate upstream
+ *  workaround for converters that populate the key wrongly. A period of 1
+ *  means every layer is dense, so a phi3 model that advertises a window still
+ *  has no sliding layers. Believing its key instead would under-count KV,
+ *  which is the one direction that can turn a "tight" verdict into a wrong
+ *  "fits". */
 const SWA_PATTERN_FIXED: Record<string, number> = { phi3: 1 };
+
+/** Architectures where llama.cpp enables sliding attention at ONE layer count
+ *  only. exaone4.cpp wraps its whole SWA block in `if (n_layer() == 64)`, so a
+ *  smaller EXAONE 4 has no sliding layers even though its file still carries a
+ *  sliding_window key — applying the period anyway would under-count its
+ *  cache. */
+const SWA_LAYER_GATE: Record<string, number> = { exaone4: 64 };
 
 /** What the reader could pull out of one model file's metadata. Every numeric
  *  field is null when the file did not carry it (never a guessed default). */
@@ -244,6 +286,13 @@ class Cursor {
     // then the elements.
     if (type !== T_ARRAY) throw new UnknownTypeError(`GGUF value type ${type}`);
     const elemType = this.u32();
+    // Refuse an array OF arrays before recursing into it. GGUF does not define
+    // one, and a crafted (or corrupt) file can nest thousands deep at twelve
+    // bytes a level — which blows the JS call stack and would put a raw
+    // "Maximum call stack size exceeded" in front of the user. Routing it into
+    // UnknownTypeError instead reports the file as an upper bound, which is the
+    // honest answer for bytes we cannot walk.
+    if (elemType === T_ARRAY) throw new UnknownTypeError('a nested GGUF array');
     const count = this.u64();
     const elemSize = TYPE_SIZES[elemType];
     if (elemSize === undefined) throw new UnknownTypeError(`GGUF array element type ${elemType}`);
@@ -300,8 +349,8 @@ export function parseGgufHeader(buf: Buffer): GgufParseResult {
   const magic = buf.toString('ascii', 0, 4);
   if (magic !== MAGIC) throw new Error(`Not a GGUF file: expected the magic "${MAGIC}", found ${JSON.stringify(magic)}.`);
   const version = buf.readUInt32LE(4);
-  if (version !== SUPPORTED_VERSION) {
-    throw new Error(`Unsupported GGUF version ${version} — this reader understands version ${SUPPORTED_VERSION}.`);
+  if (!SUPPORTED_VERSIONS.includes(version)) {
+    throw new Error(`Unsupported GGUF version ${version} — this reader understands versions ${SUPPORTED_VERSIONS.join(' and ')}.`);
   }
 
   const cur = new Cursor(buf);
@@ -310,10 +359,14 @@ export function parseGgufHeader(buf: Buffer): GgufParseResult {
   const raw = new Map<string, number | boolean | string | (number | boolean)[]>();
   let kvCount = 0;
   let complete = false;
-  // The architecture's keys are written as one contiguous run in every file
-  // llama.cpp's converter produces. Once a key with a different prefix follows
-  // them, running out of bytes is no longer a problem — everything the
-  // estimator wants is already behind us. Until then, it is.
+  // Every key the estimator wants sits in the FIRST run of architecture keys,
+  // ahead of the tokenizer block. Architecture keys as a whole are NOT all
+  // contiguous — Qwen3.8-Flash-Next writes `qwen4exp.ple.image_token_id` at
+  // offset 10,945,998, ten megabytes past the tokenizer — but nothing in WANTED
+  // has ever been out there, which is the claim probe-headers.mjs re-checks
+  // against the live repos on every bump. So once a key with a different prefix
+  // follows that first run, running out of bytes is no longer a problem;
+  // until then, it is.
   let sawArchKey = false;
   let archRunEnded = false;
   let archKeysEnd = 0;
@@ -359,6 +412,11 @@ export function parseGgufHeader(buf: Buffer): GgufParseResult {
 
   h.archBytes = archKeysEnd || cur.offset;
   applyRaw(h, raw);
+  // §D1 lists a truncated read as one of the conditions. The two loaders below
+  // re-parse with more bytes and never return an incomplete header, but this
+  // function is exported: a direct caller must not be handed a half-read header
+  // stamped "exact".
+  if (!complete) h.contextBytesIsUpperBound = true;
   return { header: h, complete };
 }
 
@@ -400,6 +458,16 @@ function applyRaw(h: GgufHeader, raw: Map<string, number | boolean | string | (n
   const kvHeads = numOrLayers(h, raw, 'attention.head_count_kv');
   h.headCountKv = kvHeads.scalar ?? h.headCount;
   h.headCountKvLayers = kvHeads.layers ?? (kvHeads.scalar === null ? h.headCountLayers : null);
+  // A per-layer array that does not cover every layer would hand the estimator
+  // `undefined` for the layers past its end — NaN, and a nonsense figure on the
+  // model card. Drop it and fall back to the scalar (the array's maximum, so an
+  // over-count), exactly as the sliding pattern below is handled.
+  const shortArray = (a: number[] | null) => a !== null && h.blockCount !== null && a.length !== h.blockCount;
+  if (shortArray(h.headCountLayers) || shortArray(h.headCountKvLayers)) {
+    h.headCountLayers = null;
+    h.headCountKvLayers = null;
+    h.contextBytesIsUpperBound = true;
+  }
   h.embeddingLength = num(h, raw, 'embedding_length');
   h.keyLengthSwa = num(h, raw, 'attention.key_length_swa');
   h.valueLengthSwa = num(h, raw, 'attention.value_length_swa');
@@ -410,9 +478,23 @@ function applyRaw(h: GgufHeader, raw: Map<string, number | boolean | string | (n
   // Per-head width: the explicit key when the file has one, else the classic
   // embedding ÷ heads. Falling back silently is safe — it is what llama.cpp
   // itself does for models that predate the explicit keys.
-  const fallback = h.embeddingLength !== null && h.headCount ? h.embeddingLength / h.headCount : null;
-  h.keyLength = num(h, raw, 'attention.key_length') ?? fallback;
-  h.valueLength = num(h, raw, 'attention.value_length') ?? fallback;
+  //
+  // The DIVISOR is the SMALLEST head count, not `headCount`. `headCount` holds
+  // the maximum, which is the safe direction everywhere it is used as a
+  // multiplier — but in a denominator the max yields the NARROWEST possible
+  // head, i.e. an under-count of the cache, the one direction that can turn a
+  // "tight" verdict into a wrong "fits". And one width for a model whose head
+  // count varies per layer is an estimate however it is computed, so it is
+  // reported as an upper bound rather than printed as a fact.
+  const divisor = h.headCountLayers ? Math.min(...h.headCountLayers) : h.headCount;
+  const fallback = h.embeddingLength !== null && divisor ? h.embeddingLength / divisor : null;
+  const explicitK = num(h, raw, 'attention.key_length');
+  const explicitV = num(h, raw, 'attention.value_length');
+  h.keyLength = explicitK ?? fallback;
+  h.valueLength = explicitV ?? fallback;
+  if (h.headCountLayers !== null && (explicitK === null || explicitV === null)) {
+    h.contextBytesIsUpperBound = true;
+  }
 
   // The two shapes of sliding_window_pattern (§D1). A scalar says "every Nth
   // layer is full attention"; Gemma 4 writes a per-layer bool array instead,
@@ -442,6 +524,12 @@ function resolveSlidingLayers(h: GgufHeader): boolean[] | null {
     return h.slidingWindowPatternLayers;
   }
   if (layers === null || layers <= 0) return null;
+
+  // Some families only switch sliding attention on at one size (see
+  // SWA_LAYER_GATE). At any other size there are no sliding layers at all —
+  // an exact answer, not an upper bound.
+  const gate = SWA_LAYER_GATE[h.architecture];
+  if (gate !== undefined && layers !== gate) return null;
 
   const fixed = SWA_PATTERN_FIXED[h.architecture];
   if (fixed !== undefined) return swaPatternMask(layers, fixed, DENSE_FIRST_ARCHITECTURES.has(h.architecture));
@@ -530,12 +618,21 @@ export async function fetchRemoteGgufHeader(url: string, fetchImpl: FetchLike = 
     if (!res.ok) throw new Error(`Could not read this model's header from Hugging Face: HTTP ${res.status}.`);
     if (res.status !== 206) {
       // The server ignored the Range header and is about to hand back the whole
-      // multi-gigabyte file. Say exactly that rather than silently buffering it.
-      const len = Number(res.headers.get('content-length') ?? 0);
-      if (!Number.isFinite(len) || len > MAX_HEADER_BYTES) {
+      // file. Refuse BEFORE reading a byte of it: this runs in the Electron main
+      // process, and buffering a multi-gigabyte GGUF freezes the window or gets
+      // the app OOM-killed, taking the user's live session with it. Any repo on
+      // Hugging Face can be searched and read, so the server is not ours.
+      //
+      // A MISSING or unparseable content-length is the same refusal, not a pass
+      // (fixed 2026-09-05, measured buffering 8 MB and climbing): a chunked
+      // response has no length, and "I won't tell you how big it is" from a
+      // server that has already ignored the range is not a reason to trust it.
+      const advertised = res.headers.get('content-length');
+      const len = advertised === null ? NaN : Number(advertised);
+      if (!Number.isFinite(len) || len <= 0 || len > MAX_HEADER_BYTES) {
         throw new Error(
           `Could not read this model's header: the server ignored the range request ` +
-          `(HTTP ${res.status}, ${len || 'unknown'} bytes).`,
+          `(HTTP ${res.status}, ${advertised === null ? 'no content-length' : `${advertised} bytes`}).`,
         );
       }
     }

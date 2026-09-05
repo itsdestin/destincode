@@ -38,9 +38,15 @@ async function loadReader() {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
   }).outputText;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'probe-headers-'));
-  const file = path.join(dir, 'gguf-header.mjs');
-  fs.writeFileSync(file, out);
-  return import(pathToFileURL(file).href);
+  try {
+    const file = path.join(dir, 'gguf-header.mjs');
+    fs.writeFileSync(file, out);
+    return await import(pathToFileURL(file).href);
+  } finally {
+    // Node has the module loaded by now; the file on disk is no longer needed.
+    // Without this every run left a directory behind (15 of them after a day).
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 const argv = process.argv.slice(2);
