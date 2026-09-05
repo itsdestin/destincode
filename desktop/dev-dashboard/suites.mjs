@@ -21,15 +21,21 @@ export const SUITES = [
   },
   {
     key: 'workbench-boot',
+    // Says what it NEEDS, because without a workbench serving its port this
+    // refuses with exit 2 — an honest refusal that reads like a failure if the
+    // label does not warn you first.
     label: 'Workbench boot check',
-    weight: 'seconds',
+    weight: 'seconds · needs the workbench running',
     paid: false,
     argv: (c, ws) => ({ cmd: 'node', args: [path.join(ws, 'scripts', 'workbench-boot-check.mjs')], cwd: c.path }),
   },
   {
     key: 'docs-audit',
+    // Workspace-wide, NOT per-branch: audit-anchors.mjs checks the workspace's
+    // own docs and rules, so it gives the same answer from every row. The label
+    // says so rather than letting the row imply otherwise.
     label: 'Docs audit',
-    weight: 'seconds',
+    weight: 'seconds · whole workspace, not this branch',
     paid: false,
     argv: (c, ws) => ({ cmd: 'node', args: [path.join(ws, 'scripts', 'audit-anchors.mjs')], cwd: ws }),
   },

@@ -24,6 +24,15 @@ describe('the suite registry', () => {
     }
   });
 
+  it('says so on any suite that is not actually about the chosen branch', () => {
+    // docs-audit checks the WORKSPACE, so it returns the same answer from every
+    // row. A row-level control that quietly ignores its row is a lie.
+    expect(suiteByKey('docs-audit').weight).toMatch(/whole workspace/i);
+    // workbench-boot refuses with exit 2 when nothing serves its port — an honest
+    // refusal that reads as a failure unless the label warns first.
+    expect(suiteByKey('workbench-boot').weight).toMatch(/needs the workbench/i);
+  });
+
   it('always passes a spend cap to the paid suite', () => {
     const { args } = suiteByKey('model-eval').argv(checkout, '/ws');
     expect(args).toContain('--max-spend');
