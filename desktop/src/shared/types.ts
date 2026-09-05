@@ -1774,6 +1774,9 @@ export const IPC = {
   // ---- Native runtime Plan C (Phase 1): model manager ----
   ENGINE_SET_BACKEND: 'engine:set-backend',
   ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
+  // What a faster engine build needs installed before it can be offered
+  // (Linux ROCm) — 2026-09-05 local-engine upgrades §A3/§A5.
+  ENGINE_PREREQS: 'engine:prereqs',
   MODELS_CURATED: 'models:curated',
   MODELS_SEARCH: 'models:search',
   MODELS_QUANTS: 'models:quants',

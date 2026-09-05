@@ -37,6 +37,9 @@ import { createNativeTitleFeeder } from './native-title-feeder';
 import { reapplyStoredTitle, type ResumeTitleDeps } from './native-resume-title';
 import { ModelCatalog } from './providers/model-catalog';
 import { EngineManager } from './engine/engine-manager';
+// Faster-engine prerequisites (2026-09-05 §A5) — a pure-ish read of this
+// machine, so it needs no manager instance.
+import { enginePrereqs } from './engine/rocm-prereqs';
 import type { EngineModel as EngineModelType } from '../shared/engine-types';
 import { ModelManager } from './models/model-manager';
 import { detectEndpoints } from './models/endpoint-detectors';
@@ -2964,6 +2967,11 @@ export function registerIpcHandlers(
   });
   ipcMain.handle(IPC.ENGINE_SET_BACKEND, async (_e, backend: string) => { await engineManager.setBackend(backend as any); return engineManager.status(); });
   ipcMain.handle(IPC.ENGINE_SET_CONTEXT, async (_e, contextSize: number) => { await engineManager.setContext(contextSize); return engineManager.status(); });
+  // Faster-engine prerequisites (2026-09-05 §A5). `refresh: true` on purpose:
+  // this channel is only ever called by the card, including its "Check again"
+  // button AFTER the user has run the install command — a cached answer there
+  // would report the software still missing and strand them in the set-up box.
+  ipcMain.handle(IPC.ENGINE_PREREQS, async (_e, backend: string) => enginePrereqs(backend));
   ipcMain.handle(IPC.MODELS_CURATED, async () => modelManager.curatedList());
   ipcMain.handle(IPC.MODELS_SEARCH, async (_e, query: string) => modelManager.search(query));
   ipcMain.handle(IPC.MODELS_QUANTS, async (_e, repo: string) => modelManager.quants(repo));

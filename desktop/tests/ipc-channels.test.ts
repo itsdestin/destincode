@@ -997,6 +997,8 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
   const channels: Array<[string, string]> = [
     ['engine:set-backend', 'ENGINE_SET_BACKEND'],
     ['engine:set-context', 'ENGINE_SET_CONTEXT'],
+    // Faster-engine prerequisites (2026-09-05 local-engine upgrades §A5).
+    ['engine:prereqs', 'ENGINE_PREREQS'],
     ['models:curated', 'MODELS_CURATED'],
     ['models:search', 'MODELS_SEARCH'],
     ['models:quants', 'MODELS_QUANTS'],

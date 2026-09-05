@@ -1710,6 +1710,8 @@ export function installShim(): void {
       // Plan C context-length knob. Object payload matches remote-server's
       // WS case read (payload.contextSize).
       setContext: (contextSize: number) => invoke('engine:set-context', { contextSize }),
+      // Object payload matches remote-server's WS case read (payload.backend).
+      prereqs: (backend: string) => invoke('engine:prereqs', { backend }),
       onInstallProgress: (cb: (p: unknown) => void) => {
         const handler: Callback = (payload: any) => cb(payload);
         addListener('engine:install-progress', handler);

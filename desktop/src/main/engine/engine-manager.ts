@@ -18,8 +18,10 @@ import { readManifest, removeManifest, markManifestComplete, isManifestComplete 
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
 import { stripSplitSuffix } from '../../shared/gguf-split';
+import { detectGpu, backendOptions, gpuDeviceName } from '../models/gpu-detector';
+import { checkRocmPrereqs } from './rocm-prereqs';
 import type {
-  EngineBackend, EngineInstallProgress, EngineStatus, EngineModel,
+  EngineBackend, EngineInstallProgress, EngineStatus, EngineModel, BackendOption,
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
 import type { InstalledLocalModel } from '../../shared/model-manager-types';
@@ -93,6 +95,43 @@ export function resolveSlotCount(raw: unknown): number | null {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
 }
 
+/** Read this machine's chip, its ROCm prerequisites and the engine's own device
+ *  list, and turn them into the two fields the Local Models card shows (§A3).
+ *
+ *  Free function rather than a method so the decision it makes is the PURE
+ *  `backendOptions` in gpu-detector.ts, tested there; everything here is the
+ *  three readings that feed it.
+ *
+ *  The device list comes from the install's `.complete` marker, which
+ *  engine-acquisition writes from `llama-server --list-devices`. An install made
+ *  before that field existed simply has no `devices` key, and an unreadable
+ *  marker is not an error worth surfacing — both mean "no device name yet", and
+ *  the card says "Processor only" rather than inventing one. */
+async function readHardwareOffer(
+  inst: InstalledEngine | null
+): Promise<{ options: BackendOption[]; deviceName: string | null }> {
+  const gpu = await detectGpu();
+  // The prerequisite check only matters on the Linux ROCm path, and it shells
+  // out — so it is not run on machines where its answer cannot change anything.
+  const rocmPrereqsSatisfied = gpu.vendor === 'amd' ? checkRocmPrereqs().satisfied : false;
+  const options = backendOptions({
+    platform: process.platform,
+    arch: process.arch,
+    vendor: gpu.vendor,
+    gfxTarget: gpu.gfxTarget,
+    installedBackend: inst?.backend ?? null,
+    rocmPrereqsSatisfied,
+  });
+  let deviceName: string | null = null;
+  if (inst) {
+    try {
+      const marker = JSON.parse(fs.readFileSync(path.join(inst.dir, '.complete'), 'utf8')) as { devices?: unknown };
+      deviceName = gpuDeviceName(marker.devices);
+    } catch { /* no marker / no devices key / unreadable — no name to show. */ }
+  }
+  return { options, deviceName };
+}
+
 export class EngineManager extends EventEmitter {
   private acquisition: EngineAcquisition;
   private supervisor: EngineSupervisor | null = null;
@@ -120,11 +159,41 @@ export class EngineManager extends EventEmitter {
     return this.acquisition.installed(readEngineConfig(this.home).backend ?? undefined);
   }
 
+  /** The hardware answers the card needs: which faster builds this machine may
+   *  be offered, and the name of the chip the engine says it will run on.
+   *
+   *  Cached and filled OFF the first status() call, not during it. Reading them
+   *  shells out (nvidia-smi, PowerShell, ldconfig), and status() is called on
+   *  every engine event and every IPC status request — blocking the main process
+   *  there would freeze the window for as long as a hung driver tool takes to
+   *  time out. So the first call answers instantly with the fields absent, the
+   *  reading happens on the next tick, and the 'status-changed' push carries the
+   *  filled-in version a moment later. `hardwareWarming` makes that happen once. */
+  private hardware: { options: BackendOption[]; deviceName: string | null } | null = null;
+  private hardwareWarming = false;
+
+  private warmHardware(inst: InstalledEngine | null): void {
+    if (this.hardware || this.hardwareWarming) return;
+    this.hardwareWarming = true;
+    setImmediate(() => {
+      void readHardwareOffer(inst)
+        .then((h) => { this.hardware = h; })
+        // A probe that throws must not take the card down: no offer, no name.
+        .catch(() => { this.hardware = { options: [], deviceName: null }; })
+        .finally(() => { this.hardwareWarming = false; this.emit('status-changed'); });
+    });
+  }
+
   status(): EngineStatus {
     const cfg = readEngineConfig(this.home);
     const inst = this.currentInstall();
     const supState = this.supervisor?.status() ?? 'stopped';
+    this.warmHardware(inst);
     return {
+      // Undefined (not []) until the probe has run once — the renderer treats an
+      // absent list as "not known yet", which is exactly what it is.
+      backendOptions: this.hardware?.options,
+      deviceName: this.hardware ? this.hardware.deviceName : undefined,
       installed: inst !== null,
       installedVersion: inst?.version ?? null,
       pinnedVersion: ENGINE_VERSION,
