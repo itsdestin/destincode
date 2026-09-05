@@ -2552,7 +2552,7 @@ export class NativeSessionHost extends EventEmitter {
       // reassembled, not even by setBinding's mid-session model swap (that is what
       // keeps the KV-cache prefix stable). Sizing therefore follows the model the
       // session STARTED on. Deliberate; revisit only if prompt reassembly ever is.
-      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools, instructionBudgetTokens: profile.injectionBudgetTokens }),
+      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools, instructionBudgetTokens: profile.injectionBudgetTokens, supportsParallelToolCalls: profile.supportsParallelToolCalls, audience: 'user' }),
     };
   }
 
@@ -2939,6 +2939,10 @@ export class NativeSessionHost extends EventEmitter {
           presetBody: specialist.systemPrompt, cwd: workDir, appVersion: this.appVersion,
           promptVariant: profile.promptVariant, hasTools: profile.supportsTools,
           instructionBudgetTokens: profile.injectionBudgetTokens,
+          // audience 'parent': the shared doctrine's writing-for-the-user block is
+          // for the person; a specialist's reader is the parent model, and its
+          // report rules live in specialists/builtins.ts.
+          supportsParallelToolCalls: profile.supportsParallelToolCalls, audience: 'parent',
         }),
         // Project rules / nested instructions for the CHILD's directory. Project
         // state, not conversation state, so it does not violate the cold start —
