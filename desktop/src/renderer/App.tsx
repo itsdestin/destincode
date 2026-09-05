@@ -3094,9 +3094,14 @@ function AppInner() {
                   <ThemeMascot variant="idle" fallback={AppIcon} className="w-16 h-16 text-fg-dim mb-6 animate-pulse" />
                   <p className="text-sm text-fg-dim font-medium">Initializing session...</p>
                   {initSlowWarning && (
-                    <div className="mt-4 text-xs text-fg-muted text-center max-w-xs flex flex-col gap-1">
-                      <p>Something may be wrong.</p>
-                      <p>Use the chat/terminal toggle to check terminal view for messages.</p>
+                    <div className="mt-4 text-xs text-fg-muted text-center max-w-xs flex flex-col items-center gap-2">
+                      <p>Something may be wrong. The terminal may show what it is waiting on.</p>
+                      {/* Fix: the old copy told the user to go find the chat/terminal toggle
+                         themselves. This does it in one tap — and because the overlay is
+                         hidden in terminal view, switching also clears it. */}
+                      <Button variant="secondary" size="sm" onClick={() => handleToggleView('terminal')}>
+                        Check terminal view
+                      </Button>
                     </div>
                   )}
                 </div>
