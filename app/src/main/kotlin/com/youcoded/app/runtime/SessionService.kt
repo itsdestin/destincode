@@ -4053,6 +4053,9 @@ class SessionService : Service() {
             "engine:install",
             "engine:restart",
             "engine:set-context",   // Plan C context-length knob — desktop-only
+            // Every engine-wide setting in one write (2026-09-05) — desktop-only,
+            // same as the knob above: a phone runs no local engine to configure.
+            "engine:set-config",
             // Faster-engine prerequisites (2026-09-05) — reads the DESKTOP machine's
             // graphics libraries; a phone has no engine to switch, so it stubs out.
             "engine:prereqs",

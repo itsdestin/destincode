@@ -135,8 +135,11 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   };
 
   // Commit the context-length knob. Reverts an invalid value (< 1024 or NaN)
-  // and no-ops when unchanged, so a blur/Enter can't needlessly reboot the
-  // engine (setContext restarts a running server).
+  // and no-ops when unchanged, so a blur/Enter can't needlessly disturb the
+  // engine. NOTE (2026-09-05): setContext no longer RESTARTS anything — the
+  // context length lives in the engine's preset file now, and main rewrites it
+  // and asks the router to re-read it, once no reply is streaming. The engine
+  // keeps serving throughout.
   const commitContext = async () => {
     if (ctxDraft == null || !status) return;
     const n = Math.floor(ctxDraft);
@@ -442,7 +445,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                     checked={speed.speculative}
                     disabled={busy}
                     aria-label="Speculative decoding"
-                    onChange={(next) => void run(() => window.claude.engine.setSpeed({ speculative: next }))}
+                    onChange={(next) => void run(() => window.claude.engine.setConfig({ speed: { speculative: next } }))}
                   />
                 )}
               />
@@ -464,7 +467,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                     checked={speed.compressCache}
                     disabled={busy}
                     aria-label="Compress context memory"
-                    onChange={(next) => void run(() => window.claude.engine.setSpeed({ compressCache: next }))}
+                    onChange={(next) => void run(() => window.claude.engine.setConfig({ speed: { compressCache: next } }))}
                   />
                 )}
               />

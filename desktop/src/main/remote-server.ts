@@ -1340,6 +1340,18 @@ export class RemoteServer {
         }
         break;
       }
+      // Every engine-wide setting in one write (2026-09-05 §B). The whole
+      // payload IS the patch here — unlike the single-value cases above there is
+      // no bare-value form to unwrap, because a patch is always an object.
+      case 'engine:set-config': {
+        try {
+          if (this.nativeRuntime) await this.nativeRuntime.engineManager.setConfig(payload ?? {});
+          this.respond(client.ws, type, id, this.nativeRuntime?.engineManager.status() ?? null);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
       // "Run in terminal" over the remote link. The shell runs on the HOST — a
       // remote client is a browser and has no terminal of its own — so this is
       // the same plain-shell session the desktop button makes, and the client

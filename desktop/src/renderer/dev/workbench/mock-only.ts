@@ -45,8 +45,10 @@
 // ipc-handlers + preload + remote-shim + remote-server (it opens a plain-shell session and
 // types the command onto its prompt). Its fake above stays so the workbench can still show
 // the ROCm set-up box without a PTY.
+// `engine.setSpeed` came off on 2026-09-05 too, RENAMED: the two speed switches are now
+// part of `engine:set-config`, one write for every engine-wide setting, real on all five
+// surfaces. Its fake in mock-shim.ts kept the same behaviour under the new name.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  { channel: 'engine.setSpeed', feature: 'local-engine-upgrades: speculative decoding / cache compression switches (Q-4)' },
   { channel: 'models.settings', feature: 'local-engine-upgrades: per-model settings read (Q-2)' },
   { channel: 'models.setSettings', feature: 'local-engine-upgrades: per-model settings write (Q-2)' },
   { channel: 'models.addVision', feature: 'local-engine-upgrades: add the vision file to a downloaded model (S-3)' },

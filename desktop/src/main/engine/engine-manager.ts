@@ -11,12 +11,13 @@ import * as fs from 'fs'; // Plan C: deleteModel needs fs.rmSync for model files
 import { NativeHome } from '../native-home';
 import { EngineAcquisition, InstalledEngine } from './engine-acquisition';
 import type { EngineDevice } from './engine-acquisition';
-import { EngineSupervisor } from './engine-supervisor';
+import { EngineSupervisor, SLEEP_IDLE_SECONDS } from './engine-supervisor';
 import type { EngineSpawnConfig } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
-import { readEngineConfig, updateEngineConfig } from './engine-config';
-import { presetFilePath } from './model-presets';
+import { readEngineConfig, updateEngineConfig, updateEngineSpeed } from './engine-config';
+import { presetFilePath, renderPresetFile, writePresetFile } from './model-presets';
+import { contextLengthFor } from '../models/fit-estimator';
 import { readManifest, removeManifest, markManifestComplete, isManifestComplete } from '../models/download-manifest';
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
@@ -26,6 +27,7 @@ import type { GpuVendor } from '../../shared/model-manager-types';
 import { checkRocmPrereqs } from './rocm-prereqs';
 import type {
   EngineBackend, EngineInstallProgress, EngineStatus, EngineModel, BackendOption, ReplyTimings,
+  EngineSpeedSettings,
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
 import type { InstalledLocalModel } from '../../shared/model-manager-types';
@@ -314,12 +316,26 @@ export function routerErrorText(status: number, body: string): string {
   if (raw) return raw.split(/\r?\n/)[0].slice(0, 300);
   return `the engine answered HTTP ${status} with no message`;
 }
+// How often a queued settings change asks "is a reply still streaming?", and how
+// long it waits before applying anyway. Ten minutes is the design's bound (§C2):
+// long enough that no real reply is cut short, short enough that a stream which
+// never releases its hold (a wedged model, a client that walked away) cannot
+// leave a saved setting unapplied for the rest of the session.
+const CONFIG_APPLY_POLL_MS = 1_000;
+const CONFIG_APPLY_MAX_WAIT_MS = 10 * 60_000;
 
 export class EngineManager extends EventEmitter {
   private acquisition: EngineAcquisition;
   private supervisor: EngineSupervisor | null = null;
   private supervisorBinary: string | null = null;
   private installing = false;
+  // Saved settings changes not yet in force (see requestApply). Two flags, not
+  // a job queue, so any number of changes made during one wait cost one action.
+  private needsReload = false;
+  private needsRestart = false;
+  private applyDeadline = 0;                      // when the OLDEST pending change lands regardless
+  private applyWaiter: Promise<void> | null = null;
+  private configApplyError: string | null = null;
 
   constructor(
     private home: NativeHome,
@@ -338,6 +354,10 @@ export class EngineManager extends EventEmitter {
       /** Test seam: the verification load's cap. A guard that has to wait out
        *  the real ten minutes is a guard that gets deleted. */
       loadProbeTimeoutMs?: number;
+      /** Test seams for the settings-apply wait — a suite cannot spend ten real
+       *  minutes proving that the bound exists. */
+      configApplyPollMs?: number;
+      configApplyMaxWaitMs?: number;
     } = {}
   ) {
     super();
@@ -493,25 +513,173 @@ export class EngineManager extends EventEmitter {
       cacheDir: cfg.cacheDir,
       contextSize: cfg.contextSize,   // Plan C: the knob binds to this value
       port: this.port,
+      speed: cfg.speed,
+      // While true the card shows "Applies after the current reply" — the value
+      // is saved, the engine has not picked it up yet.
+      configApplyPending: this.applyWaiter !== null,
+      configApplyError: this.configApplyError,
     };
   }
 
-  /** Plan C (Amendment I): the context-length knob. Persists the new -c and
-   *  reboots a running engine so the change takes effect immediately. */
-  async setContext(contextSize: number): Promise<void> {
-    if (!Number.isFinite(contextSize) || contextSize < 1024) {
+  /** One engine-wide settings write (design §B, channel `engine:set-config`).
+   *
+   *  The VALUE is saved immediately — if the disk write fails, this call fails
+   *  and the user is told. APPLYING it to the running engine is what waits:
+   *  both paths below are queued behind `queueConfigApply`, so nothing here
+   *  interrupts a reply the user is reading. */
+  async setConfig(patch: { contextSize?: number; speed?: Partial<EngineSpeedSettings> }): Promise<void> {
+    const wantsContext = patch.contextSize !== undefined;
+    if (wantsContext && (!Number.isFinite(patch.contextSize) || (patch.contextSize as number) < 1024)) {
       throw new Error('Context length must be at least 1024 tokens.');
     }
-    await updateEngineConfig(this.home, { contextSize: Math.floor(contextSize) });
-    // A running engine keeps its old -c until rebooted; restart now so the knob
-    // does what it says. The supervisorBinary = null is REQUIRED (K6):
-    // rebuildSupervisor dedups on binaryPath, so a plain restart() would return
-    // early and keep the OLD contextSize — nulling forces a rebuild with the
-    // fresh config on the next ensureRunning. stop() is single-flight (Plan B),
-    // so a send in the kill window is coordinated; only avoid applying this
-    // mid-stream (a context change is inherently disruptive).
-    if (this.supervisor) { await this.supervisor.stop(); this.supervisorBinary = null; }
+    // Only the two booleans this app knows about are written. Anything else in
+    // the patch is dropped rather than stored: config.json feeds the engine's
+    // preset file, and a value nothing validates ends up on a command line.
+    const speed: Partial<EngineSpeedSettings> = {};
+    if (typeof patch.speed?.speculative === 'boolean') speed.speculative = patch.speed.speculative;
+    if (typeof patch.speed?.compressCache === 'boolean') speed.compressCache = patch.speed.compressCache;
+    const wantsSpeed = Object.keys(speed).length > 0;
+    if (!wantsContext && !wantsSpeed) return;
+
+    if (wantsContext) await updateEngineConfig(this.home, { contextSize: Math.floor(patch.contextSize as number) });
+    if (wantsSpeed) await updateEngineSpeed(this.home, speed);
+    this.emit('status-changed');   // the saved value is visible at once
+
+    // A context change needs NO process restart: the value lives in the preset
+    // file's [*] section, and `GET /models?reload=1` makes the router re-read it
+    // (verified against the pinned binary, design §C2). A speed switch is a
+    // command-line flag, so that one does need a fresh spawn.
+    if (wantsContext) this.requestApply('reload');
+    if (wantsSpeed) this.requestApply('restart');
+  }
+
+  /** Plan C (Amendment I): the context-length knob. Kept as a thin alias so the
+   *  callers already wired to `engine:set-context` — the engine card, the remote
+   *  browser shim, the WS handler, the Android stub list — keep working
+   *  unchanged while new UI moves to `engine:set-config` (design §B). */
+  async setContext(contextSize: number): Promise<void> {
+    await this.setConfig({ contextSize });
+  }
+
+  /** Rewrite `~/.youcoded/engine/models.ini` from config.json + what is on disk.
+   *
+   *  The `[*]` section carries the engine-wide values a model is allowed to
+   *  override (context length, auto-sleep), and one section per model carries
+   *  that model's own. Sections are emitted ONLY for ids the cache scan found:
+   *  a section for a deleted model resurrects it as a row that can never load. */
+  private writeModelPresets(): void {
+    const cfg = readEngineConfig(this.home);
+    const contents = renderPresetFile({
+      contextSize: cfg.contextSize,
+      sleepIdleSeconds: SLEEP_IDLE_SECONDS,
+      modelIds: scanGgufCache(cfg.cacheDir).map((m) => m.id),
+      settings: cfg.models,
+    });
+    writePresetFile(presetFilePath(this.home.root), contents);
+  }
+
+  /** Ask the running router to re-read its preset file. No restart — the
+   *  process keeps serving throughout.
+   *
+   *  This sends `?reload=1` ITSELF rather than going through refreshModels(),
+   *  because refreshModels swallows every failure (its routerModelIds returns
+   *  null on a non-ok response AND on a throw). A refused reload is exactly the
+   *  failure that has to be reported: the engine keeps serving with the OLD
+   *  settings and NOTHING looks wrong until the next spawn, so without a message
+   *  the user's change simply never happened and they are never told. The
+   *  message carries the engine's own status, never a guessed cause. */
+  private async applyReload(): Promise<void> {
+    if (!this.supervisor || this.supervisor.status() !== 'running') return; // its next boot reads the file
+    const url = `http://127.0.0.1:${this.port}/models?reload=1`;
+    const res = await (this.opts.fetchImpl ?? fetch)(url, { method: 'GET' });
+    if (!res.ok) {
+      const detail = res.statusText ? `${res.status} ${res.statusText}` : String(res.status);
+      throw new Error(`The engine would not re-read its settings (HTTP ${detail}). It is still running with the previous ones.`);
+    }
+    // No second reload here: the supervisor's own model poll picks up anything
+    // the reload unloaded within a tick, and a reload is a WRITE — sending two
+    // for one change would reconcile the router twice.
     this.emit('status-changed');
+  }
+
+  /** Apply a speed switch: the flags are command-line arguments, so the engine
+   *  has to be respawned to pick them up. `supervisorBinary = null` is REQUIRED
+   *  (K6): rebuildSupervisor dedups on binaryPath, so without it the rebuild
+   *  returns early and the OLD flags come straight back. An engine that was NOT
+   *  running is left stopped — booting one nothing asked for would take a
+   *  gigabyte of memory to apply a setting. */
+  private async applySpeed(): Promise<void> {
+    const wasRunning = this.supervisor?.status() === 'running';
+    if (this.supervisor) { await this.supervisor.stop(); this.supervisorBinary = null; }
+    if (wasRunning) {
+      const inst = this.currentInstall();
+      if (inst) {
+        await this.rebuildSupervisor(inst);
+        await this.supervisor!.ensureRunning();
+      }
+    }
+    this.emit('status-changed');
+  }
+
+  /** Note that the engine needs a reload (a new context length) or a fresh spawn
+   *  (a speed switch), and make sure exactly ONE waiter is watching for the
+   *  moment it is safe to do it.
+   *
+   *  WHY the wait exists: EngineSupervisor.stop() has no in-flight guard, so
+   *  restarting the engine the instant a switch is flipped SIGTERMs
+   *  llama-server mid-answer and the streaming reply dies — the opposite of
+   *  what the signed contract promises ("a model in use reloads on its next
+   *  message").
+   *
+   *  WHY FLAGS RATHER THAN A QUEUE OF JOBS: every restart is a full model
+   *  reload the user sits through. One job per call meant flipping a switch off
+   *  and on again while a reply streamed cost TWO restarts for a net-zero
+   *  change, and changing the context length and a switch together cost a
+   *  restart plus a reload the restart then made pointless. Two flags collapse
+   *  any number of changes made during one wait into one action.
+   *
+   *  WHY THE DEADLINE IS SET HERE, not where the waiting happens: it belongs to
+   *  the CHANGE. Timed from the start of each job instead, the second change
+   *  behind a stream that never ends would wait ten minutes AFTER the first one
+   *  already waited ten — the design says ten minutes regardless. */
+  private requestApply(kind: 'reload' | 'restart'): void {
+    if (kind === 'reload') this.needsReload = true; else this.needsRestart = true;
+    this.configApplyError = null;
+    // An existing waiter keeps ITS deadline: that one is the oldest pending
+    // change, and it is the one the bound is owed to.
+    if (!this.applyWaiter) {
+      this.applyDeadline = Date.now() + (this.opts.configApplyMaxWaitMs ?? CONFIG_APPLY_MAX_WAIT_MS);
+      this.applyWaiter = this.drainApplies()
+        .finally(() => { this.applyWaiter = null; this.emit('status-changed'); });
+    }
+    this.emit('status-changed');    // the "Applies after the current reply" footer
+  }
+
+  /** Wait for the engine to be free, then apply everything asked for since the
+   *  wait began, in one pass. */
+  private async drainApplies(): Promise<void> {
+    const pollMs = this.opts.configApplyPollMs ?? CONFIG_APPLY_POLL_MS;
+    while (this.supervisor?.busy() && Date.now() < this.applyDeadline) {
+      await new Promise((resolve) => { const t = setTimeout(resolve, pollMs); t.unref?.(); });
+    }
+    // Taken together, and cleared BEFORE the work: a change made while the
+    // engine is being restarted is a new change and gets its own waiter.
+    const reload = this.needsReload;
+    const restart = this.needsRestart;
+    this.needsReload = false;
+    this.needsRestart = false;
+    try {
+      if (reload) this.writeModelPresets();
+      // A fresh process reads config.json AND the preset file on its way up, so
+      // when both are pending the restart applies both — reloading a router
+      // that is about to be torn down buys nothing and costs a reconciliation.
+      if (restart) await this.applySpeed();
+      else if (reload) await this.applyReload();
+    } catch (err: any) {
+      // The channel answered long ago, so there is nothing left to fail — the
+      // real message goes on the status instead, never a guessed cause.
+      this.configApplyError = err?.message ? String(err.message) : String(err);
+    }
   }
 
   /** Install the pinned engine for this machine. Vulkan-first on win/linux
@@ -826,7 +994,15 @@ export class EngineManager extends EventEmitter {
       // /props is a llama-server management endpoint at ROOT (not the /v1 OpenAI
       // namespace) — same 127.0.0.1:port convention as /models and /health. Plain
       // fetch, not trackedFetch: a status read must not bump the idle-shutdown clock.
-      const res = await (this.opts.fetchImpl ?? fetch)(`http://127.0.0.1:${this.port}/props`, { method: 'GET' });
+      //
+      // ?model=<id> IS REQUIRED (design §C3, probed 2026-09-05): the bare /props
+      // is the ROUTER's own dummy and answers `n_ctx: 0` even while a model is
+      // loaded and serving. Named, the router forwards the question to that
+      // model's child process and the answer is that model's real window — which
+      // matters now that each model can carry its own context length. The id is
+      // a filename and can contain anything a filename can, so it is encoded.
+      const propsUrl = `http://127.0.0.1:${this.port}/props?model=${encodeURIComponent(modelId)}`;
+      const res = await (this.opts.fetchImpl ?? fetch)(propsUrl, { method: 'GET' });
       const props: any = await res.json();
       // The field carrying the loaded context has drifted across llama.cpp builds
       // (default_generation_settings.n_ctx vs a top-level n_ctx) — read both.
@@ -867,14 +1043,25 @@ export class EngineManager extends EventEmitter {
       //     "trained max" guard the comment relies on provides nothing either way.
       // Closing the gap properly means parsing <arch>.context_length from the GGUF
       // — tracked as the trainedContextFor TODO below, not solved by guessing low.
-      const configured = readEngineConfig(this.home).contextSize ?? null;
+      //
+      // 2026-09-05 (§C3): the number to fall back on is THIS MODEL's configured
+      // context length, not the engine-wide one — a model the user set to 128k
+      // that happens to be asleep must not be sized as if it were on the
+      // engine's 32k default. `contextLengthFor` is that resolution (per-model
+      // setting ?? engine-wide) and lives with the estimator that also uses it.
+      const cfg = readEngineConfig(this.home);
+      const configured = contextLengthFor(modelId, cfg.models, cfg.contextSize);
       return { contextLength: resolveEffectiveContext(loadedRaw, configured, trained), totalSlots };
     } catch {
       // Same reasoning on the error path — prefer our own -c over a guess.
       // A failed read (network error, bad JSON, no supervisor) means the slot
       // count is unknown too — never guess a number here either.
       try {
-        return { contextLength: resolveEffectiveContext(null, readEngineConfig(this.home).contextSize ?? null, null), totalSlots: null };
+        const cfg = readEngineConfig(this.home);
+        return {
+          contextLength: resolveEffectiveContext(null, contextLengthFor(modelId, cfg.models, cfg.contextSize), null),
+          totalSlots: null,
+        };
       } catch {
         return { contextLength: 32_768, totalSlots: null };
       }

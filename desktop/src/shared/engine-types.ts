@@ -97,6 +97,15 @@ export interface EngineStatus {
   /** Faster builds this machine could switch to. Empty = nothing to offer. (S-1) */
   backendOptions?: BackendOption[];
   speed?: EngineSpeedSettings;
+  /** A change is saved but has not reached the engine yet, because a reply is
+   *  still streaming. The panel shows "Applies after the current reply" while
+   *  this is true (design §B/§C2). */
+  configApplyPending?: boolean;
+  /** The REAL failure text if applying a saved change went wrong — never a
+   *  guessed cause. Null/absent = nothing went wrong. WHY it needs its own
+   *  field: the setting is written and the channel has already answered by the
+   *  time the change is applied, so a failure here has no call to fail. */
+  configApplyError?: string | null;
 }
 
 export type EngineInstallProgress =
