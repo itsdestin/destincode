@@ -160,9 +160,12 @@ export class EngineManager extends EventEmitter {
   private supervisor: EngineSupervisor | null = null;
   private supervisorBinary: string | null = null;
   private installing = false;
-  /** Saved settings changes not yet in force (see queueConfigApply). */
-  private pendingApplies = 0;
-  private applyChain: Promise<void> = Promise.resolve();
+  // Saved settings changes not yet in force (see requestApply). Two flags, not
+  // a job queue, so any number of changes made during one wait cost one action.
+  private needsReload = false;
+  private needsRestart = false;
+  private applyDeadline = 0;                      // when the OLDEST pending change lands regardless
+  private applyWaiter: Promise<void> | null = null;
   private configApplyError: string | null = null;
 
   constructor(
@@ -310,7 +313,7 @@ export class EngineManager extends EventEmitter {
       speed: cfg.speed,
       // While true the card shows "Applies after the current reply" — the value
       // is saved, the engine has not picked it up yet.
-      configApplyPending: this.pendingApplies > 0,
+      configApplyPending: this.applyWaiter !== null,
       configApplyError: this.configApplyError,
     };
   }
@@ -343,8 +346,8 @@ export class EngineManager extends EventEmitter {
     // file's [*] section, and `GET /models?reload=1` makes the router re-read it
     // (verified against the pinned binary, design §C2). A speed switch is a
     // command-line flag, so that one does need a fresh spawn.
-    if (wantsContext) this.queueConfigApply(() => this.applyContextSize());
-    if (wantsSpeed) this.queueConfigApply(() => this.applySpeed());
+    if (wantsContext) this.requestApply('reload');
+    if (wantsSpeed) this.requestApply('restart');
   }
 
   /** Plan C (Amendment I): the context-length knob. Kept as a thin alias so the
@@ -372,11 +375,28 @@ export class EngineManager extends EventEmitter {
     writePresetFile(presetFilePath(this.home.root), contents);
   }
 
-  /** Apply a new engine-wide context length: rewrite the preset, then ask the
-   *  router to re-read it. No restart — the process keeps serving throughout. */
-  private async applyContextSize(): Promise<void> {
-    this.writeModelPresets();
-    await this.refreshModels();
+  /** Ask the running router to re-read its preset file. No restart — the
+   *  process keeps serving throughout.
+   *
+   *  This sends `?reload=1` ITSELF rather than going through refreshModels(),
+   *  because refreshModels swallows every failure (its routerModelIds returns
+   *  null on a non-ok response AND on a throw). A refused reload is exactly the
+   *  failure that has to be reported: the engine keeps serving with the OLD
+   *  settings and NOTHING looks wrong until the next spawn, so without a message
+   *  the user's change simply never happened and they are never told. The
+   *  message carries the engine's own status, never a guessed cause. */
+  private async applyReload(): Promise<void> {
+    if (!this.supervisor || this.supervisor.status() !== 'running') return; // its next boot reads the file
+    const url = `http://127.0.0.1:${this.port}/models?reload=1`;
+    const res = await (this.opts.fetchImpl ?? fetch)(url, { method: 'GET' });
+    if (!res.ok) {
+      const detail = res.statusText ? `${res.status} ${res.statusText}` : String(res.status);
+      throw new Error(`The engine would not re-read its settings (HTTP ${detail}). It is still running with the previous ones.`);
+    }
+    // No second reload here: the supervisor's own model poll picks up anything
+    // the reload unloaded within a tick, and a reload is a WRITE — sending two
+    // for one change would reconcile the router twice.
+    this.emit('status-changed');
   }
 
   /** Apply a speed switch: the flags are command-line arguments, so the engine
@@ -398,33 +418,65 @@ export class EngineManager extends EventEmitter {
     this.emit('status-changed');
   }
 
-  /** Run `apply` at the first moment no reply is streaming through the engine —
-   *  or after CONFIG_APPLY_MAX_WAIT_MS regardless, so a stream that never ends
-   *  cannot park a saved setting forever (design §C2's bound).
+  /** Note that the engine needs a reload (a new context length) or a fresh spawn
+   *  (a speed switch), and make sure exactly ONE waiter is watching for the
+   *  moment it is safe to do it.
    *
    *  WHY the wait exists: EngineSupervisor.stop() has no in-flight guard, so
    *  restarting the engine the instant a switch is flipped SIGTERMs
    *  llama-server mid-answer and the streaming reply dies — the opposite of
    *  what the signed contract promises ("a model in use reloads on its next
-   *  message"). Applies are queued one after another, so two changes made in
-   *  the same second cannot race each other into the engine. */
-  private queueConfigApply(apply: () => Promise<void>): void {
-    this.pendingApplies += 1;
+   *  message").
+   *
+   *  WHY FLAGS RATHER THAN A QUEUE OF JOBS: every restart is a full model
+   *  reload the user sits through. One job per call meant flipping a switch off
+   *  and on again while a reply streamed cost TWO restarts for a net-zero
+   *  change, and changing the context length and a switch together cost a
+   *  restart plus a reload the restart then made pointless. Two flags collapse
+   *  any number of changes made during one wait into one action.
+   *
+   *  WHY THE DEADLINE IS SET HERE, not where the waiting happens: it belongs to
+   *  the CHANGE. Timed from the start of each job instead, the second change
+   *  behind a stream that never ends would wait ten minutes AFTER the first one
+   *  already waited ten — the design says ten minutes regardless. */
+  private requestApply(kind: 'reload' | 'restart'): void {
+    if (kind === 'reload') this.needsReload = true; else this.needsRestart = true;
     this.configApplyError = null;
+    // An existing waiter keeps ITS deadline: that one is the oldest pending
+    // change, and it is the one the bound is owed to.
+    if (!this.applyWaiter) {
+      this.applyDeadline = Date.now() + (this.opts.configApplyMaxWaitMs ?? CONFIG_APPLY_MAX_WAIT_MS);
+      this.applyWaiter = this.drainApplies()
+        .finally(() => { this.applyWaiter = null; this.emit('status-changed'); });
+    }
     this.emit('status-changed');    // the "Applies after the current reply" footer
-    this.applyChain = this.applyChain
-      .then(async () => {
-        const pollMs = this.opts.configApplyPollMs ?? CONFIG_APPLY_POLL_MS;
-        const deadline = Date.now() + (this.opts.configApplyMaxWaitMs ?? CONFIG_APPLY_MAX_WAIT_MS);
-        while (this.supervisor?.busy() && Date.now() < deadline) {
-          await new Promise((resolve) => { const t = setTimeout(resolve, pollMs); t.unref?.(); });
-        }
-        await apply();
-      })
+  }
+
+  /** Wait for the engine to be free, then apply everything asked for since the
+   *  wait began, in one pass. */
+  private async drainApplies(): Promise<void> {
+    const pollMs = this.opts.configApplyPollMs ?? CONFIG_APPLY_POLL_MS;
+    while (this.supervisor?.busy() && Date.now() < this.applyDeadline) {
+      await new Promise((resolve) => { const t = setTimeout(resolve, pollMs); t.unref?.(); });
+    }
+    // Taken together, and cleared BEFORE the work: a change made while the
+    // engine is being restarted is a new change and gets its own waiter.
+    const reload = this.needsReload;
+    const restart = this.needsRestart;
+    this.needsReload = false;
+    this.needsRestart = false;
+    try {
+      if (reload) this.writeModelPresets();
+      // A fresh process reads config.json AND the preset file on its way up, so
+      // when both are pending the restart applies both — reloading a router
+      // that is about to be torn down buys nothing and costs a reconciliation.
+      if (restart) await this.applySpeed();
+      else if (reload) await this.applyReload();
+    } catch (err: any) {
       // The channel answered long ago, so there is nothing left to fail — the
       // real message goes on the status instead, never a guessed cause.
-      .catch((err: any) => { this.configApplyError = err?.message ? String(err.message) : String(err); })
-      .finally(() => { this.pendingApplies -= 1; this.emit('status-changed'); });
+      this.configApplyError = err?.message ? String(err.message) : String(err);
+    }
   }
 
   /** Install the pinned engine for this machine. Vulkan-first on win/linux

@@ -145,6 +145,13 @@ export function readEngineConfig(home: NativeHome): EngineConfig {
   };
 }
 
+/** Merge a patch into the `engine` section, ONE LEVEL DEEP.
+ *
+ *  WARNING for whoever wires the per-model settings dialog: passing `models`
+ *  here REPLACES the whole section, losing every model the patch does not
+ *  mention. Nothing does that today (no shipped caller passes `models`), but a
+ *  save that writes one model's settings needs a merging writer of its own, the
+ *  way `updateEngineSpeed` below merges the speed object inside the lock. */
 export async function updateEngineConfig(home: NativeHome, patch: Partial<EngineConfig>): Promise<void> {
   await home.mutateJson(FILE, (cur) => {
     // Preserve sibling top-level keys — config.json will grow other sections

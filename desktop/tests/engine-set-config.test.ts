@@ -73,14 +73,18 @@ let urls: string[];
  *  hand back its own Response for one URL prefix (the streaming reply below). */
 function makeFetch(special?: (url: string) => Response | undefined) {
   urls = [];
-  return vi.fn(async (input: any, _init?: any) => {
+  const f: any = vi.fn(async (input: any, _init?: any) => {
     const url = String(input);
     urls.push(url);
     const own = special?.(url);
     if (own) return own as any;
     if (url.endsWith('/health')) return { ok: true, status: 200, json: async () => ({ status: 'ok' }) } as any;
+    // A test can make the reload fail the way the engine really fails it: the
+    // router answers 500 and goes on serving the OLD presets.
+    if (url.includes('reload=1') && f.reloadFails) return f.reloadFails as any;
     return { ok: true, status: 200, json: async () => ({ data: [] }) } as any;
   });
+  return f;
 }
 
 function makeManager(fetchImpl: any, extra: Record<string, unknown> = {}) {
@@ -308,6 +312,150 @@ describe('engine:set-context — the alias every existing caller still goes thro
     plantInstall();
     mgr = makeManager(makeFetch());
     await expect(mgr.setContext(1_023)).rejects.toThrow('Context length must be at least 1024 tokens.');
+  });
+});
+
+describe('engine:set-config — one action per wait, however many changes (R3-5 follow-up)', () => {
+  /** Boot, hold a reply open, and hand back the fixtures the probes need. */
+  async function bootWithStream() {
+    plantInstall();
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 32_768 } }));
+    let stream: ((url: string) => Response | undefined) | undefined;
+    const fetchImpl: any = makeFetch((url) => stream?.(url));
+    stream = (url) => (fetchImpl.streamFor ? fetchImpl.streamFor(url) : undefined);
+    mgr = makeManager(fetchImpl);
+    const reply = await startStreamingReply(mgr, fetchImpl);
+    return { fetchImpl, reply };
+  }
+
+  it('a switch toggled off and back on during one reply costs ONE restart, not two', async () => {
+    const { reply } = await bootWithStream();
+    expect(mockSpawn).toHaveBeenCalledTimes(1);   // the boot
+
+    await mgr!.setConfig({ speed: { speculative: false } });
+    await mgr!.setConfig({ speed: { speculative: true } });
+    await settled();
+    expect(mockSpawn).toHaveBeenCalledTimes(1);   // still nothing, the reply is streaming
+
+    await reply.finish();
+    await vi.waitFor(() => { expect(mgr!.status().configApplyPending).toBe(false); });
+    // …and then keep watching. `configApplyPending` false is not on its own
+    // proof that the work is over: a SECOND waiter would clear the flag the
+    // first one set, and its restart would land just after this assertion.
+    await settled();
+
+    // Two clicks, one teardown-and-respawn — every restart is a full model
+    // reload the user waits through.
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(children[0].kill).toHaveBeenCalledTimes(1);
+    expect(engineSection().speed).toEqual({ speculative: true, compressCache: true });
+  });
+
+  it('a context length and a switch in ONE patch cost one restart and NO reload', async () => {
+    const { reply } = await bootWithStream();
+    urls.length = 0;
+
+    await mgr!.setConfig({ contextSize: 8_192, speed: { compressCache: false } });
+    await reply.finish();
+    await vi.waitFor(() => { expect(mgr!.status().configApplyPending).toBe(false); });
+    await settled();      // same reason as the probe above
+
+    // The preset carries the new context length…
+    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 8192\nsleep-idle-seconds = 300\n');
+    // …and the fresh process reads it on the way up, so asking the router that
+    // is about to be torn down to re-read it would be work for nothing.
+    expect(urls.filter((u) => u.includes('reload=1'))).toEqual([]);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(engineSection()).toMatchObject({ contextSize: 8_192, speed: { compressCache: false, speculative: true } });
+  });
+
+  it('changes made while the wait is still running join it, so the bound is not paid twice', async () => {
+    // With ONE waiter there is one deadline — the oldest pending change's. The
+    // job-per-call version this replaced timed each job from its own start, so
+    // the second change behind a stream that never ends waited 2x the bound.
+    plantInstall();
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 32_768 } }));
+    let stream: ((url: string) => Response | undefined) | undefined;
+    const fetchImpl: any = makeFetch((url) => stream?.(url));
+    stream = (url) => (fetchImpl.streamFor ? fetchImpl.streamFor(url) : undefined);
+    mgr = makeManager(fetchImpl, { configApplyMaxWaitMs: 60 });
+    await startStreamingReply(mgr, fetchImpl);    // never finished
+
+    await mgr.setConfig({ speed: { speculative: false } });
+    await new Promise((r) => setTimeout(r, 20));
+    await mgr.setConfig({ contextSize: 8_192 });   // joins the SAME wait
+
+    await vi.waitFor(() => { expect(mgr!.status().configApplyPending).toBe(false); });
+    await settled();
+    // Both landed together, in the one pass the first change's deadline bought.
+    // NOTE what this does and does not pin, measured rather than assumed: it
+    // pins that a second change JOINS the wait. That is what makes a doubled
+    // bound impossible — one waiter, one deadline — but it is not a direct test
+    // of the deadline's assignment site, and it is not the test that fails if
+    // per-call jobs come back (the toggle probe above is). Moving the deadline
+    // into the waiter leaves every test in this file green while coalescing
+    // holds, because with one pass the two placements are the same thing.
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 8192\nsleep-idle-seconds = 300\n');
+  });
+});
+
+describe('engine:set-config — a refused reload is REPORTED (should-fix 1)', () => {
+  it('surfaces the engine\'s own status, because nothing else would look wrong', async () => {
+    plantInstall();
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 32_768 } }));
+    const fetchImpl: any = makeFetch();
+    mgr = makeManager(fetchImpl);
+    await mgr.registryHook().ensureRunning();
+    // What the router really does when it cannot apply a preset: 500, and it
+    // goes on serving with the OLD settings (model-presets.ts's header).
+    fetchImpl.reloadFails = { ok: false, status: 500, statusText: 'Internal Server Error', json: async () => ({}) };
+
+    await mgr.setConfig({ contextSize: 8_192 });
+    await vi.waitFor(() => { expect(mgr!.status().configApplyPending).toBe(false); });
+
+    // The exact sentence, not a substring: the whole value of this message is
+    // that it says what the engine said and what state the user is left in.
+    expect(mgr.status().configApplyError).toBe(
+      'The engine would not re-read its settings (HTTP 500 Internal Server Error). It is still running with the previous ones.',
+    );
+  });
+
+  it('a reload that a network error kills reports THAT, not a guess', async () => {
+    plantInstall();
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 32_768 } }));
+    const fetchImpl: any = makeFetch();
+    mgr = makeManager(fetchImpl);
+    await mgr.registryHook().ensureRunning();
+    const boom = new Error('connect ECONNREFUSED 127.0.0.1:9999');
+    fetchImpl.reloadFails = undefined;
+    const inner = fetchImpl.getMockImplementation();
+    fetchImpl.mockImplementation(async (input: any, init?: any) => {
+      if (String(input).includes('reload=1')) throw boom;
+      return inner(input, init);
+    });
+
+    await mgr.setConfig({ contextSize: 8_192 });
+    await vi.waitFor(() => { expect(mgr!.status().configApplyPending).toBe(false); });
+    expect(mgr.status().configApplyError).toBe('connect ECONNREFUSED 127.0.0.1:9999');
+  });
+
+  it('a change made after a failure clears the old message', async () => {
+    plantInstall();
+    await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 32_768 } }));
+    const fetchImpl: any = makeFetch();
+    mgr = makeManager(fetchImpl);
+    await mgr.registryHook().ensureRunning();
+    fetchImpl.reloadFails = { ok: false, status: 503, statusText: '', json: async () => ({}) };
+
+    await mgr.setConfig({ contextSize: 8_192 });
+    await vi.waitFor(() => { expect(mgr!.status().configApplyError).toBe(
+      'The engine would not re-read its settings (HTTP 503). It is still running with the previous ones.') });
+
+    fetchImpl.reloadFails = undefined;
+    await mgr.setConfig({ contextSize: 16_384 });
+    await vi.waitFor(() => { expect(mgr!.status().configApplyPending).toBe(false); });
+    expect(mgr.status().configApplyError).toBeNull();
   });
 });
 

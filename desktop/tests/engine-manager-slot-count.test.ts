@@ -118,6 +118,14 @@ describe('resolveSlotCount — /props n_slots parsing (Task 13 fix pass)', () =>
   });
 });
 
+// WHAT THIS FILE DOES *NOT* GUARD (measured 2026-09-05, so the next reader does
+// not assume otherwise): the `contextLength` assertions below cannot tell a live
+// /props reading from the configured fallback — every case here was written with
+// the two numbers deliberately equal, so replacing `resolveEffectiveContext(
+// loadedRaw, …)` with `(null, …)` leaves this whole file green. It guards
+// totalSlots. That the live reading is really read, that it comes from
+// `/props?model=<id>`, and that the fallback is the model's own length, are
+// guarded in engine-set-config.test.ts.
 describe('EngineManager.effectiveContextWindow — totalSlots (Task 13 fix pass)', () => {
   it('surfaces n_slots from the SAME /props body that already supplies context — one fetch serves both', async () => {
     const cacheDir = path.join(root, 'cache'); fs.mkdirSync(cacheDir, { recursive: true });
