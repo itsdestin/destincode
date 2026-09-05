@@ -1,11 +1,12 @@
-import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useContext } from 'react';
 import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import TerminalToolbar from './TerminalToolbar';
 import { Button } from './ui';
 import { AttachmentChip } from './AttachmentChip';
 import { AttachIcon, CompassIcon } from './Icons';
-import { VoiceButton } from './VoiceButton';
+import { VoiceButton, VoiceMeter, VoiceStyleContext } from './VoiceButton';
+import { StatusStrip } from './ui/StatusStrip';
 import { useVoiceInput } from '../hooks/useVoiceInput';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
@@ -157,6 +158,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   const spaceHoldTimer = useRef<number | null>(null);
   const spaceHeld = useRef(false);
   const voiceCanStart = voice.supported && voice.readiness?.state === 'ready' && voice.phase === 'idle';
+  // Round-2 alternatives for WHERE the listening feedback lives (see VoiceStyle).
+  const voiceStyle = useContext(VoiceStyleContext);
+  const voiceListening = voice.phase === 'listening';
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Drive the same fade-edge treatment on the textarea itself. The mask fades
   // wrapped text that sits above/below the 3-line max-height viewport.
@@ -730,6 +734,17 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         </div>
       )}
 
+      {/* Feedback B: the app's thin status band, above the box, while listening. */}
+      {voiceListening && voiceStyle.feedback === 'strip' && (
+        <div className="px-2 sm:px-3 pb-1.5">
+          <StatusStrip
+            tone="ok"
+            action={<Button variant="secondary" size="sm" onClick={() => { void voice.stop(); }}>Stop</Button>}
+          >
+            <span className="inline-flex items-center gap-3">Listening <VoiceMeter level={voice.level} seconds={voice.seconds} /></span>
+          </StatusStrip>
+        </div>
+      )}
       <div className="px-2 sm:px-3 pb-1 sm:pb-1.5">
         <form onSubmit={handleSubmit} className="flex items-center gap-1.5 sm:gap-2 bg-inset rounded-xl px-2 sm:px-3 py-2">
           <BrailleBurst
@@ -751,6 +766,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             </BrailleBurst>
           )}
           <div className="relative flex-1">
+            {/* Feedback C: meter and clock in the empty line, gone once words arrive. */}
+            {voiceListening && voiceStyle.feedback === 'placeholder' && !text && !voiceTail && (
+              <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 flex items-center gap-2 text-sm text-fg-muted">
+                <span>Listening</span>
+                <VoiceMeter level={voice.level} seconds={voice.seconds} />
+              </div>
+            )}
             {/* Mirror layer: renders the same text behind the transparent
                 textarea, with keyword spans that animate via CSS. aria-hidden
                 because the textarea still owns the accessible value. */}
@@ -847,7 +869,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               if (spaceHeld.current) { spaceHeld.current = false; void voice.stop(); }
             }}
             onPaste={handlePaste}
-            placeholder={disabled ? 'Waiting for approval...' : voice.phase === 'listening' ? 'Listening…' : 'Message Claude...'}
+            placeholder={disabled ? 'Waiting for approval...' : voiceListening ? (voiceStyle.feedback === 'placeholder' ? '' : 'Listening…') : 'Message Claude...'}
             disabled={disabled}
             // Text color is transparent so the mirror div behind it shows
             // through (with animated keyword spans). caret-color keeps the

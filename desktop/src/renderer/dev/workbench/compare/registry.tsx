@@ -50,6 +50,7 @@ import InputBar from '../../../components/InputBar';
 import { ChatProvider } from '../../../state/chat-context';
 import { SkillProvider } from '../../../state/skill-context';
 import { createVoiceMock } from '../mock-shim';
+import { VoiceStyleContext, DEFAULT_VOICE_STYLE, type VoiceStyle } from '../../../components/VoiceButton';
 // chatsearch-present Round 6: the real label→color resolver ChatsearchFindCard
 // uses — reused (not re-derived) so a tag rendered here can never disagree
 // with a tag rendered on the search-result row about what color it gets, and
@@ -5381,14 +5382,27 @@ const ACTIVE_FIRST = 'session-strip-motion';
 // next sibling pane's demo renders and swaps the next fake in. Dev-only; the
 // workbench page's own fake is restored by the last pane that mounts. A short
 // assistant turn sits above the composer so the mic is judged in its context.
-function VoiceComposerDemo({ state }: { state: 'ready' | 'needs-download' | 'unavailable' }) {
+function VoiceComposerDemo({ state, style, loop }: { state: 'ready' | 'needs-download' | 'unavailable'; style?: Partial<VoiceStyle>; loop?: boolean }) {
   const mockRef = React.useRef<ReturnType<typeof createVoiceMock> | null>(null);
-  if (!mockRef.current) mockRef.current = createVoiceMock(state);
+  if (!mockRef.current) mockRef.current = createVoiceMock(state, { loopReset: !!loop });
   window.claude.voice = mockRef.current;
+  const boxRef = React.useRef<HTMLDivElement>(null);
+  // Round 2 judges the LISTENING state, so a looping pane keeps the mic open:
+  // whenever the fake has closed it, tap it again. Dev harness only — it drives
+  // the real button through a click, the way a finger would.
+  React.useEffect(() => {
+    if (!loop) return;
+    const id = window.setInterval(() => {
+      const btn = boxRef.current?.querySelector<HTMLButtonElement>('[aria-label="Speak your message"]');
+      btn?.click();
+    }, 900);
+    return () => window.clearInterval(id);
+  }, [loop]);
   return (
     <ChatProvider>
       <SkillProvider>
-        <div className="flex flex-col gap-3">
+      <VoiceStyleContext.Provider value={{ ...DEFAULT_VOICE_STYLE, ...style }}>
+        <div ref={boxRef} className="flex flex-col gap-3">
           <div className="px-3">
             <div className="bg-inset rounded-xl px-3 py-2 text-sm text-fg max-w-[85%]">
               Sure — which spreadsheet, and what should I change?
@@ -5396,12 +5410,49 @@ function VoiceComposerDemo({ state }: { state: 'ready' | 'needs-download' | 'una
           </div>
           <InputBar sessionId="voice-demo" compact />
         </div>
+      </VoiceStyleContext.Provider>
       </SkillProvider>
     </ChatProvider>
   );
 }
 
 export const COMPARE_SURFACES: CompareSurface[] = [
+  {
+    id: 'voice-listening-feedback',
+    label: 'Message box — listening feedback',
+    question: 'While the mic listens, where should the loudness meter and the clock live?',
+    frame: 'canvas',
+    paneWidth: { min: 440, max: 700 },
+    rounds: [
+      {
+        n: 1,
+        basis: 'Round 1 of the voice deck (V-1, 2026-09-05): Destin approved the mic and asked for "a few alternatives for the counter/feedback location and styling". Every pane loops the listening state; the mic motion is the round-1 breathing ring in all three.',
+        candidates: [
+          { id: 'beside', label: 'A · Beside the mic', note: 'Round 1: bars and m:ss left of the glowing mic, inside the box.', render: () => <VoiceComposerDemo state="ready" loop style={{ feedback: 'beside' }} /> },
+          { id: 'strip', label: 'B · Strip above the box', note: 'The model-loading band, reused: dot, "Listening", bars and clock above the box. Pushes the chat up one row while listening.', render: () => <VoiceComposerDemo state="ready" loop style={{ feedback: 'strip' }} /> },
+          { id: 'placeholder', label: 'C · In the empty line', note: 'Bars and clock where the placeholder was; they step aside as the first words arrive, leaving only the glowing mic.', render: () => <VoiceComposerDemo state="ready" loop style={{ feedback: 'placeholder' }} /> },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'voice-mic-motion',
+    label: 'Message box — mic motion',
+    question: 'How should the mic button move while it listens?',
+    frame: 'canvas',
+    paneWidth: { min: 440, max: 700 },
+    rounds: [
+      {
+        n: 1,
+        basis: 'Round 1 of the voice deck (V-1, 2026-09-05): "…and the animation on the mic icon". Every pane loops the listening state; the feedback is the round-1 beside-the-mic meter in all three.',
+        candidates: [
+          { id: 'breathe', label: 'A · Breathing ring', note: 'Round 1: a stepped ring grows out of the filled mic every 1.4 s, regardless of loudness.', render: () => <VoiceComposerDemo state="ready" loop style={{ motion: 'breathe' }} /> },
+          { id: 'level', label: 'B · Ring follows your voice', note: 'No timer: the ring\'s size is the loudness, 2 to 12 px. Reacts the instant you speak, still when you pause.', render: () => <VoiceComposerDemo state="ready" loop style={{ motion: 'level' }} /> },
+          { id: 'dot', label: 'C · Recording dot', note: 'The mic sits still; a red dot on its corner blinks every 1.2 s, the way a recorder does.', render: () => <VoiceComposerDemo state="ready" loop style={{ motion: 'dot' }} /> },
+        ],
+      },
+    ],
+  },
   {
     id: 'voice-mic',
     label: 'Message box — the mic',

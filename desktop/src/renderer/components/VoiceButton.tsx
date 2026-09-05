@@ -17,7 +17,7 @@
 // OverlayPanel at layer 4, measured from the trigger — rather than reusing
 // AnchorTip, whose trigger is its own ⓘ glyph. Overlay.tsx stays the only
 // z-index authority.
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button } from './ui/Button';
 import { ProgressBar } from './ui/ProgressBar';
@@ -26,6 +26,20 @@ import { useEscClose } from '../hooks/use-esc-close';
 import { MicIcon } from './Icons';
 import type { VoiceReadiness } from '../../shared/voice-types';
 import type { VoicePhase } from '../hooks/useVoiceInput';
+
+/** Round-2 alternatives (review deck 2026-09-05, V-1: "alternatives for the
+ *  counter/feedback location and styling, and the animation on the mic icon").
+ *  `feedback` is where the meter and clock live while listening; `motion` is
+ *  how the button itself moves. The defaults are what ships; the compare view
+ *  provides the others through VoiceStyleContext so all three sit side by side
+ *  against the same fake. When Destin picks, the default changes and the
+ *  losers stay renderable (the registry keeps every round). */
+export interface VoiceStyle {
+  feedback: 'beside' | 'strip' | 'placeholder';
+  motion: 'breathe' | 'level' | 'dot';
+}
+export const DEFAULT_VOICE_STYLE: VoiceStyle = { feedback: 'beside', motion: 'breathe' };
+export const VoiceStyleContext = createContext<VoiceStyle>(DEFAULT_VOICE_STYLE);
 
 interface Props {
   phase: VoicePhase;
@@ -44,7 +58,7 @@ interface Props {
 }
 
 /** Four bars whose height follows the microphone level, plus m:ss elapsed. */
-function VoiceMeter({ level, seconds }: { level: number; seconds: number }) {
+export function VoiceMeter({ level, seconds }: { level: number; seconds: number }) {
   // Each bar wakes up at a higher level so quiet speech still moves the first
   // one and only a loud moment lights all four.
   const heights = [0.15, 0.35, 0.6, 0.85].map((gate) => {
@@ -83,6 +97,12 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
 
   const listening = phase === 'listening';
   const state = readiness?.state ?? 'unavailable';
+  const style = useContext(VoiceStyleContext);
+  // Motion B: the ring IS the meter — an inline shadow sized by the level, no
+  // keyframes at all, so it only repaints when a level event arrives.
+  const levelRing = listening && style.motion === 'level'
+    ? { boxShadow: `0 0 0 ${2 + Math.round(level * 10)}px color-mix(in srgb, var(--accent) 35%, transparent)`, transition: 'box-shadow 90ms linear' }
+    : undefined;
 
   const measure = useCallback(() => {
     const el = triggerRef.current;
@@ -195,7 +215,7 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
 
   return (
     <div className="relative shrink-0 flex items-center gap-2">
-      {listening && <VoiceMeter level={level} seconds={seconds} />}
+      {listening && style.feedback === 'beside' && <VoiceMeter level={level} seconds={seconds} />}
       <Button
         ref={triggerRef}
         type="button"
@@ -207,9 +227,16 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
         title={label}
         disabled={disabled || phase === 'finishing'}
         onClick={handleClick}
-        className={`rounded-full ${listening ? 'voice-mic-on' : ''}`}
+        className={`relative rounded-full ${listening && style.motion === 'breathe' ? 'voice-mic-on' : ''}`}
+        style={levelRing}
       >
         {phase === 'finishing' ? <Spinner /> : <MicIcon className="w-4 h-4" />}
+        {/* Motion C: a recorder's blinking dot on the button's corner. Red is the
+            one colour every recorder has taught people; stepped so it presents
+            two frames a cycle, not 180. */}
+        {listening && style.motion === 'dot' && (
+          <span aria-hidden="true" className="voice-rec-dot absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500 ring-2 ring-canvas" />
+        )}
       </Button>
       {open && card &&
         createPortal(

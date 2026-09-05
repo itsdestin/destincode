@@ -1979,7 +1979,7 @@ const VOICE_SCRIPT = "Can you look at the budget spreadsheet I sent yesterday? R
 /** A self-contained fake of `window.claude.voice`. Exported so the compare view
  *  can mount one composer per readiness state on ONE page (each pane swaps its
  *  own instance in before its InputBar mounts — see registry.tsx `voice-mic`). */
-export function createVoiceMock(initial: string | null): NonNullable<Window['claude']['voice']> {
+export function createVoiceMock(initial: string | null, opts: { loopReset?: boolean } = {}): NonNullable<Window['claude']['voice']> {
   const engine = 'Parakeet';
   let readiness: VoiceReadiness =
     initial === 'needs-download' ? { state: 'needs-download', engine, sizeMb: 464 }
@@ -1994,7 +1994,9 @@ export function createVoiceMock(initial: string | null): NonNullable<Window['cla
   const clear = () => { timers.forEach((t) => window.clearTimeout(t)); timers = []; };
   const finish = () => {
     clear();
-    const text = VOICE_SCRIPT.slice(0, words).join(' ');
+    // loopReset: the compare panes that judge the listening feedback restart the
+    // mic on a loop; ending with an empty final keeps the box from filling up.
+    const text = opts.loopReset ? '' : VOICE_SCRIPT.slice(0, words).join(' ');
     words = 0;
     emit({ type: 'level', value: 0 });
     emit({ type: 'final', text });

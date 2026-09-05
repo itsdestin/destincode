@@ -2601,3 +2601,8 @@ html[data-platform="electron"][data-view-mode="terminal"] .chrome-glass {
 /* The four loudness bars beside the listening mic. Height follows the level a few
    times a second; the short transition smooths the steps without lagging speech. */
 .voice-bar { transition: height 90ms linear; }
+/* Round-2 motion C: the recording dot. steps(2) = on, off — two presented frames a cycle. */
+@keyframes voice-blink { 0% { opacity: 1; } 100% { opacity: 0.15; } }
+.voice-rec-dot { animation: voice-blink 1.2s steps(2) infinite; }
+[data-reduced-effects] .voice-rec-dot { animation: none; }
+@media (prefers-reduced-motion: reduce) { .voice-rec-dot { animation: none; } }
