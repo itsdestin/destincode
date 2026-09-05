@@ -590,6 +590,33 @@ describe.skipIf(!posix)('EngineAcquisition — the lazy backfill (design §A2)',
     expect(JSON.parse(fs.readFileSync(path.join(dir, '.complete'), 'utf8')).devices).toHaveLength(1);
   });
 
+  it('a one-off probe failure does not pin a permanent refusal on the install', async () => {
+    // The device check (design §A4) REFUSES a GPU build whose marker carries a
+    // devicesError, quoting it. Nothing re-probes a directory that already has
+    // a `devices` key, so without this a single fifteen-second timeout — a busy
+    // driver, a loaded machine — would make that refusal unclearable for the
+    // life of the install, in words that stopped being true minutes later.
+    const dir = path.join(engineRoot, `${ENGINE_VERSION}-cpu`);
+    const bin = path.join(dir, 'build', 'bin', 'llama-server');
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    fs.writeFileSync(bin, fakeBinary(REAL_ONE_GPU), { mode: 0o755 });   // it answers fine NOW
+    fs.writeFileSync(path.join(dir, '.complete'), JSON.stringify({
+      version: ENGINE_VERSION, backend: 'cpu', binaryRelPath: path.join('build', 'bin', 'llama-server'),
+      devices: [], devicesError: 'llama-server --list-devices did not answer within 15s',
+    }));
+
+    const acq = new EngineAcquisition(engineRoot, fetchServing(archivePath));
+    const again = await acq.install(asset, () => {});
+    expect(again.dir).toBe(dir);
+    expect(again.devices?.[0]?.name).toBe('AMD Radeon 8060S Graphics (RADV STRIX_HALO)');
+    // The stale error must go WITH the re-probe, or the pair keeps saying "we
+    // don't know" over a list we now have.
+    expect(again.devicesError).toBeUndefined();
+    const marker = JSON.parse(fs.readFileSync(path.join(dir, '.complete'), 'utf8'));
+    expect(marker.devicesError).toBeUndefined();
+    expect(marker.devices).toHaveLength(1);
+  });
+
   it('install() JOINS a backfill status() already started, instead of returning before it finished', async () => {
     // The shipping order: status() runs on every engine event, so by the time
     // the user presses Install the background backfill is nearly always already

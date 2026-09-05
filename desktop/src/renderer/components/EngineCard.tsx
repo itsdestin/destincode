@@ -55,6 +55,17 @@ const BACKEND_WORDS: Record<string, string> = {
 };
 const CHIP_WORDS: Record<string, string> = { cuda: 'NVIDIA', rocm: 'AMD', metal: 'Apple' };
 
+/** Electron wraps every rejected `invoke` as
+ *  `Error invoking remote method 'engine:set-backend': Error: <the real
+ *  message>`. That prefix is machinery — a non-developer cannot read past it,
+ *  and every sentence main writes for this card (the refusals that explain why
+ *  a faster engine was not kept, the set-up failures) arrives wearing it. One
+ *  stripper for all of them, so a new call site cannot forget. */
+function plainMessage(e: any): string {
+  const raw = e?.message ?? String(e);
+  return raw.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
+}
+
 export default function EngineCard({ showDetails = false }: { showDetails?: boolean }) {
   const [status, setStatus] = useState<EngineStatusView | null>(null);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -96,7 +107,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   const run = async (fn: () => Promise<any>) => {
     setBusy(true); setError(null);
     try { setStatus(await fn()); }
-    catch (e: any) { setError(e?.message ?? String(e)); }
+    catch (e: any) { setError(plainMessage(e)); }
     finally { setBusy(false); setProgress(null); }
   };
 
@@ -118,10 +129,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
     // Electron wraps every rejected invoke as "Error invoking remote method
     // 'engine:run-in-terminal': Error: <the real message>", which is machinery,
     // not something a non-developer can act on. Strip it down to the sentence.
-    catch (e: any) {
-      const raw = e?.message ?? String(e);
-      setTerminalError(raw.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, ''));
-    }
+    catch (e: any) { setTerminalError(plainMessage(e)); }
     finally { setBusy(false); }
   };
 
@@ -148,7 +156,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
       if (next) {
         setPrereqs(null);
         try { setPrereqs(await window.claude.engine.prereqs(opt.backend)); }
-        catch (e: any) { setError(e?.message ?? String(e)); }
+        catch (e: any) { setError(plainMessage(e)); }
       }
       return;
     }
@@ -162,7 +170,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
       const p = await window.claude.engine.prereqs(backend);
       setPrereqs(p);
       if (p.satisfied) { setSetupOpen(false); await run(() => window.claude.models.setBackend(backend)); }
-    } catch (e: any) { setError(e?.message ?? String(e)); }
+    } catch (e: any) { setError(plainMessage(e)); }
   };
 
   const copyCommand = async (cmd: string) => {

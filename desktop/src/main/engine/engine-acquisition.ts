@@ -199,15 +199,21 @@ export class EngineAcquisition {
    *  marker that `installed()` can no longer parse — which would make a working
    *  engine look uninstalled). Never throws: a failure records the engine's own
    *  words in `devicesError` and stops there. */
-  private backfillDevices(install: InstalledEngine): Promise<void> {
+  private backfillDevices(install: InstalledEngine, force = false): Promise<void> {
     const inFlight = this.devicesBackfilled.get(install.dir);
-    if (inFlight) return inFlight;
-    const run = this.runBackfill(install);
+    // `force` deliberately walks past the once-per-process cache. A probe that
+    // failed ONCE — a driver busy for fifteen seconds, a machine under load —
+    // otherwise writes `devicesError` into the marker permanently: nothing ever
+    // re-probes a directory that already has a `devices` key, so the post-
+    // install device check (engine-manager §A4) would refuse that build for the
+    // life of the install, quoting an error that is no longer true.
+    if (inFlight && !force) return inFlight;
+    const run = this.runBackfill(install, force);
     this.devicesBackfilled.set(install.dir, run);
     return run;
   }
 
-  private async runBackfill(install: InstalledEngine): Promise<void> {
+  private async runBackfill(install: InstalledEngine, force = false): Promise<void> {
     const probed = await listDevices(install.binaryPath, this.probeTimeouts);
     try {
       const markerPath = path.join(install.dir, '.complete');
@@ -215,9 +221,12 @@ export class EngineAcquisition {
       // Re-check under the read: another process (the built app alongside a dev
       // instance shares nothing here, but a second install can) may have filled
       // it already, and its list came from the same binary.
-      if (marker.devices !== undefined) return;
+      if (marker.devices !== undefined && !force) return;
       marker.devices = probed.devices;
       if (probed.error) marker.devicesError = probed.error;
+      // A re-probe that SUCCEEDED must take the stale error away with it, or
+      // the pair keeps saying "we don't know" over a list we now have.
+      else delete marker.devicesError;
       // Per-process temp name: the built app and a dev instance can hold the
       // same engine directory, and two of them racing one fixed `<file>.tmp`
       // makes the loser's rename throw ENOENT over a half-written marker.
@@ -314,8 +323,12 @@ export class EngineAcquisition {
           // device list behind: the post-install check (design §A4) reads the
           // marker either way, and waiting here is free — the user is already
           // sitting in front of an install.
-          if (already.devices === undefined) {
-            await this.backfillDevices(already);
+          // Re-probe when the list is missing OR when the last probe failed:
+          // a recorded `devicesError` is the one state the post-install device
+          // check refuses on, and pressing Switch again is exactly the moment
+          // to find out whether it is still true.
+          if (already.devices === undefined || already.devicesError !== undefined) {
+            await this.backfillDevices(already, already.devices !== undefined);
             const refreshed = this.readMarker(finalDir);
             already.devices = refreshed?.devices;
             already.devicesError = refreshed?.devicesError;

@@ -10,6 +10,20 @@ import {
 import { ENGINE_VERSION } from '../src/main/engine/engine-pin';
 import { updateEngineConfig, readEngineConfig } from '../src/main/engine/engine-config';
 
+// The ROCm prerequisite reading decides whether a faster-engine row is 'ready'
+// or 'needs-prereqs', and the real one asks THIS machine — so whether the
+// row-state gate below is exercised at all would otherwise depend on whether
+// the developer happens to have AMD's libraries installed. Both states have to
+// be drivable for that gate to be under test.
+const prereqState = vi.hoisted(() => ({ satisfied: true }));
+vi.mock('../src/main/engine/rocm-prereqs', () => ({
+  checkRocmPrereqs: () => ({
+    backend: 'rocm', satisfied: prereqState.satisfied, distro: 'Arch Linux',
+    command: prereqState.satisfied ? null : 'sudo pacman -S --needed rocm-hip-runtime hipblas rocblas',
+    docsUrl: 'https://rocm.docs.amd.com/', explainer: 'AMD\'s software for its graphics chips.',
+  }),
+}));
+
 let root: string;
 let userData: string;
 let home: NativeHome;
@@ -627,6 +641,167 @@ describe('EngineManager.setBackend — the device check, the real load, and what
 
     expect(await refusalOf(mgr.setBackend('rocm'))).toContain('found no graphics chip it can use');
     expect(fs.existsSync(path.join(ROCM_DIR(), '.complete'))).toBe(true);
+    // …and, because the directory survives, WHICH ENGINE IS NOW CURRENT is the
+    // assertion that matters. Without the config pin below, installed() falls
+    // through to raw readdir order — where `b10665-rocm` sorts before
+    // `b10665-vulkan` — and the refused build becomes the engine every model
+    // loads on, under a message reading "Nothing was changed".
+    expect(readEngineConfig(home).backend).toBe('vulkan');
+    expect(mgr.status().backend).toBe('vulkan');
+  });
+
+  it('a refusal whose directory could NOT be deleted still leaves the old engine current', async () => {
+    // discard() is documented to return false when a caller may still hold the
+    // binary open — the Windows case right after verifyBoot ran that very exe.
+    // Its return value is not actionable, so the config pin is what has to
+    // survive it.
+    plantInstall('vulkan');
+    const mgr = new EngineManager(home, userData, 9999);
+    stubDownload(mgr, { devices: SOFTWARE_ONLY });
+    stubBoots(mgr);
+    vi.spyOn((mgr as any).acquisition, 'discard').mockReturnValue(false);
+
+    await refusalOf(mgr.setBackend('rocm'));
+    expect(fs.existsSync(path.join(ROCM_DIR(), '.complete'))).toBe(true);   // it really is still there
+    expect(readEngineConfig(home).backend).toBe('vulkan');
+    expect(mgr.status().backend).toBe('vulkan');
+  });
+
+  it('the engine the user is running is pinned BEFORE the download, not after the refusal', async () => {
+    // The third route to a surviving directory is a quit or a crash between the
+    // install and the config write — a window this task widened from "boot a
+    // server" to "download up to 612 MB, boot, and load a whole model". Nothing
+    // runs on that path to clean up, so the pin has to be on disk before the
+    // first byte moves.
+    plantInstall('vulkan');
+    const mgr = new EngineManager(home, userData, 9999);
+    let backendAtDownload: string | null = null;
+    vi.spyOn((mgr as any).acquisition, 'install').mockImplementation(async () => {
+      backendAtDownload = readEngineConfig(home).backend ?? null;
+      return writeRocmInstall({ devices: SOFTWARE_ONLY });
+    });
+    stubBoots(mgr);
+    await refusalOf(mgr.setBackend('rocm'));
+    expect(backendAtDownload).toBe('vulkan');
+  });
+
+  it('a marker whose binary is missing is NOT "already on disk" — install() reinstalls over it', async () => {
+    plantInstall('vulkan');
+    // The half-install: a marker, no binary. acquisition.install() treats this
+    // as a fresh install, so the directory that exists afterwards IS this
+    // call's — and refusing to discard it would strand the refused build.
+    const dir = ROCM_DIR();
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, '.complete'), JSON.stringify({
+      version: ENGINE_VERSION, backend: 'rocm', binaryRelPath: 'llama-server', devices: [],
+    }));
+    const mgr = new EngineManager(home, userData, 9999);
+    stubDownload(mgr, { devices: SOFTWARE_ONLY });
+    stubBoots(mgr);
+
+    await refusalOf(mgr.setBackend('rocm'));
+    expect(fs.existsSync(dir)).toBe(false);
+  });
+
+  it('the device check does NOT stop the engine the user is running', async () => {
+    // Nothing has touched the supervisor at this point: it is still the old,
+    // working engine, possibly mid-reply, and stop() has no in-flight guard.
+    // Tearing it down here would kill a streaming answer and unload the
+    // resident model, under a message saying nothing changed.
+    plantInstall('vulkan');
+    const mgr = new EngineManager(home, userData, 9999);
+    const stop = vi.fn(async () => {});
+    (mgr as any).supervisor = { status: () => 'running', stop };
+    (mgr as any).supervisorBinary = path.join(userData, 'engine', `${ENGINE_VERSION}-vulkan`, 'llama-server.exe');
+    stubDownload(mgr, { devices: SOFTWARE_ONLY });
+    stubBoots(mgr);
+
+    await refusalOf(mgr.setBackend('rocm'));
+    expect(stop).not.toHaveBeenCalled();
+    expect((mgr as any).supervisor).not.toBeNull();
+  });
+
+  it('…but DOES drop a supervisor pointing at the binary being deleted', async () => {
+    plantInstall('vulkan');
+    const mgr = new EngineManager(home, userData, 9999);
+    const stop = vi.fn(async () => {});
+    stubDownload(mgr, { devices: [ROCM_DEVICE] });
+    // verifyBoot is what repoints the supervisor at the new build; when the
+    // boot then fails, that binary is about to be deleted underneath it.
+    vi.spyOn(mgr as unknown as { verifyBoot: () => Promise<void> }, 'verifyBoot')
+      .mockImplementation(async () => {
+        (mgr as any).supervisor = { status: () => 'running', stop };
+        (mgr as any).supervisorBinary = path.join(ROCM_DIR(), 'llama-server');
+        throw new Error('port busy');
+      });
+
+    await refusalOf(mgr.setBackend('rocm'));
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect((mgr as any).supervisor).toBeNull();
+  });
+
+  it('an engine that cannot be reached at all is a BUILD problem — the switch is refused, not kept', async () => {
+    // A GPU build compiled for the wrong chip commonly aborts the child rather
+    // than answering with an error document. Filing that as "the model is
+    // broken" would keep the switch and leave every future model failing.
+    plantInstall('vulkan');
+    await plantModel();
+    const fetchImpl = (async () => { throw new Error('fetch failed'); }) as unknown as typeof fetch;
+    const mgr = new EngineManager(home, userData, 9999, { fetchImpl });
+    stubDownload(mgr, { devices: [ROCM_DEVICE] });
+    stubBoots(mgr);
+
+    expect(await refusalOf(mgr.setBackend('rocm'))).toBe(
+      'Kept the current engine: the ROCm build stopped answering while loading a model — "fetch failed". Nothing was changed.'
+    );
+    expect(fs.existsSync(ROCM_DIR())).toBe(false);
+    expect(readEngineConfig(home).backend).toBe('vulkan');
+  });
+
+  it('a load that never finishes is bounded, and reported as the engine not answering', async () => {
+    plantInstall('vulkan');
+    await plantModel();
+    // Honours the abort signal, like undici does — the timeout is what ends it.
+    const fetchImpl = ((_url: any, init: any) => new Promise((_res, rej) => {
+      init.signal.addEventListener('abort', () => rej(new Error('This operation was aborted')));
+    })) as unknown as typeof fetch;
+    const mgr = new EngineManager(home, userData, 9999, { fetchImpl, loadProbeTimeoutMs: 5 });
+    stubDownload(mgr, { devices: [ROCM_DEVICE] });
+    stubBoots(mgr);
+
+    expect(await refusalOf(mgr.setBackend('rocm'))).toBe(
+      'Kept the current engine: the ROCm build stopped answering while loading a model '
+      + '— "the engine did not finish loading a model within 5 ms". Nothing was changed.'
+    );
+    expect(readEngineConfig(home).backend).toBe('vulkan');
+  });
+
+  it("a ROCm-prefixed device error is caught, and a CUDA out-of-memory is not", async () => {
+    // Both arrive through the same ggml error macro; only one is a verdict on
+    // the build. Driven end to end, because the consequence is opposite:
+    // one deletes a 204 MB download, the other must not.
+    plantInstall('vulkan');
+    await plantModel();
+    const rocmMgr = new EngineManager(home, userData, 9999, {
+      fetchImpl: failingRouter(500, JSON.stringify({ error: { message: 'ROCm error: hipErrorNoDevice' } })).fetchImpl,
+    });
+    stubDownload(rocmMgr, { devices: [ROCM_DEVICE] });
+    stubBoots(rocmMgr);
+    expect(await refusalOf(rocmMgr.setBackend('rocm'))).toBe(
+      'Kept the current engine: the ROCm build found no graphics chip it can use — "ROCm error: hipErrorNoDevice". Nothing was changed.'
+    );
+    expect(fs.existsSync(ROCM_DIR())).toBe(false);
+
+    const oomMgr = new EngineManager(home, userData, 9999, {
+      fetchImpl: failingRouter(500, JSON.stringify({ error: { message: 'CUDA error: out of memory' } })).fetchImpl,
+    });
+    stubDownload(oomMgr, { devices: [ROCM_DEVICE] });
+    stubBoots(oomMgr);
+    // A model that does not fit is not a broken build: the download stays and
+    // the switch stands, and the message never claims a cause.
+    expect(await refusalOf(oomMgr.setBackend('rocm'))).toContain('did not load — "CUDA error: out of memory"');
+    expect(fs.existsSync(ROCM_DIR())).toBe(true);
+    expect(readEngineConfig(home).backend).toBe('rocm');
   });
 
   it('with no model on disk the load step is SKIPPED, and the switch is still kept', async () => {
@@ -656,12 +831,33 @@ describe('EngineManager.setBackend — the device check, the real load, and what
     });
     mgr.status();                                   // kicks the deferred chip probe
     await new Promise((r) => setTimeout(r, 0));
+    expect(mgr.status().backendOptions?.map((o) => o.state)).toEqual(['ready']);
     expect(mgr.status().backendOptions?.map((o) => o.note))
       .toEqual(['Checked when your first model loads.']);
 
     // One completed download and the note is gone — the check can run now.
     fs.writeFileSync(path.join(cacheDir, 'tiny-Q4_K_M.gguf'), Buffer.alloc(4));
     expect(mgr.status().backendOptions?.map((o) => o.note)).toEqual([undefined]);
+  });
+
+  it('but a row that is still asking for AMD\'s software gets no second instruction', async () => {
+    // "ROCm needs AMD's software installed first. Checked when your first model
+    // loads." is two unrelated instructions in one line, on the one row where
+    // the user already has something else to do.
+    prereqState.satisfied = false;
+    try {
+      plantInstall('vulkan');
+      const cacheDir = path.join(root, 'empty-cache-3');
+      fs.mkdirSync(cacheDir, { recursive: true });
+      await updateEngineConfig(home, { cacheDir });
+      const mgr = new EngineManager(home, userData, 9999, {
+        probeChip: async () => ({ vendor: 'amd' as const, gfxTarget: 'gfx1151' }),
+      });
+      mgr.status();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(mgr.status().backendOptions?.map((o) => o.state)).toEqual(['needs-prereqs']);
+      expect(mgr.status().backendOptions?.map((o) => o.note)).toEqual([undefined]);
+    } finally { prereqState.satisfied = true; }
   });
 
   it('a successful switch writes the config only after every check has passed', async () => {
@@ -735,7 +931,7 @@ describe('setBackend rules', () => {
       'HIP error: no kernel image is available for execution on the device',
       'CUDA error: invalid device function',
       'hipErrorNoBinaryForGpu',
-      'ggml_cuda_compute_forward: CUDA error',
+      'ggml_cuda_compute_forward: ROCm error: invalid configuration argument',
     ]) expect(isDeviceClassLoadError(deviceClass)).toBe(true);
 
     for (const modelClass of [
@@ -743,6 +939,30 @@ describe('setBackend rules', () => {
       'llama_model_load: error loading model: invalid split file',
       'failed to allocate buffer of size 12884901888',
     ]) expect(isDeviceClassLoadError(modelClass)).toBe(false);
+  });
+
+  it("catches every vendor's spelling of a device error, not just CUDA's", () => {
+    // ggml stamps each checked GPU failure with its backend's name, and that
+    // name is not always 'CUDA' — T2's own device ids are the in-repo proof
+    // (`ROCm0`, not `CUDA0`; the same upstream rename). Listing only CUDA's
+    // spelling would let a real ROCm failure through as a model problem, keep
+    // the switch, and blame the user's file — on this machine's backend.
+    expect(isDeviceClassLoadError('ROCm error: hipErrorNoDevice')).toBe(true);
+    expect(isDeviceClassLoadError('HIP error: hipErrorInvalidDevice')).toBe(true);
+    expect(isDeviceClassLoadError('CUDA error: an illegal memory access was encountered')).toBe(true);
+  });
+
+  it('never blames the hardware for running out of memory, whatever prefix it wears', () => {
+    // ggml_cuda_error() prints `CUDA error: <msg>` for EVERY checked failure,
+    // out of memory included. Treating that as "found no graphics chip it can
+    // use" deletes a perfectly good build and states a cause we never
+    // established — which the error-message standard forbids outright.
+    for (const oom of [
+      'CUDA error: out of memory',
+      'ROCm error: out of memory',
+      'HIP error: failed to allocate 12 GiB on device 0',
+      'cudaMalloc failed: out of memory',
+    ]) expect(isDeviceClassLoadError(oom)).toBe(false);
   });
 
   it('proves the switch with the SMALLEST complete model — a 1-token load reads the whole file', () => {

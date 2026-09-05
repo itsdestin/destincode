@@ -216,20 +216,64 @@ export function backendDeviceRefusal(
   return keptCurrentEngine(word, listed ? `it reported: ${listed}` : 'it reported no devices at all');
 }
 
+/** How long a 1-token load of the SMALLEST model on disk may take before we
+ *  stop waiting. Generous — a cold read off a slow disk is minutes — but
+ *  bounded, because without it a wedged build leaves the Switch button
+ *  disabled with the download bar already gone and nothing else on screen.
+ *  Overridable for tests only (`loadProbeTimeoutMs`); production never sets it. */
+const LOAD_PROBE_TIMEOUT_MS = 10 * 60_000;
+
+/** A duration in the units a reader would use for it. The verification load's
+ *  cap is ten minutes in production and milliseconds under test, and neither
+ *  reads correctly in the other's units. */
+function describeDuration(ms: number): string {
+  if (ms >= 60_000) return `${Math.round(ms / 60_000)} minutes`;
+  if (ms >= 1_000) return `${Math.round(ms / 1_000)} seconds`;
+  return `${ms} ms`;
+}
+
+/** What a failed verification load tells us. The distinction is the whole
+ *  point: an engine that ANSWERS with an error is describing the model or the
+ *  build, while an engine that cannot be reached at all is describing itself. */
+interface LoadProbeFailure {
+  kind: 'answered' | 'unreachable';
+  message: string;
+}
+
+/** Wording that means "not enough memory", in the shapes llama.cpp, HIP and
+ *  CUDA all use. Checked BEFORE anything else, because `ggml_cuda_error()`
+ *  prints `CUDA error: <msg>` for EVERY checked failure it handles — out of
+ *  memory included. Without this, a user whose model simply does not fit would
+ *  have a perfectly good CUDA build deleted and be told it "found no graphics
+ *  chip it can use", which is a cause we never established. */
+const ALLOCATION_WORDING = ['out of memory', 'failed to allocate', 'cannot allocate', 'insufficient memory'];
+
 /** The load failed because the BUILD cannot run on this chip, rather than
- *  because the model file is bad (design §A4). These four are the messages a
- *  wrong-architecture GPU build produces: llama.cpp/HIP/CUDA all report a
- *  missing compiled kernel for the installed chip in one of these shapes.
+ *  because the model file is bad (design §A4).
+ *
+ *  Two shapes. The needles are the messages a wrong-architecture GPU build
+ *  produces when it has no compiled kernel for the installed chip. The prefix
+ *  regex catches the whole family in one go: ggml stamps every checked GPU
+ *  failure with its backend's name, and THAT NAME IS NOT ALWAYS "CUDA" — the
+ *  in-repo proof is T2's own device ids, where the HIP build reports `ROCm0`
+ *  and not `CUDA0`; both come from the same upstream rename. Listing only
+ *  CUDA's spelling would let `ROCm error: hipErrorNoDevice` through as a model
+ *  problem, keep the switch, and blame the user's file — on exactly the
+ *  backend this machine uses.
  *
  *  Anything else — a corrupt GGUF, an architecture the engine cannot read, a
  *  model too big for the memory — is a MODEL problem, and discarding a working
  *  engine over one broken file is the wrong trade. Matched case-insensitively
  *  because these strings reach us through several layers of error wrapping. */
-const DEVICE_CLASS_LOAD_ERRORS = ['no kernel image', 'invalid device function', 'hiperrornobinaryforgpu', 'cuda error'];
+const DEVICE_CLASS_LOAD_ERRORS = ['no kernel image', 'invalid device function', 'hiperror'];
+const DEVICE_CLASS_ERROR_PREFIX = /(cuda|rocm|hip) error: /i;
 
 export function isDeviceClassLoadError(text: string): boolean {
   const lower = text.toLowerCase();
-  return DEVICE_CLASS_LOAD_ERRORS.some((needle) => lower.includes(needle));
+  // Memory is not a verdict on the hardware, whichever vendor prefix it wears.
+  if (ALLOCATION_WORDING.some((needle) => lower.includes(needle))) return false;
+  if (DEVICE_CLASS_LOAD_ERRORS.some((needle) => lower.includes(needle))) return true;
+  return DEVICE_CLASS_ERROR_PREFIX.test(text);
 }
 
 /** The cheapest complete model to prove the switch with — a 1-token load has to
@@ -284,6 +328,9 @@ export class EngineManager extends EventEmitter {
       fetchImpl?: typeof fetch;
       supervisorOpts?: Record<string, unknown>;
       probeChip?: () => Promise<MachineChip>;
+      /** Test seam: the verification load's cap. A guard that has to wait out
+       *  the real ten minutes is a guard that gets deleted. */
+      loadProbeTimeoutMs?: number;
     } = {}
   ) {
     super();
@@ -372,7 +419,11 @@ export class EngineManager extends EventEmitter {
       // Free: the chip probe primed this cache on its own tick, and it is only
       // ever consulted on an AMD machine.
       rocmPrereqsSatisfied: chip.vendor === 'amd' ? checkRocmPrereqs().satisfied : false,
-    }).map((o) => (note ? { ...o, note } : o));
+    // The note goes only on a row the user can actually press. A
+    // 'needs-prereqs' row is already telling them to install AMD's software
+    // first, and appending "Checked when your first model loads." to that reads
+    // as two unrelated instructions in one line.
+    }).map((o) => (note && o.state === 'ready' ? { ...o, note } : o));
   }
 
   /** The compute devices the installed engine reported at install time, exactly
@@ -799,30 +850,62 @@ export class EngineManager extends EventEmitter {
    *        gets reported as "your graphics chip is unsupported"),
    *    2. the binary boots and answers /health (verifyBoot),
    *    3. a real 1-token load of the smallest model on disk does not fail with
-   *       a device- or kernel-class error,
+   *       a device- or kernel-class error, and does not leave the engine
+   *       unreachable,
    *    4. and only then is the choice written to config.json.
    *
    *  Any of 1-3 failing throws away the install THIS CALL created — never one
    *  that was already on disk (the same `preexisting` guard installAndVerify
-   *  has: pressing Switch twice must not delete a build that has been working)
-   *  — which restores the previous engine as the newest usable install. */
+   *  has: pressing Switch twice must not delete a build that has been working).
+   *
+   *  PINNING THE PREVIOUS ENGINE IS NOT OPTIONAL, and deleting the new
+   *  directory is NOT enough on its own. Which engine is current is decided by
+   *  `installed(preferBackend)`, and `preferBackend` is the config's `backend`
+   *  — which is `null` for an ordinary user, because install() records it only
+   *  when it differs from the platform default. With null, `installed()` falls
+   *  through to raw `readdirSync` order, and `b10665-rocm` / `b10665-cuda` sort
+   *  BEFORE `b10665-vulkan`. So any refused directory that survives makes the
+   *  refused build the current engine while the message says "Nothing was
+   *  changed" — and three routes leave one behind: a `preexisting` directory we
+   *  must not delete, a `discard()` that returns false (Windows, holding the
+   *  exe we just booted), and a quit or crash between the install and the
+   *  config write, a window this task widened to "download 612 MB, boot, and
+   *  load a whole model". Writing the CURRENT backend down BEFORE the download
+   *  closes all three at once. */
   async setBackend(backend: EngineBackend): Promise<void> {
     const asset = pickAsset(process.platform, process.arch, backend);
     if (!asset) {
       throw new Error(`That backend is not available for this platform (${process.platform}/${process.arch}).`);
     }
     const onProgress = (p: EngineInstallProgress) => this.emit('install-progress', p);
+    // The engine the user is running right now, named explicitly (see above).
+    // Null only when nothing is installed at all, in which case there is no
+    // previous engine for a leftover directory to shadow.
+    let previous = this.currentInstall()?.backend ?? null;
+    if (previous === backend) {
+      // The build we are about to test is ALREADY what installed() selects,
+      // which on a null config means readdir order picked it — a leftover
+      // directory from an earlier attempt shadowing the engine the user is
+      // really running. Pinning THAT would make the shadowing permanent, so
+      // pin what they would otherwise be on instead.
+      const fallback = this.acquisition.installed(defaultBackend(process.platform));
+      previous = fallback && fallback.backend !== backend ? fallback.backend : null;
+    }
+    if (previous) await updateEngineConfig(this.home, { backend: previous });
     // Read BEFORE the install, because install() is idempotent: handed a
     // version+backend already on disk it returns it untouched, so afterwards
     // there is no way left to tell "I just made this" from "this was here".
-    const dir = this.acquisition.installDir(ENGINE_VERSION, asset.backend);
-    const preexisting = fs.existsSync(path.join(dir, '.complete'));
+    // It must ask the SAME question install() asks — a marker whose binary is
+    // missing is not a usable install, and install() reinstalls over it, so
+    // treating it as pre-existing would refuse to discard a directory this
+    // call really did create.
+    const preexisting = this.usableInstallExists(this.acquisition.installDir(ENGINE_VERSION, asset.backend));
     const installed = await this.acquisition.install(asset, onProgress);
 
     // 1. What does the build itself say it can run on?
     const deviceRefusal = backendDeviceRefusal(backend, installed.devices, installed.devicesError);
     if (deviceRefusal) {
-      await this.undoSwitch(installed, preexisting);
+      await this.undoSwitch(installed, preexisting, previous);
       throw new Error(deviceRefusal);
     }
 
@@ -830,7 +913,7 @@ export class EngineManager extends EventEmitter {
     try {
       await this.verifyBoot(installed);
     } catch (bootErr) {
-      await this.undoSwitch(installed, preexisting);
+      await this.undoSwitch(installed, preexisting, previous);
       throw bootErr;
     }
 
@@ -843,10 +926,23 @@ export class EngineManager extends EventEmitter {
     // No model on disk: there is nothing to load, so the check is deferred
     // rather than failed. The card's faster-engine row says so in words
     // (currentBackendOptions' note) instead of implying we checked.
-    const loadError = model ? await this.probeModelLoad(model.id) : null;
-    if (loadError && isDeviceClassLoadError(loadError)) {
-      await this.undoSwitch(installed, preexisting);
-      throw new Error(keptCurrentEngine(BACKEND_WORD[backend] ?? backend, `"${loadError}"`));
+    const load = model ? await this.probeModelLoad(model.id) : null;
+    if (load && load.kind === 'unreachable') {
+      // The engine answered /health seconds ago and now cannot be reached at
+      // all. A GPU build compiled for the wrong chip commonly ABORTS the child
+      // rather than returning an error document, so silence here is evidence
+      // about the build, not about the model file — and the safe direction is
+      // the one this whole method exists for: put the user back where they
+      // started.
+      await this.undoSwitch(installed, preexisting, previous);
+      throw new Error(
+        `Kept the current engine: the ${BACKEND_WORD[backend] ?? backend} build stopped answering while loading a model `
+        + `— "${load.message}". Nothing was changed.`
+      );
+    }
+    if (load && isDeviceClassLoadError(load.message)) {
+      await this.undoSwitch(installed, preexisting, previous);
+      throw new Error(keptCurrentEngine(BACKEND_WORD[backend] ?? backend, `"${load.message}"`));
     }
 
     // 4. Every check that says anything about the BACKEND has passed.
@@ -860,24 +956,64 @@ export class EngineManager extends EventEmitter {
     // alternative is discovering it on their next message. Thrown, because a
     // thrown message is the only thing the card renders (its install-progress
     // line is cleared the moment the action settles).
-    if (loadError) {
+    //
+    // CAREFUL: throwing here means the IPC handler's `return engineManager
+    // .status()` never runs, so the card's status comes ENTIRELY from the
+    // 'status-changed' push emitted on the line above. Move or remove that
+    // emit and the card keeps drawing the old backend under this message.
+    if (load) {
       throw new Error(
         `Switched to ${BACKEND_WORD[backend] ?? backend}. The engine started and found your graphics chip, `
-        + `but the model "${model!.id}" did not load — "${loadError}".`
+        + `but the model "${model!.id}" did not load — "${load.message}".`
       );
     }
   }
 
-  /** Put the machine back exactly as the switch found it. Only ever removes an
-   *  install THIS call created — `preexisting` is read before install() for
-   *  precisely this decision. The supervisor goes too: verifyBoot pointed it at
-   *  the binary being deleted. */
-  private async undoSwitch(installed: InstalledEngine, preexisting: boolean): Promise<void> {
-    if (preexisting) return;
-    if (this.supervisor) { try { await this.supervisor.stop(); } catch { /* already dead */ } }
-    this.supervisor = null;
-    this.supervisorBinary = null;
-    this.acquisition.discard(installed);
+  /** The same question `EngineAcquisition.install()` asks before deciding a
+   *  directory is already installed: a marker AND the binary it names. */
+  private usableInstallExists(dir: string): boolean {
+    try {
+      const marker = JSON.parse(fs.readFileSync(path.join(dir, '.complete'), 'utf8')) as { binaryRelPath?: unknown };
+      if (typeof marker.binaryRelPath !== 'string') return false;
+      return fs.existsSync(path.join(dir, marker.binaryRelPath));
+    } catch {
+      return false;
+    }
+  }
+
+  /** Put the machine back exactly as the switch found it.
+   *
+   *  TWO separate mechanisms, because neither is sufficient alone: the config
+   *  is pinned back to the engine the user was running (the only thing that
+   *  decides which install is current — see setBackend's comment), and the new
+   *  directory is deleted, but ONLY when this call created it. */
+  private async undoSwitch(
+    installed: InstalledEngine, preexisting: boolean, previous: EngineBackend | null,
+  ): Promise<void> {
+    // First, and unconditionally: whatever happens to the directory, the engine
+    // the user was running is the one that must come back.
+    //
+    // This is deliberately a SECOND write of the same value — setBackend
+    // already pinned it before the download, and no mutation can tell the two
+    // apart today (measured: deleting this line leaves the suite green,
+    // because nothing between the two writes touches the config). It stays
+    // because the first write exists to survive a CRASH and this one exists to
+    // survive a future edit that writes the config mid-flow; losing either
+    // silently makes the refused build the current engine.
+    if (previous) await updateEngineConfig(this.home, { backend: previous });
+    if (!preexisting) {
+      // The supervisor is dropped ONLY when it is pointing at the binary being
+      // deleted. On the device-check path nothing has touched it — it is still
+      // the user's old, working engine, possibly mid-reply, and stop() has no
+      // in-flight guard, so tearing it down there would kill a streaming answer
+      // and unload the resident model under a message saying nothing changed.
+      if (this.supervisor && this.supervisorBinary === installed.binaryPath) {
+        try { await this.supervisor.stop(); } catch { /* already dead */ }
+        this.supervisor = null;
+        this.supervisorBinary = null;
+      }
+      this.acquisition.discard(installed);
+    }
     // The card's own error line comes from the thrown message, but the STATUS
     // it is drawn around (which engine is installed, which switch is offered)
     // just changed back — and nothing else pushes that.
@@ -887,12 +1023,21 @@ export class EngineManager extends EventEmitter {
   /** Ask the running engine to load a model for one token, and report what it
    *  said if it would not. Returns null when the load succeeded.
    *
+   *  Three outcomes, not two. An engine that ANSWERS with an error is telling
+   *  us something about the model or the build; an engine that cannot be
+   *  reached at all is telling us about the build, and must never be filed as
+   *  "the model is broken" — the difference decides whether the switch stands.
+   *
    *  Deliberately awaited, unlike loadModel() — this is a verification, not a
    *  warm-up, and its whole value is the engine's error text. Routed through
    *  trackedFetch so the idle shutdown cannot reap the server mid-load (a large
-   *  model takes minutes to read off disk). */
-  private async probeModelLoad(modelId: string): Promise<string | null> {
+   *  model takes minutes to read off disk), and bounded by its own timeout so a
+   *  wedged build cannot leave the button disabled forever. */
+  private async probeModelLoad(modelId: string): Promise<LoadProbeFailure | null> {
     const doFetch = this.supervisor ? this.supervisor.trackedFetch : (this.opts.fetchImpl ?? fetch);
+    const timeoutMs = this.opts.loadProbeTimeoutMs ?? LOAD_PROBE_TIMEOUT_MS;
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(), timeoutMs);
     try {
       const res = await doFetch(`http://127.0.0.1:${this.port}/v1/chat/completions`, {
         method: 'POST',
@@ -900,14 +1045,19 @@ export class EngineManager extends EventEmitter {
         body: JSON.stringify({
           model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false,
         }),
+        signal: abort.signal,
       });
       if (res.ok) return null;
-      return routerErrorText(res.status, await res.text().catch(() => ''));
+      return { kind: 'answered', message: routerErrorText(res.status, await res.text().catch(() => '')) };
     } catch (e: any) {
-      // The request itself could not be made. Report what the network layer
-      // said — never a guess at why — and let the classifier decide; nothing in
-      // this shape names a device, so it is reported rather than acted on.
-      return (e?.message ?? String(e)).trim() || 'the engine could not be reached';
+      // The request could not be made, or took longer than a model load ever
+      // should. Report what actually happened — never a guess at why.
+      const message = abort.signal.aborted
+        ? `the engine did not finish loading a model within ${describeDuration(timeoutMs)}`
+        : (e?.message ?? String(e)).trim() || 'the engine could not be reached';
+      return { kind: 'unreachable', message };
+    } finally {
+      clearTimeout(timer);
     }
   }
 
