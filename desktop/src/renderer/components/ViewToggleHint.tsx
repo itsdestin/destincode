@@ -17,6 +17,13 @@ import { CloseButton } from './ui';
  * narrow breakpoint and across platforms — on macOS the toggle sits in a
  * different header cluster than it does on Windows/Linux, and neither position
  * is hardcoded here.
+ *
+ * Shape chosen by Destin on 2026-09-04 from three candidates
+ * (docs/active/design/2026-09-04-back-to-chat-hint/): the filled bubble, plus an
+ * outline, with fill AND outline both derived from the theme's accent. The two
+ * candidates it beat were a plain popup-surface bubble (invisible on Light — a
+ * near-white box on a near-white terminal) and an arrowless shelf hung off the
+ * toolbar (nothing pointed at the button).
  */
 
 /** Marks the element this hint points at. Both toggle variants carry it. */
@@ -24,7 +31,15 @@ export const VIEW_TOGGLE_ANCHOR_ATTR = 'data-view-toggle';
 
 const GAP_PX = 8;      // vertical distance from the toggle to the bubble
 const MARGIN_PX = 8;   // minimum distance from the window edges
-const ARROW_PX = 10;
+const ARROW_PX = 12;   // side of the rotated square; its visible tip is ~8px tall
+
+// Fill and edge are the SAME theme colour at two strengths — no neutral border,
+// which is what made the outline read as a foreign part in review. Nudging the
+// edge toward the label colour is the app's own trick for deriving a rim from a
+// fill (globals.css does it for the accent gradients), so a theme pack that
+// changes --accent gets a matching outline for free.
+const HINT_FILL = 'var(--accent)';
+const HINT_EDGE = 'color-mix(in srgb, var(--on-accent) 55%, var(--accent))';
 
 interface Props {
   /** The ✕. Auto-dismissal on switching back to chat is the caller's job. */
@@ -46,13 +61,22 @@ export default function ViewToggleHint({ onDismiss }: Props) {
     // breakpoint) would pin the bubble to the top-left corner. Skip the frame.
     if (a.width <= 0 || a.height <= 0) return;
     const width = panel.offsetWidth;
-    const centre = a.left + a.width / 2;
-    // The toggle sits close to the window edge on Windows/Linux, so a bubble
-    // centred on it would hang off-screen. Clamp the box, then move the arrow
-    // within it so it keeps pointing at the real centre.
+
+    // Aim at the button the user has to press, not at the middle of the pill —
+    // centred on the pill, the arrow landed on the seam between its two halves.
+    // Wide renders Chat first, then Terminal; narrow renders the single button
+    // for the view you'd switch TO, which in terminal view is chat. Either way
+    // the first button is the target.
+    const target = (anchor.querySelector('button') ?? anchor).getBoundingClientRect();
+    const aim = target.left + target.width / 2;
+
+    // Left-aligned to the toggle, then clamped: the toggle sits close to the
+    // window edge on Windows/Linux and the bubble is wider than that offset, so
+    // an unclamped box would hang off-screen. The arrow moves within the box to
+    // keep pointing at the real target.
     const maxLeft = Math.max(MARGIN_PX, window.innerWidth - width - MARGIN_PX);
-    const left = Math.min(Math.max(centre - width / 2, MARGIN_PX), maxLeft);
-    setGeo({ top: a.bottom + GAP_PX, left, arrowLeft: centre - left });
+    const left = Math.min(Math.max(a.left, MARGIN_PX), maxLeft);
+    setGeo({ top: a.bottom + GAP_PX, left, arrowLeft: aim - left });
   }, []);
 
   useLayoutEffect(() => {
@@ -76,35 +100,74 @@ export default function ViewToggleHint({ onDismiss }: Props) {
   }, [measure]);
 
   return createPortal(
-    // Wrapper carries the layer, so the arrow (a sibling of the panel, because
-    // .layer-surface clips its own children) can't fall behind the header.
+    // The wrapper carries the layer, so the arrow — which has to live OUTSIDE
+    // the bubble, because .layer-surface clips its own children — can't fall
+    // behind the header.
     <div
       className="fixed"
       style={{
         top: geo?.top ?? 0,
         left: geo?.left ?? 0,
         zIndex: CONTENT_Z[4],
-        // First paint happens before the panel can be measured; showing it then
-        // would flash the bubble in the corner.
+        // First paint happens before the bubble can be measured; showing it then
+        // would flash it in the corner.
         visibility: geo ? 'visible' : 'hidden',
       }}
     >
-      <div
-        aria-hidden="true"
-        className="absolute w-2.5 h-2.5 bg-panel border-l border-t border-edge rotate-45"
-        style={{ left: (geo?.arrowLeft ?? 0) - ARROW_PX / 2, top: -ARROW_PX / 2 }}
-      />
       <OverlayPanel
         ref={panelRef}
         layer={4}
         role="status"
-        className="relative flex items-center gap-1.5 pl-3 pr-1 py-1.5 max-w-[calc(100vw-1rem)]"
+        className="relative flex items-center gap-1 pl-3 pr-1 py-1 text-on-accent max-w-[calc(100vw-1rem)]"
+        // Inline, not utility classes: .layer-surface sets background, border and
+        // radius in UNLAYERED css, and unlayered always beats a Tailwind utility
+        // (see the cascade note in globals.css). Inline is the only thing that
+        // wins, and it wins over the wallpaper opacity rule too — which is what
+        // we want, since this has to stay readable over terminal text.
+        style={{
+          // zIndex auto, overriding the layer's own 100: the WRAPPER already
+          // carries L4, so inside it the only thing that should decide paint
+          // order is document order — and the arrow must come out on top. With
+          // the panel at 100 it won, and its top border drew a line straight
+          // across the arrow's base (measured: a solid row of edge colour under
+          // the tip), which is the seam this shape exists to avoid.
+          zIndex: 'auto',
+          background: HINT_FILL,
+          borderColor: HINT_EDGE,
+          // The popup radius (16px) reads as a full lozenge on a 30px-tall bar;
+          // still a theme token, so big-radius packs scale with it.
+          borderRadius: 'var(--radius-lg)',
+        }}
       >
-        <span className="text-2xs text-fg-2 leading-snug whitespace-nowrap">
+        <span className="text-2xs font-medium leading-snug whitespace-nowrap">
           Click here to switch back to chat view
         </span>
-        <CloseButton label="Dismiss hint" onClick={onDismiss} className="shrink-0" />
+        <CloseButton
+          label="Dismiss hint"
+          variant="on-accent"
+          onClick={onDismiss}
+          className="shrink-0 w-5 h-5"
+        />
       </OverlayPanel>
+      {/* AFTER the bubble on purpose: a rotated square painted BELOW it left the
+          bubble's own top border running straight across the arrow's base, so the
+          tip read as a separate triangle stuck to a box. Painted above, the
+          arrow's fill hides that segment and its two borders continue the
+          bubble's outline as one shape. Centred on the bubble's top edge, so
+          half of it is inside and half is the visible tip. */}
+      <div
+        aria-hidden="true"
+        className="absolute rotate-45"
+        style={{
+          width: ARROW_PX,
+          height: ARROW_PX,
+          left: (geo?.arrowLeft ?? 0) - ARROW_PX / 2,
+          top: -ARROW_PX / 2,
+          background: HINT_FILL,
+          borderTop: `1px solid ${HINT_EDGE}`,
+          borderLeft: `1px solid ${HINT_EDGE}`,
+        }}
+      />
     </div>,
     document.body,
   );

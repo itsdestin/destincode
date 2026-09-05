@@ -13,7 +13,7 @@ import React from 'react';
  * don't get reintroduced as "improvements".
  */
 
-export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-outline';
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-outline' | 'on-accent';
 export type ButtonSize = 'sm' | 'md' | 'lg' | 'icon';
 
 /** The one focus ring — every interactive control shares it (design rule 4),
@@ -59,6 +59,13 @@ const BUTTON_VARIANT: Record<ButtonVariant, string> = {
   ghost: 'text-fg-dim hover:text-fg hover:bg-inset',
   danger: 'bg-destructive text-on-destructive hover:bg-destructive/90',
   'danger-outline': 'border border-destructive/50 text-destructive-fg hover:bg-destructive/10',
+  // ghost, but for a control sitting ON an accent-filled surface (ViewToggleHint's
+  // ✕). Added 2026-09-04: ghost there was wrong twice over — its hover fill is
+  // --inset, a panel colour that reads as a foreign patch on accent, and its
+  // hover TEXT is --fg, which on Light's near-black accent turns the glyph
+  // black-on-black. Both roles derive from --on-accent instead, so the whole
+  // control tracks whatever a theme pack sets the accent to.
+  'on-accent': 'text-on-accent/80 hover:text-on-accent hover:bg-on-accent/15',
 };
 
 /** sm  — inline row actions (EngineCard, provider rows, chips)

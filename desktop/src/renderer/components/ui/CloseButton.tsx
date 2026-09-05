@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button } from './Button';
+import { Button, type ButtonVariant } from './Button';
 
 /**
  * The popup ✕ (change 41, §1.8).
@@ -18,12 +18,17 @@ export type CloseButtonProps = Omit<
 > & {
   /** Override when "Close" is ambiguous — e.g. "Close settings", "Dismiss toast". */
   label?: string;
+  /** Only reason to change it: the ✕ sits on an accent fill, not a panel
+   *  ("on-accent"). Passing a className instead does NOT work — ghost's own
+   *  hover classes still ship, and two competing hover backgrounds resolve by
+   *  Tailwind's source order rather than by what the caller wrote. */
+  variant?: ButtonVariant;
 };
 
 export const CloseButton = React.forwardRef<HTMLButtonElement, CloseButtonProps>(
-  function CloseButton({ label, ...rest }, ref) {
+  function CloseButton({ label, variant = 'ghost', ...rest }, ref) {
     return (
-      <Button ref={ref} size="icon" variant="ghost" aria-label={label ?? 'Close'} {...rest}>
+      <Button ref={ref} size="icon" variant={variant} aria-label={label ?? 'Close'} {...rest}>
         <svg
           className="w-4 h-4"
           fill="none"

@@ -11,16 +11,24 @@ import ViewToggleHint from './ViewToggleHint';
 
 const ANCHOR_WIDTH = 144;
 const ANCHOR_BOTTOM = 34;
+const CHAT_WIDTH = 48;
 const PANEL_WIDTH = 300;
 
+/** A stand-in for the toggle: an outer box plus the Chat button inside it, which
+ *  is what the arrow actually aims at (the pill's own centre is the seam between
+ *  its two halves). The button occupies the left third, as Chat does. */
 function mountAnchor(left: number): HTMLElement {
-  const el = document.createElement('div');
-  el.setAttribute('data-view-toggle', '');
-  el.getBoundingClientRect = () => ({
-    x: left, y: 6, left, right: left + ANCHOR_WIDTH,
-    top: 6, bottom: ANCHOR_BOTTOM, width: ANCHOR_WIDTH, height: 28,
+  const rect = (l: number, w: number) => () => ({
+    x: l, y: 6, left: l, right: l + w,
+    top: 6, bottom: ANCHOR_BOTTOM, width: w, height: 28,
     toJSON: () => ({}),
   }) as DOMRect;
+  const el = document.createElement('div');
+  el.setAttribute('data-view-toggle', '');
+  el.getBoundingClientRect = rect(left, ANCHOR_WIDTH);
+  const chat = document.createElement('button');
+  chat.getBoundingClientRect = rect(left, CHAT_WIDTH);
+  el.appendChild(chat);
   document.body.appendChild(el);
   return el;
 }
@@ -47,26 +55,28 @@ function wrapper(): HTMLElement {
   return document.querySelector('[role="status"]')!.parentElement as HTMLElement;
 }
 
+// Direct child only: the ✕'s own glyph is aria-hidden too, and it comes first
+// in document order now that the arrow paints after the bubble.
 function arrow(): HTMLElement {
-  return wrapper().querySelector('[aria-hidden="true"]') as HTMLElement;
+  return wrapper().querySelector(':scope > [aria-hidden="true"]') as HTMLElement;
 }
 
 describe('ViewToggleHint', () => {
-  it('sits under the toggle and points at its centre', () => {
-    mountAnchor(400); // centre 472, comfortably inside a 1024px window
+  it('lines up under the toggle and aims at the chat button, not the pill', () => {
+    mountAnchor(400); // chat button spans 400..448, so its centre is 424
     render(<ViewToggleHint onDismiss={vi.fn()} />);
     expect(wrapper().style.top).toBe(`${ANCHOR_BOTTOM + 8}px`);
-    expect(wrapper().style.left).toBe(`${472 - PANEL_WIDTH / 2}px`);
-    // Arrow offset is relative to the bubble, and the bubble is centred here.
-    expect(arrow().style.left).toBe(`${PANEL_WIDTH / 2 - 5}px`);
+    expect(wrapper().style.left).toBe('400px');
+    // Arrow offset is relative to the bubble; 6 is half the arrow's width.
+    expect(arrow().style.left).toBe(`${424 - 400 - 6}px`);
   });
 
-  it('stays on screen when the toggle is near the left edge, and re-aims the arrow', () => {
-    mountAnchor(76); // centre 148 — a centred 300px bubble would start at -2
+  it('stays on screen when the toggle is near the right edge, and re-aims the arrow', () => {
+    mountAnchor(800); // a 300px bubble from x=800 would run to 1100, past 1024
     render(<ViewToggleHint onDismiss={vi.fn()} />);
-    expect(wrapper().style.left).toBe('8px');
-    // Still pointing at the toggle's real centre, now off-centre in the bubble.
-    expect(arrow().style.left).toBe(`${148 - 8 - 5}px`);
+    expect(wrapper().style.left).toBe(`${1024 - PANEL_WIDTH - 8}px`);
+    // Still pointing at the chat button's real centre, now off-centre in the bubble.
+    expect(arrow().style.left).toBe(`${824 - (1024 - PANEL_WIDTH - 8) - 6}px`);
   });
 
   it('hides rather than parking itself in the corner when there is no toggle', () => {
