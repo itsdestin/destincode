@@ -20,6 +20,21 @@ export interface ProviderConfig {
   enabled: boolean;
 }
 
+/** True when a custom endpoint's address points at this computer — Ollama,
+ *  LM Studio and the like. The only signal the app has to file a custom
+ *  endpoint under Local Models rather than Cloud Models (Destin, 2026-09-05:
+ *  "wouldn't that be local?"); a server elsewhere keeps its cloud placement. */
+export function isLocalEndpoint(baseUrl: string | undefined | null): boolean {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1'
+      || host.endsWith('.localhost');
+  } catch {
+    return false;
+  }
+}
+
 /** What a native session is bound to: one model on one provider. */
 export interface ModelBinding { providerId: string; modelId: string; }
 

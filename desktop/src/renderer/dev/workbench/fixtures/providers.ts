@@ -2,7 +2,7 @@
 // shapes the runtime selector actually reads; `providers.list()` and
 // `.catalog()` are typed `Promise<any[]>` in useIpc.ts, so the compiler cannot
 // check this pair — keep them in step with RuntimeBinding.tsx by hand.
-export interface ProviderRow { id: string; type: string; label: string; ready: boolean }
+export interface ProviderRow { id: string; type: string; label: string; ready: boolean; baseUrl?: string }
 export interface CatalogRow { id: string; providerId: string; label: string }
 
 export function providers(): ProviderRow[] {
@@ -15,7 +15,7 @@ export function providers(): ProviderRow[] {
     { id: 'local', type: 'local-engine', label: 'Local Models', ready: true },
     // Deliberately not ready: the runtime selector has a distinct disabled row
     // treatment, and a fixture where everything is ready never shows it.
-    { id: 'pv-ollama', type: 'openai-compatible', label: 'Ollama', ready: false },
+    { id: 'pv-ollama', type: 'openai-compatible', label: 'Ollama', ready: false, baseUrl: 'http://localhost:11434/v1' },
   ];
 }
 

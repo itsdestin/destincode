@@ -494,7 +494,7 @@ function OpenRouterBlock() {
 
       {/* Other API providers — direct keys (Anthropic/OpenAI/Google) + custom
           endpoints. Embedded hides the openrouter + local-engine rows. */}
-      <ProvidersSection embedded />
+      <ProvidersSection embedded="cloud" />
 
       {connectOpen && openrouter && (
         <ConnectOpenRouterModal
@@ -635,6 +635,11 @@ function LocalModelsBlock() {
 
       {/* Embedded: no standalone header (this section supplies it). */}
       <LocalModelsSection embedded />
+      {/* Custom endpoints on this computer — Ollama, LM Studio — file here,
+          not under the OpenRouter card (Destin, 2026-09-05). */}
+      <div className="mt-2">
+        <ProvidersSection embedded="local" />
+      </div>
     </section>
   );
 }
