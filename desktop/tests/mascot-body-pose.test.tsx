@@ -20,6 +20,14 @@ import { POSES } from '../src/renderer/components/mascot/mascot-poses';
 
 afterEach(cleanup);
 
+function mountLive(pose: Parameters<typeof MascotRig>[0]['pose']) {
+  const motionRef = { current: { vx: 0, vy: 0, dragging: false } as RigMotion };
+  const r = render(<MascotRig svgUrl={null} pose={pose} motionRef={motionRef} reducedEffects={false} />);
+  const rerender = (next: Parameters<typeof MascotRig>[0]['pose']) =>
+    r.rerender(<MascotRig svgUrl={null} pose={next} motionRef={motionRef} reducedEffects={false} />);
+  return { container: r.container, rerender };
+}
+
 function mount(pose: Parameters<typeof MascotRig>[0]['pose']) {
   const motionRef = { current: { vx: 0, vy: 0, dragging: false } as RigMotion };
   // reducedEffects: springs and idle loops off, so the only thing writing a
@@ -73,5 +81,53 @@ describe('a pose that moves the body', () => {
       expect(c.querySelector<SVGGElement>('#rig-face-blink')!.style.display).toBe('');
       expect(c.querySelector<SVGGElement>('#rig-face-welcome')!.style.display).toBe('none');
     });
+  });
+});
+
+describe('a pose change animates instead of teleporting', () => {
+  // THE DEFECT, in plain terms: React rebuilds the mascot's host element when
+  // the pose changes, and the code used to throw away every spring at that
+  // moment and rebuild each one ALREADY SITTING AT its new target. So no pose
+  // change in the whole app ever animated — the limbs arrived instantly while
+  // the body eased underneath them. Destin, 2026-09-05: "the animation to
+  // transition between states can be improved."
+  //
+  // The assertion is deliberately "not there YET" rather than a frame count:
+  // the springs are physics on a timer, and a test that counts frames is a test
+  // about vitest's clock. What matters is that the instant the pose changes,
+  // the limb has NOT already arrived.
+  const tyOf = (c: HTMLElement) => {
+    const t = c.querySelector<SVGGElement>('#rig-arm-left')!.style.transform;
+    return Number(/translate\([^,]+,\s*(-?[\d.]+)px/.exec(t)?.[1] ?? NaN);
+  };
+
+  const transformOf = (c: HTMLElement) =>
+    c.querySelector<SVGGElement>('#rig-arm-left')!.style.transform;
+
+  it('does not put the limb at its destination on the frame the pose changes', async () => {
+    const { container, rerender } = mountLive('idle');
+    await waitFor(() => expect(container.querySelector('#rig-arm-left')).toBeTruthy());
+    // WAIT FOR THE SPRINGS TO EXIST, on their own signal rather than a sleep:
+    // the motion loop writing a transform of its own IS the signal. Rerendering
+    // before its first tick is not the case under test — nothing has been on
+    // screen long enough to teleport away from.
+    const first = transformOf(container);
+    await waitFor(() => expect(transformOf(container)).not.toBe(first), { timeout: 4000 });
+    const before = tyOf(container);
+    const after = POSES['sleep-arms-docked'].parts['rig-arm-left']!.ty!;
+    expect(before).not.toBe(after);   // the two poses must actually differ, or this proves nothing
+
+    rerender('sleep-arms-docked');
+    // Whatever it is, it is not the destination — it is still where the springs
+    // were holding it. Before the fix this read `after` exactly.
+    expect(tyOf(container)).not.toBe(after);
+  });
+
+  it('and gets there in the end', async () => {
+    const { container, rerender } = mountLive('idle');
+    await waitFor(() => expect(container.querySelector('#rig-arm-left')).toBeTruthy());
+    rerender('sleep-arms-docked');
+    const want = POSES['sleep-arms-docked'].parts['rig-arm-left']!.ty!;
+    await waitFor(() => expect(tyOf(container)).toBeCloseTo(want, 1), { timeout: 4000 });
   });
 });

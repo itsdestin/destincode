@@ -4387,6 +4387,30 @@ const ALL_SURFACES: CompareSurface[] = [
           },
         ],
       },
+      {
+        n: 2,
+        basis: 'R1 · A (loaf), picked 2026-09-05: "i quite like loaf. the animation to transition between states can be improved though. also wanna see a few more variants with the arms in different positions (tucked just a bit, fully docked, wildcard)." The body is the loaf\'s and is NOT under review here — only the arms move, so the choice is about one thing. The transition complaint was fixed rather than offered as an option: limb translation now rides the same springs the rotations do (it used to teleport while the body eased), and the body\'s settle is directional — 620ms heavy going under, 300ms with a little overshoot coming back.',
+        candidates: [
+          {
+            id: 'tuck',
+            label: 'Tuck',
+            note: 'Barely moved — arms stay where you last saw them, just relaxed and dropped a little.',
+            render: () => <BuddySleepDemo pose="sleep-arms-tucked" />,
+          },
+          {
+            id: 'dock',
+            label: 'Dock',
+            note: 'All the way down and pulled into the body, so his outline becomes one clean shape.',
+            render: () => <BuddySleepDemo pose="sleep-arms-docked" />,
+          },
+          {
+            id: 'flop',
+            label: 'Flop',
+            note: 'The wildcard: arms swung out flat, flumped. Funny rather than tidy.',
+            render: () => <BuddySleepDemo pose="sleep-arms-flop" />,
+          },
+        ],
+      },
     ],
   },
   {

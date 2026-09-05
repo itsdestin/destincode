@@ -63,6 +63,8 @@ export function MascotRig({
   const [svgHtml, setSvgHtml] = useState<string | null>(null);
   const partsRef = useRef<Parts | null>(null);
   const springsRef = useRef<Map<SpringId, SpringState>>(new Map());
+  // `<partId>:tx` / `<partId>:ty` — see the translation springs in the loop below.
+  const transSpringsRef = useRef<Map<string, SpringState>>(new Map());
   const poseRef = useRef<PoseName>(pose);
   poseRef.current = pose;
   const styleRef = useRef<MotionStyle>(motionStyle);
@@ -145,9 +147,23 @@ export function MascotRig({
       faces,
       pupils: Array.from(svg.querySelectorAll<SVGGElement>('.pupil')),
     };
-    springsRef.current = new Map();
+    // SPRINGS SURVIVE A RE-INDEX (2026-09-05). They used to be thrown away here,
+    // and because React can rebuild the host div with identical innerHTML —
+    // which it does on a pose change — every spring was then recreated ALREADY
+    // AT its new target. So no pose change ever animated: the limbs teleported
+    // while the body eased under them, which is exactly what Destin saw ("the
+    // animation to transition between states can be improved", 2026-09-05).
+    // Measured on the sleep pane: the left arm's slide showed 2 distinct
+    // positions across 313 samples at 16ms.
+    //
+    // A spring is physical state belonging to a PART ID, not to a DOM node, so
+    // it is right for it to outlive the element. On a genuine rig swap the limbs
+    // now spring from where the old rig's were rather than appearing pre-posed,
+    // which is the better of the two reads.
     // Fresh DOM starts from the authored state — write the full current look.
-    applyPose(partsRef.current, poseRef.current, blinking, true);
+    applyPose(partsRef.current, poseRef.current, blinking, true, {
+      rot: springsRef.current, trans: transSpringsRef.current,
+    });
     applyLimbVisibility(partsRef.current, poseRef.current);
     applyLoopClass(partsRef.current);
     return partsRef.current;
@@ -326,14 +342,35 @@ export function MascotRig({
           if (def.wave && id === 'rig-arm-right') offs += waveSway(now);
         }
         const target = base + offs;
+        // Translation springs, one per axis, keyed off the same id. Reuses the
+        // tuned physics rather than a second easing model, so a limb's shift and
+        // its swing cannot disagree about how heavy this buddy is.
+        let transMoving = false;
+        for (const [axis, want] of [['tx', pp.tx ?? 0], ['ty', pp.ty ?? 0]] as const) {
+          const key = `${id}:${axis}`;
+          let ts = transSpringsRef.current.get(key);
+          if (!ts) { ts = { value: want, velocity: 0 }; transSpringsRef.current.set(key, ts); }
+          if (isSettled(ts, want)) { ts.value = want; ts.velocity = 0; continue; }
+          const n = stepSpring(ts, want, dt);
+          ts.value = n.value;
+          ts.velocity = n.velocity;
+          transMoving = true;
+        }
         let s = springsRef.current.get(id);
         if (!s) { s = { value: base, velocity: 0 }; springsRef.current.set(id, s); }
-        if (!poseChanged && s.value === target && isSettled(s, target)) continue; // parked on a static target
+        // Parked on a static target — and "parked" now has to mean the SLIDE as
+        // well as the swing. Gating on the rotation alone computed the arm's
+        // slide every tick and never wrote it, so a pose that only translates
+        // (every sleep pose) teleported instead of moving (measured 2026-09-05:
+        // two distinct positions across 145 samples).
+        if (!poseChanged && !transMoving && s.value === target && isSettled(s, target)) continue;
         const next = stepSpring(s, target, dt);
         s.value = next.value;
         s.velocity = next.velocity;
         el.style.transition = 'none';
-        el.style.transform = `translate(${pp.tx ?? 0}px, ${pp.ty ?? 0}px) rotate(${s.value.toFixed(2)}deg)`;
+        const tx = transSpringsRef.current.get(`${id}:tx`)?.value ?? (pp.tx ?? 0);
+        const ty = transSpringsRef.current.get(`${id}:ty`)?.value ?? (pp.ty ?? 0);
+        el.style.transform = `translate(${tx.toFixed(2)}px, ${ty.toFixed(2)}px) rotate(${s.value.toFixed(2)}deg)`;
       }
       // Velocity decay while a drag pauses mid-hold, so limbs relax.
       if (m.dragging) { m.vx *= 0.85; m.vy *= 0.85; }
@@ -419,26 +456,51 @@ function applyBody(parts: Parts, pose: PoseName, instant: boolean): void {
   const el = parts.byId.get('rig-body');
   if (el) {
     const p = def.parts['rig-body'] ?? {};
-    el.style.transition = instant ? 'none' : 'transform 520ms cubic-bezier(.22,.61,.36,1)';
+    // Directional on purpose (Destin, 2026-09-05): falling asleep is a slow
+    // heavy settle, waking is a quick one with a little overshoot at the end.
+    // The same curve both ways is what made the change of state read as a jump
+    // rather than as him doing something.
+    const asleep = pose.startsWith('sleep-');
+    el.style.transition = instant
+      ? 'none'
+      : asleep
+        ? 'transform 620ms cubic-bezier(.32,.02,.28,1)'
+        : 'transform 300ms cubic-bezier(.2,1.5,.4,1)';
     el.style.transform =
       `translate(${p.tx ?? 0}px, ${p.ty ?? 0}px) rotate(${p.rotate ?? 0}deg) scale(${p.scale ?? 1})`;
   }
   // Dim the WHOLE rig, not the body alone — half a faded mascot is a bug, and
   // the limbs are siblings of the body, not children of it.
   if (parts.root) {
-    parts.root.style.transition = instant ? 'none' : 'opacity 520ms ease-out';
+    parts.root.style.transition = instant
+      ? 'none'
+      : POSES[pose].dim != null ? 'opacity 620ms ease-out' : 'opacity 240ms ease-out';
     parts.root.style.opacity = String(def.dim ?? 1);
   }
 }
 
 /** Direct (non-spring) pose write — initial mount and reduced-effects mode. */
-function applyPose(parts: Parts, pose: PoseName, blinking: boolean, instant: boolean): void {
+function applyPose(
+  parts: Parts,
+  pose: PoseName,
+  blinking: boolean,
+  instant: boolean,
+  // WHERE THE LIMBS ACTUALLY ARE, when the springs are already holding them.
+  // This write runs on every re-index, which React performs on a pose change —
+  // so without it the limbs were slammed to the FINAL pose for one frame and
+  // the springs then dragged them back to the start and animated up. A pop,
+  // then the move (measured 2026-09-05: the arm's path began 0.5 → 5 → 1.25).
+  live?: { rot: Map<SpringId, SpringState>; trans: Map<string, SpringState> },
+): void {
   const def = POSES[pose];
   for (const [id, el] of parts.byId) {
     if (id === 'rig-body') continue;
     const p = def.parts[id] ?? {};
+    const rot = live?.rot.get(id as SpringId)?.value ?? p.rotate ?? 0;
+    const tx = live?.trans.get(`${id}:tx`)?.value ?? p.tx ?? 0;
+    const ty = live?.trans.get(`${id}:ty`)?.value ?? p.ty ?? 0;
     el.style.transition = instant ? 'none' : 'transform 180ms ease-out';
-    el.style.transform = `translate(${p.tx ?? 0}px, ${p.ty ?? 0}px) rotate(${p.rotate ?? 0}deg)`;
+    el.style.transform = `translate(${tx}px, ${ty}px) rotate(${rot}deg)`;
   }
   applyBody(parts, pose, instant);
   applyFace(parts, pose, blinking);

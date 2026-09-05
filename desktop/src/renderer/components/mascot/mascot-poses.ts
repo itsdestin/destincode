@@ -21,7 +21,9 @@ export type PoseName =
   // asleep, up for Destin to pick between. THE LOSERS GET DELETED; do not
   // build anything on one of these until the pick is recorded. The winner
   // keeps its parts and is renamed `sleep`.
-  | 'sleep-loaf' | 'sleep-slump' | 'sleep-deflate';
+  | 'sleep-loaf' | 'sleep-slump' | 'sleep-deflate'
+  // Round 2 — the loaf's BODY is settled; these vary only the arms.
+  | 'sleep-arms-tucked' | 'sleep-arms-docked' | 'sleep-arms-flop';
 
 /**
  * `scale` and the body:
@@ -137,6 +139,50 @@ export const POSES: Record<PoseName, PoseDef> = {
     },
     face: 'blink',
     dim: 0.55,
+  },
+
+  // ── Round 2, 2026-09-05. Destin picked the loaf and asked to see the arms in
+  // a few more positions: "tucked just a bit, fully docked, wildcard". The BODY
+  // below is the loaf's, unchanged and not under review — only the arms differ,
+  // so the comparison is about one thing.
+  //
+  // The arms are small nubs OUTSIDE the body silhouette (x 1-4 and 20-23,
+  // pivoting at y 9), which is why these are mostly TRANSLATIONS: a large
+  // rotation swings them up level with his face and reads as ears, not as arms.
+  'sleep-arms-tucked': {
+    parts: {
+      'rig-body': { ty: 2.2, scale: 0.94 },
+      // Barely moved — they stay where you last saw them, just relaxed.
+      'rig-arm-left': { ty: 2, rotate: 6 },
+      'rig-arm-right': { ty: 2, rotate: -6 },
+      'rig-leg-left': { hidden: true },
+      'rig-leg-right': { hidden: true },
+    },
+    face: 'blink',
+  },
+  'sleep-arms-docked': {
+    parts: {
+      'rig-body': { ty: 2.2, scale: 0.94 },
+      // All the way down and pulled INTO the body, so the outline becomes one
+      // clean shape with nothing sticking out.
+      'rig-arm-left': { ty: 5, tx: 1.7 },
+      'rig-arm-right': { ty: 5, tx: -1.7 },
+      'rig-leg-left': { hidden: true },
+      'rig-leg-right': { hidden: true },
+    },
+    face: 'blink',
+  },
+  'sleep-arms-flop': {
+    parts: {
+      'rig-body': { ty: 2.2, scale: 0.94 },
+      // The wildcard: arms swung out flat, flumped on his face. The one that is
+      // funny rather than tidy.
+      'rig-arm-left': { ty: 3.4, rotate: 72 },
+      'rig-arm-right': { ty: 3.4, rotate: -72 },
+      'rig-leg-left': { hidden: true },
+      'rig-leg-right': { hidden: true },
+    },
+    face: 'blink',
   },
 };
 
