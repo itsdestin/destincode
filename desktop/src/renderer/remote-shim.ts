@@ -1571,6 +1571,23 @@ export function installShim(): void {
       // no browser/Android equivalent); same desktop-only-throw contract as
       // openMain/dismiss/getStatus above.
       setKeepAbove: () => { throw new Error('Buddy is desktop-only in this version'); },
+      // ── The Linux/KDE buddy helper (design §4) ──
+      // Answered locally, not thrown and not sent over the wire. Two reasons.
+      // First, the honest answer really is this one: a phone or a remote browser
+      // has no buddy window at all, so nothing here needs a helper and the whole
+      // helper UI stays hidden — which is exactly what needed:false renders.
+      // Second, asking the DESKTOP would be wrong even though it can answer:
+      // the reply would describe the desktop's screen, not this browser's, and
+      // an "Add helper" button on a phone would change a machine the user is not
+      // looking at.
+      //
+      // The two actions still throw, matching openMain/dismiss/getStatus above:
+      // they are user-driven writes that genuinely cannot happen from here, and
+      // the file's contract is that a stray remote call is loud rather than
+      // silently successful.
+      helperStatus: async () => ({ needed: false, supported: false, installed: false }),
+      installHelper: () => { throw new Error('Buddy is desktop-only in this version'); },
+      removeHelper: () => { throw new Error('Buddy is desktop-only in this version'); },
     },
     // Remote clients do not participate in buddy attention aggregation —
     // main-process aggregation is desktop-Electron only.

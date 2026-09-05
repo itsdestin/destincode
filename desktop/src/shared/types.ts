@@ -1154,6 +1154,12 @@ export interface BuddyApi {
   // installed = the helper is already in the user's KDE settings.
   helperStatus?(): Promise<{ supported: boolean; installed: boolean }>;
   installHelper?(): Promise<{ ok: boolean }>;
+  // Added 2026-09-04 (decide-uninstall#D-1). The consent card used to promise the
+  // helper was "removed when you uninstall YouCoded", which is false: the AppImage
+  // build has no uninstall step at all. Destin chose a Remove helper control the
+  // user owns instead, so the app needs a channel that takes the helper back out
+  // of KDE's settings — see design §6 for the order the main side must use.
+  removeHelper?(): Promise<{ ok: boolean }>;
   show(): Promise<void>;
   hide(): Promise<void>;
   toggleChat(): Promise<void>;
@@ -1677,6 +1683,20 @@ export const IPC = {
   // rare/user-driven, not a hover-hot path). Settings' keep-above toggle:
   // persists to BUDDY_POS_FILE and runs the KWin script live.
   BUDDY_OVERLAY_KEEP_ABOVE: 'buddy:overlay-keep-above',
+  // ── The Linux/KDE buddy helper (docs/active/design/2026-09-04-linux-buddy-helper/) ──
+  // On a native-Wayland desktop an app is not allowed to move its own windows,
+  // so the buddy appears but cannot be dragged. A small script that runs inside
+  // KDE's window manager can move it. These three channels are the app's side
+  // of that script: ask whether it is needed/possible/present, put it in the
+  // user's KDE settings, and take it back out again.
+  //
+  // Deliberately three surfaces, not five: buddy has NO Android (SessionService.kt)
+  // or remote-server presence today, and adding one would turn this feature into
+  // a platform-parity sweep (design §4). ipc-channels.test.ts's `buddy:*` block
+  // records that omission so it does not read as an oversight.
+  BUDDY_HELPER_STATUS: 'buddy:helper-status',
+  BUDDY_INSTALL_HELPER: 'buddy:install-helper',
+  BUDDY_REMOVE_HELPER: 'buddy:remove-helper',
   // Main → main window: switch active session (sent by buddy:open-main).
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',

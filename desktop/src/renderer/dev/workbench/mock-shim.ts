@@ -1919,9 +1919,11 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       ({ ok: true as const, value: { ok: true as const, best: score, best_at: Math.floor(Date.now() / 1000), runs: 1, is_best: true } }),
   };
 
-  // The buddy floater. Six of these mirror preload.ts; helperStatus and
-  // installHelper have NO real backend yet and are registered in MOCK_ONLY —
-  // they are the Linux/KDE helper design (docs/active/design/2026-09-04-linux-buddy-helper/).
+  // The buddy floater. Every one of these mirrors preload.ts, including the
+  // three Linux/KDE helper calls — those had no real backend while the popup was
+  // being designed and came off MOCK_ONLY on 2026-09-04 when it landed
+  // (docs/active/design/2026-09-04-linux-buddy-helper/). The fakes below stay so
+  // the workbench can still show every state without a KDE desktop.
   //
   // ?buddyHelper= picks which Linux the workbench is pretending to be:
   //   installed  the KWin helper is in place — the buddy can be dragged  (default)
@@ -1958,6 +1960,15 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     installHelper: async () => {
       if (!buddyHelperSupported) return { ok: false as const };
       buddyHelperInstalled = true;
+      return { ok: true as const };
+    },
+    // MOCK_ONLY. The user-owned undo (decide-uninstall#D-1). The real one runs
+    // design §6's order — unload the script, disable it, ask KWin to reconfigure,
+    // then delete the package — and the buddy is switched off after it, because
+    // without the helper there is no buddy to move.
+    removeHelper: async () => {
+      if (!buddyHelperSupported) return { ok: false as const };
+      buddyHelperInstalled = false;
       return { ok: true as const };
     },
   };

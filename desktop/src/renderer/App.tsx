@@ -3805,6 +3805,76 @@ function AppInnerProfiler({ children }: { children: React.ReactNode }) {
   return <React.Profiler id="AppInner" onRender={onRender}>{children}</React.Profiler>;
 }
 
+// ─── R12: the one-time Linux buddy hide ────────────────────────────────────
+// Design §6 of docs/active/design/2026-09-04-linux-buddy-helper/.
+//
+// WHAT THE USER SEES: a Linux user who already had the buddy switched on finds it
+// OFF exactly once, the first time they launch the version that adds the KDE
+// helper. Turning it back on is one click in Settings → Buddy Floater, and that
+// click is where the helper is offered. Nothing pops up at launch (R13).
+//
+// WHY it has to happen at all: before this version the buddy appeared on Wayland
+// but could not be dragged. Leaving it switched on would put a stuck buddy back on
+// screen with no explanation; hiding it once turns "it's broken" into "it's off,
+// switch it on and it asks you a question".
+//
+// WHY IN THE RENDERER, not the main process: the preference is
+// localStorage['youcoded-buddy-enabled'], which only the renderer can read or
+// write — a main-process one-shot cannot clear it.
+const BUDDY_LINUX_HIDE_MIGRATION_KEY = 'youcoded-buddy-linux-hidden-once';
+
+// Exported for tests/buddy-linux-migration.test.ts. Resolves to what it did, so a
+// test can prove "exactly once" rather than inferring it from storage.
+export async function runBuddyLinuxHideMigration(): Promise<
+  'hid' | 'nothing-to-hide' | 'already-run' | 'skipped'
+> {
+  // The three buddy renderers (and the dormant overlay one) are separate windows
+  // running this same App module. They share the profile's localStorage, so
+  // without this guard the migration would run up to four times per launch and,
+  // worse, could fire inside a buddy window after the main window had already
+  // been re-enabled by the user.
+  if (buddyMode) return 'skipped';
+  // Remote browsers and Android: same Electron-only probe the boot effect uses
+  // below. A phone has no buddy and no KDE, and every buddy method there throws.
+  if (!(window as any).claude?.window) return 'skipped';
+  if (localStorage.getItem(BUDDY_LINUX_HIDE_MIGRATION_KEY) === '1') return 'already-run';
+  let platform: string | undefined;
+  try {
+    platform = await (window as any).claude?.getPlatform?.();
+  } catch {
+    // Never let a boot-time IPC failure take the launch path down: if we cannot
+    // tell which OS this is, we change nothing and try again next launch.
+    return 'skipped';
+  }
+  if (platform !== 'linux') return 'skipped';
+  // The marker is written whether or not the buddy was on, so this is a true
+  // one-shot: a user who switches the buddy back on is never hidden again.
+  localStorage.setItem(BUDDY_LINUX_HIDE_MIGRATION_KEY, '1');
+  if (localStorage.getItem('youcoded-buddy-enabled') !== '1') return 'nothing-to-hide';
+  localStorage.setItem('youcoded-buddy-enabled', '0');
+  return 'hid';
+}
+
+// The launch path for the buddy, extracted from the effect below so the ordering
+// it depends on is testable: the R12 one-shot must finish BEFORE the preference
+// is read, or a launch would still re-open the buddy this version means to hide.
+export async function bootBuddyOnLaunch(): Promise<void> {
+  if (buddyMode) return;
+  // Fix: buddy.show() is an error-throwing stub in remote-shim (browser and
+  // Android). Optional chaining does NOT help — the stub exists, it throws —
+  // so a remote client with this flag set in localStorage threw out of this
+  // effect and RootErrorBoundary replaced the whole app with "YouCoded failed
+  // to start". Gate on window.claude.window, the Electron-only window-controls
+  // surface the shim deliberately omits; getPlatform() is NOT usable here
+  // because the shim sets __PLATFORM__ to the host's 'desktop' on auth:ok, so
+  // a remote browser does not report as 'browser'.
+  if (!(window as any).claude?.window) return;
+  await runBuddyLinuxHideMigration();
+  if (localStorage.getItem('youcoded-buddy-enabled') === '1') {
+    window.claude.buddy?.show?.();
+  }
+}
+
 export default function App() {
   // Perf lab: React has mounted the app shell (first commit).
   useEffect(() => { performance.mark('yc:app-mounted'); }, []);
@@ -3814,30 +3884,23 @@ export default function App() {
   // buddy windows themselves — only the main window should re-open the
   // buddy. Optional chaining guards against preload not being ready.
   useEffect(() => {
-    if (buddyMode) return;
-    // Fix: buddy.show() is an error-throwing stub in remote-shim (browser and
-    // Android). Optional chaining does NOT help — the stub exists, it throws —
-    // so a remote client with this flag set in localStorage threw out of this
-    // effect and RootErrorBoundary replaced the whole app with "YouCoded failed
-    // to start". Gate on window.claude.window, the Electron-only window-controls
-    // surface the shim deliberately omits; getPlatform() is NOT usable here
-    // because the shim sets __PLATFORM__ to the host's 'desktop' on auth:ok, so
-    // a remote browser does not report as 'browser'.
-    if (!(window as any).claude?.window) return;
-    if (localStorage.getItem('youcoded-buddy-enabled') === '1') {
-      window.claude.buddy?.show?.();
-    }
+    void bootBuddyOnLaunch();
   }, []);
 
   // Buddy windows render as isolated placeholders without main-app providers
   if (buddyMode === 'buddy-mascot') return <BuddyMascotApp />;
   if (buddyMode === 'buddy-chat') return <BuddyChatApp />;
   if (buddyMode === 'buddy-bar') return <BuddyBarApp />;
-  // Linux Wayland can't reposition BrowserWindows, so the whole floater
-  // (mascot + chat + bar) mounts as DOM inside one screen-sized overlay
-  // window instead of the three separate windows above — see
-  // BuddyOverlayManager (main) / chooseBuddyStrategy for how a platform ends
-  // up on this route. Other platforms never set ?mode=buddy-overlay.
+  // The overlay strategy: the whole floater (mascot + chat + bar) mounted as DOM
+  // inside one screen-sized window instead of the three separate windows above.
+  //
+  // Correction 2026-09-04 (design §7): this comment used to say Linux Wayland
+  // takes this route. It does not, and has not — chooseBuddyStrategy
+  // (buddy-manager.ts) returns 'windows' on every path except an explicit
+  // YOUCODED_BUDDY_STRATEGY env override, so NO platform reaches
+  // ?mode=buddy-overlay on its own. The overlay code is dormant, kept behind that
+  // override; on Linux Wayland the buddy is three real windows moved by the KWin
+  // helper. Believing the old sentence sends a session to the wrong file.
   if (buddyMode === 'buddy-overlay') return <BuddyOverlayApp />;
 
   // Main app wrapped in providers

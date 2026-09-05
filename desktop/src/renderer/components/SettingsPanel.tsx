@@ -806,6 +806,11 @@ function BuddyButton() {
   const [consent, setConsent] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
+  // The undo half (decide-uninstall#D-1). Separate flags from the install ones:
+  // the two actions live in different states of the popup and must never share a
+  // spinner or an error line.
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isDesktopShell() || platform !== 'linux') return;
@@ -835,8 +840,14 @@ function BuddyButton() {
   // 2026-09-04 (review B-2). It existed because raising the window was the only
   // thing the app could do on Wayland; the helper now pins the buddy itself, and
   // without the helper the buddy cannot be switched on at all — so the control
-  // had nothing left to control. Its main-side preference and kwin-keep-above.ts
-  // stay; the helper is what drives them.
+  // had nothing left to control.
+  //
+  // Correction 2026-09-04 (design §7): the sentence that used to sit here said
+  // kwin-keep-above.ts "stays; the helper is what drives them". That is wrong and
+  // would have sent a future session to the wrong file. kwin-keep-above.ts is
+  // DEAD on this path — both its call sites pass the overlay window's caption,
+  // and chooseBuddyStrategy never picks the overlay strategy on Linux. The helper
+  // script sets keepAbove on the buddy window itself and does not call it.
 
   useEffect(() => {
     if (!open) return;
@@ -880,9 +891,41 @@ function BuddyButton() {
         return;
       }
     } catch { /* falls through to the same honest message */ }
+    // Fix 2026-09-04 (design §11): the button used to stay on "Adding…" forever
+    // when the install failed — `installing` was only ever set true, so the only
+    // way back was to close and reopen the popup. Clear it before showing the
+    // error so "Add helper" is clickable again for a retry.
+    setInstalling(false);
     // Non-committal on purpose (docs/error-message-standards.md): we know the
     // install did not succeed, we do not know why, so we do not guess a cause.
     setInstallError("Couldn't add the helper to your KDE settings.");
+  }, [applyEnabled]);
+
+  // R10, amended by decide-uninstall#D-1: removal is the user's to run, from this
+  // popup, on any Linux. The old consent card promised the helper went away when
+  // YouCoded was uninstalled, which is false — the AppImage build has no uninstall
+  // step at all — so this control is what makes the new sentence true.
+  //
+  // On success the buddy is switched OFF as well: no helper, no buddy (R4). Doing
+  // it here rather than leaving the buddy running keeps the popup honest, since
+  // the moment the script leaves KWin the buddy can no longer be moved.
+  const removeHelper = useCallback(async () => {
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      const r = await window.claude.buddy?.removeHelper?.();
+      if (r?.ok) {
+        setHelper({ supported: true, installed: false });
+        applyEnabled(false);
+        setRemoving(false);
+        return;
+      }
+    } catch { /* falls through to the same honest message */ }
+    setRemoving(false);
+    // Same shape as the install failure above, and for the same reason: we know
+    // it did not succeed and we do not know why, so we say exactly that and
+    // nothing more (docs/error-message-standards.md).
+    setRemoveError("Couldn't remove the helper from your KDE settings.");
   }, [applyEnabled]);
 
   const showNow = useCallback(() => {
@@ -910,13 +953,19 @@ function BuddyButton() {
         icon={<BuddyIcon />}
         title="Buddy Floater"
         description={status}
-        onClick={() => setOpen(true)}
+        // The failure line is cleared on the way IN, so a warning from an earlier
+        // attempt is never the first thing in a freshly-opened popup. This row is
+        // always mounted (only the dialog closes), so the state would otherwise
+        // survive indefinitely.
+        onClick={() => { setRemoveError(null); setOpen(true); }}
       />
 
       {/* maxHeight="none" preserves this one's existing behavior — it was the only
           popup of the seven with no height ceiling, and it has no scroll container,
-          so inheriting the shell's 80vh default would silently CLIP the Linux
-          keep-above row instead of letting the popup grow. */}
+          so inheriting the shell's 80vh default would silently CLIP the popup's
+          taller states instead of letting it grow. (Written for the Linux
+          keep-above row, which review B-2 deleted; the consent card and the
+          Remove helper action are what make this popup tall now.) */}
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
@@ -942,8 +991,15 @@ function BuddyButton() {
                   small helper to your KDE settings that moves it on the buddy&rsquo;s behalf.
                   Without this helper, the buddy floater cannot be enabled.
                   <br /><br />
-                  It only ever touches the buddy&rsquo;s own window, and it is removed when you
-                  uninstall YouCoded.
+                  {/* Replaced 2026-09-04 (decide-uninstall#D-1, design §6). The old
+                      sentence ended "and it is removed when you uninstall YouCoded",
+                      which is not true for most Linux users: the AppImage build has
+                      no uninstall step, and on deb/rpm/pacman the cleanup would run
+                      as root against a per-user KDE config. Destin picked the honest
+                      wording plus the Remove helper control below. Verbatim — do not
+                      reword without another deck. */}
+                  It only ever touches the buddy&rsquo;s own window. You can remove it again any
+                  time from this menu.
                 </div>
                 {installError && <Callout tone="warning">{installError}</Callout>}
                 <div className="flex gap-2 pt-1">
@@ -984,6 +1040,23 @@ function BuddyButton() {
                   }
                   control={<Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />}
                 />
+              )}
+
+              {/* R10 (amended by decide-uninstall#D-1): the undo for "Add helper".
+                  It renders ONLY when the helper is actually in the user's KDE
+                  settings, so the single-row popup Destin signed off (R6) is still
+                  exactly what a new Linux user sees — this second control cannot
+                  appear until they have added the helper themselves. It is also
+                  never shown on Windows or macOS, where there is no helper. */}
+              {platform === 'linux' && helper?.supported && helper.installed && (
+                <>
+                  {removeError && <Callout tone="warning">{removeError}</Callout>}
+                  <div className="flex justify-end">
+                    <Button variant="ghost" size="sm" onClick={removeHelper} disabled={removing}>
+                      {removing ? 'Removing\u2026' : 'Remove helper'}
+                    </Button>
+                  </div>
+                </>
               )}
             </div>
             )}
