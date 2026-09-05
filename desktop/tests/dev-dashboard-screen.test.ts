@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { PILL_COPY, pillDetail } from '../src/renderer/dev/dashboard/StatusPill';
+import { PILL_COPY, pillDetail, mainPillCopy } from '../src/renderer/dev/dashboard/StatusPill';
 import { buildCleanupPrompt } from '../src/renderer/dev/dashboard/cleanup-prompt';
 import type { Checkout } from '../src/renderer/dev/dashboard/api';
 
 const c = (over: Partial<Checkout>): Checkout => ({
   id: 'i', path: '/w/wt', name: 'wt', branch: 'feat/x', dirty: 0, ahead: 0,
-  pushed: false, merged: false, status: 'safe', missing: false, ...over,
+  pushed: false, merged: false, status: 'safe', missing: false, isMain: false, ...over,
 });
 
 describe('pill copy', () => {
@@ -29,6 +29,23 @@ describe('pill copy', () => {
       expect(PILL_COPY[k].dot).toMatch(/^bg-/);
     }
     expect(PILL_COPY.unsaved.dot).toBe('bg-destructive');
+  });
+});
+
+describe('the main checkout', () => {
+  it('is never told it is safe to delete', () => {
+    // Everything else hangs off it. A green all-clear beside the main checkout
+    // invites exactly the wrong action, and it has no tick box for the same reason.
+    const { label } = mainPillCopy('safe');
+    expect(label).toBe('Main checkout');
+    expect(label).not.toMatch(/delete/i);
+  });
+
+  it('still warns when it holds unsaved work', () => {
+    // Suppressing "safe to delete" must not suppress a real warning — an
+    // uncommitted file in the shared checkout matters as much as anywhere.
+    expect(mainPillCopy('unsaved').label).toBe('Unsaved work');
+    expect(mainPillCopy('unpushed').label).toBe('Unpushed work');
   });
 });
 

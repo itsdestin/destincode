@@ -9,6 +9,7 @@ import { CheckoutRow } from './CheckoutRow';
 import { ConfirmDialog } from './ConfirmDialog';
 import { buildCleanupPrompt } from './cleanup-prompt';
 import { WorkspaceBanner } from './WorkspaceBanner';
+import { CopyButton } from './CopyButton';
 
 /** Most-fragile first. A page sorted alphabetically buries the one row that
  *  matters among twenty-three that don't. */
@@ -125,8 +126,12 @@ export function DevDashboard() {
   );
 
   return (
-    <div className="min-h-screen p-6">
-      <div className="mx-auto max-w-5xl">
+    // h-full + overflow-y-auto, NOT min-h-screen: globals.css pins html, body and
+    // #root to 100dvh with overflow:hidden (right for the app's fixed shell, wrong
+    // for a long list), so this page has to be its own scroll container or its
+    // bottom rows are simply unreachable.
+    <div className="h-full overflow-y-auto p-6">
+      <div className="mx-auto max-w-5xl pb-2">
         <header className="mb-4 flex items-center gap-3">
           <h1 className="flex-1 text-base text-fg">Dev dashboard</h1>
           {notice && <span className="text-3xs text-fg-muted">{notice}</span>}
@@ -139,7 +144,7 @@ export function DevDashboard() {
           </Button>
         </header>
 
-        <WorkspaceBanner state={workspace} checking={checkingWorkspace} />
+        <WorkspaceBanner state={workspace} checking={checkingWorkspace} onError={say} />
 
         <div className="layer-surface overflow-hidden rounded-lg border border-edge-dim">
           {error && (
@@ -169,30 +174,22 @@ export function DevDashboard() {
         </div>
 
         {selected.size > 0 && (
-          <div className="mt-3 flex items-center gap-3 rounded-lg border border-edge-dim bg-panel px-3 py-2">
+          <div className="sticky bottom-0 mt-3 flex items-center gap-3 rounded-lg border border-edge-dim bg-panel px-3 py-2 shadow-lg">
             <span className="flex-1 text-3xs text-fg-muted">
               {selected.size} selected
               {riskyCount > 0 && ` · ${riskyCount} hold the only copy of some work`}
             </span>
             <Button variant="secondary" size="sm" onClick={() => setSelected(new Set())}>Clear</Button>
-            <Button
+            <CopyButton
               variant="primary"
-              size="sm"
-              onClick={async () => {
-                const chosen = (checkouts ?? []).filter((c) => selected.has(c.id));
-                // Clipboard ONLY. No delete button lives on this page: one click
-                // from a red "unsaved work" pill is the most dangerous control it
-                // could carry, and nothing in the answers asked for one.
-                try {
-                  await navigator.clipboard.writeText(buildCleanupPrompt(chosen));
-                  say('Cleanup prompt copied — paste it into a new conversation');
-                } catch (e) {
-                  say(`Could not copy: ${e instanceof Error ? e.message : String(e)}`);
-                }
-              }}
-            >
-              Request cleanup
-            </Button>
+              label="Request cleanup"
+              copiedLabel="Copied — paste in a new chat"
+              onError={say}
+              // Clipboard ONLY. No delete button lives on this page: one click
+              // from a red "unsaved work" pill is the most dangerous control it
+              // could carry, and nothing in the answers asked for one.
+              text={() => buildCleanupPrompt((checkouts ?? []).filter((c) => selected.has(c.id)))}
+            />
           </div>
         )}
       </div>

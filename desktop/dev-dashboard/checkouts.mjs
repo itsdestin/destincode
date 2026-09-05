@@ -74,7 +74,10 @@ export async function listCheckouts(repoDir, opts = {}) {
   let current = null;
   for (const line of porcelain.split('\n')) {
     if (line.startsWith('worktree ')) {
-      current = { path: line.slice('worktree '.length), branch: null };
+      // git lists the MAIN checkout first. It is not a worktree you would ever
+      // remove — everything else hangs off it — so it is marked and never offered
+      // for cleanup, however clean it happens to look.
+      current = { path: line.slice('worktree '.length), branch: null, isMain: entries.length === 0 };
       entries.push(current);
     } else if (line.startsWith('branch ') && current) {
       current.branch = line.slice('branch '.length).replace('refs/heads/', '');
@@ -87,6 +90,7 @@ export async function listCheckouts(repoDir, opts = {}) {
       path: e.path,
       name: path.basename(e.path),
       branch: e.branch,
+      isMain: e.isMain,
     };
     // A worktree still registered against a deleted directory: report it rather
     // than letting every git call below fail one at a time.
@@ -97,6 +101,8 @@ export async function listCheckouts(repoDir, opts = {}) {
       };
     }
     const m = await measure(e.path, e.branch, base);
+    // The main checkout still gets a real status — "unsaved work" there matters as
+    // much as anywhere — but never the word "safe to delete".
     return { ...common, ...m, status: classify(m), missing: false };
   }));
 }

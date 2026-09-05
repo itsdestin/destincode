@@ -30,7 +30,11 @@ export function CheckoutRow({
   return (
     <div className="border-b border-edge-dim px-3 py-2 last:border-b-0">
       <div className="flex items-center gap-3">
-        <Checkbox checked={selected} onChange={() => onToggle(checkout.id)} />
+        {/* The main checkout is not a cleanup candidate, so it has no tick box —
+            a disabled one still reads as "you could". */}
+        {checkout.isMain
+          ? <span className="w-4 shrink-0" aria-hidden="true" />
+          : <Checkbox checked={selected} onChange={() => onToggle(checkout.id)} />}
 
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm text-fg">{checkout.name}</div>
@@ -44,7 +48,7 @@ export function CheckoutRow({
           </div>
         </div>
 
-        <StatusPill status={checkout.status} />
+        <StatusPill status={checkout.status} isMain={checkout.isMain} />
 
         <div className="w-44 shrink-0">
           <Select

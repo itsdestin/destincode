@@ -41,8 +41,22 @@ export function pillDetail(c: Checkout): string {
   return bits.length ? bits.join(' · ') : 'nothing ahead, nothing uncommitted';
 }
 
-export function StatusPill({ status }: { status: Status }) {
-  const c = PILL_COPY[status];
+/** The main checkout is never "safe to delete" — everything else hangs off it, and
+ *  a green all-clear beside it invites exactly the wrong action. Every OTHER state
+ *  passes through unchanged: suppressing the all-clear must not suppress a real
+ *  warning, because an uncommitted file in the shared checkout matters as much as
+ *  it does anywhere else. */
+export function mainPillCopy(status: Status): { label: string; hint: string; dot: string } {
+  if (status !== 'safe') return PILL_COPY[status];
+  return {
+    label: 'Main checkout',
+    hint: 'The shared checkout every worktree hangs off. Not something to remove.',
+    dot: 'bg-fg-muted/40',
+  };
+}
+
+export function StatusPill({ status, isMain }: { status: Status; isMain?: boolean }) {
+  const c = isMain ? mainPillCopy(status) : PILL_COPY[status];
   return (
     <span
       // aria-label carries the consequence for a screen reader. It is NOT the

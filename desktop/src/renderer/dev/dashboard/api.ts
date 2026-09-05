@@ -15,6 +15,7 @@ export interface Checkout {
   merged: boolean;
   status: Status;
   missing: boolean;
+  isMain: boolean;
 }
 
 export interface Instance {

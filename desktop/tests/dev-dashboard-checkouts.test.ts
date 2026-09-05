@@ -83,6 +83,15 @@ describe('listCheckouts against a real repo', () => {
     expect(by('wt-done').status).toBe('safe');
   });
 
+  it('marks the main checkout, and only it', async () => {
+    // git lists the main checkout first. It is never a cleanup candidate —
+    // everything else hangs off it — so the page must be able to tell it apart.
+    const list = await listCheckouts(repo, { base: 'origin/master' });
+    const mains = list.filter((c: { isMain: boolean }) => c.isMain);
+    expect(mains).toHaveLength(1);
+    expect(mains[0].path).toBe(repo);
+  });
+
   it('gives every checkout a stable id and never leaks a path into it', async () => {
     const list = await listCheckouts(repo, { base: 'origin/master' });
     expect(list.every((c: { id: string }) => /^[a-zA-Z0-9-]+$/.test(c.id))).toBe(true);

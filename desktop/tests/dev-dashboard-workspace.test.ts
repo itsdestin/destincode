@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { verdict } from '../dev-dashboard/workspace.mjs';
+import { buildWorkspacePrompt } from '../src/renderer/dev/dashboard/workspace-prompt';
+import type { WorkspaceState } from '../src/renderer/dev/dashboard/api';
 
 const ws = (over: Record<string, unknown> = {}) => ({
   workspace: {
@@ -48,5 +50,45 @@ describe('the workspace verdict', () => {
   it('does not claim a verdict with no repo to measure', () => {
     const v = verdict({ workspace: null, repos: [] });
     expect(v.tone).not.toBe('ok');
+  });
+});
+
+const full = (over: Record<string, unknown> = {}): WorkspaceState => {
+  const base = ws(over);
+  return { ...base, verdict: verdict(base) } as WorkspaceState;
+};
+
+describe('buildWorkspacePrompt', () => {
+  it('says what being behind costs, not just the number', () => {
+    const out = buildWorkspacePrompt(full({ behind: 38 }));
+    expect(out).toMatch(/38 commit/);
+    expect(out).toMatch(/out of date/i);
+  });
+
+  it('names each blocking file and asks for them to be checked one by one', () => {
+    const out = buildWorkspacePrompt(full({ behind: 38, blocking: ['docs/MAP.md', 'CLAUDE.md'] }));
+    expect(out).toContain('docs/MAP.md');
+    expect(out).toContain('CLAUDE.md');
+    expect(out).toMatch(/check rather than assume/i);
+  });
+
+  it('never tells the reader to just discard the blockers', () => {
+    // This session found two blocking files that were genuinely another session's
+    // only copy. A prompt that said "clear them" would have lost that work.
+    const out = buildWorkspacePrompt(full({ behind: 5, blocking: ['a.md'] }));
+    expect(out).toMatch(/tell me before discarding/i);
+    expect(out).not.toMatch(/just delete|simply remove/i);
+  });
+
+  it('asks a different question when the check itself failed', () => {
+    const out = buildWorkspacePrompt(full({ fetchFailed: true }));
+    expect(out).toMatch(/could not check/i);
+    expect(out).not.toMatch(/commit\(s\) behind/);
+  });
+
+  it('says so plainly when nothing is blocking', () => {
+    const out = buildWorkspacePrompt(full({ behind: 3, blocking: [] }));
+    expect(out).toMatch(/nothing is blocking/i);
+    expect(out).toMatch(/setup\.sh/);
   });
 });
