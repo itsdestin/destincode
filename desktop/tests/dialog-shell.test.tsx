@@ -181,7 +181,7 @@ const NOT_DIALOGS: Record<string, string> = {
   // shape as AnchorTip above — a bubble pinned to a control it points at.
   'ViewToggleHint.tsx': 'coach mark anchored to the chat/terminal toggle via computed coordinates',
   // Evidence, not a class string: `pos` comes from getBoundingClientRect() of the
-  // mic button (its own triggerRef), the transform is translate(-50%, -100%) — up
+  // mic button (its own triggerRef), the transform is translate(-100%, -100%) — up
   // from the trigger's top edge, never -50%/-50% — and the file renders no <Scrim>.
   // The same shape as AnchorTip and ViewToggleHint: a bubble pinned above the
   // control it belongs to (the first-run download card, the download progress,

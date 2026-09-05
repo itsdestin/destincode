@@ -88,7 +88,10 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
     const el = triggerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setPos({ x: r.left + r.width / 2, y: r.top - 10 });
+    // The mic lives at the composer's right edge, so a card centred on it would
+    // run off the window. Hang the card's RIGHT edge from the mic's right edge
+    // instead (translate(-100%, -100%) below): it grows leftward, over the box.
+    setPos({ x: r.right, y: r.top - 8 });
   }, []);
 
   useEffect(() => {
@@ -216,7 +219,7 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
             role="dialog"
             aria-label="Voice"
             className="fixed p-3 text-left w-72 max-w-[calc(100vw-1.5rem)]"
-            style={{ left: pos.x, top: pos.y, transform: 'translate(-50%, -100%)' }}
+            style={{ left: pos.x, top: pos.y, transform: 'translate(-100%, -100%)' }}
             onClick={(e) => e.stopPropagation()}
           >
             {card}
