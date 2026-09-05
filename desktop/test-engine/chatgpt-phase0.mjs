@@ -32,6 +32,7 @@ const REDIRECT = 'http://localhost:1455/auth/callback';
 const SCOPE = 'openid profile email offline_access';
 const BACKEND = 'https://chatgpt.com/backend-api';
 
+const APP_VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 const argv = process.argv.slice(2);
 const outIdx = argv.indexOf('--out');
 const OUT = outIdx >= 0 ? argv[outIdx + 1] : path.join(os.tmpdir(), 'chatgpt-phase0');
@@ -118,7 +119,9 @@ async function main() {
     // P0-3: the manifest with OUR version string and with a Codex-CLI-shaped one — if
     // the manifest gates rows on the caller's version, the app's own string is
     // what R3 is graded against, so both bodies are kept.
-    ['models-app-version', `${BACKEND}/codex/models?client_version=${encodeURIComponent(app.getVersion())}`],
+    // Review R2-5: under `npx electron <script>` app.getVersion() is ELECTRON's number,
+    // so the app's own version is read straight from desktop/package.json.
+    ['models-app-version', `${BACKEND}/codex/models?client_version=${encodeURIComponent(APP_VERSION)}`],
     ['models-codex-version', `${BACKEND}/codex/models?client_version=${encodeURIComponent(process.env.CLIENT_VERSION ?? '0.130.0')}`],
     ['accounts-check', `${BACKEND}/wham/accounts/check`],
     ['profile', `${BACKEND}/wham/profiles/me`],
@@ -126,7 +129,7 @@ async function main() {
     try {
       const r = await fetch(u, { headers: H });
       const text = await r.text();
-      say(`${name}: HTTP ${r.status} content-type=${r.headers.get('content-type')} bytes=${text.length}`);
+      say(`${name}: GET ${u.replace(/\?.*$/, (q) => q)} → HTTP ${r.status} content-type=${r.headers.get('content-type')} bytes=${text.length}`);
       save(`${name}.${r.ok ? 'json' : `http${r.status}.txt`}`, text);
     } catch (e) { say(`${name}: FAILED ${e.message}`); }
   }
@@ -153,6 +156,18 @@ async function main() {
     if (!r.ok) save(`responses.http${r.status}.txt`, text);
     else save('responses.sse.txt', text.replace(/"encrypted_content":"[^"]+"/g, '"encrypted_content":"…"'));
   } catch (e) { say(`responses: FAILED ${e.message}`); }
+
+  // P0-5 (review R2-2): is a NON-streaming call refused? The native auto-title feeder
+  // uses generateText, which sends no `stream: true`.
+  try {
+    const r = await fetch(`${BACKEND}/codex/responses`, {
+      method: 'POST', headers: { ...H, 'content-type': 'application/json', 'OpenAI-Beta': 'responses=experimental' },
+      body: JSON.stringify({ model: process.env.PHASE0_MODEL ?? 'gpt-5.5', store: false, stream: false, instructions: 'Reply with the single word: ok', input: [{ role: 'user', content: [{ type: 'input_text', text: 'ok?' }] }] }),
+    });
+    const text = await r.text();
+    say(`non-streaming: HTTP ${r.status} bytes=${text.length}`);
+    save(`responses-nonstream.${r.ok ? 'json' : `http${r.status}.txt`}`, text.replace(/"encrypted_content":"[^"]+"/g, '"encrypted_content":"…"'));
+  } catch (e) { say(`non-streaming: FAILED ${e.message}`); }
 
   // P0-4 (review R1-2): does a tool turn work when the follow-up carries the
   // function_call but NOT the encrypted reasoning item beside it? The harness keeps
