@@ -19,9 +19,16 @@ function header(over: Partial<GgufHeader> = {}): GgufHeader {
     slidingWindowPattern: null, slidingWindowPatternLayers: null,
     fullAttentionInterval: null, nextnPredictLayers: null,
     recurrentLayers: null, sharedKvLayers: null, slidingLayers: null,
+    ssmConvKernel: null, ssmStateSize: null, ssmInnerSize: null, ssmGroupCount: null,
     contextBytesIsUpperBound: false, archBytes: 0,
     ...over,
   };
+}
+
+/** The SSM shape every Qwen 3.5/3.6/3.8 file carries (read off Destin's own
+ *  copies): state 128, conv kernel 4, 16 groups; only the inner size varies. */
+function ssm(innerSize: number) {
+  return { ssmStateSize: 128, ssmInnerSize: innerSize, ssmConvKernel: 4, ssmGroupCount: 16 };
 }
 
 const F16 = { k: 'f16', v: 'f16' } as const;
@@ -58,10 +65,48 @@ describe('kvCacheBytes — the per-layer formula (§D2)', () => {
     expect(kvCacheBytes(h, 4096, F16).bytes).toBeLessThan(flat);
   });
 
-  it('recurrent/linear layers hold no attention KV at all', () => {
+  it('recurrent/linear layers hold no attention KV — but they DO hold their own state', () => {
+    // Qwen3.5-9B's real shape: 32 blocks, every 4th is attention.
     const recurrent = Array.from({ length: 32 }, (_, il) => (il + 1) % 4 !== 0); // 24 of 32
-    const h = header({ blockCount: 32, headCountKv: 4, keyLength: 256, valueLength: 256, recurrentLayers: recurrent });
-    expect(kvCacheBytes(h, 32768, Q8K).bytes).toBe(8 * 4 * (256 * 1 + 256 * 2) * 32768 * BLOCK);
+    const h = header({
+      blockCount: 32, headCountKv: 4, keyLength: 256, valueLength: 256,
+      recurrentLayers: recurrent, ...ssm(4096),
+    });
+    const attention = 8 * 4 * (256 * 1 + 256 * 2) * 32768 * BLOCK;
+    // MEASURED on b10665: llama.cpp reports 201.00 MiB of recurrent state for
+    // this model at the default 4 sequence slots.
+    expect(kvCacheBytes(h, 32768, Q8K).bytes - attention).toBe(201.00 * MIB);
+  });
+
+  it('recurrent state is measured, not guessed — three real models, to the byte', () => {
+    // nRec × n_seq_max × [d_state×d_inner + (d_conv−1)×(d_inner + 2·n_group·d_state)] × 4,
+    // checked against what llama.cpp prints for each of Destin's own models.
+    const hybrid = (blocks: number, inner: number, nextn = 0) => header({
+      blockCount: blocks, headCountKv: 4, keyLength: 256, valueLength: 256, ...ssm(inner),
+      recurrentLayers: Array.from({ length: blocks }, (_, il) => il < blocks - nextn && (il + 1) % 4 !== 0),
+    });
+    const stateOf = (h: ReturnType<typeof header>, attentionLayers: number, heads: number) =>
+      kvCacheBytes(h, 4096, Q8K).bytes - attentionLayers * heads * (256 * 1 + 256 * 2) * 4096 * BLOCK;
+    // Qwen3.5-2B: 24 blocks, 18 recurrent, inner 2048.
+    expect(stateOf(header({
+      blockCount: 24, headCountKv: 2, keyLength: 256, valueLength: 256, ...ssm(2048),
+      recurrentLayers: Array.from({ length: 24 }, (_, il) => (il + 1) % 4 !== 0),
+    }), 6, 2)).toBe(80_805_888);   // 77.0625 MiB, printed as 77.06
+    // Qwen3.5-9B: 32 blocks, 24 recurrent, inner 4096.
+    expect(stateOf(hybrid(32, 4096), 8, 4)).toBe(201.00 * MIB);
+    // Qwen3.8-27B: 65 blocks with one MTP layer, 48 recurrent, inner 6144.
+    expect(stateOf(hybrid(65, 6144, 1), 17, 4)).toBe(598.50 * MIB);
+  });
+
+  it('a hybrid model whose SSM shape is missing takes the ceiling, never a zero state', () => {
+    // Adding 0 here would under-count Qwen3.8-27B by 598 MiB and call it exact.
+    const h = header({
+      blockCount: 32, headCountKv: 4, keyLength: 256, valueLength: 256,
+      recurrentLayers: Array.from({ length: 32 }, (_, il) => (il + 1) % 4 !== 0),
+    });
+    const kv = kvCacheBytes(h, 32768, Q8K, 9 * GB);
+    expect(kv.isUpperBound).toBe(true);
+    expect(kv.bytes).toBe(Math.max(2 * GB, 9 * GB * 0.25));
   });
 
   it('shared_kv_layers drops the TRAILING n layers, not the leading ones', () => {
@@ -76,30 +121,31 @@ describe('kvCacheBytes — the per-layer formula (§D2)', () => {
     expect(kvCacheBytes(h, 1024, F16).bytes).toBe(5 * perToken(4) * 1024 * BLOCK);
   });
 
-  it('sliding layers keep min(context, window + ubatch) tokens, padded to 256, at the _swa widths', () => {
+  it('a sliding layer keeps window × 4 sequence slots + one ubatch, padded to 256', () => {
     // 5 sliding + 5 full, Gemma 4's half-width sliding keys/values.
     const sliding = [true, true, true, true, true, false, false, false, false, false];
     const h = header({
       blockCount: 10, headCountKv: 1, keyLength: 512, valueLength: 512,
       keyLengthSwa: 256, valueLengthSwa: 256, slidingWindow: 1024, slidingLayers: sliding,
     });
-    // llama-kv-cache-iswa.cpp:52 — GGML_PAD(min(size_base, n_swa + n_ubatch), 256),
-    // n_ubatch 512: 1024 + 512 = 1536, already a multiple of 256.
-    const slidingTokens = 1536;
-    const expected = (5 * (256 * 2 + 256 * 2) * slidingTokens + 5 * (512 * 2 + 512 * 2) * 32768) * BLOCK;
+    // MEASURED on b10665, one model, same binary:
+    //   -np auto (what this app spawns) → "SWA KV cache, size = 4608 cells" for
+    //   a 1024 window; -np 1 → 1536. 1024×4 + 512 = 4608.
+    const slidingCells = 4608;
+    const expected = (5 * (256 * 2 + 256 * 2) * slidingCells + 5 * (512 * 2 + 512 * 2) * 32768) * BLOCK;
     expect(kvCacheBytes(h, 32768, F16).bytes).toBe(expected);
   });
 
-  it('the ubatch term is REAL memory: dropping it under-counts a sliding model', () => {
-    const sliding = [true, true, true, true];
+  it('the sequence slots and the ubatch are REAL cells: one slot under-counts three-fold', () => {
     const h = header({
       blockCount: 4, headCountKv: 8, keyLength: 256, valueLength: 256,
-      slidingWindow: 1024, slidingLayers: sliding,
+      slidingWindow: 512, slidingLayers: [true, true, true, true],
     });
-    const withUbatch = 4 * 8 * (256 * 2 + 256 * 2) * (1024 + 512) * BLOCK;
-    const windowOnly = 4 * 8 * (256 * 2 + 256 * 2) * 1024 * BLOCK;
-    expect(kvCacheBytes(h, 32768, F16).bytes).toBe(withUbatch);
-    expect(kvCacheBytes(h, 32768, F16).bytes).toBeGreaterThan(windowOnly);
+    const perLayerToken = 8 * (256 * 2 + 256 * 2);
+    // MEASURED: a 512 window is 2560 cells at the engine's default -np auto
+    // (512×4 + 512) and 1024 cells at -np 1. The app never passes -np.
+    expect(kvCacheBytes(h, 32768, F16).bytes).toBe(4 * perLayerToken * 2560 * BLOCK);
+    expect(kvCacheBytes(h, 32768, F16).bytes).toBeGreaterThan(4 * perLayerToken * 1024 * BLOCK);
   });
 
   it('a sliding window wider than the context never costs more than the context', () => {
@@ -115,12 +161,27 @@ describe('kvCacheBytes — the per-layer formula (§D2)', () => {
     expect(kvCacheBytes(h, 4000, F16).bytes).toBe(1 * 1 * (128 * 2 + 128 * 2) * 4096 * BLOCK);
   });
 
-  it('an unread header falls back to a context-scaled ceiling and says so', () => {
+  it('shared_kv_layers at or past the layer count is nonsense, not a model with no cache', () => {
+    // A silent zero here would be an under-count of the ENTIRE cache, presented
+    // as an exact figure.
+    const h = header({ blockCount: 35, headCountKv: 1, keyLength: 512, valueLength: 512, sharedKvLayers: 35 });
+    const kv = kvCacheBytes(h, 131072, Q8K);
+    expect(kv.bytes).toBe(35 * 1 * (512 * 1 + 512 * 2) * 131072 * BLOCK);
+    expect(kv.isUpperBound).toBe(true);
+  });
+
+  it('an unread header falls back to a ceiling that scales with the MODEL, and says so', () => {
     const at32k = kvCacheBytes(null, 32768, F16);
     expect(at32k.isUpperBound).toBe(true);
-    expect(at32k.bytes).toBe(2 * GB);
+    expect(at32k.bytes).toBe(2 * GB);                       // no size given: the floor
     // A 128k context on an unknown model is four times the cache, not the same one.
     expect(kvCacheBytes(null, 131072, F16).bytes).toBe(8 * GB);
+    // A dense 70B (80 layers, 8 KV heads, 128/128) really needs 8.05 GB at 32k
+    // with 8-bit keys. The old flat 2 GB was printed to the user as "up to
+    // 2.0 GB" — a false statement. The size-scaled floor must clear it, even
+    // when the file is a 4-bit quant.
+    const realDense70B = 80 * 8 * (128 * 1 + 128 * 2) * 32768;
+    expect(kvCacheBytes(null, 32768, Q8K, 40 * GB).bytes).toBeGreaterThan(realDense70B);
   });
 
   it('a header the reader could not fully understand stays an upper bound', () => {
@@ -210,6 +271,28 @@ describe('estimateFit — the four tiers (§D2)', () => {
     // Without the model fitting on its own it IS too-large — the clamp is not a
     // blanket "never block".
     expect(estimateFit(inputs({ modelBytes: 100 * GB, kvBytes: 100 * GB })).fit).toBe('too-large');
+  });
+
+  it('on shared memory the pool and the free RAM are the SAME bytes, and are not added twice', () => {
+    // This laptop: an 84 GiB Vulkan "device" that IS the 121.5 GiB of system
+    // RAM. Adding them would offer 158 GiB on a 121.5 GiB machine.
+    const shared = inputs({
+      modelBytes: 150 * GB, poolBytes: 84 * GB, poolIsGpu: true,
+      poolIsDedicatedVram: false, totalMemBytes: 121.5 * GB, availableBytes: 74 * GB,
+    });
+    expect(estimateFit(shared).fit).toBe('too-large');
+    // A discrete card really is extra memory, so it is not capped: the same
+    // sums with 84 GB of VRAM beside 121.5 GB of RAM do reach that model.
+    expect(estimateFit({ ...shared, poolIsDedicatedVram: true }).fit).toBe('tight');
+  });
+
+  it('when only the context cache blew the budget, the label says so instead of promising a split', () => {
+    const r = estimateFit(inputs({
+      modelBytes: 30 * GB, kvBytes: 100 * GB, poolBytes: 40 * GB, availableBytes: 32 * GB,
+    }));
+    expect(r.fit).toBe('tight');
+    expect(r.label).toBe('Will be tight — lower its context length');
+    expect(r.label).not.toMatch(/splits/i);
   });
 
   it('a CPU-only pool never claims the model fits on a GPU', () => {
@@ -454,13 +537,13 @@ describe('the real models on this machine keep their verdicts', () => {
   // person can sanity-check rather than as a passing abstract test.
   const z13 = { poolBytes: 86016 * MIB, poolIsGpu: true, availableBytes: 70 * GB, loadedBytes: 0 };
 
-  it('Qwen3.5-9B (32 layers, 24 recurrent, 4 KV heads, 256/256) — 0.8 GB of cache at 32k', () => {
+  it('Qwen3.5-9B (32 layers, 24 recurrent, 4 KV heads) — 0.80 GB of cache + 0.20 GB of state at 32k', () => {
     const h = header({
-      blockCount: 32, headCountKv: 4, keyLength: 256, valueLength: 256,
+      blockCount: 32, headCountKv: 4, keyLength: 256, valueLength: 256, ...ssm(4096),
       recurrentLayers: Array.from({ length: 32 }, (_, il) => (il + 1) % 4 !== 0),
     });
-    const kv = kvCacheBytes(h, 32768, Q8K);
-    expect(kv.bytes / GB).toBeCloseTo(0.80, 2);
+    const kv = kvCacheBytes(h, 32768, Q8K, 8.87 * GB);
+    expect(kv.bytes / GB).toBeCloseTo(0.99, 2);
     expect(estimateFit({ modelBytes: 8.87 * GB, kvBytes: kv.bytes, contextLength: 32768, ...z13 }).fit).toBe('fits');
   });
 
@@ -473,17 +556,36 @@ describe('the real models on this machine keep their verdicts', () => {
       keyLengthSwa: 256, valueLengthSwa: 256, slidingWindow: 512,
       slidingLayers: sliding, sharedKvLayers: 20,
     });
-    const kv = kvCacheBytes(h, 32768, Q8K);
-    expect(kv.bytes / GB).toBeCloseTo(0.16, 2);
+    const kv = kvCacheBytes(h, 32768, Q8K, 4.7 * GB);
+    expect(kv.bytes / GB).toBeCloseTo(0.17, 2);
     expect(estimateFit({ modelBytes: 4.7 * GB, kvBytes: kv.bytes, contextLength: 32768, ...z13 }).fit).toBe('fits');
+  });
+
+  it('gemma-4-12b-it (curated) — 4608 SWA cells, 1.52 GB against llama.cpp\'s measured 1.459 GB', () => {
+    // Header read live off unsloth/gemma-4-12b-it-GGUF: 48 blocks, a 1024-token
+    // window, 40 sliding / 8 full, 8 KV heads on the sliding layers and 1 on the
+    // full ones, 512/512 full widths and 256/256 sliding.
+    const perLayerHeads = Array.from({ length: 48 }, (_, il) => ((il + 1) % 6 === 0 ? 1 : 8));
+    const h = header({
+      blockCount: 48, headCountKv: 8, headCountKvLayers: perLayerHeads,
+      keyLength: 512, valueLength: 512, keyLengthSwa: 256, valueLengthSwa: 256,
+      slidingWindow: 1024, slidingLayers: Array.from({ length: 48 }, (_, il) => (il + 1) % 6 !== 0),
+    });
+    const kv = kvCacheBytes(h, 32768, Q8K, 6.86 * GB);
+    // llama.cpp really allocates 1.459 GB here. Modelling one sequence slot
+    // gave 0.772 GB — 47% short — and printed "Runs fast — fits on your GPU"
+    // for a model that spills onto the processor on a 10 GB card.
+    expect(kv.bytes / GB).toBeCloseTo(1.52, 2);
+    expect(kv.bytes / GB).toBeGreaterThan(1.459);
+    expect(kv.bytes / GB).toBeLessThan(1.459 * 1.1);   // over, but only by the block overhead
   });
 
   it('Qwen3.8-Flash-Next (103.7 GB on disk) splits across the pool and memory — it is NOT blocked', () => {
     const h = header({
-      blockCount: 48, headCountKv: 2, keyLength: 256, valueLength: 256,
+      blockCount: 48, headCountKv: 2, keyLength: 256, valueLength: 256, ...ssm(6144),
       recurrentLayers: Array.from({ length: 48 }, (_, il) => (il + 1) % 4 !== 0),
     });
-    const kv = kvCacheBytes(h, 32768, Q8K);
+    const kv = kvCacheBytes(h, 32768, Q8K, 103.69 * GB);
     const r = estimateFit({ modelBytes: 103.69 * GB, kvBytes: kv.bytes, contextLength: 32768, ...z13 });
     expect(r.fit).toBe('tight');
     expect(r.label).toMatch(/splits/i);

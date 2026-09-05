@@ -89,12 +89,23 @@ export class ModelManager extends EventEmitter {
   // ---- What this machine has, and what one model will cost on it (§D2) ----
 
   /** The pool a model is scored against: the installed engine's own first GPU
-   *  device, else detected VRAM, else total RAM. See poolFromDevices. */
-  private async pool(): Promise<MemoryPool> {
-    return poolFromDevices(this.engine.installedDevices(), {
-      totalMemBytes: this.opts.totalMemBytes ?? os.totalmem(),
-      detectedVramBytes: await this.vram(),
-    });
+   *  device, else detected VRAM, else total RAM. See poolFromDevices.
+   *
+   *  `isDedicatedVram` comes from gpu-detector, which reports a number ONLY for
+   *  a confidently-probed discrete card and null for integrated graphics. That
+   *  is exactly the question the split tier needs answered: is the graphics
+   *  pool memory the system does not also have? Nothing in the engine's device
+   *  list can say — Vulkan reports this laptop's shared RAM as an 84 GiB
+   *  "device" — so the probe is the only source. */
+  private async pool(): Promise<MemoryPool & { isDedicatedVram: boolean }> {
+    const vram = await this.vram();
+    return {
+      ...poolFromDevices(this.engine.installedDevices(), {
+        totalMemBytes: this.opts.totalMemBytes ?? os.totalmem(),
+        detectedVramBytes: vram,
+      }),
+      isDedicatedVram: vram !== null && vram > 0,
+    };
   }
 
   private available(): number {
@@ -183,7 +194,7 @@ export class ModelManager extends EventEmitter {
       if (!isResident(m.state)) continue;
       const ctx = contextLengthFor(m.id, settings, cfg.contextSize);
       const header = await this.localHeader(m.id);
-      sum += (m.sizeBytes ?? 0) + kvCacheBytes(header, ctx, cache).bytes;
+      sum += (m.sizeBytes ?? 0) + kvCacheBytes(header, ctx, cache, m.sizeBytes ?? 0).bytes;
     }
     return sum;
   }
@@ -206,9 +217,15 @@ export class ModelManager extends EventEmitter {
       this.pool(),
       this.engine.liveModels().then((m) => this.loadedBytes(m, null)).catch(() => 0),
     ]);
-    const kv = kvCacheBytes(header, contextLength, this.cacheTypes());
+    const cache = this.cacheTypes();
     const availableBytes = this.available();
-    return opts.map((o) => ({
+    const totalMemBytes = this.opts.totalMemBytes ?? os.totalmem();
+    return opts.map((o) => {
+      // Per quant, not once per repo: when the header could not be read the
+      // fallback scales with the model's own size, and the quants of one repo
+      // differ by several gigabytes.
+      const kv = kvCacheBytes(header, contextLength, cache, o.totalSizeBytes);
+      return {
       ...o,
       fit: estimateFit({
         modelBytes: o.totalSizeBytes,
@@ -222,10 +239,13 @@ export class ModelManager extends EventEmitter {
         contextLength,
         poolBytes: pool.poolBytes,
         poolIsGpu: pool.poolIsGpu,
+        poolIsDedicatedVram: pool.isDedicatedVram,
+        totalMemBytes,
         availableBytes,
         loadedBytes,
       }),
-    }));
+      };
+    });
   }
 
   /** Create-time / swap-time memory guard for an INSTALLED model id: is it safe
@@ -248,14 +268,21 @@ export class ModelManager extends EventEmitter {
       this.pool(),
       this.loadedBytes(models, modelId),
     ]);
-    const kv = kvCacheBytes(header, contextLength, this.cacheTypes());
+    const kv = kvCacheBytes(header, contextLength, this.cacheTypes(), chosenBytes);
     return checkMemoryForLoad({
       modelBytes: chosenBytes,
+      // HANDOFF (T15/T17): no `visionBytes` here, because an installed model's
+      // row does not yet report its projector's size — the cache scan learns
+      // about the folder layout in T15. A projector is up to ~2.6 GB, so this
+      // guard under-counts a vision model until that field exists. Pass it the
+      // moment `InstalledLocalModel.visionBytes` is populated.
       kvBytes: kv.bytes,
       kvIsUpperBound: kv.isUpperBound,
       contextLength,
       poolBytes: pool.poolBytes,
       poolIsGpu: pool.poolIsGpu,
+      poolIsDedicatedVram: pool.isDedicatedVram,
+      totalMemBytes: this.opts.totalMemBytes ?? os.totalmem(),
       availableBytes: this.available(),
       loadedBytes,
       dismissed: dismissedWarning(settings, modelId),

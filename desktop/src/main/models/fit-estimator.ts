@@ -51,21 +51,41 @@ const ELEMENT_BYTES: Record<KvCacheType, number> = { f16: 2, q8_0: 1 };
  *  "tight" verdict into a wrong "fits". */
 const KV_BLOCK_OVERHEAD = 34 / 32;
 
-/** llama-server's default `--ubatch-size`, and the padding llama.cpp applies to
- *  a cache size. Both are needed because a SLIDING layer's cache is bigger than
- *  its window: llama-kv-cache-iswa.cpp:52 allocates
- *  `GGML_PAD(min(size_base, n_swa + n_ubatch), 256)`. Left out, gemma-4-12b is
- *  under-counted by ~170 MB and gemma-4-26B by ~105 MB — small against a 12 GB
- *  model, but it lands exactly on the fits/tight boundary. */
+/** A SLIDING layer's cache is much bigger than its window. llama.cpp allocates
+ *  `min(size_base, GGML_PAD(n_swa × n_seq_max + n_ubatch, 256))` for it
+ *  (llama-kv-cache-iswa.cpp), and BOTH of the extra terms are engine defaults
+ *  this app never overrides:
+ *    - `n_ubatch` = 512 (`--ubatch-size`).
+ *    - `n_seq_max` = **4**. llama-server's `--parallel` default is `auto`, which
+ *      resolves to 4 slots, and engine-supervisor.ts passes no `-np`. MEASURED
+ *      on b10665 with one model: `-np auto` → "SWA KV cache, size = 2560 cells"
+ *      (512×4 + 512); `-np 1` → 1024 cells. Modelling one slot under-counts the
+ *      sliding half of the cache THREE-fold, which on curated `gemma-4-12b-it`
+ *      (1024-token window) is 1.459 GB of real cache read as 0.772 GB — enough
+ *      to print "fits on your GPU" for a model that spills onto the processor.
+ *  If T6's per-model `extraFlags` ever carries `--parallel` or `--ubatch-size`,
+ *  these two constants stop being true for that model and the estimate would be
+ *  wrong with no flag: read them off the model's own flags when that lands. */
 const UBATCH_TOKENS = 512;
+const SEQ_SLOTS = 4;
 const CACHE_PAD_TOKENS = 256;
 
-/** The KV cache guess for a model whose header could not be read: what the old
- *  flat constant assumed, but scaled with the context length, since a 128k
- *  context on an unread model is nothing like a 32k one. Always reported as an
- *  upper bound, so the UI says "up to". */
-const FALLBACK_KV_BYTES_AT_32K = 2 * GB;
+/** The guess for a model whose header could not be read at all. Scaled by BOTH
+ *  the context length and the model's own size, because a cache is roughly
+ *  proportional to the model's depth and width and a flat constant is wrong by
+ *  a factor of four on a big model: a dense 70B at 32k really needs 8.05 GB,
+ *  and the old flat 2 GB was printed to the user as "up to 2.0 GB" — a
+ *  statement that was simply false. The fraction covers a dense 70B even at a
+ *  4-bit quant (0.15 × 40 GB = 10 GB ≥ 8.05). It does NOT cover a pre-GQA model
+ *  (a 7B with 32 KV heads needs ~13 GB at 32k), which is why this path is
+ *  always flagged as an upper bound rather than presented as a reading. */
+const FALLBACK_KV_MIN_BYTES = 2 * GB;
+const FALLBACK_KV_MODEL_FRACTION = 0.25;
 const FALLBACK_KV_CONTEXT = 32768;
+
+/** Bytes per element of a recurrent layer's state — llama.cpp keeps both the
+ *  SSM state and its convolution state in f32. */
+const RECURRENT_ELEMENT_BYTES = 4;
 
 function padUp(n: number, multiple: number): number {
   return Math.ceil(n / multiple) * multiple;
@@ -99,11 +119,14 @@ export function kvCacheBytes(
   header: GgufHeader | null,
   contextLength: number,
   cache: KvCacheTypes,
+  /** The model's weights, used only by the fallback below when the header could
+   *  not be read. Omitted → the fallback is the flat minimum. */
+  modelBytes = 0,
 ): KvEstimate {
   const fallback = (): KvEstimate => ({
-    // Scales with context, and is flagged, because it is a rule of thumb and
-    // not a reading of this model.
-    bytes: FALLBACK_KV_BYTES_AT_32K * (Math.max(1, contextLength) / FALLBACK_KV_CONTEXT),
+    // A rule of thumb, not a reading of this model — hence the flag.
+    bytes: Math.max(FALLBACK_KV_MIN_BYTES, modelBytes * FALLBACK_KV_MODEL_FRACTION)
+      * (Math.max(1, contextLength) / FALLBACK_KV_CONTEXT),
     isUpperBound: true,
   });
   if (!header || !contextLength || contextLength <= 0) return fallback();
@@ -127,8 +150,10 @@ export function kvCacheBytes(
   const fullTokens = padUp(contextLength, CACHE_PAD_TOKENS);
   const window = header.slidingWindow;
   const hasWindow = window !== null && window > 0;
+  // min(size_base, PAD(n_swa × n_seq_max + n_ubatch, 256)) — the padding is
+  // applied INSIDE the min, so a sliding layer never costs more than a full one.
   const slidingTokens = hasWindow
-    ? padUp(Math.min(fullTokens, window + UBATCH_TOKENS), CACHE_PAD_TOKENS)
+    ? Math.min(fullTokens, padUp(window * SEQ_SLOTS + UBATCH_TOKENS, CACHE_PAD_TOKENS))
     : fullTokens;
   if (header.slidingLayers && !hasWindow) {
     // The file says which layers slide but not how wide the window is. Those
@@ -140,9 +165,15 @@ export function kvCacheBytes(
   // `shared_kv_layers = n` means the LAST n layers store no KV of their own:
   // llama.cpp's Gemma 4 loader computes n_layer_kv_from_start = n_layer_all − n
   // (src/models/gemma4.cpp), so on E2B only the first 15 of 35 layers have a
-  // cache. Clamped so a nonsensical value can never make the whole cache zero.
+  // cache. A value at or past the layer count would leave the model with NO
+  // cache at all, which is not a thing a model does — so it is read as "we do
+  // not understand this file", every layer is counted, and the answer is
+  // flagged. (A silent zero here is the worst possible failure: it is an
+  // under-count of the whole cache, presented as exact.)
   const shared = header.sharedKvLayers ?? 0;
-  const layersWithOwnKv = shared > 0 ? Math.max(0, layers - shared) : layers;
+  let layersWithOwnKv = layers;
+  if (shared > 0 && shared < layers) layersWithOwnKv = layers - shared;
+  else if (shared >= layers) isUpperBound = true;
 
   let bytes = 0;
   for (let il = 0; il < layers; il++) {
@@ -159,7 +190,45 @@ export function kvCacheBytes(
     bytes += (slides ? slidingTokens : fullTokens) * perToken;
   }
 
-  return { bytes: bytes * KV_BLOCK_OVERHEAD, isUpperBound };
+  const recurrentState = recurrentStateBytes(header);
+  // A hybrid model whose SSM shape we cannot read would be under-counted by up
+  // to 600 MB if we simply added zero — so it takes the generous fallback, the
+  // same way an unreadable head count does.
+  if (recurrentState === null) return fallback();
+
+  return { bytes: bytes * KV_BLOCK_OVERHEAD + recurrentState, isUpperBound };
+}
+
+/**
+ * The memory a hybrid model's RECURRENT layers hold (`llama_memory_recurrent`).
+ *
+ * Those layers hold no attention KV — the loop above skips them, correctly —
+ * but they are not free: llama.cpp allocates one SSM state and one convolution
+ * state per layer per sequence slot. Formula transcribed from llama.cpp and
+ * verified to the byte against three of Destin's own models at `-np auto`:
+ * Qwen3.5-2B 77.06 MiB, Qwen3.5-9B 201.00 MiB, Qwen3.8-27B **598.50 MiB** —
+ * which is more than the whole working-memory cushion this file adds.
+ *
+ * It does NOT scale with the context length, so lowering a model's context
+ * cannot shrink it; it is counted here rather than in the weights because it is
+ * runtime memory, and the size bubble's "Model file" row must keep matching the
+ * download. Every Qwen 3.5/3.6/3.8 is a hybrid, curated ones included.
+ */
+function recurrentStateBytes(header: GgufHeader): number | null {
+  const recurrent = header.recurrentLayers?.filter(Boolean).length ?? 0;
+  if (recurrent === 0) return 0;
+  const dState = header.ssmStateSize;
+  const dInner = header.ssmInnerSize;
+  const dConv = header.ssmConvKernel;
+  const nGroup = Number.isFinite(header.ssmGroupCount) ? header.ssmGroupCount! : 1;
+  // Recurrent layers with no SSM shape in the file: null, so the caller falls
+  // back rather than adding a zero that would under-count by hundreds of MB.
+  // Tested for FINITENESS, not for null: a missing field on a header built by
+  // hand is `undefined`, and `undefined * 4` is NaN — which compares false
+  // against every threshold and would silently make a model "too large".
+  if (![dState, dInner, dConv].every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0)) return null;
+  const perLayer = dState! * dInner! + (dConv! - 1) * (dInner! + 2 * nGroup * dState!);
+  return recurrent * SEQ_SLOTS * perLayer * RECURRENT_ELEMENT_BYTES;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +314,10 @@ export function poolFromDevices(
  * would reserve memory nothing is using and warn about models that are fine.
  * 'loading' IS resident — that memory is being taken this second, and leaving
  * it out is the under-count that tells a user a second model fits while the
- * first is still arriving.
+ * first is still arriving. That is a DELIBERATE widening of §D2's "loaded rows
+ * only": it preserves what shipped before, and the cost is understood — it
+ * shrinks the free pool, which is the same side as a hard block, so it can only
+ * push a verdict towards a warning for the few seconds a load takes.
  */
 export function isResident(state: EngineModelState): boolean {
   return state === 'loaded' || state === 'loading';
@@ -323,7 +395,15 @@ export function contextLengthFor(modelId: string, modelsSection: unknown, engine
 export interface FitInputs {
   /** The model's weights on disk. */
   modelBytes: number;
-  /** The vision projector that downloads with it, when the model has one. */
+  /** The vision projector that downloads with it, when the model has one.
+   *
+   *  HANDOFF, for whoever lands the folder layout (T15) and Add-vision (T17):
+   *  the DOWNLOAD side passes this (models.quants), the CREATE-TIME guard does
+   *  NOT — `ModelManager.memoryCheck` has no way to learn an installed model's
+   *  projector size until the cache scan reports one. Qwen2.5-Omni's projector
+   *  is ~2.6 GB, five times the working-memory cushion below, so it can flip a
+   *  verdict on its own. When `InstalledLocalModel` starts carrying
+   *  `visionBytes`, pass it here from `memoryCheck` too. */
   visionBytes?: number;
   /** From kvCacheBytes(), at the context length this model will run with. */
   kvBytes: number;
@@ -332,6 +412,15 @@ export interface FitInputs {
   /** From poolFromDevices(). */
   poolBytes: number;
   poolIsGpu: boolean;
+  /** True only when the pool is a discrete card's OWN memory — i.e. memory that
+   *  is not also the system RAM below. On a shared-memory machine (this Z13's
+   *  Vulkan pool is 84 GiB of the same 121.5 GiB the OS uses) the pool and the
+   *  available memory are the SAME BYTES, and adding them would let a 150 GB
+   *  model score as merely "tight" on a 121.5 GB machine. */
+  poolIsDedicatedVram?: boolean;
+  /** Physical RAM. Only used to cap the split tier on a shared-memory machine —
+   *  nothing can exceed what the machine physically has. */
+  totalMemBytes?: number;
   /** From availableMemoryBytes(). */
   availableBytes: number;
   /** Weights + KV of the models resident right now (`loaded`, never
@@ -363,10 +452,19 @@ export function estimateFit(input: FitInputs): FitEstimate {
   // negative: a machine already over-committed is at zero, not below it.
   const poolFree = Math.max(0, input.poolBytes - input.loadedBytes);
 
+  // The split tier's ceiling: the graphics pool plus what the system has free.
+  // On a machine whose "graphics memory" IS system memory those are the same
+  // bytes, so the sum is capped at what the machine physically has — otherwise
+  // 84 GiB of Vulkan pool + 74 GiB of free RAM would offer 158 GiB on a 121.5
+  // GiB laptop. A discrete card really is extra memory, so it is not capped.
+  const splitCeiling = input.poolIsDedicatedVram || input.totalMemBytes === undefined
+    ? poolFree + input.availableBytes
+    : Math.min(poolFree + input.availableBytes, input.totalMemBytes);
+
   const tierFor = (n: number): FitEstimate['fit'] => {
     if (n <= poolFree * 0.9) return 'fits';
     if (n <= poolFree) return 'tight';
-    if (n <= poolFree + input.availableBytes) return 'tight';
+    if (n <= splitCeiling) return 'tight';
     return 'too-large';
   };
 
@@ -376,12 +474,17 @@ export function estimateFit(input: FitInputs): FitEstimate {
   // too-large is a hard block. So a model that would be blocked ONLY because of
   // its context cache is warned about instead — lowering its context length is
   // exactly what the advice line tells the user to do.
-  if (fit === 'too-large' && tierFor(base) !== 'too-large') fit = 'tight';
+  const clamped = fit === 'too-large' && tierFor(base) !== 'too-large';
+  if (clamped) fit = 'tight';
 
-  const splits = fit === 'tight' && need > poolFree;
+  // Only a model that fits SOMEWHERE really "splits and runs". When the clamp
+  // above is what rescued it, its context cache does not fit at all — saying it
+  // "splits across your GPU and memory" would be an optimistic reading of a
+  // case we just decided not to block.
+  const splits = fit === 'tight' && need > poolFree && !clamped;
   return {
     fit,
-    label: labelFor(fit, input.poolIsGpu, splits),
+    label: clamped ? 'Will be tight — lower its context length' : labelFor(fit, input.poolIsGpu, splits),
     breakdown: {
       modelBytes: input.modelBytes,
       contextBytes: input.kvBytes,
@@ -409,9 +512,14 @@ function labelFor(fit: FitEstimate['fit'], poolIsGpu: boolean, splits: boolean):
  *  model per context length (§D4). PURE — every number is injected. */
 export interface MemoryVerdict {
   verdict: 'ok' | 'tight' | 'too-large';
-  /** The one numbers line the warning row opens to (R28); '' when ok. */
+  /** The one numbers line the warning row opens to (R28); '' when ok. This is
+   *  the ONLY field the warning row draws today. */
   headline: string;
-  /** One sentence of explanation, plus the advice line; '' when ok. */
+  /** One sentence of explanation, plus the advice line; '' when ok.
+   *  NOTE: nothing renders this — `RuntimeBinding.tsx` shows `headline` alone.
+   *  It is kept because it is part of the IPC shape and because the same
+   *  sentence is what a "why?" affordance would need; the advice itself does
+   *  reach the user, through `breakdown.advice` on the model card (R8). */
   detail: string;
 }
 

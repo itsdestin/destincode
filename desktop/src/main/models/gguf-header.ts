@@ -97,6 +97,13 @@ const WANTED = new Set([
   'attention.recurrent_layers',
   'full_attention_interval',
   'nextn_predict_layers',
+  // The recurrent (Mamba-style) layers of a hybrid model do not hold an
+  // attention cache, but they DO hold a state of their own, and it is not
+  // small — 598 MiB on Qwen3.8-27B. These four keys are what sizes it.
+  'ssm.conv_kernel',
+  'ssm.state_size',
+  'ssm.inner_size',
+  'ssm.group_count',
 ]);
 
 /** Architectures whose sliding-window pattern starts with a DENSE layer.
@@ -196,6 +203,16 @@ export interface GgufHeader {
   recurrentLayers: boolean[] | null;
   /** Gemma 4: the last n layers reuse an earlier layer's KV and store none. */
   sharedKvLayers: number | null;
+  /** The shape of a recurrent (Mamba/SSM) layer's own state, for the hybrid
+   *  models — every Qwen 3.5/3.6/3.8 is one. llama.cpp allocates a separate
+   *  `llama_memory_recurrent` for exactly the layers `recurrentLayers` marks,
+   *  and it is real memory the estimator must count: measured 77 MiB on
+   *  Qwen3.5-2B, 201 MiB on 9B and 598 MiB on 27B. All null on a model with no
+   *  recurrent layers. */
+  ssmConvKernel: number | null;
+  ssmStateSize: number | null;
+  ssmInnerSize: number | null;
+  ssmGroupCount: number | null;
   /** The resolved per-layer sliding map (true = this layer slides), from the
    *  bool array when the file has one, else from the scalar period and the
    *  architecture's dense-first rule. null = the reader could not build one. */
@@ -340,6 +357,7 @@ function emptyHeader(architecture: string): GgufHeader {
     slidingWindowPattern: null, slidingWindowPatternLayers: null,
     fullAttentionInterval: null, nextnPredictLayers: null,
     recurrentLayers: null, sharedKvLayers: null, slidingLayers: null,
+    ssmConvKernel: null, ssmStateSize: null, ssmInnerSize: null, ssmGroupCount: null,
     contextBytesIsUpperBound: false, archBytes: 0,
   };
 }
@@ -483,6 +501,10 @@ function applyRaw(h: GgufHeader, raw: Map<string, number | boolean | string | (n
   h.fullAttentionInterval = num(h, raw, 'full_attention_interval');
   h.nextnPredictLayers = num(h, raw, 'nextn_predict_layers');
   h.sharedKvLayers = num(h, raw, 'attention.shared_kv_layers');
+  h.ssmConvKernel = num(h, raw, 'ssm.conv_kernel');
+  h.ssmStateSize = num(h, raw, 'ssm.state_size');
+  h.ssmInnerSize = num(h, raw, 'ssm.inner_size');
+  h.ssmGroupCount = num(h, raw, 'ssm.group_count');
 
   // Per-head width: the explicit key when the file has one, else the classic
   // embedding ÷ heads. Falling back silently is safe — it is what llama.cpp
