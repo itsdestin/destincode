@@ -11,7 +11,7 @@
 // consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
-import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip, Toggle, TextInput, Select, SettingRow } from './ui';
+import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip, Toggle, TextInput, Select, SettingRow, Dialog } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettings,
@@ -55,7 +55,7 @@ function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fit: FitE
   const ctxK = Math.round(b.contextLength / 1024);
   return (
     <span className="text-fg-dim">
-      <AnchorTip label={`What ${gb(download)} is made of`} title="What this needs" trigger="hover" placement="bottom" widthClass="w-64" anchor={number}>
+      <AnchorTip label={`What ${gb(download)} is made of`} title="What this needs" trigger="hover" placement="bottom" align="start" widthClass="w-64" anchor={number}>
         <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 text-2xs">
           <dt className="text-fg-muted">Model file</dt><dd className="text-fg text-right">{gb(b.modelBytes)}</dd>
           {vision > 0 && <><dt className="text-fg-muted">Vision file (sees images)</dt><dd className="text-fg text-right">{gb(vision)}</dd></>}
@@ -875,7 +875,11 @@ export function LocalModelRow({
         )}
         {error && <FieldError as="p" className="mt-1">{error}</FieldError>}
 
-        {settingsOpen && !confirming && <ModelSettingsPanel modelId={model.id} />}
+        {/* Round 2 P-14 (Destin): the settings open in a small dialog on its own layer,
+            not inline under the row. */}
+        {settingsOpen && (
+          <ModelSettingsDialog open modelId={model.id} name={displayName(model)} onClose={() => setSettingsOpen(false)} />
+        )}
       </div>
     </div>
   );
@@ -891,7 +895,7 @@ const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'
  *  in place. Explanations live in each row's description; an (i) only where a
  *  concept needs more than a line. Saves on blur/toggle; the model reloads with
  *  the new values on its next message. */
-function ModelSettingsPanel({ modelId }: { modelId: string }) {
+function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; modelId: string; name: string; onClose: () => void }) {
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ctxDraft, setCtxDraft] = useState('');
@@ -900,7 +904,11 @@ function ModelSettingsPanel({ modelId }: { modelId: string }) {
 
   useEffect(() => {
     let alive = true;
-    window.claude.models.settings(modelId)
+    // Mounted only while open (the row gates it), so this fetch happens on demand —
+    // an older bridge without the channel shows the error line instead of throwing.
+    const api = window.claude.models as { settings?: (id: string) => Promise<ModelSettings> };
+    if (typeof api.settings !== 'function') { setError('This version cannot read per-model settings.'); return; }
+    api.settings(modelId)
       .then((st) => { if (alive) { setSettings(st); setCtxDraft(st.contextLength == null ? '' : String(st.contextLength)); setFlagsDraft(st.extraFlags); } })
       .catch((e) => { if (alive) setError(e instanceof Error ? e.message : 'Could not read this model\u2019s settings.'); });
     return () => { alive = false; };
@@ -921,13 +929,17 @@ function ModelSettingsPanel({ modelId }: { modelId: string }) {
     if (n !== settings.contextLength) void save({ contextLength: n });
   };
 
-  if (error && !settings) return <FieldError as="p" className="mt-2">{error}</FieldError>;
-  if (!settings) return <p className="mt-2 text-3xs text-fg-muted">Loading settings…</p>;
+  const gpuValue = settings ? (settings.gpuLayers === 'auto' ? 'auto' : String(settings.gpuLayers)) : 'auto';
 
-  const gpuValue = settings.gpuLayers === 'auto' ? 'auto' : String(settings.gpuLayers);
-
+  // Layer 3: this sits on top of the Model Providers dialog (layer 2). `panel`
+  // width — the settings-screen width, so a row title, its hint and a Select fit
+  // side by side (at `prompt` width the GPU-layers title wrapped one word per line).
   return (
-    <div className="mt-2 pt-2 border-t border-edge-dim space-y-1.5" data-testid="model-settings">
+    <Dialog open={open} onClose={onClose} title="Model settings" subtitle={name} size="panel" layer={3}>
+      {error && !settings && <FieldError as="p">{error}</FieldError>}
+      {!settings && !error && <p className="text-3xs text-fg-muted">Loading settings…</p>}
+      {settings && (
+    <div className="space-y-1.5" data-testid="model-settings">
       <SettingRow
         variant="item"
         title="Context length"
@@ -963,7 +975,7 @@ function ModelSettingsPanel({ modelId }: { modelId: string }) {
         expanded={advanced}
       />
       {advanced && (
-        <div className="space-y-1.5 pl-3">
+        <div className="space-y-1.5">
           <SettingRow
             variant="item"
             title={(
@@ -978,13 +990,16 @@ function ModelSettingsPanel({ modelId }: { modelId: string }) {
             )}
             description="Auto fits as many as the chip holds."
             control={(
-              <Select
-                size="sm"
-                value={gpuValue}
-                onChange={(v) => void save({ gpuLayers: v === 'auto' ? 'auto' : Number(v) })}
-                options={GPU_LAYER_CHOICES.map((c) => ({ value: c === 'all' ? '999' : c, label: c === 'auto' ? 'Auto' : c === 'all' ? 'All' : c }))}
-                className="w-24"
-              />
+              // The Select stretches to its container, so the container fixes the width —
+              // without this the row's title column collapsed to one word per line.
+              <span className="block w-24 shrink-0">
+                <Select
+                  size="sm"
+                  value={gpuValue}
+                  onChange={(v) => void save({ gpuLayers: v === 'auto' ? 'auto' : Number(v) })}
+                  options={GPU_LAYER_CHOICES.map((c) => ({ value: c === 'all' ? '999' : c, label: c === 'auto' ? 'Auto' : c === 'all' ? 'All' : c }))}
+                />
+              </span>
             )}
           />
           <div className="rounded-lg bg-inset/50 px-3 py-2">
@@ -1011,6 +1026,8 @@ function ModelSettingsPanel({ modelId }: { modelId: string }) {
       )}
       {error && <FieldError as="p">{error}</FieldError>}
     </div>
+      )}
+    </Dialog>
   );
 }
 

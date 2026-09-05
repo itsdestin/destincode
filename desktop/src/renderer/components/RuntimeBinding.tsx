@@ -275,25 +275,27 @@ export function NativeExtras({ nb, preset, onPreset }: {
                 {nb.memDetailOpen ? 'Less' : 'Why?'}
               </Button>
             )}
+            detail={nb.memDetailOpen ? (
+              // Round-2 P-15 (Destin): the reason unfolds INSIDE the same container, and
+              // the remembered "don't warn again" stays with it.
+              <span className="block mt-1 space-y-1.5">
+                <span className="block text-fg-2">{nb.memVerdict.headline}</span>
+                <span className="block leading-snug">{nb.memVerdict.detail}</span>
+                {nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <Checkbox
+                      checked={nb.memDismissed}
+                      onChange={(next) => nb.dismissMemoryWarning?.(next)}
+                      aria-label="Don't warn me again for this model"
+                    />
+                    Don&rsquo;t warn me again for this model at this context length
+                  </label>
+                )}
+              </span>
+            ) : undefined}
           >
             {nb.memVerdict.verdict === 'too-large' ? 'This model is too large for this computer' : 'This model may not fit in available memory'}
           </StatusStrip>
-          {nb.memDetailOpen && (
-            <div className="mt-1.5 px-1 space-y-1.5">
-              <p className="text-fg-2">{nb.memVerdict.headline}</p>
-              <p className="text-fg-muted leading-snug">{nb.memVerdict.detail}</p>
-              {nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
-                <label className="flex items-center gap-2 text-3xs text-fg-muted cursor-pointer">
-                  <Checkbox
-                    checked={nb.memDismissed}
-                    onChange={(next) => nb.dismissMemoryWarning?.(next)}
-                    aria-label="Don't warn me again for this model"
-                  />
-                  Don&rsquo;t warn me again for this model at this context length
-                </label>
-              )}
-            </div>
-          )}
         </div>
       )}
     </>

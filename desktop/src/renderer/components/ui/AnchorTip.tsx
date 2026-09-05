@@ -47,6 +47,12 @@ export type AnchorTipProps = {
    * 2026-09-05 for the Local Models screen (design deck P-5 / P-6).
    */
   anchor?: React.ReactNode;
+  /**
+   * `start` lines the bubble's left edge up with the trigger's left edge instead of
+   * centring on it — for triggers at the left of a row, where a centred bubble hangs
+   * out of the panel it belongs to (round-2 P-12). Default `center`.
+   */
+  align?: 'center' | 'start';
 };
 
 export function AnchorTip({
@@ -58,6 +64,7 @@ export function AnchorTip({
   widthClass = 'w-72',
   className = '',
   anchor,
+  align = 'center',
 }: AnchorTipProps) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ x: 0, y: 0 });
@@ -69,7 +76,7 @@ export function AnchorTip({
     if (!el) return;
     const rect = el.getBoundingClientRect();
     setPos({
-      x: rect.left + rect.width / 2,
+      x: align === 'start' ? rect.left : rect.left + rect.width / 2,
       y: placement === 'bottom' ? rect.bottom + 6 : rect.top - 10,
     });
   };
@@ -77,7 +84,7 @@ export function AnchorTip({
   useLayoutEffect(() => {
     if (open) measure();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, placement]);
+  }, [open, placement, align]);
 
   /**
    * Esc goes through the shared dismissal stack rather than a hand-rolled
@@ -117,7 +124,7 @@ export function AnchorTip({
       window.removeEventListener('resize', reposition);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, placement]);
+  }, [open, placement, align]);
 
   const hoverProps =
     trigger === 'hover'
@@ -171,7 +178,9 @@ export function AnchorTip({
             style={{
               left: pos.x,
               top: pos.y,
-              transform: placement === 'bottom' ? 'translateX(-50%)' : 'translate(-50%, -100%)',
+              transform: align === 'start'
+                ? (placement === 'bottom' ? 'none' : 'translateY(-100%)')
+                : (placement === 'bottom' ? 'translateX(-50%)' : 'translate(-50%, -100%)'),
             }}
             onClick={(e) => e.stopPropagation()}
           >
