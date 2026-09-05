@@ -1,15 +1,23 @@
 // Guards for the router's per-model settings file (design §C2).
 //
-// READ THIS BEFORE DELETING A GUARD THAT "LOOKS REDUNDANT". Every assertion here
-// was broken deliberately and watched go red (36 mutations, 2026-09-05) — but
-// FIVE of them only went red once BOTH of a pair of defences were broken. A NaN
-// context length is stopped by `Number.isFinite` and again by `> 0`; the
-// alias-table prototype hazard by the table's null prototype and again by a
-// `typeof === 'string'` check; a settings key read through a prototype by
-// `hasOwnProperty` and again by a type check downstream. So: removing one guard
-// of a pair leaves this suite GREEN. That is not evidence the guard was dead —
-// it is evidence the second one caught you. Break both before you conclude
-// anything.
+// READ THIS BEFORE DELETING A GUARD THAT "LOOKS REDUNDANT". These assertions
+// were broken deliberately and watched go red, 2026-09-05 — 47 mutations of the
+// source and 5 of probe-presets.mjs. The exact tally, because a vague one is
+// worse than none:
+//
+//   * 44 of the 47 turn this suite red on their own.
+//   * TWO behaviours are defended TWICE, so breaking either half alone leaves
+//     the suite green: a NaN context length is stopped by `Number.isFinite` AND
+//     again by `> 0`, and the alias table's prototype hazard by its null
+//     prototype AND again by a `typeof === 'string'` check. Break both halves
+//     before concluding a guard is dead code — green here is not evidence.
+//     (`lookupSettings`'s `hasOwnProperty` is NOT one of these: it reddens on
+//     its own, against the inherited-settings fixture below.)
+//   * ONE mutation cannot be caught and is documented at its site: the `claimed`
+//     set in `modelSectionEntries` is unreachable while reserved names are
+//     refused earlier. It stays because it is what keeps "the controls win" true
+//     by construction. The `INI_KEY_RE` branch in `parseExtraFlags` is the same
+//     shape, and the alias-shape test below is what its comment rests on.
 //
 // Everything asserted here about llama.cpp's INI grammar was MEASURED against
 // the pinned binary (b10665) on 2026-09-05 and cross-read against its own
@@ -24,10 +32,11 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   renderPresetFile, writePresetFile, presetFilePath, parseExtraFlags, normaliseArgKey,
-  isReservedKey, isWritableSectionName, modelSectionEntries, checkFlagsAgainstBinary, reservedReason,
+  isReservedKey, isWritableSectionName, modelSectionEntries, checkFlagsAgainstBinary, reservedReason, reservedMatch,
   engineErrorLine, RESERVED_KEYS,
 } from '../src/main/engine/model-presets';
 import type { ModelSettings } from '../src/shared/model-manager-types';
+import { ARG_ALIASES } from '../src/main/engine/engine-pin';
 
 const DEFAULTS: ModelSettings = {
   contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '',
@@ -212,6 +221,15 @@ describe('model-presets — alias normalisation and the reserved list', () => {
     expect(normaliseArgKey('--temp')).toBe('temperature');
   });
 
+  it('resolves every alias to a name the INI grammar can actually hold', () => {
+    // What the unreachable INI_KEY_RE branch in parseExtraFlags rests on: if any
+    // canonical name were not ident-shaped, writing it would make the WHOLE file
+    // unparseable rather than refusing one option.
+    const ident = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+    const offenders = Object.values(ARG_ALIASES).filter((v) => !ident.test(v));
+    expect(offenders).toEqual([]);
+  });
+
   it('cannot be fooled into returning a Function for an inherited name', () => {
     // engine-pin's table is prototype-less on purpose; copying it into a plain
     // object would make `--valueOf` resolve to Function.prototype.valueOf, sail
@@ -234,21 +252,53 @@ describe('model-presets — alias normalisation and the reserved list', () => {
       byReason.set(reason!, (byReason.get(reason!) ?? 0) + 1);
     }
     expect(Object.fromEntries(byReason)).toEqual({
-      managed: 11,     // the design's signed list
+      controls: 3,     // ctx-size, n-gpu-layers, sleep-idle-seconds — the ones with a control
+      managed: 8,      // the rest of the design's signed list, with no control to point at
       network: 18,     // anything that fetches: hf-*, model-url, docker-repo, mmproj-url, 11 model presets
+      remote: 1,       // rpc — the model's work leaves the computer
       writes: 4,       // log-file, log-prompts-dir, slot-save-path, lookup-cache-dynamic
       runs: 6,         // tools, tools-runtime, agent, the two mcp-servers-*, video-ffmpeg-dir
       exposes: 3,      // media-path, path, ui-mcp-proxy
-      connection: 1,   // api-key-file
+      connection: 2,   // api-key-file, api-prefix
     });
   });
 
   it('rejects every reserved option, including through an alias', () => {
     for (const key of RESERVED_KEYS) expect(isReservedKey(key)).toBe(true);
-    for (const raw of ['--ctx-size 8192', '--c 8192', '--LLAMA_ARG_CTX_SIZE 8192', '--ngl 20', '--m /tmp/x.gguf', '--alias x']) {
+    for (const [raw, expected] of [
+      // The three with a control get sent to it…
+      ['--ctx-size 8192', 'set from the controls above'],
+      ['--c 8192', 'set from the controls above'],
+      ['--LLAMA_ARG_CTX_SIZE 8192', 'set from the controls above'],
+      ['--ngl 20', 'set from the controls above'],
+      // …and the ones with NO control must not be, because there is no host,
+      // model or mmproj control to go and look for.
+      ['--m /tmp/x.gguf', 'set by YouCoded and cannot be changed here'],
+      ['--alias x', 'set by YouCoded and cannot be changed here'],
+      ['--host 0.0.0.0', 'set by YouCoded and cannot be changed here'],
+    ] as Array<[string, string]>) {
       const r = parseExtraFlags(raw);
-      expect(r.ok).toBe(false);
-      expect(r.ok === false && r.message).toContain('YouCoded');
+      expect(r.ok, raw).toBe(false);
+      expect(r.ok === false && r.message, raw).toContain(expected);
+    }
+  });
+
+  it('never describes a NEGATED spelling as doing what its positive does', () => {
+    // `--no-agent` turns OFF the built-in tools; telling the user it "would let
+    // the engine start other programs" is the reverse of what they typed, and a
+    // message that describes the opposite is worse than no message at all.
+    // The distinction the message rests on, asserted directly.
+    expect(reservedMatch('agent')).toEqual({ reason: 'runs', viaNegation: false });
+    expect(reservedMatch('no-agent')).toEqual({ reason: 'runs', viaNegation: true });
+    expect(reservedMatch('no-mmproj-auto')).toBeNull();
+    for (const raw of ['--no-agent', '--no-ui-mcp-proxy', '--no-host']) {
+      const r = parseExtraFlags(raw);
+      expect(r.ok, raw).toBe(false);
+      const message = r.ok === false ? r.message : '';
+      expect(message, raw).toContain('neither spelling can be set here');
+      expect(message, raw).not.toContain('would let the engine start');
+      expect(message, raw).not.toContain('would open a way');
+      expect(message, raw).not.toContain('controls above');
     }
   });
 
@@ -267,6 +317,13 @@ describe('model-presets — alias normalisation and the reserved list', () => {
       ['--video-ffmpeg-dir /tmp/bin', 'start other programs'],
       ['--media-path /home/me', 'read or reach files through the engine'],
       ['--api-key-file /tmp/keys', 'how YouCoded connects to this model'],
+      ['--api-prefix /x', 'how YouCoded connects to this model'],
+      // The most network-exposing option llama.cpp has: --rpc offloads the
+      // weights AND the computation to another machine over TCP, on a backend
+      // upstream itself calls "fragile and insecure". Its own sentence, because
+      // "downloads from the internet" is not what happens — the user's own work
+      // leaves the computer.
+      ['--rpc 10.0.0.5:50052', 'to another computer over the network'],
     ];
     for (const [raw, expected] of cases) {
       const r = parseExtraFlags(raw);
@@ -355,8 +412,18 @@ describe('model-presets — writing the file', () => {
 // A stand-in for the spawned llama-server: exactly the surface the check uses.
 class FakeChild extends EventEmitter {
   stderr = new EventEmitter();
-  killed = false;
-  kill(): boolean { this.killed = true; return true; }
+  signals: string[] = [];
+  exitCode: number | null = null;
+  signalCode: string | null = null;
+  get killed(): boolean { return this.signals.length > 0; }
+  kill(signal?: string): boolean {
+    this.signals.push(signal ?? 'SIGTERM');
+    // A real child ends when it is killed; without this the post-verdict wait
+    // would sit out its whole grace period on every test.
+    this.signalCode = signal ?? 'SIGTERM';
+    setTimeout(() => this.emit('exit', null), 0);
+    return true;
+  }
 }
 
 describe('model-presets — asking the binary whether a flag is real', () => {
@@ -364,12 +431,22 @@ describe('model-presets — asking the binary whether a flag is real', () => {
 
   function run(drive: (child: FakeChild) => void, extra: Record<string, unknown> = {}) {
     const child = new FakeChild();
-    const spawnImpl = vi.fn(() => child) as any;
+    let spawnArgs: string[] = [];
+    // The check file is deleted the moment the promise settles, so the only
+    // place to read it is here, while the "process" is being started.
+    let ini = '';
+    const spawnImpl = vi.fn((_bin: string, args: string[]) => {
+      spawnArgs = args;
+      ini = fs.readFileSync(args[args.indexOf('--models-preset') + 1], 'utf8');
+      return child;
+    }) as any;
     const promise = checkFlagsAgainstBinary({
       binaryPath: '/fake/llama-server', modelId: 'gemma-4-E2B-it-Q8_0', entries, spawnImpl, timeoutMs: 50, ...extra,
     });
-    setTimeout(() => drive(child), 0);
-    return { promise, child, spawnImpl };
+    // Wait for the spawn rather than sleeping at it: the check does real I/O
+    // (mkdtemp, and asking the OS for a free port) before the child exists.
+    const spawned = vi.waitFor(() => expect(spawnImpl).toHaveBeenCalled()).then(() => drive(child));
+    return { promise, child, spawnImpl, spawned, args: () => spawnArgs, ini: () => ini };
   }
 
   it('rejects on a non-zero exit and quotes the engine, not a guess', async () => {
@@ -383,10 +460,39 @@ describe('model-presets — asking the binary whether a flag is real', () => {
     });
   });
 
-  it('accepts as soon as the engine says it is listening, and kills it', async () => {
-    const { promise, child } = run((c) => c.stderr.emit('data', '0.00.045.005 I srv  llama_server: listening on http://127.0.0.1:9317\n'));
+  it('accepts the INSTANT the engine says it is listening — not when the timeout runs out', async () => {
+    // The timeout is 10 s here and the assertion is SYNCHRONOUS: right after the
+    // "listening" line, the child must already have been signalled. Only the
+    // early-accept branch can do that. With a short timeout both paths return an
+    // identical {ok:true}, so deleting that branch — or llama.cpp rewording
+    // "listening on" — would leave this green while every settings save with an
+    // extra flag stalled the dialog for the full timeout.
+    const { promise, child, spawned } = run(
+      (c) => c.stderr.emit('data', '0.00.045.005 I srv  llama_server: listening on http://127.0.0.1:9317\n'),
+      { timeoutMs: 10_000 }
+    );
+    await spawned;
+    expect(child.signals).toEqual(['SIGTERM']);
     await expect(promise).resolves.toEqual({ ok: true });
-    expect(child.killed).toBe(true);
+  });
+
+  it('escalates to SIGKILL rather than leaving an orphan holding a deleted folder', async () => {
+    // llama-server can sit in a GPU init call and ignore SIGTERM, which is
+    // exactly the state a timed-out check is in. The temp folder is removed the
+    // moment this returns, so a survivor would be an orphan holding it open.
+    const child = new FakeChild();
+    child.kill = function (signal?: string) { this.signals.push(signal ?? 'SIGTERM'); return true; }; // ignores TERM
+    const spawnImpl = vi.fn(() => child) as any;
+    const promise = checkFlagsAgainstBinary({
+      binaryPath: '/fake/llama-server', modelId: 'm', entries, spawnImpl, timeoutMs: 10, killGraceMs: 20,
+    });
+    await expect(promise).resolves.toEqual({ ok: true });
+    expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('reads an exit with no code as our own kill, never as a rejection', async () => {
+    const { promise } = run((c) => c.emit('exit', null));
+    await expect(promise).resolves.toEqual({ ok: true });
   });
 
   it('accepts when the check could not run at all — a verdict we did not reach is not a rejection', async () => {
@@ -402,11 +508,20 @@ describe('model-presets — asking the binary whether a flag is real', () => {
     expect(spawnImpl).not.toHaveBeenCalled();
   });
 
-  it('checks under the model\'s own name so the engine\'s message names it, but never with an unwritable one', async () => {
-    const { promise, spawnImpl } = run((c) => c.emit('exit', 1), { modelId: 'a]b' });
+  it("checks under the model's own name, so the engine's message names the model", async () => {
+    const { promise, ini } = run((c) => c.emit('exit', 1), { modelId: 'tiny-model-Q4' });
     await promise;
-    const iniPath = spawnImpl.mock.calls[0][1][spawnImpl.mock.calls[0][1].indexOf('--models-preset') + 1];
-    expect(iniPath).toMatch(/check\.ini$/);
+    expect(ini().split('\n')[0]).toBe('[tiny-model-Q4]');
+  });
+
+  it('checks under a neutral name when the model id cannot be written as a section', async () => {
+    // Otherwise a user with `a]b.gguf` on disk saves a perfectly good --temp 0.6
+    // and gets told the config file could not be parsed — an error about the
+    // check file itself, with nothing to do with what they typed.
+    const { promise, ini } = run((c) => c.emit('exit', 1), { modelId: 'a]b' });
+    await promise;
+    expect(ini().split('\n')[0]).toBe('[model]');
+    expect(ini()).toContain('not-a-real-flag = 7');
   });
 });
 
@@ -416,9 +531,12 @@ describe('model-presets — the message the user is shown', () => {
       .toBe("failed to initialize router models: option 'x' not recognized in preset 'y'");
   });
 
-  it('prefers the engine\'s error line over its chatter', () => {
+  it('takes the LAST error line, not the first, and never the chatter around them', () => {
+    // Real stderr carries several E lines and the last one is the failure that
+    // actually stopped the engine; an earlier one is a symptom on the way there.
     const stderr = [
       '0.00.049.485 I srv   load_models: Loaded 0 cached model presets',
+      '0.00.049.900 E srv   load_models: failed to load model preset',
       '0.00.050.247 E srv  llama_server: failed to parse server config file: /tmp/x.ini',
       '0.00.050.900 I srv    operator(): cleaning up before exit...',
     ].join('\n');

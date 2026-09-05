@@ -57,7 +57,10 @@ const FLAG_TOKEN_RE = /^--[A-Za-z_][A-Za-z0-9_.-]*$/;
 /** Why an option cannot be typed into the extra-flags box. Each kind carries one
  *  sentence that is true of EVERY key filed under it — read off llama-server's
  *  own `--help` for b10665, never inferred. */
-type ReservedReason = 'managed' | 'network' | 'writes' | 'runs' | 'exposes' | 'connection';
+type ReservedReason =
+  | 'controls'    // the three the Context length / GPU layers / Keep loaded controls write
+  | 'managed'     // ours, with no control to point the user at
+  | 'network' | 'remote' | 'writes' | 'runs' | 'exposes' | 'connection';
 
 const RESERVED: ReadonlyMap<string, ReservedReason> = new Map<string, ReservedReason>([
   // --- Managed by the app (design §C2, R1-13) -------------------------------
@@ -65,10 +68,14 @@ const RESERVED: ReadonlyMap<string, ReservedReason> = new Map<string, ReservedRe
   // `mmproj`/`models-*` are how the app points the engine at its own files, and
   // the last three are what the Context length / GPU layers / Keep loaded
   // controls write.
+  // Split in two on purpose: only three of them have a control to send the user
+  // to. Telling someone to "use the controls above" for --host, when no host
+  // control exists or ever will, is a message that sends them looking for
+  // something that is not there.
+  ['ctx-size', 'controls'], ['n-gpu-layers', 'controls'], ['sleep-idle-seconds', 'controls'],
   ['host', 'managed'], ['port', 'managed'], ['model', 'managed'],
   ['models-dir', 'managed'], ['models-preset', 'managed'], ['models-max', 'managed'],
-  ['mmproj', 'managed'], ['alias', 'managed'], ['ctx-size', 'managed'],
-  ['n-gpu-layers', 'managed'], ['sleep-idle-seconds', 'managed'],
+  ['mmproj', 'managed'], ['alias', 'managed'],
 
   // --- Fetches over the network --------------------------------------------
   // llama.cpp strips `models-dir/max/preset/autoload`, `api-key` and the two
@@ -92,6 +99,17 @@ const RESERVED: ReadonlyMap<string, ReservedReason> = new Map<string, ReservedRe
   ['gpt-oss-120b-default', 'network'], ['vision-gemma-4b-default', 'network'],
   ['vision-gemma-12b-default', 'network'],
 
+  // --- Sends this model's work to another computer ---------------------------
+  // `--rpc host:port` offloads the model's WEIGHTS AND ITS COMPUTATION to an
+  // llama.cpp RPC server over TCP — measured reaching the child at b10665, and
+  // not stripped. llama.cpp's own tools/rpc/README.md: the backend "is fragile
+  // and insecure. Never run the RPC server on an open network or in a sensitive
+  // environment!" A line pasted from a forum thread would send every prompt and
+  // the model itself to an unauthenticated machine, with nothing in YouCoded
+  // saying so. Its own reason because its own sentence is different: this is not
+  // a download, it is the user's work leaving the computer.
+  ['rpc', 'remote'],
+
   // --- Writes outside the model folder --------------------------------------
   // Files the app does not manage, never cleans up, and cannot show the user —
   // `log-prompts-dir` in particular writes everything they type to disk.
@@ -114,21 +132,33 @@ const RESERVED: ReadonlyMap<string, ReservedReason> = new Map<string, ReservedRe
   ['media-path', 'exposes'], ['path', 'exposes'], ['ui-mcp-proxy', 'exposes'],
 
   // --- Breaks the app's own connection to the model --------------------------
-  // Not stripped by llama.cpp (only the inline `api-key` is), so the child would
-  // demand a key the app does not send and answer every message with 401.
-  ['api-key-file', 'connection'],
+  // `api-key-file` is not stripped by llama.cpp (only the inline `api-key` is),
+  // so the child would demand a key the app never sends and answer every message
+  // with a 401. `api-prefix` is the same defect from the other end: the router
+  // proxies the request path to the child verbatim, so a child serving only
+  // under `/x` 404s every routed request (both measured reaching the child).
+  ['api-key-file', 'connection'], ['api-prefix', 'connection'],
 ]);
 
 export const RESERVED_KEYS: ReadonlySet<string> = new Set(RESERVED.keys());
 
 const RESERVED_SENTENCE: Record<ReservedReason, string> = {
-  managed: 'is set by YouCoded from this model\'s own settings. Remove it and use the controls above.',
+  controls: 'is set from the controls above. Change it there instead.',
+  managed: 'is set by YouCoded and cannot be changed here.',
   network: 'is not allowed here: it would make the engine fetch files from the internet on its own.',
+  remote: "is not allowed here: it would send this model's work — your prompts and the model itself — to another computer over the network.",
   writes: 'is not allowed here: it would make the engine write files outside your models folder.',
   runs: 'is not allowed here: it would let the engine start other programs on this computer.',
   exposes: 'is not allowed here: it would open a way for something other than YouCoded to read or reach files through the engine.',
   connection: 'is not allowed here: it would change how YouCoded connects to this model.',
 };
+
+/** What a NEGATED spelling gets instead. `--no-agent` TURNS OFF the tools that
+ *  `--agent` turns on, so "it would let the engine start other programs" is the
+ *  opposite of what that flag does — and a message that describes the reverse of
+ *  what the user typed is worse than no message. Both spellings are refused
+ *  because YouCoded decides the option, so that is what it says. */
+const NEGATED_SENTENCE = 'is decided by YouCoded, so neither spelling can be set here.';
 
 /** Collapse any spelling of an option onto its canonical long name: `c`,
  *  `ctx-size` and `LLAMA_ARG_CTX_SIZE` are all the same option to llama-server,
@@ -151,7 +181,18 @@ export function normaliseArgKey(rawKey: string): string {
  *  every reserved option has a negative twin that walks straight past the list —
  *  `--no-host` and `--no-agent`, for two, are real llama-server flags. */
 export function reservedReason(canonicalKey: string): ReservedReason | null {
-  return RESERVED.get(canonicalKey) ?? RESERVED.get(canonicalKey.replace(/^no-/, '')) ?? null;
+  return reservedMatch(canonicalKey)?.reason ?? null;
+}
+
+/** `viaNegation` = it matched only after the `no-` strip, i.e. the user typed the
+ *  OFF spelling of a reserved option. The message has to change with it (S4). */
+export function reservedMatch(
+  canonicalKey: string
+): { reason: ReservedReason; viaNegation: boolean } | null {
+  const direct = RESERVED.get(canonicalKey);
+  if (direct) return { reason: direct, viaNegation: false };
+  const stripped = RESERVED.get(canonicalKey.replace(/^no-/, ''));
+  return stripped ? { reason: stripped, viaNegation: true } : null;
 }
 
 export function isReservedKey(canonicalKey: string): boolean {
@@ -214,15 +255,21 @@ export function parseExtraFlags(raw: string): ExtraFlagsResult {
         return { ok: false, message: `"${token}" is not an option name. Write each one as --name or --name value.` };
       }
       const canonical = normaliseArgKey(token);
+      // Unreachable today, and deliberately kept: FLAG_TOKEN_RE already allows
+      // only ident-shaped names, and every value in the pin's alias table is
+      // ident-shaped too (checked by model-presets.test.ts). It is here because
+      // the day one of those changes, this is what stops a key the INI grammar
+      // cannot express from making the WHOLE file unparseable.
       if (!INI_KEY_RE.test(canonical)) {
         return { ok: false, message: `"${token}" cannot be saved — the engine's settings file has no way to write it.` };
       }
-      const reason = reservedReason(canonical);
-      if (reason) {
+      const match = reservedMatch(canonical);
+      if (match) {
         // Name the canonical option too when the user typed an alias, so the
         // sentence is about an option they can actually find in the docs.
         const via = canonical === token.slice(2) ? '' : ` (another name for --${canonical})`;
-        return { ok: false, message: `${token}${via} ${RESERVED_SENTENCE[reason]}` };
+        const sentence = match.viaNegation ? NEGATED_SENTENCE : RESERVED_SENTENCE[match.reason];
+        return { ok: false, message: `${token}${via} ${sentence}` };
       }
       pendingKey = canonical;
       pendingToken = token;
@@ -369,6 +416,8 @@ export interface BinaryCheckOptions {
   entries: readonly PresetEntry[];
   /** How long to wait for a verdict before giving up and ACCEPTING (see below). */
   timeoutMs?: number;
+  /** How long SIGTERM gets before SIGKILL, and again after it. Test seam. */
+  killGraceMs?: number;
   /** Test seam. */
   spawnImpl?: typeof spawn;
   tmpRoot?: string;
@@ -418,11 +467,12 @@ export async function checkFlagsAgainstBinary(opts: BinaryCheckOptions): Promise
     // bind error at them. Ask the OS for a free one instead of guessing.
     const port = await freePort();
 
-    return await new Promise<BinaryCheckResult>((resolve) => {
+    let child: ReturnType<typeof spawn> | null = null;
+    const result = await new Promise<BinaryCheckResult>((resolve) => {
       let settled = false;
       let stderr = '';
       let timer: NodeJS.Timeout | null = null;
-      const child = spawnFn(
+      child = spawnFn(
         binaryPath,
         [
           '--host', '127.0.0.1', '--port', String(port), '--no-webui',
@@ -431,14 +481,18 @@ export async function checkFlagsAgainstBinary(opts: BinaryCheckOptions): Promise
         { stdio: ['ignore', 'ignore', 'pipe'] }
       );
 
-      const finish = (result: BinaryCheckResult) => {
+      const finish = (outcome: BinaryCheckResult) => {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
-        // Kill by THIS child's pid — never by a pattern, and never a pid
-        // remembered from anywhere else.
-        try { child.kill(); } catch { /* already gone */ }
-        resolve(result);
+        // Kill THIS child object — never by a pattern, and never a pid
+        // remembered from anywhere else. SIGTERM then SIGKILL, the shape
+        // engine-supervisor already uses: llama-server can sit in a GPU
+        // initialisation call and ignore TERM, and a check that timed out is
+        // exactly when that is happening. A survivor here would be an orphan
+        // holding a directory we are about to delete.
+        try { child?.kill('SIGTERM'); } catch { /* already gone */ }
+        resolve(outcome);
       };
 
       timer = setTimeout(() => finish({ ok: true }), timeoutMs);
@@ -451,15 +505,40 @@ export async function checkFlagsAgainstBinary(opts: BinaryCheckOptions): Promise
       });
       child.on('error', () => finish({ ok: true })); // could not run it — no verdict
       child.on('exit', (code) => {
+        // `null` = killed by a signal, which is US killing it after a verdict.
+        // Never a rejection: only a non-zero EXIT means the engine read the file
+        // and refused it.
         if (code === 0 || code === null) return finish({ ok: true });
         finish({ ok: false, message: engineErrorLine(stderr, code) });
       });
     });
+    // The temp directory is deleted the moment this returns, so wait for the
+    // child to be gone first — escalating to SIGKILL, which cannot be ignored.
+    if (child) await killAndWait(child, opts.killGraceMs);
+    return result;
   } catch {
     return { ok: true };
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/** SIGTERM has already been sent; give it a moment, then SIGKILL the survivor and
+ *  wait for the exit that SIGKILL guarantees. Bounded, and both timers unref'd so
+ *  a settings save can never hold the app open. */
+function killAndWait(child: ReturnType<typeof spawn>, graceMs = 1_500): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    child.once('exit', finish);
+    const t1 = setTimeout(() => {
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+      const t2 = setTimeout(finish, graceMs);
+      if (typeof t2.unref === 'function') t2.unref();
+    }, graceMs);
+    if (typeof t1.unref === 'function') t1.unref();
+  });
 }
 
 /** The engine's OWN last error line, with only its log prefix removed

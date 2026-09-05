@@ -44,15 +44,15 @@ const modelId = gguf.replace(/\.gguf$/i, '');
 // pinned build. A phantom entry would refuse the user a flag that never existed
 // and, worse, would mean the real option's name moved and is no longer covered.
 const RESERVED_KEYS = [
-  'host', 'port', 'model', 'models-dir', 'models-preset', 'models-max', 'mmproj', 'alias',
-  'ctx-size', 'n-gpu-layers', 'sleep-idle-seconds', 'hf-repo', 'hf-file', 'hf-token',
+  'ctx-size', 'n-gpu-layers', 'sleep-idle-seconds', 'host', 'port', 'model', 'models-dir',
+  'models-preset', 'models-max', 'mmproj', 'alias', 'hf-repo', 'hf-file', 'hf-token',
   'hf-repo-draft', 'model-url', 'docker-repo', 'mmproj-url', 'embd-gemma-default',
   'fim-qwen-1.5b-default', 'fim-qwen-3b-default', 'fim-qwen-7b-default', 'fim-qwen-7b-spec',
   'fim-qwen-14b-spec', 'fim-qwen-30b-default', 'gpt-oss-20b-default', 'gpt-oss-120b-default',
-  'vision-gemma-4b-default', 'vision-gemma-12b-default', 'log-file', 'log-prompts-dir',
+  'vision-gemma-4b-default', 'vision-gemma-12b-default', 'rpc', 'log-file', 'log-prompts-dir',
   'slot-save-path', 'lookup-cache-dynamic', 'tools', 'tools-runtime', 'agent',
   'mcp-servers-config', 'mcp-servers-json', 'video-ffmpeg-dir', 'media-path', 'path',
-  'ui-mcp-proxy', 'api-key-file',
+  'ui-mcp-proxy', 'api-key-file', 'api-prefix',
 ];
 
 let ok = true;

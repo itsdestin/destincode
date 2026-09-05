@@ -54,8 +54,9 @@ The pinned version + per-platform asset table live in
   screen to explain it. Asserts that `[*]` reaches a model, that a per-model
   section overrides one key and inherits the rest, that a sectioned model reports
   `source: preset`, that an unrecognised key in EITHER section is fatal with the
-  exact message `model-presets.ts` quotes back to the user, and that all eleven
-  reserved keys are real options on this build. Cheap: `GET /models` renders each
+  exact message `model-presets.ts` quotes back to the user, and that EVERY key on
+  the reserved list is a real option on this build (45 today — the probe prints
+  the count it checked, so it cannot drift out of date here). Cheap: `GET /models` renders each
   model's full child command line without loading it, so nothing here reads a
   gigabyte of weights. If the fatal-key assertion ever goes GREEN-by-passing (the
   engine tolerates a bad key), the save-time binary check has stopped being
