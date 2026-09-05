@@ -38,7 +38,8 @@ export interface VoiceStyle {
   feedback: 'beside' | 'strip' | 'placeholder';
   motion: 'breathe' | 'level' | 'dot';
 }
-export const DEFAULT_VOICE_STYLE: VoiceStyle = { feedback: 'beside', motion: 'breathe' };
+// Round 2 picks (2026-09-05): V-4 strip, V-5 level ("make the max size a tad smaller tho").
+export const DEFAULT_VOICE_STYLE: VoiceStyle = { feedback: 'strip', motion: 'level' };
 export const VoiceStyleContext = createContext<VoiceStyle>(DEFAULT_VOICE_STYLE);
 
 interface Props {
@@ -98,10 +99,11 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
   const listening = phase === 'listening';
   const state = readiness?.state ?? 'unavailable';
   const style = useContext(VoiceStyleContext);
-  // Motion B: the ring IS the meter — an inline shadow sized by the level, no
-  // keyframes at all, so it only repaints when a level event arrives.
+  // Motion B (picked): the ring IS the meter — an inline shadow sized by the level,
+  // no keyframes at all, so it only repaints when a level event arrives. 2 to 9 px:
+  // round 2 showed 2 to 12 and Destin asked for the biggest a tad smaller.
   const levelRing = listening && style.motion === 'level'
-    ? { boxShadow: `0 0 0 ${2 + Math.round(level * 10)}px color-mix(in srgb, var(--accent) 35%, transparent)`, transition: 'box-shadow 90ms linear' }
+    ? { boxShadow: `0 0 0 ${2 + Math.round(level * 7)}px color-mix(in srgb, var(--accent) 35%, transparent)`, transition: 'box-shadow 90ms linear' }
     : undefined;
 
   const measure = useCallback(() => {
