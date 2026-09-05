@@ -39,6 +39,9 @@ export interface PageContext {
   /** Closes the whole panel — the Claude Code Preferences button hands off to
    *  another dialog and must not leave this one open underneath it. */
   onClosePanel: () => void;
+  /** Switch to another page — for the one cross-reference a page makes
+   *  (Permissions → Claude Code). UX review 1, U17: "make its page a link". */
+  goTo: (id: PageId) => void;
 }
 
 export interface PageDef {
@@ -227,12 +230,18 @@ export const PAGES: PageDef[] = [
     group: 'Assistant',
     explainer: { intro: PERMISSIONS_EXPLAINER_INTRO, sections: PERMISSIONS_EXPLAINER_SECTIONS },
     icon: <Icon><path d="M12 3l7 3v5.5c0 4.3-2.9 8.1-7 9.5-4.1-1.4-7-5.2-7-9.5V6l7-3z" /><path d="M9 12l2 2 4-4" /></Icon>,
-    render: () => (
+    render: (ctx) => (
       <div className="space-y-3">
         {/* The one sentence the split needs (Q-2): this page is the native
-            modes and grants; Claude Code's switch is on its own page. */}
+            modes and grants; Claude Code's switch is on its own page. UX
+            review 1 (U7, U17): say that Claude Code's approvals are not in
+            this list either, and make the page name a link. */}
         <p className="text-2xs text-fg-dim leading-relaxed">
-          For conversations on ChatGPT, OpenRouter and local models. Claude Code's permissions are on its page.
+          Applies to ChatGPT, OpenRouter and local models. Claude Code asks in its own way, and its
+          switch is on the{' '}
+          <button type="button" className="text-accent hover:underline" onClick={() => ctx.goTo('claude')}>
+            Claude Code page
+          </button>.
         </p>
         <PermissionsSection />
       </div>

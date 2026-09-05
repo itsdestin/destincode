@@ -90,6 +90,9 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // contract test actually covers them; a channel absent from HAND_WRITTEN
   // escapes the real-or-registered check entirely.
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
+  // Web search keys — real channels (search:* in main); listed so the
+  // contract test checks them like every other hand-written fake.
+  'search.list', 'search.test', 'search.setKey', 'search.removeKey',
   // G-1 — real backend as of 2026-08-28; hand-written so the gallery's Bash
   // cards keep their fixture state instead of talking to a real process.
   'native.killShell', 'on.shellEvent',
@@ -321,6 +324,10 @@ const NAMESPACES = [
   // Sign in with ChatGPT (design 2026-09-04) — MOCK_ONLY until main grows the
   // OAuth round-trip; typed by shared/chatgpt-types.ts, not useIpc.ts yet.
   'chatgpt',
+  // Web search keys (Tavily / Exa). Real channels (search:* in main); the fake
+  // was missing, which left Assistant settings → Web search an empty page in
+  // the workbench (UX review 1, U1).
+  'search',
 ];
 
 export function createMockShim(store: MockStore): Window['claude'] {
@@ -808,6 +815,20 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       chatgptStatus = { state: 'signed-out' };
       return true;
     },
+  };
+
+  // Web search backends: two rows, neither keyed, as a fresh install has them.
+  // `test` accepts any key so the Save path can be walked; `setKey`/`removeKey`
+  // flip the row like the real store does.
+  const searchKeys = new Set<string>();
+  const search = {
+    list: async () => [
+      { id: 'tavily', label: 'Tavily', hasKey: searchKeys.has('tavily') },
+      { id: 'exa', label: 'Exa', hasKey: searchKeys.has('exa') },
+    ],
+    test: async (_id: string, key: string) => ({ ok: key.trim().length > 8, message: key.trim().length > 8 ? 'Connected.' : 'That key is too short to be valid.' }),
+    setKey: async (id: string) => { if (store.refuseWrites) throw new Error('refused'); searchKeys.add(id); return true; },
+    removeKey: async (id: string) => { if (store.refuseWrites) throw new Error('refused'); searchKeys.delete(id); return true; },
   };
 
   const providers: Ns<'providers'> = {
@@ -2035,6 +2056,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, chatgpt, ...(remote ? { remote } : {}),
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, chatgpt, search, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
 }

@@ -253,9 +253,10 @@ export default function SpecialistsSection({ cwd }: {
           Available specialists{roster.status === 'ready' ? ` · ${definitions.length}` : ''}
           {warningCount ? ` · ${warningCount} warning${warningCount === 1 ? '' : 's'}` : ''}
         </h3>
+        {/* Fix (UX review 1, U27): an empty padded div sat here above the first
+            group and read as a missing row; the first group's top border now
+            starts the card. */}
         <div className="rounded-lg bg-inset/50">
-          <div className="px-3 py-2.5">
-          </div>
           {roster.status === 'loading' ? (
             <div className="border-t border-edge-dim px-3 py-3">
               <LoadingState what="specialists" variant="inline" />

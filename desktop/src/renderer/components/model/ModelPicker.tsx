@@ -459,8 +459,8 @@ export default function ModelPicker({
           type="button"
           onClick={() => toggleFavorite(e.key)}
           aria-pressed={fav}
-          aria-label={fav ? `Unfavourite ${e.label}` : `Favourite ${e.label}`}
-          title={fav ? 'Remove from favourites' : 'Add to favourites'}
+          aria-label={fav ? `Unfavorite ${e.label}` : `Favorite ${e.label}`}
+          title={fav ? 'Remove from favorites' : 'Add to favorites'}
           className={`shrink-0 w-6 h-6 rounded inline-flex items-center justify-center transition-opacity coarse-hit touch-reveal ${
             fav ? 'text-accent opacity-100' : 'text-fg-faint opacity-0 group-hover/model:opacity-100 hover:text-fg-2'
           }`}
@@ -594,7 +594,7 @@ export default function ModelPicker({
                     <p className="text-xs text-fg-muted text-center py-4 px-4 leading-relaxed">
                       {searching
                         ? 'No models match.'
-                        : 'No favourites yet. Search for a model, then star it to keep it here.'}
+                        : 'No favorites yet. Search for a model, then star it to keep it here.'}
                     </p>
                   )}
                 </>

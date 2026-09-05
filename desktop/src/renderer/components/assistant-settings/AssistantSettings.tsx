@@ -104,12 +104,14 @@ export default function AssistantSettingsRow({
   const current: PageDef = pages.find((p) => p.id === (narrow ? narrowPage : page)) ?? pages[0];
   const showingList = narrow && narrowPage === null;
 
+  const goTo = (id: PageId) => { setPage(id); setNarrowPage(id); setShowInfo(false); };
   const ctx = {
     defaults,
     onDefaultsChange,
     cwd,
     onOpenClaudePreferences,
     onClosePanel: () => setOpen(false),
+    goTo,
   };
 
   const rowSummary = startSummary(defaults);
@@ -144,7 +146,10 @@ export default function AssistantSettingsRow({
         onClose={() => setOpen(false)}
         title={title}
         onBack={onBack}
-        headerActions={!showInfo && current.explainer && !showingList ? <InfoIconButton onClick={() => setShowInfo(true)} /> : undefined}
+        // UX review 1 (U26): one place for every page's (i) — beside the page
+        // title, where the short-tip pages already had theirs. On the phone the
+        // page title IS the dialog header, so the (i) stays up there.
+        headerActions={narrow && !showInfo && current.explainer && !showingList ? <InfoIconButton onClick={() => setShowInfo(true)} /> : undefined}
         size={narrow ? 'panel' : 'wide'}
         fill
         // The panel owns its two regions (static list, scrolling page), so the
@@ -163,8 +168,8 @@ export default function AssistantSettingsRow({
           )
         ) : (
           <div className="flex flex-1 min-h-0">
-            <PageRail pages={pages} current={page} attention={attention} onPick={(id) => { setPage(id); setShowInfo(false); }} />
-            <PageBody page={current} ctx={ctx} attention={attention} />
+            <PageRail pages={pages} current={page} attention={attention} onPick={goTo} />
+            <PageBody page={current} ctx={ctx} attention={attention} onInfo={current.explainer ? () => setShowInfo(true) : undefined} />
           </div>
         )}
       </Dialog>
@@ -241,11 +246,14 @@ function PageList({ pages, attention, onPick }: {
 
 // ── One page ─────────────────────────────────────────────────────────────────
 
-function PageBody({ page, ctx, attention, narrow }: {
+function PageBody({ page, ctx, attention, narrow, onInfo }: {
   page: PageDef;
   ctx: Parameters<PageDef['render']>[0];
   attention: Set<PageId>;
   narrow?: boolean;
+  /** Opens the page's full explainer (Permissions, Specialists) — the (i)
+   *  sits beside the title like the short tips do (U26). */
+  onInfo?: () => void;
 }) {
   const ref = useScrollFade<HTMLDivElement>();
   return (
@@ -256,6 +264,7 @@ function PageBody({ page, ctx, attention, narrow }: {
           <div className="flex items-center gap-1.5">
             <h3 className="text-sm font-medium text-fg">{page.label}</h3>
             {page.info && <AnchorTip label={page.info.label} title={page.label}>{page.info.body}</AnchorTip>}
+            {onInfo && <InfoIconButton onClick={onInfo} />}
             {attention.has(page.id) && <AttentionDot label={`${page.label} needs attention`} />}
           </div>
         )}
