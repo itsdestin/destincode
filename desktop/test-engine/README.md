@@ -47,6 +47,17 @@ The pinned version + per-platform asset table live in
   round-trip: auto-load on first request, delta frames, final usage/timings.
 - `node probe-speed.mjs --binary <path>` — the speed flags (`--spec-default`, `--cache-type-k q8_0`)
   reach the router's model child and the n-gram drafter fires on an echo task (2026-09-04)
+- `node probe-headers.mjs` — the ONLY probe that needs no binary and no local
+  GGUF: it reads each curated repo's header straight off Hugging Face and asserts
+  that ONE 1 MB range request is enough. `gguf-header.ts`'s whole design rests on
+  a fact about real files we do not control — that a converted GGUF writes its
+  architecture keys before its multi-megabyte tokenizer arrays — and unit
+  fixtures cannot notice that changing upstream. It prints each model's real
+  layer/head/window numbers, which is also the fastest way to see what a new
+  family looks like. `--repo <id>` for one repo; `--local <file.gguf>` for a file
+  on disk. It has already earned its keep: on its first run it found that
+  Gemma 4's larger models write `head_count_kv` as a per-LAYER array, which the
+  reader was dropping (2026-09-05).
 
 Each probe exits 0 on pass and prints the raw JSON it saw (that output is what
 goes into `engine-dependencies.md` entries).

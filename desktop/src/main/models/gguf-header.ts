@@ -1,0 +1,609 @@
+// GGUF header reader (design §D1). Reads a model file's metadata KV table —
+// magic, version, key/value pairs — and NEVER the tensor data behind it, so the
+// memory estimator can size a KV cache from the model's real shape (layers, KV
+// heads, head widths, which layers slide) instead of the flat 2 GB constant
+// fit-estimator.ts has used until now.
+//
+// WHY it must read from the network as well as disk: the "will this fit?"
+// question is answered on the model CARD, before a single byte is downloaded.
+// The remote loader therefore walks the file in 1 MB HTTP Range steps and stops
+// the moment the architecture keys are behind it — measured on Destin's three
+// local GGUFs, every architecture key sits inside the first 2 KB, while the
+// tokenizer arrays that follow them run past 4 MB. probe-headers.mjs pins that
+// against the curated repos on every engine bump.
+//
+// WHY the honesty flag: `contextBytesIsUpperBound` is set whenever the reader
+// could not fully understand the header — an unknown architecture, a key in a
+// type it does not handle, or a truncated read. The caller then says "up to
+// N GB" rather than stating a precise number it cannot stand behind (§D2's "no
+// fake precision" rule).
+import * as fs from 'fs';
+import * as path from 'path';
+
+const MAGIC = 'GGUF';
+const SUPPORTED_VERSION = 3;
+
+/** One HTTP Range step / one local read step. */
+export const CHUNK_BYTES = 1024 * 1024;
+/** Hard stop. A header that has not resolved inside this much file is reported
+ *  as an upper bound rather than downloaded further — the tokenizer arrays of a
+ *  large-vocabulary model are tens of megabytes and none of it is useful here. */
+const MAX_HEADER_BYTES = 16 * CHUNK_BYTES;
+
+// GGUF metadata value types (ggml's `gguf_type`). The number is the value's
+// size in bytes; -1 means variable-length, i.e. it must be walked rather than
+// skipped by arithmetic. An id absent from this table is a GGUF version we do
+// not know how to walk at all — see UnknownTypeError below.
+const TYPE_SIZES: Record<number, number> = {
+  0: 1, // uint8
+  1: 1, // int8
+  2: 2, // uint16
+  3: 2, // int16
+  4: 4, // uint32
+  5: 4, // int32
+  6: 4, // float32
+  7: 1, // bool
+  8: -1, // string
+  9: -1, // array
+  10: 8, // uint64
+  11: 8, // int64
+  12: 8, // float64
+};
+const T_BOOL = 7;
+const T_STRING = 8;
+const T_ARRAY = 9;
+
+/** The architecture-relative keys this reader collects. Everything else in the
+ *  table is walked past without being materialised — `tokenizer.ggml.tokens` is
+ *  a quarter of a million strings and allocating it would cost more than the
+ *  whole estimate. */
+const WANTED = new Set([
+  'block_count',
+  'context_length',
+  'embedding_length',
+  'attention.head_count',
+  'attention.head_count_kv',
+  'attention.key_length',
+  'attention.value_length',
+  'attention.key_length_swa',
+  'attention.value_length_swa',
+  'attention.sliding_window',
+  'attention.sliding_window_pattern',
+  'attention.shared_kv_layers',
+  'full_attention_interval',
+]);
+
+/** Architectures whose sliding-window pattern starts with a DENSE layer.
+ *  Read straight off llama.cpp `src/models/*.cpp` (the third argument to
+ *  `set_swa_pattern`, which defaults to false) — every other architecture that
+ *  calls it starts with sliding layers. Pinned in gguf-header.test.ts. */
+export const DENSE_FIRST_ARCHITECTURES = new Set(['cohere2moe', 'smallthinker', 'modern-bert']);
+
+/** The pattern period llama.cpp assumes when a file carries a sliding window
+ *  but no `sliding_window_pattern` key. Also read off `src/models/*.cpp`; an
+ *  architecture missing from this table is one whose layer map we cannot
+ *  reproduce, and it sets the upper-bound flag rather than guessing. */
+export const SWA_PATTERN_DEFAULTS: Record<string, number> = {
+  afmoe: 4,
+  cohere2: 4,
+  cohere2moe: 4,
+  'exaone-moe': 4,
+  exaone4: 4,
+  gemma2: 2,
+  gemma3: 6,
+  gemma3n: 5,
+  'gemma-embedding': 6,
+  'gpt-oss': 2,
+  llama4: 4,
+  mellum: 4,
+  'modern-bert': 3,
+  olmo2: 4,
+  plamo3: 8,
+  smallthinker: 4,
+};
+
+/** Architectures where llama.cpp hard-codes the period and IGNORES the file's
+ *  own `sliding_window_pattern` key. phi3 calls `set_swa_pattern(1)` with no
+ *  lookup, and a period of 1 means every layer is dense. Believing a phi3
+ *  file's key instead would under-count KV, which is the one direction that
+ *  can turn a "tight" verdict into a wrong "fits". */
+const SWA_PATTERN_FIXED: Record<string, number> = { phi3: 1 };
+
+/** What the reader could pull out of one model file's metadata. Every numeric
+ *  field is null when the file did not carry it (never a guessed default). */
+export interface GgufHeader {
+  architecture: string;
+  blockCount: number | null;
+  contextLength: number | null;
+  /** Attention heads. Gemma 4's larger models write these PER LAYER (measured
+   *  2026-09-05: gemma-4-12b's `head_count_kv` is a 48-element int32 array —
+   *  8 KV heads on its sliding layers, 1 on its full-attention layers), which
+   *  is what `get_key_or_arr` reads in llama.cpp. When the file gives an array
+   *  whose entries differ, the scalar below is its MAXIMUM, so a consumer that
+   *  reads only the scalar over-estimates the KV cache rather than under-
+   *  estimating it, and `headCountKvLayers` carries the exact per-layer truth. */
+  headCount: number | null;
+  headCountLayers: number[] | null;
+  headCountKv: number | null;
+  headCountKvLayers: number[] | null;
+  embeddingLength: number | null;
+  /** Per-head key/value width. Resolved: the explicit `attention.key_length` /
+   *  `.value_length` when present, else `embedding_length / head_count`. */
+  keyLength: number | null;
+  valueLength: number | null;
+  /** Gemma 4 gives its sliding layers HALF-width keys and values (256 against a
+   *  full-attention 512), so a sliding layer costs half what a full one does. */
+  keyLengthSwa: number | null;
+  valueLengthSwa: number | null;
+  /** How many tokens a sliding layer keeps. */
+  slidingWindow: number | null;
+  /** Scalar form of the pattern: "every Nth layer is full attention". */
+  slidingWindowPattern: number | null;
+  /** Per-layer form of the SAME key (Gemma 4 writes a 35-element bool array).
+   *  true = that layer slides. */
+  slidingWindowPatternLayers: boolean[] | null;
+  /** Qwen3.5/3.6: layers where `(il + 1) % n != 0` are linear/recurrent and
+   *  store no attention KV at all. */
+  fullAttentionInterval: number | null;
+  /** Gemma 4: the last n layers reuse an earlier layer's KV and store none. */
+  sharedKvLayers: number | null;
+  /** The resolved per-layer sliding map (true = this layer slides), from the
+   *  bool array when the file has one, else from the scalar period and the
+   *  architecture's dense-first rule. null = the reader could not build one. */
+  slidingLayers: boolean[] | null;
+  /** True when anything above could not be read as expected. The caller must
+   *  present its number as "up to", never as an exact figure. */
+  contextBytesIsUpperBound: boolean;
+  /** The offset just past the LAST architecture key — i.e. how far into the
+   *  file a reader has to go to learn everything the estimator wants.
+   *  probe-headers.mjs asserts it stays inside one CHUNK_BYTES step for every
+   *  curated repo, which is what makes the single-range-request loader safe. */
+  archBytes: number;
+}
+
+/** llama.cpp's `llama_hparams::set_swa_pattern`, transcribed exactly.
+ *  `n_pattern` counts layers per repeat: 0 = every layer slides, 1 = none do.
+ *  With dense_first the repeat starts on the dense layer instead of ending on
+ *  it. Pinned against the C++ in gguf-header.test.ts. */
+export function swaPatternMask(nLayers: number, nPattern: number, denseFirst: boolean): boolean[] {
+  const out: boolean[] = [];
+  for (let il = 0; il < nLayers; il++) {
+    out.push(nPattern === 0 || (denseFirst ? il % nPattern !== 0 : il % nPattern < nPattern - 1));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// The pure parser
+// ---------------------------------------------------------------------------
+
+/** Thrown when a read runs off the end of the buffer we have so far. It is not
+ *  a failure — it is the loaders' signal to fetch another chunk. */
+class TruncatedError extends Error {}
+/** Thrown when the table contains a value type this reader cannot even measure,
+ *  so it cannot walk past it to reach the keys after it. */
+class UnknownTypeError extends Error {}
+
+class Cursor {
+  offset = 0;
+  private buf: Buffer;
+
+  // Written out rather than declared as a constructor parameter property so
+  // this module can be imported straight from source by test-engine's probes,
+  // which run under plain Node's strip-only TypeScript support.
+  constructor(buf: Buffer) { this.buf = buf; }
+
+  private need(n: number): number {
+    if (this.offset + n > this.buf.length) throw new TruncatedError();
+    const at = this.offset;
+    this.offset += n;
+    return at;
+  }
+
+  u32(): number { return this.buf.readUInt32LE(this.need(4)); }
+
+  // GGUF v3 lengths and counts are u64. Model headers never approach 2^53, so
+  // reading them as JS numbers is exact; a file claiming more is malformed and
+  // is caught by the bounds check in need().
+  u64(): number { return Number(this.buf.readBigUInt64LE(this.need(8))); }
+
+  str(): string {
+    const len = this.u64();
+    const at = this.need(len);
+    return this.buf.toString('utf8', at, at + len);
+  }
+
+  /** Read one value of `type`, or walk past it when `keep` is false. Returns
+   *  null for a value that was walked past or that has no numeric/bool form. */
+  value(type: number, keep: boolean): number | boolean | string | (number | boolean)[] | null {
+    const size = TYPE_SIZES[type];
+    if (size === undefined) throw new UnknownTypeError(`GGUF value type ${type}`);
+    if (size > 0) {
+      const at = this.need(size);
+      if (!keep) return null;
+      switch (type) {
+        case 0: return this.buf.readUInt8(at);
+        case 1: return this.buf.readInt8(at);
+        case 2: return this.buf.readUInt16LE(at);
+        case 3: return this.buf.readInt16LE(at);
+        case 4: return this.buf.readUInt32LE(at);
+        case 5: return this.buf.readInt32LE(at);
+        case 6: return this.buf.readFloatLE(at);
+        case T_BOOL: return this.buf.readUInt8(at) !== 0;
+        case 10: return Number(this.buf.readBigUInt64LE(at));
+        case 11: return Number(this.buf.readBigInt64LE(at));
+        case 12: return this.buf.readDoubleLE(at);
+        default: return null;
+      }
+    }
+    if (type === T_STRING) {
+      const s = this.str();
+      return keep ? s : null;
+    }
+    // The only other variable-length type is an array: element type, count,
+    // then the elements.
+    if (type !== T_ARRAY) throw new UnknownTypeError(`GGUF value type ${type}`);
+    const elemType = this.u32();
+    const count = this.u64();
+    const elemSize = TYPE_SIZES[elemType];
+    if (elemSize === undefined) throw new UnknownTypeError(`GGUF array element type ${elemType}`);
+    if (!keep && elemSize > 0) {
+      // Fixed-width elements can be skipped by arithmetic — this is what lets
+      // the reader step over `tokenizer.ggml.token_type` (a quarter-million
+      // int32s) without ever holding it, or fetching it.
+      this.need(elemSize * count);
+      return null;
+    }
+    const out: (number | boolean)[] = [];
+    for (let i = 0; i < count; i++) {
+      const v = this.value(elemType, keep);
+      if (typeof v === 'boolean' || typeof v === 'number') out.push(v);
+    }
+    // Numbers and bools are the only element kinds any wanted key uses (Gemma 4
+    // writes its sliding pattern as bools and its KV head counts as int32s);
+    // anything else that was kept comes back as an empty array, which the
+    // caller reads as "a shape I do not handle".
+    return keep ? out : null;
+  }
+}
+
+export interface GgufParseResult {
+  header: GgufHeader;
+  /** True when the whole KV table was read, or when everything the estimator
+   *  needs was read and the architecture's run of keys had already ended. */
+  complete: boolean;
+}
+
+function emptyHeader(architecture: string): GgufHeader {
+  return {
+    architecture,
+    blockCount: null, contextLength: null,
+    headCount: null, headCountLayers: null, headCountKv: null, headCountKvLayers: null,
+    embeddingLength: null, keyLength: null, valueLength: null,
+    keyLengthSwa: null, valueLengthSwa: null, slidingWindow: null,
+    slidingWindowPattern: null, slidingWindowPatternLayers: null,
+    fullAttentionInterval: null, sharedKvLayers: null, slidingLayers: null,
+    contextBytesIsUpperBound: false, archBytes: 0,
+  };
+}
+
+/**
+ * Parse as much of a GGUF metadata table as `buf` holds.
+ *
+ * Throws only when the bytes are not a GGUF v3 header at all — a real,
+ * specific message, never a guessed cause. Everything else (a truncated
+ * buffer, a key in an unexpected type, an architecture with no known layer
+ * map) comes back as a header with `contextBytesIsUpperBound: true`.
+ */
+export function parseGgufHeader(buf: Buffer): GgufParseResult {
+  if (buf.length < 8) throw new Error(`Not a GGUF file: only ${buf.length} bytes to read.`);
+  const magic = buf.toString('ascii', 0, 4);
+  if (magic !== MAGIC) throw new Error(`Not a GGUF file: expected the magic "${MAGIC}", found ${JSON.stringify(magic)}.`);
+  const version = buf.readUInt32LE(4);
+  if (version !== SUPPORTED_VERSION) {
+    throw new Error(`Unsupported GGUF version ${version} — this reader understands version ${SUPPORTED_VERSION}.`);
+  }
+
+  const cur = new Cursor(buf);
+  cur.offset = 8;
+  const h = emptyHeader('');
+  const raw = new Map<string, number | boolean | string | (number | boolean)[]>();
+  let kvCount = 0;
+  let complete = false;
+  // The architecture's keys are written as one contiguous run in every file
+  // llama.cpp's converter produces. Once a key with a different prefix follows
+  // them, running out of bytes is no longer a problem — everything the
+  // estimator wants is already behind us. Until then, it is.
+  let sawArchKey = false;
+  let archRunEnded = false;
+  let archKeysEnd = 0;
+
+  try {
+    cur.u64(); // tensor count — the tensor table itself is never read
+    kvCount = cur.u64();
+    for (let i = 0; i < kvCount; i++) {
+      const key = cur.str();
+      const type = cur.u32();
+      if (key === 'general.architecture') {
+        const v = cur.value(type, true);
+        h.architecture = typeof v === 'string' ? v : '';
+        // An architecture that is not a plain string means we cannot even name
+        // the model's key prefix; nothing below can be trusted.
+        if (typeof v !== 'string') h.contextBytesIsUpperBound = true;
+        continue;
+      }
+      const prefix = h.architecture ? `${h.architecture}.` : null;
+      const isArchKey = prefix !== null && key.startsWith(prefix);
+      if (isArchKey) sawArchKey = true;
+      else if (sawArchKey) archRunEnded = true;
+      const suffix = isArchKey ? key.slice(prefix.length) : '';
+      const keep = isArchKey && WANTED.has(suffix);
+      const v = cur.value(type, keep);
+      if (keep && v !== null) raw.set(suffix, v);
+      if (isArchKey) archKeysEnd = cur.offset;
+    }
+    complete = true;
+  } catch (e) {
+    if (e instanceof UnknownTypeError) {
+      // We cannot measure this value, so we cannot walk past it to reach any
+      // key after it. Report what we have as an upper bound.
+      h.contextBytesIsUpperBound = true;
+    } else if (e instanceof TruncatedError) {
+      // Out of bytes. Fine if the architecture's run of keys is already behind
+      // us; otherwise the caller must fetch another chunk.
+      if (archRunEnded) complete = true;
+    } else {
+      throw e;
+    }
+  }
+
+  h.archBytes = archKeysEnd || cur.offset;
+  applyRaw(h, raw);
+  return { header: h, complete };
+}
+
+/** Read one collected key as a whole number, flagging any other shape. */
+function num(h: GgufHeader, raw: Map<string, unknown>, suffix: string): number | null {
+  if (!raw.has(suffix)) return null;
+  const v = raw.get(suffix);
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  // The key was there but in a type this reader does not turn into a number —
+  // exactly the case §D1 says must flag rather than be silently dropped.
+  h.contextBytesIsUpperBound = true;
+  return null;
+}
+
+/** Read a key that llama.cpp's `get_key_or_arr` accepts in either form: one
+ *  number for the whole model, or one per layer. A uniform array collapses to
+ *  the scalar; a varying one keeps both (see the note on `headCount`). */
+function numOrLayers(h: GgufHeader, raw: Map<string, unknown>, suffix: string): { scalar: number | null; layers: number[] | null } {
+  if (!raw.has(suffix)) return { scalar: null, layers: null };
+  const v = raw.get(suffix);
+  if (typeof v === 'number' && Number.isFinite(v)) return { scalar: v, layers: null };
+  if (Array.isArray(v) && v.length > 0 && v.every((x) => typeof x === 'number' && Number.isFinite(x))) {
+    const layers = v as number[];
+    const uniform = layers.every((x) => x === layers[0]);
+    return uniform ? { scalar: layers[0], layers: null } : { scalar: Math.max(...layers), layers };
+  }
+  h.contextBytesIsUpperBound = true;
+  return { scalar: null, layers: null };
+}
+
+function applyRaw(h: GgufHeader, raw: Map<string, number | boolean | string | (number | boolean)[]>): void {
+  h.blockCount = num(h, raw, 'block_count');
+  h.contextLength = num(h, raw, 'context_length');
+  const heads = numOrLayers(h, raw, 'attention.head_count');
+  h.headCount = heads.scalar;
+  h.headCountLayers = heads.layers;
+  // llama.cpp seeds n_head_kv_arr from n_head_arr before looking for the KV
+  // key, so a model that omits head_count_kv is plain multi-head attention.
+  const kvHeads = numOrLayers(h, raw, 'attention.head_count_kv');
+  h.headCountKv = kvHeads.scalar ?? h.headCount;
+  h.headCountKvLayers = kvHeads.layers ?? (kvHeads.scalar === null ? h.headCountLayers : null);
+  h.embeddingLength = num(h, raw, 'embedding_length');
+  h.keyLengthSwa = num(h, raw, 'attention.key_length_swa');
+  h.valueLengthSwa = num(h, raw, 'attention.value_length_swa');
+  h.slidingWindow = num(h, raw, 'attention.sliding_window');
+  h.fullAttentionInterval = num(h, raw, 'full_attention_interval');
+  h.sharedKvLayers = num(h, raw, 'attention.shared_kv_layers');
+
+  // Per-head width: the explicit key when the file has one, else the classic
+  // embedding ÷ heads. Falling back silently is safe — it is what llama.cpp
+  // itself does for models that predate the explicit keys.
+  const fallback = h.embeddingLength !== null && h.headCount ? h.embeddingLength / h.headCount : null;
+  h.keyLength = num(h, raw, 'attention.key_length') ?? fallback;
+  h.valueLength = num(h, raw, 'attention.value_length') ?? fallback;
+
+  // The two shapes of sliding_window_pattern (§D1). A scalar says "every Nth
+  // layer is full attention"; Gemma 4 writes a per-layer bool array instead,
+  // and a reader expecting a u32 here would read that array's header as a
+  // number.
+  const pattern = raw.get('attention.sliding_window_pattern');
+  if (typeof pattern === 'number') {
+    h.slidingWindowPattern = pattern;
+  } else if (Array.isArray(pattern) && pattern.length > 0 && pattern.every((x) => typeof x === 'boolean')) {
+    h.slidingWindowPatternLayers = pattern as boolean[];
+  } else if (pattern !== undefined) {
+    h.contextBytesIsUpperBound = true;
+  }
+
+  h.slidingLayers = resolveSlidingLayers(h);
+}
+
+function resolveSlidingLayers(h: GgufHeader): boolean[] | null {
+  const layers = h.blockCount;
+  if (h.slidingWindowPatternLayers) {
+    // The array IS the answer — no architecture table involved. It must still
+    // cover every layer; a short one would silently make late layers full.
+    if (layers !== null && h.slidingWindowPatternLayers.length !== layers) {
+      h.contextBytesIsUpperBound = true;
+      return null;
+    }
+    return h.slidingWindowPatternLayers;
+  }
+  if (layers === null || layers <= 0) return null;
+
+  const fixed = SWA_PATTERN_FIXED[h.architecture];
+  if (fixed !== undefined) return swaPatternMask(layers, fixed, DENSE_FIRST_ARCHITECTURES.has(h.architecture));
+
+  const denseFirst = DENSE_FIRST_ARCHITECTURES.has(h.architecture);
+  if (h.slidingWindowPattern !== null) return swaPatternMask(layers, h.slidingWindowPattern, denseFirst);
+
+  // No pattern key. A file with no sliding window at all simply has no sliding
+  // layers; one that HAS a window but no pattern follows its architecture's
+  // built-in period, and an architecture we do not have that period for is one
+  // whose layer map we would be inventing.
+  if (h.slidingWindow === null || h.slidingWindow <= 0) return null;
+  const period = SWA_PATTERN_DEFAULTS[h.architecture];
+  if (period === undefined) {
+    h.contextBytesIsUpperBound = true;
+    return null;
+  }
+  return swaPatternMask(layers, period, denseFirst);
+}
+
+// ---------------------------------------------------------------------------
+// The two loaders
+// ---------------------------------------------------------------------------
+
+type ChunkReader = (offset: number, length: number) => Promise<Buffer>;
+
+/** Walk a file in CHUNK_BYTES steps until the parser says it has what it needs.
+ *  Shared by both loaders so the stop condition can only ever be defined once. */
+async function loadInChunks(read: ChunkReader, totalBytes: number | null): Promise<GgufHeader> {
+  let buf: Buffer = Buffer.alloc(0);
+  for (;;) {
+    const chunk = await read(buf.length, CHUNK_BYTES);
+    if (chunk.length === 0) break; // end of file — parse what we have
+    buf = buf.length === 0 ? chunk : Buffer.concat([buf, chunk]);
+    const { header, complete } = parseGgufHeader(buf);
+    if (complete) return header;
+    if (buf.length >= MAX_HEADER_BYTES || (totalBytes !== null && buf.length >= totalBytes)) {
+      // Give up on precision rather than on the answer: the caller still gets
+      // every key we did read, marked as an upper bound.
+      header.contextBytesIsUpperBound = true;
+      return header;
+    }
+  }
+  const { header } = parseGgufHeader(buf);
+  header.contextBytesIsUpperBound = true;
+  return header;
+}
+
+/** Read a GGUF header off local disk. */
+export async function readLocalGgufHeader(filePath: string): Promise<GgufHeader> {
+  const fd = await fs.promises.open(filePath, 'r');
+  try {
+    const size = (await fd.stat()).size;
+    return await loadInChunks(async (offset, length) => {
+      const want = Math.min(length, Math.max(0, size - offset));
+      if (want === 0) return Buffer.alloc(0);
+      const out = Buffer.alloc(want);
+      const { bytesRead } = await fd.read(out, 0, want, offset);
+      return out.subarray(0, bytesRead);
+    }, size);
+  } finally {
+    await fd.close();
+  }
+}
+
+type FetchLike = (url: string, init?: any) => Promise<{
+  ok: boolean; status: number;
+  headers: { get: (name: string) => string | null };
+  arrayBuffer: () => Promise<ArrayBuffer>;
+}>;
+
+const FETCH_TIMEOUT_MS = 15_000;
+
+/** Read a GGUF header over HTTP without downloading the model. Each step is one
+ *  Range request; in practice exactly one is made, because every architecture
+ *  key sits in the first few kilobytes. */
+export async function fetchRemoteGgufHeader(url: string, fetchImpl: FetchLike = fetch as any): Promise<GgufHeader> {
+  return loadInChunks(async (offset, length) => {
+    const end = offset + length - 1;
+    const res = await fetchImpl(url, {
+      headers: { Range: `bytes=${offset}-${end}` },
+      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    });
+    // 416 = we asked past the end of the file; that is the natural stop.
+    if (res.status === 416) return Buffer.alloc(0);
+    if (!res.ok) throw new Error(`Could not read this model's header from Hugging Face: HTTP ${res.status}.`);
+    if (res.status !== 206) {
+      // The server ignored the Range header and is about to hand back the whole
+      // multi-gigabyte file. Say exactly that rather than silently buffering it.
+      const len = Number(res.headers.get('content-length') ?? 0);
+      if (!Number.isFinite(len) || len > MAX_HEADER_BYTES) {
+        throw new Error(
+          `Could not read this model's header: the server ignored the range request ` +
+          `(HTTP ${res.status}, ${len || 'unknown'} bytes).`,
+        );
+      }
+    }
+    // Through a Uint8Array view so the result is a Buffer over a plain
+    // ArrayBuffer, which is what the chunk reader's signature promises.
+    return Buffer.from(new Uint8Array(await res.arrayBuffer()));
+  }, null);
+}
+
+// ---------------------------------------------------------------------------
+// The cache
+// ---------------------------------------------------------------------------
+
+const CACHE_FILE = 'gguf-headers-cache.json';
+const CACHE_VERSION = 1;
+
+interface CacheEntry { stamp: string; header: GgufHeader }
+interface CacheFile { version: number; entries: Record<string, CacheEntry> }
+
+/** Freshness stamp for a Hugging Face repo: the default quant's sha. A repo
+ *  that re-uploads its files gets a new sha and so a fresh read. */
+export function hfHeaderStamp(sha256: string | null): string { return `sha:${sha256 ?? 'none'}`; }
+/** Freshness stamp for a file on disk: its modification time. */
+export function localHeaderStamp(mtimeMs: number): string { return `mtime:${Math.round(mtimeMs)}`; }
+
+/**
+ * One parsed header per repo (or per local model), stored beside
+ * curated-models-cache.json in userData. Parsing costs a network round trip, so
+ * the Local Models panel would otherwise re-fetch a dozen headers every time it
+ * opens. Best-effort throughout: a corrupt or unwritable cache is a slower
+ * panel, never an error the user sees.
+ */
+export class GgufHeaderCache {
+  private cachePath: string;
+  private data: CacheFile | null = null;
+
+  constructor(cacheDir: string) {
+    this.cachePath = path.join(cacheDir, CACHE_FILE);
+  }
+
+  private load(): CacheFile {
+    if (this.data) return this.data;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.cachePath, 'utf8'));
+      if (parsed?.version === CACHE_VERSION && parsed.entries && typeof parsed.entries === 'object') {
+        this.data = { version: CACHE_VERSION, entries: parsed.entries };
+        return this.data;
+      }
+    } catch { /* absent or corrupt — start empty */ }
+    this.data = { version: CACHE_VERSION, entries: {} };
+    return this.data;
+  }
+
+  /** The cached header for `id`, or null when there is none or the model has
+   *  changed since (`stamp` differs). */
+  get(id: string, stamp: string): GgufHeader | null {
+    const entry = this.load().entries[id];
+    return entry && entry.stamp === stamp ? entry.header : null;
+  }
+
+  /** Replace this model's single entry. One header per repo, by design: a repo
+   *  has one default quant and that quant's first file is the one we read. */
+  set(id: string, stamp: string, header: GgufHeader): void {
+    const data = this.load();
+    data.entries[id] = { stamp, header };
+    try {
+      fs.mkdirSync(path.dirname(this.cachePath), { recursive: true });
+      fs.writeFileSync(this.cachePath, JSON.stringify(data));
+    } catch { /* cache write is best-effort */ }
+  }
+}
