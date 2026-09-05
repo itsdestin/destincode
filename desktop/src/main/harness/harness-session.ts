@@ -45,7 +45,33 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // canonicalize "read-only:/home/x/proj" AS a path, which is a category error
 // exactly like Bash's command string or Skill's id above — workDir containment
 // itself is already enforced inside NativeSessionHost.createChild.
-const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
+const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task',
+  // WebSearch's subject is a search QUERY and WebFetch's is a URL. Neither is a
+  // path, so canonicalizing them against the cwd is the same category error as
+  // Bash's command string above — and it had a real bite: a URL is resolved to
+  // `<cwd>/https:/host/path`, so fetching a page whose last segment looks like a
+  // credential file (`/.env.example`, `/id_rsa.pub`) tripped the SECRET hard-deny
+  // and the fetch was refused as "it looks like a credential or secret file".
+  // Nothing about a web request is gated by the filesystem jail. (2026-08-18 spec.)
+  'WebSearch', 'WebFetch']);
+
+/** Tools that only LOOK at the filesystem. An outside-the-workspace path no
+ *  longer forces an approval card for these — in ANY permission mode, Ask First
+ *  included (Destin, 2026-09-05: "permissions boundaries should only really be
+ *  for actions that change things").
+ *
+ *  WHY this is not a hole. Three reasons, in order of weight:
+ *   1. Bash is exempt from this guard entirely (NON_PATH_SUBJECT_TOOLS above),
+ *      so the model could already `cat` any of these bytes with no card. The
+ *      prompt was charging the polite tools a toll the terminal walks past.
+ *   2. Credential and secret paths are hard-DENIED inside checkPathGuard, above
+ *      this point, and that deny is unchanged and still cannot be overridden.
+ *   3. Reading changes nothing. Write and Edit are deliberately absent from this
+ *      set and still raise the outside-the-workspace card exactly as before.
+ *
+ *  Every other harness draws the line in the same place: Codex and Hermes fence
+ *  writes and leave reads open, Pi gates neither. */
+const READ_ONLY_PATH_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 /** G-1: a poll is SUPPOSED to repeat, so BashOutput is exempt from the
  *  doom-loop signature window (spec §4.2); BASH_OUTPUT_READS_PER_TURN is the
  *  guard instead. */
@@ -2875,7 +2901,15 @@ export class HarnessSession extends EventEmitter {
             isError: true,
           };
         }
-        externalAsk = true;   // external_directory → force an ask
+        // A read tool looking outside the workspace no longer forces a card —
+        // see READ_ONLY_PATH_TOOLS for why this is not a hole. Falling THROUGH
+        // (rather than returning 'ok' early) is deliberate: decide() still runs
+        // below, so an explicit deny/ask rule the user set for Read still wins,
+        // and — because the ask is no longer synthetic — an "Always allow" on
+        // one of those rule-driven asks is now a promise the engine can keep.
+        if (!READ_ONLY_PATH_TOOLS.has(call.toolName)) {
+          externalAsk = true;   // external_directory → force an ask (writes only)
+        }
       }
     }
 
