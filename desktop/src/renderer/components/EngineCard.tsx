@@ -163,7 +163,12 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   // Otherwise: version · backend, so the user still knows what is on disk.
   const facts: string[] = [];
   if (status.state === 'running') {
-    facts.push(status.deviceName ?? 'Processor only');
+    // Three answers, not two (see EngineManager.status): a name is the chip,
+    // `null` means the engine looked and found none, and `undefined` means we
+    // have not asked yet. Saying "Processor only" while still checking asserts
+    // something we do not know — and it lands exactly on a fresh install, whose
+    // device list has not been read yet.
+    if (status.deviceName !== undefined) facts.push(status.deviceName ?? 'Processor only');
     if (typeof status.loadedModelsBytes === 'number') {
       facts.push(status.loadedModelsBytes > 0 ? `${gb(status.loadedModelsBytes)} loaded` : 'nothing loaded');
     }
@@ -318,9 +323,20 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                   )}
                   {prereqs && !prereqs.satisfied && !prereqs.command && (
                     <div className="space-y-2">
+                      {/* Two very different reasons there is nothing to paste, and
+                          they must not read the same. On Ubuntu and Debian we know
+                          exactly which system this is — the packages simply come
+                          from AMD's own repository, which has to be added first.
+                          Telling that user we could not recognise their Linux,
+                          one line under the words "Ubuntu 24.04", reads as the
+                          app being broken. */}
                       <p className="text-fg-muted">
-                        We could not tell which Linux this is. AMD&rsquo;s guide covers every supported system;
-                        press Check again when it is installed.
+                        {prereqs.reason === 'needs-amd-repo'
+                          ? <>On {prereqs.distro ?? 'this system'}, AMD&rsquo;s software comes from AMD&rsquo;s own
+                            download site rather than your system&rsquo;s. Their guide has the steps;
+                            press Check again when it is installed.</>
+                          : <>We could not tell which Linux this is. AMD&rsquo;s guide covers every supported system;
+                            press Check again when it is installed.</>}
                       </p>
                       <div className="flex gap-1.5">
                         <Button size="sm" variant="secondary" onClick={() => void window.claude.shell.openExternal(prereqs.docsUrl)}>

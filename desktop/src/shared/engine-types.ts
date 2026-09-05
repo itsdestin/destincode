@@ -19,8 +19,8 @@ export interface BackendOption {
 }
 
 /** What is missing before a backend can be installed, and how to get it.
- *  `command` is the one line for THIS Linux flavour (null when the distro is
- *  unknown — the card then shows docsUrl only). */
+ *  `command` is the one line for THIS Linux flavour, and is null for two very
+ *  different reasons that `reason` tells apart — see below. */
 export interface EnginePrereqs {
   backend: EngineBackend;
   satisfied: boolean;
@@ -28,6 +28,15 @@ export interface EnginePrereqs {
   command: string | null;            // 'sudo pacman -S rocm-hip-runtime hipblas rocblas'
   docsUrl: string;
   explainer: string;                 // one plain sentence: what the software is
+  /** WHY a `command` is absent, so the card never says the wrong thing:
+   *  - 'needs-amd-repo' — we know exactly which Linux this is, and its packages
+   *    come from AMD's own repository, which has to be registered first. There
+   *    is no honest one-liner for that, so the guide is the answer.
+   *  - 'unknown-distro' — we could not identify the system at all.
+   *  Telling an Ubuntu user we could not recognise their Linux, right after
+   *  naming it as 'Ubuntu 24.04', reads as the app being broken. Absent when
+   *  `command` is present or the check is satisfied. */
+  reason?: 'needs-amd-repo' | 'unknown-distro';
 }
 
 /** The two engine-wide speed features (Q-4 pick a: visible under Advanced, on by

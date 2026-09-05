@@ -5,9 +5,12 @@ import {
   hasAllRocmLibs,
   rocmSetupGuide,
   computeRocmPrereqs,
+  checkRocmPrereqs,
   enginePrereqs,
   type RocmPrereqEnv,
 } from '../src/main/engine/rocm-prereqs';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // The real `ldconfig -p` output from this machine (CachyOS, ROCm 7.2.4 installed),
 // read on 2026-09-05. Kept verbatim — including the leading tabs and the count
@@ -97,7 +100,8 @@ describe('parseLdconfigSonames / hasAllRocmLibs', () => {
   });
   it('a DIFFERENT library whose name merely starts the same does not count', () => {
     // hipBLASLt is a real, separate library that ships beside hipBLAS; having it
-    // must not be read as having hipBLAS.
+    // must not be read as having hipBLAS. (Both a strict and a loose rule reject
+    // this one — what pins the version anchor itself is the `.so.8` case above.)
     expect(hasAllRocmLibs(['libamdhip64.so.7', 'libhipblasLt.so.0', 'librocblas.so'])).toBe(false);
   });
   it('missing any one of the three fails', () => {
@@ -138,6 +142,9 @@ describe('rocmSetupGuide — the distro table', () => {
       const g = guide(`ID=${id}`);
       expect(g.command).toBeNull();
       expect(g.docsUrl).toContain('quick-start');
+      // The card branches on this. Without it, a user whose Linux we just named
+      // 'Ubuntu 24.04' is told we could not tell which Linux they are on.
+      expect(g.reason).toBe('needs-amd-repo');
     }
     // Derivatives that only declare the family (elementary, Zorin, Kubuntu…).
     expect(guide('ID=elementary\nID_LIKE=ubuntu').command).toBeNull();
@@ -146,6 +153,7 @@ describe('rocmSetupGuide — the distro table', () => {
     const g = guide('ID=voidlinux\nPRETTY_NAME="Void Linux"');
     expect(g.command).toBeNull();
     expect(g.distro).toBe('Void Linux');
+    expect(g.reason).toBe('unknown-distro');
     expect(g.docsUrl).toBe('https://rocm.docs.amd.com/projects/install-on-linux/en/latest/');
   });
   it('no /etc/os-release at all: no command, no distro name, still a docs link', () => {
@@ -175,6 +183,7 @@ describe('rocmSetupGuide — the distro table', () => {
 describe('computeRocmPrereqs', () => {
   it('this machine: libraries present via ldconfig → satisfied, no command to run', () => {
     const p = computeRocmPrereqs(env());
+    expect(p.reason).toBeUndefined();   // nothing is missing, so there is no reason
     expect(p.satisfied).toBe(true);
     expect(p.backend).toBe('rocm');
     expect(p.distro).toBe('CachyOS');
@@ -184,6 +193,7 @@ describe('computeRocmPrereqs', () => {
 
   it('libraries missing on an Arch box → the pacman command', () => {
     const p = computeRocmPrereqs(env({ ldconfig: () => '\tlibc.so.6 (libc6,x86-64) => /usr/lib/libc.so.6' }));
+    expect(p.reason).toBeUndefined();   // there IS a command, so no reason to explain
     expect(p.satisfied).toBe(false);
     expect(p.command).toBe('sudo pacman -S --needed rocm-hip-runtime hipblas rocblas');
     expect(p.explainer).toContain('not installed yet');
@@ -212,6 +222,8 @@ describe('computeRocmPrereqs', () => {
     expect(p.command).toBeNull();
     expect(p.distro).toBe('Ubuntu 24.04.1 LTS');
     expect(p.docsUrl).toContain('quick-start');
+    // Not 'unknown-distro' — we identified it, its packages just come from AMD.
+    expect(p.reason).toBe('needs-amd-repo');
   });
 
   it('no /etc/os-release: still answers, with no distro and no command', () => {
@@ -219,6 +231,7 @@ describe('computeRocmPrereqs', () => {
     expect(p.satisfied).toBe(false);
     expect(p.distro).toBeNull();
     expect(p.command).toBeNull();
+    expect(p.reason).toBe('unknown-distro');
   });
 
   it('Windows is always satisfied — its ROCm zip carries its own runtime', () => {
@@ -241,5 +254,58 @@ describe('enginePrereqs — the channel', () => {
     expect(p.satisfied).toBe(true);
     expect(p.backend).toBe('cuda');
     expect(p.command).toBeNull();
+  });
+
+  it('a name that is not an engine build at all is REFUSED, not called satisfied', () => {
+    // Reachable from the remote path, where the backend arrives off the wire.
+    // "Nothing to install" would be an answer about a build that does not exist.
+    expect(() => enginePrereqs('rocmm')).toThrow(/Unknown engine build/);
+    expect(() => enginePrereqs('')).toThrow(/Unknown engine build/);
+  });
+
+  it('answers for every backend the app can actually install', () => {
+    // Pins the allowlist against EngineBackend: a new backend that is not added
+    // here would be refused at the channel with a confusing error.
+    for (const b of ['vulkan', 'cpu', 'metal', 'cuda', 'rocm']) {
+      expect(() => enginePrereqs(b)).not.toThrow();
+    }
+  });
+
+  // BLOCKER: the card's "Check again" is the whole point of the set-up box —
+  // the user runs the command, then presses it. The reading is cached (status()
+  // warms it on every AMD machine), so a call that does not refresh reports the
+  // state from BEFORE the install, for the rest of the app run.
+  it('every surface\'s engine:prereqs handler passes refresh', () => {
+    const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+    const handlers = read('src', 'main', 'ipc-handlers.ts');
+    const prereqLine = handlers.split('\n').find((l) => l.includes('IPC.ENGINE_PREREQS'));
+    expect(prereqLine).toBeDefined();
+    expect(prereqLine).toContain('{ refresh: true }');
+    const remoteLine = read('src', 'main', 'remote-server.ts').split('\n').find((l) => l.includes('enginePrereqs('));
+    expect(remoteLine).toBeDefined();
+    expect(remoteLine).toContain('{ refresh: true }');
+  });
+
+  it('refresh bypasses the cache; without it the SAME answer object comes back', () => {
+    // The cache exists because status() consults this on every engine event.
+    // `refresh` is what makes "Check again" ask the machine a second time.
+    const first = checkRocmPrereqs();
+    expect(checkRocmPrereqs()).toBe(first);                    // cached: same object
+    expect(checkRocmPrereqs({ refresh: true })).not.toBe(first); // re-read
+  });
+
+  it('refresh re-reads the machine; without it the first answer is reused', () => {
+    let installed = false;
+    const changing = (): RocmPrereqEnv => ({
+      platform: 'linux',
+      ldconfig: () => (installed ? REAL_LDCONFIG : ''),
+      rocmLibDir: () => null,
+      osRelease: () => REAL_CACHYOS,
+    });
+    // computeRocmPrereqs is the uncached core the cache wraps: it must see the
+    // change. (checkRocmPrereqs's own cache is what `refresh: true` bypasses.)
+    expect(computeRocmPrereqs(changing()).satisfied).toBe(false);
+    installed = true;
+    expect(computeRocmPrereqs(changing()).satisfied).toBe(true);
   });
 });

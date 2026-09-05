@@ -2971,7 +2971,7 @@ export function registerIpcHandlers(
   // this channel is only ever called by the card, including its "Check again"
   // button AFTER the user has run the install command — a cached answer there
   // would report the software still missing and strand them in the set-up box.
-  ipcMain.handle(IPC.ENGINE_PREREQS, async (_e, backend: string) => enginePrereqs(backend));
+  ipcMain.handle(IPC.ENGINE_PREREQS, async (_e, backend: string) => enginePrereqs(backend, { refresh: true }));
   ipcMain.handle(IPC.MODELS_CURATED, async () => modelManager.curatedList());
   ipcMain.handle(IPC.MODELS_SEARCH, async (_e, query: string) => modelManager.search(query));
   ipcMain.handle(IPC.MODELS_QUANTS, async (_e, repo: string) => modelManager.quants(repo));

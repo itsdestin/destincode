@@ -43,6 +43,12 @@ const ROCM_LIB_DIR = '/opt/rocm/lib';
 const AMD_QUICK_START = 'https://rocm.docs.amd.com/projects/install-on-linux/en/latest/install/quick-start.html';
 const AMD_INSTALL_LANDING = 'https://rocm.docs.amd.com/projects/install-on-linux/en/latest/';
 
+/** The engine builds that exist. `enginePrereqs` answers for these and refuses
+ *  anything else, rather than reporting a name it does not recognise as needing
+ *  nothing. Mirrors `EngineBackend` in shared/engine-types.ts, and
+ *  `rocm-prereqs.test.ts` fails if the two drift apart. */
+const KNOWN_BACKENDS: ReadonlySet<string> = new Set<EngineBackend>(['vulkan', 'cpu', 'metal', 'cuda', 'rocm']);
+
 /** The parts of /etc/os-release this module cares about. */
 export interface OsRelease {
   id: string | null;          // ID= — 'cachyos', 'ubuntu', …
@@ -113,7 +119,10 @@ export function hasAllRocmLibs(sonames: readonly string[]): boolean {
  *  into a real shell for the user to press Enter on, and a carriage return
  *  anywhere inside the string would RUN it with no keypress at all — measured on
  *  bash, zsh and fish. `rocm-prereqs.test.ts` fails on any control character. */
-export function rocmSetupGuide(os: OsRelease | null): { distro: string | null; command: string | null; docsUrl: string } {
+export function rocmSetupGuide(os: OsRelease | null): {
+  distro: string | null; command: string | null; docsUrl: string;
+  reason?: 'needs-amd-repo' | 'unknown-distro';
+} {
   const distro = os?.prettyName ?? null;
   const family = new Set<string>([...(os?.id ? [os.id] : []), ...(os?.idLike ?? [])]);
   const inFamily = (...names: string[]) => names.some((n) => family.has(n));
@@ -129,11 +138,13 @@ export function rocmSetupGuide(os: OsRelease | null): { distro: string | null; c
   if (inFamily('fedora', 'rhel', 'nobara')) {
     return { distro, command: 'sudo dnf install rocm-hip hipblas rocblas', docsUrl: AMD_INSTALL_LANDING };
   }
-  // Debian family: no command, on purpose. See AMD_QUICK_START above.
+  // Debian family: no command, on purpose. See AMD_QUICK_START above. The
+  // reason matters — we DID recognise this system, so the card must not tell
+  // the user we could not.
   if (inFamily('ubuntu', 'debian', 'mint', 'linuxmint', 'pop')) {
-    return { distro, command: null, docsUrl: AMD_QUICK_START };
+    return { distro, command: null, docsUrl: AMD_QUICK_START, reason: 'needs-amd-repo' };
   }
-  return { distro, command: null, docsUrl: AMD_INSTALL_LANDING };
+  return { distro, command: null, docsUrl: AMD_INSTALL_LANDING, reason: 'unknown-distro' };
 }
 
 /** The readings `computeRocmPrereqs` needs, as an injectable seam so tests can
@@ -183,6 +194,8 @@ export function computeRocmPrereqs(env: RocmPrereqEnv, backend: EngineBackend = 
     distro: guide.distro,
     command: satisfied ? null : guide.command,
     docsUrl: guide.docsUrl,
+    // Only meaningful while something is actually missing.
+    ...(satisfied || guide.command ? {} : { reason: guide.reason }),
     // One plain sentence, and it has to be TRUE in both states — the card shows
     // it either way. No cause is guessed: we say what the software is and
     // whether we found it, never why it might be missing.
@@ -237,6 +250,12 @@ export function checkRocmPrereqs(opts: { refresh?: boolean } = {}): EnginePrereq
  *  a plain "Switch" instead of a set-up box that has nothing to say. */
 export function enginePrereqs(backend: string, opts: { refresh?: boolean } = {}): EnginePrereqs {
   if (backend === 'rocm') return checkRocmPrereqs(opts);
+  // An allowlist, not a cast. A name that is not a backend at all — a typo from
+  // the remote path, say — must not be answered "nothing to install", which is
+  // an answer about a build that does not exist.
+  if (!KNOWN_BACKENDS.has(backend)) {
+    throw new Error(`Unknown engine build: ${backend}`);
+  }
   return {
     backend: backend as EngineBackend,
     satisfied: true,

@@ -19,6 +19,7 @@ import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
 import { stripSplitSuffix } from '../../shared/gguf-split';
 import { detectGpu, backendOptions, gpuDeviceName } from '../models/gpu-detector';
+import type { GpuVendor } from '../../shared/model-manager-types';
 import { checkRocmPrereqs } from './rocm-prereqs';
 import type {
   EngineBackend, EngineInstallProgress, EngineStatus, EngineModel, BackendOption,
@@ -95,41 +96,52 @@ export function resolveSlotCount(raw: unknown): number | null {
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
 }
 
-/** Read this machine's chip, its ROCm prerequisites and the engine's own device
- *  list, and turn them into the two fields the Local Models card shows (§A3).
+/** What chip this computer has. These two facts CANNOT change while the app is
+ *  running — the graphics card does not get swapped mid-session — which is why
+ *  they, and only they, are the part that gets cached (§A3).
  *
- *  Free function rather than a method so the decision it makes is the PURE
- *  `backendOptions` in gpu-detector.ts, tested there; everything here is the
- *  three readings that feed it.
- *
- *  The device list comes from the install's `.complete` marker, which
- *  engine-acquisition writes from `llama-server --list-devices`. An install made
- *  before that field existed simply has no `devices` key, and an unreadable
- *  marker is not an error worth surfacing — both mean "no device name yet", and
- *  the card says "Processor only" rather than inventing one. */
-async function readHardwareOffer(
-  inst: InstalledEngine | null
-): Promise<{ options: BackendOption[]; deviceName: string | null }> {
+ *  Split out from the two card fields deliberately. An earlier version cached
+ *  the finished answer instead, and got both fields wrong on the path every new
+ *  user walks: the Local Models panel is where the Install button lives, so the
+ *  panel is opened BEFORE anything is installed. The answer was computed then,
+ *  against no engine, and never recomputed — so after installing, the card said
+ *  "Processor only" on a machine that was using its graphics chip, and kept
+ *  offering a switch to the build it had just switched to. Everything that can
+ *  change (which engine is installed, whether the ROCm libraries have since
+ *  been installed, what the engine reports about its devices) is now read fresh
+ *  on every status(). */
+export interface MachineChip { vendor: GpuVendor | null; gfxTarget: string | null; }
+
+async function probeMachineChip(): Promise<MachineChip> {
   const gpu = await detectGpu();
-  // The prerequisite check only matters on the Linux ROCm path, and it shells
-  // out — so it is not run on machines where its answer cannot change anything.
-  const rocmPrereqsSatisfied = gpu.vendor === 'amd' ? checkRocmPrereqs().satisfied : false;
-  const options = backendOptions({
-    platform: process.platform,
-    arch: process.arch,
-    vendor: gpu.vendor,
-    gfxTarget: gpu.gfxTarget,
-    installedBackend: inst?.backend ?? null,
-    rocmPrereqsSatisfied,
-  });
-  let deviceName: string | null = null;
-  if (inst) {
-    try {
-      const marker = JSON.parse(fs.readFileSync(path.join(inst.dir, '.complete'), 'utf8')) as { devices?: unknown };
-      deviceName = gpuDeviceName(marker.devices);
-    } catch { /* no marker / no devices key / unreadable — no name to show. */ }
+  // Warm the ROCm prerequisite reading on this same deferred tick, so that
+  // status() — which is synchronous — can read it for free afterwards. It only
+  // matters on an AMD machine, and it shells out, so nowhere else pays for it.
+  if (gpu.vendor === 'amd') checkRocmPrereqs();
+  return { vendor: gpu.vendor, gfxTarget: gpu.gfxTarget };
+}
+
+/** The device the engine says it will run on, from the install's `.complete`
+ *  marker (engine-acquisition writes it from `llama-server --list-devices`).
+ *
+ *  Read on EVERY status() rather than cached: it changes when the engine is
+ *  installed, and again when the backend is switched, and it is a small file
+ *  read — no subprocess — so there is nothing to defer.
+ *
+ *  Three answers, not two. `undefined` means "not known yet": no engine
+ *  installed, or a marker written before the device list existed (T2 backfills
+ *  those lazily). `null` means the engine looked and found no graphics chip.
+ *  A string is the chip. Collapsing the first two into `null` is what would let
+ *  the card assert "Processor only" about a machine it has not asked yet. */
+function deviceNameOf(inst: InstalledEngine | null): string | null | undefined {
+  if (!inst) return undefined;
+  try {
+    const marker = JSON.parse(fs.readFileSync(path.join(inst.dir, '.complete'), 'utf8')) as { devices?: unknown };
+    if (!Array.isArray(marker.devices)) return undefined;   // no device list recorded yet
+    return gpuDeviceName(marker.devices);
+  } catch {
+    return undefined;   // no marker, or unreadable — not an answer, an absence
   }
-  return { options, deviceName };
 }
 
 export class EngineManager extends EventEmitter {
@@ -145,13 +157,13 @@ export class EngineManager extends EventEmitter {
     // `private` modifier was storing a dead reference on every instance.
     userDataDir: string,
     private port: number,
-    /** Test seams (spec §5: mocked subprocess + fetch). `readHardware` stands in
-     *  for the chip/prerequisite probe so a test can drive its FAILURE path —
-     *  the real one asks the machine, and a machine cannot be made to fail. */
+    /** Test seams (spec §5: mocked subprocess + fetch). `probeChip` stands in
+     *  for the graphics-chip probe so a test can drive its FAILURE path — the
+     *  real one asks the machine, and a machine cannot be made to fail. */
     private opts: {
       fetchImpl?: typeof fetch;
       supervisorOpts?: Record<string, unknown>;
-      readHardware?: (inst: InstalledEngine | null) => Promise<{ options: BackendOption[]; deviceName: string | null }>;
+      probeChip?: () => Promise<MachineChip>;
     } = {}
   ) {
     super();
@@ -165,47 +177,65 @@ export class EngineManager extends EventEmitter {
     return this.acquisition.installed(readEngineConfig(this.home).backend ?? undefined);
   }
 
-  /** The hardware answers the card needs: which faster builds this machine may
-   *  be offered, and the name of the chip the engine says it will run on.
+  /** The chip probe's answer, once. WHY it is not simply computed inside
+   *  status(): finding out means ASKING THE MACHINE — running `nvidia-smi`, a
+   *  PowerShell query against the display-driver registry, and `ldconfig` — and
+   *  every one of those can take a moment, or a long moment if a graphics
+   *  driver is wedged (the Windows probes are capped at four seconds EACH).
+   *  status() is called on every engine event and on every status request from
+   *  the screen, and it is synchronous, so doing that work inside it would
+   *  freeze the whole window each time.
    *
-   *  WHY these are not simply computed inside status(): finding them out means
-   *  ASKING THE MACHINE — running `nvidia-smi`, a PowerShell query against the
-   *  display-driver registry, and `ldconfig` — and every one of those can take a
-   *  moment, or a long moment if a graphics driver is wedged (the Windows probes
-   *  are capped at four seconds EACH). status() is called on every engine event
-   *  and on every status request from the screen, and it is synchronous, so
-   *  doing that work inside it would freeze the whole window each time.
-   *
-   *  So: the first status() answers instantly with these two fields simply
-   *  absent (the screen reads an absent list as "not known yet", not as
-   *  "nothing to offer"), the asking happens on the next tick, and the
-   *  'status-changed' push delivers the filled-in answer a moment later.
-   *  `hardwareWarming` makes that happen exactly once per app run.
+   *  So: the first status() answers instantly with `backendOptions` simply
+   *  absent, the asking happens on the next tick, and the 'status-changed' push
+   *  delivers the answer a moment later. `chipProbing` makes it happen exactly
+   *  once per app run — which is correct, because the chip cannot change.
    *
    *  The push MUST fire on the failure path too. It is the only thing that ever
-   *  delivers these fields, so a missed one leaves the card waiting forever for
-   *  a second status that never comes — which looks exactly like a hung app. */
-  private hardware: { options: BackendOption[]; deviceName: string | null } | null = null;
-  private hardwareWarming = false;
+   *  delivers that field, so a missed one leaves the card waiting forever for a
+   *  second status that never comes — which looks exactly like a hung app. */
+  private chip: MachineChip | null = null;
+  private chipProbing = false;
 
-  private warmHardware(inst: InstalledEngine | null): void {
-    if (this.hardware || this.hardwareWarming) return;
-    this.hardwareWarming = true;
-    const read = this.opts.readHardware ?? readHardwareOffer;
+  private warmChip(): void {
+    if (this.chip || this.chipProbing) return;
+    this.chipProbing = true;
+    const probe = this.opts.probeChip ?? probeMachineChip;
     setImmediate(() => {
       void (async () => {
         try {
-          this.hardware = await read(inst);
+          this.chip = await probe();
         } catch {
-          // A probe that throws still has to SETTLE: record "nothing to offer,
-          // no name" so the push below carries a real answer instead of nothing.
-          this.hardware = { options: [], deviceName: null };
+          // A probe that throws still has to SETTLE: "no chip we recognise", so
+          // the push below carries a real answer instead of nothing.
+          this.chip = { vendor: null, gfxTarget: null };
         }
-        this.hardwareWarming = false;
-        // Deliberately outside the try/catch, and after both assignments: this
-        // one line is what the card is waiting on, on both paths.
+        this.chipProbing = false;
+        // Deliberately outside the try/catch, and after the assignment: this one
+        // line is what the card is waiting on, on both paths.
         this.emit('status-changed');
       })();
+    });
+  }
+
+  /** Which faster builds to offer RIGHT NOW. Recomputed on every status() from
+   *  the cached chip plus the two things that do change: which backend is
+   *  installed (so a switch is never offered back to itself) and whether the
+   *  ROCm libraries are present (the user may have just installed them — the
+   *  card's "Check again" refreshes that same reading). Undefined until the
+   *  chip probe has answered. */
+  private currentBackendOptions(inst: InstalledEngine | null): BackendOption[] | undefined {
+    const chip = this.chip;
+    if (!chip) return undefined;
+    return backendOptions({
+      platform: process.platform,
+      arch: process.arch,
+      vendor: chip.vendor,
+      gfxTarget: chip.gfxTarget,
+      installedBackend: inst?.backend ?? null,
+      // Free: the chip probe primed this cache on its own tick, and it is only
+      // ever consulted on an AMD machine.
+      rocmPrereqsSatisfied: chip.vendor === 'amd' ? checkRocmPrereqs().satisfied : false,
     });
   }
 
@@ -213,12 +243,13 @@ export class EngineManager extends EventEmitter {
     const cfg = readEngineConfig(this.home);
     const inst = this.currentInstall();
     const supState = this.supervisor?.status() ?? 'stopped';
-    this.warmHardware(inst);
+    this.warmChip();
     return {
-      // Undefined (not []) until the probe has run once — the renderer treats an
-      // absent list as "not known yet", which is exactly what it is.
-      backendOptions: this.hardware?.options,
-      deviceName: this.hardware ? this.hardware.deviceName : undefined,
+      // Undefined (not []) until the chip probe has answered once. Both fields
+      // are recomputed here rather than cached, so installing an engine or
+      // switching backend is reflected in the very next status.
+      backendOptions: this.currentBackendOptions(inst),
+      deviceName: deviceNameOf(inst),
       installed: inst !== null,
       installedVersion: inst?.version ?? null,
       pinnedVersion: ENGINE_VERSION,

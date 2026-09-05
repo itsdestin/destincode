@@ -111,6 +111,10 @@ export function gfxTargetName(version: number): string | null {
   // covers the CPU node's 0 and any junk short of a real target. (A second
   // `major <= 0` check further down was dead weight — it made the 0 case
   // survive a deliberate break of this line, so the test could not prove it.)
+  // AMD's own rocm_agent_enumerator writes the major as `(id / 10000) % 100`;
+  // the plain divide here differs only for a three-digit major, which no
+  // shipping target has, and errs toward a name that matches nothing (a refusal)
+  // rather than toward mis-naming a real chip.
   if (!Number.isFinite(version) || version < 10000) return null;
   const major = Math.floor(version / 10000);
   const minor = Math.floor(version / 100) % 100;
@@ -199,10 +203,18 @@ function readRegistryVram(): number | null {
 // The display-adapter class key. Same GUID the VRAM probe above reads, but for
 // the two driver STRINGS rather than the memory QWORD, so a machine with no
 // nvidia-smi can still be identified as AMD.
+//
+// `ForEach-Object` and NOT `Select-Object -ExpandProperty 'DriverDesc','ProviderName'`:
+// -ExpandProperty takes a SINGLE property name (Microsoft's reference says so
+// outright — "Multiple properties cannot be expanded"), so the two-name form
+// errors, prints nothing, and would leave `vendor` null on every non-NVIDIA
+// Windows machine — silently switching the Windows-AMD → ROCm offer off
+// altogether. ForEach-Object also gives the one-value-per-line shape
+// `parseWindowsAdapterVendor` reads.
 function readWindowsAdapterStrings(): string | null {
   const cmd =
     "Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\*' " +
-    "-EA SilentlyContinue | Select-Object -ExpandProperty 'DriverDesc','ProviderName' -EA SilentlyContinue";
+    "-EA SilentlyContinue | ForEach-Object { $_.DriverDesc; $_.ProviderName }";
   return runCmd('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd]);
 }
 
