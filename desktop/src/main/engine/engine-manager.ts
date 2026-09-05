@@ -12,9 +12,11 @@ import { NativeHome } from '../native-home';
 import { EngineAcquisition, InstalledEngine } from './engine-acquisition';
 import type { EngineDevice } from './engine-acquisition';
 import { EngineSupervisor } from './engine-supervisor';
+import type { EngineSpawnConfig } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
 import { readEngineConfig, updateEngineConfig } from './engine-config';
+import { presetFilePath } from './model-presets';
 import { readManifest, removeManifest, markManifestComplete, isManifestComplete } from '../models/download-manifest';
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
@@ -646,15 +648,44 @@ export class EngineManager extends EventEmitter {
     await this.supervisor!.ensureRunning();
   }
 
+  /** Everything the supervisor's spawn needs, read from disk EACH time it asks.
+   *
+   *  `speed` and `models` are read straight off the engine section rather than
+   *  through readEngineConfig, which validates only the three keys it has always
+   *  had. Both are read defensively because this file is shared with the built
+   *  app and can be edited by hand: a missing or malformed value means "the
+   *  default", never a crash on the path that starts the engine.
+   *
+   *  Both speed switches default ON — that is what shipped before they were
+   *  switchable, so a config file that predates them behaves exactly as before. */
+  private spawnConfig(): EngineSpawnConfig {
+    const cfg = readEngineConfig(this.home);
+    const engine = (this.home.readJson('config.json') as { engine?: Record<string, any> } | null)?.engine;
+    const speed = engine?.speed;
+    const models = engine?.models;
+    return {
+      cacheDir: cfg.cacheDir,
+      contextSize: cfg.contextSize,
+      speed: {
+        speculative: speed?.speculative !== false,
+        compressCache: speed?.compressCache !== false,
+      },
+      models: models && typeof models === 'object' ? models : null,
+    };
+  }
+
   private async rebuildSupervisor(installed: InstalledEngine): Promise<void> {
     if (this.supervisor && this.supervisorBinary === installed.binaryPath) return;
     if (this.supervisor) await this.supervisor.stop();
-    const cfg = readEngineConfig(this.home);
     this.supervisor = new EngineSupervisor({
       binaryPath: installed.binaryPath,
       port: this.port,
-      cacheDir: cfg.cacheDir,
-      contextSize: cfg.contextSize,
+      // A CALLBACK, not the values: the supervisor re-reads config.json at every
+      // spawn, so changing a speed switch or the context length and restarting
+      // now actually restarts with the new setting. Passing cfg.* here is what
+      // used to freeze the old values into the object for its whole life.
+      readConfig: () => this.spawnConfig(),
+      presetPath: presetFilePath(this.home.root),
       fetchImpl: this.opts.fetchImpl,
       ...(this.opts.supervisorOpts ?? {}),
     });
