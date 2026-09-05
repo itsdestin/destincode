@@ -120,20 +120,18 @@ function AuthScreen({
           hover:opacity-90 faded the label along with the fill.
           One primary per view (G-4): Claude Code is the default engine, so its
           button is the filled one; the other two plans are outlined peers. */}
-      {/* The filled Claude button spans the card; the two outlined plans share
-          the row beneath it, so three pills do not stack into a column. */}
+      {/* Three full-width pills, the filled Claude one first. Side by side the
+          two outlined labels wrapped onto two lines at the card's width. */}
       <div className="flex flex-col items-stretch gap-3 w-full">
         <Button onClick={onOAuth} className="px-6 py-3 rounded-full font-semibold text-base w-full">
           Log in with Claude
         </Button>
-        <div className="flex gap-3">
-          <Button variant="secondary" onClick={onChatGpt} className="flex-1 px-4 py-3 rounded-full font-semibold text-base">
-            Log in with ChatGPT
-          </Button>
-          <Button variant="secondary" onClick={onOpenRouter} className="flex-1 px-4 py-3 rounded-full font-semibold text-base">
-            Log in with OpenRouter
-          </Button>
-        </div>
+        <Button variant="secondary" onClick={onChatGpt} className="px-6 py-3 rounded-full font-semibold text-base w-full">
+          Log in with ChatGPT
+        </Button>
+        <Button variant="secondary" onClick={onOpenRouter} className="px-6 py-3 rounded-full font-semibold text-base w-full">
+          Log in with OpenRouter
+        </Button>
       </div>
 
       {!showApiKey ? (
