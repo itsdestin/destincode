@@ -132,6 +132,25 @@ describe('VoiceButton card — the microphone will not open (R11, R12, R20, R21)
     expect(h.onRecheck).toHaveBeenCalledTimes(1);
   });
 
+  // WHY: the error card's only button is OK. When the microphone is unavailable AND
+  // something also errored, showing that card took away the Check again — the one
+  // affordance that lets the user come back after plugging a microphone in. The more
+  // useful of the two truths wins. Found reviewing T9, 2026-09-05.
+  it('an unavailable microphone keeps its Check again even when an error is also set', () => {
+    const h = renderCard({
+      readiness: { state: 'unavailable', reason: NO_DEVICE },
+      error: 'something else went wrong',
+    });
+    // No tap: an error opens the card by itself, so tapping would close it again.
+
+    expect(screen.getByText(NO_DEVICE)).toBeInTheDocument();
+    expect(screen.queryByText('Voice stopped')).toBeNull();
+    const buttons = screen.getAllByRole('button', { name: 'Check again' });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]);
+    expect(h.onRecheck).toHaveBeenCalledTimes(1);
+  });
+
   it('refused by the computer: the approved sentence, verbatim, with one Check again', () => {
     renderCard({ readiness: { state: 'unavailable', reason: REFUSED } });
     tapMic();

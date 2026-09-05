@@ -220,6 +220,21 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
         </div>
       </>
     );
+  } else if (state === 'unavailable') {
+    // BEFORE the error branch. WHY: when the microphone is unavailable AND something
+    // also errored (tapping Check again on a machine with no mic while the host itself
+    // fails), the error card's lone OK button replaced the Check again the user needs —
+    // the one affordance that lets them come back after plugging a mic in. Unavailable
+    // is the more useful of the two truths. Found reviewing T9, 2026-09-05.
+    card = (
+      <>
+        <p className="text-xs font-semibold text-fg mb-1.5">Voice isn&rsquo;t available</p>
+        <p className="text-2xs text-fg-2 leading-snug">{readiness?.state === 'unavailable' ? readiness.reason : 'Still checking whether this computer can listen.'}</p>
+        <div className="flex justify-end gap-2 mt-3">
+          <Button variant="ghost" size="sm" onClick={onRecheck}>Check again</Button>
+        </div>
+      </>
+    );
   } else if (error) {
     card = (
       <>

@@ -167,6 +167,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   voiceListeningRef.current = voiceListening;
   const voiceStopRef = useRef(voice.stop);
   voiceStopRef.current = voice.stop;
+  // Read by `send`, which cannot depend on them without rebuilding on every
+  // partial — the same reason voiceListeningRef exists.
+  const voicePhaseRef = useRef(voice.phase);
+  voicePhaseRef.current = voice.phase;
+  const voiceCancelRef = useRef(voice.cancel);
+  voiceCancelRef.current = voice.cancel;
 
   // Let go of the walkie-talkie, whatever the reason.
   //
@@ -351,6 +357,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     const resetTimer = () => {
       if (idleBlurTimer.current) clearTimeout(idleBlurTimer.current);
       idleBlurTimer.current = setTimeout(() => {
+        // Never blur out from under a space-hold dictation. The hold releases on
+        // blur, and this timer fires 750 ms after the last keydown — which is
+        // fine while a held key repeats faster than that, but the repeat delay is
+        // a system setting that can be longer, or switched off entirely. On such
+        // a machine a walkie-talkie dictation would have been cut off silently,
+        // three-quarters of a second in. Found reviewing T9, 2026-09-05.
+        if (spaceHeld.current || spaceHoldTimer.current !== null) return;
         if (document.activeElement === el) el.blur();
       }, 750);
     };
@@ -657,6 +670,16 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     // in the input bar so the user's text isn't lost. `force` is the "Send
     // anyway" override, which re-enters here past the gate (see sendMessage).
     if (!sendMessage(currentText, attachments, force)) return;
+    // The message has gone, so the dictation behind it goes too. Without this,
+    // sending mid-sentence sent the unsettled GREY words along with it AND left
+    // them in the box, and the next thing the engine said re-typed the whole
+    // utterance — so the user had to delete a copy of what they had just sent,
+    // with the microphone still open. `cancel` emits nothing (the event contract
+    // in voice-types.ts), so no late words can arrive after this either.
+    // Found reviewing T9, 2026-09-05.
+    setVoiceTail('');
+    voiceBaseRef.current = '';
+    if (voicePhaseRef.current !== 'idle') void voiceCancelRef.current();
     setText('');
     setAttachments([]);
     draftsRef.current.delete(sessionId); // Clear stored draft after sending

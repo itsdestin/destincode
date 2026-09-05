@@ -592,7 +592,48 @@ describe('InputBar — voice prompting (T9)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect((window as any).claude.native.send).toHaveBeenCalledTimes(1);
-    expect(voiceBridge.stop).not.toHaveBeenCalled();
+    // It sends — but it does NOT leave the microphone open behind it. This used
+    // to assert `stop` was never called, which pinned exactly that bug: the
+    // message went, the mic stayed hot, and the next thing the engine said
+    // re-typed the whole utterance into the empty box.
+    expect(voiceBridge.cancel).toHaveBeenCalled();
+  });
+
+  // WHY: sending mid-sentence used to send the unsettled GREY words along with
+  // the message AND leave them in the box, so the user had to delete a copy of
+  // what they had just sent. Found reviewing T9, 2026-09-05.
+  it('sending takes the dictation with it — no leftovers, no second copy', async () => {
+    const textarea = await renderComposer();
+    await startListening();
+    emit({ type: 'partial', committed: 'Book the room.', tail: 'and tell' });
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toContain('Book the room.'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+
+    expect((window as any).claude.native.send).toHaveBeenCalledTimes(1);
+    // The box is empty afterwards — not holding the grey remainder.
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(''));
+    // And a late word from the engine cannot re-fill it, because the dictation
+    // was cancelled rather than left running.
+    emit({ type: 'partial', committed: 'Book the room.', tail: 'and tell Sam' });
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(''));
+  });
+
+  // WHY: both Enter guards read "am I listening", so during the `finishing` beat —
+  // the last engine pass, seconds long — a second Enter fell through and sent,
+  // and the late words then re-filled the box. A stop-then-send double tap is the
+  // natural gesture, so this is the likely route into the bug above.
+  it('a second Enter during the finishing beat does not leave a duplicate draft', async () => {
+    const textarea = await renderComposer();
+    await startListening();
+    emit({ type: 'partial', committed: 'Book the room.', tail: '' });
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toContain('Book the room.'));
+
+    fireEvent.keyDown(textarea, { key: 'Enter' });          // stops the mic
+    fireEvent.keyDown(textarea, { key: 'Enter' });          // sends
+    await waitFor(() => expect((window as any).claude.native.send).toHaveBeenCalled());
+    emit({ type: 'final', text: 'Book the room.' });
+    await waitFor(() => expect((textarea as HTMLTextAreaElement).value).toBe(''));
   });
 
   it('the "Send anyway" retry still sends while the mic is open', async () => {
@@ -691,6 +732,21 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
 
     fireEvent.keyUp(textarea, { key: ' ' });
     expect(voiceBridge.stop).toHaveBeenCalledTimes(1);
+  });
+
+  // The one release path with no test: deleting the visibilitychange listener
+  // left the whole suite green, so a hold that survived the page being hidden
+  // would have gone unnoticed.
+  it('the page being hidden mid-hold closes the microphone', async () => {
+    const textarea = await renderComposer();
+    fireEvent.keyDown(textarea, { key: ' ' });
+    await hold(250);
+    expect(voiceBridge.start).toHaveBeenCalledTimes(1);
+
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    fireEvent(document, new Event('visibilitychange'));
+    expect(voiceBridge.stop).toHaveBeenCalledTimes(1);
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
   });
 
   it('a quick tap does nothing at all', async () => {
