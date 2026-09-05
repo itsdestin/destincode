@@ -2488,7 +2488,9 @@ export class NativeSessionHost extends EventEmitter {
       // buildAiTools when the profile can afford its catalog. Threading the
       // catalog (rather than letting the session scan on its own) means the host
       // and the session agree on one source, and a test can inject a fake.
-      ...(this.skillCatalog ? { skillCatalog: this.skillCatalog } : {}),
+      // Fix: project .claude/skills are session-scoped. Build their catalog from
+      // this session's cwd so one workspace's workflows never appear in another.
+      skillCatalog: this.skillCatalog ?? createSkillCatalog(undefined, cwd),
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       // Stamp the CURRENT mode on every ask (read at call time, not wiring
       // time — a mid-session mode flip must show on the next ask). The
@@ -3767,7 +3769,9 @@ export class NativeSessionHost extends EventEmitter {
 
     let loaded;
     try {
-      loaded = (this.skillCatalog ?? createSkillCatalog()).load(skill);
+      // Match the session's Skill tool: a slash invocation must see this
+      // project's .claude/skills too, including on smaller models without Skill.
+      loaded = (this.skillCatalog ?? createSkillCatalog(undefined, entry.cwd)).load(skill);
     } catch (err: any) {
       // SkillNotFound is the ordinary case — the user typed a Claude Code command
       // or a skill they haven't installed — so it is a coded refusal, not an error.
