@@ -214,13 +214,20 @@ export class ProviderRegistry {
             + 'It may have been deleted, moved, or renamed — re-download it in Settings → Providers → Local models.',
           );
         }
-        // Live prefill progress (llama.cpp `return_progress`). Only wrap when a
-        // consumer is listening — an unwatched tee would copy every byte of every
-        // response for nothing. See prefill-progress.ts for why this rides a fetch
-        // wrapper rather than the SDK's stream.
-        const localFetch = opts?.onPrefillProgress
-          ? withPrefillProgress(this.localEngine.fetchImpl(), opts.onPrefillProgress)
-          : this.localEngine.fetchImpl();
+        // The local stream tap does two jobs off ONE tee'd copy: live prefill
+        // progress (llama.cpp `return_progress`, only when someone is watching
+        // it) and the finished reply's speed, which is read off the final frame
+        // and pushed to the engine card's fact line. The second consumer is
+        // always present, so unlike before this wraps on every local send —
+        // that is the cost of the card knowing how fast the last reply ran. See
+        // prefill-progress.ts for why this rides a fetch wrapper rather than the
+        // SDK's stream.
+        const engine = this.localEngine;
+        const localFetch = withPrefillProgress(
+          engine.fetchImpl(),
+          opts?.onPrefillProgress,
+          (timings) => engine.recordReply(timings),
+        );
         return createOpenAICompatible({
           name: 'local',
           baseURL: base,

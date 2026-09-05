@@ -29,7 +29,8 @@ interface EngineStatusView {
   // Optional: an older main omits them and the card simply shows less.
   deviceName?: string | null;
   loadedModelsBytes?: number;
-  lastReply?: { promptPerSecond: number; generatePerSecond: number } | null;
+  // Either rate may be missing on its own — see ReplyTimings in engine-types.
+  lastReply?: { promptPerSecond?: number; generatePerSecond?: number } | null;
   backendOptions?: BackendOption[];
   speed?: EngineSpeedSettings;
 }
@@ -202,8 +203,15 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
     if (typeof status.loadedModelsBytes === 'number') {
       facts.push(status.loadedModelsBytes > 0 ? `${gb(status.loadedModelsBytes)} loaded` : 'nothing loaded');
     }
+    // Show whichever halves were measured. A prompt served entirely from the
+    // cache has no reading speed to report, and printing "0 read per second"
+    // beside a real write speed would be a wrong fact about the machine —
+    // dropping the whole line over it would lose a true one.
     if (status.lastReply) {
-      facts.push(`last reply ${Math.round(status.lastReply.promptPerSecond)} read / ${Math.round(status.lastReply.generatePerSecond)} write per second`);
+      const rates: string[] = [];
+      if (typeof status.lastReply.promptPerSecond === 'number') rates.push(`${Math.round(status.lastReply.promptPerSecond)} read`);
+      if (typeof status.lastReply.generatePerSecond === 'number') rates.push(`${Math.round(status.lastReply.generatePerSecond)} write`);
+      if (rates.length > 0) facts.push(`last reply ${rates.join(' / ')} per second`);
     }
   } else if (status.installed) {
     facts.push(`Engine ${status.installedVersion}`, BACKEND_WORDS[status.backend ?? ''] ?? status.backend ?? '');

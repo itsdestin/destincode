@@ -203,6 +203,11 @@ export class EngineSupervisor extends EventEmitter {
   private intentionalShutdown = false;
   private modelPollTimer: NodeJS.Timeout | null = null; // per-model /models state poll
   private lastModelSig = '';                             // last emitted (id→state) signature
+  // The most recent /models reading, kept so the SYNCHRONOUS status() path can
+  // answer "how much memory are the loaded models using?" without a fetch.
+  // null = never polled, which status() must report as "not asked yet" rather
+  // than as zero (see loadedModelsBytes below).
+  private lastPolledModels: EngineModel[] | null = null;
   private loadProgress = new Map<string, number>();      // modelId → max resident bytes seen while loading (monotonic)
 
   constructor(private readonly opts: EngineSupervisorOpts) { super(); }
@@ -725,6 +730,26 @@ export class EngineSupervisor extends EventEmitter {
     if (this.modelPollTimer) { clearTimeout(this.modelPollTimer); this.modelPollTimer = null; }
     this.lastModelSig = '';
     this.loadProgress.clear();
+    // Back to "not asked yet". A stopped engine holds no model in memory, but
+    // the reading it left behind describes a process that no longer exists.
+    this.lastPolledModels = null;
+  }
+
+  /** How much memory the engine's models are using right now, in bytes, or
+   *  `undefined` when it has not been asked yet (engine not running, or the
+   *  first poll has not landed).
+   *
+   *  **`loaded` rows ONLY — a `sleeping` row contributes nothing.** Sleeping is
+   *  what `--sleep-idle-seconds` does to an idle model: it FREES the weights and
+   *  reloads them on the next request. Adding those bytes in would tell the user
+   *  their machine is holding gigabytes it has already handed back (R1-14).
+   *
+   *  A `loaded` row whose `sizeBytes` is unknown (`null` — a router row with no
+   *  size and no file on disk to measure) adds nothing, so the total can only
+   *  ever understate, never overstate. */
+  loadedModelsBytes(): number | undefined {
+    if (this.lastPolledModels === null) return undefined;
+    return sumLoadedModelBytes(this.lastPolledModels);
   }
 
   /** Compute the live model set (with load progress) and emit if it changed. */
@@ -744,6 +769,10 @@ export class EngineSupervisor extends EventEmitter {
         this.loadProgress.delete(m.id); // load finished / not loading → drop tracker
       }
     }
+    // Recorded on EVERY poll, not only when the signature changed: the emit
+    // below is about telling the renderer something new, this is about status()
+    // having a current answer to read.
+    this.lastPolledModels = models;
     const sig = models.map((m) => `${m.id}:${m.state}:${m.loadedBytes ?? ''}`).sort().join('|');
     if (sig !== this.lastModelSig) { this.lastModelSig = sig; this.emit('models-changed', models); }
   }
@@ -808,6 +837,18 @@ export class EngineSupervisor extends EventEmitter {
   async pollModelsNow(): Promise<void> {
     await this.emitModelsIfChanged();
   }
+}
+
+/** Σ `sizeBytes` over the rows the engine reports as `loaded`. Split out as a
+ *  pure function so the rule it enforces — loaded yes, sleeping no — is testable
+ *  without a running supervisor. */
+export function sumLoadedModelBytes(models: EngineModel[]): number {
+  let total = 0;
+  for (const m of models) {
+    if (m.state !== 'loaded') continue;
+    if (typeof m.sizeBytes === 'number' && m.sizeBytes > 0) total += m.sizeBytes;
+  }
+  return total;
 }
 
 /** Map llama-server's /models status.value to our EngineModelState. Unknown →

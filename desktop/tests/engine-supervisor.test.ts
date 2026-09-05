@@ -6,6 +6,7 @@ import {
   parseSsListenerPid,
   parseLsofPid,
   parseNetstatListenerPid,
+  sumLoadedModelBytes,
 } from '../src/main/engine/engine-supervisor';
 
 const mockSpawn = vi.fn();
@@ -320,6 +321,80 @@ describe('EngineSupervisor', () => {
     await new Promise((r) => setTimeout(r, 30)); // let the initial poll tick resolve
     expect(changed.length).toBeGreaterThan(0);
     expect(changed[changed.length - 1][0]).toMatchObject({ id: 'a', state: 'loaded' });
+  });
+
+  // ---- T19: how much memory the loaded models are using -------------------
+  //
+  // The engine card prints this as "8.9 GB loaded". A `sleeping` model has had
+  // its weights FREED by --sleep-idle-seconds and reloads on the next request,
+  // so counting it would tell the user their machine is holding memory it has
+  // already handed back (R1-14).
+
+  /** Router rows spanning every residency state, with sizes that make each
+   *  wrong rule produce a DIFFERENT total (loaded-only 1e9; +sleeping 3e9;
+   *  +loading 3.4e9; everything 11.4e9) — so an exact assertion below can only
+   *  pass for one rule. */
+  const RESIDENCY_ROWS = [
+    { id: 'awake-Q8_0', size: 1_000_000_000, status: { value: 'loaded' } },
+    { id: 'napping-Q8_0', size: 2_000_000_000, status: { value: 'sleeping' } },
+    { id: 'arriving-Q8_0', size: 400_000_000, status: { value: 'loading' } },
+    { id: 'cold-Q8_0', size: 8_000_000_000, status: { value: 'unloaded' } },
+    { id: 'awake-but-unmeasured-Q8_0', status: { value: 'loaded' } },   // no size anywhere
+  ];
+
+  function residencyFetch() {
+    return vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (String(url).endsWith('/models')) {
+        return { ok: true, status: 200, json: async () => ({ data: RESIDENCY_ROWS }) } as any;
+      }
+      return { ok: false, status: 404 } as any;
+    });
+  }
+
+  it('loadedModelsBytes sums the LOADED rows only — a sleeping model contributes nothing', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    sup = makeSupervisor(residencyFetch());
+    await sup.ensureRunning();
+    await sup.pollModelsNow();
+    // Exactly the one loaded row with a known size. Not 3e9 (loaded+sleeping),
+    // not 3.4e9 (+loading), not 11.4e9 (everything).
+    expect(sup.loadedModelsBytes()).toBe(1_000_000_000);
+  });
+
+  it('loadedModelsBytes is UNDEFINED until the engine has actually been asked', async () => {
+    // Not zero. Zero is a claim ("nothing loaded") about an engine nobody has
+    // polled yet, and the card prints it as one.
+    sup = makeSupervisor(residencyFetch());
+    expect(sup.loadedModelsBytes()).toBeUndefined();
+  });
+
+  it('loadedModelsBytes goes back to undefined once the engine stops', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    sup = makeSupervisor(residencyFetch());
+    await sup.ensureRunning();
+    await sup.pollModelsNow();
+    expect(sup.loadedModelsBytes()).toBe(1_000_000_000);
+    await sup.stop();
+    // The reading described a process that no longer exists.
+    expect(sup.loadedModelsBytes()).toBeUndefined();
+  });
+
+  it('sumLoadedModelBytes: every state, and an unmeasurable loaded row', () => {
+    const rows = [
+      { id: 'a', sizeBytes: 1_000_000_000, loaded: true, state: 'loaded' as const },
+      { id: 'b', sizeBytes: 2_000_000_000, loaded: false, state: 'sleeping' as const },
+      { id: 'c', sizeBytes: 400_000_000, loaded: false, state: 'loading' as const },
+      { id: 'd', sizeBytes: 8_000_000_000, loaded: false, state: 'unloaded' as const },
+      { id: 'e', sizeBytes: null, loaded: true, state: 'loaded' as const },
+    ];
+    expect(sumLoadedModelBytes(rows)).toBe(1_000_000_000);
+    // A set with nothing resident is a real zero, not an absence.
+    expect(sumLoadedModelBytes(rows.filter((r) => r.state !== 'loaded'))).toBe(0);
+    expect(sumLoadedModelBytes([])).toBe(0);
+    // Two loaded rows add up; the sleeping one still never joins in.
+    expect(sumLoadedModelBytes([...rows, { id: 'f', sizeBytes: 500_000_000, loaded: true, state: 'loaded' as const }]))
+      .toBe(1_500_000_000);
   });
 
   it('ensureRunning during an in-flight stop WAITS for it, then respawns (no URL to the dying server)', async () => {

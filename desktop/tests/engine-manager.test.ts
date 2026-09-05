@@ -419,3 +419,69 @@ describe('EngineManager — local downloads', () => {
     expect(fs.readdirSync(cacheDir)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// T19 — the engine card's "last reply N read / M write per second" fact.
+// ---------------------------------------------------------------------------
+describe('EngineManager — the last reply\'s speed', () => {
+  /** The exact reading b10665 reported for a real streamed reply, 2026-09-05
+   *  (pasted from the capture in prefill-progress.test.ts). */
+  const REAL_READING = { promptPerSecond: 84.05715886803026, generatePerSecond: 37.821109441135555 };
+
+  it('is ABSENT until a reply has actually been measured — never a zero', () => {
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999);
+    // The card reads `if (status.lastReply)`, so a `{0, 0}` here would print
+    // "last reply 0 read / 0 write per second" to every user who has not sent a
+    // message yet. Absence is the only honest answer before the first reply.
+    expect(mgr.status().lastReply).toBeUndefined();
+    // Same three-state rule as deviceName: not asked yet is not an answer.
+    expect(mgr.status().loadedModelsBytes).toBeUndefined();
+  });
+
+  it('status() reports the supervisor\'s loaded-model total, not a fixed absence', () => {
+    // Deliberately white-box: getting a REAL supervisor into a running state
+    // means spawning llama-server, which this suite cannot do. Standing a stub
+    // in its place is what makes this test bite — asserting only that the field
+    // is `undefined` on a stopped engine passes just as happily when the field
+    // is not wired into status() at all (measured: that mutation stayed green).
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999);
+    (mgr as any).supervisor = { status: () => 'running', loadedModelsBytes: () => 9_527_502_048 };
+    expect(mgr.status().loadedModelsBytes).toBe(9_527_502_048);
+    // And a supervisor that has not been asked yet passes its absence through.
+    (mgr as any).supervisor = { status: () => 'running', loadedModelsBytes: () => undefined };
+    expect(mgr.status().loadedModelsBytes).toBeUndefined();
+  });
+
+  it('recordReply stores the exact rates and pushes status-changed', () => {
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999);
+    let pushes = 0;
+    mgr.on('status-changed', () => { pushes++; });
+    mgr.recordReply(REAL_READING);
+    // Exact, not rounded and not a range: the card divides these two numbers
+    // between "read" and "write", and swapping them is a silent wrong fact.
+    expect(mgr.status().lastReply).toEqual(REAL_READING);
+    // status() is pull-only. Without the push the card keeps the old number.
+    expect(pushes).toBeGreaterThan(0);
+  });
+
+  it('recordReply(null) CLEARS the reading rather than leaving a stale one', () => {
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999);
+    mgr.recordReply(REAL_READING);
+    expect(mgr.status().lastReply).toEqual(REAL_READING);
+    // A reply whose final frame carried no timings must not leave the PREVIOUS
+    // reply's speed on screen labelled "last reply".
+    mgr.recordReply(null);
+    expect(mgr.status().lastReply).toBeUndefined();
+  });
+
+  it('registryHook() exposes recordReply, so the provider tap can reach it', () => {
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999);
+    mgr.registryHook().recordReply(REAL_READING);
+    expect(mgr.status().lastReply).toEqual(REAL_READING);
+  });
+});
