@@ -76,6 +76,7 @@ function AuthScreen({
   authMode,
   onOAuth,
   onChatGpt,
+  onOpenRouter,
   onApiKey,
 }: {
   authMode: FirstRunState['authMode'];
@@ -83,42 +84,56 @@ function AuthScreen({
   // Sign in with ChatGPT (design 2026-09-04, Q-1a): a second plan the app can
   // run on from day one, so a ChatGPT-only user is not sent to "Skip setup".
   onChatGpt: () => void;
+  // OpenRouter's own sign-in (PKCE against openrouter.ai/auth — spec
+  // 2026-08-31-openrouter-connection-trust-design.md, not yet built). Review
+  // 2026-09-05 P-5: it belongs on this screen beside the other two plans.
+  onOpenRouter: () => void;
   onApiKey: (key: string) => void;
 }) {
   const [showApiKey, setShowApiKey] = useState(false);
   const [apiKey, setApiKey] = useState('');
 
-  if (authMode === 'oauth' || authMode === 'chatgpt') {
+  // The waiting line keeps the card around it (P-6): the screen does not
+  // change shape between pressing a button and coming back from the browser.
+  const card = 'mt-6 w-full max-w-md rounded-2xl bg-panel border border-edge p-6 flex flex-col items-center gap-4';
+
+  if (authMode === 'oauth' || authMode === 'chatgpt' || authMode === 'openrouter') {
+    const where = authMode === 'chatgpt' ? 'ChatGPT' : authMode === 'openrouter' ? 'OpenRouter' : 'Claude';
     return (
-      <div className="mt-6 text-center flex items-center justify-center gap-2 text-sm text-fg-dim">
-        <BrailleSpinner size="sm" />
-        <span>
-          {authMode === 'chatgpt'
-            ? 'A browser window should have opened. Finish signing in to ChatGPT there…'
-            : 'A browser window should have opened. Complete sign-in there…'}
-        </span>
+      <div className={card}>
+        <div className="flex items-center justify-center gap-2 text-sm text-fg-dim">
+          <BrailleSpinner size="sm" />
+          <span>A browser window should have opened. Finish signing in to {where} there…</span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="mt-6 w-full max-w-md rounded-2xl bg-panel border border-edge p-6 flex flex-col items-center gap-4">
+    <div className={card}>
       <p className="text-sm text-fg-dim text-center leading-relaxed">
-        Sign in with your Claude or ChatGPT plan — no API key or credit card needed.
+        Sign in with the plan you already pay for — no API key or credit card needed.
       </p>
 
       {/* Documented pill exception: first-run hero CTAs keep rounded-full and
           their own larger padding. Only the hover and the focus ring normalize —
           hover:opacity-90 faded the label along with the fill.
           One primary per view (G-4): Claude Code is the default engine, so its
-          button is the filled one; ChatGPT is the outlined peer beside it. */}
-      <div className="flex flex-wrap items-center justify-center gap-3">
-        <Button onClick={onOAuth} className="px-6 py-3 rounded-full font-semibold text-base">
+          button is the filled one; the other two plans are outlined peers. */}
+      {/* The filled Claude button spans the card; the two outlined plans share
+          the row beneath it, so three pills do not stack into a column. */}
+      <div className="flex flex-col items-stretch gap-3 w-full">
+        <Button onClick={onOAuth} className="px-6 py-3 rounded-full font-semibold text-base w-full">
           Log in with Claude
         </Button>
-        <Button variant="secondary" onClick={onChatGpt} className="px-6 py-3 rounded-full font-semibold text-base">
-          Log in with ChatGPT
-        </Button>
+        <div className="flex gap-3">
+          <Button variant="secondary" onClick={onChatGpt} className="flex-1 px-4 py-3 rounded-full font-semibold text-base">
+            Log in with ChatGPT
+          </Button>
+          <Button variant="secondary" onClick={onOpenRouter} className="flex-1 px-4 py-3 rounded-full font-semibold text-base">
+            Log in with OpenRouter
+          </Button>
+        </div>
       </div>
 
       {!showApiKey ? (
@@ -126,7 +141,7 @@ function AuthScreen({
           onClick={() => setShowApiKey(true)}
           className="text-xs text-fg-muted hover:text-fg-dim underline transition-colors"
         >
-          I have an API key instead
+          Use an API key or local model
         </button>
       ) : (
         <div className="flex flex-col items-center gap-3 w-full">
@@ -289,16 +304,16 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
     (window as any).claude.firstRun.startAuth('chatgpt');
   }, []);
 
+  const handleOpenRouter = useCallback(() => {
+    (window as any).claude.firstRun.startAuth('openrouter');
+  }, []);
+
   const handleApiKey = useCallback((key: string) => {
     (window as any).claude.firstRun.submitApiKey(key);
   }, []);
 
   const handleDevMode = useCallback(() => {
     (window as any).claude.firstRun.devModeDone();
-  }, []);
-
-  const handleSkip = useCallback(() => {
-    (window as any).claude.firstRun.skip();
   }, []);
 
   const launching =
@@ -353,6 +368,7 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
               authMode={state.authMode}
               onOAuth={handleOAuth}
               onChatGpt={handleChatGpt}
+              onOpenRouter={handleOpenRouter}
               onApiKey={handleApiKey}
             />
           )}
@@ -381,13 +397,9 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
         </div>
       )}
 
-      {/* Skip link */}
-      <button
-        onClick={handleSkip}
-        className="mt-10 text-xs text-fg-muted hover:text-fg-2 transition-colors"
-      >
-        Skip setup (I installed via terminal)
-      </button>
+      {/* The "Skip setup (I installed via terminal)" link is gone — review
+          2026-09-05 P-6. Three sign-ins and a key/local route cover every way
+          in; the skip left people on a screen with nothing signed in. */}
     </div>
   );
 }

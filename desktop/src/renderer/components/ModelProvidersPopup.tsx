@@ -5,9 +5,10 @@ import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
-import { chatGptPlanLabel, type ChatGptAccountStatus, type ChatGptUsage } from '../../shared/chatgpt-types';
+import { chatGptPlanLabel, type ChatGptAccountStatus } from '../../shared/chatgpt-types';
 import { AnchorTip, Button, Dialog, InputGroup, TextInput, SettingRow } from './ui';
 import BrailleSpinner from './BrailleSpinner';
+import { PlanWindows, type PlanUsage } from './plan-windows';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -125,6 +126,51 @@ function SectionHeader({ title, info }: { title: string; info: { label: string; 
   );
 }
 
+// One row shape for every provider (review 2026-09-05, P-1 "all providers
+// formatted similarly with neutral treatment"): name · one status line in the
+// same muted grey · one action on the right · optional plan bars underneath.
+// No green "connected" text and no "Default engine" badge — the status line
+// says the state in words and the plan bars say how much is left.
+function ProviderRow({ title, status, detail, action, children }: {
+  title: string;
+  status: React.ReactNode;
+  /** A second line under the status: OpenAI's refusal reason, a hint. Tone
+   *  'bad' is the destructive colour for a reason the user must read. */
+  detail?: { text: React.ReactNode; tone?: 'muted' | 'bad' } | null;
+  action?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="bg-inset/50 rounded-lg px-3 py-2.5">
+      <div className="flex items-center gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs text-fg font-medium">{title}</p>
+          <p className="text-2xs mt-0.5 text-fg-muted">{status}</p>
+          {detail && (
+            <p className={`text-2xs mt-0.5 ${detail.tone === 'bad' ? 'text-destructive-fg' : 'text-fg-muted'}`}>{detail.text}</p>
+          )}
+        </div>
+        {action && <div className="shrink-0">{action}</div>}
+      </div>
+      {children && <div className="mt-2.5">{children}</div>}
+    </div>
+  );
+}
+
+/** The Claude plan's windows, as the status bar receives them on status:data.
+ *  Subscribed here (not threaded from App) because this popup lives three
+ *  levels down Settings and nothing else on the way needs the number. */
+function useClaudePlanUsage(): PlanUsage | null {
+  const [usage, setUsage] = useState<PlanUsage | null>(null);
+  useEffect(() => {
+    const handler = window.claude.on.statusData((data: any) => {
+      setUsage(data?.usage ?? null);
+    });
+    return () => { window.claude.off('status:data', handler); };
+  }, []);
+  return usage;
+}
+
 // ── 1. Claude Code ───────────────────────────────────────────────────────────
 
 function ClaudeCodeBlock({
@@ -157,24 +203,20 @@ function ClaudeCodeBlock({
   const installed = claudePrereq?.status === 'installed';
   const signedIn = state?.authComplete === true;
 
-  // Plain-word status line (no ●◐○ glyphs).
+  // Plain-word status line (no ●◐○ glyphs), in the same grey as every other row.
   let statusText: string;
-  let statusTone: 'ok' | 'warn';
   if (!loaded) {
     statusText = 'Checking…';
-    statusTone = 'warn';
   } else if (signedIn) {
     statusText = state?.authMode === 'apikey'
       ? 'Connected with an Anthropic API key'
       : 'Signed in with your Claude account';
-    statusTone = 'ok';
   } else if (installed) {
     statusText = 'Installed — not signed in yet';
-    statusTone = 'warn';
   } else {
     statusText = 'Not set up yet';
-    statusTone = 'warn';
   }
+  const claudeUsage = useClaudePlanUsage();
 
   return (
     <section>
@@ -197,28 +239,20 @@ function ClaudeCodeBlock({
         }}
       />
 
-      <div className="bg-inset/50 rounded-lg px-3 py-2.5">
-        <p className="text-xs text-fg font-medium">Default engine</p>
-        <p className={`text-2xs mt-0.5 ${statusTone === 'ok' ? 'text-green-600' : 'text-fg-muted'}`}>
-          {statusText}
-        </p>
-        <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
-          Every session runs through Claude Code unless you pick another provider below.
-        </p>
-
-        {/* Outline peer action — the shared secondary recipe replaces the
-            hand-rolled border-edge-dim/text-fg-2 copy of it. */}
-        {onOpenClaudePreferences && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}
-            className="mt-2.5"
-          >
-            Claude Code preferences
+      {/* P-1 (2026-09-05): the "Default engine" badge and its sentence are gone;
+          the (i) above still says Claude Code is what sessions run on unless
+          another provider is picked. Same row as ChatGPT and OpenRouter below. */}
+      <ProviderRow
+        title="Claude Code"
+        status={statusText}
+        action={onOpenClaudePreferences && (
+          <Button variant="secondary" size="sm" onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}>
+            Preferences
           </Button>
         )}
-      </div>
+      >
+        {signedIn && state?.authMode !== 'apikey' && <PlanWindows usage={claudeUsage} />}
+      </ProviderRow>
     </section>
   );
 }
@@ -275,28 +309,49 @@ function ChatGptBlock() {
     }
   };
 
-  // Plain-word status line — no glyphs (the app's standing rule).
-  let line: React.ReactNode;
-  let tone: 'ok' | 'muted' | 'bad' = 'muted';
-  if (!status) {
-    line = 'Checking…';
-  } else if (status.state === 'signed-in') {
-    line = `Signed in as ${status.email} · ${chatGptPlanLabel(status.plan)}`;
-    tone = 'ok';
-  } else if (status.state === 'waiting') {
+  // Plain-word status line — no glyphs (the app's standing rule) — and, for
+  // the one state with a second thing to say, a detail line under it.
+  let line: React.ReactNode = 'Checking…';
+  let detail: { text: React.ReactNode; tone?: 'muted' | 'bad' } | null = null;
+  if (status?.state === 'signed-in') {
+    // Email on the status line, plan on the detail line: the two together
+    // wrapped onto a second line beside the button (round-2 self-check).
+    line = `Signed in as ${status.email}`;
+    detail = { text: chatGptPlanLabel(status.plan) };
+  } else if (status?.state === 'waiting') {
     line = (
       <span className="inline-flex items-center gap-1.5">
         <BrailleSpinner size="sm" />
-        Waiting for you to finish in the browser…
+        Waiting for the browser…
       </span>
     );
-  } else if (status.state === 'blocked') {
+  } else if (status?.state === 'blocked') {
     // OpenAI's own words, verbatim — never a guessed cause.
-    line = `Signed in as ${status.email} — ${status.reason}`;
-    tone = 'bad';
-  } else {
+    line = `Signed in as ${status.email}`;
+    detail = { text: status.reason, tone: 'bad' };
+  } else if (status?.state === 'signed-out') {
     line = 'Not signed in';
+    detail = { text: "Your plan's models, in YouCoded's assistant." };
   }
+
+  // One action per state (G-4): the primary is the sign-in; everything after
+  // it is an outline peer.
+  const action = status?.state === 'waiting' ? (
+    <Button variant="secondary" size="sm" disabled={busy}
+      onClick={() => void run(() => chatGptApi().cancelSignIn(), 'Could not cancel the sign-in.')}>
+      Cancel
+    </Button>
+  ) : status?.state === 'signed-in' || status?.state === 'blocked' ? (
+    <Button variant="secondary" size="sm" disabled={busy}
+      onClick={() => void run(() => chatGptApi().signOut(), 'Could not sign out.')}>
+      Sign out
+    </Button>
+  ) : (
+    <Button size="sm" disabled={busy || !status}
+      onClick={() => void run(() => chatGptApi().signIn(), 'Could not open the sign-in page.')}>
+      Sign in with ChatGPT
+    </Button>
+  );
 
   return (
     <section>
@@ -312,7 +367,8 @@ function ChatGptBlock() {
               </p>
               <p>
                 It runs on your plan's limits: a five-hour window and a weekly one, the same ones
-                the Codex app uses. The usage card and the status bar show how much is left.
+                the Codex app uses. The bars under the row, the usage card and the status bar show
+                how much is left.
               </p>
               <p>
                 OpenAI has publicly welcomed apps like this using your plan, but it is not written
@@ -324,68 +380,11 @@ function ChatGptBlock() {
         }}
       />
 
-      <div className="bg-inset/50 rounded-lg px-3 py-2.5">
-        <div className="flex items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-fg font-medium">ChatGPT</p>
-            <p className={`text-2xs mt-0.5 ${tone === 'ok' ? 'text-green-600' : tone === 'bad' ? 'text-destructive-fg' : 'text-fg-muted'}`}>
-              {line}
-            </p>
-          </div>
-          {/* One action per state (G-4): the primary is the sign-in; everything
-              after it is an outline peer. */}
-          {status?.state === 'waiting' ? (
-            <Button variant="secondary" size="sm" disabled={busy} className="shrink-0"
-              onClick={() => void run(() => chatGptApi().cancelSignIn(), 'Could not cancel the sign-in.')}>
-              Cancel
-            </Button>
-          ) : status?.state === 'signed-in' || status?.state === 'blocked' ? (
-            <Button variant="secondary" size="sm" disabled={busy} className="shrink-0"
-              onClick={() => void run(() => chatGptApi().signOut(), 'Could not sign out.')}>
-              Sign out
-            </Button>
-          ) : (
-            <Button size="sm" disabled={busy || !status} className="shrink-0"
-              onClick={() => void run(() => chatGptApi().signIn(), 'Could not open the sign-in page.')}>
-              Sign in with ChatGPT
-            </Button>
-          )}
-        </div>
-
-        {status?.state === 'signed-in' ? (
-          <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
-            {planUsageLine(status.usage) ?? 'Your plan’s models are in the model picker under ChatGPT.'}
-          </p>
-        ) : status?.state === 'waiting' ? (
-          <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
-            Sign in on chatgpt.com in the tab that opened, then come back here.
-          </p>
-        ) : status?.state === 'signed-out' ? (
-          <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
-            Your plan's models, in YouCoded's assistant. Opens chatgpt.com to sign in.
-          </p>
-        ) : null}
-
-        {note && <p className="text-3xs mt-2 text-destructive-fg">{note}</p>}
-      </div>
+      <ProviderRow title="ChatGPT" status={line} detail={note ? { text: note, tone: 'bad' } : detail} action={action}>
+        {status?.state === 'signed-in' && <PlanWindows usage={status.usage} />}
+      </ProviderRow>
     </section>
   );
-}
-
-/** "34% of the 5-hour window (resets 4:10 pm) · 12% of the week" — the two
- *  rolling windows the plan is metered on, or null when OpenAI reported none. */
-function planUsageLine(u: ChatGptUsage | null | undefined): string | null {
-  if (!u) return null;
-  const parts: string[] = [];
-  if (u.five_hour) parts.push(`${Math.round(u.five_hour.utilization)}% of the 5-hour window (resets ${clockTime(u.five_hour.resets_at)})`);
-  if (u.seven_day) parts.push(`${Math.round(u.seven_day.utilization)}% of the week`);
-  return parts.length ? `Plan usage: ${parts.join(' · ')}` : null;
-}
-
-function clockTime(iso: string): string {
-  const t = Date.parse(iso);
-  if (!Number.isFinite(t)) return 'later';
-  return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 // ── 2. OpenRouter ────────────────────────────────────────────────────────────
@@ -444,33 +443,28 @@ function OpenRouterBlock() {
 
       {/* OpenRouter connect state — the "To connect…" instructions + key entry
           now live inside the Connect modal, not an always-on banner. */}
-      <div className="bg-inset/50 rounded-lg px-3 py-2.5 mb-3">
-        <div className="flex items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-fg font-medium">OpenRouter</p>
-            <p className="text-3xs text-fg-muted">
-              {openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
-            </p>
-          </div>
-          {/* Primary row action. hover:brightness-110 dropped — the primitive's
-              bg fade is the one hover idiom (it stays visible on near-black
-              accents, where brightness-110 does nothing). */}
-          <Button size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }} className="shrink-0">
-            {connected ? 'Replace key' : 'Connect to OpenRouter'}
-          </Button>
-        </div>
-        {connected && (
-          <div className="flex items-center gap-1.5 mt-2">
+      {/* Same row as Claude Code and ChatGPT above (P-1, 2026-09-05). */}
+      <div className="mb-3">
+        <ProviderRow
+          title="OpenRouter"
+          status={openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
+          detail={testNote ? { text: testNote.text, tone: testNote.tone === 'ok' ? 'muted' : 'bad' } : null}
+          action={connected ? (
+            <Button variant="secondary" size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }}>
+              Replace key
+            </Button>
+          ) : (
+            <Button size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }}>
+              Connect to OpenRouter
+            </Button>
+          )}
+        >
+          {connected && (
             <Button variant="secondary" size="sm" onClick={() => void runTest()}>
               Test
             </Button>
-          </div>
-        )}
-        {testNote && (
-          <p className={`text-3xs mt-2 ${testNote.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
-            {testNote.text}
-          </p>
-        )}
+          )}
+        </ProviderRow>
       </div>
 
       {/* Other API providers — direct keys (Anthropic/OpenAI/Google) + custom

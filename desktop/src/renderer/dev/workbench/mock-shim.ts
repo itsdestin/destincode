@@ -518,7 +518,18 @@ function statusBarFixtureFor(scenario: string): { usage: unknown; sessionStatsMa
   // Every other scenario used to return null here (no status:data push at all).
   // It now pushes an empty Claude side so the ChatGPT windows can ride along;
   // `usage: null` and an empty stats map leave those scenarios exactly as they were.
-  if (scenario !== 'statusbar-cc') return { usage: null, sessionStatsMap: {} };
+  // `?planUsage=1` puts the Claude plan's windows on status:data in any
+  // scenario, so the Model Providers row can be reviewed with its bars.
+  const planUsage = typeof location !== 'undefined' && new URLSearchParams(location.search).get('planUsage') === '1';
+  if (scenario !== 'statusbar-cc') {
+    return {
+      usage: planUsage ? {
+        five_hour: { utilization: 42, resets_at: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+        seven_day: { utilization: 61, resets_at: new Date(Date.now() + 4 * 86_400_000).toISOString() },
+      } : null,
+      sessionStatsMap: {},
+    };
+  }
   return {
     usage: {
       five_hour: { utilization: 42, resets_at: new Date(Date.now() + 3 * 3_600_000).toISOString() },

@@ -10,7 +10,8 @@ export function providers(): ProviderRow[] {
     { id: 'pv-openrouter', type: 'openrouter', label: 'OpenRouter', ready: true },
     // Sign in with ChatGPT (2026-09-04): a keyless provider whose `ready` is
     // "signed in". The mock shim flips it with the sign-in state (`?chatgpt=`).
-    { id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT', ready: true },
+    // Labelled "ChatGPT Plan" in the picker and the chip (review 2026-09-05, P-10).
+    { id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT Plan', ready: true },
     { id: 'local', type: 'local-engine', label: 'Local Models', ready: true },
     // Deliberately not ready: the runtime selector has a distinct disabled row
     // treatment, and a fixture where everything is ready never shows it.

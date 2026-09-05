@@ -25,7 +25,7 @@ export interface FirstRunState {
   // 'chatgpt': the Sign-in-with-ChatGPT browser round-trip is in flight
   // (design 2026-09-04). 'oauth' stays Claude's, unrenamed, because main and
   // the Android bridge both write the literal.
-  authMode: 'none' | 'oauth' | 'apikey' | 'chatgpt';
+  authMode: 'none' | 'oauth' | 'apikey' | 'chatgpt' | 'openrouter';
   /** Whether auth completed successfully */
   authComplete: boolean;
   /** Error from the most recent failed step */

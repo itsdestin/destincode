@@ -136,7 +136,15 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
     <div className="flex flex-col items-start gap-1 px-4 py-1.5 in-view">
       <div className={bubbleClasses}>
         {showSpinner && <BrailleSpinner size="base" />}
-        <span className={textClasses}>{line}</span>
+        <span className={textClasses}>
+          {line}
+          {showSwitch && planLimitAlternative && (
+            <span className="text-fg-muted">
+              {' '}{planLimitAlternative.label} is connected
+              {planLimitAlternative.metered ? ' and bills per use.' : ' and runs on this computer.'}
+            </span>
+          )}
+        </span>
         {showRetry && !planLimit && (
           <button
             type="button"
@@ -164,6 +172,14 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
             Stop
           </Button>
         )}
+        {showSwitch && planLimitAlternative && (
+          // P-9 (2026-09-05): the switch lives INSIDE the bubble like every other
+          // banner action, and the billing note rides the sentence — one card,
+          // one button, the consequence read before the tap (Q-5a).
+          <Button size="sm" onClick={planLimitAlternative.onPick} className="ml-auto shrink-0">
+            Switch
+          </Button>
+        )}
         {showOpenSettings && (
           // ml-auto pushes the CTA to the right edge of the bubble, past the
           // message text. Plain-words label (no glyph) per standing preference.
@@ -176,21 +192,6 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
           </Button>
         )}
       </div>
-      {showSwitch && planLimitAlternative && (
-        // The switch is a second bubble-width row under the message, so the
-        // sentence stays one line and the button carries its own consequence:
-        // a metered provider says so BEFORE the tap (Q-5a), never after.
-        <div className="flex items-center gap-2 pl-1">
-          <Button size="sm" onClick={planLimitAlternative.onPick} className="shrink-0">
-            Continue with {planLimitAlternative.label}
-          </Button>
-          <span className="text-2xs text-fg-muted">
-            {planLimitAlternative.metered
-              ? 'That provider bills per use.'
-              : 'Runs on this computer, nothing to pay.'}
-          </span>
-        </div>
-      )}
       {showRequestId && (
         <div className="text-[10.5px] text-fg-muted font-mono mt-1 select-text">
           Request ID: {anthropicRequestId}
