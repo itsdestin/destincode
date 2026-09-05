@@ -235,6 +235,84 @@ describe('parseGgufHeader — Qwen3.5 / Qwen3.6', () => {
     expect(header.headCountKv).toBe(2);
   });
 
+  it('derives the recurrent layers from full_attention_interval — every 4th holds KV', () => {
+    const { header } = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'qwen35' },
+      { key: 'qwen35.block_count', type: T.u32, value: 24 },
+      { key: 'qwen35.full_attention_interval', type: T.u32, value: 4 },
+    ]));
+    // llama.cpp qwen35.cpp: is_recr[i] = (i + 1) % interval != 0.
+    expect(header.recurrentLayers!.slice(0, 8)).toEqual([true, true, true, false, true, true, true, false]);
+    expect(header.recurrentLayers!.filter((r) => !r)).toHaveLength(6); // 6 of 24 keep KV
+    expect(header.contextBytesIsUpperBound).toBe(false);
+  });
+
+  it('an MTP/NextN block is never recurrent, even where the interval says it would be', () => {
+    // Measured in ~/.cache/llama.cpp/Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf: 41 blocks
+    // with nextn_predict_layers = 1. block_count is llama.cpp's n_layer_all and
+    // the derivation runs over n_layer() = n_layer_all - nextn, so the last
+    // block is a dense attention layer that DOES hold KV. (41 + 0) % 4 != 0
+    // would otherwise mark index 40 recurrent and under-count the cache.
+    const { header } = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'qwen35moe' },
+      { key: 'qwen35moe.block_count', type: T.u32, value: 41 },
+      { key: 'qwen35moe.full_attention_interval', type: T.u32, value: 4 },
+      { key: 'qwen35moe.nextn_predict_layers', type: T.u32, value: 1 },
+    ]));
+    expect(header.nextnPredictLayers).toBe(1);
+    expect(header.recurrentLayers![40]).toBe(false);
+    expect(header.recurrentLayers).toHaveLength(41);
+  });
+
+  it('attention.recurrent_layers WINS over full_attention_interval when the file has both', () => {
+    // llama.cpp qwen35.cpp:21 reads the array first and only computes the
+    // interval when that key is ABSENT. Scoring a file that carries the array
+    // off its interval instead would put the wrong layers in the cache — this
+    // fixture makes the two disagree on every layer so nothing can coincide.
+    const byArray = [false, false, false, true, false, false, false, true]; // only layers 3 and 7 are recurrent
+    const { header } = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'qwen35' },
+      { key: 'qwen35.block_count', type: T.u32, value: 8 },
+      { key: 'qwen35.attention.recurrent_layers', type: T.array, elemType: T.bool, value: byArray },
+      { key: 'qwen35.full_attention_interval', type: T.u32, value: 4 },
+    ]));
+    expect(header.recurrentLayers).toEqual(byArray);
+    // The interval is still reported raw, but it must NOT be what was used:
+    // its derivation is the exact inverse of the array here.
+    expect(header.fullAttentionInterval).toBe(4);
+    const fromInterval = Array.from({ length: 8 }, (_, il) => (il + 1) % 4 !== 0);
+    expect(header.recurrentLayers).not.toEqual(fromInterval);
+    expect(header.contextBytesIsUpperBound).toBe(false);
+  });
+
+  it('a recurrent_layers array of the wrong shape is an upper bound, never a silent fallback', () => {
+    const wrongType = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'qwen35' },
+      { key: 'qwen35.block_count', type: T.u32, value: 8 },
+      { key: 'qwen35.attention.recurrent_layers', type: T.array, elemType: T.i32, value: [1, 1, 1, 0, 1, 1, 1, 0] },
+      { key: 'qwen35.full_attention_interval', type: T.u32, value: 4 },
+    ])).header;
+    expect(wrongType.recurrentLayers).toBeNull();
+    expect(wrongType.contextBytesIsUpperBound).toBe(true);
+
+    const tooShort = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'qwen35' },
+      { key: 'qwen35.block_count', type: T.u32, value: 24 },
+      { key: 'qwen35.attention.recurrent_layers', type: T.array, elemType: T.bool, value: [true, false] },
+    ])).header;
+    expect(tooShort.recurrentLayers).toBeNull();
+    expect(tooShort.contextBytesIsUpperBound).toBe(true);
+  });
+
+  it('no interval and no array means no recurrent layers — nothing is invented', () => {
+    const { header } = parseGgufHeader(buildGguf([
+      { key: 'general.architecture', type: T.string, value: 'llama' },
+      { key: 'llama.block_count', type: T.u32, value: 32 },
+    ]));
+    expect(header.recurrentLayers).toBeNull();
+    expect(header.contextBytesIsUpperBound).toBe(false);
+  });
+
   it('falls back to embedding_length / head_count when the explicit widths are absent', () => {
     const { header } = parseGgufHeader(buildGguf([
       { key: 'general.architecture', type: T.string, value: 'llama' },

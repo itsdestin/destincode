@@ -88,7 +88,14 @@ function describe(h) {
     h.slidingWindowPattern != null ? `pattern=${h.slidingWindowPattern} (scalar)` : null,
     h.slidingWindowPatternLayers != null ? `pattern=[${h.slidingWindowPatternLayers.length} bools]` : null,
     h.fullAttentionInterval != null ? `full_attn_interval=${h.fullAttentionInterval}` : null,
+    h.nextnPredictLayers ? `nextn=${h.nextnPredictLayers}` : null,
     h.sharedKvLayers != null ? `shared_kv_layers=${h.sharedKvLayers}` : null,
+    // Which SOURCE the recurrent map came from matters: llama.cpp prefers the
+    // per-layer `recurrent_layers` array over `full_attention_interval`, so a
+    // repo switching to the array form is a thing to notice here first.
+    h.recurrentLayers
+      ? `recurrent ${h.recurrentLayers.filter(Boolean).length}/${h.recurrentLayers.length} layers`
+      : null,
     layers ? `sliding ${sliding}/${layers.length} layers` : 'no sliding layers',
     `archBytes=${h.archBytes}`,
     h.contextBytesIsUpperBound ? 'UPPER BOUND' : 'exact',

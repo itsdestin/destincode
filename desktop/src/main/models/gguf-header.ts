@@ -19,29 +19,22 @@
 // fake precision" rule).
 //
 // ---------------------------------------------------------------------------
-// TWO KNOWN GAPS, FOR WHOEVER BUILDS THE ESTIMATOR ON TOP OF THIS (§D2 / T11)
+// ONE KNOWN GAP, FOR WHOEVER BUILDS THE ESTIMATOR ON TOP OF THIS (§D2 / T11)
 // ---------------------------------------------------------------------------
-// Both were found in review on 2026-09-05, both push the estimate the SAFE way
-// (too big, never too small), and neither is fixed here.
+// A sliding layer's real cache is BIGGER than `min(context, slidingWindow)`.
+// llama-kv-cache-iswa.cpp:52 allocates
+// `GGML_PAD(min(size_base, n_swa + n_ubatch), 256)`, and `n_ubatch` defaults to
+// 512 — so every sliding layer holds 512 extra tokens' worth, rounded up to a
+// multiple of 256. Measured against the curated headers that is about 170 MB
+// unaccounted on gemma-4-12b and 105 MB on gemma-4-26B-A4B. Small beside a
+// 12 GB model, but it lands on the wrong side of the fits/tight boundary, which
+// is the one place a small error changes what the user sees. It is arithmetic
+// over what this file reports, not a key this file can read, so it belongs in
+// the estimator.
 //
-// 1. `attention.recurrent_layers` is NOT collected. llama.cpp's qwen35.cpp:21
-//    reads that per-layer array IN PREFERENCE TO `full_attention_interval`, and
-//    only falls back to an interval of 4 when neither key is present. A Qwen
-//    file that uses the array form therefore hands this reader nothing, and an
-//    estimator that sees `fullAttentionInterval === null` counts EVERY layer as
-//    attention — roughly a 4x over-count on that family. Nothing in the curated
-//    list does this today (all eleven write the scalar; probe-headers.mjs
-//    prints which), so the fix is to add the key to WANTED here the day one
-//    does, not to guess around it in the estimator.
-//
-// 2. A sliding layer's real cache is BIGGER than `min(context, slidingWindow)`.
-//    llama-kv-cache-iswa.cpp:52 allocates
-//    `GGML_PAD(min(size_base, n_swa + n_ubatch), 256)`, and `n_ubatch` defaults
-//    to 512 — so every sliding layer holds 512 extra tokens' worth, rounded up
-//    to a multiple of 256. Measured against the curated headers that is about
-//    170 MB unaccounted on gemma-4-12b and 105 MB on gemma-4-26B-A4B. Small
-//    beside a 12 GB model, but it lands on the wrong side of the fits/tight
-//    boundary, which is the one place a small error changes what the user sees.
+// (The other gap found in the same review — `attention.recurrent_layers` — is
+// fixed here rather than worked around there: which layers are recurrent is a
+// statement about the FILE, so it is this reader's job. See `recurrentLayers`.)
 // ---------------------------------------------------------------------------
 import * as fs from 'fs';
 import * as path from 'path';
@@ -101,7 +94,9 @@ const WANTED = new Set([
   'attention.sliding_window',
   'attention.sliding_window_pattern',
   'attention.shared_kv_layers',
+  'attention.recurrent_layers',
   'full_attention_interval',
+  'nextn_predict_layers',
 ]);
 
 /** Architectures whose sliding-window pattern starts with a DENSE layer.
@@ -185,8 +180,20 @@ export interface GgufHeader {
    *  true = that layer slides. */
   slidingWindowPatternLayers: boolean[] | null;
   /** Qwen3.5/3.6: layers where `(il + 1) % n != 0` are linear/recurrent and
-   *  store no attention KV at all. */
+   *  store no attention KV at all. Prefer `recurrentLayers` below, which
+   *  already applies this and the key that overrides it. */
   fullAttentionInterval: number | null;
+  /** Extra prediction (MTP/NextN) blocks appended past the main stack. They are
+   *  counted in `blockCount` but are never recurrent, so the derivation below
+   *  has to exclude them. */
+  nextnPredictLayers: number | null;
+  /** The resolved per-layer recurrent map (true = this layer is linear /
+   *  recurrent and stores NO attention KV at all). Straight off
+   *  `attention.recurrent_layers` when the file has it — llama.cpp's
+   *  qwen35.cpp reads that array IN PREFERENCE TO `full_attention_interval` —
+   *  otherwise derived from the interval. null = no such layers, or the reader
+   *  could not tell. */
+  recurrentLayers: boolean[] | null;
   /** Gemma 4: the last n layers reuse an earlier layer's KV and store none. */
   sharedKvLayers: number | null;
   /** The resolved per-layer sliding map (true = this layer slides), from the
@@ -331,7 +338,8 @@ function emptyHeader(architecture: string): GgufHeader {
     embeddingLength: null, keyLength: null, valueLength: null,
     keyLengthSwa: null, valueLengthSwa: null, slidingWindow: null,
     slidingWindowPattern: null, slidingWindowPatternLayers: null,
-    fullAttentionInterval: null, sharedKvLayers: null, slidingLayers: null,
+    fullAttentionInterval: null, nextnPredictLayers: null,
+    recurrentLayers: null, sharedKvLayers: null, slidingLayers: null,
     contextBytesIsUpperBound: false, archBytes: 0,
   };
 }
@@ -473,6 +481,7 @@ function applyRaw(h: GgufHeader, raw: Map<string, number | boolean | string | (n
   h.valueLengthSwa = num(h, raw, 'attention.value_length_swa');
   h.slidingWindow = num(h, raw, 'attention.sliding_window');
   h.fullAttentionInterval = num(h, raw, 'full_attention_interval');
+  h.nextnPredictLayers = num(h, raw, 'nextn_predict_layers');
   h.sharedKvLayers = num(h, raw, 'attention.shared_kv_layers');
 
   // Per-head width: the explicit key when the file has one, else the classic
@@ -510,6 +519,40 @@ function applyRaw(h: GgufHeader, raw: Map<string, number | boolean | string | (n
   }
 
   h.slidingLayers = resolveSlidingLayers(h);
+  h.recurrentLayers = resolveRecurrentLayers(h, raw.get('attention.recurrent_layers'));
+}
+
+/** Which layers are linear/recurrent, i.e. hold no attention KV. Transcribed
+ *  from llama.cpp's qwen35.cpp: it reads `attention.recurrent_layers` FIRST and
+ *  only falls back to `full_attention_interval` when that key is absent, so a
+ *  file using the array form must not be scored off the interval. */
+function resolveRecurrentLayers(h: GgufHeader, fromFile: unknown): boolean[] | null {
+  if (fromFile !== undefined) {
+    const ok = Array.isArray(fromFile) && fromFile.length > 0 && fromFile.every((x) => typeof x === 'boolean');
+    if (!ok) {
+      // The key is there in a shape we do not read. Counting every layer as
+      // attention over-states the cache, which is the safe direction — but it
+      // is an estimate, so say so.
+      h.contextBytesIsUpperBound = true;
+      return null;
+    }
+    const flags = fromFile as boolean[];
+    if (h.blockCount !== null && flags.length !== h.blockCount) {
+      h.contextBytesIsUpperBound = true;
+      return null;
+    }
+    return flags;
+  }
+  // No array: derive from the interval, but ONLY when the file actually states
+  // one. llama.cpp defaults it to 4 inside the Qwen loaders; applying that to
+  // an architecture we have not identified would invent recurrent layers and
+  // under-count the cache.
+  const interval = h.fullAttentionInterval;
+  if (interval === null || interval <= 0 || h.blockCount === null) return null;
+  // `block_count` is llama.cpp's n_layer_all; the MTP blocks at the end are
+  // outside n_layer() and are dense attention, never recurrent.
+  const mainLayers = h.blockCount - (h.nextnPredictLayers ?? 0);
+  return Array.from({ length: h.blockCount }, (_, il) => il < mainLayers && (il + 1) % interval !== 0);
 }
 
 function resolveSlidingLayers(h: GgufHeader): boolean[] | null {
