@@ -79,3 +79,14 @@ describe('sharedDoctrine — consolidation review (Destin, 2026-09-05)', () => {
     expect(sharedDoctrine(FULL)).toContain('optimize responses for glanceability');
   });
 });
+
+describe('sharedDoctrine — capability assumption (Destin, 2026-09-05)', () => {
+  it('every audience is told to find a way before declining, in both sizes', () => {
+    expect(sharedDoctrine(FULL)).toContain('Assume you can do whatever the user asks');
+    expect(sharedDoctrine({ ...FULL, audience: 'parent' })).toContain('Assume you can do whatever the user asks');
+    expect(sharedDoctrine({ ...FULL, compact: true, batching: false })).toContain('Assume you can do what the user asks');
+  });
+  it('a tool-less model is NOT told to reach for tools it does not have', () => {
+    expect(sharedDoctrine({ ...FULL, tools: false, batching: false })).not.toContain('Assume you can do');
+  });
+});
