@@ -2172,7 +2172,7 @@ function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, ac
           cwd={activeSessionCwd}
           onOpenClaudePreferences={onOpenClaudePreferences}
           autoOpen={providersAutoOpen}
-          autoOpenPage="claude"
+          autoOpenPage="cloud"
           onAutoOpenHandled={onProvidersAutoOpenHandled}
         />
 

@@ -14,6 +14,9 @@ import { PAGES, startSummary, type AssistantDefaults, type DefaultsUpdate, type 
 // Phone width (Q-1a's fold): the page list is the first screen, a page opens
 // with the dialog's back arrow — the shape of phone settings everywhere.
 //
+// Round 1 (2026-09-05): five pages in one flat list — General, Cloud
+// providers, Local models, Permissions, Specialists.
+//
 // Android (Q-6b): the same row and panel, showing only the pages the phone can
 // serve today (General); the others arrive as the native runtime does.
 
@@ -45,7 +48,7 @@ function useAttention(active: boolean): Set<PageId> {
     const chatgpt = (window as any).claude?.chatgpt;
     const engine = (window as any).claude?.engine;
     Promise.all([
-      chatgpt?.status?.().then((s: { state?: string }) => { if (s?.state === 'blocked') next.add('chatgpt'); }).catch(() => {}),
+      chatgpt?.status?.().then((s: { state?: string }) => { if (s?.state === 'blocked') next.add('cloud'); }).catch(() => {}),
       engine?.status?.().then((s: { state?: string; error?: string }) => { if (s?.state === 'error' || s?.error) next.add('local'); }).catch(() => {}),
     ]).then(() => { if (alive) setPages(next); });
     return () => { alive = false; };
@@ -187,19 +190,14 @@ function PageRail({ pages, current, attention, onPick }: {
 }) {
   // Rows are the menu row shape (G-21: icon · label, text-xs, short rows), not
   // SettingRows — a SettingRow's chevron says "this opens something", and a
-  // page in this list is a place you are, not a place you go.
-  let lastGroup: PageDef['group'] = null;
+  // page in this list is a place you are, not a place you go. One flat list:
+  // the Providers / Assistant eyebrows went in round 1 (P-5 note).
   return (
     <nav aria-label="Assistant settings pages" className="w-44 shrink-0 border-r border-edge px-2 py-3 space-y-0.5 overflow-y-auto">
       {pages.map((p) => {
-        const eyebrow = p.group && p.group !== lastGroup ? p.group : null;
-        lastGroup = p.group;
         const selected = p.id === current;
         return (
           <React.Fragment key={p.id}>
-            {eyebrow && (
-              <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase px-2 pt-3 pb-1">{eyebrow}</h3>
-            )}
             <button
               type="button"
               onClick={() => onPick(p.id)}

@@ -7,23 +7,31 @@ import { PERMISSIONS_EXPLAINER_INTRO, PERMISSIONS_EXPLAINER_SECTIONS } from '../
 import type { ExplainerSection } from '../SettingsExplainer';
 import {
   ClaudeCodeBlock, ChatGptBlock, OpenRouterBlock, LocalModelsBlock, SearchProvidersBlock,
-  LOCAL_MODELS_INFO, WEB_SEARCH_INFO,
+  LOCAL_MODELS_INFO,
 } from '../ModelProvidersPopup';
 import SkipPermissionsSection, { type PermissionOverrides } from './SkipPermissionsSection';
 import { Button, SettingRow, Toggle } from '../ui';
 
-// The pages of Assistant settings (questions deck 2026-09-05, Q-1a: a list of
-// pages down the left of one wide window). Each page is the body of one of the
-// four popups the panel replaces — Session Defaults, Model Providers,
-// Permissions, Specialists — re-homed, not redrawn: the blocks are the ones the
-// popups rendered, so nothing changes appearance by moving here.
+// The pages of Assistant settings. Five, in one flat list (review round 1,
+// 2026-09-05 — P-5 note: one "Cloud providers" page for the three sign-in /
+// usage cards, no "Providers" / "Assistant" group labels; P-10 note: web
+// search inside General, "too empty to be its own thing"):
+//
+//   General · Cloud providers · Local models · Permissions · Specialists
+//
+// Each page is the body of one of the four popups the panel replaces —
+// Session Defaults, Model Providers, Permissions, Specialists — re-homed, not
+// redrawn: the blocks are the ones the popups rendered.
 
-export type PageId = 'general' | 'claude' | 'chatgpt' | 'openrouter' | 'local' | 'permissions' | 'specialists' | 'search';
+export type PageId = 'general' | 'cloud' | 'local' | 'permissions' | 'specialists';
 
 export interface AssistantDefaults {
   skipPermissions: boolean;
   model: string;
   projectFolder: string;
+  /** Stored on users' machines by the old Advanced list; no longer editable
+   *  here (round 1, P-4/P-14). Kept in the type so the build stage can decide
+   *  what to do with a value that is on. */
   permissionOverrides?: PermissionOverrides;
   /** Q-3a: one default across every provider. Absent on installs that only
    *  ever set the Claude alias (`model`), which stays the fallback. */
@@ -39,16 +47,13 @@ export interface PageContext {
   /** Closes the whole panel — the Claude Code Preferences button hands off to
    *  another dialog and must not leave this one open underneath it. */
   onClosePanel: () => void;
-  /** Switch to another page — for the one cross-reference a page makes
-   *  (Permissions → Claude Code). UX review 1, U17: "make its page a link". */
+  /** Switch to another page. */
   goTo: (id: PageId) => void;
 }
 
 export interface PageDef {
   id: PageId;
   label: string;
-  /** Rail group eyebrow; `null` for the ungrouped first page. */
-  group: 'Providers' | 'Assistant' | null;
   icon: React.ReactNode;
   /** A short (i) beside the page title — the AnchorTip the popup section carried. */
   info?: { label: string; body: React.ReactNode };
@@ -70,8 +75,8 @@ const Icon = ({ children }: { children: React.ReactNode }) => (
 
 const CLAUDE_LABELS: Record<string, string> = { haiku: 'Haiku', sonnet: 'Sonnet', 'opus[1m]': 'Opus', fable: 'Fable' };
 
-/** The choice a new conversation starts on. `startModel` when set (any
- *  provider); else the Claude alias every install has carried since 1.0. */
+/** The default model. `startModel` when set (any provider); else the Claude
+ *  alias every install has carried since 1.0. */
 export function startChoice(defaults: AssistantDefaults): ModelChoice {
   if (defaults.startModel) return defaults.startModel;
   // `model` is an alias ('sonnet') on every real install; a full id
@@ -107,15 +112,15 @@ function GeneralPage({ defaults, onDefaultsChange }: PageContext) {
 
   return (
     <div className="space-y-5">
-      <section>
-        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">New conversations</h3>
+      <section className="space-y-2">
         {/* Q-3a: the same picker the chat uses, so any connected model can be
-            the default — the four Claude tabs are gone. Stacked like the
-            Specialists tier rows: label + hint, then the picker at full width. */}
+            the default. Title and hint are Destin's words from round 1 (P-3
+            note). Stacked like the Specialists tier rows: label + hint, then
+            the picker at full width. */}
         <div className="bg-inset/50 rounded-lg px-3 py-2.5 space-y-1.5">
           <div>
-            <p className="text-xs font-medium text-fg">Start on</p>
-            <p className="text-3xs text-fg-muted">The model a new conversation uses until you pick another.</p>
+            <p className="text-xs font-medium text-fg">Default model</p>
+            <p className="text-3xs text-fg-muted">This model will be pre-filled in the model picker, but you may still switch models at any time.</p>
           </div>
           <ModelPicker
             value={startChoice(defaults)}
@@ -127,9 +132,6 @@ function GeneralPage({ defaults, onDefaultsChange }: PageContext) {
             })}
           />
         </div>
-      </section>
-
-      <div className="space-y-2">
         <SettingRow
           variant="item"
           title="Project folder"
@@ -164,7 +166,12 @@ function GeneralPage({ defaults, onDefaultsChange }: PageContext) {
             />
           }
         />
-      </div>
+      </section>
+
+      {/* Round 1, P-10 note: web search lives here, with the popup's own
+          heading and (i). Only where the native runtime is (the search keys
+          are its). */}
+      {(window as any).claude?.native?.supported === true && <SearchProvidersBlock />}
     </div>
   );
 }
@@ -175,50 +182,27 @@ export const PAGES: PageDef[] = [
   {
     id: 'general',
     label: 'General',
-    group: null,
     icon: <Icon><line x1="4" y1="7" x2="20" y2="7" /><circle cx="8" cy="7" r="2.2" fill="var(--panel)" /><line x1="4" y1="17" x2="20" y2="17" /><circle cx="16" cy="17" r="2.2" fill="var(--panel)" /></Icon>,
     render: (ctx) => <GeneralPage {...ctx} />,
   },
   {
-    id: 'claude',
-    label: 'Claude Code',
-    group: 'Providers',
+    id: 'cloud',
+    label: 'Cloud providers',
     needsNative: true,
-    icon: <Icon><path d="M12 3l9 5-9 5-9-5 9-5z" /><path d="M3 13l9 5 9-5" /></Icon>,
+    icon: <Icon><path d="M7 18a4 4 0 0 1-.6-7.95A6 6 0 0 1 18 8.5a3.5 3.5 0 0 1-.5 7H7z" /></Icon>,
+    // The three cards stacked as the Model Providers popup stacked them (P-5
+    // note: "similar to the current page"), then your own API keys.
     render: (ctx) => (
-      <div className="space-y-5">
+      <div className="space-y-2">
         <ClaudeCodeBlock onOpenClaudePreferences={ctx.onOpenClaudePreferences} onCloseParent={ctx.onClosePanel} />
-        {/* Q-2 note: Claude Code's permissions are one switch and its advanced
-            list, so they live here rather than on the Permissions page, which
-            covers the other providers' modes and Always-allow list. */}
-        <SkipPermissionsSection defaults={ctx.defaults} onDefaultsChange={ctx.onDefaultsChange} />
+        <ChatGptBlock />
+        <OpenRouterBlock keysHeading="Your own API keys" />
       </div>
     ),
   },
   {
-    id: 'chatgpt',
-    label: 'ChatGPT',
-    group: 'Providers',
-    needsNative: true,
-    icon: <Icon><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z" /><path d="M8 12h8M12 8v8" /></Icon>,
-    render: () => <ChatGptBlock />,
-  },
-  {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    group: 'Providers',
-    needsNative: true,
-    icon: <Icon><path d="M4 12h5l3-6 3 12 3-6h2" /></Icon>,
-    // The block renders the OpenRouter card and, under it, the list of your own
-    // API keys and custom endpoints; on its own page that list needs the
-    // eyebrow the popup's OpenRouter (i) used to imply ("…or a custom endpoint
-    // below"), or an empty list is one orphaned Add provider button.
-    render: () => <OpenRouterBlock keysHeading="Your own API keys" />,
-  },
-  {
     id: 'local',
     label: 'Local models',
-    group: 'Providers',
     needsNative: true,
     info: LOCAL_MODELS_INFO,
     icon: <Icon><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></Icon>,
@@ -227,41 +211,27 @@ export const PAGES: PageDef[] = [
   {
     id: 'permissions',
     label: 'Permissions',
-    group: 'Assistant',
     explainer: { intro: PERMISSIONS_EXPLAINER_INTRO, sections: PERMISSIONS_EXPLAINER_SECTIONS },
     icon: <Icon><path d="M12 3l7 3v5.5c0 4.3-2.9 8.1-7 9.5-4.1-1.4-7-5.2-7-9.5V6l7-3z" /><path d="M9 12l2 2 4-4" /></Icon>,
+    // Two blocks (questions deck Q-2 option a, chosen in round 1's P-5 note):
+    // Claude Code's switch first, then the modes and Always-allow list that
+    // cover every other provider — labelled so the two systems are not
+    // mistaken for one.
     render: (ctx) => (
-      <div className="space-y-3">
-        {/* The one sentence the split needs (Q-2): this page is the native
-            modes and grants; Claude Code's switch is on its own page. UX
-            review 1 (U7, U17): say that Claude Code's approvals are not in
-            this list either, and make the page name a link. */}
-        <p className="text-2xs text-fg-dim leading-relaxed">
-          Applies to ChatGPT, OpenRouter and local models. Claude Code asks in its own way, and its
-          switch is on the{' '}
-          <button type="button" className="text-accent hover:underline" onClick={() => ctx.goTo('claude')}>
-            Claude Code page
-          </button>.
-        </p>
-        <PermissionsSection />
+      <div className="space-y-5">
+        <SkipPermissionsSection defaults={ctx.defaults} onDefaultsChange={ctx.onDefaultsChange} />
+        <section>
+          <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">ChatGPT, OpenRouter and local models</h3>
+          <PermissionsSection />
+        </section>
       </div>
     ),
   },
   {
     id: 'specialists',
     label: 'Specialists',
-    group: 'Assistant',
     explainer: { intro: SPECIALISTS_EXPLAINER_INTRO, sections: SPECIALISTS_EXPLAINER_SECTIONS },
     icon: <Icon><circle cx="9" cy="8" r="3.2" /><path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5" /><path d="M16 5.5a3 3 0 0 1 0 5.6" /><path d="M17.5 14.5c2 .6 3.5 2.4 3.5 4.5" /></Icon>,
     render: (ctx) => <SpecialistsSection cwd={ctx.cwd} />,
-  },
-  {
-    id: 'search',
-    label: 'Web search',
-    group: 'Assistant',
-    needsNative: true,
-    info: WEB_SEARCH_INFO,
-    icon: <Icon><circle cx="11" cy="11" r="6.5" /><path d="M20 20l-4-4" /></Icon>,
-    render: () => <SearchProvidersBlock withHeader={false} />,
   },
 ];
