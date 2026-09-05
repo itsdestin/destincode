@@ -60,7 +60,7 @@ import SettingsPanel from './components/SettingsPanel';
 import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
 import PreferencesPopup from './components/PreferencesPopup';
-import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
+import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, defaultRuntime, type Runtime, type Binding } from './components/RuntimeBinding';
 import ModelPicker, { type ModelChoice } from './components/model/ModelPicker';
 import ModelPickerPopup from './components/ModelPickerPopup';
 import type { ModelBinding } from '../shared/provider-types';
@@ -416,7 +416,9 @@ function AppInner() {
   // Runtime (Claude Code vs YouCoded native harness) + native binding for the
   // welcome/app-open new-session form — mirrors the SessionStrip form via the
   // shared RuntimeBinding hook so the two forms can't drift.
-  const [welcomeRuntime, setWelcomeRuntime] = useState<Runtime>('claude');
+  // Opens on the install's remembered default (see RuntimeBinding.defaultRuntime):
+  // 'claude' normally, 'native' on an install that signed in with ChatGPT.
+  const [welcomeRuntime, setWelcomeRuntime] = useState<Runtime>(() => defaultRuntime());
   const [welcomeBinding, setWelcomeBinding] = useState<Binding | null>(() => loadLastBinding());
   const welcomeNb = useNativeBinding({ active: welcomeFormOpen, runtime: welcomeRuntime, binding: welcomeBinding, setBinding: setWelcomeBinding });
   // Native harness preset for the welcome form — shared lifecycle hook (see
@@ -3358,7 +3360,10 @@ function AppInner() {
                           welcomeRuntime === 'native' ? welcomePreset : undefined,
                         );
                         setWelcomeFormOpen(false);
-                        setWelcomeRuntime('claude');
+                        // Reset to the remembered default, NOT the literal 'claude' --
+                        // otherwise a ChatGPT-only install's default would last one
+                        // session (review R2-3).
+                        setWelcomeRuntime(defaultRuntime());
                       }}
                       disabled={welcomeNb.nativeCreateBlocked}
                       variant={welcomeDangerous && welcomeRuntime !== 'native' ? 'danger' : 'primary'}

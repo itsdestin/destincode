@@ -5,7 +5,7 @@ import { Button, Toggle } from './ui';
 import { isAndroid } from '../platform';
 import FolderSwitcher from './FolderSwitcher';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
-import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
+import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, defaultRuntime, type Runtime, type Binding } from './RuntimeBinding';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
@@ -351,7 +351,9 @@ export default function SessionStrip({
   // whole control — Runtime toggle, provider/model picker, and all derivation —
   // now lives in the shared RuntimeBinding module so this form and the welcome/
   // app-open form can't drift on native-session creation.
-  const [runtime, setRuntime] = useState<Runtime>('claude');
+  // Opens on the install's remembered default (see RuntimeBinding.defaultRuntime):
+  // 'claude' normally, 'native' on an install that signed in with ChatGPT.
+  const [runtime, setRuntime] = useState<Runtime>(() => defaultRuntime());
   const [binding, setBinding] = useState<Binding | null>(() => loadLastBinding());
   const nb = useNativeBinding({ active: showNewForm, runtime, binding, setBinding });
   // Native harness preset (Assistant | Coder) — shared lifecycle hook (see
@@ -739,7 +741,9 @@ export default function SessionStrip({
     setDangerous(defaultSkipPermissions || false);
     setNewModel(defaultModel || 'sonnet');
     setLaunchInNewWindow(false);
-    setRuntime('claude');
+    // Reset to the remembered default, NOT the literal 'claude' -- otherwise a
+    // ChatGPT-only install's default would last one session (review R2-3).
+    setRuntime(defaultRuntime());
   }, [newCwd, dangerous, newModel, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel, runtime, nb.effectiveBinding, preset]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
