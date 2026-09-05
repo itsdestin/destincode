@@ -17,19 +17,45 @@
 // Spec: docs/active/specs/2026-08-26-model-download-resume-design.md §3.1
 import * as fs from 'fs';
 import * as path from 'path';
-import type { DownloadManifest, QuantOption } from '../../shared/model-manager-types';
+import type { DownloadManifest, ManifestVisionFile, QuantOption } from '../../shared/model-manager-types';
 
 /** `<first-file-basename>.gguf.download.json`. Exported so cache-scan can
  *  recognise a manifest without knowing anything else about it. */
 export const MANIFEST_SUFFIX = '.download.json';
 
 /** The manifest path for a download, keyed to its FIRST file's basename — the
- *  same id models:delete addresses a split model by. */
-export function manifestPathFor(cacheDir: string, firstFileBasename: string): string {
-  return path.join(cacheDir, `${firstFileBasename}${MANIFEST_SUFFIX}`);
+ *  same id models:delete addresses a split model by. `dir` is the download's
+ *  own directory (downloadDirFor), which for a vision model is its folder. */
+export function manifestPathFor(dir: string, firstFileBasename: string): string {
+  return path.join(dir, `${firstFileBasename}${MANIFEST_SUFFIX}`);
 }
 
-export function writeManifest(cacheDir: string, repo: string, quant: QuantOption, startedAt: number): void {
+/** WHERE a download's files and its manifest live (design §E2).
+ *
+ *  A model that ships a vision projector gets a folder of its own,
+ *  `<cacheDir>/<id>/`, because llama-server only pairs a model with an
+ *  `mmproj*.gguf` when the two sit together in ONE subdirectory of the models
+ *  dir — and it then names that model by the FOLDER (both probed on b10665,
+ *  2026-09-05). So the folder name has to be the id the flat layout would have
+ *  given the model, or the app and the router would disagree about what this
+ *  model is called. Text-only models stay flat, exactly as before. */
+export function downloadDirFor(
+  cacheDir: string, quant: { files: string[]; visionFile?: ManifestVisionFile }
+): string {
+  if (!quant.visionFile) return cacheDir;
+  return path.join(cacheDir, path.basename(quant.files[0]).replace(/\.gguf$/i, ''));
+}
+
+/** The directory an ALREADY-INSTALLED model's files live in — its own folder
+ *  when it has one, else the cache dir. Callers that only know a model id (the
+ *  Resume path) cannot ask downloadDirFor, because the answer is on disk. */
+export function installedDirFor(cacheDir: string, modelId: string): string {
+  const folder = path.join(cacheDir, modelId);
+  try { if (fs.statSync(folder).isDirectory()) return folder; } catch { /* flat */ }
+  return cacheDir;
+}
+
+export function writeManifest(dir: string, repo: string, quant: QuantOption, startedAt: number): void {
   const firstFileBasename = path.basename(quant.files[0]);
   // WHY the prior manifest is read first: a manifest now survives completion, so
   // starting the SAME model again (a re-download, or fetching a part that was
@@ -37,7 +63,7 @@ export function writeManifest(cacheDir: string, repo: string, quant: QuantOption
   // already known to ship. Carry that one fact forward; everything else is
   // re-stated by the caller, and the fresh write deliberately drops
   // `completedAt` because this download is in flight again.
-  const prior = readManifest(cacheDir, firstFileBasename);
+  const prior = readManifest(dir, firstFileBasename);
   const manifest: DownloadManifest = {
     v: 1,
     repo,
@@ -46,14 +72,22 @@ export function writeManifest(cacheDir: string, repo: string, quant: QuantOption
     totalSizeBytes: quant.totalSizeBytes,
     sha256ByFile: quant.sha256ByFile,
     startedAt,
-    // Same publisher ONLY. Six-plus Hugging Face accounts publish byte-identical
-    // GGUF filenames, so a same-named download from a DIFFERENT account would
-    // otherwise inherit the previous account's projector path — which §E4 would
-    // then fetch from the wrong repo, 404ing or pairing a projector with weights
-    // it does not match.
-    ...(prior?.visionFile && prior.repo === repo ? { visionFile: prior.visionFile } : {}),
+    // The projector THIS download knows about wins. Nothing used to write one:
+    // the line below only ever carried a projector FORWARD from an earlier
+    // manifest, so a first-ever download of a vision repo produced a manifest
+    // with no `visionFile` at all and the "Add vision" state was unreachable
+    // (design §E2, T15 handoff 1).
+    //
+    // The fallback is same-publisher ONLY. Six-plus Hugging Face accounts
+    // publish byte-identical GGUF filenames, so a same-named download from a
+    // DIFFERENT account would otherwise inherit the previous account's
+    // projector path — which §E4 would then fetch from the wrong repo, 404ing
+    // or pairing a projector with weights it does not match.
+    ...(quant.visionFile
+      ? { visionFile: quant.visionFile }
+      : prior?.visionFile && prior.repo === repo ? { visionFile: prior.visionFile } : {}),
   };
-  writeAtomic(manifestPathFor(cacheDir, firstFileBasename), manifest);
+  writeAtomic(manifestPathFor(dir, firstFileBasename), manifest);
 }
 
 /** Stamp a manifest as finished — the download's LAST step, in place of the

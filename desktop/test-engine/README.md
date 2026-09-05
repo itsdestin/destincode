@@ -61,6 +61,14 @@ The pinned version + per-platform asset table live in
   gigabyte of weights. If the fatal-key assertion ever goes GREEN-by-passing (the
   engine tolerates a bad key), the save-time binary check has stopped being
   load-bearing and its cost can be revisited.
+- `node probe-vision.mjs --binary <path> [--port N]` — the vision folder layout
+  (design §E2). Downloads SmolVLM-256M (~0.4 GB, both files) into
+  `cache/<id>/`, then asserts the router lists that model under the FOLDER's
+  name, reports `input_modalities` including `image`, and answers an inline
+  solid-red PNG with the word "red". Both halves matter: the modality alone only
+  proves the flag was passed, and the same two files laid out FLAT report
+  `["text"]` with no `--mmproj` at all — which is the silent failure the whole
+  folder layout exists to avoid.
 - `node probe-headers.mjs` — the ONLY probe that needs no binary and no local
   GGUF: it reads each curated repo's header straight off Hugging Face and asserts
   that ONE 1 MB range request is enough. `gguf-header.ts`'s whole design rests on

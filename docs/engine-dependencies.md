@@ -267,6 +267,26 @@ first part and cache-scan sums the parts' sizes into one entry.
   downloaded on a 32 GB dev box. **PASS on b9992** (Windows x64 Vulkan,
   `Qwen3-0.6B-Q4_K_M` single + `Qwen3-0.6B-SPLIT-00001-of-00002`), 2026-07-14 —
   router discovered both ids from `--models-dir` and served the split model.
+- **One level of folders, named by the FOLDER — VERIFIED b10665, 2026-09-05
+  (design §E2).** A model that ships a vision projector cannot live flat: the
+  router only passes `--mmproj` when the model and an `mmproj*.gguf` sit together
+  in ONE subdirectory of `--models-dir`. Probed with SmolVLM-256M laid out both
+  ways — flat, `input_modalities` was `["text"]` and no `--mmproj` was passed;
+  in a folder, `["text","image"]`, `--mmproj` passed, and a solid-red PNG came
+  back answered "Red." Three further facts that `cache-scan.ts` depends on, all
+  probed the same day:
+  - **The id is the FOLDER's name, not the file's.** `weird-folder/C-Q8_0.gguf`
+    was served as `weird-folder`. So the downloader must name the folder exactly
+    what the flat layout would have called the model, or the app and the router
+    disagree about what a model is called.
+  - **Two levels deep is invisible.** `deep/inner/B-Q8_0.gguf` was absent from
+    `GET /models` entirely (checked with `--models-max 16`, so it is not a cap).
+  - **A flat file WINS a name collision.** With both `A-Q8_0.gguf` and
+    `A-Q8_0/A-Q8_0.gguf` present, only the flat one was listed — the folder copy
+    was unreachable. `ModelDownloader.start` refuses to create that pair.
+  A split set inside a folder is one model, named by the folder, loaded from its
+  part 1. `probe-download.mjs` pins both folder ids; `probe-vision.mjs` pins the
+  pairing and the image round-trip.
 - **Router hot-reload of `--models-dir` after boot — RESOLVED 2026-08-16.** The
   router discovers GGUFs at BOOT and re-scans ONLY when asked: `GET /models?reload=1`
   (any non-empty value) re-runs `load_models()`. Its `need_reload` dirty flag is set

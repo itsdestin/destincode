@@ -25,6 +25,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { EngineModel } from '../../shared/engine-types';
 import { MANIFEST_SUFFIX } from '../models/download-manifest';
+import { isVisionProjectorFile } from '../models/quant-parser';
 
 // llama.cpp split-GGUF convention: <name>-00001-of-000NN.gguf. The model is
 // addressed through its FIRST part; other parts are the same model's payload.
@@ -47,6 +48,18 @@ export interface LocalDownload {
   // says nothing about whether the download finished — the manifest survives
   // completion now, and its `completedAt` is what answers that.
   hasManifest: boolean;
+  /** The one-level subdirectory of the cache dir this download lives in, or
+   *  null when it sits flat. A model that ships a vision projector gets a
+   *  folder of its own, because the engine only pairs the two when they sit
+   *  together (design §E2); everything else stays flat, as before. */
+  subdir: string | null;
+  /** A published `mmproj*.gguf` sits beside the weights, so the engine will
+   *  load this model with `--mmproj` and it can look at images. */
+  hasProjector: boolean;
+  /** Bytes of that published projector; 0 when there is none. Kept OUT of
+   *  `bytesPublished`, which stays "the model's own weights" — the number the
+   *  engine-off model list reports as a model's size. */
+  visionBytes: number;
 }
 
 /** A download is usable only when every declared part is published. A stray
@@ -59,28 +72,63 @@ export function isComplete(d: LocalDownload): boolean {
 /** Every GGUF download in the cache dir, complete or not — the Settings view.
  *  Groups a split set under its first part and reports published vs in-flight
  *  bytes separately. A manifest with no bytes yet is a download too (it is
- *  written before the first fetch). */
+ *  written before the first fetch).
+ *
+ *  ONE LEVEL DEEP, and no further: the flat files, plus each immediate
+ *  subdirectory. That is exactly what llama-server does with `--models-dir`
+ *  (probed on b10665, 2026-09-05: `deep/inner/B-Q8_0.gguf` was not listed at
+ *  all, while `weird-folder/C-Q8_0.gguf` was), and this scan must agree with
+ *  the router about which models exist. */
 export function scanLocalDownloads(cacheDir: string): LocalDownload[] {
-  let entries: fs.Dirent[] = [];
+  const out: LocalDownload[] = [];
+  out.push(...scanOneDir(cacheDir, null));
+  for (const ent of readDirents(cacheDir)) {
+    if (!ent.isDirectory()) continue;
+    out.push(...scanOneDir(path.join(cacheDir, ent.name), ent.name));
+  }
+  return out.sort((a, b) => a.modelId.localeCompare(b.modelId));
+}
+
+function readDirents(dir: string): fs.Dirent[] {
   try {
-    entries = fs.readdirSync(cacheDir, { withFileTypes: true });
+    return fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return []; // cache dir not created yet — no downloads, not an error
   }
+}
+
+/** The scan of ONE directory: the cache dir itself (subdir null) or one model
+ *  folder inside it. A folder holds exactly one model as far as the engine is
+ *  concerned, so its rows are folded into one before they are returned. */
+function scanOneDir(dirAbs: string, subdir: string | null): LocalDownload[] {
   const sets = new Map<string, LocalDownload>();
-  for (const ent of entries) {
+  // The projector is tracked apart from the sets on purpose — see hasProjector.
+  let projectorBytes = 0;
+  let projectorPartialBytes = 0;
+  let hasProjector = false;
+  for (const ent of readDirents(dirAbs)) {
     if (!ent.isFile()) continue;
     const published = /\.gguf$/i.test(ent.name);
     const partial = /\.gguf\.partial$/i.test(ent.name);
     const manifest = ent.name.endsWith(`.gguf${MANIFEST_SUFFIX}`);
     if (!published && !partial && !manifest) continue;   // notes, .tmp, anything else
     let sizeBytes = 0;
-    try { sizeBytes = fs.statSync(path.join(cacheDir, ent.name)).size; } catch { continue; } // raced delete
+    try { sizeBytes = fs.statSync(path.join(dirAbs, ent.name)).size; } catch { continue; } // raced delete
     // The final filename this entry belongs to ('X.gguf.partial' -> 'X.gguf',
     // 'X.gguf.download.json' -> 'X.gguf').
     const finalName = partial ? ent.name.replace(/\.partial$/i, '')
       : manifest ? ent.name.slice(0, -MANIFEST_SUFFIX.length)
       : ent.name;
+    // A vision projector is NOT a model and NOT one of the weight set's parts.
+    // The router never lists it (it pairs it onto the model beside it), so
+    // letting it through here would invent a model row nothing can serve, and —
+    // worse — a `mmproj-…-00001-of-00002`-shaped name could be counted as a
+    // published part of the set it sits next to.
+    if (isVisionProjectorFile(finalName)) {
+      if (published) { hasProjector = true; projectorBytes += sizeBytes; }
+      else if (partial) { projectorPartialBytes += sizeBytes; }
+      continue;
+    }
     const part = PART_RE.exec(finalName);
     const firstFileName = part ? finalName.replace(PART_RE, `-00001-of-${part[2]}.gguf`) : finalName;
     let set = sets.get(firstFileName);
@@ -94,6 +142,9 @@ export function scanLocalDownloads(cacheDir: string): LocalDownload[] {
         bytesPartial: 0,
         hasPartial: false,
         hasManifest: false,
+        subdir,
+        hasProjector: false,
+        visionBytes: 0,
       };
       sets.set(firstFileName, set);
     }
@@ -101,7 +152,31 @@ export function scanLocalDownloads(cacheDir: string): LocalDownload[] {
     else if (partial) { set.hasPartial = true; set.bytesPartial += sizeBytes; }
     else { set.hasManifest = true; }
   }
-  return [...sets.values()].sort((a, b) => a.modelId.localeCompare(b.modelId));
+  const rows = [...sets.values()].sort((a, b) => a.firstFileName.localeCompare(b.firstFileName));
+  if (subdir === null) return rows;
+  if (rows.length === 0) return [];       // an empty folder, or one holding no GGUFs
+  // A folder is ONE model to the engine, and the engine names it by the FOLDER,
+  // not by the file inside it (probed on b10665, 2026-09-05:
+  // `weird-folder/C-Q8_0.gguf` was served as the model `weird-folder`). Using
+  // the filename here instead would give the app an id the router does not
+  // answer to — the 2026-08-16 class of bug. Anything else that happens to be
+  // in the folder is part of the same footprint: it is what `deleteModel`
+  // removes and what the row's size has to admit to.
+  const primary = rows[0];
+  for (const extra of rows.slice(1)) {
+    primary.bytesPublished += extra.bytesPublished;
+    primary.bytesPartial += extra.bytesPartial;
+    primary.hasPartial = primary.hasPartial || extra.hasPartial;
+    primary.hasManifest = primary.hasManifest || extra.hasManifest;
+  }
+  primary.modelId = subdir;
+  primary.hasProjector = hasProjector;
+  primary.visionBytes = projectorBytes;
+  // A projector still arriving is in-flight bytes of THIS download — the
+  // second leg of the one job that fetched the weights (design §E2).
+  primary.bytesPartial += projectorPartialBytes;
+  if (projectorPartialBytes > 0) primary.hasPartial = true;
+  return [primary];
 }
 
 /** The engine-off view — complete downloads only.

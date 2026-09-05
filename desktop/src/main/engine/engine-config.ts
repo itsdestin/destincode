@@ -49,6 +49,22 @@ export function readEngineConfig(home: NativeHome): EngineConfig {
   };
 }
 
+/** Drop one model's per-model settings from `engine.models` (design §E2 —
+ *  deleteModel prunes it). WHY it matters: a section for a model that no longer
+ *  exists renders a ghost row in the router's preset file that can never load
+ *  and cannot be removed from the app (model-presets.ts says so), and a
+ *  re-download of the same model would silently inherit the deleted copy's
+ *  context length and flags. No-op when there is nothing to prune. */
+export async function removeModelSettings(home: NativeHome, modelId: string): Promise<void> {
+  await home.mutateJson(FILE, (cur) => {
+    const file = (cur && typeof cur === 'object' ? cur : { v: 1 }) as any;
+    const models = file?.engine?.models;
+    if (!models || typeof models !== 'object' || !(modelId in models)) return file;
+    delete models[modelId];
+    return file;
+  });
+}
+
 export async function updateEngineConfig(home: NativeHome, patch: Partial<EngineConfig>): Promise<void> {
   await home.mutateJson(FILE, (cur) => {
     // Preserve sibling top-level keys — config.json will grow other sections

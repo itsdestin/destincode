@@ -80,6 +80,17 @@ interface TreeFile { path: string; size: number; sha256: string | null; }
 // vision models as text-only forever.
 const MMPROJ_BASENAME_RE = /(^|[-_.])mmproj.*\.gguf$/i;
 
+/** Is this file a vision projector rather than a model? Exported because the
+ *  CACHE SCAN has to ask the same question of files on disk (design §E2): a
+ *  projector sits in the model's folder, and counting it as one of the split
+ *  parts would both invent a spare model row and make a half-fetched projector
+ *  read as a published part. One regex, so disk and repo can never disagree.
+ *  Accepts a bare basename or a repo-relative path. */
+export function isVisionProjectorFile(fileNameOrPath: string): boolean {
+  const base = fileNameOrPath.split('/').pop() ?? fileNameOrPath;
+  return MMPROJ_BASENAME_RE.test(base);
+}
+
 // Preference order the design pins: mmproj-F16 first, then BF16, then whatever
 // mmproj file came first in the repo listing. WHY F16 over BF16: they are the
 // same size and the same weights, and F16 is the one llama.cpp's own tooling
@@ -101,7 +112,7 @@ export function findVisionFile(files: TreeFile[]): ManifestVisionFile | null {
   let best: { file: TreeFile; rank: number } | null = null;
   for (const f of files) {
     const base = f.path.split('/').pop() ?? f.path;
-    if (!MMPROJ_BASENAME_RE.test(base)) continue;
+    if (!isVisionProjectorFile(base)) continue;
     const rank = projectorRank(base);
     // Strictly-better only, so ties keep the repo listing's own order — that is
     // what "then the first mmproj*" means.
