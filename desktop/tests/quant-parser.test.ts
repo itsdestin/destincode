@@ -40,6 +40,11 @@ describe('parseGgufName', () => {
     // 'mtp-' basename. Not chat models. Basename check catches both.
     expect(parseGgufName('MTP/mtp-gemma-4-12B-it-Q4_0.gguf')).toBeNull();
     expect(parseGgufName('mtp-gemma-4-12B-it.gguf')).toBeNull();
+    // 2026-09-05: the token does NOT always come first. Two of twelve surveyed
+    // publishers put the model name ahead of it, and a start-anchored denylist
+    // let those projectors onto the pick list as if they were chat quants.
+    expect(parseGgufName('gemma-3-12b-it.mmproj-Q8_0.gguf')).toBeNull();
+    expect(parseGgufName('google_gemma-3-4b-it-mmproj-f16.gguf')).toBeNull();
     // Unrecognized / non-gguf → null (drop silently — Amendment 2026-07-14 E).
     expect(parseGgufName('README.md')).toBeNull();
   });
@@ -101,6 +106,32 @@ describe('groupQuantOptions', () => {
     expect(opts.find((o) => o.quant === 'Q4_K_M')!.totalSizeBytes).toBe(9_000);
   });
 
+  // 2026-09-05: mradermacher/gemma-3-12b-it-GGUF ships exactly this shape, and
+  // before the separator-anchored denylist its 590 MB projector was the ONLY
+  // option the app offered — labelled 'Q8_0 · Highest quality quantization'.
+  // Downloading it produced a file that cannot load.
+  it('never offers an mmproj file as a quant, wherever the token sits in the name', () => {
+    const opts = groupQuantOptions([
+      { path: 'gemma-3-12b-it.mmproj-Q8_0.gguf', size: 590_179_104, sha256: null },
+      { path: 'google_gemma-3-4b-it-mmproj-f16.gguf', size: 854_200_448, sha256: null },
+      { path: 'gemma-3-12b-it-Q4_K_M.gguf', size: 9_000, sha256: null },
+    ]);
+    expect(opts.map((o) => o.quant)).toEqual(['Q4_K_M']);
+    expect(opts[0].files).toEqual(['gemma-3-12b-it-Q4_K_M.gguf']);
+  });
+
+  it('finds the projector when the model name comes FIRST in the filename', () => {
+    const opts = groupQuantOptions([
+      { path: 'gemma-3-12b-it-Q4_K_M.gguf', size: 9_000, sha256: null },
+      { path: 'gemma-3-12b-it.mmproj-f16.gguf', size: 854_200_448, sha256: 'f'.repeat(64) },
+    ]);
+    expect(opts).toHaveLength(1);
+    expect(opts[0].visionFile).toEqual({
+      path: 'gemma-3-12b-it.mmproj-f16.gguf', size: 854_200_448, sha256: 'f'.repeat(64),
+    });
+    expect(opts[0].visionBytes).toBe(854_200_448);
+  });
+
   it('a text-only repo reports no projector at all', () => {
     const opts = groupQuantOptions([
       { path: 'M-Q4_K_M.gguf', size: 9_000, sha256: null },
@@ -153,6 +184,17 @@ describe('findVisionFile — preference order F16 → BF16 → first mmproj*', (
   it('matches on the BASENAME, keeps the full path, and carries size + sha', () => {
     const sub = { path: 'vision/MMPROJ-f16.gguf', size: 42, sha256: 'b'.repeat(64) };
     expect(findVisionFile([sub])).toEqual({ path: 'vision/MMPROJ-f16.gguf', size: 42, sha256: 'b'.repeat(64) });
+  });
+
+  it('matches the token after a separator, not only at the start', () => {
+    // mradermacher / Mungert shapes — real, surveyed 2026-09-05.
+    expect(findVisionFile([f('gemma-3-12b-it.mmproj-f16.gguf', 854_200_448)])?.path)
+      .toBe('gemma-3-12b-it.mmproj-f16.gguf');
+    expect(findVisionFile([f('google_gemma-3-4b-it-mmproj-f16.gguf', 1)])?.path)
+      .toBe('google_gemma-3-4b-it-mmproj-f16.gguf');
+    // A separator is still REQUIRED, so a chat model whose name merely contains
+    // the letters cannot be mistaken for a projector.
+    expect(findVisionFile([f('nommproj-Q4_K_M.gguf', 1)])).toBeNull();
   });
 
   it('is null for a repo with no projector — mtp- drafts are not projectors', () => {

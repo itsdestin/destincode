@@ -27,12 +27,20 @@ export interface ParsedGgufName {
 // appear in real chat-model filenames).
 const NAME_RE = /^(.+?)-(UD-)?((?:I?Q\d+_[A-Z0-9_]+)|Q\d+|F16|F32|BF16|MXFP4_MOE|MXFP4)(?:-(\d{5})-of-(\d{5}))?\.gguf$/;
 
-// Aux-file denylist (Amendment 2026-07-14 E): vision projectors ('mmproj*',
-// UPPERCASE in real repos) and MTP speculative-decode draft models ('mtp-*',
+// Aux-file denylist (Amendment 2026-07-14 E): vision projectors ('mmproj',
+// UPPERCASE in real repos) and MTP speculative-decode draft models ('mtp-',
 // often in an 'MTP/' subfolder — the basename check catches both). These are
 // NOT chat models and must never appear as downloadable quants. Matched on the
 // BASENAME, case-insensitively.
-const AUX_BASENAME_RE = /^(mmproj|mtp-)/i;
+//
+// WHY it anchors on a SEPARATOR and not on the start of the name (2026-09-05):
+// the token does not always come first. Several publishers put the model name
+// ahead of it — 'gemma-3-12b-it.mmproj-Q8_0.gguf',
+// 'google_gemma-3-4b-it-mmproj-f16.gguf' — and a start-anchored denylist let
+// those straight onto the pick list AS A QUANT. On mradermacher/gemma-3-12b-it-GGUF
+// the 590 MB projector was the ONLY option the app offered, labelled 'Q8_0 —
+// highest quality quantization'; picking it downloaded a file that cannot load.
+const AUX_BASENAME_RE = /(^|[-_.])(mmproj|mtp-)/i;
 
 export function parseGgufName(fileName: string): ParsedGgufName | null {
   const base = fileName.split('/').pop() ?? fileName; // callers may pass repo-relative paths
@@ -66,8 +74,11 @@ interface TreeFile { path: string; size: number; sha256: string | null; }
 
 // A repo's vision projector, by BASENAME (subfolders keep their path). Real
 // repos ship these UPPERCASE next to the chat model, so match case-insensitively
-// — the same way AUX_BASENAME_RE denylists them from the quant list.
-const MMPROJ_BASENAME_RE = /^mmproj.*\.gguf$/i;
+// — the same way AUX_BASENAME_RE denylists them from the quant list, and
+// separator-anchored for the same reason: 'gemma-3-12b-it.mmproj-f16.gguf' is a
+// real 854 MB projector, and a start-anchored test would report that publisher's
+// vision models as text-only forever.
+const MMPROJ_BASENAME_RE = /(^|[-_.])mmproj.*\.gguf$/i;
 
 // Preference order the design pins: mmproj-F16 first, then BF16, then whatever
 // mmproj file came first in the repo listing. WHY F16 over BF16: they are the
