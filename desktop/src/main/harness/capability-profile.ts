@@ -100,7 +100,10 @@ export interface DiscoveredModel {
   supportsVision?: boolean;
   /** Task 13 — the engine's live parallel-slot count (llama-server's
    *  `total_slots`; `n_slots` on older builds), read from the SAME
-   *  `/props?model=<id>` call that already supplies contextLength (see
+   *  `/props?model=<id>` call that already supplies contextLength — a call
+   *  the app makes only once the model is already `loaded`, because naming
+   *  a model in /props autoloads it on b10665; until then the model-less
+   *  /props carries no slot field and this stays unknown (see
    *  docs/engine-dependencies.md § "Parallel slots" — the 2026-08-12 probe
    *  that measured 4 slots batching cleanly at ~1.7-1.85x single-request
    *  latency, the largest tested N that still cleared that bar).
@@ -110,7 +113,8 @@ export interface DiscoveredModel {
    *  NativeSessionHost.resolveContextAndProfile() — so, unlike when this
    *  comment first landed, a construction site DOES wire a live reading
    *  through. Still optional: resolveContextAndProfile coalesces
-   *  contextAndSlotsFor's `null` (no running engine instance, an older
+   *  contextAndSlotsFor's `null` (no running engine instance, a model not
+   *  yet loaded — the model-less /props has no slot field — an older
    *  llama.cpp build with neither `total_slots` nor `n_slots` in its /props
    *  response, or a
    *  non-local-engine binding, which never queries the engine at all) into

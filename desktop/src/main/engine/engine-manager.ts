@@ -447,11 +447,35 @@ export class EngineManager extends EventEmitter {
       // slot field at all, so the app had been reading "unknown" for every
       // local model — which capability-profile.ts turns into a cap of ONE
       // helper at a time, while the engine actually had four slots. With the
-      // model named, n_ctx is also the PER-SLOT window (`-c` / slots), which
-      // is the number a single request really gets — the honest figure to
-      // report, not the total `-c` shared across all slots.
-      const res = await (this.opts.fetchImpl ?? fetch)(
-        `http://127.0.0.1:${this.port}/props?model=${encodeURIComponent(modelId)}`, { method: 'GET' });
+      // model named, n_ctx is whatever the engine holds for THAT model: under
+      // the app's real spawn (no `--parallel`, so b10665 turns on a unified KV
+      // cache) that is the FULL `-c` shared by all slots — 16384 with 4 slots,
+      // measured; only an explicit `--parallel N` splits it into `-c` / N. We
+      // pass the engine's number through either way, never recompute it.
+      //
+      // WHY the status check first (2026-09-04 review, F1 + F4): on this build
+      // `GET /props?model=<id>` is NOT a read — the router AUTOLOADS the named
+      // model (`--models-autoload` defaults on; the supervisor passes no
+      // `--no-models-autoload`) and blocks, with no timeout on this fetch,
+      // until gigabytes are in RAM/VRAM. This method runs on every session
+      // create / resume / model swap BEFORE the user has sent anything, and at
+      // `--models-max 2` an autoload can evict the model a live conversation
+      // is mid-way through using. A status read must never have that side
+      // effect, so we ask `GET /models` (the supervisor's listModels — the same
+      // fetch its model poll already makes, no `?reload=1`, which the engine
+      // rule forbids as a write) and name the model ONLY when it is already
+      // `loaded`. Everything else — `unloaded`, `sleeping` (naming a sleeping
+      // model would wake it: same autoload, F4), `loading`, or a model the
+      // router has never listed — takes the model-less `/props` master always
+      // used: instant, n_ctx 0 → the configured -c below, no slot field →
+      // totalSlots null → the conservative one-helper cap until the first
+      // real send loads the model and a later read sees `loaded`.
+      const models = await this.supervisor!.listModels();
+      const resident = models.find((m) => m.id === modelId)?.state === 'loaded';
+      const propsUrl = resident
+        ? `http://127.0.0.1:${this.port}/props?model=${encodeURIComponent(modelId)}`
+        : `http://127.0.0.1:${this.port}/props`;
+      const res = await (this.opts.fetchImpl ?? fetch)(propsUrl, { method: 'GET' });
       const props: any = await res.json();
       // The field carrying the loaded context has drifted across llama.cpp builds
       // (default_generation_settings.n_ctx vs a top-level n_ctx) — read both.
@@ -468,8 +492,9 @@ export class EngineManager extends EventEmitter {
       // Fall back to the -c WE spawned the server with, not a blind constant.
       //
       // WHY (found 2026-07-26 dogfooding): in `--models-dir` ROUTER mode — the
-      // default — /props answers `{model_path: "none", n_ctx: 0}` whenever the
-      // named model is not currently resident (and whenever no model is named). clampContextWindow discards any value <= 0,
+      // default — a model-less /props answers `{model_path: "none", n_ctx: 0}`,
+      // and that is the URL this method sends whenever the model is not
+      // already `loaded` (see the status check above). clampContextWindow discards any value <= 0,
       // so it fell through to its hardcoded 32_768 and every local session
       // believed it had half the window it was actually given. A read of
       // ROADMAP.md that fits comfortably in 64k then overflowed a phantom 32k
@@ -488,9 +513,11 @@ export class EngineManager extends EventEmitter {
       // far larger than the 4k-trained model the warning describes. The old default
       // over-sized that model too; it just over-sized everything else DOWNWARD as
       // well. Three things bound the risk here:
-      //   - /props only reports 0 when the named model is not resident. Once it
-      //     loads, the live (per-slot) reading wins and any server-side clamp is
-      //     respected.
+      //   - the model-less /props (sent while the model is not resident) reports
+      //     0. Once the model is loaded, the next read names it and the live
+      //     n_ctx the engine holds for it wins — the full -c under the app's
+      //     spawn, -c / slots only with an explicit --parallel — so any
+      //     server-side clamp is respected.
       //   - effectiveContextForModel then clamps to the registry's documented
       //     maxContextWindow for every known family.
       //   - trainedContextFor() is inert today (no GGUF header reader), so the
