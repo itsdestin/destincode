@@ -6,6 +6,7 @@
 // ── Marketplace types re-declared locally ─────────────────────────────────────
 // WHY: remote-shim.ts lives in renderer/ and cannot import from main/ (Node.js
 import { REMOTE_UNSUPPORTED_EVENT, remoteFeatureName, remoteUnsupportedMessage } from './remote-unsupported';
+import type { FirstRunState } from '../shared/first-run-types';
 // boundary). These interfaces mirror marketplace-auth-store.ts and
 // marketplace-api-handlers.ts exactly — keep in sync if those change.
 interface MarketplaceUser {
@@ -1425,7 +1426,8 @@ export function installShim(): void {
     firstRun: {
       getState: () => Promise.resolve({ currentStep: 'COMPLETE' }),
       retry: () => Promise.resolve(),
-      startAuth: (_mode: string) => Promise.resolve(),
+      // Same widened type as preload's (FirstRunState['authMode']); still a no-op here.
+      startAuth: (_mode: FirstRunState['authMode']) => Promise.resolve(),
       submitApiKey: (_key: string) => Promise.resolve(),
       devModeDone: () => Promise.resolve(),
       skip: () => Promise.resolve(),
@@ -1644,6 +1646,21 @@ export function installShim(): void {
       test: (id: string) => invoke('provider:test', { id }),
       setKey: (id: string, key: string) => invoke('provider:set-key', { id, key }),
       catalog: () => invoke('provider:catalog'),
+    },
+    // Sign in with ChatGPT (backend design 2026-09-05 §5) — WS transport, no
+    // payload (none of the four takes an argument). `supported: false` on
+    // purpose (review R1-9): the renderer gates the card on `=== true`, and a
+    // remote browser cannot run the sign-in — the browser tab and the
+    // 127.0.0.1:1455 listener live on the desktop. The four invokes still exist
+    // so the five-surface parity test holds and a remote caller gets an honest
+    // answer (status real, sign-in false, cancel / sign-out real) instead of
+    // an undefined namespace.
+    chatgpt: {
+      supported: false,
+      status: () => invoke('chatgpt:status'),
+      signIn: () => invoke('chatgpt:sign-in'),
+      cancelSignIn: () => invoke('chatgpt:cancel-sign-in'),
+      signOut: () => invoke('chatgpt:sign-out'),
     },
     // WebSearch providers (Phase 2 Plan B) — WS transport. Object payloads match
     // remote-server's WS case reads (payload.backend / payload.key).

@@ -3,6 +3,10 @@ import type { AuthStartResponse, AuthPollResponse, PostRatingInput } from '../re
 import type { MarketplaceUser } from './marketplace-auth-store';
 import type { ApiResult } from './marketplace-api-handlers';
 import type { AttentionSummary, AttentionReport, PerformanceConfigSnapshot, SessionMetaResult } from '../shared/types';
+// Type-only (erased at build), so the sandboxed preload still resolves nothing at
+// runtime — same footing as the '../shared/types' line above.
+import type { FirstRunState } from '../shared/first-run-types';
+import type { ChatGptAccountStatus } from '../shared/chatgpt-types';
 
 // Mirrored type — must match ChangelogResult in src/main/changelog-service.ts.
 interface ChangelogIpcResult {
@@ -350,6 +354,11 @@ const IPC = {
   PROVIDER_TEST: 'provider:test',
   PROVIDER_SET_KEY: 'provider:set-key',
   PROVIDER_CATALOG: 'provider:catalog',
+  // Sign in with ChatGPT (backend design 2026-09-05 §5) — mirrors shared/types.ts.
+  CHATGPT_STATUS: 'chatgpt:status',
+  CHATGPT_SIGN_IN: 'chatgpt:sign-in',
+  CHATGPT_CANCEL_SIGN_IN: 'chatgpt:cancel-sign-in',
+  CHATGPT_SIGN_OUT: 'chatgpt:sign-out',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',
@@ -378,6 +387,19 @@ const IPC = {
   MODELS_MEMORY_CHECK: 'models:memory-check',
   MODELS_LOAD: 'models:load',
 } as const;
+
+// Strip the transport prefix Electron puts on a rejected invoke (see the
+// `chatgpt` namespace for why), keeping the handler's own sentence. Anything
+// that is not that exact shape is rethrown untouched.
+const INVOKE_ERROR_PREFIX = /^Error invoking remote method '[^']*': (?:Error: )?/;
+function unwrapInvokeError<T>(p: Promise<T>): Promise<T> {
+  return p.catch((e: unknown) => {
+    if (e instanceof Error && INVOKE_ERROR_PREFIX.test(e.message)) {
+      throw new Error(e.message.replace(INVOKE_ERROR_PREFIX, ''));
+    }
+    throw e;
+  });
+}
 
 contextBridge.exposeInMainWorld('claude', {
   // Dev-instance descriptor from `run-dev.sh --label` (YOUCODED_DEV_LABEL). The
@@ -1069,7 +1091,12 @@ contextBridge.exposeInMainWorld('claude', {
   firstRun: {
     getState: (): Promise<any> => ipcRenderer.invoke(IPC.FIRST_RUN_STATE),
     retry: (): Promise<void> => ipcRenderer.invoke(IPC.FIRST_RUN_RETRY),
-    startAuth: (mode: 'oauth' | 'apikey'): Promise<void> =>
+    // Widened from 'oauth' | 'apikey' (backend design 2026-09-05 §5): the
+    // approved first-run card has a "Sign in with ChatGPT" button and an
+    // OpenRouter one, and main.ts's two FIRST_RUN_START_AUTH handlers branch on
+    // the mode. 'none' is in the union only because it IS FirstRunState's; main
+    // ignores it.
+    startAuth: (mode: FirstRunState['authMode']): Promise<void> =>
       ipcRenderer.invoke(IPC.FIRST_RUN_START_AUTH, mode),
     submitApiKey: (key: string): Promise<void> =>
       ipcRenderer.invoke(IPC.FIRST_RUN_SUBMIT_API_KEY, key),
@@ -1266,6 +1293,27 @@ contextBridge.exposeInMainWorld('claude', {
     test: (id: string) => ipcRenderer.invoke(IPC.PROVIDER_TEST, id),
     setKey: (id: string, key: string) => ipcRenderer.invoke(IPC.PROVIDER_SET_KEY, id, key),
     catalog: () => ipcRenderer.invoke(IPC.PROVIDER_CATALOG),
+  },
+  // Sign in with ChatGPT (backend design 2026-09-05 §5, §6). The account state
+  // machine the Settings card and the first-run wizard read, and its three verbs.
+  // `supported` mirrors native.supported above: YOUCODED_CHATGPT=0 is the kill
+  // switch, and the renderer gates the card on `=== true` (workbench and
+  // remote-shim set it explicitly for that reason — review R1-9).
+  //
+  // WHY the invokes go through unwrapInvokeError: signIn() THROWS the two
+  // sentences the card must show verbatim ("Port 1455 is already in use…", the
+  // keychain one). Electron's ipcRenderer.invoke rewraps a handler's throw as
+  // "Error invoking remote method 'chatgpt:sign-in': Error: <sentence>", and
+  // the card prints e.message as-is — so without this the user would read the
+  // transport's prefix in front of the sentence. No other namespace in this
+  // file needed it: the provider handlers' throws reach a section that shows
+  // them the same prefixed way (ProvidersSection.tsx, a pre-existing wart).
+  chatgpt: {
+    supported: process.env.YOUCODED_CHATGPT !== '0',
+    status: (): Promise<ChatGptAccountStatus> => unwrapInvokeError(ipcRenderer.invoke(IPC.CHATGPT_STATUS)),
+    signIn: (): Promise<boolean> => unwrapInvokeError(ipcRenderer.invoke(IPC.CHATGPT_SIGN_IN)),
+    cancelSignIn: (): Promise<boolean> => unwrapInvokeError(ipcRenderer.invoke(IPC.CHATGPT_CANCEL_SIGN_IN)),
+    signOut: (): Promise<boolean> => unwrapInvokeError(ipcRenderer.invoke(IPC.CHATGPT_SIGN_OUT)),
   },
   // WebSearch providers (Phase 2 Plan B): keyed Tavily/Exa upgrades. list = the
   // fixed backend rows (hasKey flags); set/remove-key manage the encrypted key;

@@ -35,6 +35,14 @@ import { MOUNT_PROBE_JS } from './dev-mount-probe';
 import { log, rotateLog } from './logger';
 import { registerThemeProtocol } from './theme-protocol';
 import { FirstRunManager } from './first-run';
+import type { FirstRunState } from '../shared/first-run-types';
+// Sign in with ChatGPT (backend design 2026-09-05 §1): the account object is
+// built HERE, inside createWindow, and handed to the IPC layer and both
+// first-run managers. It needs its own SecretsStore over the same encrypted
+// file ipc-handlers' store uses (precedent: mcp-reconciler.ts) — one file, one
+// lock, two readers.
+import { ChatGptAuth } from './providers/chatgpt-auth';
+import { SecretsStore } from './providers/secrets-store';
 import { SyncService } from './sync-service';
 import { setSyncService, getSyncConfig } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
@@ -158,6 +166,9 @@ let mainWindow: BrowserWindow | null = null;
 // buddy when the last main window closes (spec §7.6).
 let buddyManagerRef: BuddyManager | null = null;
 let cleanupIpcHandlers: (() => Promise<void>) | null = null;
+// Sign in with ChatGPT: module scope only so runShutdown can dispose it (stops
+// the usage poll, closes a lingering sign-in listener). Assigned in createWindow.
+let chatgptAuth: ChatGptAuth | null = null;
 // Plan 2b Task 8: the conversation-lease client + this install's device identity.
 // Constructed inside createWindow (before registerIpcHandlers) but referenced
 // again in the app-ready sync block, so they live at module scope. The holder
@@ -373,6 +384,10 @@ export function setPermissionOverrides(overrides: Partial<PermissionOverrides>) 
 function registerFirstRunIpc(
   mainWindow: BrowserWindow,
   firstRunManager: FirstRunManager,
+  // Sign in with ChatGPT (backend design 2026-09-05 §5): the wizard's "Sign in
+  // with ChatGPT" button routes through here to the SAME account object the
+  // Settings card uses, so a sign-in finished in the wizard is signed in everywhere.
+  chatgptAuth: ChatGptAuth,
 ) {
   // Push state updates to renderer
   firstRunManager.on('state-changed', (state) => {
@@ -400,11 +415,22 @@ function registerFirstRunIpc(
     catch (e) { log('ERROR', 'FirstRun', 'Retry failed', { error: String(e) }); }
   });
 
-  ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: 'oauth' | 'apikey') => {
+  ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: FirstRunState['authMode']) => {
     try {
       if (mode === 'oauth') {
         // claude auth login opens the browser itself — don't double-open
         await firstRunManager.handleOAuthLogin();
+      } else if (mode === 'chatgpt') {
+        // Opens the browser through ChatGptAuth and waits for the callback.
+        // handleChatGptLogin catches signIn()'s own throws (port 1455 held,
+        // no keychain) into lastError itself — the catch below is only the
+        // last resort, since a swallowed throw here would leave the wizard's
+        // button silently doing nothing.
+        await firstRunManager.handleChatGptLogin(chatgptAuth);
+      } else if (mode === 'openrouter') {
+        // The approved card has the button; the sign-in is not built yet, and
+        // a button that does nothing was review R1-6.
+        firstRunManager.handleOpenRouterNotBuilt();
       }
     } catch (e) { log('ERROR', 'FirstRun', 'Auth failed', { error: String(e) }); }
   });
@@ -888,12 +914,31 @@ function createWindow(firstRunManager?: FirstRunManager) {
     delay: (ms) => new Promise((r) => setTimeout(r, ms)),
   });
 
-  cleanupIpcHandlers = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
+  // Sign in with ChatGPT (backend design 2026-09-05 §1, §6). Built HERE, right
+  // before registerIpcHandlers — i.e. AFTER the dev-profile userData override
+  // near the top of this file — and never beside `remoteServer`, which is
+  // constructed before that override: an instance built there would read and
+  // write the BUILT app's native-secrets.json and chatgpt-account.json from a
+  // dev instance (the live-app rule broken through a file). Constructed even
+  // under the kill switch (YOUCODED_CHATGPT=0): it is the file reader the
+  // launch-time auth check below needs, so a ChatGPT-only install is not locked
+  // out by the switch; ipc-handlers applies the switch to everything user-facing.
+  chatgptAuth = new ChatGptAuth({
+    userDataDir: app.getPath('userData'),
+    secrets: new SecretsStore(app.getPath('userData')),
+    appVersion: app.getVersion(),
+    openExternal: (url) => shell.openExternal(url),
+  });
+
+  const ipcWiring = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
     { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; }, requester,
-      deviceId: deviceIdentity.id, machineId: machineIdentity?.id ?? '' });
+      deviceId: deviceIdentity.id, machineId: machineIdentity?.id ?? '' },
+    chatgptAuth);
+  cleanupIpcHandlers = ipcWiring.cleanup;
+  const hasUsableProvider = ipcWiring.hasUsableProvider;
 
   if (firstRunManager) {
-    registerFirstRunIpc(mainWindow, firstRunManager);
+    registerFirstRunIpc(mainWindow, firstRunManager, chatgptAuth);
   } else {
     // Not a first-run — but verify Claude Code can actually run.
     // If auth is missing, re-trigger first-run at the auth step so the user
@@ -915,9 +960,21 @@ function createWindow(firstRunManager?: FirstRunManager) {
       if (!lateAuthCheck) {
         lateAuthCheck = (async () => {
           try {
+            // Provider-aware since Sign in with ChatGPT (backend design
+            // 2026-09-05 §5, review R3-2). This branch removed the wizard's
+            // Skip link, so forcing AUTHENTICATE here is a lock-out, not a
+            // nudge — and the old Claude-only check would have locked out a
+            // ChatGPT-only install (every launch), an install running on an
+            // OpenRouter key, and anyone whose `claude` CLI broke. Order is
+            // load-bearing: the two LOCAL reads first, the `claude auth status`
+            // spawn last, so a signed-in ChatGPT account never pays for it.
+            // chatgptAuth is read directly (not via the registry row) so the
+            // kill switch, which removes the row, cannot lock anyone out either.
             const { detectAuth } = require('./prerequisite-installer');
-            const result = await detectAuth();
-            if (result.installed) return { currentStep: 'COMPLETE' };
+            const usable = chatgptAuth!.isSignedIn()
+              || (await hasUsableProvider())
+              || (await detectAuth()).installed;
+            if (usable) return { currentStep: 'COMPLETE' };
 
             // Auth missing — spin up first-run at the auth step
             log('WARN', 'Main', 'Setup complete but auth missing — showing auth screen');
@@ -934,8 +991,15 @@ function createWindow(firstRunManager?: FirstRunManager) {
 
             // Register the other handlers
             ipcMain.handle(IPC.FIRST_RUN_RETRY, async () => { try { await lateFirstRunManager!.retry(); } catch {} });
-            ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: 'oauth' | 'apikey') => {
-              try { if (mode === 'oauth') { await lateFirstRunManager!.handleOAuthLogin(); } } catch {} });
+            // Same three arms as registerFirstRunIpc above (ChatGPT / OpenRouter
+            // per backend design 2026-09-05 §5); swallowed throws are the last
+            // resort only — handleChatGptLogin writes its own lastError.
+            ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: FirstRunState['authMode']) => {
+              try {
+                if (mode === 'oauth') await lateFirstRunManager!.handleOAuthLogin();
+                else if (mode === 'chatgpt') await lateFirstRunManager!.handleChatGptLogin(chatgptAuth!);
+                else if (mode === 'openrouter') lateFirstRunManager!.handleOpenRouterNotBuilt();
+              } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_SUBMIT_API_KEY, async (_event, key: string) => { try { await lateFirstRunManager!.handleApiKeySubmit(key); } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_DEV_MODE_DONE, async () => { try { await lateFirstRunManager!.handleDevModeDone(); } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_SKIP, async () => {
@@ -2107,6 +2171,9 @@ async function runShutdown(): Promise<void> {
   // must let it finish before app.quit(), else the engine outlives the app and keeps
   // the fixed port bound for the next instance to wrongly adopt (2026-07-20 fix).
   const engineStopped = cleanupIpcHandlers ? cleanupIpcHandlers() : Promise.resolve();
+  // Sign in with ChatGPT: stop the usage poll and close any lingering sign-in
+  // listener on 1455. Best-effort like the other teardowns here.
+  chatgptAuth?.dispose().catch(() => {});
   destroySocialHandlers(); // tear down the presence WebSocket + its timers
   sessionManager.destroyAll();
   hookRelay.stop();

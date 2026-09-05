@@ -1435,3 +1435,82 @@ describe('arcade:* channel parity', () => {
     }
   });
 });
+
+// Five-surface parity for Sign in with ChatGPT (backend design 2026-09-05 §5,
+// §8). Shaped like the arcade block above, with one deliberate difference: the
+// Android assertion is "listed in the not-implemented fall-through", the
+// permissions:* / specialists:* precedent — the account, its encrypted tokens
+// and the 127.0.0.1:1455 sign-in listener all live in the DESKTOP main process,
+// and Android has no native runtime to hold any of that until M8. A REAL arm
+// there would be wrong, and a missing entry would make a phone's invoke hang
+// ~30 s instead of rejecting fast.
+describe('chatgpt:* channel parity', () => {
+  const TYPES = ['chatgpt:status', 'chatgpt:sign-in', 'chatgpt:cancel-sign-in', 'chatgpt:sign-out'];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+
+  it('registered in ipc-handlers.ts (through the IPC constants)', () => {
+    // The handlers use IPC.CHATGPT_* rather than string literals, so assert
+    // the constant exists in shared/types.ts AND the handler references it.
+    const types = read('src', 'shared', 'types.ts');
+    const handlers = read('src', 'main', 'ipc-handlers.ts');
+    const constants: Record<string, string> = {
+      'chatgpt:status': 'CHATGPT_STATUS',
+      'chatgpt:sign-in': 'CHATGPT_SIGN_IN',
+      'chatgpt:cancel-sign-in': 'CHATGPT_CANCEL_SIGN_IN',
+      'chatgpt:sign-out': 'CHATGPT_SIGN_OUT',
+    };
+    for (const t of TYPES) {
+      expect(types, `${t} missing from shared/types.ts IPC`).toContain(`${constants[t]}: '${t}'`);
+      expect(handlers, `IPC.${constants[t]} has no ipcMain.handle in ipc-handlers.ts`).toContain(`ipcMain.handle(IPC.${constants[t]}`);
+    }
+  });
+
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`case '${t}'`);
+  });
+
+  it('is listed in the Android not-implemented fall-through, NOT a real arm', () => {
+    const kt = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+        'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'),
+      'utf8',
+    );
+    for (const t of TYPES) {
+      expect(kt, `${t} not listed in SessionService.kt`).toContain(`"${t}"`);
+      // `"channel" ->` is the real-arm marker (see the arcade block). Android
+      // cannot run the sign-in, so an arm here would be a fake, not a feature.
+      expect(kt, `${t} has a real arm in SessionService.kt — it must be a not-implemented stub`).not.toContain(`"${t}" ->`);
+    }
+  });
+
+  it('the preload flag and the mock/remote flags exist, so the renderer gate (=== true) is honest everywhere', () => {
+    // Review R1-9: a `supported` the renderer reads as `=== true` must be SET
+    // on every surface — undefined hides the card in the workbench and on the
+    // acceptance deck for a tooling reason.
+    expect(read('src', 'main', 'preload.ts')).toMatch(/chatgpt:\s*\{\s*supported: process\.env\.YOUCODED_CHATGPT !== '0'/);
+    expect(read('src', 'renderer', 'dev', 'workbench', 'mock-shim.ts')).toMatch(/const chatgpt = \{[\s\S]*?supported: true,/);
+    expect(read('src', 'renderer', 'remote-shim.ts')).toMatch(/chatgpt:\s*\{\s*supported: false,/);
+  });
+
+  it('the shim sends an OBJECT payload or nothing, never bare positional args', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of TYPES) {
+      const call = src.match(new RegExp(`invoke\\('${t}'(,\\s*([^)]*))?\\)`));
+      expect(call, `no invoke('${t}', ...) found in remote-shim.ts`).toBeTruthy();
+      const arg = (call![2] ?? '').trim();
+      expect(arg === '' || arg.startsWith('{'),
+        `invoke('${t}') must pass an object literal or nothing, got: ${arg}`).toBe(true);
+    }
+  });
+});

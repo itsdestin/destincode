@@ -318,8 +318,8 @@ const NAMESPACES = [
   'account', 'social', 'marketplaceApi', 'detach', 'defaults', 'analytics', 'dev',
   'performance', 'app', 'native', 'providers', 'engine', 'models', 'theme',
   'commands', 'tags', 'artifacts', 'firstRun', 'clipboard', 'window',
-  // Sign in with ChatGPT (design 2026-09-04) — MOCK_ONLY until main grows the
-  // OAuth round-trip; typed by shared/chatgpt-types.ts, not useIpc.ts yet.
+  // Sign in with ChatGPT (design 2026-09-04) — real on all five surfaces since
+  // the backend design of 2026-09-05; typed by shared/chatgpt-types.ts.
   'chatgpt',
 ];
 
@@ -787,6 +787,10 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     : CHATGPT_SIGNED_IN;
   let chatgptTimer: ReturnType<typeof setTimeout> | null = null;
   const chatgpt = {
+    // The renderer gates the card on `supported === true` (the native.supported
+    // pattern; review R1-9) — without this every workbench shot and the
+    // acceptance deck would come back cardless for a tooling reason.
+    supported: true,
     status: async () => chatgptStatus,
     signIn: async () => {
       if (store.refuseWrites) return false;
