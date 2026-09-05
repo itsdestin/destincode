@@ -1143,16 +1143,56 @@ export interface AttentionApi {
   report(payload: AttentionReport): void;
 }
 
+/**
+ * What the desktop answers when the settings screen asks about the Linux/KDE
+ * buddy helper (docs/active/design/2026-09-04-linux-buddy-helper/ §4).
+ *
+ * THREE facts, not two, and the first one is the one that keeps a working buddy
+ * working. `needed` says "this app cannot move its own windows here" — true only
+ * on a native-Wayland Linux session. On Windows, macOS, Linux/X11 and Linux
+ * Wayland that is really running through XWayland it is false, and there the
+ * buddy already works exactly as it always has: no helper, no consent card, no
+ * mention of any of this. `supported` is the separate question of whether a
+ * helper could work here at all (KDE 6 on Wayland), and it is only ever asked
+ * once `needed` is true.
+ *
+ * `installed` is reported TRUTHFULLY whatever `needed` says, because a user can
+ * add the helper on Wayland and then log into X11: the script is still sitting
+ * in their KDE settings, and the Remove helper button is the only way back out.
+ */
+export interface BuddyHelperStatus {
+  /** The app cannot position its own windows here, so a helper is required. */
+  needed: boolean;
+  /** A helper can work on this desktop at all (KDE Plasma 6 on Wayland). */
+  supported: boolean;
+  /** The helper script is loaded in the compositor right now. */
+  installed: boolean;
+  /** Why this desktop is unsupported — shown, never guessed at. */
+  reason?: string;
+}
+
+/**
+ * What `show()` answers. `ok: false` means MAIN REFUSED to put the buddy on
+ * screen — see design §5: the refusal is enforced in the main process, because
+ * the settings screen is not the only thing that switches the buddy on.
+ */
+export interface BuddyShowResult {
+  ok: boolean;
+  /** Main's own words for the refusal. Surfaced as-is; never re-worded. */
+  reason?: string;
+}
+
 export interface BuddyApi {
   // The Linux/KDE helper (docs/active/design/2026-09-04-linux-buddy-helper/).
-  // OPTIONAL because they are MOCK_ONLY today: the workbench implements them so
-  // the UI could be designed and reviewed, and preload.ts does not serve them
-  // yet. When the real backend lands they lose the `?` and come off the
-  // MOCK_ONLY registry in the same change.
+  // These had no backend while the popup was being designed; the real one landed
+  // 2026-09-04 (kwin-helper.ts + three channels on preload, remote-shim and the
+  // workbench mock), so they are no longer MOCK_ONLY.
   //
-  // supported = this desktop can run the helper at all (KDE Plasma).
-  // installed = the helper is already in the user's KDE settings.
-  helperStatus?(): Promise<{ supported: boolean; installed: boolean }>;
+  // They keep the `?` because every caller optional-chains them anyway: the
+  // settings screen runs inside remote browsers and Android too, where the whole
+  // buddy surface is a set of stubs, and a `?.()` call site that silently does
+  // nothing is the behaviour we want there.
+  helperStatus?(): Promise<BuddyHelperStatus>;
   installHelper?(): Promise<{ ok: boolean }>;
   // Added 2026-09-04 (decide-uninstall#D-1). The consent card used to promise the
   // helper was "removed when you uninstall YouCoded", which is false: the AppImage
@@ -1160,7 +1200,13 @@ export interface BuddyApi {
   // user owns instead, so the app needs a channel that takes the helper back out
   // of KDE's settings — see design §6 for the order the main side must use.
   removeHelper?(): Promise<{ ok: boolean }>;
-  show(): Promise<void>;
+  /**
+   * Widened 2026-09-04 (design §5): this used to resolve to nothing, and now
+   * reports whether the buddy was actually shown. A Wayland user without the
+   * helper is REFUSED, and the settings switch must not sit in the "on"
+   * position after a refusal — that would be a switch that lies.
+   */
+  show(): Promise<BuddyShowResult | void>;
   hide(): Promise<void>;
   toggleChat(): Promise<void>;
   setSession(sessionId: string): Promise<void>;

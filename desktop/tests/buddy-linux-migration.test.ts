@@ -13,7 +13,12 @@
 //  · running on a phone or a remote browser, where there is no buddy and every
 //    buddy method throws;
 //  · running AFTER the launch path reads the preference, which would re-open the
-//    stuck buddy this migration exists to hide.
+//    stuck buddy this migration exists to hide;
+//  · running for a user whose buddy is NOT broken — a Linux X11 or XWayland
+//    session, where the app moves its own windows and the buddy has always
+//    worked. Hiding theirs would take away something that was fine, and the
+//    switch that brings it back would greet them with a consent card for a
+//    helper they do not need (design §4, revision 7).
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // jsdom in this suite ships NO localStorage — `window.localStorage` is undefined
@@ -38,17 +43,41 @@ for (const target of [globalThis, window]) {
 
 type Calls = { show: number; helperStatus: number; installHelper: number; getPlatform: number };
 
+type Helper = { needed: boolean; supported: boolean; installed: boolean };
+
+/** A native-Wayland KDE session with no helper yet: the buddy appears and cannot
+ *  be dragged. THE ONLY state R12 is for. */
+const BROKEN_BUDDY: Helper = { needed: true, supported: true, installed: false };
+/** The helper is already in the user's KDE settings, so the buddy works. */
+const HELPER_IN_PLACE: Helper = { needed: true, supported: true, installed: true };
+/** Windows, macOS, Linux X11, and Wayland sessions whose windows are really
+ *  XWayland ones. The app moves its own windows; no helper is wanted. */
+const NO_HELPER_WANTED: Helper = { needed: false, supported: false, installed: false };
+
 /** The Electron-shaped bridge. `window` (window controls) is the marker the boot
- *  path uses to tell a real desktop app from a remote browser or Android. */
-function installFakeClaude(platform: string, opts: { electron?: boolean } = {}): Calls {
+ *  path uses to tell a real desktop app from a remote browser or Android.
+ *
+ *  `helper` is what the desktop answers about the buddy helper — the fact the
+ *  migration now turns on. It defaults to the honest answer for the platform:
+ *  a Linux session that needs a helper and has none, anything else not needing
+ *  one at all. Pass 'throws' for a bridge that cannot answer. */
+function installFakeClaude(
+  platform: string,
+  opts: { electron?: boolean; helper?: Helper | 'throws' } = {},
+): Calls {
   const calls: Calls = { show: 0, helperStatus: 0, installHelper: 0, getPlatform: 0 };
+  const helper = opts.helper ?? (platform === 'linux' ? BROKEN_BUDDY : NO_HELPER_WANTED);
   (window as any).claude = {
     ...(opts.electron === false ? {} : { window: {} }),
     getPlatform: async () => { calls.getPlatform++; return platform; },
     buddy: {
-      show: async () => { calls.show++; },
+      show: async () => { calls.show++; return { ok: true }; },
       hide: async () => {},
-      helperStatus: async () => { calls.helperStatus++; return { supported: true, installed: false }; },
+      helperStatus: async () => {
+        calls.helperStatus++;
+        if (helper === 'throws') throw new Error('bridge not ready');
+        return helper;
+      },
       installHelper: async () => { calls.installHelper++; return { ok: true }; },
     },
   };
@@ -112,6 +141,8 @@ describe('R12 — the one-time Linux buddy hide', () => {
   });
 
   it('leaves Windows and macOS buddies alone', async () => {
+    // Those desktops let an app place its own windows, so they answer
+    // needed:false and there was never anything wrong with their buddy.
     const { runBuddyLinuxHideMigration } = await loadApp();
     for (const platform of ['win32', 'darwin']) {
       localStorage.clear();
@@ -154,18 +185,88 @@ describe('R12 — the one-time Linux buddy hide', () => {
     expect(localStorage.getItem(MARKER)).toBe(null);
   });
 
-  it('changes nothing when the platform cannot be read', async () => {
+  it('changes nothing when the desktop cannot answer', async () => {
+    // A boot-time bridge failure must never cost the user their buddy. Doing
+    // nothing leaves them exactly where they were, and the next launch asks
+    // again — the marker is deliberately not written.
     const { runBuddyLinuxHideMigration } = await loadApp();
-    (window as any).claude = {
-      window: {},
-      getPlatform: async () => { throw new Error('bridge not ready'); },
-      buddy: {},
-    };
+    installFakeClaude('linux', { helper: 'throws' });
     localStorage.setItem(ENABLED, '1');
 
     expect(await runBuddyLinuxHideMigration()).toBe('skipped');
     expect(localStorage.getItem(ENABLED)).toBe('1');
     expect(localStorage.getItem(MARKER)).toBe(null);
+  });
+});
+
+// ─── The gate that keeps a working buddy working (design §4, §6/R12) ────────
+describe('R12 — only a buddy that is actually broken is hidden', () => {
+  it('leaves a Linux X11 / XWayland buddy switched on', async () => {
+    // THE REGRESSION THIS EXISTS TO PREVENT. These users are on Linux, the app
+    // moves its own windows, and their buddy has worked all along. Hiding it
+    // would be an unexplained loss — and switching it back on would hand them a
+    // consent card for a helper they do not need.
+    const { runBuddyLinuxHideMigration } = await loadApp();
+    installFakeClaude('linux', { helper: NO_HELPER_WANTED });
+    localStorage.setItem(ENABLED, '1');
+
+    expect(await runBuddyLinuxHideMigration()).toBe('skipped');
+    expect(localStorage.getItem(ENABLED)).toBe('1');
+    // And no marker: if they log into a native Wayland session next week, where
+    // the buddy really would be stuck, the one-time hide is still available.
+    expect(localStorage.getItem(MARKER)).toBe(null);
+  });
+
+  it('hides a native-Wayland buddy that has no helper', async () => {
+    const { runBuddyLinuxHideMigration } = await loadApp();
+    installFakeClaude('linux', { helper: BROKEN_BUDDY });
+    localStorage.setItem(ENABLED, '1');
+
+    expect(await runBuddyLinuxHideMigration()).toBe('hid');
+    expect(localStorage.getItem(ENABLED)).toBe('0');
+  });
+
+  it('leaves a Wayland buddy alone once its helper is in place', async () => {
+    // The helper is loaded, so the buddy can be dragged and does what it
+    // promises. Hiding it here would read as the app losing the buddy for no
+    // reason the user could connect to anything they did.
+    const { runBuddyLinuxHideMigration } = await loadApp();
+    installFakeClaude('linux', { helper: HELPER_IN_PLACE });
+    localStorage.setItem(ENABLED, '1');
+
+    expect(await runBuddyLinuxHideMigration()).toBe('skipped');
+    expect(localStorage.getItem(ENABLED)).toBe('1');
+    expect(localStorage.getItem(MARKER)).toBe(null);
+  });
+
+  it('the X11 launch path still re-opens the buddy', async () => {
+    // End to end, through the same entry point launch uses: the migration does
+    // not fire AND the buddy comes back on screen.
+    const { bootBuddyOnLaunch } = await loadApp();
+    const calls = installFakeClaude('linux', { helper: NO_HELPER_WANTED });
+    localStorage.setItem(ENABLED, '1');
+
+    await bootBuddyOnLaunch();
+
+    expect(calls.show).toBe(1);
+    expect(localStorage.getItem(ENABLED)).toBe('1');
+  });
+});
+
+// ─── A refused show() (design §5) ──────────────────────────────────────────
+describe('the launch path does not claim a buddy that was refused', () => {
+  it('clears the stored preference when the desktop says no', async () => {
+    // Otherwise Settings → Buddy Floater would read "On" with nothing on the
+    // desktop: the helper went missing since the last launch (the user switched
+    // the script off in KDE's own settings), main refuses, and the row lies.
+    const { bootBuddyOnLaunch } = await loadApp();
+    installFakeClaude('linux', { helper: HELPER_IN_PLACE });
+    (window as any).claude.buddy.show = async () => ({ ok: false, reason: 'no helper' });
+    localStorage.setItem(ENABLED, '1');
+
+    await bootBuddyOnLaunch();
+
+    expect(localStorage.getItem(ENABLED)).toBe('0');
   });
 });
 
@@ -220,7 +321,13 @@ describe('R13 — no dialog interrupts you after an update', () => {
 
     await bootBuddyOnLaunch();
 
-    expect(calls.helperStatus).toBe(0);
+    // It DOES ask the desktop one question — "does the buddy need a helper here,
+    // and is one missing?" — because that is what decides whether this user's
+    // buddy is broken at all. A silent read is not an interruption; changed
+    // 2026-09-04 when the migration stopped firing for every Linux user. What
+    // R13 forbids is still pinned below: nothing is installed, nothing is shown,
+    // and no card, dialog or offer appears anywhere at launch.
+    expect(calls.helperStatus).toBe(1);
     expect(calls.installHelper).toBe(0);
     expect(calls.show).toBe(0);
     // The only thing that changed is the stored preference.

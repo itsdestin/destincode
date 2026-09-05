@@ -1925,14 +1925,27 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // (docs/active/design/2026-09-04-linux-buddy-helper/). The fakes below stay so
   // the workbench can still show every state without a KDE desktop.
   //
-  // ?buddyHelper= picks which Linux the workbench is pretending to be:
-  //   installed  the KWin helper is in place — the buddy can be dragged  (default)
-  //   available  KDE Plasma, helper not added yet — the consent path
-  //   none       a Linux desktop this cannot work on — the unavailable path
+  // ?buddyHelper= picks which desktop the workbench is pretending to be. All
+  // FOUR rows of design §4's table are reachable, because the two that were
+  // missing are the two a Linux session cannot easily be put into by hand:
+  //
+  //   installed       KDE Wayland, helper in place — the buddy can be dragged (default)
+  //   available       KDE Wayland, helper not added yet — the consent path
+  //   none            Wayland, but a desktop the helper cannot work on — the
+  //                   "Not yet supported on this desktop" row
+  //   not-needed      Windows/macOS/Linux X11 — the app moves its own windows,
+  //                   so NO helper UI appears at all and the switch is the plain
+  //                   one it has always been
+  //   not-needed-installed
+  //                   the same, except a helper is still sitting in KDE's
+  //                   settings from a previous Wayland login — Remove helper is
+  //                   the only helper control shown
   const buddyHelperMode = (typeof location !== 'undefined'
     && new URLSearchParams(location.search).get('buddyHelper')) || 'installed';
-  let buddyHelperInstalled = buddyHelperMode === 'installed';
-  const buddyHelperSupported = buddyHelperMode !== 'none';
+  // `needed` is the fact that decides whether ANY helper UI exists (design §4).
+  const buddyHelperNeeded = !buddyHelperMode.startsWith('not-needed');
+  let buddyHelperInstalled = buddyHelperMode === 'installed' || buddyHelperMode === 'not-needed-installed';
+  const buddyHelperSupported = buddyHelperNeeded && buddyHelperMode !== 'none';
   let buddyDismissed = false;
   let buddyKeepAbove = true;
   const buddyStatusSubs = new Set<(s: unknown) => void>();
@@ -1942,7 +1955,21 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   };
   const buddy = {
     getStatus: async () => ({ dismissed: buddyDismissed, keepAbove: buddyKeepAbove }),
-    show: async () => { buddyDismissed = false; pushBuddyStatus(); },
+    // Mirrors main's refusal (design §5): a desktop that NEEDS a helper and does
+    // not have one says no rather than putting a buddy on screen that cannot be
+    // dragged. The sentence is main's own (ipc-handlers.ts buddyShowRefusal), so
+    // the workbench shows the words a real user would read, not invented ones.
+    show: async () => {
+      if (buddyHelperNeeded && !buddyHelperInstalled) {
+        return {
+          ok: false as const,
+          reason: 'The buddy needs its KDE helper on this desktop, and the helper is not running.',
+        };
+      }
+      buddyDismissed = false;
+      pushBuddyStatus();
+      return { ok: true as const };
+    },
     hide: async () => {},
     dismiss: async () => { buddyDismissed = true; pushBuddyStatus(); },
     // Mirrors the real one's contract exactly: resolves FALSE when KWin could
@@ -1952,22 +1979,33 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       buddyStatusSubs.add(cb);
       return () => buddyStatusSubs.delete(cb);
     },
-    // MOCK_ONLY. supported = this desktop can run the helper at all (KDE);
-    // installed = the helper package is present in the user's KDE settings.
-    helperStatus: async () => ({ supported: buddyHelperSupported, installed: buddyHelperInstalled }),
-    // MOCK_ONLY. Real one writes the package into ~/.local/share/kwin/scripts,
+    // needed = the app cannot move its own windows here, so a helper is required
+    // at all; supported = a helper could work on this desktop (KDE 6 Wayland);
+    // installed = the helper package is loaded in the compositor. `installed` is
+    // reported truthfully even when nothing is needed — that is what keeps the
+    // Remove helper button reachable after a Wayland user logs into X11.
+    helperStatus: async () => ({
+      needed: buddyHelperNeeded,
+      supported: buddyHelperSupported,
+      installed: buddyHelperInstalled,
+    }),
+    // Real one writes the package into ~/.local/share/kwin/scripts,
     // enables it and asks KWin to reconfigure. Fails on a non-KDE desktop.
     installHelper: async () => {
       if (!buddyHelperSupported) return { ok: false as const };
       buddyHelperInstalled = true;
       return { ok: true as const };
     },
-    // MOCK_ONLY. The user-owned undo (decide-uninstall#D-1). The real one runs
+    // The user-owned undo (decide-uninstall#D-1). The real one runs
     // design §6's order — unload the script, disable it, ask KWin to reconfigure,
     // then delete the package — and the buddy is switched off after it, because
     // without the helper there is no buddy to move.
     removeHelper: async () => {
-      if (!buddyHelperSupported) return { ok: false as const };
+      // Gated on INSTALLED, not on supported — the real remove() just unloads
+      // whatever is there. Gating on `supported` would make Remove helper fail
+      // in exactly the state it exists for: a helper left behind on a desktop
+      // that no longer supports (or needs) one.
+      if (!buddyHelperInstalled) return { ok: false as const };
       buddyHelperInstalled = false;
       return { ok: true as const };
     },

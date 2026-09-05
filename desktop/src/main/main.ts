@@ -24,7 +24,7 @@ import fs from 'fs';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { WindowRegistry } from './window-registry';
-import { registerIpcHandlers, buddyShowRefusal, cachedBuddyHelperStatus, refreshBuddyHelperStatus } from './ipc-handlers';
+import { registerIpcHandlers, buddyShowRefusal, cachedBuddyHelperStatus, refreshBuddyHelperStatus, setBuddyHelperLostHandler } from './ipc-handlers';
 import { RemoteServer } from './remote-server';
 import { RemoteConfig } from './remote-config';
 import { LocalSkillProvider } from './skill-provider';
@@ -1684,8 +1684,15 @@ void app.whenReady().then(async () => {
   // profiles that no longer exist (each one keeps running inside the window
   // manager and fights over the buddy on every drag frame), and it quietly
   // replaces our own copy when the app has been updated.
-  await syncHelperOnLaunch();
-  const helperAtLaunch = await refreshBuddyHelperStatus();
+  // Wrapped, and deliberately so: every buddy IPC handler below is registered
+  // AFTER these two awaits, so a throw here would silently leave the buddy — and
+  // the session-attention indicator — with no handlers at all, and the process
+  // unhandledRejection listener would swallow it. The helper is optional; the
+  // launch is not. (B4 review, F2.)
+  await syncHelperOnLaunch().catch(() => { /* an un-swept orphan is inert; launch matters more */ });
+  const helperAtLaunch = await refreshBuddyHelperStatus().catch(
+    () => ({ needed: false, supported: false, installed: false }) as const,
+  );
 
   // WHY this lookup exists and is built only where it is needed: on native
   // Wayland the desktop will not tell an app how much of the screen the taskbar
@@ -1809,6 +1816,13 @@ void app.whenReady().then(async () => {
       });
   // Publish to module scope so createAppWindow's 'closed' handler can see it.
   buddyManagerRef = buddyManager;
+
+  // If the helper stops being live while the buddy is up — the user switches the
+  // KWin script off in KDE's System Settings, or KWin is briefly unreachable —
+  // put the buddy away rather than leaving one that cannot be dragged and whose
+  // chat and bar open in the screen corner. Design §4 added the re-check to
+  // NOTICE this; without a reaction, noticing changed nothing.
+  setBuddyHelperLostHandler(() => buddyManager.hide());
 
   // ─── CONSENT IS ENFORCED HERE, not in the settings screen (design §5) ────
   //

@@ -94,8 +94,20 @@ describe('IPC channel consistency', () => {
     const preloadOnly = [...preloadIpc.keys()].filter((n) => !typesIpc.has(n)).sort();
     const typesOnly = [...typesIpc.keys()].filter((n) => !preloadIpc.has(n)).sort();
     // Compared as ARRAYS so a failure names the exact constant that drifted.
-    expect(preloadOnly).toEqual([...PRELOAD_ONLY_ON_2026_09_04].sort());
-    expect(typesOnly).toEqual([...TYPES_ONLY_ON_2026_09_04].sort());
+    // SUBSET-PLUS-CAP, not equality (B4 review, F4). Equality pins BOTH
+    // directions: fixing a legitimate piece of drift — adding one of the
+    // types-only constants to preload — would turn this red until someone
+    // hand-edited the baseline, and the failure would be a raw array diff that
+    // does not say which direction is the good one. This way a fix passes
+    // silently, a NEW one-sided constant fails and names itself, and quietly
+    // appending to the baseline no longer works: the count is a hard number that
+    // has to be edited too, which is a visible change in review.
+    const strays = preloadOnly.filter((n) => !PRELOAD_ONLY_ON_2026_09_04.includes(n));
+    expect(strays, 'new preload-only channel constant(s); add them to shared/types.ts too').toEqual([]);
+    expect(preloadOnly.length).toBeLessThanOrEqual(PRELOAD_ONLY_ON_2026_09_04.length);
+    const typesStrays = typesOnly.filter((n) => !TYPES_ONLY_ON_2026_09_04.includes(n));
+    expect(typesStrays, 'new types-only channel constant(s); add them to preload.ts too').toEqual([]);
+    expect(typesOnly.length).toBeLessThanOrEqual(TYPES_ONLY_ON_2026_09_04.length);
   });
 
   // Channel strings preload passes to ipcRenderer directly, without going

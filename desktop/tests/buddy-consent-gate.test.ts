@@ -241,3 +241,66 @@ describe('main.ts wires the gate to the window that gets created', () => {
     expect(debouncer).toContain('clearTimeout(t)');
   });
 });
+
+describe('losing the helper under a live buddy', () => {
+  let gate: Gate;
+  beforeEach(async () => {
+    helperStatusMock.mockReset();
+    gate = await freshGate();   // the cache is module state; each case starts empty
+  });
+
+  it('puts the buddy away when the helper stops being live', async () => {
+    // WHY this is not covered by the Remove button. buddy-window-manager.ts
+    // records that the caption channel MUST NOT flip true→false while buddy
+    // windows exist: after the flip, moves take the setPosition branch — a
+    // silent no-op on Wayland — and rectOf returns getBounds(), frozen at the
+    // constructor position, so the chat and bar open in the screen corner while
+    // the mascot sits still and undraggable. Removal was claimed as the
+    // guarantee, but design §4 added the on-show re-check precisely so that
+    // switching the KWin script off in KDE's own System Settings mid-session is
+    // NOTICED — and noticing without acting produced exactly that buddy.
+    const hide = vi.fn();
+    gate.setBuddyHelperLostHandler(hide);
+    try {
+      helperStatusMock.mockResolvedValueOnce({ needed: true, supported: true, installed: true });
+      await gate.refreshBuddyHelperStatus();
+      expect(hide).not.toHaveBeenCalled();
+
+      helperStatusMock.mockResolvedValueOnce({ needed: true, supported: true, installed: false });
+      await gate.refreshBuddyHelperStatus();
+      expect(hide).toHaveBeenCalledTimes(1);
+    } finally {
+      gate.setBuddyHelperLostHandler(null);
+    }
+  });
+
+  it('does not put the buddy away when the helper was never live', async () => {
+    const hide = vi.fn();
+    gate.setBuddyHelperLostHandler(hide);
+    try {
+      helperStatusMock.mockResolvedValueOnce({ needed: false, supported: false, installed: false });
+      await gate.refreshBuddyHelperStatus();
+      helperStatusMock.mockResolvedValueOnce({ needed: false, supported: false, installed: false });
+      await gate.refreshBuddyHelperStatus();
+      expect(hide).not.toHaveBeenCalled();
+    } finally {
+      gate.setBuddyHelperLostHandler(null);
+    }
+  });
+
+  it('reacts to a mid-session KDE outage, which is the case that actually happens', async () => {
+    // helperStatus() has no rejecting path: an unreachable KWin comes back as
+    // supported:false, installed:false. That is the shape a real outage takes.
+    const hide = vi.fn();
+    gate.setBuddyHelperLostHandler(hide);
+    try {
+      helperStatusMock.mockResolvedValueOnce({ needed: true, supported: true, installed: true });
+      await gate.refreshBuddyHelperStatus();
+      helperStatusMock.mockResolvedValueOnce({ needed: true, supported: false, installed: false, reason: 'KWin is not reachable' });
+      await gate.refreshBuddyHelperStatus();
+      expect(hide).toHaveBeenCalledTimes(1);
+    } finally {
+      gate.setBuddyHelperLostHandler(null);
+    }
+  });
+});

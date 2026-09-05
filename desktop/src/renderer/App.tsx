@@ -3818,6 +3818,16 @@ function AppInnerProfiler({ children }: { children: React.ReactNode }) {
 // screen with no explanation; hiding it once turns "it's broken" into "it's off,
 // switch it on and it asks you a question".
 //
+// WHY IT IS NOT "every Linux user" (design §4, revision 7): only a buddy that is
+// actually broken gets hidden. On Linux X11 — and on Wayland sessions whose
+// windows are really XWayland ones, which look identical from every environment
+// variable — the app moves its own windows perfectly well and the buddy has
+// always worked. Hiding THEIR buddy would take away something that was fine, and
+// they could not get it back: the switch is where the hiding is undone, and a
+// user who never needed a helper would be handed a consent card for one. So the
+// question this asks the desktop is "does the buddy need a helper here, and is
+// one missing?" — nothing else qualifies.
+//
 // WHY IN THE RENDERER, not the main process: the preference is
 // localStorage['youcoded-buddy-enabled'], which only the renderer can read or
 // write — a main-process one-shot cannot clear it.
@@ -3838,15 +3848,25 @@ export async function runBuddyLinuxHideMigration(): Promise<
   // below. A phone has no buddy and no KDE, and every buddy method there throws.
   if (!(window as any).claude?.window) return 'skipped';
   if (localStorage.getItem(BUDDY_LINUX_HIDE_MIGRATION_KEY) === '1') return 'already-run';
-  let platform: string | undefined;
+  // The desktop's own three-fact answer, NOT "is this Linux". This one call is
+  // the difference between hiding a broken buddy and taking a working one away.
+  let helper: { needed?: boolean; installed?: boolean } | undefined;
   try {
-    platform = await (window as any).claude?.getPlatform?.();
+    helper = await window.claude.buddy?.helperStatus?.();
   } catch {
     // Never let a boot-time IPC failure take the launch path down: if we cannot
-    // tell which OS this is, we change nothing and try again next launch.
+    // tell what kind of desktop this is, we change nothing and try again next
+    // launch. Doing nothing costs the user exactly today's behaviour.
     return 'skipped';
   }
-  if (platform !== 'linux') return 'skipped';
+  // No helper is wanted here (Windows, macOS, Linux/X11, XWayland): the buddy is
+  // not broken, so there is nothing to hide. Deliberately WITHOUT writing the
+  // marker — someone who is on X11 today and logs into a Wayland session
+  // tomorrow still gets their one hide on the launch where it would matter.
+  if (!helper?.needed) return 'skipped';
+  // The helper is already in place, so the buddy can be dragged and works as
+  // promised. Hiding it would be a mystery, not a rescue.
+  if (helper.installed) return 'skipped';
   // The marker is written whether or not the buddy was on, so this is a true
   // one-shot: a user who switches the buddy back on is never hidden again.
   localStorage.setItem(BUDDY_LINUX_HIDE_MIGRATION_KEY, '1');
@@ -3870,9 +3890,17 @@ export async function bootBuddyOnLaunch(): Promise<void> {
   // a remote browser does not report as 'browser'.
   if (!(window as any).claude?.window) return;
   await runBuddyLinuxHideMigration();
-  if (localStorage.getItem('youcoded-buddy-enabled') === '1') {
-    window.claude.buddy?.show?.();
-  }
+  if (localStorage.getItem('youcoded-buddy-enabled') !== '1') return;
+  // show() can now answer "no" (design §5) — a Wayland desktop whose helper has
+  // gone missing since last launch refuses rather than putting a buddy on screen
+  // that cannot be dragged. When it does, the stored preference is cleared, so
+  // Settings → Buddy Floater does not sit there reading "On" with nothing on the
+  // desktop. The refusal itself is main's to explain; the launch path stays
+  // silent (R13: no dialog interrupts you).
+  try {
+    const res = await window.claude.buddy?.show?.();
+    if (res && res.ok === false) localStorage.setItem('youcoded-buddy-enabled', '0');
+  } catch { /* a throwing bridge is not a refusal — leave the preference alone */ }
 }
 
 export default function App() {

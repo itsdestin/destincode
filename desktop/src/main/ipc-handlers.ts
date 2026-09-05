@@ -223,7 +223,30 @@ export function cachedBuddyHelperStatus(): HelperStatus | null {
  * in KDE's own System Settings while YouCoded is running, and a stale "yes it
  * is installed" would leave the buddy switched on and unable to move.
  */
+let onHelperLost: (() => void) | null = null;
+
+/**
+ * Told what to do when the helper stops being live under a buddy that is
+ * already on screen. Wired by main.ts to `buddyManager.hide()`.
+ *
+ * WHY this exists rather than trusting the Remove button (B4 review, F1):
+ * `buddy-window-manager.ts` records that `captionChannelLive` MUST NOT flip
+ * true→false while buddy windows exist — after the flip, moves take the
+ * `setPosition` branch, which is a silent no-op on Wayland, and `rectOf` starts
+ * returning `getBounds()`, frozen at the constructor position, so the chat and
+ * bar re-anchor to the screen corner while the mascot stays put. It claimed
+ * removal-forces-hide as the guarantee, but removal is not the only writer:
+ * design §4 added the on-show re-check EXACTLY so that switching the script off
+ * in KDE's own System Settings mid-session is noticed, and a momentary DBus
+ * failure does the same. Noticing without acting produced the undraggable,
+ * corner-anchored buddy this whole feature exists to eliminate.
+ */
+export function setBuddyHelperLostHandler(fn: (() => void) | null): void {
+  onHelperLost = fn;
+}
+
 export async function refreshBuddyHelperStatus(): Promise<HelperStatus> {
+  const wasLive = helperStatusCache?.needed === true && helperStatusCache.installed === true;
   try {
     helperStatusCache = await helperStatus();
   } catch (err) {
@@ -239,13 +262,23 @@ export async function refreshBuddyHelperStatus(): Promise<HelperStatus> {
     // the "false" direction costs a Wayland user exactly today's behaviour — a
     // buddy that cannot be dragged. Getting it wrong the other way TAKES AWAY a
     // working buddy from a Windows, macOS or KDE-X11 user, who never needed a
-    // helper in the first place. Only reachable if the status call throws before
-    // it can decide anything, which needs the profile directory itself to be
-    // unreadable — main.ts has already crashed by then.
+    // helper in the first place.
+    //
+    // BUT THIS BRANCH IS NOT THE RULE THAT GOVERNS IN PRACTICE (B4 review, F3).
+    // helperStatus() has no rejecting path today — supportGate() turns an
+    // unreachable KWin into { supported: false }, and kdeCall catches its own
+    // exec errors — so a real mid-session KDE outage lands on the NON-throwing
+    // path above: { needed: true, supported: false, installed: false }, which
+    // the consent gate refuses. That is the right direction (no buddy beats an
+    // undraggable one), and it is the behaviour to reason about. This branch is
+    // insurance against a future throw, not the live decision.
     helperStatusCache = helperStatusCache
       ? { ...helperStatusCache, installed: false, reason: err instanceof Error ? err.message : String(err) }
       : { needed: false, supported: false, installed: false, reason: err instanceof Error ? err.message : String(err) };
   }
+  const isLive = helperStatusCache.needed === true && helperStatusCache.installed === true;
+  // The transition, not the button, is the trigger. See setBuddyHelperLostHandler.
+  if (wasLive && !isLive) onHelperLost?.();
   return helperStatusCache;
 }
 
