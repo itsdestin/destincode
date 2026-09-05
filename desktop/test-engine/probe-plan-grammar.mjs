@@ -35,6 +35,7 @@ import Ajv from 'ajv';
 const [base, model, trialsArg] = process.argv.slice(2);
 if (!base || !model) { console.error('usage: probe-plan-grammar.mjs <baseURL> <modelId> [trials]'); process.exit(2); }
 const TRIALS = Number(trialsArg ?? 3);
+if (!Number.isInteger(TRIALS) || TRIALS < 1) { console.error(`usage: trials must be a positive integer, got "${trialsArg}"`); process.exit(2); }
 
 const STEP_SCHEMA = {
   $defs: {
@@ -97,19 +98,29 @@ async function trial(i) {
   const wall = performance.now() - start;
   if (!res.ok) return { i, wall, outcome: `HTTP ${res.status}: ${(await res.text()).slice(0, 300)}` };
   const json = await res.json();
-  const msg = json.choices?.[0]?.message ?? {};
+  // Review F8: a 200 with no choices (an {error} body, a proxy hiccup) is its own outcome,
+  // not "the model answered in prose" — that label is read as a model failure in the doc.
+  const choice = json.choices?.[0];
+  if (!choice) return { i, wall, outcome: 'NO CHOICES IN RESPONSE', raw: JSON.stringify(json).slice(0, 300) };
+  const msg = choice.message ?? {};
   const call = msg.tool_calls?.[0];
-  if (!call) return { i, wall, outcome: 'NO TOOL CALL', text: String(msg.content ?? '').slice(0, 200) };
+  const finish = choice.finish_reason ?? '?';
+  if (!call) return { i, wall, outcome: `NO TOOL CALL (finish_reason=${finish})`, text: String(msg.content ?? '').slice(0, 200) };
+  const rawArgs = String(call.function?.arguments ?? '');
   let args;
-  try { args = JSON.parse(call.function.arguments); } catch { return { i, wall, outcome: 'ARGS NOT JSON', raw: call.function.arguments.slice(0, 300) }; }
+  // Review F9: a call cut off by max_tokens is a budget failure, not garbage — say which.
+  try { args = JSON.parse(rawArgs); } catch { return { i, wall, outcome: finish === 'length' ? 'ARGS TRUNCATED (finish_reason=length — raise max_tokens)' : `ARGS NOT JSON (finish_reason=${finish})`, raw: rawArgs.slice(0, 300) }; }
   const ok = validate(args);
   if (!ok) return { i, wall, outcome: 'SCHEMA INVALID', errors: ajv.errorsText(validate.errors).slice(0, 400), args };
   // Sense check: did it map over the three files and end in a combine?
   const kinds = args.steps.map((s) => s.kind);
-  const mapStep = args.steps.find((s) => s.kind === 'map');
+  const mapSteps = args.steps.filter((s) => s.kind === 'map');
+  // Review F11: three map steps of one item each is a fair reading of "one helper per file" —
+  // count items across every map step, not only the first.
+  const mapped = mapSteps.reduce((n, s) => n + (s.items ?? []).length, 0);
   const sense = [];
-  if (!mapStep) sense.push('no map step');
-  else if ((mapStep.items ?? []).length !== 3) sense.push(`map has ${(mapStep.items ?? []).length} items, expected 3`);
+  if (!mapSteps.length) sense.push('no map step');
+  else if (mapped !== 3) sense.push(`map steps cover ${mapped} items, expected 3`);
   if (!kinds.includes('combine')) sense.push('no combine step');
   if (kinds.includes('repeat')) sense.push('used repeat when nothing looped');
   return { i, wall, outcome: sense.length ? `VALID BUT ODD (${sense.join('; ')})` : 'VALID + SENSIBLE', kinds, args };
@@ -129,6 +140,9 @@ async function trial(i) {
     if (r.args && i === 1) console.log('   first plan:', JSON.stringify(r.args).slice(0, 600));
   }
   const valid = results.filter((r) => r.outcome.startsWith('VALID')).length;
+  // Review F9: the summary names truncation separately so a small max_tokens is not read as a model failure.
+  const truncated = results.filter((r) => r.outcome.startsWith('ARGS TRUNCATED')).length;
+  if (truncated) console.log(`\n${truncated}/${TRIALS} trials were cut off by max_tokens — a budget failure, not a grammar failure.`);
   const sensible = results.filter((r) => r.outcome === 'VALID + SENSIBLE').length;
   console.log(`\nSUMMARY ${model}: ${valid}/${TRIALS} schema-valid, ${sensible}/${TRIALS} valid and sensible`);
 })().catch((e) => { console.error(String(e.message || e)); process.exit(1); });

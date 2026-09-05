@@ -405,14 +405,17 @@ Destin's live engine on 9920 was left alone.
 
 Qwen3.5-2B-Q8_0, `max_tokens: 24`, N simultaneous requests, **app shape (no `--parallel`)**:
 
-| N | total_ms | avg_req_ms | min_ms | max_ms | classification |
-|---|----------|------------|--------|--------|----------------|
-| 1 | 475 | 475 | 475 | 475 | baseline |
-| 2 | 528 | 522 | 517 | 528 | batched |
-| 4 | 907 | 900 | 892 | 907 | partial (1.9× baseline) |
-| 8 | 1890 | 1465 | 878 | 1889 | two waves: four finish at ~880 ms, four at ~1890 ms |
+| N | total_ms | avg_req_ms | min_ms | max_ms | vs N×single | classification (the script's) |
+|---|----------|------------|--------|--------|-------------|----------------|
+| 1 | 475 | 475 | 475 | 475 | 100% | batched |
+| 2 | 528 | 522 | 517 | 528 | 56% | batched |
+| 4 | 907 | 900 | 892 | 907 | 48% | partial |
+| 8 | 1890 | 1465 | 878 | 1889 | 50% | partial |
 
-`--parallel 4` gave the same picture (390 / 556 / 799 / 1160 ms; N=8 split 787 / 1533).
+Reading the N=8 row: `min` 878 ms and `max` 1889 ms are two waves — four requests finish in
+about one wave's time and four wait for the first four — which is what a four-slot ceiling
+looks like from outside. N=4's average is 1.9× the single-request baseline. `--parallel 4`
+gave the same picture (390 / 556 / 799 / 1160 ms; N=8 split 787 / 1533).
 `/props?model=<id>` and the server log both say **`total_slots = 4`** in either shape.
 
 **Findings that matter to the plan card:**

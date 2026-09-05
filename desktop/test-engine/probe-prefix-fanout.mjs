@@ -12,7 +12,8 @@
 //
 // Three waves, one already-loaded model, all sharing one ~2,000-token system
 // prefix P and differing only in the user turn:
-//   wave 0  one request with P — the cold prefill (loads P into one slot)
+//   warm-up one untimed request with P (pays the model load; P now sits in one slot)
+//   cold    one timed request with a never-seen prefix — the full-prefill baseline
 //   wave 1  N simultaneous requests with P — the fan-out this probe is about
 //   wave 2  N simultaneous requests with P again — steady state, every slot
 //           has now seen P at least once
@@ -20,17 +21,20 @@
 // prefilled) and `timings.prompt_ms`. Reuse "survives fan-out" if wave 1's
 // requests prefill far fewer tokens than the cold request did.
 //
-// Launch a server first, matching engine-supervisor.ts's router-mode spawn,
-// with an explicit slot count so N is meaningful:
+// Launch a server first, matching engine-supervisor.ts's router-mode spawn — the
+// APP'S shape, with no slot flag (this build resolves to four slots on its own and
+// keeps one shared KV pool; adding `--parallel 4` splits the context per slot and
+// changes what you are measuring — see docs/engine-dependencies.md → Stage-two probes):
 //
 //   llama-server --host 127.0.0.1 --port 8199 --no-webui --jinja \
 //     --models-dir <cacheDir> --models-max 2 --sleep-idle-seconds 300 \
-//     -c <contextSize> --parallel 4
+//     -c <contextSize>
 //
 // Usage: node test-engine/probe-prefix-fanout.mjs <baseURL> <modelId> [N=4]
 const [base, model, nArg] = process.argv.slice(2);
 if (!base || !model) { console.error('usage: probe-prefix-fanout.mjs <baseURL> <modelId> [N]'); process.exit(2); }
 const N = Number(nArg ?? 4);
+if (!Number.isInteger(N) || N < 1) { console.error(`usage: N must be a positive integer, got "${nArg}"`); process.exit(2); }
 
 // Same filler construction as probe-prefix-cache.mjs so the two probes measure
 // the same prefix size; the server's `prompt_n` is the ground truth.
@@ -41,14 +45,16 @@ function buildPrefix(seed, approxTokens = 2000) {
 }
 const PREFIX = buildPrefix('P');
 
-async function chat(userContent) {
+// One request path for every row (review F3: the cold request used to be a copy of this
+// without the HTTP check, so an error body became a confident wrong verdict).
+async function chat(userContent, systemPrefix = PREFIX) {
   const start = performance.now();
   const res = await fetch(`${base}/v1/chat/completions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'system', content: PREFIX }, { role: 'user', content: userContent }],
+      messages: [{ role: 'system', content: systemPrefix }, { role: 'user', content: userContent }],
       max_tokens: 8,
       temperature: 0,
     }),
@@ -72,19 +78,10 @@ function row(label, r) {
   // Warm-up pays the model load AND loads P into one slot (it uses P). So the
   // table's cold baseline below uses a never-seen prefix variant instead.
   await chat('warm-up: reply with one word.');
-  const coldPrefixReq = async () => {
-    const start = performance.now();
-    const res = await fetch(`${base}/v1/chat/completions`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, messages: [{ role: 'system', content: buildPrefix('COLD') }, { role: 'user', content: 'one word.' }], max_tokens: 8, temperature: 0 }),
-    });
-    const wall = performance.now() - start; const json = await res.json(); const t = json.timings ?? {};
-    return { wall, promptN: t.prompt_n ?? null, promptMs: t.prompt_ms ?? null, cacheN: t.cache_n ?? null };
-  };
 
   console.log('\n request        | prompt_n | cache_n | prompt_ms | wall_ms');
   console.log('----------------|----------|---------|-----------|--------');
-  const cold = await coldPrefixReq();
+  const cold = await chat('one word.', buildPrefix('COLD'));
   row('cold (new P)', cold);
 
   const wave1 = await Promise.all(Array.from({ length: N }, (_, i) => chat(`Child ${i + 1}: reply with the number ${i + 1} only.`)));
@@ -93,8 +90,14 @@ function row(label, r) {
   const wave2 = await Promise.all(Array.from({ length: N }, (_, i) => chat(`Child ${i + 1} again: reply with the number ${i + 1} only.`)));
   wave2.forEach((r, i) => row(`wave2 child ${i + 1}`, r));
 
+  // Review F4: a build that omits `timings` must not produce a verdict at all — the old
+  // `?? 0` / `?? 1` fallbacks turned "no data" into "reuse survives" or "no reuse".
+  if ([cold, ...wave1, ...wave2].some((r) => r.promptN == null)) {
+    console.error('\nNO VERDICT: this build did not report timings.prompt_n on every request; the table above is all the evidence there is.');
+    process.exit(1);
+  }
   const avg = (rs, k) => rs.reduce((a, r) => a + (r[k] ?? 0), 0) / rs.length;
-  const coldN = cold.promptN ?? 1;
+  const coldN = cold.promptN;
   const w1 = avg(wave1, 'promptN'), w2 = avg(wave2, 'promptN');
   const w1ms = avg(wave1, 'promptMs'), w2ms = avg(wave2, 'promptMs');
   console.log(`\ncold prefill: ${coldN} tokens in ${(cold.promptMs ?? 0).toFixed(0)} ms`);

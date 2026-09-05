@@ -28,7 +28,8 @@
 // (N=8 on a 4-slot server should serialize into two waves). Default unchanged.
 const [base, model, nsArg] = process.argv.slice(2);
 const NS = nsArg ? nsArg.split(',').map((x) => Number(x)).filter((x) => Number.isInteger(x) && x > 0) : [1, 2, 4];
-if (!base || !model) { console.error('usage: probe-parallel.mjs <baseURL> <modelId>'); process.exit(2); }
+if (!base || !model) { console.error('usage: probe-parallel.mjs <baseURL> <modelId> [N,N,...]'); process.exit(2); }
+if (nsArg && NS.length === 0) { console.error(`usage: the N list "${nsArg}" has no positive integers`); process.exit(2); }
 
 const PROMPT = 'In one short sentence, name the capital of France.';
 const MAX_TOKENS = 24;
@@ -65,7 +66,15 @@ async function runBatch(n) {
   }
 
   const rows = [];
-  let singleAvg = null;
+  // Review F1 (2026-09-04): the baseline used to be "the N=1 row", so a list without 1
+  // (e.g. 2,4,8) left it null and every percentage printed Infinity. Measure it once here.
+  let singleAvg;
+  try {
+    singleAvg = (await runBatch(1)).avg;
+  } catch (e) {
+    console.error(`FAIL baseline request errored: ${String(e.message || e)}`);
+    process.exit(1);
+  }
   for (const n of NS) {
     let r;
     try {
@@ -76,7 +85,6 @@ async function runBatch(n) {
       console.error(`FAIL N=${n} batch errored: ${String(e.message || e)}`);
       process.exit(1);
     }
-    if (n === 1) singleAvg = r.avg;
     rows.push(r);
   }
 
