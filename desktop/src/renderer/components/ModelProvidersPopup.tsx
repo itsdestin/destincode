@@ -131,8 +131,11 @@ function SectionHeader({ title, info }: { title: string; info: { label: string; 
 // same muted grey · one action on the right · optional plan bars underneath.
 // No green "connected" text and no "Default engine" badge — the status line
 // says the state in words and the plan bars say how much is left.
-function ProviderRow({ title, status, detail, action, children }: {
+function ProviderRow({ title, info, status, detail, action, children }: {
   title: string;
+  /** The (i) explainer, beside the name INSIDE the card (round 3, P-1): the
+   *  eyebrow heading above the card repeated the name, so it is gone. */
+  info?: { label: string; body: React.ReactNode };
   status: React.ReactNode;
   /** A second line under the status: OpenAI's refusal reason, a hint. Tone
    *  'bad' is the destructive colour for a reason the user must read. */
@@ -142,9 +145,14 @@ function ProviderRow({ title, status, detail, action, children }: {
 }) {
   return (
     <div className="bg-inset/50 rounded-lg px-3 py-2.5">
-      <div className="flex items-center gap-3">
+      {/* items-start: the button sits on the title line, top-right, not
+          centred against however many lines the status grows to (P-1/P-2). */}
+      <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
-          <p className="text-xs text-fg font-medium">{title}</p>
+          <p className="text-xs text-fg font-medium inline-flex items-center gap-1.5">
+            {title}
+            {info && <AnchorTip label={info.label} title={title}>{info.body}</AnchorTip>}
+          </p>
           <p className="text-2xs mt-0.5 text-fg-muted">{status}</p>
           {detail && (
             <p className={`text-2xs mt-0.5 ${detail.tone === 'bad' ? 'text-destructive-fg' : 'text-fg-muted'}`}>{detail.text}</p>
@@ -220,7 +228,9 @@ function ClaudeCodeBlock({
 
   return (
     <section>
-      <SectionHeader
+      {/* P-1 (2026-09-05): no eyebrow heading — the card's own name is the
+          label, and the (i) sits beside it. Same row as ChatGPT and OpenRouter. */}
+      <ProviderRow
         title="Claude Code"
         info={{
           label: 'About Claude Code',
@@ -228,7 +238,8 @@ function ClaudeCodeBlock({
             <>
               <p>
                 Claude Code is Anthropic's AI coding agent — the engine YouCoded is built around. It can
-                read your files, run commands, browse, and use tools.
+                read your files, run commands, browse, and use tools. Every session runs through it
+                unless you pick another provider below.
               </p>
               <p>
                 You sign in with your Claude Pro or Max plan (or an Anthropic API key) — there's no extra
@@ -237,13 +248,6 @@ function ClaudeCodeBlock({
             </>
           ),
         }}
-      />
-
-      {/* P-1 (2026-09-05): the "Default engine" badge and its sentence are gone;
-          the (i) above still says Claude Code is what sessions run on unless
-          another provider is picked. Same row as ChatGPT and OpenRouter below. */}
-      <ProviderRow
-        title="Claude Code"
         status={statusText}
         action={onOpenClaudePreferences && (
           <Button variant="secondary" size="sm" onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}>
@@ -355,7 +359,7 @@ function ChatGptBlock() {
 
   return (
     <section>
-      <SectionHeader
+      <ProviderRow
         title="ChatGPT"
         info={{
           label: 'About ChatGPT sign-in',
@@ -378,9 +382,10 @@ function ChatGptBlock() {
             </>
           ),
         }}
-      />
-
-      <ProviderRow title="ChatGPT" status={line} detail={note ? { text: note, tone: 'bad' } : detail} action={action}>
+        status={line}
+        detail={note ? { text: note, tone: 'bad' } : detail}
+        action={action}
+      >
         {status?.state === 'signed-in' && <PlanWindows usage={status.usage} />}
       </ProviderRow>
     </section>

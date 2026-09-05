@@ -1,5 +1,5 @@
-// Which provider a native session's model belongs to, and what to fall back to
-// when that provider's plan runs out (Sign in with ChatGPT, design 2026-09-04).
+// Which provider a native session's model belongs to (Sign in with ChatGPT,
+// design 2026-09-04).
 //
 // WHY a hook rather than a field on SessionInfo: a native session records its
 // bound MODEL id; the provider is only known through the catalog. The status
@@ -54,37 +54,4 @@ export function useModelProviderType(modelId: string | null | undefined): string
     return () => { alive = false; };
   }, [modelId]);
   return type;
-}
-
-export interface FallbackBinding {
-  /** "GPT-5 on OpenRouter" — model, then the provider it would run through. */
-  label: string;
-  /** True when that provider bills per use (anything but the local engine),
-   *  so the card can say so before the tap (questions deck Q-5a). */
-  metered: boolean;
-  providerId: string;
-  modelId: string;
-}
-
-/** Another connected provider's first catalog model, for the plan-limit card's
- *  one-tap switch. Excludes the provider that just ran out. Null when nothing
- *  else is connected — the card then only names the reset time. */
-export function useFallbackBinding(excludeType: string | null): FallbackBinding | null {
-  const [fb, setFb] = useState<FallbackBinding | null>(null);
-  useEffect(() => {
-    let alive = true;
-    void load().then((c) => {
-      if (!alive) return;
-      for (const p of c.providers) {
-        if (!p.ready || p.type === excludeType) continue;
-        const m = c.catalog.find((row) => row.providerId === p.id);
-        if (!m) continue;
-        setFb({ label: `${m.label} on ${p.label}`, metered: p.type !== 'local-engine', providerId: p.id, modelId: m.id });
-        return;
-      }
-      setFb(null);
-    });
-    return () => { alive = false; };
-  }, [excludeType]);
-  return fb;
 }

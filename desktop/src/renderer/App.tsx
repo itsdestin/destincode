@@ -33,7 +33,7 @@ import { runNativeSlashAction, routeSlashResult } from './state/native-slash-act
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
 import { buildUsageSnapshot, pruneExpiredUsage, type SubscriptionUsage } from './state/usage-snapshot';
-import { resolveProviderType, useFallbackBinding, useModelProviderType } from './hooks/use-provider-type';
+import { resolveProviderType, useModelProviderType } from './hooks/use-provider-type';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
@@ -2722,7 +2722,6 @@ function AppInner() {
   // and what to offer when its plan window runs out (the plan-limit card).
   const activeProviderType = useModelProviderType(isNativeSession ? currentSession?.model : null);
   const onChatGptPlan = activeProviderType === 'chatgpt';
-  const fallbackBinding = useFallbackBinding(onChatGptPlan ? 'chatgpt' : null);
   // What the StatusBar model chip renders — see model-chip.ts for why native
   // sessions bypass the Claude Code alias matcher entirely.
   const modelChip = modelChipFor(currentSession, currentModel);
@@ -3046,13 +3045,9 @@ function AppInner() {
                       // Provider-config error bubble → open Settings straight to
                       // the Model Providers section so the key can be fixed.
                       onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
-                      // Plan-limit card (Q-5a): one tap rebinds THIS conversation
-                      // to another connected provider's model; the picker's swap path.
-                      planLimitAlternative={onChatGptPlan && fallbackBinding && sessionId ? {
-                        label: fallbackBinding.label,
-                        metered: fallbackBinding.metered,
-                        onPick: () => { void window.claude.native.setBinding(sessionId, { providerId: fallbackBinding.providerId, modelId: fallbackBinding.modelId }); },
-                      } : null}
+                      // Plan-limit card (review round 2, P-9): Switch Providers
+                      // opens the same picker the status-bar chip opens.
+                      onSwitchProviders={() => setModelPickerOpen(true)}
                       onCancelQueued={handleCancelQueued}
                       onEditQueued={handleEditQueued}
                     />

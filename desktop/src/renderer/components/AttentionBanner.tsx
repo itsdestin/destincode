@@ -29,10 +29,9 @@ interface Props {
   /** Stalled card only: end the turn, keeping everything written so far.
    *  Identical to ESC — see ChatView, which wires it to the same handler. */
   onStop?: () => void;
-  /** Plan-limit card (Sign in with ChatGPT, questions deck Q-5a): the one-tap
-   *  switch to another connected provider for THIS conversation. Absent when
-   *  nothing else is connected — the card then only names the reset time. */
-  planLimitAlternative?: { label: string; metered: boolean; onPick: () => void } | null;
+  /** Plan-limit card (Sign in with ChatGPT; review round 2, P-9): the Switch
+   *  Providers button opens the model picker for THIS conversation. */
+  onSwitchProviders?: () => void;
 }
 
 // Provider-CONFIGURATION errors (missing API key, disabled provider, no endpoint)
@@ -75,7 +74,7 @@ function elapsedLabel(ms: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry, onOpenProviderSettings, stalledSince, onStop, planLimitAlternative }: Props) {
+export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry, onOpenProviderSettings, stalledSince, onStop, onSwitchProviders }: Props) {
   // Ticks once a second while parked. `stalledSince` IS serialized to the host
   // (chat-types.ts) so a reconnecting phone can still see the card — see that
   // field's own comment for why the elapsed number is only approximate there.
@@ -126,7 +125,7 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
   // already names when it resets — so Try again is withheld and the one useful
   // action is offered instead: carry on with another connected provider.
   const planLimit = state === 'error' && isChatGptLimitMessage(errorMessage);
-  const showSwitch = planLimit && !!planLimitAlternative;
+  const showSwitch = planLimit && !!onSwitchProviders;
 
   return (
     // in-view: opts the bubble into wallpaper-driven bubble glassmorphism
@@ -136,15 +135,7 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
     <div className="flex flex-col items-start gap-1 px-4 py-1.5 in-view">
       <div className={bubbleClasses}>
         {showSpinner && <BrailleSpinner size="base" />}
-        <span className={textClasses}>
-          {line}
-          {showSwitch && planLimitAlternative && (
-            <span className="text-fg-muted">
-              {' '}{planLimitAlternative.label} is connected
-              {planLimitAlternative.metered ? ' and bills per use.' : ' and runs on this computer.'}
-            </span>
-          )}
-        </span>
+        <span className={textClasses}>{line}</span>
         {showRetry && !planLimit && (
           <button
             type="button"
@@ -172,12 +163,12 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
             Stop
           </Button>
         )}
-        {showSwitch && planLimitAlternative && (
-          // P-9 (2026-09-05): the switch lives INSIDE the bubble like every other
-          // banner action, and the billing note rides the sentence — one card,
-          // one button, the consequence read before the tap (Q-5a).
-          <Button size="sm" onClick={planLimitAlternative.onPick} className="ml-auto shrink-0">
-            Switch
+        {showSwitch && (
+          // P-9 (round 3): the message in Destin's words and one button that
+          // opens the model picker — the picker is where every provider and
+          // its models already are, so the choice is the user's, not a guess.
+          <Button size="sm" onClick={onSwitchProviders} className="ml-auto shrink-0">
+            Switch Providers
           </Button>
         )}
         {showOpenSettings && (

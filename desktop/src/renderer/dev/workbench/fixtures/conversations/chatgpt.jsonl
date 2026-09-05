@@ -3,4 +3,4 @@
 {"type":"user_message","text":"Tighten paragraph 3 and give me one statistic I can cite."}
 {"type":"assistant_text","text":"Paragraph 3, tightened:\n\n*Downtown business runs on people who stop, not people who pass. Cafés and shops on pedestrian streets see more visits per day than the same shops on streets with through traffic, because a person on foot decides in a doorway and a driver decided three blocks ago.*\n\nA statistic to look up and cite properly: New York City's Department of Transportation reported retail sales rising on 9th Avenue after protected lanes and plazas replaced car lanes — check the current figure in their *Measuring the Street* report before you use it."}
 {"type":"user_message","text":"Great. Now draft paragraph 4."}
-{"type":"session_error","optIn":"planLimit","text":"Your ChatGPT plan's 5-hour limit is used up. It resets at 6:43 PM."}
+{"type":"session_error","optIn":"planLimit","text":"You have reached ChatGPT's 5-hour session limit (Resets @ 6:43pm)."}

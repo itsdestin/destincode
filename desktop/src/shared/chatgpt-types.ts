@@ -43,14 +43,16 @@ export type ChatGptAccountStatus =
  *  way the provider-config bubble keys on "Settings → Providers". */
 export function chatGptLimitMessage(windowLabel: '5-hour' | 'weekly', resetsAt: string): string {
   const t = Date.parse(resetsAt);
+  // "6:43pm", the status bar's own reset format, so the card and the chip agree.
   const when = Number.isFinite(t)
-    ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    ? new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }).replace(' ', '').toLowerCase()
     : 'later';
-  return `Your ChatGPT plan's ${windowLabel} limit is used up. It resets at ${when}.`;
+  // Wording is Destin's (review round 2, P-9).
+  return `You have reached ChatGPT's ${windowLabel} session limit (Resets @ ${when}).`;
 }
 
 export function isChatGptLimitMessage(message: string | null | undefined): boolean {
-  return !!message && /ChatGPT plan's .* limit is used up/.test(message);
+  return !!message && /ChatGPT's .* session limit/.test(message);
 }
 
 /** Human plan label: 'plus' → 'ChatGPT Plus'. Unknown strings pass through

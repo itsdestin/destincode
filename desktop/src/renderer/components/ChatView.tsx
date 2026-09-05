@@ -60,9 +60,9 @@ interface Props {
    *  provider-config error bubble (missing/disabled key) can jump the user
    *  straight to the fix. App owns Settings open-state, so it passes this down. */
   onOpenProviderSettings?: () => void;
-  /** Plan-limit card's one-tap switch (Sign in with ChatGPT). App resolves it
-   *  from the catalog; the banner shows it only for a plan-limit error. */
-  planLimitAlternative?: { label: string; metered: boolean; onPick: () => void } | null;
+  /** Plan-limit card's Switch Providers button (Sign in with ChatGPT): opens
+   *  the model picker. The banner shows it only for a plan-limit error. */
+  onSwitchProviders?: () => void;
   // Task 12 (docked strip, replaces Task 11's UserMessage-bubble affordances):
   // App owns the native:queue-remove invoke, the QUEUED_MESSAGE_REMOVED
   // dispatch, the toast state, and the input-bar ref the Edit flow refills —
@@ -74,7 +74,7 @@ interface Props {
   onEditQueued?: (sessionId: string, queueId: string, text: string) => void;
 }
 
-export default function ChatView({ sessionId, visible, sessionActive, cwd, gamePane, provider, onOpenProviderSettings, planLimitAlternative, onCancelQueued, onEditQueued }: Props) {
+export default function ChatView({ sessionId, visible, sessionActive, cwd, gamePane, provider, onOpenProviderSettings, onSwitchProviders, onCancelQueued, onEditQueued }: Props) {
   const state = useChatState(sessionId);
   const dispatch = useChatDispatch();
   const { showTimestamps, reducedEffects } = useTheme();
@@ -1182,7 +1182,7 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
                     // Provider-config errors (missing/disabled key) show an
                     // "Open Settings" button that deep-links to Model Providers.
                     onOpenProviderSettings={onOpenProviderSettings}
-                    planLimitAlternative={planLimitAlternative}
+                    onSwitchProviders={onSwitchProviders}
                     // Stalled card only. Retry re-runs the PARKED STEP — it is
                     // deliberately NOT the native-send helper the old TODO here
                     // pointed at, which sends a new user message and would fork
