@@ -64,3 +64,18 @@ describe('sharedDoctrine — question vs action (Destin, 2026-09-05)', () => {
     expect(sharedDoctrine({ ...FULL, audience: 'parent' })).not.toContain('unambiguously expects');
   });
 });
+
+describe('sharedDoctrine — consolidation review (Destin, 2026-09-05)', () => {
+  it('the visual-review rule reaches every audience and both sizes', () => {
+    expect(sharedDoctrine(FULL)).toContain('check the finished result the way the user will see it');
+    expect(sharedDoctrine({ ...FULL, audience: 'parent' })).toContain('check the finished result the way the user will see it');
+    expect(sharedDoctrine({ ...FULL, compact: true, batching: false })).toContain('look at the result as the user will see it');
+  });
+  it('planning is said once, to the root session, with the threshold', () => {
+    expect(sharedDoctrine(FULL)).toContain('never make a one-item plan');
+    expect(sharedDoctrine({ ...FULL, audience: 'parent' })).not.toContain('TodoWrite');
+  });
+  it('the writing block is Destin\'s wording', () => {
+    expect(sharedDoctrine(FULL)).toContain('optimize responses for glanceability');
+  });
+});
