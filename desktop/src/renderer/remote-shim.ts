@@ -1510,9 +1510,20 @@ export function installShim(): void {
       dragStarted: (_p: any) => {},
       dragEnded: () => {},
       dragDropped: (_p: any) => {},
+      // Claiming a dropped session is desktop-Electron only (main moves
+      // ownership between windows). A browser tab or the phone has one window.
+      dragAdopt: (_p: any) => {},
       focusAndSwitch: (_p: any) => {},
       openDetached: (_p: any) => {},
       requestTranscriptReplay: (_sid: string) => {},
+      // Stubs: multi-window ownership is desktop-only. There is no second
+      // window on the phone or in a remote browser, so nothing is ever queued
+      // and there is no memory-only state to re-send — the page fetched by
+      // requestTranscriptPage below is the whole story. Both must EXIST though:
+      // App.tsx calls them unconditionally on mount, and a missing key is a
+      // TypeError, not a no-op.
+      claimPending: () => Promise.resolve([] as any[]),
+      replayLiveState: (_sid: string) => Promise.resolve(),
       // A REAL call, not a stub. requestTranscriptReplay above shipped as a
       // no-op and silently gave the phone no history for months; paging is the
       // phone's only way back through a long conversation, so it must reach the

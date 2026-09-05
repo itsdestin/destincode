@@ -221,12 +221,15 @@ const IPC = {
   WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
   SESSION_OWNERSHIP_ACQUIRED: 'session:ownership-acquired',
   SESSION_OWNERSHIP_LOST: 'session:ownership-lost',
+  DETACH_CLAIM_PENDING: 'detach:claim-pending',
+  SESSION_REPLAY_LIVE_STATE: 'session:replay-live-state',
   SESSION_DETACH_START: 'session:detach-start',
   SESSION_DETACH_LIVE: 'session:detach-live',
   SESSION_DRAG_WINDOW_MOVE: 'session:drag-window-move',
   SESSION_DRAG_STARTED: 'session:drag-started',
   SESSION_DRAG_ENDED: 'session:drag-ended',
   SESSION_DRAG_DROPPED: 'session:drag-dropped',
+  SESSION_DRAG_ADOPT: 'session:drag-adopt',
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
@@ -642,6 +645,20 @@ contextBridge.exposeInMainWorld('claude', {
   // hide Install buttons on macOS-only integrations when running on Windows).
   getPlatform: (): Promise<'darwin' | 'win32' | 'linux' | 'android'> =>
     ipcRenderer.invoke(IPC.PLATFORM_GET),
+  // FACTS about the host windowing system, read once at preload time. Pure
+  // data — the decision that consumes it lives in renderer/session-drag-model.ts,
+  // so the rule ("which drag model") stays testable without a live Electron.
+  //
+  // Synchronous on purpose: the session strip has to choose a tear-off model in
+  // the middle of a pointermove, where awaiting a round-trip would mean the
+  // first drag after launch silently used the wrong one. Preload must not name
+  // a model itself — session-drag-model.test.ts pins that.
+  platformFacts: {
+    platform: process.platform as string,
+    // Wayland vs X11 decides whether window positions and the cursor's screen
+    // position are readable at all — on Wayland every such API returns zero.
+    wayland: !!process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland',
+  },
   // YouCoded account (device-code OAuth) — token stays in main process.
   // start/poll/updateProfile/setHandle/deleteAccount wrap API calls and return
   // ApiResult so the renderer can inspect HTTP status codes across the contextBridge
@@ -1040,6 +1057,12 @@ contextBridge.exposeInMainWorld('claude', {
     dragEnded: () => ipcRenderer.send(IPC.SESSION_DRAG_ENDED),
     dragDropped: (payload: { sessionId: string; targetWindowId: number; insertIndex: number }) =>
       ipcRenderer.send(IPC.SESSION_DRAG_DROPPED, payload),
+    // Sent by the window that RECEIVED a browser-drag drop (Linux/Wayland —
+    // session-drag-model.ts). It names only the session:
+    // main resolves the source from the WindowRegistry, so a forged drop can
+    // never move a session the sender was not entitled to move.
+    dragAdopt: (payload: { sessionId: string }) =>
+      ipcRenderer.send(IPC.SESSION_DRAG_ADOPT, payload),
     focusAndSwitch: (payload: { windowId: number; sessionId: string }) =>
       ipcRenderer.send(IPC.WINDOW_FOCUS_AND_SWITCH, payload),
     // Request/response — ask main which window's strip currently contains the cursor
@@ -1055,6 +1078,19 @@ contextBridge.exposeInMainWorld('claude', {
     // uuid-based dedup handles any overlap with live events.
     requestTranscriptReplay: (sessionId: string) =>
       ipcRenderer.send(IPC.TRANSCRIPT_REPLAY, { sessionId }),
+    // Pull the ownership handoffs main queued while this window was booting.
+    // Called once from App's mount effect, right after onOwnershipAcquired is
+    // subscribed — a push that lands before that subscription is DROPPED by
+    // Electron, not queued, which is why the pull exists.
+    claimPending: (): Promise<any[]> =>
+      ipcRenderer.invoke(IPC.DETACH_CLAIM_PENDING),
+    // Re-send the session state that exists only in main's memory (open
+    // permission asks, specialist + background-shell run records, and the
+    // replay-complete marker). Awaited AFTER the history page lands, because
+    // the marker reaps tool cards the page left 'running' and must not run
+    // before those cards exist.
+    replayLiveState: (sessionId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.SESSION_REPLAY_LIVE_STATE, { sessionId }),
     // Perf cycle 2: request/response, unlike the fire-and-forget replay above.
     // Returns ONE page of history (newest when beforeCursor is null, else the
     // page immediately older than the cursor) so opening a huge conversation

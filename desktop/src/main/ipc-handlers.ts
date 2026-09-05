@@ -2685,10 +2685,17 @@ export function registerIpcHandlers(
   // older page. Request/response — unlike TRANSCRIPT_REPLAY, which streams
   // every historical event back over TRANSCRIPT_EVENT and cost ~22s of main +
   // renderer work on a huge conversation.
-  ipcMain.handle(IPC.TRANSCRIPT_PAGE, async (_evt, req: TranscriptPageRequest): Promise<TranscriptPageResult> => {
+  ipcMain.handle(IPC.TRANSCRIPT_PAGE, async (evt, req: TranscriptPageRequest): Promise<TranscriptPageResult> => {
     const empty: TranscriptPageResult = { events: [], cursor: null, hasMore: false };
     if (!req || typeof req.sessionId !== 'string') return empty;
     const { sessionId, beforeCursor } = req;
+
+    // Did this window INHERIT the session (tear-off / re-dock) rather than watch
+    // it live? Consumed unconditionally — including on the native path below,
+    // which needs no special handling but must not leave the mark set for a
+    // later, unrelated page read. See WindowRegistry.markInheritedByTransfer.
+    const inherited = !beforeCursor
+      && !!windowRegistry?.consumeInheritedByTransfer(sessionId, evt.sender.id);
 
     // Native sessions page over the merged event array; getHistoryPage returns
     // null for non-native ids, so CC's watcher stays the source for claude
@@ -2724,7 +2731,18 @@ export function registerIpcHandlers(
     // The FIRST page ends where the live tailer started, so the page and the
     // live stream cannot overlap (transcript-watcher startOffset, Task 4). A
     // startOffset of 0 means the file didn't exist at watch time — read to EOF.
-    const endOffset = beforeCursor ? beforeCursor.offset : (source.startOffset || null);
+    //
+    // EXCEPT for a window that INHERITED this session: "the live stream already
+    // delivered the rest" is only true of a window that was listening. A
+    // torn-off window received none of it, so stopping at startOffset showed a
+    // conversation frozen at the moment the session was resumed, with every
+    // message since missing (Destin, 2026-09-03). It reads to EOF instead; the
+    // reducer's HISTORY_PAGE_LOADED seeds its scratch replay from the live
+    // session's seenUuids, so any overlap with live events is deduped, not
+    // duplicated.
+    const endOffset = beforeCursor
+      ? beforeCursor.offset
+      : (inherited ? null : (source.startOffset || null));
     return readTranscriptPage({
       jsonlPath: source.jsonlPath,
       sessionId,
@@ -2746,59 +2764,81 @@ export function registerIpcHandlers(
     for (const ev of events) {
       evt.sender.send(IPC.TRANSCRIPT_EVENT, ev);
     }
-    // Task 0 (ROADMAP #permissions): a replayed transcript rebuilds every card
-    // from disk, but an OPEN ask lives only in PermissionBroker's memory — the
-    // JSONL has no record that one is still awaiting an answer. Without this,
-    // the rebuilt card comes back with no buttons and (a root ask has no
-    // timeout) the turn hangs forever. Re-send it the same way the loop above
-    // sends transcript events — direct to the requesting window, for the same
-    // ownership reason stated above. Native-only: nativeEvents is null for CC
-    // sessions, which have no broker-held asks to re-send.
-    if (nativeEvents !== null) {
+    // (The blocks this used to inline now live in sendLiveOnlyState, which
+    // SESSION_REPLAY_LIVE_STATE also serves — see its WHY.)
+    sendLiveOnlyState(evt.sender, sessionId, nativeEvents !== null);
+  });
+
+  /**
+   * Re-send the parts of a session's state that exist ONLY in main's memory and
+   * have no record in the transcript on disk. A window hydrating from history —
+   * whether by whole-transcript replay or by a single page — cannot reconstruct
+   * any of it, so it must be pushed:
+   *
+   *  - open permission asks: the JSONL has no record that an ask is still
+   *    AWAITING an answer, so the rebuilt card comes back with no buttons and
+   *    (a root ask has no timeout) the turn hangs forever;
+   *  - specialist run records: a specialist card's status IS its run record,
+   *    which the transcript says nothing about;
+   *  - background Bash run records: same, for a shell card's background state;
+   *  - the replay-complete marker, which reaps tool cards the history left
+   *    'running' (a transcript ends wherever the process died, so its last
+   *    tool_use may have no matching result — Destin, 2026-08-09 dogfood).
+   *
+   * Sent DIRECT to the requesting window rather than via sendForSession: on the
+   * ownership-handoff path the caller already owns the session, and on the
+   * replay path ownership has likewise already transferred.
+   *
+   * `isNative` gates the first three: CC sessions have no broker-held asks, no
+   * ledger and no shell registry, so they report nothing and keep today's
+   * behaviour. The marker is sent for both, with sessionIdle false for CC —
+   * only the native host can tell "genuinely mid-turn" from "died mid-tool".
+   */
+  function sendLiveOnlyState(sender: Electron.WebContents, sessionId: string, isNative: boolean): void {
+    if (isNative) {
       for (const ev of nativeHost.pendingAskEventsFor(sessionId)) {
-        evt.sender.send(IPC.HOOK_EVENT, ev);
+        sender.send(IPC.HOOK_EVENT, ev);
       }
     }
-    // Task 9 (plan 1c): a replayed transcript rebuilds every tool card from
-    // the JSONL, but a specialist card's status IS its run record — the
-    // ledger the transcript itself says nothing about (delegation-ledger.ts's
-    // module comment). Without this, a reloaded window's helper card comes
-    // back with no status. Same "direct to the requesting window" ownership
-    // reason as the ask replay just above, and native-only for the same
-    // reason: nativeEvents is null for CC sessions, which have no ledger.
-    if (nativeEvents !== null) {
+    if (isNative) {
       for (const run of nativeHost.specialistRunsFor(sessionId)) {
-        evt.sender.send(IPC.SPECIALISTS_EVENT, { kind: 'run', sessionId, run } satisfies SpecialistsEvent);
+        sender.send(IPC.SPECIALISTS_EVENT, { kind: 'run', sessionId, run } satisfies SpecialistsEvent);
       }
-      // G-1: a Bash card's background state IS its run record, which the
-      // transcript never carries — replay it the way specialist runs are.
       for (const run of nativeHost.shellRunsFor(sessionId)) {
-        evt.sender.send(IPC.NATIVE_SHELL_EVENT, { sessionId, run } satisfies ShellEvent);
+        sender.send(IPC.NATIVE_SHELL_EVENT, { sessionId, run } satisfies ShellEvent);
       }
     }
-    // Terminal marker so the reducer can reap tool cards this history left
-    // 'running'. A transcript ends wherever the process died, so its last
-    // tool_use may have no matching result — replaying it verbatim leaves a
-    // card spinning forever after a resume (Destin, 2026-08-09 dogfood).
-    // sessionIdle gates the reap because this SAME replay fires when a window
-    // re-docks a session that is genuinely mid-turn. Only the native host can
-    // answer that (`entry.inFlight`); CC sessions have no equivalent signal, so
-    // they report false and keep today's behaviour rather than risk failing a
-    // tool that really is running. Synthesized here and never persisted, so it
-    // cannot be re-read from a transcript.
-    // Annotated, NOT passed inline: evt.sender.send takes ...args: any[], which
+    // sessionIdle gates the reap because this SAME state re-send fires when a
+    // window re-docks a session that is genuinely mid-turn. Only the native
+    // host can answer that (`entry.inFlight`); CC sessions have no equivalent
+    // signal, so they report false and keep today's behaviour rather than risk
+    // failing a tool that really is running. Synthesized here and never
+    // persisted, so it cannot be re-read from a transcript.
+    // Annotated, NOT passed inline: sender.send takes ...args: any[], which
     // erases the contextual type — an inline literal is checked against nothing,
     // so a typo'd `sessionIdle` compiles clean and silently disables the reap
     // (measured 2026-08-10). The annotation is what makes the field name a
-    // compile error instead of a silent undefined. Same pattern as errEvent above.
+    // compile error instead of a silent undefined.
     const replayComplete: TranscriptEvent = {
       type: 'replay-complete',
       sessionId,
       uuid: `replay-complete-${sessionId}`,
       timestamp: Date.now(),
-      data: { sessionIdle: nativeEvents !== null && nativeHost.isIdle(sessionId) },
+      data: { sessionIdle: isNative && nativeHost.isIdle(sessionId) },
     };
-    evt.sender.send(IPC.TRANSCRIPT_EVENT, replayComplete);
+    sender.send(IPC.TRANSCRIPT_EVENT, replayComplete);
+  }
+
+  // Ownership-handoff counterpart to TRANSCRIPT_REPLAY. A window that inherits
+  // a session now hydrates its transcript from ONE page (TRANSCRIPT_PAGE, read
+  // to EOF for an inherited session) instead of a whole-transcript replay that
+  // cost ~22s on a long conversation and visibly rebuilt the view. That page
+  // carries everything on disk but nothing that lives only in memory, which is
+  // what this channel supplies. `handle`, not `on`: the renderer awaits the
+  // page FIRST and then this, so the replay-complete marker cannot reap tool
+  // cards before the page that creates them has been applied.
+  ipcMain.handle(IPC.SESSION_REPLAY_LIVE_STATE, (evt, { sessionId }: { sessionId: string }) => {
+    sendLiveOnlyState(evt.sender, sessionId, nativeHost.getHistory(sessionId) !== null);
   });
 
   // --- Native runtime IPC (Phase 1 Plan A) ---

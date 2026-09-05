@@ -72,6 +72,13 @@ export interface LoadOptions {
 // every load, and a moving clock makes bubble grouping non-reproducible.
 const FIXTURE_T0 = 1_753_800_000_000;
 
+/** A fixture line's own `timestamp` (epoch ms) when it has one, else the
+ *  synthetic clock every other action here uses — one second per action, so
+ *  fixture order IS time order and a note's `at` can be placed among rows. */
+function fixtureTime(parsed: { timestamp?: unknown }, index: number): number {
+  return typeof parsed.timestamp === 'number' ? parsed.timestamp : FIXTURE_T0 + index * 1000;
+}
+
 /**
  * @param sessionId Which session the emitted actions target. Defaults to the
  *   sandbox id for the tool gallery; the workbench passes a real seeded session
@@ -204,6 +211,11 @@ export function loadFixture(
           toolUseId: parsed.id,
           toolName: parsed.name,
           toolInput: parsed.input ?? {},
+          // Review fix (2026-09-04, F5): stamped like the text/interrupt lines
+          // above so a specialist card mocked here can show a note interleaved
+          // with its rows — the fixture's own time when a line carries one,
+          // else the same synthetic clock the other actions use.
+          timestamp: fixtureTime(parsed, actions.length),
         };
         state = chatReducer(state, action);
         actions.push(action);
@@ -282,6 +294,7 @@ export function loadFixture(
           type: 'TRANSCRIPT_TOOL_USE', sessionId,
           uuid: `${name}-sause-${parsed.id}`, toolUseId: parsed.id,
           toolName: parsed.name, toolInput: parsed.input ?? {},
+          timestamp: fixtureTime(parsed, actions.length), // as for tool_use above (F5)
           parentAgentToolUseId: parsed.parent,
         };
         state = chatReducer(state, action);

@@ -340,6 +340,14 @@ export interface NativeTool<A = any> {
    *  askUser() — guards/decide are skipped (asking permission to ask a question
    *  is absurd) and execute() never runs. */
   interactive?: boolean;
+  /** Set on tools whose OUTPUT is text from outside the user's machine (web
+   *  pages, search results, MCP servers). defineTool wraps a non-error result in
+   *  <untrusted-content source="…"> so the model can tell fetched text from the
+   *  harness's own notices; prompts/shared-doctrine.ts tells it what the tag
+   *  means. The value is the source label shown in the tag. WHY (2026-09-04):
+   *  WebFetch/WebSearch need no permission in any mode, so a page that says
+   *  "run this" reached the model with nothing marking it as data. */
+  untrusted?: string;
   /** How to widen THIS tool's output, in its own vocabulary — a static property,
    *  independent of whether the tool or the pipeline did the cutting.
    *

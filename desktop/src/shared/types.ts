@@ -485,6 +485,14 @@ export type SubagentSegment =
       // per delta — see chat-reducer.ts applySubagentEvent. CC events never
       // set this, so its absence preserves today's one-segment-per-event.
       partId?: string;
+      /** When this happened (epoch ms, the transcript event's own stamp).
+       *  Optional on every non-note segment because it exists for ONE reason:
+       *  placing a mid-run 'note' (below, which always has a time) among the
+       *  rows that happened before and after it, instead of at the bottom of
+       *  the trail on replay (chat-reducer.ts reconcileNoteSegments). A
+       *  segment without one is never ordered against — it just keeps its
+       *  place. Nothing else reads it. */
+      timestamp?: number;
     }
   | {
       type: 'tool';
@@ -493,6 +501,8 @@ export type SubagentSegment =
       toolName: string;
       input: Record<string, unknown>;
       status: 'running' | 'complete' | 'failed' | 'awaiting-approval';
+      /** See the 'text' variant's `timestamp` — same field, same one reason. */
+      timestamp?: number;
       response?: string;
       error?: string;
       structuredPatch?: StructuredPatchHunk[];
@@ -525,6 +535,8 @@ export type SubagentSegment =
       id: string;
       content: string;
       partId?: string;
+      /** See the 'text' variant's `timestamp` — same field, same one reason. */
+      timestamp?: number;
     };
 
 /** Specialists 1c — one mid-run steering message, kept on the ledger record so
@@ -826,7 +838,7 @@ export interface SkillEntry {
   description: string;
   category: 'personal' | 'work' | 'development' | 'admin' | 'other';
   prompt: string;
-  source: 'youcoded-core' | 'self' | 'plugin' | 'marketplace';
+  source: 'youcoded-core' | 'self' | 'project' | 'plugin' | 'marketplace';
   pluginName?: string;
 
   // New — marketplace fields
@@ -1593,6 +1605,18 @@ export const IPC = {
   WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
   SESSION_OWNERSHIP_ACQUIRED: 'session:ownership-acquired',
   SESSION_OWNERSHIP_LOST: 'session:ownership-lost',
+  // Pull half of SESSION_OWNERSHIP_ACQUIRED. A window created BY a tear-off is
+  // handed its session before its renderer can subscribe, and Electron drops
+  // (never queues) a send with no listener — so the renderer asks for what it
+  // inherited once mounted. Returns SessionOwnershipAcquired[] and clears it.
+  DETACH_CLAIM_PENDING: 'detach:claim-pending',
+  // Re-send the parts of a session's state that live ONLY in main's memory and
+  // have no record in the transcript on disk: open permission asks, specialist
+  // run records, background shell run records, and the replay-complete marker
+  // that reaps tool cards the history left 'running'. Split out of
+  // TRANSCRIPT_REPLAY so an ownership handoff can hydrate from one PAGE of
+  // history instead of a whole-transcript replay.
+  SESSION_REPLAY_LIVE_STATE: 'session:replay-live-state',
   SESSION_DETACH_START: 'session:detach-start',
   // Chrome-style live tear-off: spawn the peer window mid-drag (before pointerup)
   // once the pill has moved far enough from the header. Source window then
@@ -1603,6 +1627,7 @@ export const IPC = {
   SESSION_DRAG_STARTED: 'session:drag-started',
   SESSION_DRAG_ENDED: 'session:drag-ended',
   SESSION_DRAG_DROPPED: 'session:drag-dropped',
+  SESSION_DRAG_ADOPT: 'session:drag-adopt',
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
   // Request the full transcript history for a session — used when a window

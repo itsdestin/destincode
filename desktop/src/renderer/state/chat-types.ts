@@ -670,6 +670,12 @@ export type ChatAction =
       toolUseId: string;
       toolName: string;
       toolInput: Record<string, unknown>;
+      // The transcript event's own stamp (epoch ms). Optional because the
+      // top-level card never needed it; a CHILD tool row (parentAgentToolUseId
+      // set) carries it onto its segment so a specialist's mid-run note can be
+      // placed among the tool calls by time (chat-reducer.ts
+      // reconcileNoteSegments) instead of at the bottom of the trail.
+      timestamp?: number;
       parentAgentToolUseId?: string;
       agentId?: string;
     }

@@ -2,10 +2,10 @@ import React, { useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import remarkGfm from 'remark-gfm';
-import type { Plugin } from 'unified';
+import type { Plugin, PluggableList } from 'unified';
 import type { Root, Element, Text, RootContent } from 'hast';
 import { visitParents } from 'unist-util-visit-parents';
-import { detectFilepaths } from '../hooks/useInlineFilepathDetector';
+import { detectLinkTokens } from './markdown-linkify';
 import { Button } from './ui';
 import { FilepathToken } from './FilepathToken';
 import { CONVERSATIONS_FENCE, parseConversationRefs } from '../../shared/chatsearch-refs';
@@ -33,12 +33,6 @@ const rehypeMarkBlockCode: Plugin<[], Root> = () => (tree: Root) => {
   });
 };
 
-// Stable plugin arrays — avoids re-creating on every render when sessionId
-// is absent (non-artifact contexts). When filepath detection is active,
-// the rehype plugin array is memoized per-sessionId in the component below.
-const remarkPluginsStable = [remarkGfm];
-const rehypePluginsStable = [rehypeHighlight, rehypeMarkBlockCode];
-
 /**
  * Collect the raw text of a hast subtree.
  *
@@ -59,49 +53,83 @@ function hastText(node: unknown): string {
 }
 
 /**
- * Rehype plugin: walks hast text nodes that are NOT inside <code> or <pre>
- * elements and splits detected file paths into filepath-token elements.
+ * Rehype plugin: splits plain text nodes into clickable tokens — web URLs
+ * (rendered as real <a> links) and file paths (rendered as filepath-token,
+ * which becomes a FilepathToken chip below).
  *
- * Filepath detection runs in the hast (HTML AST) pass — after the markdown is
- * already parsed — so we get correct element context (inline code vs. block code)
- * for free by checking the ancestor chain. No regex pre-processing of the source.
+ * WHY it runs in the hast (HTML AST) pass rather than on the markdown source:
+ * the ancestor chain is available here, so "is this inside a code block?" is a
+ * fact rather than a guess, and nothing has to be re-parsed.
+ *
+ * WHY it runs AFTER rehype-highlight in the plugin array: the highlighter
+ * rewrites a code block's single text node into a tree of <span> tokens. Going
+ * last means we split the leaves it produced, so a URL inside ```bash is found
+ * and the colouring around it survives.
+ *
+ * Text already inside an <a> is skipped — remark-gfm has already autolinked
+ * bare URLs in prose, and linkifying a link would nest anchors.
+ *
+ * Fenced code blocks are NO LONGER skipped (they were, for paths). A URL or a
+ * path printed in a code block is the single most common way Claude hands one
+ * over, and reading it out by hand was the complaint this fixes.
  */
-const rehypeFilepathTokens: Plugin<[], Root> = () => (tree: Root) => {
-  // visitParents provides the full ancestor chain so we can correctly detect
-  // whether the text node is inside a <code> or <pre> element.
+const rehypeLinkTokens: Plugin<[{ filepaths: boolean }], Root> =
+  (options) => (tree: Root) => {
+  const filepaths = options?.filepaths ?? false;
+  // visitParents provides the full ancestor chain, which is what tells us
+  // whether we are inside an existing link or inside a fenced code block.
   visitParents(tree, 'text', (node, ancestors) => {
     const parent = ancestors[ancestors.length - 1];
     if (!parent) return;
     const index = (parent as Element | Root).children.indexOf(node as Text);
     if (index === -1) return;
 
-    // Fix: skip ONLY when inside a <pre> element (fenced code block).
-    // Inline <code> spans are intentionally NOT excluded — Claude commonly formats
-    // file paths as backtick-wrapped inline code (e.g. `foo.md`) and users expect
-    // those to be clickable. Multi-line fenced blocks still get no detection because
-    // the <pre> ancestor check correctly catches them.
+    // Never linkify inside an existing anchor — that would nest <a> in <a>,
+    // which is invalid HTML and makes the click target ambiguous.
+    if (ancestors.some((a) => a.type === 'element' && (a as Element).tagName === 'a')) return;
+
+    // Inside a fenced block the chip styling would break the monospace grid, so
+    // FilepathToken uses its quieter 'inline' variant there (see the component
+    // map below). Inline `backticks` keep the chip.
     const inPreBlock = ancestors.some(
       (a) => a.type === 'element' && (a as Element).tagName === 'pre',
     );
-    if (inPreBlock) return;
 
     const textNode = node as Text;
-    const matches = detectFilepaths(textNode.value);
+    const matches = detectLinkTokens(textNode.value, { filepaths });
     if (matches.length === 0) return;
 
-    // Split the text node into a sequence of text + filepath-token elements.
+    // Split the text node into a sequence of text + token elements.
     const replacements: RootContent[] = [];
     let cursor = 0;
     for (const m of matches) {
       if (m.start > cursor) {
         replacements.push({ type: 'text', value: textNode.value.slice(cursor, m.start) });
       }
-      replacements.push({
-        type: 'element',
-        tagName: 'filepath-token',
-        properties: { 'data-path': m.path },
-        children: [],
-      } as Element);
+      // The matched source text is kept as the element's child even when the
+      // component ignores it: CopyButton reads the raw text off this hast tree
+      // (hastText), so dropping it would silently delete every path from what a
+      // code block copies.
+      const child: Text = { type: 'text', value: m.text };
+      replacements.push(
+        m.kind === 'url'
+          ? ({
+              type: 'element',
+              tagName: 'a',
+              properties: { href: m.value },
+              children: [child],
+            } as Element)
+          : ({
+              type: 'element',
+              tagName: 'filepath-token',
+              properties: {
+                'data-path': m.value,
+                'data-raw': m.text,
+                ...(inPreBlock ? { 'data-in-code': 'true' } : {}),
+              },
+              children: [child],
+            } as Element),
+      );
       cursor = m.end;
     }
     if (cursor < textNode.value.length) {
@@ -114,6 +142,22 @@ const rehypeFilepathTokens: Plugin<[], Root> = () => (tree: Root) => {
     return index + replacements.length;
   });
 };
+
+// Stable plugin arrays — avoids re-creating on every render. URL linkification
+// runs in EVERY context (it needs no session), so it lives in the stable array;
+// only the filepath half, which needs a sessionId to resolve a click, is
+// switched on per-session in the memo below.
+const remarkPluginsStable = [remarkGfm];
+const rehypePluginsStable: PluggableList = [
+  rehypeHighlight,
+  rehypeMarkBlockCode,
+  [rehypeLinkTokens, { filepaths: false }],
+];
+const rehypePluginsWithFilepaths: PluggableList = [
+  rehypeHighlight,
+  rehypeMarkBlockCode,
+  [rehypeLinkTokens, { filepaths: true }],
+];
 
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -300,6 +344,13 @@ const mdPreviewComponents = {
   a({ href: _href, children, ...props }: any) {
     return <span className="text-link underline" {...props}>{children}</span>;
   },
+  // Same reason as the <a> above: a preview tile is itself a <button>, so the
+  // path renders as its own text and nothing inside is focusable.
+  'filepath-token': ({ node, ...props }: any) => {
+    const p = (node as Element)?.properties ?? {};
+    const raw = (p['data-raw'] as string) ?? (p['data-path'] as string) ?? props['data-raw'] ?? '';
+    return <span className="text-fg-dim">{raw}</span>;
+  },
 };
 
 interface Props {
@@ -315,13 +366,12 @@ export default React.memo(function MarkdownContent({ content, sessionId, preview
   // (a) When sessionId is absent, we use the stable module-scope arrays (no allocation).
   // (b) When sessionId is present, the filepath-token component is added once and
   //     remains stable across re-renders for the same session.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const rehypePlugins = useMemo(
-    () => sessionId ? [rehypeHighlight, rehypeMarkBlockCode, rehypeFilepathTokens] : rehypePluginsStable,
-    // Intentionally omitting rehypeFilepathTokens from deps — it's stable (module-level function).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [sessionId],
-  );
+  // Both arrays are module-level constants, so this only picks between them —
+  // URLs are linkified either way; the filepath half needs a session to resolve
+  // a click against, and in preview mode nothing may be clickable at all.
+  const rehypePlugins = (sessionId && !preview)
+    ? rehypePluginsWithFilepaths
+    : rehypePluginsStable;
 
   const components = useMemo(() => {
     if (preview) return mdPreviewComponents;
@@ -333,8 +383,17 @@ export default React.memo(function MarkdownContent({ content, sessionId, preview
       // react-markdown v10 passes custom hast element props directly.
       // 'data-path' becomes 'data-path' in props (React preserves data-* attrs).
       'filepath-token': ({ node, ...props }: any) => {
-        const path: string = (node as Element)?.properties?.['data-path'] as string ?? props['data-path'] ?? '';
+        const p = (node as Element)?.properties ?? {};
+        const path: string = (p['data-path'] as string) ?? props['data-path'] ?? '';
         if (!path) return null;
+        // Inside a fenced code block a bordered chip would break the monospace
+        // grid and hide the rest of the command, so the quieter dotted-underline
+        // variant is used and it keeps the path EXACTLY as written.
+        const inCode = (p['data-in-code'] ?? props['data-in-code']) !== undefined;
+        const raw = (p['data-raw'] as string) ?? props['data-raw'] ?? path;
+        if (inCode) {
+          return <FilepathToken path={path} sessionId={sessionId} variant="inline" label={raw} />;
+        }
         return <FilepathToken path={path} sessionId={sessionId} />;
       },
     };

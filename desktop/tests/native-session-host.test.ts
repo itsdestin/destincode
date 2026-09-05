@@ -2174,6 +2174,67 @@ describe('NativeSessionHost', () => {
 
         await h.destroyAll();
       });
+
+      it('checklist 9b: an Always-allow remembered for Worker in a folder does not satisfy code-reviewer in the SAME folder — through memory AND through disk', async () => {
+        // The 1c testing checklist's check 9b (the "security-relevant one"):
+        // hire Worker in folder F, click Always allow, then hire a DIFFERENT
+        // read-write helper in the same F — it must be asked again. The test
+        // above drives the scope filter with a pre-keyed fake store; this one
+        // pins the whole LOOKUP the way the app actually writes and reads it:
+        // the real Always-allow write path (rememberRule, the exact call
+        // native-session-host makes with `specialist: agentType`), a real
+        // PermissionStore filed under F, and buildDecide reading back BOTH
+        // sources it unions — the parent session's in-memory copy (what
+        // answers for the rest of this run) and the disk record (what answers
+        // after a restart, checked via a second host with no memory at all).
+        const F = path.join(root, 'project-f');
+        fs.mkdirSync(F, { recursive: true });
+        const store = new PermissionStore(new NativeHome(root));
+        // Review fix (2026-09-04, F4): the memory leg used to read the REAL
+        // store too, and rememberRule kicks off the disk persist before the
+        // first ask() — so the "memory" assertions could be satisfied by the
+        // disk record alone. This host now writes through to disk (the disk
+        // leg below still needs the real persist) but is BLIND to it on read:
+        // rulesFor is always empty, so only the in-memory copy can answer.
+        const memoryOnlyStore = {
+          rulesFor: async () => [] as any[],
+          remember: (cwd: string, rule: PermissionRule) => store.remember(cwd, rule),
+          remove: async () => false,
+          removeProject: async () => false,
+        };
+        const h = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null, undefined, memoryOnlyStore,
+        );
+        await h.create({ sessionId: 'root-1', cwd: F, binding: { providerId: 'openrouter', modelId: 'm' } });
+
+        // Exactly what an Always-allow on Worker's routed ask persists (:1620).
+        const workerGrant: PermissionRule = { tool: 'Bash', pattern: 'rm -rf marker.txt', action: 'allow', match: 'exact', specialist: 'worker' };
+        (h as any).rememberRule('root-1', F, workerGrant);
+
+        const ask = async (host: NativeSessionHost, scope?: string) =>
+          (await (host as any).buildDecide('root-1', F, [], scope ? { specialistScope: scope } : undefined)('Bash', 'rm -rf marker.txt')).action;
+
+        // Memory path (this run): Worker is covered, code-reviewer and root are not.
+        expect(await ask(h, 'worker')).toBe('allow');
+        expect(await ask(h, 'code-reviewer')).toBe('ask');
+        expect(await ask(h)).toBe('ask');
+
+        // Disk path (next run): wait for the fire-and-forget persist, then read
+        // it back through a host that holds NOTHING in memory for this session.
+        for (let i = 0; i < 100 && !(await store.rulesFor(F)).some((r) => r.specialist === 'worker'); i++) {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        expect((await store.rulesFor(F)).some((r) => r.specialist === 'worker')).toBe(true);
+        const restarted = new NativeSessionHost(
+          new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null, undefined, store,
+        );
+        expect(await ask(restarted, 'worker')).toBe('allow');
+        expect(await ask(restarted, 'code-reviewer')).toBe('ask');
+        expect(await ask(restarted)).toBe('ask');
+
+        await h.destroyAll();
+        await restarted.destroyAll();
+      });
     });
 
     it("an external-directory Read is declined instantly, factually, by the wired ask router — not the config-error stub (mutation-proof pin for createChild's askUser wiring)", async () => {

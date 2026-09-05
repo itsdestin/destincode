@@ -82,3 +82,53 @@ describe('transcript event surface parity: App.tsx vs BubbleFeed.tsx', () => {
     expect(buddy).toContain('NATIVE_TOOL_PREPARING');
   });
 });
+
+// Review of fix/specialists-ledger-bugs (2026-09-04, F1): the fix that places a
+// specialist's mid-run note among its tool rows by time needs every
+// TRANSCRIPT_TOOL_USE dispatcher to forward the event's `timestamp` — App.tsx
+// and transcript-page-actions.ts were patched, BubbleFeed.tsx was not, so buddy
+// rows were unstamped and a note fell to the tail there. Case-label parity
+// above cannot see a missing FIELD, so this scans each dispatch object literal.
+const TOOL_USE_DISPATCHERS = [
+  'App.tsx',
+  'components/buddy/BubbleFeed.tsx',
+  'state/transcript-page-actions.ts',
+  // The workbench replays fixtures through the same reducer; without a stamp a
+  // mocked specialist card can never show a note interleaved with its rows, so
+  // the fix would be unreviewable on a review deck.
+  'dev/workbench/fixture-loader.ts',
+];
+
+/** Every `{ ... type: 'TRANSCRIPT_TOOL_USE' ... }` object literal in a file,
+ *  found by walking back to the opening brace and forward to its match. */
+function toolUseDispatchLiterals(file: string): string[] {
+  const text = readFileSync(join(RENDERER, file), 'utf8');
+  const needle = "type: 'TRANSCRIPT_TOOL_USE'";
+  const out: string[] = [];
+  let from = 0;
+  for (;;) {
+    const hit = text.indexOf(needle, from);
+    if (hit < 0) break;
+    from = hit + needle.length;
+    const open = text.lastIndexOf('{', hit);
+    let depth = 0;
+    let close = -1;
+    for (let i = open; i < text.length; i++) {
+      if (text[i] === '{') depth++;
+      else if (text[i] === '}' && --depth === 0) { close = i; break; }
+    }
+    out.push(text.slice(open, close + 1));
+  }
+  return out;
+}
+
+describe('every TRANSCRIPT_TOOL_USE dispatcher forwards the event timestamp', () => {
+  for (const file of TOOL_USE_DISPATCHERS) {
+    it(`${file} stamps each tool-use dispatch`, () => {
+      const literals = toolUseDispatchLiterals(file);
+      // A file in this list with no dispatch at all means the list is stale.
+      expect(literals.length).toBeGreaterThan(0);
+      for (const lit of literals) expect(lit).toMatch(/\btimestamp:/);
+    });
+  }
+});

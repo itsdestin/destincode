@@ -17,6 +17,7 @@ import { isPlaceholderModelId } from '../shared/model-ids';
 
 import ErrorBoundary from './components/ErrorBoundary';
 import { AnchorTip, Button, Dialog, Toast, Toggle } from './components/ui';
+import ViewToggleHint from './components/ViewToggleHint';
 import { takeoverDialogCopy } from './components/takeover-dialog-copy';
 import GamePanel from './components/game/GamePanel';
 import TerminalRightSlot from './components/TerminalRightSlot';
@@ -98,6 +99,7 @@ import ThemeEffects from './components/ThemeEffects';
 import { ZoomOverlay } from './components/ZoomOverlay';
 import { RemoteSnapshotExporter } from './components/RemoteSnapshotExporter';
 import RemoteUnsupportedNotice from './components/RemoteUnsupportedNotice';
+import { SessionDropZone } from './components/SessionDropZone';
 import { ContextMenuHost } from './components/context-menu/ContextMenuHost';
 import { BuddyMascotApp } from './components/buddy/BuddyMascotApp';
 import { BuddyChatApp } from './components/buddy/BuddyChatApp';
@@ -1218,6 +1220,12 @@ function AppInner() {
             toolUseId: event.data.toolUseId,
             toolName: event.data.toolName,
             toolInput: event.data.toolInput || {},
+            // Carried so a specialist's mid-run note can be placed among its
+            // tool rows by time (reconcileNoteSegments); the top-level card
+            // ignores it. Three mirrors must stay identical: this switch,
+            // BubbleFeed.tsx (buddy window) and transcript-page-actions.ts
+            // (replayed page) — pinned by transcript-event-surface-parity.test.ts.
+            timestamp: event.timestamp,
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
           });
@@ -1892,7 +1900,11 @@ function AppInner() {
       if (typeof dir.leaderWindowId === 'number') setLeaderWindowId(dir.leaderWindowId);
     }).catch(() => {});
 
-    const cleanupAcquired = det.onOwnershipAcquired?.((payload: any) => {
+    // Named, not inline: BOTH the push (onOwnershipAcquired) and the pull
+    // (claimPending, below) run the identical acquisition. See claimPending's
+    // WHY — a fresh tear-off window is handed its session before this
+    // subscription exists, and that push is dropped, not queued.
+    const applyAcquired = (payload: any) => {
       const { sessionId: sid, sessionInfo, freshWindow, refocusOnly } = payload;
       if (refocusOnly) {
         // Switcher asked us to focus an existing local session — just flip active.
@@ -1920,18 +1932,33 @@ function AppInner() {
         const next = new Set(prev); next.add(sid); return next;
       });
       if (freshWindow) setSessionId(sid);
-      // Hydrate reducer from disk. Main streams every transcript event back on
-      // the normal channel; uuid dedup absorbs any overlap with live events.
+      // Hydrate from ONE page, not a whole-transcript replay. Main knows this
+      // window INHERITED the session and serves its first page read to EOF
+      // (WindowRegistry.markInheritedByTransfer) — so the page is complete
+      // through the newest message, which the stop-at-startOffset page was not.
       //
-      // The LAST remaining requestTranscriptReplay caller, deliberately (perf
-      // cycle 2): the replay handler ALSO re-sends broker-held permission asks
-      // and specialist run records, which live only in main's memory and have no
-      // record in the JSONL — a page cannot carry them, so a re-docked native
-      // session would come back with a button-less ask and a status-less
-      // helper card. Folding those into the page response is a follow-up; until
-      // then a re-dock pays the full-replay cost that first open no longer does.
-      det.requestTranscriptReplay?.(sid);
-    });
+      // Called here rather than left to the sessions effect below so the order
+      // is deterministic: this claims `firstPageAsked` first, and replayLiveState
+      // is chained AFTER the page resolves. That ordering is load-bearing —
+      // replayLiveState ends with the replay-complete marker, which reaps tool
+      // cards the history left 'running', and it must not run before the page
+      // that creates those cards has been applied.
+      void loadFirstPage(sid).then(() => det.replayLiveState?.(sid));
+    };
+
+    const cleanupAcquired = det.onOwnershipAcquired?.(applyAcquired);
+
+    // The pull half. A window created BY a tear-off is handed its session one
+    // statement after `new BrowserWindow()` — long before this React tree
+    // exists — and Electron DROPS a send with no listener rather than queueing
+    // it (measured on 41.10.7). Every tear-off into a fresh window therefore
+    // skipped the whole handoff: no history hydration (so the conversation
+    // ended at the moment the session was resumed), no "open on the session you
+    // just dragged", no re-send of an open permission ask. Main queues the
+    // payload for a window that has not pulled yet; this drains that queue.
+    det.claimPending?.().then((queued: any[]) => {
+      for (const payload of queued ?? []) applyAcquired(payload);
+    }).catch(() => {});
 
     const cleanupLost = det.onOwnershipLost?.((payload: any) => {
       const { sessionId: sid } = payload;
@@ -1961,7 +1988,7 @@ function AppInner() {
       cleanupAcquired?.();
       cleanupLost?.();
     };
-  }, [dispatch]);
+  }, [dispatch, loadFirstPage]);
 
   // (Removed) A mount effect used to fetch skills.list() and store it in a `skills`
   // state that nothing ever read — a wasted IPC round-trip on every mount. The real
@@ -2642,6 +2669,13 @@ function AppInner() {
     document.documentElement.dataset.viewMode = currentViewMode;
   }, [currentViewMode]);
 
+  // Auto-dismiss: the hint has done its job the moment the user is back in chat.
+  // Keyed on the view rather than on the toggle's own click so the keyboard
+  // shortcut and a remote switch clear it too.
+  useEffect(() => {
+    if (currentViewMode === 'chat') setBackToChatHint(false);
+  }, [currentViewMode]);
+
   const handleToggleView = useCallback(
     (mode: ViewMode) => {
       if (!sessionId) return;
@@ -2886,6 +2920,9 @@ function AppInner() {
   // Show a "something may be wrong" hint after 15s of waiting on initialization.
   // Resets whenever the active session changes or the session becomes initialized.
   const [initSlowWarning, setInitSlowWarning] = useState(false);
+  // The init warning's button is a one-way door: switching to terminal view also
+  // hides the overlay that named the toggle. This coach mark is the way back.
+  const [backToChatHint, setBackToChatHint] = useState(false);
   useEffect(() => {
     if (sessionInitialized) { setInitSlowWarning(false); return; }
     setInitSlowWarning(false);
@@ -2967,6 +3004,13 @@ function AppInner() {
       >
         {sessions.length > 0 && sessionId && currentSession ? (
           <>
+            {/* On Linux/Wayland a session pill dragged over the chat area can
+                be dropped there — "open in a new window" for this window's
+                own pill, "move here" for another window's. Inert everywhere
+                else. A child of this positioned box so it covers the chat and
+                not the header. See SessionDropZone for why the empty desktop
+                is not a drop target there. */}
+            <SessionDropZone sessions={sessions} />
             {/* Chrome-glass: single backdrop-filter layer for the entire
                 frame chrome. Replaces the per-element backdrop-filters on
                 HeaderBar, frame-edges, frame-divider, drawer-pane, and the
@@ -3114,12 +3158,20 @@ function AppInner() {
                   <ThemeMascot variant="idle" fallback={AppIcon} className="w-16 h-16 text-fg-dim mb-6 animate-pulse" />
                   <p className="text-sm text-fg-dim font-medium">Initializing session...</p>
                   {initSlowWarning && (
-                    <div className="mt-4 text-xs text-fg-muted text-center max-w-xs flex flex-col gap-1">
-                      <p>Something may be wrong.</p>
-                      <p>Use the chat/terminal toggle to check terminal view for messages.</p>
+                    <div className="mt-4 text-xs text-fg-muted text-center max-w-xs flex flex-col items-center gap-2">
+                      <p>Something may be wrong. The terminal may show what it is waiting on.</p>
+                      {/* Fix: the old copy told the user to go find the chat/terminal toggle
+                         themselves. This does it in one tap — and because the overlay is
+                         hidden in terminal view, switching also clears it. */}
+                      <Button variant="secondary" size="sm" onClick={() => { setBackToChatHint(true); handleToggleView('terminal'); }}>
+                        Check terminal view
+                      </Button>
                     </div>
                   )}
                 </div>
+              )}
+              {backToChatHint && currentViewMode === 'terminal' && (
+                <ViewToggleHint onDismiss={() => setBackToChatHint(false)} />
               )}
               {trustGateActive && sessionId && <TrustGate sessionId={sessionId} />}
               {/* Plan 2b Moved Gate — covers the content area for a taken-over
