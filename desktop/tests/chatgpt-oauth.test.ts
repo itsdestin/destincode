@@ -283,7 +283,10 @@ describe('chatgpt-oauth: the limit sentence (words deck W-1, answer a)', () => {
     expect(src).toMatch(/from '\.\/time-format'/);
     // The chip formats with the same function, so the two cannot drift.
     const bar = fs.readFileSync(path.join(__dirname, '..', 'src', 'renderer', 'components', 'StatusBar.tsx'), 'utf8');
-    expect(bar).toMatch(/import \{ formatTime12, formatDayLong \} from '\.\.\/\.\.\/shared\/time-format'/);
+    // Any import list is fine as long as formatTime12 comes from the shared module —
+    // the chip may pull more helpers from it later (it already does), and pinning the
+    // exact list broke the moment the plan-window work widened it.
+    expect(bar).toMatch(/import \{[^}]*\bformatTime12\b[^}]*\} from '\.\.\/\.\.\/shared\/time-format'/);
     expect(bar).not.toMatch(/function formatTime12/);
   });
 
