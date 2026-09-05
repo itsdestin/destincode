@@ -139,3 +139,45 @@ describe('EngineCard — the live hardware fact line', () => {
     expect(await line(running({ loadedModelsBytes: 0 }))).toContain('nothing loaded');
   });
 });
+
+// The refusal sentences main writes for a rejected engine switch are the whole
+// point of the device check (design §A4) — and Electron wraps every rejected
+// invoke as `Error invoking remote method '<channel>': Error: <the real
+// message>`. A non-developer cannot read past that prefix, so it must never
+// reach the card.
+describe('EngineCard — what a rejected switch actually reads like', () => {
+  beforeEach(() => { vi.restoreAllMocks(); });
+  afterEach(() => { cleanup(); });
+
+  const REFUSAL = 'Kept the current engine: the ROCm build found no graphics chip it can use '
+    + '— it reported: llvmpipe (LLVM 22.1.6, 256 bits). Nothing was changed.';
+
+  it('strips the IPC wrapper off a refused switch, leaving the sentence alone', async () => {
+    const status = {
+      ...installed('b10665', 'b10665'),
+      backendOptions: [{ backend: 'rocm', label: 'Switch to ROCm (faster on AMD)', state: 'ready' }],
+    };
+    (globalThis as any).window.claude = {
+      engine: {
+        status: vi.fn(async () => status),
+        install: vi.fn(async () => status),
+        restart: vi.fn(async () => status),
+        onInstallProgress: vi.fn(() => () => {}),
+        onStatusChanged: vi.fn(() => () => {}),
+      },
+      models: {
+        setBackend: vi.fn(async () => {
+          throw new Error(`Error invoking remote method 'engine:set-backend': Error: ${REFUSAL}`);
+        }),
+      },
+    };
+    const { getByText, queryByText } = render(<EngineCard showDetails />);
+    await flush();
+    await waitFor(() => expect(getByText('Switch')).toBeTruthy());
+    await act(async () => { fireEvent.click(getByText('Switch')); });
+    await waitFor(() => expect(getByText(REFUSAL)).toBeTruthy());
+    // Asserted as an absence too: a substring match on the sentence would pass
+    // with the whole wrapper still glued to the front of it.
+    expect(queryByText(/invoking remote method/)).toBeNull();
+  });
+});
