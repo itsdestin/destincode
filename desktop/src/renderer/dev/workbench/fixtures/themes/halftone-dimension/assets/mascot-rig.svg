@@ -3,11 +3,11 @@
     Example rig: Halftone Dimension — the theme's shipped capsule buddy rebuilt to the rig
     contract. 2.5D-soft shading stack on the theme's ink-navy body, with the identity kept
     hardcoded (README → Tinting):
-      body #191327 · highlight #332852 · shade #0b0813 · face/socket #eef2fa (paper white — the old #1e2636 was invisible on the navy body)
+      body #191327 · highlight #332852 · shade #0b0813 · face #0d1120 with a #dfe8f5 outline (a near-black face with no outline was invisible on this body)
       CMYK dots + sparkles #e8234a (red) / #00b8ff (cyan) / #ffea00 (yellow)
     The chromatic rim light (cyan top-left / red bottom-right) replaces the single warm rim —
-    the misregistered-print read. The dimensional visor is pre-filled into slot-eyewear
-    (it is also available standalone at ../components/eyewear/dimensional-visor.svg).
+    the misregistered-print read. The dimensional visor is NOT pre-filled — it hid every expression, so it ships as an
+    opt-in component at mascots/components/eyewear/dimensional-visor.svg (from the repo root).
     The chromatic after-image ghost + glitch bars are NOT baked — they ship as scene
     companions that spring-follow the buddy (README → Scene companions).
     NOTE: the shipped flat art drew this body in currentColor, which renders BLACK through
@@ -83,12 +83,7 @@
       <g id="rig-face-shutdown" style="display:none">
         <path d="M8 10 L10.6 10" fill="none" stroke="#dfe8f5" stroke-width="0.8" stroke-linecap="round"/><path d="M13.4 9.8 L16 9.8" fill="none" stroke="#dfe8f5" stroke-width="0.8" stroke-linecap="round"/><path d="M11.3 13.3 L12.7 13.3" fill="none" stroke="#dfe8f5" stroke-width="0.5" stroke-linecap="round"/>
       </g>
-      <g id="slot-eyewear">
-        <rect x="5.3" y="6.8" width="13.4" height="5.6" rx="2.1" fill="#08060e" opacity="0.16"/>
-        <rect x="5.3" y="6.8" width="13.4" height="5.6" rx="2.1" fill="none" stroke="#e8234a" stroke-width="0.32" opacity="0.85"/>
-        <path d="M6.2 7.8 L17.8 7.8" stroke="#00b8ff" stroke-width="0.18" opacity="0.5"/>
-        <path d="M6.6 12 L10.6 7.2" stroke="#ffffff" stroke-width="0.5" opacity="0.10" stroke-linecap="round"/>
-      </g>
+      <g id="slot-eyewear"/>
     </g>
     <g id="slot-hat"/>
     <g id="rig-hand-peek-right" style="display:none">
