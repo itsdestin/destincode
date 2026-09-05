@@ -50,17 +50,31 @@ export class ModelDownloader {
     // flat. Resolved ONCE here and passed down, so the manifest, the .partial
     // files and the published files can never end up in different places.
     const dir = downloadDirFor(this.cacheDir, quant);
+    // NEVER let `<cacheDir>/X.gguf` and `<cacheDir>/X/` both exist. They are one
+    // model id to the engine, which serves exactly ONE of the two and silently
+    // drops the other — and WHICH ONE IS NOT PREDICTABLE. Measured on b10665
+    // (2026-09-05) on a single server: a dir holding `ACOLL-Q4_K_M.gguf` beside
+    // `ACOLL-Q4_K_M/ACOLL-Q4_K_M.gguf` served the FLAT file, while `BCOLL` — the
+    // same pair created in the opposite order — served the FOLDER. It follows
+    // directory-entry order, which belongs to the filesystem, not to us.
+    //
+    // READ THIS BEFORE MOVING A MODEL INTO ITS FOLDER (T17): do not order that
+    // move on an assumption that the half-populated folder is ignored while the
+    // flat file is still there. It may shadow the working model instead, and
+    // the user's model stops loading with nothing on screen to explain it.
+    //
+    // Both directions are refused, because the pair can be created from either
+    // end. This one: a vision download whose model is already installed flat.
     if (dir !== this.cacheDir && fs.existsSync(path.join(this.cacheDir, firstFile))) {
-      // The engine serves ONE model per id, and on a collision the FLAT file
-      // wins: probed on b10665 (2026-09-05) with a cache dir holding both
-      // `A-Q8_0.gguf` and `A-Q8_0/A-Q8_0.gguf`, only the flat one was listed.
-      // So fetching the folder copy would spend the whole download on a model
-      // the engine will never serve. Refuse, and name both ways out.
-      throw new Error(
-        `${firstFile} is already downloaded without its vision file. `
-        + `Add the vision file from that model's row in Local Models, `
-        + `or delete it there and download it again.`
-      );
+      throw new Error(refuseCollision(firstFile, 'flat'));
+    }
+    // And this one: a TEXT-ONLY download of a filename that is already a vision
+    // model's folder. Publisher A ships the filename with an mmproj (folder),
+    // publisher B ships the same filename without one (flat) — and the flat path
+    // cannot even see the folder's manifest, which lives inside the folder, so
+    // the different-publisher guard below never fires for it.
+    if (dir === this.cacheDir && isDirectory(path.join(this.cacheDir, firstFile.replace(/\.gguf$/i, '')))) {
+      throw new Error(refuseCollision(firstFile, 'folder'));
     }
     // The manifest is what makes this download resumable after a crash — write
     // it BEFORE any bytes, so a crash one second from now still leaves a trail.
@@ -209,8 +223,13 @@ export class ModelDownloader {
       // The real failure, forwarded — never a guessed cause. The only thing
       // added is the fact this code KNOWS and the user cannot see: the weights
       // are already on disk, so the model works and only its eye is missing.
+      // The forwarded detail is another system's sentence and may end without
+      // punctuation ("socket hang up"), which would run straight into the next
+      // sentence. Close it rather than reword it — the real cause must survive
+      // verbatim.
+      const closed = /[.!?]$/.test(detail.trim()) ? detail.trim() : `${detail.trim()}.`;
       const message = weightsPublished
-        ? `The model downloaded, but its vision file did not: ${detail} `
+        ? `The model downloaded, but its vision file did not: ${closed} `
           + `You can add it later from the model's row in Local Models.`
         : detail;
       onProgress({ ...base, state: 'error', receivedBytes: doneBytes, currentPart: parts, message });
@@ -255,6 +274,29 @@ export class ModelDownloader {
       await new Promise<void>((resolve) => ws.end(() => resolve()));
     }
   }
+}
+
+/** Is this path a directory? False for "absent" and for "a file". */
+function isDirectory(p: string): boolean {
+  try { return fs.statSync(p).isDirectory(); } catch { return false; }
+}
+
+/** The refusal for a flat/folder name collision, in both directions.
+ *
+ *  It leads with DELETE, not with "Add vision": the Add-vision link only appears
+ *  on a row whose manifest names a projector, and every download made before
+ *  this feature has no manifest at all — Destin's own `gemma-4-E2B-it-Q8_0` is
+ *  exactly that case, and unsloth's repo for it does ship an mmproj. Telling him
+ *  to click a link that is not on the row would be a misleading instruction, and
+ *  §E3's backfill can permanently record `repo: null` for a model it cannot
+ *  identify, which would leave the link missing forever. So the action that
+ *  always works comes first, and the better one is offered conditionally. */
+function refuseCollision(firstFile: string, existing: 'flat' | 'folder'): string {
+  const what = existing === 'flat'
+    ? `${firstFile} is already downloaded without its vision file.`
+    : `${firstFile} is already downloaded as a model that can see images.`;
+  return `${what} Delete it in Local Models and download it again. `
+    + `If its row offers "Add vision", that adds the vision file on its own and keeps the model you have.`;
 }
 
 function sha256File(file: string): Promise<string> {

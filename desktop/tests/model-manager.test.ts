@@ -126,7 +126,25 @@ describe('ModelManager.download — the disk guard reserves the projector', () =
     await settled;                     // the fake fetch 500s; the guard is what was tested
   });
 
-  it('credits a half-fetched projector in the folder, so a resume is judged on what is LEFT', async () => {
+  it('credits the PROJECTOR already on disk, not only the weights', async () => {
+    // The projector is the half that was missing from bytesOnDiskFor's path
+    // list: with only it on disk, the guard has to see 3 GB left of a 4 GB job.
+    // Charging the whole 4 GB here would refuse a download that fits, and the
+    // obvious reaction — delete the .partial — destroys what made it fit.
+    fs.mkdirSync(path.join(cacheDir, 'V-Q4_K_M'), { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, 'V-Q4_K_M', 'mmproj-F16.gguf'), '');
+    fs.truncateSync(path.join(cacheDir, 'V-Q4_K_M', 'mmproj-F16.gguf'), GB);
+    // 3.4 GB free: clears the 3 GB that is left (plus the guard's 5% margin),
+    // and does not clear the whole 4 GB job.
+    const mm = manager({ freeDiskBytes: 3.4 * GB });
+    const settled = new Promise<DownloadProgress>((resolve) => {
+      mm.on('download-progress', (p: DownloadProgress) => { if (p.state === 'error') resolve(p); });
+    });
+    await expect(mm.download('unsloth/V-GGUF', visionQuant as any)).resolves.toBeTruthy();
+    await settled;
+  });
+
+  it('credits a half-fetched model file in the folder, so a resume is judged on what is LEFT', async () => {
     // The 2026-08-26 trap: charging a resume the full size tells the user to
     // delete the very .partial that made it fit.
     fs.mkdirSync(path.join(cacheDir, 'V-Q4_K_M'), { recursive: true });
@@ -168,6 +186,28 @@ describe('ModelManager.resume — a vision download resumes into its folder', ()
   });
 });
 
+/** A foldered vision model on disk: `<cacheDir>/<id>/<id>.gguf` + its projector,
+ *  both sparse so the sizes are real and the disk holds nothing. */
+function plantVisionFolder(id: string, weightBytes: number, projectorBytes: number) {
+  const folder = path.join(cacheDir, id);
+  fs.mkdirSync(folder, { recursive: true });
+  for (const [name, bytes] of [[`${id}.gguf`, weightBytes], ['mmproj-F16.gguf', projectorBytes]] as const) {
+    fs.writeFileSync(path.join(folder, name), '');
+    fs.truncateSync(path.join(folder, name), bytes);
+  }
+  return folder;
+}
+
+/** An installed engine, so liveModels() falls back to the engine-off cache scan
+ *  instead of returning [] (which makes every memory number silently zero). */
+function plantEngine(userData: string) {
+  const dir = path.join(userData, 'engine', `${ENGINE_VERSION}-cpu`);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'llama-server'), 'fake');
+  fs.writeFileSync(path.join(dir, '.complete'),
+    JSON.stringify({ version: ENGINE_VERSION, backend: 'cpu', binaryRelPath: 'llama-server' }));
+}
+
 describe('ModelManager.memoryCheck — the projector is memory too', () => {
   it("counts an installed model's projector, and names it in the numbers line", async () => {
     // A projector is loaded WITH its model (--mmproj) and reaches 2.6 GB on
@@ -197,5 +237,87 @@ describe('ModelManager.memoryCheck — the projector is memory too', () => {
     // Exact string: the headline is the ONLY thing the warning row draws, and a
     // substring match on "vision" would stay green if the size were wrong.
     expect(verdict.headline).toContain('4.0 GB model + 2.0 GB vision file');
+  });
+});
+
+// ── The two numbers that only a FOLDERED model can get wrong ────────────────
+
+/** A minimal real GGUF v3 header (scalars only, no tokenizer tail) — enough for
+ *  the reader to answer EXACTLY rather than with a ceiling. That difference is
+ *  the only observable proof that the header was read from the right path. */
+function miniGguf(): Buffer {
+  const u32 = (n: number) => { const b = Buffer.alloc(4); b.writeUInt32LE(n); return b; };
+  const u64 = (n: number) => { const b = Buffer.alloc(8); b.writeBigUInt64LE(BigInt(n)); return b; };
+  const str = (v: string) => { const b = Buffer.from(v, 'utf8'); return Buffer.concat([u64(b.length), b]); };
+  const kvs: Array<[string, number, Buffer]> = [
+    ['general.architecture', 8, str('llama')],
+    ['llama.block_count', 4, u32(32)],
+    ['llama.attention.head_count', 4, u32(32)],
+    ['llama.attention.head_count_kv', 4, u32(8)],
+    ['llama.attention.key_length', 4, u32(128)],
+    ['llama.attention.value_length', 4, u32(128)],
+  ];
+  return Buffer.concat([
+    Buffer.from('GGUF', 'ascii'), u32(3), u64(0), u64(kvs.length),
+    ...kvs.flatMap(([k, t, v]) => [str(k), u32(t), v]),
+  ]);
+}
+
+describe('a foldered model is found by the header reader and by the loaded-memory sum', () => {
+  it("reads the model's HEADER from its folder — a wrong path degrades every estimate to 'up to'", async () => {
+    // localHeader used to build `<cacheDir>/<id>.gguf`, which for a vision model
+    // is not where the file is. The failure is silent: the read throws, the
+    // catch turns it into "header unknown", and the KV estimate quietly becomes
+    // a ceiling — the model card then reads "up to 8.0 GB for 32k context" for
+    // a file the app could have measured exactly.
+    const folder = path.join(cacheDir, 'V-Q4_K_M');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'V-Q4_K_M.gguf'), miniGguf());
+    fs.truncateSync(path.join(folder, 'V-Q4_K_M.gguf'), 4 * GB);   // real header, real size, sparse
+    fs.writeFileSync(path.join(folder, 'mmproj-F16.gguf'), '');
+    fs.truncateSync(path.join(folder, 'mmproj-F16.gguf'), GB);
+
+    const userData = path.join(root, 'userData');
+    plantEngine(userData);
+    const mm = new ModelManager(home, new EngineManager(home, userData, 9999), userData, {
+      fetchImpl: recordingFetch, totalVramBytes: null,
+      totalMemBytes: 16 * GB, availableMemBytes: 4 * GB,
+    });
+    const headline = (await mm.memoryCheck('V-Q4_K_M')).headline;
+    // "up to" is the reader saying it could not understand the file. Reading the
+    // right path removes it; reading the flat path puts it back.
+    expect(headline).not.toContain('up to');
+    expect(headline).toContain('4.0 GB model + 1.0 GB vision file');
+  });
+
+  it("counts a RESIDENT model's projector in what is already loaded", async () => {
+    // loadedBytes sums the models holding memory right now. `sizeBytes` is the
+    // weights alone, so without the projector term a resident vision model is
+    // under-counted by up to 2.6 GB — and the number it feeds is the one that
+    // decides whether the NEXT model is refused.
+    plantVisionFolder('R-Q4_K_M', 3 * GB, GB);           // the resident one
+    plantVisionFolder('V-Q4_K_M', 4 * GB, 2 * GB);       // the one being checked
+    const userData = path.join(root, 'userData');
+    plantEngine(userData);
+    const engine = new EngineManager(home, userData, 9999);
+    // No engine is really running here, so state the residency directly — this
+    // is the only way to exercise the `loaded` branch of loadedBytes.
+    engine.liveModels = async () => ([
+      { id: 'R-Q4_K_M', sizeBytes: 3 * GB, loaded: true, state: 'loaded' as const },
+      { id: 'V-Q4_K_M', sizeBytes: 4 * GB, loaded: false, state: 'unloaded' as const },
+    ]);
+    const mm = new ModelManager(home, engine, userData, {
+      fetchImpl: recordingFetch, totalVramBytes: null,
+      totalMemBytes: 64 * GB, availableMemBytes: 4 * GB,
+    });
+    const loadedGb = (h: string) => Number(/([\d.]+) GB already loaded/.exec(h)![1]);
+    const withProjector = loadedGb((await mm.memoryCheck('V-Q4_K_M')).headline);
+
+    // Take the resident model's projector away and re-ask. Everything else is
+    // identical, so the whole difference is that one file — asserted as an exact
+    // delta, because the absolute figure also carries an estimated KV cache.
+    fs.rmSync(path.join(cacheDir, 'R-Q4_K_M', 'mmproj-F16.gguf'));
+    const withoutProjector = loadedGb((await mm.memoryCheck('V-Q4_K_M')).headline);
+    expect(withProjector - withoutProjector).toBeCloseTo(1.0, 5);
   });
 });

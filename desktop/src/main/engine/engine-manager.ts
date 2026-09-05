@@ -713,8 +713,11 @@ export class EngineManager extends EventEmitter {
       // The row's "unfinished" facts come only from a manifest that is still
       // in flight; a stamped one describes a download that already landed.
       const unfinished = !complete && manifest != null && !isManifestComplete(manifest);
-      // The projector counts as bytes on disk — it is part of what a delete
-      // removes, and what the confirmation therefore has to name.
+      // Everything this download occupies: published weights, the projector, and
+      // any .partial. All three are what a delete removes, so all three are what
+      // the delete confirmation has to name — including on a COMPLETE row, which
+      // used to report published bytes only and therefore understated a model
+      // whose projector was still sitting as a .partial beside it.
       const bytesOnDisk = d.bytesPublished + d.bytesPartial + d.visionBytes;
       if (!complete && bytesOnDisk === 0 && !unfinished) {
         // Only an unreadable manifest — or one stamped complete whose files are
@@ -728,7 +731,7 @@ export class EngineManager extends EventEmitter {
         id: d.modelId,
         // Bytes on disk. For an unfinished set that includes the .partial, so
         // the delete confirmation names what the user actually gives up.
-        sizeBytes: complete ? d.bytesPublished + d.visionBytes : bytesOnDisk,
+        sizeBytes: bytesOnDisk,
         // The manifest's quant is the exact string Hugging Face used — the one
         // live progress events carry, so the renderer can match them to this row.
         quant: (unfinished ? manifest?.quant : undefined) ?? parsed?.quant ?? null,

@@ -225,6 +225,30 @@ describe('scanLocalDownloads — one level of folders', () => {
     expect(scanLocalDownloads(dir).map((d) => d.modelId)).toEqual(['Flat-Q4_K_M']);
   });
 
+  it('a folder holding ONLY a projector is still a row — or it can never be deleted', () => {
+    // The leftover of a download whose weights were removed, or of a move that
+    // stopped half way. It can be gigabytes, and a row that is never listed is
+    // also a row the user has no way to get rid of. Never complete, so it is
+    // never offered as a model.
+    touchIn('Orphan-Q4_K_M', 'mmproj-F16.gguf', 900);
+    const [d] = scanLocalDownloads(dir);
+    expect(d).toMatchObject({
+      modelId: 'Orphan-Q4_K_M', subdir: 'Orphan-Q4_K_M',
+      partsDeclared: 1, partsPresent: 0, bytesPublished: 0,
+      hasProjector: true, visionBytes: 900,
+    });
+    expect(isComplete(d)).toBe(false);
+    expect(scanGgufCache(dir)).toEqual([]);
+  });
+
+  it('a folder with no GGUFs at all is not a row', () => {
+    // The other half of the rule above: "empty folder" must stay invisible, or
+    // any stray directory in the cache dir becomes a phantom model.
+    touchIn('NotAModel', 'readme.txt', 10);
+    fs.mkdirSync(path.join(dir, 'Empty'), { recursive: true });
+    expect(scanLocalDownloads(dir)).toEqual([]);
+  });
+
   it('a flat model and a folder model are listed side by side', () => {
     touch('Flat-Q4_K_M.gguf', 5);
     touchIn('V-Q4_K_M', 'V-Q4_K_M.gguf', 10);

@@ -53,9 +53,10 @@ const expectedSplitId = firstPart.replace(/\.gguf$/i, '');  // == cache-scan's i
 // ── The folder layout (design §E2) ──────────────────────────────────────────
 // Hardlinked, not re-downloaded: same bytes, no second 0.4GB fetch. The folder
 // names deliberately DIFFER from the flat ids above, because a flat file and a
-// folder of the same name collide — and the flat one wins, which would hide the
-// folder copy from the engine entirely (that collision is refused in
-// ModelDownloader.start, so it must not be created here either).
+// folder of the same name are ONE id to the router: it serves one of the two and
+// drops the other, and which one is NOT predictable (asserted at the end of this
+// probe). ModelDownloader.start refuses to create that pair from either end, so
+// the working layouts here must not create it either.
 const FOLDER_ID = 'Qwen3-0.6B-DIR-Q4_K_M';
 const folderDir = path.join(cacheDir, FOLDER_ID);
 if (!fs.existsSync(path.join(folderDir, `${FOLDER_ID}.gguf`))) {
@@ -113,4 +114,41 @@ const out = await chat.json();
 child.kill();
 console.log('multi-part reply:', JSON.stringify(out.choices?.[0]?.message?.content ?? null));
 if (chat.status !== 200) { console.error('FAIL: multi-part chat round-trip'); process.exit(1); }
-console.log(`PASS: single-file ('${expectedSingleId}') and multi-part ('${expectedSplitId}') GGUFs are served under their FILENAME ids, and foldered ones ('${FOLDER_ID}', '${dirSplitId}') under their FOLDER ids`);
+// ── The collision, asserted as UNRESOLVABLE rather than as a winner ─────────
+// A flat file and a folder of the same name are one id. The app's rule is
+// "never create the pair", and the reason has to stay accurate: an earlier
+// version of this probe recorded "the flat file wins", which is FALSE and would
+// have invited §E4's move-into-a-folder to assume the half-built folder is
+// harmless while the flat file is still there. What is actually true is that
+// exactly ONE of the two is served and we cannot say which — so assert the
+// count, not the winner, and DELETE the pair before leaving.
+const collDir = path.join(cacheDir, '_collision');
+fs.rmSync(collDir, { recursive: true, force: true });
+fs.mkdirSync(path.join(collDir, 'COLL-Q4_K_M'), { recursive: true });
+fs.linkSync(dest, path.join(collDir, 'COLL-Q4_K_M', 'COLL-Q4_K_M.gguf'));
+fs.linkSync(dest, path.join(collDir, 'COLL-Q4_K_M.gguf'));
+const collPort = PORT + 1;
+const collChild = spawn(binary, ['--host', '127.0.0.1', '--port', String(collPort), '--no-webui', '--jinja',
+  '--models-dir', collDir, '--models-max', '4', '-c', '4096'],
+  { env: { ...process.env, LLAMA_CACHE: collDir }, stdio: ['ignore', 'inherit', 'inherit'] });
+const collDeadline = Date.now() + 30_000;
+while (Date.now() < collDeadline) {
+  try { if ((await fetch(`http://127.0.0.1:${collPort}/health`)).ok) break; } catch {}
+  await new Promise((r) => setTimeout(r, 250));
+}
+const collModels = await (await fetch(`http://127.0.0.1:${collPort}/models`)).json();
+const collRows = (collModels.data ?? []).filter((m) => (m.id ?? m.name) === 'COLL-Q4_K_M');
+const servedFrom = collRows.map((m) => {
+  const a = m.status?.args ?? [];
+  return a[a.indexOf('--model') + 1].includes(`${path.sep}COLL-Q4_K_M${path.sep}`) ? 'folder' : 'flat';
+});
+collChild.kill();
+fs.rmSync(collDir, { recursive: true, force: true });
+console.log(`collision: ${collRows.length} row(s) for 'COLL-Q4_K_M', served from ${JSON.stringify(servedFrom)}`);
+if (collRows.length !== 1) {
+  console.error(`FAIL: a flat file and a folder of the same name produced ${collRows.length} rows, not 1 — the id collision this build resolves silently now behaves differently; re-read the collision note in engine-dependencies.md before changing ModelDownloader.start`);
+  process.exit(1);
+}
+console.log(`  (which of the two is served is NOT predictable — do not write down a winner)`);
+
+console.log(`PASS: single-file ('${expectedSingleId}') and multi-part ('${expectedSplitId}') GGUFs are served under their FILENAME ids, foldered ones ('${FOLDER_ID}', '${dirSplitId}') under their FOLDER ids, and a flat/folder name collision collapses to exactly one unpredictable row`);

@@ -447,6 +447,16 @@ describe('EngineManager — local downloads', () => {
     });
   });
 
+  it('a complete row admits to a projector still arriving, because Delete removes it too', async () => {
+    // deleteModel removes the folder recursively — .partial files included — so
+    // a complete row that reported published bytes only understated what the
+    // confirmation was about to throw away.
+    const folder = visionFolder('V-Q4_K_M', { projector: false });
+    fs.writeFileSync(path.join(folder, 'mmproj-F16.gguf.partial'), Buffer.alloc(11));
+    const rows = await manager.installedModels();
+    expect(rows[0]).toMatchObject({ id: 'V-Q4_K_M', status: 'complete', sizeBytes: 71 });
+  });
+
   it("vision 'available': the manifest names a projector that is not on disk", async () => {
     // Both the failed-second-leg case and the crash-recovery case (R1-11).
     visionFolder('V-Q4_K_M', { projector: false });

@@ -281,9 +281,20 @@ first part and cache-scan sums the parts' sizes into one entry.
     disagree about what a model is called.
   - **Two levels deep is invisible.** `deep/inner/B-Q8_0.gguf` was absent from
     `GET /models` entirely (checked with `--models-max 16`, so it is not a cap).
-  - **A flat file WINS a name collision.** With both `A-Q8_0.gguf` and
-    `A-Q8_0/A-Q8_0.gguf` present, only the flat one was listed — the folder copy
-    was unreachable. `ModelDownloader.start` refuses to create that pair.
+  - **A name collision is resolved NON-DETERMINISTICALLY — never reason about
+    which copy "wins".** `<cacheDir>/X.gguf` and `<cacheDir>/X/` are one model id
+    to the router: it serves exactly one of the two and silently drops the other.
+    On ONE server, one cache dir: `ACOLL-Q4_K_M.gguf` beside
+    `ACOLL-Q4_K_M/ACOLL-Q4_K_M.gguf` was served from the FLAT file
+    (`input_modalities: ["text"]`), while `BCOLL-Q4_K_M` — the same pair, created
+    in the opposite order — was served from the FOLDER (`["text","image"]`). The
+    outcome tracks directory-entry order, which is the filesystem's and not the
+    app's, so it cannot be predicted from the layout or from creation order.
+    `ModelDownloader.start` refuses to create the pair from EITHER end.
+    **Before moving a flat model into its folder (§E4 / T17), read this:** do not
+    order that move on an assumption that a half-populated folder is ignored
+    while the flat file is still there. It may shadow the working model instead,
+    and the user's model then stops loading with nothing on screen to explain it.
   A split set inside a folder is one model, named by the folder, loaded from its
   part 1. `probe-download.mjs` pins both folder ids; `probe-vision.mjs` pins the
   pairing and the image round-trip.

@@ -121,8 +121,9 @@ export class ModelManager extends EventEmitter {
   /** How many bytes of vision projector each installed model carries, by model
    *  id. A projector is loaded WITH its model (`--mmproj`) and is up to ~2.6 GB
    *  on Qwen2.5-Omni, so leaving it out under-states what loading that model
-   *  costs. One directory scan, read off the same source as the model list so
-   *  the two can never disagree. */
+   *  costs. Read off the same scan as the model list, so the two can never
+   *  disagree. Costs a readdir plus a stat per file, so callers that need it
+   *  more than once pass the result down rather than asking again. */
   private visionBytesByModel(): Map<string, number> {
     const out = new Map<string, number>();
     for (const d of scanLocalDownloads(this.cacheDir())) {
@@ -207,11 +208,12 @@ export class ModelManager extends EventEmitter {
    *  reserve memory nothing is using. 'loading' rows ARE counted: that memory is
    *  being taken this second, and leaving it out is the under-count that tells a
    *  user a second model fits while the first is still arriving. */
-  private async loadedBytes(models: EngineModel[], excludeId: string | null): Promise<number> {
+  private async loadedBytes(
+    models: EngineModel[], excludeId: string | null, vision = this.visionBytesByModel()
+  ): Promise<number> {
     const cfg = readEngineConfig(this.home);
     const settings = this.modelSettings();
     const cache = this.cacheTypes();
-    const vision = this.visionBytesByModel();
     let sum = 0;
     for (const m of models) {
       if (m.id === excludeId) continue;
@@ -285,6 +287,9 @@ export class ModelManager extends EventEmitter {
     const chosenBytes = chosen?.sizeBytes ?? 0;
     if (chosenBytes <= 0) return { verdict: 'ok', headline: '', detail: '' };
     const settings = this.modelSettings();
+    // ONE scan, shared with loadedBytes below — it is a readdir plus a stat per
+    // file, and this method would otherwise run it twice for the same answer.
+    const vision = this.visionBytesByModel();
     // An installed model uses ITS OWN context length when it has one (§D3) —
     // the whole point of the per-model setting is that this model is the one
     // running at 128k, and scoring it at the engine-wide 32k would under-count
@@ -293,7 +298,7 @@ export class ModelManager extends EventEmitter {
     const [header, pool, loadedBytes] = await Promise.all([
       this.localHeader(modelId),
       this.pool(),
-      this.loadedBytes(models, modelId),
+      this.loadedBytes(models, modelId, vision),
     ]);
     const kv = kvCacheBytes(header, contextLength, this.cacheTypes(), chosenBytes);
     return checkMemoryForLoad({
@@ -302,7 +307,7 @@ export class ModelManager extends EventEmitter {
       // create-time guard counts it like the download-time one does. A
       // projector is up to ~2.6 GB — five times the working-memory cushion —
       // so it can flip this verdict on its own.
-      visionBytes: this.visionBytesByModel().get(modelId) ?? 0,
+      visionBytes: vision.get(modelId) ?? 0,
       kvBytes: kv.bytes,
       kvIsUpperBound: kv.isUpperBound,
       contextLength,

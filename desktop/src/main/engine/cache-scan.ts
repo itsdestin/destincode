@@ -154,7 +154,28 @@ function scanOneDir(dirAbs: string, subdir: string | null): LocalDownload[] {
   }
   const rows = [...sets.values()].sort((a, b) => a.firstFileName.localeCompare(b.firstFileName));
   if (subdir === null) return rows;
-  if (rows.length === 0) return [];       // an empty folder, or one holding no GGUFs
+  if (rows.length === 0) {
+    // A folder with NO weights at all. Empty, or holding nothing we recognise:
+    // return nothing, there is no model here. The one exception is a folder
+    // holding ONLY a projector — the leftover of a download whose weights were
+    // deleted, or of a move that got half way — because a row that is never
+    // listed is also a row the user can never delete, and this one can be
+    // gigabytes. It is reported as an incomplete download, which is what it is.
+    if (projectorBytes === 0 && projectorPartialBytes === 0) return [];
+    return [{
+      modelId: subdir,
+      firstFileName: `${subdir}.gguf`,   // where its manifest would be, if it had one
+      partsDeclared: 1,
+      partsPresent: 0,                    // no weights → never complete, never offered
+      bytesPublished: 0,
+      bytesPartial: projectorPartialBytes,
+      hasPartial: projectorPartialBytes > 0,
+      hasManifest: false,
+      subdir,
+      hasProjector: projectorBytes > 0,
+      visionBytes: projectorBytes,
+    }];
+  }
   // A folder is ONE model to the engine, and the engine names it by the FOLDER,
   // not by the file inside it (probed on b10665, 2026-09-05:
   // `weird-folder/C-Q8_0.gguf` was served as the model `weird-folder`). Using
@@ -162,6 +183,12 @@ function scanOneDir(dirAbs: string, subdir: string | null): LocalDownload[] {
   // answer to — the 2026-08-16 class of bug. Anything else that happens to be
   // in the folder is part of the same footprint: it is what `deleteModel`
   // removes and what the row's size has to admit to.
+  //
+  // COST of that folding, for a folder our downloader did not create: the row
+  // keeps only the FIRST filename, and `installedModels` reads the manifest
+  // under that name — so a second weight set's own manifest, and the repo in it,
+  // are silently lost. Harmless today (the downloader puts exactly one set in a
+  // folder), but it is why "one folder, one model" is a rule and not a habit.
   const primary = rows[0];
   for (const extra of rows.slice(1)) {
     primary.bytesPublished += extra.bytesPublished;
