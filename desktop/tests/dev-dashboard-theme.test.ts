@@ -1,5 +1,4 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — dev-only helper, plain ESM with no .d.ts
 import { rewriteAssets, resolveAssetFile } from '../dev-dashboard/theme.mjs';
 
 describe('rewriteAssets', () => {

@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error — dev-only helper, plain ESM with no .d.ts
 import { SUITES, suiteByKey, runSuite } from '../dev-dashboard/suites.mjs';
-// @ts-expect-error — dev-only helper, plain ESM with no .d.ts
 import { takeOffset, OFFSET_POOL } from '../dev-dashboard/instances.mjs';
 
 const checkout = { id: 'x', path: '/tmp/wt', name: 'wt', branch: 'feat/x' };

@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { AddressInfo } from 'node:net';
 import http from 'node:http';
-// @ts-expect-error — dev-only helper, plain ESM with no .d.ts
 import { guardRequest, createServer, json } from '../dev-dashboard/server.mjs';
 
 const req = (headers: Record<string, string>) => ({ headers });

@@ -11,6 +11,29 @@ bash dev-dashboard/run.sh
 
 Ctrl-C stops Vite, the helper, and every dev instance the page started.
 
+## Is the workspace itself up to date?
+
+The banner at the top of the page answers this, because nothing else on the
+machine does. `.claude/rules/`, `CLAUDE.md`, `docs/MAP.md` and `scripts/` are read
+— and RUN — from the shared checkout, so a stale one **governs every new session**
+with stale rules and stale tooling, and you cannot read your way out of it. It has
+sat 175 commits behind for 31 hours without a word.
+
+The banner fetches from GitHub for real (twice on load: once from what git already
+knows so it paints instantly, then again with the network so the number is
+current), and says three things:
+
+- **what it costs** — "new sessions are loading guidance that is 38 updates out of
+  date", not a bare git count
+- **what is blocking it** — the specific files that disagree with the incoming
+  commits, which is usually one or two and usually leftovers of work already
+  pushed from a worktree
+- **when it last checked** — a behind-count is only as true as the fetch behind it
+
+An offline check reports "could not check for updates". It never reports a
+remembered number as current — that would be a lie with the same shape as the bug
+the banner exists to catch.
+
 ## Three pieces
 
 | Piece | Where | What it is |
@@ -18,6 +41,9 @@ Ctrl-C stops Vite, the helper, and every dev instance the page started.
 | The screen | `../src/renderer/dev/dashboard/` | A real renderer screen, so moving it into Settings later is deleting the wrapper rather than a rewrite |
 | The wrapper | `?mode=dev-dashboard` branch in `../src/renderer/index.tsx` | The same URL-query fork the workbench uses. **No `vite.config.ts` change** |
 | The helper | this folder | The only piece that runs commands. Also proxies Vite, so there is one address to open |
+
+`workspace.mjs` is the sync check; `checkouts.mjs` is the per-branch status;
+`instances.mjs` owns the dev instances; `suites.mjs` is the check registry.
 
 ## Ports
 

@@ -3,7 +3,6 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-// @ts-expect-error — dev-only helper, plain ESM with no .d.ts
 import { classify, listCheckouts } from '../dev-dashboard/checkouts.mjs';
 
 describe('classify', () => {
