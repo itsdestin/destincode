@@ -31,6 +31,9 @@
 // sits disabled forever. So the engine ACKNOWLEDGES each pass with the length of
 // audio it is about to chew on, and we hold it to a deadline derived from the
 // measured cost of that much audio. See PASS_* below.
+import { MIC_REFUSED_SENTENCE } from '../../shared/voice-types';
+export { MIC_REFUSED_SENTENCE };
+import { expectedPassMs } from './voice-worker';
 import * as path from 'path';
 import type { VoiceEvent, VoiceReadiness } from '../../shared/voice-types';
 import type { InstalledVoiceAssets, VoiceAssetProgress } from './voice-assets';
@@ -103,14 +106,11 @@ export const SPEECH_RMS_FLOOR = 0.02;
 /** Quiet for this long AFTER you have spoken closes the mic. Deck answer Q-3. */
 export const SILENCE_STOP_MS = 2_000;
 
-/** How long ONE pass over `seconds` of audio should take, from the bench in the
- *  design: at 4 threads, 44 ms for 1 s of audio, 155 ms at 6 s, 282 ms at 12 s,
- *  563 ms at 24 s. That is a straight line of about 23 ms per second of audio
- *  plus about 20 ms of fixed cost; rounded up here so the model is never
- *  optimistic about a machine slower than the bench. */
-function expectedPassMs(seconds: number): number {
-  return 200 + 25 * Math.max(0, seconds);
-}
+// How long ONE pass over `seconds` of audio should take. IMPORTED, not
+// re-derived: the worker owns this curve because the worker is what was measured,
+// and this file used to carry a second straight-line version of it that disagreed
+// by five times at one second of audio. Two numbers for one fact is how a deadline
+// ends up defending something nobody measured. Found reviewing T4, 2026-09-05.
 /** How much slower than the bench a real laptop is allowed to be before we call
  *  the engine wedged. Twenty times is deliberately enormous: this deadline
  *  exists to catch an engine that has stopped answering AT ALL (swapped to
@@ -133,9 +133,6 @@ const IDLE_UNLOAD_MS = 10 * 60 * 1000;
  *  the V-8 deck, and it appears in two places (here, when macOS refuses, and in
  *  the renderer, when the browser layer refuses). Two copies that drift would
  *  show the user two different explanations of the same refusal. */
-export const MIC_REFUSED_SENTENCE =
-  'Microphone access was refused by your computer. Allow it for YouCoded in your '
-  + "system's privacy settings, then check again.";
 
 /** The deadline for one pass over `seconds` of audio. Exported so the test can
  *  assert against the same number the service uses rather than a copy of it. */
@@ -325,9 +322,19 @@ export class VoiceService {
     const w = this.deps.spawnWorker();
     this.worker = w;
     this.lastStderr = null;
-    w.onMessage((m) => this.onWorkerMessage(m));
-    w.onExit((code) => this.onWorkerExit(code));
+    // Every callback checks that the worker which spoke is still OUR worker.
+    // WHY: a killed engine's `exit` can arrive after the user has tapped the mic
+    // again. Without this check the dead worker's exit ended the NEW session with
+    // "the speech engine closed unexpectedly" — an invented cause for a process we
+    // killed on purpose — and set `this.worker = null` while the new engine was
+    // alive, orphaning it: stop and cancel then reached nothing and the next tap
+    // spawned a THIRD 1.14 GB engine. The stderr line matters for the same reason:
+    // a dead worker could otherwise put its last words in a live one's error.
+    // Found reviewing T5, 2026-09-05.
+    w.onMessage((m) => { if (this.worker === w) this.onWorkerMessage(m); });
+    w.onExit((code) => { if (this.worker === w) this.onWorkerExit(code); });
     w.onStderr((line) => {
+      if (this.worker !== w) return;
       const trimmed = line.trim();
       if (trimmed) this.lastStderr = trimmed;
     });
@@ -425,8 +432,12 @@ export class VoiceService {
     this.endPass();
     this.clearTimer('load');
     this.clearTimer('stop');
-    // Kill BEFORE emitting, so the exit that follows finds the session already
-    // finished and stays silent — one ending, not two.
+    // Kill BEFORE emitting. What actually makes the following exit silent is that
+    // `unloadWorker` drops our reference to the worker first, so the exit callback's
+    // "is this still our worker?" check fails and it returns. (The old comment
+    // credited the ordering alone, which was not true of the mechanism: `terminated`
+    // is only set inside emitTerminal, so a synchronous exit would have won the race
+    // and replaced this specific, true sentence with a generic one.)
     this.unloadWorker();
     const parts = [`Voice stopped: ${whatHappened} and was closed.`];
     if (stderr) parts.push(`Its last message was: ${stderr}`);

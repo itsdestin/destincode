@@ -14,6 +14,7 @@
 //    long sentence is never cut off — and if the words turn up after we gave up,
 //    they still land in the box.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { MIC_REFUSED_SENTENCE } from '../src/shared/voice-types';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { renderHook, act } from '@testing-library/react';
@@ -333,6 +334,37 @@ describe('useVoiceInput — events while the mic is closed', () => {
 // page would have asked visitors for their microphone. Found by reading that
 // bundle, 2026-09-05. This is the cheapest thing that fails if someone swaps the
 // predicate back.
+// WHY both cases: the flow the contract row describes is first tap → the system's
+// own prompt → decline, and that landed on the "voice stopped" card whose only
+// button is OK, so the Check again button appeared only on some later look. And
+// Electron wraps everything a main handler throws, so the careful sentence reached
+// the user with "Error invoking remote method 'voice:start': Error: " bolted on.
+// Found reviewing T5, 2026-09-05.
+describe('a refusal from the operating system', () => {
+  it('opens the check-again card, not the voice-stopped card', async () => {
+    const { bridge } = installBridge({ desktop: true });
+    (bridge.start as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error(`Error invoking remote method 'voice:start': Error: ${MIC_REFUSED_SENTENCE}`),
+    );
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    expect(result.current.error).toBeNull();
+    expect(result.current.readiness).toEqual({ state: 'unavailable', reason: MIC_REFUSED_SENTENCE });
+  });
+
+  it('never shows Electron\'s wrapper text to the user', async () => {
+    const { bridge } = installBridge({ desktop: true });
+    (bridge.start as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error("Error invoking remote method 'voice:start': Error: the engine fell over"),
+    );
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    expect(result.current.error).toBe('the engine fell over');
+  });
+});
+
 describe('the microphone gate uses the predicate that survives a production build', () => {
   it('useVoiceInput gates on isWorkbenchDocument, never isWorkbenchMode', () => {
     const src = readFileSync(join(__dirname, '..', 'src', 'renderer', 'hooks', 'useVoiceInput.ts'), 'utf8');

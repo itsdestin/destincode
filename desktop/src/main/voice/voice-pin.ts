@@ -161,16 +161,27 @@ export const MODEL_DIR_NAME = 'sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8';
 //   `curl -sL -r 0-0 -D - -o /dev/null <url>` → Content-Range total, read
 //   2026-09-05. The four required paths were read off the archive's own index
 //   the same day (`curl -sL -r 0-25000000 <url> | bzip2 -dc | tar -tv`).
+/** The four files the recogniser opens, named ONCE. The archive's contents and
+ *  the engine's config are the same four names, and spelling them in two places
+ *  means a re-pinned model archive passes every test and then fails at load with
+ *  the engine's own words about a missing file. */
+export const MODEL_FILES = {
+  encoder: 'encoder.int8.onnx',
+  decoder: 'decoder.int8.onnx',
+  joiner: 'joiner.int8.onnx',
+  tokens: 'tokens.txt',
+} as const;
+
 export const VOICE_MODEL: VoiceArchive = {
   label: 'the speech model',
   url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2',
   digest: { algo: 'sha256', encoding: 'hex', digest: '5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf' },
   bytes: 487170055,
   requiredRelPaths: [
-    `${MODEL_DIR_NAME}/encoder.int8.onnx`,
-    `${MODEL_DIR_NAME}/decoder.int8.onnx`,
-    `${MODEL_DIR_NAME}/joiner.int8.onnx`,
-    `${MODEL_DIR_NAME}/tokens.txt`,
+    `${MODEL_DIR_NAME}/${MODEL_FILES.encoder}`,
+    `${MODEL_DIR_NAME}/${MODEL_FILES.decoder}`,
+    `${MODEL_DIR_NAME}/${MODEL_FILES.joiner}`,
+    `${MODEL_DIR_NAME}/${MODEL_FILES.tokens}`,
   ],
 };
 

@@ -62,7 +62,10 @@ function makeAssets(installed: boolean): VoiceAssetsApi {
 
 interface Harness {
   service: VoiceService;
+  /** The CURRENT worker (the newest one spawned). */
   worker: FakeWorker;
+  /** Every worker spawned, oldest first — for the stale-worker cases. */
+  workers: FakeWorker[];
   /** Every event delivered, with the window it went to. */
   events: Array<{ to: number; event: VoiceEvent }>;
   /** Only the ENDINGS — this is the number the whole file is about. */
@@ -96,7 +99,9 @@ function harness(opts: { installed?: boolean; alive?: number[] } = {}): Harness 
   return {
     service,
     workers,
-    get worker() { return workers[0]; },
+    get worker() { return workers[workers.length - 1]; },
+    /** Every worker this service has spawned, oldest first. */
+    get workers() { return workers; },
     events,
     endings: () => events
       .map((e) => e.event)
@@ -344,5 +349,40 @@ describe('voice: the wiring from main.ts', () => {
     ]) {
       expect(ns).toMatch(new RegExp(`^ {4}${member}\\s*[:(]`, 'm'));
     }
+  });
+});
+
+// WHY this exists: a killed engine's `exit` can arrive after the user has tapped
+// the mic again — and a wedged native decode loop is exactly the process that does
+// not die promptly. Without an "is this still our worker?" check on the callbacks,
+// the dead one ended the NEW session with "the speech engine closed unexpectedly"
+// (an invented cause for a process we killed on purpose) AND set worker to null
+// while the new engine was alive, orphaning it: stop and cancel then reached
+// nothing and the next tap spawned a third 1.14 GB engine. Found reviewing T5,
+// 2026-09-05.
+describe('a dead worker cannot end a live session', () => {
+  it('ignores the exit, the words and the error output of a worker we already replaced', async () => {
+    const h = harness();
+    await h.service.start(1);
+    const first = h.worker;
+    // The engine fails to load, so the service kills it and ends this session.
+    first.say({ type: 'error', stage: 'load', message: 'no GLIBCXX' });
+    expect(h.endings()).toHaveLength(1);
+
+    // The user taps again straight away and gets a fresh engine.
+    await h.service.start(1);
+    const second = h.worker;
+    expect(second).not.toBe(first);
+    const endingsBefore = h.endings().length;
+
+    // NOW the dead one finally exits, and prints its last words on the way out.
+    first.printed('the dead engine had something to say');
+    first.die(0);
+
+    // The live session is untouched...
+    expect(h.endings()).toHaveLength(endingsBefore);
+    // ...and is still reachable, rather than orphaned behind a nulled reference.
+    await h.service.stop();
+    expect(second.types()).toContain('stop');
   });
 });

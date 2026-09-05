@@ -16,6 +16,7 @@
 // neither: Android's own recogniser owns the microphone, so `start()` is the
 // one call to the phone and nothing here goes looking for hardware.
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { MIC_REFUSED_SENTENCE } from '../../shared/voice-types';
 import type { VoiceEvent, VoiceReadiness } from '../../shared/voice-types';
 import { isWorkbenchDocument } from '../workbench-mode';
 import { meterLevel, open as openCapture, probe as probeMic, type CaptureHandle } from '../voice-capture';
@@ -31,8 +32,9 @@ interface Options {
 // Written out here rather than assembled from pieces, so there is exactly one
 // place to read what he sees. Per docs/error-message-standards.md: each one is
 // either specific and true, or general and honest about not knowing.
-const REASON_REFUSED =
-  "Microphone access was refused by your computer. Allow it for YouCoded in your system's privacy settings, then check again.";
+// Imported, not retyped: main throws this exact sentence when macOS's own prompt is
+// declined, and the code below compares against it to pick the right card.
+const REASON_REFUSED = MIC_REFUSED_SENTENCE;
 const REASON_NO_DEVICE = 'No microphone was found on this computer.';
 const REASON_GENERAL = 'Voice could not open a microphone.';
 
@@ -46,7 +48,13 @@ const REASON_GENERAL = 'Voice could not open a microphone.';
 const WATCHDOG_MS = 12_000;
 
 function describe(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  const raw = err instanceof Error ? err.message : String(err);
+  // Electron wraps everything a main-process handler throws as
+  // "Error invoking remote method 'voice:start': Error: <the real sentence>".
+  // Nothing else in the app strips it, so without this the user reads our careful
+  // sentence with a line of plumbing bolted to the front. Found reviewing T5,
+  // 2026-09-05.
+  return raw.replace(/^Error invoking remote method '[^']*':\s*(?:Error:\s*)?/, '');
 }
 
 /** Turn a failure to open the microphone into words for the "check again" card. */
@@ -242,7 +250,18 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
         // of asking.
         await bridge.start();
       } catch (err) {
-        setError(describe(err));
+        const reason = describe(err);
+        // A REFUSAL is not a breakage: it belongs on the "check again" card, with
+        // the button that lets the user come back after changing their settings —
+        // not on the "voice stopped" card, whose only action is OK. This is the
+        // flow the contract row actually describes (first tap → the system's own
+        // prompt → decline), and it used to land on the wrong card entirely, so
+        // the Check again button appeared only on some LATER look.
+        if (reason === MIC_REFUSED_SENTENCE) {
+          setMicBlock({ state: 'unavailable', reason });
+          return;
+        }
+        setError(reason);
         return;
       }
 

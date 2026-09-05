@@ -30,7 +30,7 @@
 import * as path from 'path';
 import { createRequire } from 'module';
 import { splitAtLastSentenceEnd } from '../../shared/voice-types';
-import { addonPath, wrapperEntryPath, modelDir } from './voice-pin';
+import { addonPath, wrapperEntryPath, modelDir, MODEL_FILES } from './voice-pin';
 
 // ---------------------------------------------------------------------------
 // The numbers, all in one place
@@ -302,12 +302,15 @@ export async function createRecognizer(userDataPath: string, sherpa: SherpaModul
   const recognizer = await sherpa.OfflineRecognizer.createAsync({
     featConfig: { sampleRate: VOICE_SAMPLE_RATE, featureDim: 80 },
     modelConfig: {
+      // The filenames come from the pin, not from here. voice-pin.ts already
+      // names them as what the archive must contain; spelling them twice means a
+      // re-pinned model passes every test and then fails at load.
       transducer: {
-        encoder: path.join(models, 'encoder.int8.onnx'),
-        decoder: path.join(models, 'decoder.int8.onnx'),
-        joiner: path.join(models, 'joiner.int8.onnx'),
+        encoder: path.join(models, MODEL_FILES.encoder),
+        decoder: path.join(models, MODEL_FILES.decoder),
+        joiner: path.join(models, MODEL_FILES.joiner),
       },
-      tokens: path.join(models, 'tokens.txt'),
+      tokens: path.join(models, MODEL_FILES.tokens),
       numThreads: 4,
       modelType: 'nemo_transducer',
       debug: 0,
@@ -496,6 +499,14 @@ export class VoiceWorkerCore {
     this.length = keep;
     const droppedFrames = Math.floor(count / FRAME_SAMPLES);
     this.frames = this.frames.slice(droppedFrames);
+    // And throw away the part-filled frame. WHY it matters: frame k is only at
+    // buffer sample k * FRAME_SAMPLES while the two stay in step. Leaving these
+    // samples behind put every later frame boundary out by however much of a
+    // frame the closed stretch ended mid-way through — so the hard cut landed a
+    // tenth of a second late, INSIDE the next word, which is precisely the
+    // "a word cut in half is heard as two wrong words" this cut exists to avoid.
+    // Measured 2026-09-05: 14.7 s instead of 14.6 s after a non-aligned commit.
+    this.pending = [];
   }
 
   private get openSeconds(): number {
@@ -563,12 +574,24 @@ export class VoiceWorkerCore {
 
     if (err) {
       // A pass that throws is the service's problem to turn into one terminal
-      // error — the worker reports the engine's own words and stops the loop.
+      // error — the worker reports the engine's own words.
       this.deps.send({
         type: 'error',
         stage: 'pass',
         message: err instanceof Error ? err.message : String(err),
       });
+      // AND it really does stop the loop now. Without this the next `audio`
+      // message walked straight back into a pass that throws again, so a
+      // permanently broken engine sent one error per chunk for as long as the
+      // microphone stayed open — the comment above used to claim otherwise.
+      this.listening = false;
+      // A `stop` was already waiting on this pass. `stop()` declines to run the
+      // final pass while one is in flight, so returning here parked the worker
+      // forever: the composer sat on "Finishing…" and every sentence the user had
+      // already watched turn black died with the session, because emitFinal is the
+      // only thing that reads them. The service is owed exactly one terminal event
+      // — answer with the words we have. Found reviewing T4, 2026-09-05.
+      if (this.stopping) this.emitFinal();
       return;
     }
 

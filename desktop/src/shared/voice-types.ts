@@ -73,6 +73,16 @@ export type VoiceEvent =
   | { type: 'heartbeat' }
   | { type: 'error'; message: string };
 
+/** What the user is told when the computer itself refuses the microphone.
+ *
+ *  WHY it lives HERE and not beside either user: main throws it (macOS, when the
+ *  system prompt is declined) and the renderer compares against it to decide which
+ *  card to show. It used to be a constant in main and a hand-typed copy in the
+ *  renderer, with a comment claiming the two "cannot drift" and nothing whatsoever
+ *  making that true. One copy, imported twice. */
+export const MIC_REFUSED_SENTENCE =
+  "Microphone access was refused by your computer. Allow it for YouCoded in your system's privacy settings, then check again.";
+
 export interface VoiceBridge {
   status: () => Promise<VoiceReadiness>;
   /** Fetch the speech model; progress arrives as `readiness` events. */

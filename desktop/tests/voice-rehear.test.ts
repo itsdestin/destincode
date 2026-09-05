@@ -398,6 +398,53 @@ describe('when the engine itself fails', () => {
     expect(sent).toContainEqual({ type: 'error', stage: 'pass', message: 'onnxruntime ran out of memory' });
   });
 
+  // WHY: `stop()` declines to run the final pass while one is already in flight,
+  // so a pass that threw at that exact moment used to park the worker forever —
+  // the composer sat on "Finishing…" and every sentence the user had already
+  // watched turn black died with the session. Found reviewing T4, 2026-09-05.
+  it('a stop waiting on a pass that fails still returns the words already settled', async () => {
+    let fail = false;
+    const said = ['The first sentence.', 'more words'];
+    const h = makeHarness((seconds, call) => {
+      if (fail) throw new Error('onnxruntime ran out of memory');
+      return said[call] ?? '';
+    });
+    await ready(h);
+
+    // One good pass closes a sentence, so there is something to lose.
+    h.core.audio(concat(sound(6, LOUD), sound(0.9, QUIET)));
+    await flush();
+    h.runScheduled();
+    expect(h.partials()[0]).toEqual({ committed: 'The first sentence.', tail: '' });
+
+    // Now the engine breaks while a pass is in flight and the user taps Stop.
+    fail = true;
+    h.core.audio(sound(2, LOUD));
+    const inFlight = flush();
+    h.core.stop();
+    await inFlight;
+    await flush();
+
+    const finals = h.sent.filter((m) => m.type === 'final');
+    expect(finals).toHaveLength(1);
+    expect((finals[0] as { text: string }).text).toContain('The first sentence.');
+  });
+
+  // WHY: the comment said a throwing pass stops the loop; it did not, so the next
+  // chunk of audio walked back into a pass that threw again — one error per chunk
+  // for as long as the microphone stayed open.
+  it('a broken engine reports once, not once per chunk of sound', async () => {
+    const h = makeHarness(() => { throw new Error('engine is gone'); });
+    await ready(h);
+    h.core.audio(sound(1, LOUD));
+    await flush();
+    h.core.audio(sound(1, LOUD));
+    await flush();
+    h.core.audio(sound(1, LOUD));
+    await flush();
+    expect(h.sent.filter((m) => m.type === 'error')).toHaveLength(1);
+  });
+
   it('reports a failure to start the engine as a LOAD failure, in its own words', async () => {
     const sent: VoiceWorkerOutbound[] = [];
     const core = new VoiceWorkerCore({
