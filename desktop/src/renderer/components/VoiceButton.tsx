@@ -8,10 +8,21 @@
 //              obvious glowing state and a Stop are essential")
 //   finishing  a spinner for the beat between the mic closing and the last
 //              words settling
-//   card       when the engine is not ready the tap opens a card ABOVE the mic:
-//              first run offers the one-time download and says the voice never
-//              leaves this computer (Q-5); while downloading it shows progress;
-//              when the computer has no microphone it says exactly that.
+//   card       when the engine is not ready the tap opens a card ABOVE the mic.
+//              Five things that card can say, in the order they are decided:
+//                needs-download  the one-time offer — what dictation does, that
+//                                the voice never leaves this computer (Q-5),
+//                                which languages it understands (V-11) and the
+//                                size (V-10). If a download FAILED, this same
+//                                card carries the computer's own reason and its
+//                                Download button becomes Retry (R3-6).
+//                error           "Voice stopped" — a microphone that was open
+//                                and died. Never shown for a failed download.
+//                downloading     a real progress bar over the bytes.
+//                unpacking       "Almost ready…" and a bar that moves without
+//                                measuring anything (V-12).
+//                unavailable     no microphone, or the computer refused — the
+//                                real reason and one Check again.
 //
 // The card is positioned the way AnchorTip positions its bubble — a portaled
 // OverlayPanel at layer 4, measured from the trigger — rather than reusing
@@ -161,16 +172,55 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
     setOpen((v) => !v);
   };
 
-  const label = error ? 'Voice stopped — see why'
+  // A failure reported while the engine is still not on this computer can only
+  // have come from the DOWNLOAD — the microphone was never open, so the "Voice
+  // stopped" card (which is about a mic that was working and then died) would be
+  // a lie. The service hands the card back to its offer state and puts the real
+  // reason on the rejection (voice-service.ts `download()`), so this branch is
+  // the offer card it interrupted, plus that reason, plus a Retry.
+  const downloadFailed = !!error && state === 'needs-download';
+
+  const label = downloadFailed ? 'Voice download failed — see why'
+    : error ? 'Voice stopped — see why'
     : listening ? 'Stop listening'
     : phase === 'finishing' ? 'Finishing…'
     : state === 'ready' ? 'Speak your message'
     : state === 'downloading' ? 'Voice is downloading'
+    : state === 'unpacking' ? 'Voice is almost ready'
     : state === 'needs-download' ? 'Speak your message (one-time download)'
     : "Voice isn't available";
 
   let card: React.ReactNode = null;
-  if (error) {
+  if (state === 'needs-download' && readiness?.state === 'needs-download') {
+    card = (
+      <>
+        <p className="text-xs font-semibold text-fg mb-1.5">Speak your messages</p>
+        <p className="text-2xs text-fg-2 leading-snug">
+          Tap the mic, talk, and your words appear here with punctuation, ready to fix or send.
+          Your voice is turned into text on this computer and never leaves it.
+        </p>
+        {/* The limit, said BEFORE half a gigabyte is fetched rather than after
+            (reopen deck V-11): someone who speaks a language it cannot hear
+            deserves to find out first. */}
+        <p className="text-2xs text-fg-2 leading-snug mt-2">Understands English and 24 other European languages.</p>
+        {/* Written out, not computed from `sizeMb`. The number the downloader
+            knows is the archive alone and shifts by a few MB every time the
+            engine pin moves; "about 500 MB" is the true first-run total (model
+            plus the runtime that runs it) and is the sentence Destin approved
+            on the reopen deck (V-10). See voice-types.ts on `sizeMb`. */}
+        <p className="text-2xs text-fg-muted mt-2">One-time download: about 500 MB.</p>
+        {downloadFailed && (
+          // The computer's OWN words, never a guess about the network —
+          // docs/error-message-standards.md.
+          <p className="text-2xs text-fg-2 leading-snug mt-2 whitespace-pre-line">{error}</p>
+        )}
+        <div className="flex justify-end gap-2 mt-3">
+          <Button variant="ghost" size="sm" onClick={() => { onClearError(); setOpen(false); }}>Not now</Button>
+          <Button variant="primary" size="sm" onClick={onDownload}>{downloadFailed ? 'Retry' : 'Download'}</Button>
+        </div>
+      </>
+    );
+  } else if (error) {
     card = (
       <>
         <p className="text-xs font-semibold text-fg mb-1.5">Voice stopped</p>
@@ -180,27 +230,27 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
         </div>
       </>
     );
-  } else if (state === 'needs-download' && readiness?.state === 'needs-download') {
-    card = (
-      <>
-        <p className="text-xs font-semibold text-fg mb-1.5">Speak your messages</p>
-        <p className="text-2xs text-fg-2 leading-snug">
-          Tap the mic, talk, and your words appear here with punctuation, ready to fix or send.
-          Your voice is turned into text on this computer and never leaves it.
-        </p>
-        <p className="text-2xs text-fg-muted mt-2">One-time download: {readiness.sizeMb} MB.</p>
-        <div className="flex justify-end gap-2 mt-3">
-          <Button variant="ghost" size="sm" onClick={() => setOpen(false)}>Not now</Button>
-          <Button variant="primary" size="sm" onClick={onDownload}>Download</Button>
-        </div>
-      </>
-    );
   } else if (state === 'downloading' && readiness?.state === 'downloading') {
     card = (
       <>
         <p className="text-xs font-semibold text-fg mb-1.5">Getting voice ready</p>
         <ProgressBar percent={readiness.percent} showLabel aria-label="Voice download" />
-        <p className="text-2xs text-fg-muted mt-2">{readiness.sizeMb} MB, once. You can keep typing; the mic wakes up when it is done.</p>
+        <p className="text-2xs text-fg-muted mt-2">About 500 MB, once. You can keep typing; the mic wakes up when it is done.</p>
+      </>
+    );
+  } else if (state === 'unpacking') {
+    // The download has landed and is being expanded — tens of seconds on a slow
+    // machine. Without this branch the card would VANISH for that whole minute
+    // and the app would look finished, or stuck. There is no percentage worth
+    // showing here (nothing reports one), so the bar moves without measuring
+    // anything — the same sweeping track the model loader uses for its own
+    // unmeasured wait, which Reduced Effects already knows how to still.
+    // "Almost ready…" is the wording Destin picked over "Unpacking…" (reopen V-12).
+    card = (
+      <>
+        <p className="text-xs font-semibold text-fg mb-1.5">Almost ready&hellip;</p>
+        <div className="model-load-track h-1.5 rounded-full bg-inset" role="progressbar" aria-label="Getting voice ready" />
+        <p className="text-2xs text-fg-muted mt-2">You can keep typing; the mic wakes up when it is done.</p>
       </>
     );
   } else if (state === 'unavailable') {

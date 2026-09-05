@@ -64,14 +64,13 @@ interface Harness {
   service: VoiceService;
   /** The CURRENT worker (the newest one spawned). */
   worker: FakeWorker;
-  /** Every worker spawned, oldest first — for the stale-worker cases. */
-  workers: FakeWorker[];
   /** Every event delivered, with the window it went to. */
   events: Array<{ to: number; event: VoiceEvent }>;
   /** Only the ENDINGS — this is the number the whole file is about. */
   endings: () => VoiceEvent[];
   closeWindow: (id: number) => void;
-  /** A second spawn (after the first worker is killed) lands here. */
+  /** Every worker spawned, oldest first — a second spawn (after the first is
+   *  killed) lands here, which is what the stale-worker cases need. */
   workers: FakeWorker[];
 }
 
@@ -99,9 +98,9 @@ function harness(opts: { installed?: boolean; alive?: number[] } = {}): Harness 
   return {
     service,
     workers,
+    // The CURRENT worker: the newest spawned, so a test that replaces a dead one
+    // reaches the live engine rather than the corpse.
     get worker() { return workers[workers.length - 1]; },
-    /** Every worker this service has spawned, oldest first. */
-    get workers() { return workers; },
     events,
     endings: () => events
       .map((e) => e.event)

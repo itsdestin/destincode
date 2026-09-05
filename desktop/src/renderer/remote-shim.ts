@@ -3,6 +3,9 @@
  * Provides the same API surface as the Electron preload bridge.
  */
 
+// Type-only, so nothing is added to the bundle the Android WebView loads.
+import type { VoiceReadiness } from '../shared/voice-types';
+
 // ── Marketplace types re-declared locally ─────────────────────────────────────
 // WHY: remote-shim.ts lives in renderer/ and cannot import from main/ (Node.js
 import { REMOTE_UNSUPPORTED_EVENT, remoteFeatureName, remoteUnsupportedMessage } from './remote-unsupported';
@@ -42,6 +45,30 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 let targetUrl: string | null = null;
 /** Whether to preserve __PLATFORM__ on next auth:ok (prevents desktop overwriting 'android') */
 let preservePlatform = false;
+
+/** The one sentence the user is shown when they reach for voice typing from a
+ *  remote browser tab.
+ *
+ *  WHY voice is off there at all: a web browser only hands a page the microphone
+ *  on an encrypted (https) connection, and YouCoded's remote access is still
+ *  plain http on the local network. So the mic in a remote tab could not work
+ *  even if we drew it. Destin decided (voice questions deck, Q-7) that it stays
+ *  off until remote access is encrypted, rather than shipping a button that
+ *  fails. This sentence says exactly that — it is not a guess at a cause, per
+ *  docs/error-message-standards.md. */
+const VOICE_REMOTE_REASON =
+  'Voice typing is not available over remote access yet. A browser only allows the '
+  + 'microphone on an encrypted connection, and remote access is not encrypted yet.';
+
+/** Is this client the Android app talking to its OWN on-device bridge?
+ *
+ *  `file:` means the page was loaded out of the APK (a browser tab is http/https),
+ *  and no `targetUrl` means it has not been pointed at someone's desktop. Both
+ *  halves are needed: `!targetUrl` ALONE is also true of a plain remote browser
+ *  tab, which is precisely where the microphone must not appear. */
+function isAndroidLocal(): boolean {
+  return location.protocol === 'file:' && !targetUrl;
+}
 
 // Fix: queue application messages sent before the WS auth handshake completes,
 // then flush on auth:ok. Without this, first-mount fetches (skills.list etc.)
@@ -375,6 +402,13 @@ function handleMessage(data: string): void {
       // G-1 — push-only (ipc-handlers.ts's nativeHost.on('shell-event', …)
       // forwarder). window.claude.on.shellEvent subscribers get the ShellEvent.
       dispatchEvent('native:shell-event', payload);
+      break;
+    case 'voice:event':
+      // Voice typing push events from the ANDROID host (readiness / level /
+      // partial words / final / heartbeat / error). window.claude.voice.onEvent
+      // subscribers get the payload verbatim. Broadcast — no sessionId, because
+      // there is one microphone on the device, not one per conversation.
+      dispatchEvent('voice:event', payload);
       break;
     case 'social:presence-event':
       // Presence relay (Task 6). The host forwards one presence event (server
@@ -1377,6 +1411,59 @@ export function installShim(): void {
       read: (req: { provider: string; id: string; tail: number; before?: number }) =>
         invoke('chatsearch:read', req),
     },
+    // Voice typing — the PHONE's half of window.claude.voice.
+    //
+    // Written as a plain, unconditional `voice: {` rather than a conditional
+    // spread on purpose: the workbench's contract scan
+    // (tests/workbench-mock-contract.test.ts) finds a namespace by looking for
+    // its name at exactly this indentation, and `...(androidLocal ? {voice} : {})`
+    // would be invisible to it. The namespace is instead DELETED after this
+    // object is built, whenever this client is not the Android app on its own
+    // bridge — see the isAndroidLocal() check at the end of installShim().
+    //
+    // `sendAudio` and `micAccess` are deliberately missing, unlike preload's
+    // copy: on a phone Android's own speech recognition owns the microphone, and
+    // the app window's permission prompt owns the permission question, so no
+    // audio and no permission query ever passes through here. Every caller tests
+    // `typeof bridge.sendAudio === 'function'` instead of assuming. Both gaps are
+    // written down in the workspace rule .claude/rules/ipc-bridge.md.
+    voice: {
+      // Every method below refuses the moment this client is pointed at someone
+      // else's desktop.
+      //
+      // WHY a test inside each method, when the namespace is already deleted for
+      // anything but the Android app: pairing to a desktop mid-session only flips
+      // the `targetUrl` variable — it does NOT rebuild window.claude, and the
+      // composer captured this bridge once when it mounted. Without these tests a
+      // phone that pairs to a desktop while the mic is open would keep a live
+      // microphone running and send voice:* to a host that has no such handlers,
+      // which is a hang, not an error. This is the same per-call shape the
+      // `android` namespace below already uses.
+      status: (): Promise<VoiceReadiness> =>
+        targetUrl
+          // Answer, don't reject: the composer shows this sentence on its card,
+          // so the user reads why there is no microphone instead of watching a
+          // button go quietly dead.
+          ? Promise.resolve({ state: 'unavailable', reason: VOICE_REMOTE_REASON })
+          : invoke('voice:status'),
+      download: (): Promise<void> =>
+        targetUrl ? Promise.reject(new Error(VOICE_REMOTE_REASON)) : invoke('voice:download'),
+      start: (): Promise<void> =>
+        targetUrl ? Promise.reject(new Error(VOICE_REMOTE_REASON)) : invoke('voice:start'),
+      stop: (): Promise<void> =>
+        targetUrl ? Promise.reject(new Error(VOICE_REMOTE_REASON)) : invoke('voice:stop'),
+      cancel: (): Promise<void> =>
+        targetUrl ? Promise.reject(new Error(VOICE_REMOTE_REASON)) : invoke('voice:cancel'),
+      onEvent: (cb: (e: unknown) => void) => {
+        // Refuses the same way: once we are talking to a desktop, no voice event
+        // can ever arrive, so subscribe to nothing and hand back an unsubscribe
+        // that callers can still call unconditionally.
+        if (targetUrl) return () => {};
+        const handler: Callback = (payload: any) => cb(payload);
+        addListener('voice:event', handler);
+        return () => removeListener('voice:event', handler);
+      },
+    },
     // System namespace — hardware back button bridge for Android.
     // notifyStackState: React tells Android whether the dismissal stack is
     //   non-empty. Android sets OnBackPressedCallback.isEnabled accordingly
@@ -1751,4 +1838,14 @@ export function installShim(): void {
       },
     },
   };
+
+  // The one intentional gap in the shared shape: voice typing exists on the
+  // Android app and on the desktop, and NOWHERE else. Deleting the namespace
+  // here — rather than never writing it above — is what lets the workbench's
+  // indent-anchored contract scan still see it in the source.
+  //
+  // A remote browser tab reaches this line (its page is http/https, not file:),
+  // so it gets no `voice` at all, the composer's `supported` is false, and no
+  // microphone button is drawn: contract row R7.
+  if (!isAndroidLocal()) delete (window as any).claude.voice;
 }

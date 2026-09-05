@@ -161,6 +161,36 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
   // Round-2 alternatives for WHERE the listening feedback lives (see VoiceStyle).
   const voiceStyle = useContext(VoiceStyleContext);
   const voiceListening = voice.phase === 'listening';
+  // Read by the window-level key handler further down, which is installed once
+  // and must not be torn down and rebuilt every time the mic's phase changes.
+  const voiceListeningRef = useRef(false);
+  voiceListeningRef.current = voiceListening;
+  const voiceStopRef = useRef(voice.stop);
+  voiceStopRef.current = voice.stop;
+
+  // Let go of the walkie-talkie, whatever the reason.
+  //
+  // WHY this is not simply "on key-up": the hold has TWO stages, and both can
+  // leak. For the first quarter second nothing is listening yet — only a timer
+  // is counting down — and if the user alt-tabs in that window the timer still
+  // fires, the microphone opens with the app in the background, and no key-up
+  // ever arrives to close it. After that quarter second the microphone IS open,
+  // and the same alt-tab would leave it open until the two-second silence stop
+  // drops whatever the room said into the message box. So losing the box (or
+  // the window, or the whole tab) cancels the countdown AND closes the mic.
+  const releaseSpaceHold = useCallback(() => {
+    if (spaceHoldTimer.current !== null) { window.clearTimeout(spaceHoldTimer.current); spaceHoldTimer.current = null; }
+    if (spaceHeld.current) { spaceHeld.current = false; void voice.stop(); }
+  }, [voice.stop]); // eslint-disable-line react-hooks/exhaustive-deps -- voice.stop is the only member read
+  useEffect(() => {
+    const onVisibility = () => { if (document.visibilityState === 'hidden') releaseSpaceHold(); };
+    window.addEventListener('blur', releaseSpaceHold);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('blur', releaseSpaceHold);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [releaseSpaceHold]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Drive the same fade-edge treatment on the textarea itself. The mask fades
   // wrapped text that sits above/below the 3-line max-height viewport.
@@ -284,6 +314,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       inputRef.current?.focus();
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
+        // The second of the two keyboard sites that stop the mic instead of
+        // sending (the other is the textarea's own Enter branch). Enter with
+        // the mic open closes it and leaves the words in the box; a second
+        // Enter sends. The guard is deliberately NOT inside send(), which the
+        // Send button and the "Send anyway" retry also call — see the note at
+        // the textarea's Enter branch.
+        if (voiceListeningRef.current) { void voiceStopRef.current(); return; }
         sendRef.current();
       }
     };
@@ -847,6 +884,16 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               // Enter sends, Shift+Enter inserts newline
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
+                // Enter while the mic is open STOPS it and sends nothing: the
+                // words wait in the box and a second Enter sends them, exactly
+                // as if they had been typed (deck V-6, contract R3).
+                //
+                // WHY the guard is here and in the window-level handler above,
+                // and NOT inside send(): the Send button submits the form
+                // through send(), and so does the "Send anyway" retry after a
+                // blocked send. A guard inside send() would silently turn both
+                // of those into a stop — a button that says Send and doesn't.
+                if (voiceListening) { void voice.stop(); return; }
                 if (minimal && sessionId) {
                   // Terminal mode: send text + Enter directly to PTY.
                   // pty-worker auto-splits text+\r with a 600ms gap so Ink
@@ -865,9 +912,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             }}
             onKeyUp={(e) => {
               if (e.key !== ' ') return;
-              if (spaceHoldTimer.current !== null) { window.clearTimeout(spaceHoldTimer.current); spaceHoldTimer.current = null; }
-              if (spaceHeld.current) { spaceHeld.current = false; void voice.stop(); }
+              releaseSpaceHold();
             }}
+            // The box losing focus mid-hold ends the hold too — see
+            // releaseSpaceHold. (The idle-unfocus timer below cannot trip this:
+            // a held key repeats, and every repeat resets that timer.)
+            onBlur={releaseSpaceHold}
             onPaste={handlePaste}
             placeholder={disabled ? 'Waiting for approval...' : voiceListening ? (voiceStyle.feedback === 'placeholder' ? '' : 'Listening…') : 'Message Claude...'}
             disabled={disabled}
