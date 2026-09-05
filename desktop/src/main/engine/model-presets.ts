@@ -1,0 +1,428 @@
+// The router's per-model settings file — `~/.youcoded/engine/models.ini`, passed
+// to llama-server as `--models-preset`. One `[*]` section holds the values every
+// model inherits (context length, auto-sleep), and one section per model holds
+// that model's own overrides. Design §C2.
+//
+// THIS IS THE MOST DANGEROUS FILE THE APP WRITES. llama-server treats ANY defect
+// in it as a FATAL startup error, not a per-model one: an unrecognised key in any
+// section, or a line the grammar cannot parse, and the router exits 1 before it
+// serves anything. A running engine survives (the `?reload=1` just 500s and the
+// old presets stay in force), so nothing looks broken until the next spawn — a
+// speed restart, an engine restart, or the next app launch — at which point EVERY
+// local model is gone with no in-app way back. Everything below that looks
+// paranoid is guarding that one outcome.
+//
+// Probed on b10665 (2026-09-05), and the grammar transcribed from llama.cpp's own
+// `common/preset.cpp` (`parse_ini_from_file` + `load_from_ini`):
+//   - `[*]` is honoured and cascades into every model; a model's own section
+//     overrides single keys and inherits the rest.
+//   - A model that has a section reports `source: "preset"` in GET /models, and
+//     `status.args` shows the exact child command line WITHOUT loading the model
+//     — which is how probe-presets.mjs proves any of this cheaply.
+//   - A section whose name matches no file on disk becomes a GHOST model row that
+//     can never load. Hence: sections only for ids the cache scan actually found.
+//   - `option 'x' not recognized in preset 'y'` → exit 1. `failed to parse server
+//     config file: <path>` → exit 1.
+//   - A value is cut at the first `#` or `;` SILENTLY (llama.cpp's value rule
+//     stops at a comment start), so `alias = a#b` becomes `a`. No error, wrong
+//     setting — which is why those two characters are refused at save time.
+import * as fs from 'fs';
+import * as net from 'net';
+import * as os from 'os';
+import * as path from 'path';
+import { spawn } from 'child_process';
+import { ARG_ALIASES } from './engine-pin';
+import type { ModelSettings } from '../../shared/model-manager-types';
+
+/** `<NativeHome.root>/engine/models.ini` — the file `--models-preset` points at. */
+export function presetFilePath(homeRoot: string): string {
+  return path.join(homeRoot, 'engine', 'models.ini');
+}
+
+/** The section every model inherits from (llama.cpp's `COMMON_PRESET_DEFAULT_NAME`). */
+const GLOBAL_SECTION = '*';
+
+// llama.cpp's own key grammar: `ident ::= [a-zA-Z_] [a-zA-Z0-9_.-]*`. A key
+// outside it does not make the ENGINE reject one option — it makes the whole
+// FILE fail to parse, taking every model down with it. Matching the grammar
+// exactly is therefore stricter, and safer, than "looks like a word".
+const INI_KEY_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+// What a user may type in Advanced → extra flags. Long form only (`--name`), the
+// spelling llama-server's own docs use. A single dash is deliberately NOT a key
+// here: it is how a NEGATIVE VALUE is written (`--n-predict -1`), and reading
+// `-1` as an option name would refuse a perfectly good flag.
+const FLAG_TOKEN_RE = /^--[A-Za-z_][A-Za-z0-9_.-]*$/;
+
+/** Options YouCoded manages itself; a user override would fight the app or the
+ *  router and lose in a way nothing on screen could explain (design §C2, R1-13).
+ *  `host`/`port`/`alias` are rewritten by the router for every child, `model`/
+ *  `mmproj`/`models-*` are how the app points the engine at its own files, and
+ *  the last three are exactly what the Context length / GPU layers / Keep loaded
+ *  controls write. */
+export const RESERVED_KEYS: ReadonlySet<string> = new Set([
+  'host', 'port', 'model', 'models-dir', 'models-preset', 'models-max', 'mmproj',
+  'alias', 'ctx-size', 'n-gpu-layers', 'sleep-idle-seconds',
+]);
+
+/** Collapse any spelling of an option onto its canonical long name: `c`,
+ *  `ctx-size` and `LLAMA_ARG_CTX_SIZE` are all the same option to llama-server,
+ *  and a denylist that only knows one of them stops nothing.
+ *
+ *  Read straight out of the pin's PROTOTYPE-LESS table on purpose — copying it
+ *  into a plain object would make `--valueOf` resolve to a Function (see
+ *  engine-pin.ts). Leading dashes are stripped the way llama.cpp's
+ *  `rm_leading_dashes` does. */
+export function normaliseArgKey(rawKey: string): string {
+  const key = rawKey.replace(/^-+/, '');
+  const canonical = ARG_ALIASES[key];
+  return typeof canonical === 'string' ? canonical : key;
+}
+
+/** Is this canonical key one of ours?
+ *
+ *  The `no-` strip is not cosmetic. A negative spelling keeps its OWN canonical
+ *  name (`--no-mmap` → `no-mmap`, `-nkvo` → `no-kv-offload`), so without this
+ *  every reserved option has a negative twin that walks straight past the list —
+ *  `--no-host`, for one, is a real llama-server flag. */
+export function isReservedKey(canonicalKey: string): boolean {
+  return RESERVED_KEYS.has(canonicalKey) || RESERVED_KEYS.has(canonicalKey.replace(/^no-/, ''));
+}
+
+/** Can this model id be written as `[id]` and read back as the SAME id?
+ *
+ *  Every rule here is a measured failure of llama.cpp's header grammar
+ *  (`"[" ws <one or more non-']'> ws "]"`), and model ids are filenames, so a
+ *  user can produce all of them just by naming a file:
+ *   - `]` or a line break  → the whole FILE fails to parse; every model is lost.
+ *   - a leading space/tab  → eaten by the grammar's `ws`, so `[ foo]` reads back
+ *                            as `foo`: a ghost row named `foo`, and the real
+ *                            model silently keeps the engine-wide defaults.
+ *   - `*`                  → a second `[*]` header, which RESETS the section the
+ *                            parser already built, wiping the global block.
+ *  Everything else round-trips, verified on b10665: `a[b`, `a#b`, `a=b`, a tab
+ *  or `#` mid-name, non-ASCII, and even a TRAILING space all come back intact. */
+export function isWritableSectionName(id: string): boolean {
+  if (!id || id === GLOBAL_SECTION) return false;
+  if (/[\]\r\n]/.test(id)) return false;
+  if (/^[ \t]/.test(id)) return false;
+  return true;
+}
+
+/** One `key = value` line. `key` is canonical and already reserved-checked. */
+export interface PresetEntry {
+  key: string;
+  value: string;
+}
+
+export type ExtraFlagsResult =
+  | { ok: true; entries: PresetEntry[] }
+  | { ok: false; message: string };
+
+/** Tokenise the Advanced box: `--key value` → `key = value`, bare `--key` →
+ *  `key = 1` (design §C2). Every key is normalised first, then refused if it is
+ *  reserved or cannot be written into the file safely.
+ *
+ *  Splitting on whitespace is also what keeps a NEWLINE out of a value — a value
+ *  containing one makes the file unparseable and the engine unstartable. */
+export function parseExtraFlags(raw: string): ExtraFlagsResult {
+  const tokens = (raw ?? '').split(/\s+/).filter((t) => t.length > 0);
+  // A Map, never a plain object: a key of `__proto__` or `constructor` on an
+  // object literal is a live grenade, and these keys come from typed text.
+  const entries = new Map<string, string>();
+  let pendingKey: string | null = null;
+  let pendingToken = '';
+
+  const flush = () => {
+    if (pendingKey !== null) entries.set(pendingKey, '1'); // bare flag = on
+    pendingKey = null;
+  };
+
+  for (const token of tokens) {
+    if (token.startsWith('--')) {
+      flush();
+      if (!FLAG_TOKEN_RE.test(token)) {
+        return { ok: false, message: `"${token}" is not an option name. Write each one as --name or --name value.` };
+      }
+      const canonical = normaliseArgKey(token);
+      if (!INI_KEY_RE.test(canonical)) {
+        return { ok: false, message: `"${token}" cannot be saved — the engine's settings file has no way to write it.` };
+      }
+      if (isReservedKey(canonical)) {
+        const via = canonical === token.slice(2) ? '' : ` (another name for --${canonical})`;
+        return {
+          ok: false,
+          message: `${token}${via} is set by YouCoded from this model's own settings. Remove it and use the controls above.`,
+        };
+      }
+      pendingKey = canonical;
+      pendingToken = token;
+      continue;
+    }
+    if (pendingKey === null) {
+      return { ok: false, message: `"${token}" does not follow an option. Write each one as --name or --name value.` };
+    }
+    // Probed: llama.cpp cuts a value at the first `#` or `;` and reports nothing,
+    // so `--chat-template a#b` quietly becomes `a`. Refusing it is the only way
+    // the user ever learns their setting was not the one that took effect.
+    if (/[#;]/.test(token)) {
+      return {
+        ok: false,
+        message: `The value for ${pendingToken} cannot contain # or ; — the engine reads everything after those as a comment.`,
+      };
+    }
+    // A control character would be written into the file as-is and handed to the
+    // model's child process on its command line.
+    // eslint-disable-next-line no-control-regex -- matching control characters is the point
+    if (/[\u0000-\u001f\u007f]/.test(token)) {
+      return { ok: false, message: `The value for ${pendingToken} cannot contain control characters.` };
+    }
+    entries.set(pendingKey, token);
+    pendingKey = null;
+  }
+  flush();
+
+  return { ok: true, entries: [...entries].map(([key, value]) => ({ key, value })) };
+}
+
+/** Every line one model's section gets, in file order. Returns `[]` for a model
+ *  on all defaults — and an empty section is then never written, because a
+ *  section flips that model's `source` to `preset` in GET /models for no reason.
+ *
+ *  A malformed number is DROPPED rather than written: `ctx-size = NaN` is not a
+ *  parse error, it is a `std::stoi` throw at load time, which takes out that one
+ *  model with a message no user could act on. */
+export function modelSectionEntries(settings: Partial<ModelSettings> | null | undefined): PresetEntry[] {
+  const out: PresetEntry[] = [];
+  if (!settings || typeof settings !== 'object') return out;
+
+  const ctx = intOrNull(settings.contextLength);
+  if (ctx !== null && ctx > 0) out.push({ key: 'ctx-size', value: String(ctx) });
+
+  // 'auto' is llama-server's own default (it splits the model across GPU and RAM
+  // itself), so the key is omitted entirely rather than written as a number.
+  // 999 is what the UI stores for "all layers" — the engine clamps it.
+  if (settings.gpuLayers !== undefined && settings.gpuLayers !== 'auto') {
+    const layers = intOrNull(settings.gpuLayers);
+    if (layers !== null && layers >= 0) out.push({ key: 'n-gpu-layers', value: String(layers) });
+  }
+
+  // -1 is llama-server's "never auto-sleep". Written only when the user asked for
+  // it; otherwise the model inherits the global auto-sleep from [*].
+  if (settings.keepLoaded === true) out.push({ key: 'sleep-idle-seconds', value: '-1' });
+
+  const extra = parseExtraFlags(typeof settings.extraFlags === 'string' ? settings.extraFlags : '');
+  if (extra.ok) {
+    // A managed key above always wins. Unreachable today — the extra-flag parser
+    // refuses every reserved name long before this, so no mutation of this line
+    // changes what the file says — and kept anyway, because it is what makes
+    // "the controls win" true by construction rather than by two rules agreeing.
+    const claimed = new Set(out.map((e) => e.key));
+    for (const entry of extra.entries) if (!claimed.has(entry.key)) out.push(entry);
+  }
+  // WHY a bad extra-flags string is skipped instead of thrown: it was already
+  // refused at save time, so reaching here means the config file was edited by
+  // hand or written by an older build. Dropping the flags costs that user their
+  // customisation; writing them costs EVERY model on the next spawn.
+
+  return out;
+}
+
+export interface PresetFileInput {
+  /** The engine-wide context length — `[*] ctx-size`. Moves OFF the command line
+   *  (design §C2): the router's own CLI args are merged over every preset, so a
+   *  `-c` on the command line would outrank a model's own value. */
+  contextSize: number;
+  /** The engine-wide auto-sleep — `[*] sleep-idle-seconds`, same reason. */
+  sleepIdleSeconds: number;
+  /** Ids the CACHE SCAN found. A section for anything else is a ghost model row
+   *  (probed) that can never load and cannot be removed from the app. */
+  modelIds: readonly string[];
+  /** `config.json` → `engine.models`. Ids with no entry get no section. */
+  settings?: Readonly<Record<string, Partial<ModelSettings>>> | null;
+}
+
+/** Render the whole file. Pure — `writePresetFile` does the I/O. */
+export function renderPresetFile(input: PresetFileInput): string {
+  const lines: string[] = [`[${GLOBAL_SECTION}]`];
+  const ctx = intOrNull(input.contextSize);
+  if (ctx !== null && ctx > 0) lines.push(`ctx-size = ${ctx}`);
+  const sleep = intOrNull(input.sleepIdleSeconds);
+  if (sleep !== null) lines.push(`sleep-idle-seconds = ${sleep}`);
+  lines.push('');
+
+  const written = new Set<string>();
+  for (const id of input.modelIds) {
+    // Duplicate ids are not merely redundant: a repeated `[id]` header makes
+    // llama.cpp's parser RESET that section, so the second one silently erases
+    // the first one's keys.
+    if (written.has(id) || !isWritableSectionName(id)) continue;
+    written.add(id);
+    const entries = modelSectionEntries(lookupSettings(input.settings, id));
+    if (entries.length === 0) continue;
+    lines.push(`[${id}]`);
+    for (const { key, value } of entries) lines.push(`${key} = ${value}`);
+    lines.push('');
+  }
+
+  return lines.join('\n');
+}
+
+/** Write the file the way `download-manifest.ts` writes: temp file, then rename.
+ *
+ *  `~/.youcoded/` is shared between a dev instance and the built app
+ *  (native-home.ts), so two supervisors can rewrite this file at the same moment
+ *  — and a reader that catches a half-written one does not get a warning, it gets
+ *  an engine that will not start. The temp name carries this process's pid so two
+ *  writers never share one (scripts/ast-grep/atomic-tmp-name-per-process). */
+export function writePresetFile(filePath: string, contents: string): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, contents);
+  fs.renameSync(tmp, filePath);
+}
+
+export type BinaryCheckResult = { ok: true } | { ok: false; message: string };
+
+export interface BinaryCheckOptions {
+  /** The installed llama-server. */
+  binaryPath: string;
+  /** The model the section belongs to — used as the section name so the engine's
+   *  own error message names the model the user is editing. */
+  modelId: string;
+  entries: readonly PresetEntry[];
+  /** How long to wait for a verdict before giving up and ACCEPTING (see below). */
+  timeoutMs?: number;
+  /** Test seam. */
+  spawnImpl?: typeof spawn;
+  tmpRoot?: string;
+}
+
+/** Ask the BINARY whether these flags are real, by running it against a throwaway
+ *  preset that holds only this one section and an empty models folder.
+ *
+ *  WHY not a shape check plus a denylist: those accept any plausible typo, and
+ *  the router refuses to initialise on an unrecognised key in ANY section — so
+ *  one typo saved here means every local model disappears at the next launch. The
+ *  binary answers in ~50 ms and is the only thing that knows its own option list.
+ *
+ *  Only a NON-ZERO EXIT rejects the save, and the message is the binary's own
+ *  stderr line. A timeout, a missing binary or a spawn failure accepts: this
+ *  check could not reach a verdict, and refusing the user's flag would mean
+ *  inventing a cause we never observed. */
+export async function checkFlagsAgainstBinary(opts: BinaryCheckOptions): Promise<BinaryCheckResult> {
+  const { binaryPath, modelId, entries } = opts;
+  if (entries.length === 0) return { ok: true };
+
+  // A section name that cannot be written safely would take the CHECK file down
+  // instead of the flags, so an unwritable id checks under a neutral name. That
+  // model gets no section in the real file either (isWritableSectionName).
+  const section = isWritableSectionName(modelId) ? modelId : 'model';
+  const spawnFn = opts.spawnImpl ?? spawn;
+  const timeoutMs = opts.timeoutMs ?? 15_000;
+
+  let dir: string;
+  try {
+    dir = fs.mkdtempSync(path.join(opts.tmpRoot ?? os.tmpdir(), 'youcoded-preset-'));
+  } catch {
+    return { ok: true }; // no verdict, no rejection
+  }
+
+  try {
+    const modelsDir = path.join(dir, 'models');
+    fs.mkdirSync(modelsDir);
+    const iniPath = path.join(dir, 'check.ini');
+    fs.writeFileSync(
+      iniPath,
+      [`[${section}]`, ...entries.map((e) => `${e.key} = ${e.value}`), ''].join('\n')
+    );
+
+    // A port that is already taken makes llama-server exit non-zero for a reason
+    // that has nothing to do with the user's flag — and we would then quote a
+    // bind error at them. Ask the OS for a free one instead of guessing.
+    const port = await freePort();
+
+    return await new Promise<BinaryCheckResult>((resolve) => {
+      let settled = false;
+      let stderr = '';
+      let timer: NodeJS.Timeout | null = null;
+      const child = spawnFn(
+        binaryPath,
+        [
+          '--host', '127.0.0.1', '--port', String(port), '--no-webui',
+          '--models-dir', modelsDir, '--models-preset', iniPath,
+        ],
+        { stdio: ['ignore', 'ignore', 'pipe'] }
+      );
+
+      const finish = (result: BinaryCheckResult) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        // Kill by THIS child's pid — never by a pattern, and never a pid
+        // remembered from anywhere else.
+        try { child.kill(); } catch { /* already gone */ }
+        resolve(result);
+      };
+
+      timer = setTimeout(() => finish({ ok: true }), timeoutMs);
+      child.stderr?.on('data', (chunk: Buffer | string) => {
+        stderr = `${stderr}${chunk}`.slice(-8000); // bounded: llama-server is chatty
+        // The preset is parsed BEFORE this line is printed (verified: a bad key
+        // exits at ~50 ms, a good one is listening at ~45 ms), so "listening"
+        // means the file was accepted and there is nothing left to wait for.
+        if (stderr.includes('listening on')) finish({ ok: true });
+      });
+      child.on('error', () => finish({ ok: true })); // could not run it — no verdict
+      child.on('exit', (code) => {
+        if (code === 0 || code === null) return finish({ ok: true });
+        finish({ ok: false, message: engineErrorLine(stderr, code) });
+      });
+    });
+  } catch {
+    return { ok: true };
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** The engine's OWN last error line, with only its log prefix removed
+ *  (`0.00.050.247 E srv  llama_server: `). Never a guessed cause: when the binary
+ *  said nothing, the message says exactly that and quotes the exit code. */
+export function engineErrorLine(stderr: string, exitCode: number): string {
+  const lines = stderr.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+  const errorLine = [...lines].reverse().find((l) => / E /.test(l)) ?? lines[lines.length - 1];
+  if (!errorLine) return `The local engine rejected this setting and exited with code ${exitCode}.`;
+  return errorLine.replace(/^[\d.]+\s+[A-Z]\s+\S+\s+[^:]*:\s*/, '');
+}
+
+// --- small helpers -------------------------------------------------------
+
+function intOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.floor(value) : null;
+}
+
+/** Own-property lookup only. Model ids are FILENAMES, so `constructor.gguf` is a
+ *  file a user can create, and `settings.constructor` on a plain object answers
+ *  with a Function rather than undefined. */
+function lookupSettings(
+  settings: Readonly<Record<string, Partial<ModelSettings>>> | null | undefined, id: string
+): Partial<ModelSettings> | null {
+  if (!settings || typeof settings !== 'object') return null;
+  if (!Object.prototype.hasOwnProperty.call(settings, id)) return null;
+  const value = (settings as Record<string, unknown>)[id];
+  return value && typeof value === 'object' ? (value as Partial<ModelSettings>) : null;
+}
+
+/** A port the OS just confirmed is free. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const addr = srv.address();
+      const port = typeof addr === 'object' && addr ? addr.port : 0;
+      srv.close(() => (port ? resolve(port) : reject(new Error('no free port'))));
+    });
+  });
+}

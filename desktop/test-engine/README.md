@@ -47,6 +47,19 @@ The pinned version + per-platform asset table live in
   round-trip: auto-load on first request, delta frames, final usage/timings.
 - `node probe-speed.mjs --binary <path>` — the speed flags (`--spec-default`, `--cache-type-k q8_0`)
   reach the router's model child and the n-gram drafter fires on an echo task (2026-09-04)
+- `node probe-presets.mjs --binary <path>` — the per-model settings file
+  (`--models-preset`, design §C2), which is the most dangerous file the app
+  writes: llama-server treats ANY defect in it as a FATAL startup error, so one
+  bad key means every local model disappears at the next launch with nothing on
+  screen to explain it. Asserts that `[*]` reaches a model, that a per-model
+  section overrides one key and inherits the rest, that a sectioned model reports
+  `source: preset`, that an unrecognised key in EITHER section is fatal with the
+  exact message `model-presets.ts` quotes back to the user, and that all eleven
+  reserved keys are real options on this build. Cheap: `GET /models` renders each
+  model's full child command line without loading it, so nothing here reads a
+  gigabyte of weights. If the fatal-key assertion ever goes GREEN-by-passing (the
+  engine tolerates a bad key), the save-time binary check has stopped being
+  load-bearing and its cost can be revisited.
 - `node probe-headers.mjs` — the ONLY probe that needs no binary and no local
   GGUF: it reads each curated repo's header straight off Hugging Face and asserts
   that ONE 1 MB range request is enough. `gguf-header.ts`'s whole design rests on
