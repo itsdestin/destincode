@@ -10,10 +10,12 @@
 // What it does, in order, printing a line per step:
 //   1. binds 127.0.0.1:1455 and opens the browser on OpenAI's authorize URL (PKCE)
 //   2. takes the callback, exchanges the code, decodes the token claims (REDACTED)
-//   3. GETs /wham/usage, /codex/models?client_version=…, /wham/accounts/check and
-//      writes each raw JSON body to <out>/ (no secrets are in those bodies)
+//   3. GETs /wham/usage, /codex/models (with OUR version and a Codex one), /wham/accounts/check
+//      and /wham/profiles/me, writing each raw body to <out>/ (no secrets in those bodies)
 //   4. makes one tiny /codex/responses call and records every x-codex-* / ratelimit
 //      response header, plus the first SSE event names
+//   5. runs a two-step tool turn whose follow-up carries the function_call WITHOUT the
+//      encrypted reasoning item (the harness's history shape) — does the endpoint accept it?
 //
 // It never writes a token to disk and never prints one. Tokens live in this
 // process's memory and die with it. Throwaway: not imported by the app.
@@ -113,7 +115,11 @@ async function main() {
   // 3. the three GETs
   for (const [name, u] of [
     ['usage', `${BACKEND}/wham/usage`],
-    ['models', `${BACKEND}/codex/models?client_version=${encodeURIComponent(process.env.CLIENT_VERSION ?? '0.130.0')}`],
+    // P0-3: the manifest with OUR version string and with a Codex-CLI-shaped one — if
+    // the manifest gates rows on the caller's version, the app's own string is
+    // what R3 is graded against, so both bodies are kept.
+    ['models-app-version', `${BACKEND}/codex/models?client_version=${encodeURIComponent(app.getVersion())}`],
+    ['models-codex-version', `${BACKEND}/codex/models?client_version=${encodeURIComponent(process.env.CLIENT_VERSION ?? '0.130.0')}`],
     ['accounts-check', `${BACKEND}/wham/accounts/check`],
     ['profile', `${BACKEND}/wham/profiles/me`],
   ]) {
@@ -147,6 +153,43 @@ async function main() {
     if (!r.ok) save(`responses.http${r.status}.txt`, text);
     else save('responses.sse.txt', text.replace(/"encrypted_content":"[^"]+"/g, '"encrypted_content":"…"'));
   } catch (e) { say(`responses: FAILED ${e.message}`); }
+
+  // P0-4 (review R1-2): does a tool turn work when the follow-up carries the
+  // function_call but NOT the encrypted reasoning item beside it? The harness keeps
+  // text + tool calls in history, not reasoning, so this is the shape it sends.
+  try {
+    const tool = { type: 'function', name: 'get_time', description: 'Current time', parameters: { type: 'object', properties: {}, additionalProperties: false }, strict: true };
+    const base = { model: process.env.PHASE0_MODEL ?? 'gpt-5.5', store: false, stream: true, instructions: 'Use the get_time tool, then answer.', tools: [tool], include: ['reasoning.encrypted_content'], prompt_cache_key: 'phase0-tools' };
+    const hdr = { ...H, 'content-type': 'application/json', 'OpenAI-Beta': 'responses=experimental', accept: 'text/event-stream' };
+    const step1 = await fetch(`${BACKEND}/codex/responses`, { method: 'POST', headers: hdr, body: JSON.stringify({ ...base, input: [{ role: 'user', content: [{ type: 'input_text', text: 'What time is it?' }] }] }) });
+    const t1 = await step1.text();
+    say(`tools step1: HTTP ${step1.status}`);
+    // The completed function_call item, from the SSE stream's output_item.done events.
+    const done = [...t1.matchAll(/^data: (\{.*\})$/gm)].map((m) => { try { return JSON.parse(m[1]); } catch { return null; } })
+      .filter((e) => e && e.type === 'response.output_item.done').map((e) => e.item);
+    const call = done.find((i) => i.type === 'function_call');
+    const reasoning = done.find((i) => i.type === 'reasoning');
+    say(`tools step1: items=${done.map((i) => i.type).join(',')} function_call=${call ? 'present' : 'ABSENT'} reasoning=${reasoning ? 'present' : 'absent'}`);
+    if (call) {
+      const followUp = [
+        { role: 'user', content: [{ type: 'input_text', text: 'What time is it?' }] },
+        { type: 'function_call', call_id: call.call_id, name: call.name, arguments: call.arguments },   // NO reasoning item
+        { type: 'function_call_output', call_id: call.call_id, output: '12:00' },
+      ];
+      const step2 = await fetch(`${BACKEND}/codex/responses`, { method: 'POST', headers: hdr, body: JSON.stringify({ ...base, input: followUp }) });
+      const t2 = await step2.text();
+      const ev2 = [...t2.matchAll(/^event: (.+)$/gm)].map((m) => m[1]);
+      say(`tools step2 (no reasoning item): HTTP ${step2.status} events=${ev2.length} first: ${ev2.slice(0, 5).join(', ')}`);
+      save(`tools-step2.${step2.ok ? 'sse.txt' : `http${step2.status}.txt`}`, t2.replace(/"encrypted_content":"[^"]+"/g, '"encrypted_content":"…"'));
+      if (reasoning) {
+        // And WITH the reasoning item, so the two answers sit side by side.
+        const step3 = await fetch(`${BACKEND}/codex/responses`, { method: 'POST', headers: hdr, body: JSON.stringify({ ...base, input: [followUp[0], reasoning, followUp[1], followUp[2]] }) });
+        say(`tools step2 (with reasoning item): HTTP ${step3.status}`);
+        if (!step3.ok) save(`tools-step2-with-reasoning.http${step3.status}.txt`, await step3.text());
+      }
+    }
+    save('tools-step1.sse.txt', t1.replace(/"encrypted_content":"[^"]+"/g, '"encrypted_content":"…"'));
+  } catch (e) { say(`tools: FAILED ${e.message}`); }
 
   say(`done — findings in ${OUT}`);
   app.exit(0);
