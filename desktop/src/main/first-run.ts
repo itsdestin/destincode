@@ -23,6 +23,18 @@ import {
   checkWindowsDevMode,
   enableWindowsDevMode,
 } from './prerequisite-installer';
+import type { ChatGptAuth } from './providers/chatgpt-auth';
+
+// The slice of ChatGptAuth the wizard drives. Narrowed on purpose: the wizard
+// only starts a sign-in and waits for it, so a test can hand in a two-method
+// fake instead of the whole account machine (main.ts passes the real one).
+export type ChatGptSignInAuth = Pick<ChatGptAuth, 'signIn' | 'waitForSignIn'>;
+
+// The wizard's ChatGPT sign-in window (design §9.1, review R2-11): a first
+// ChatGPT sign-in on a fresh machine is an email code or 2FA away, and this
+// screen has no Cancel — so 5 minutes, not Claude's 2 and not the Settings
+// card's 10.
+export const CHATGPT_FIRST_RUN_TIMEOUT_MS = 300_000;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -395,6 +407,73 @@ export class FirstRunManager extends EventEmitter {
       });
       this.updatePrereq('auth', { status: 'failed', error: result.error });
     }
+  }
+
+  /** Called from IPC when the user chooses "Log in with ChatGPT" (design §5).
+   *  Opens the browser through ChatGptAuth, then waits for OpenAI's callback,
+   *  a timeout or an error. Never sees a token: the account machine stores it,
+   *  this only learns the outcome word. */
+  async handleChatGptLogin(auth: ChatGptSignInAuth): Promise<void> {
+    this.updateState({ authMode: 'chatgpt', statusMessage: 'Waiting for you to sign in…' });
+    this.updatePrereq('auth', { status: 'installing' });
+
+    // signIn() THROWS for two verified causes — the keychain is unavailable, or
+    // another program holds port 1455. Both first-run IPC handlers in main.ts
+    // swallow throws, so without this catch the button would silently do
+    // nothing (review R3-3). The thrown sentence is shown verbatim: it is the
+    // account machine's own accurate text, never a guess.
+    try {
+      await auth.signIn({ timeoutMs: CHATGPT_FIRST_RUN_TIMEOUT_MS });
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log('ERROR', 'first-run', 'ChatGPT sign-in could not start', { detail });
+      this.updateState({ authMode: 'none', lastError: detail });
+      this.updatePrereq('auth', { status: 'failed', error: detail });
+      return;
+    }
+
+    log('INFO', 'first-run', 'ChatGPT sign-in page opened, waiting for the callback');
+    const outcome = await auth.waitForSignIn();
+
+    if (outcome === 'signed-in') {
+      // Same closing moves as handleOAuthLogin's success path. authMode stays
+      // 'chatgpt' on purpose: the renderer's completion path reads it to make
+      // the next new session default to the ChatGPT plan (design §5).
+      this.updateState({ authComplete: true });
+      this.updatePrereq('auth', { status: 'installed' });
+      log('INFO', 'first-run', 'ChatGPT sign-in succeeded');
+      this.advanceTo('LAUNCH_WIZARD');
+      this.updateState({ statusMessage: 'Launching setup wizard...' });
+      this.emit('launch-wizard');
+      this.advanceTo('COMPLETE');
+      return;
+    }
+
+    // Every other outcome puts the three buttons back with one line under
+    // them. The { error } text is the account machine's own (OpenAI's
+    // error_description or the store's message) — shown as-is.
+    const lastError =
+      outcome === 'timed-out' ? 'Sign-in timed out. Try again?'
+      : outcome === 'cancelled' ? 'Sign-in was cancelled.'
+      : outcome.error;
+    const reason =
+      outcome === 'timed-out' ? 'Timed out'
+      : outcome === 'cancelled' ? 'Cancelled'
+      : outcome.error;
+    log('WARN', 'first-run', 'ChatGPT sign-in did not complete', { reason });
+    this.updateState({ authMode: 'none', lastError });
+    this.updatePrereq('auth', { status: 'failed', error: reason });
+  }
+
+  /** Called from IPC when the user chooses "Log in with OpenRouter". The
+   *  button is on the approved card but its sign-in is not built yet (spec
+   *  2026-08-31-openrouter-connection-trust-design.md); a button that does
+   *  nothing was review R1-6, so it answers with this one line (design §9.5). */
+  handleOpenRouterNotBuilt(): void {
+    this.updateState({
+      authMode: 'none',
+      lastError: 'OpenRouter sign-in is coming in a later update.',
+    });
   }
 
   // -------------------------------------------------------------------------

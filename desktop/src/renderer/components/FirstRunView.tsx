@@ -1,8 +1,19 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { FirstRunState, PrerequisiteState } from '../../shared/first-run-types';
+import type { CatalogModel } from '../../shared/provider-types';
 import BrailleSpinner from './BrailleSpinner';
 import { describeStep } from './first-run/describe-step';
+import { persistLastBinding, persistRuntimeDefault } from './RuntimeBinding';
 import { Button, TextInput } from './ui';
+
+// The ChatGPT kill switch (design §6): main sets `chatgpt.supported` false
+// under YOUCODED_CHATGPT=0, and the button must vanish with it — a button whose
+// backend is switched off would be a dead button on the first screen. Read as
+// `=== true` (the `native.supported` pattern) so a missing namespace, an old
+// preload or the remote shim all read as "not supported".
+function isChatGptSupported(): boolean {
+  return (window as any).claude?.chatgpt?.supported === true;
+}
 
 /* ------------------------------------------------------------------ */
 /*  StatusIcon                                                        */
@@ -126,9 +137,11 @@ function AuthScreen({
         <Button onClick={onOAuth} className="px-6 py-3 rounded-full font-semibold text-base w-full">
           Log in with Claude
         </Button>
-        <Button variant="secondary" onClick={onChatGpt} className="px-6 py-3 rounded-full font-semibold text-base w-full">
-          Log in with ChatGPT
-        </Button>
+        {isChatGptSupported() && (
+          <Button variant="secondary" onClick={onChatGpt} className="px-6 py-3 rounded-full font-semibold text-base w-full">
+            Log in with ChatGPT
+          </Button>
+        )}
         <Button variant="secondary" onClick={onOpenRouter} className="px-6 py-3 rounded-full font-semibold text-base w-full">
           Log in with OpenRouter
         </Button>
@@ -278,6 +291,32 @@ export default function FirstRunView({ onComplete }: FirstRunViewProps) {
       return () => clearTimeout(timer);
     }
   }, [state?.currentStep]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A ChatGPT-only install's first session (design §5, review R2-12). This
+  // install has no Claude login, so if the new-session forms opened on "Claude
+  // Code" the user's very first session would fail to start. Once setup
+  // finishes through ChatGPT: remember 'native' as the runtime default
+  // unconditionally, and seed the model picker with the plan's first model
+  // ONLY if the catalog already lists one — the callback kicked the model
+  // refresh a second ago and it may still be in flight; a missing seed falls
+  // back to the first ready provider's first model, which is the same thing.
+  // Neither write may delay the hand-off to the app, so the catalog lookup is
+  // fire-and-forget and every failure is swallowed. Runs once per mount.
+  const seededChatGpt = useRef(false);
+  useEffect(() => {
+    if (!state || seededChatGpt.current) return;
+    const done = state.currentStep === 'LAUNCH_WIZARD' || state.currentStep === 'COMPLETE';
+    if (!done || state.authMode !== 'chatgpt') return;
+    seededChatGpt.current = true;
+    persistRuntimeDefault('native');
+    Promise.resolve()
+      .then(() => (window as any).claude?.providers?.catalog?.() as Promise<CatalogModel[]> | undefined)
+      .then((rows) => {
+        const first = Array.isArray(rows) ? rows.find((r) => r?.providerId === 'chatgpt') : undefined;
+        if (first?.id) persistLastBinding({ providerId: 'chatgpt', modelId: first.id });
+      })
+      .catch(() => { /* the catalog is a nicety here; the forms fall back on their own */ });
+  }, [state?.currentStep, state?.authMode]);
 
   // Busy while any prerequisite is actively installing or being checked. The
   // retry path is guarded against re-entry in the main process too, but
