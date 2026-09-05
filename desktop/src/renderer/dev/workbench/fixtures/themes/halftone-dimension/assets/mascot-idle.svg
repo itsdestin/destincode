@@ -35,8 +35,8 @@
   <path d="M5 11.5 L5 8 A4 4 0 0 1 9 4 L12 4" fill="none" stroke="#00b8ff" stroke-width="0.35" opacity="0.75"/>
   <path d="M19 8.5 L19 12 A4 4 0 0 1 15 16 L12.5 16" fill="none" stroke="#e8234a" stroke-width="0.35" opacity="0.75"/>
   <!-- Painted >< eyes -->
-  <path fill="#0d1120" stroke="#dfe8f5" stroke-width="0.3" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
-  <path fill="#0d1120" stroke="#dfe8f5" stroke-width="0.3" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
+  <path fill="#33265c" stroke="#00b8ff" stroke-width="0.3" d="M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z"/>
+  <path fill="#33265c" stroke="#00b8ff" stroke-width="0.3" d="M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/>
   <!-- Spider-Verse dimensional visor across eyes -->
   <rect x="5.8" y="7.2" width="12.4" height="2.8" rx="1.2" fill="#e8234a" opacity="0.55"/>
   <rect x="6.2" y="7.6" width="11.6" height="2" rx="0.9" fill="#08060e" opacity="0.45"/>

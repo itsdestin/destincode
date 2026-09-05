@@ -35,8 +35,8 @@
   <path d="M5 11.5 L5 8 A4 4 0 0 1 9 4 L12 4" fill="none" stroke="#00b8ff" stroke-width="0.35" opacity="0.75"/>
   <path d="M19 8.5 L19 12 A4 4 0 0 1 15 16 L12.5 16" fill="none" stroke="#e8234a" stroke-width="0.35" opacity="0.75"/>
   <!-- Painted welcome eyes: tall sockets + CMYK sparkle clusters -->
-  <ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="#0d1120" stroke="#dfe8f5" stroke-width="0.3"/>
-  <ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="#0d1120" stroke="#dfe8f5" stroke-width="0.3"/>
+  <ellipse cx="9.3" cy="9.55" rx="1.6" ry="2.2" fill="#33265c" stroke="#00b8ff" stroke-width="0.3"/>
+  <ellipse cx="14.7" cy="9.25" rx="1.6" ry="2.2" fill="#33265c" stroke="#00b8ff" stroke-width="0.3"/>
   <!-- Visor (lower opacity so the eyes read through, as in the original) -->
   <rect x="5.8" y="7.5" width="12.4" height="2.5" rx="1" fill="#e8234a" opacity="0.4"/>
   <rect x="6.2" y="7.8" width="11.6" height="1.8" rx="0.8" fill="#08060e" opacity="0.35"/>
@@ -46,7 +46,7 @@
   <circle cx="15.4" cy="9.95" r="0.3" fill="#e8234a" opacity="0.9"/>
   <circle cx="14.8" cy="10.55" r="0.2" fill="#00b8ff" opacity="0.75"/>
   <circle cx="15.7" cy="10.55" r="0.15" fill="#ffea00" opacity="0.6"/>
-  <g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="#0d1120" stroke="#dfe8f5" stroke-width="0.3"/></g>
+  <g transform="rotate(-2 12 13.3)"><path d="M10.8 13.3 Q10.8 13 12 13 Q13.2 13 13.2 13.3 A1.1 1 0 0 1 10.8 13.3 Z" fill="#33265c" stroke="#00b8ff" stroke-width="0.3"/></g>
   <!-- Halftone dots -->
   <circle cx="7" cy="6" r="0.35" fill="#e8234a" opacity="0.25"/>
   <circle cx="17" cy="5.8" r="0.35" fill="#00b8ff" opacity="0.2"/>
