@@ -24,6 +24,15 @@ const TAR_BIN = process.platform === 'win32'
   ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
   : 'tar';
 
+// ASSERT THE EXACT MESSAGE, not a substring, wherever a failure has more than
+// one route to it. Measured here on 2026-09-05: the unkillable-probe test used
+// `toMatch(/did not answer/)` and stayed GREEN when killSignal was reverted to
+// SIGTERM — the mutation this test exists to catch — because the outer deadline
+// produced a DIFFERENT sentence that the loose matcher also accepted. The test
+// looked protective and was not. Only `toBe('…did not answer within 0.25s')`
+// went red. Same reasoning applies to devicesError generally: "no device list"
+// and "the probe could not run" must never be allowed to satisfy one assertion.
+
 // The `--list-devices` block EXACTLY as the pinned b10665 binary prints it on
 // this machine (captured 2026-09-05 by running it read-only), so the parser is
 // written against reality rather than a guess at the format.
@@ -455,6 +464,35 @@ describe.skipIf(!posix)('EngineAcquisition — devices in the marker (design §A
     // install stands.
     expect(acq.installed()?.dir).toBe(installed.dir);
   });
+
+  // The SECOND mechanism, on its own. Before the seam existed this was
+  // untestable: a child that survives SIGKILL needs an uninterruptible kernel
+  // call, which no fixture can stage. With the caps injectable it is trivial —
+  // push the child timeout out of reach and the outer deadline becomes the ONLY
+  // thing that can end the wait, so if the race is ever deleted this test hangs
+  // until vitest kills it.
+  const UNREACHABLE = { timeoutMs: 60_000, deadlineMs: 300 };
+
+  it('the outer deadline alone ends the wait when the child cap cannot', async () => {
+    const hang = makeFixtureArchive(
+      tmp, "#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 1; done\n", 'hang2',
+    );
+    const acq = new EngineAcquisition(engineRoot, fetchServing(hang), undefined, UNREACHABLE);
+    const started = Date.now();
+    const installed = await acq.install({ ...asset, sha256: sha256(hang) }, () => {});
+    const took = Date.now() - started;
+    const marker = JSON.parse(fs.readFileSync(path.join(installed.dir, '.complete'), 'utf8'));
+    // Exact again, and deliberately the OTHER sentence: this one says the
+    // process outlived the kill, which is a different thing to tell a reader
+    // than "the engine took too long".
+    expect(marker.devicesError)
+      .toBe(`llama-server --list-devices did not answer within ${UNREACHABLE.deadlineMs / 1000}s and would not stop`);
+    expect(marker.devices).toEqual([]);
+    // It really used the OVERRIDDEN deadline, not the production one. Measured
+    // as a wide band, not a tight one — this separates 0.3s from 17s, which is
+    // all it needs to do, and is not a wall-clock budget assertion.
+    expect(took).toBeLessThan(5_000);
+  });
 });
 
 describe.skipIf(!posix)('EngineAcquisition — a probe that will not stop', () => {
@@ -462,28 +500,37 @@ describe.skipIf(!posix)('EngineAcquisition — a probe that will not stop', () =
   // case where a catchable signal does nothing, so a SIGTERM-only cap would
   // leave install() unsettled forever behind a frozen progress bar. This binary
   // ignores SIGTERM the way a wedged one effectively does.
-  const HANG_TEST_TIMEOUT_MS = 40_000;   // > the 17s deadline the code enforces
+  //
+  // Driven through the production seam at 1/60th of the real numbers: what is
+  // under test is the MECHANISM (an untrappable kill, plus an outer deadline in
+  // case even that cannot reap it), not the wall-clock size of the cap. At the
+  // real 15s this test cost 15s of every `vitest related` run on a subsystem
+  // still being changed daily — and a slow suite is how a suite stops being run.
+  // 250ms is ~1000x the time `sh` needs to install its trap, so the child is
+  // always wedged before the cap fires.
+  const PROBE = { timeoutMs: 250, deadlineMs: 750 };
 
   it('gives up on an unkillable --list-devices and installs anyway, saying why', async () => {
     const hang = makeFixtureArchive(
       tmp, "#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 1; done\n", 'hang',
     );
-    const acq = new EngineAcquisition(engineRoot, fetchServing(hang));
+    const acq = new EngineAcquisition(engineRoot, fetchServing(hang), undefined, PROBE);
     const started = Date.now();
     const installed = await acq.install({ ...asset, sha256: sha256(hang) }, () => {});
     const took = Date.now() - started;
 
     const marker = JSON.parse(fs.readFileSync(path.join(installed.dir, '.complete'), 'utf8'));
     expect(marker.devices).toEqual([]);
-    // EXACT string, because the two escape hatches say different things and only
-    // one of them means the child was actually killed. This is the 15s
-    // child-timeout message; the 17s outer deadline says "…and would not stop".
-    // Weaken this to /did not answer/ and reverting killSignal to SIGTERM passes.
-    expect(marker.devicesError).toBe('llama-server --list-devices did not answer within 15s');
-    // It returned on its own, not by luck, and the install still stands.
-    expect(took).toBeLessThan(HANG_TEST_TIMEOUT_MS);
+    // EXACT string — see the note at the top of this file. The two escape
+    // hatches say different things and only one of them means the child was
+    // really killed: this is the child-timeout message, while the outer deadline
+    // says "…and would not stop".
+    expect(marker.devicesError).toBe(`llama-server --list-devices did not answer within ${PROBE.timeoutMs / 1000}s`);
+    // It returned on its own rather than hanging, and the install still stands.
+    // Generous: the assertion is "it stopped", not "it stopped in exactly Xms".
+    expect(took).toBeLessThan(PROBE.deadlineMs * 8);
     expect(acq.installed()?.dir).toBe(installed.dir);
-  }, HANG_TEST_TIMEOUT_MS);
+  });
 });
 
 describe.skipIf(!posix)('EngineAcquisition — the lazy backfill (design §A2)', () => {

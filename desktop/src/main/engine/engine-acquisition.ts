@@ -103,6 +103,17 @@ const LIST_DEVICES_TIMEOUT_MS = 15_000;
 // failure and the race is genuinely the last resort.
 const LIST_DEVICES_DEADLINE_MS = LIST_DEVICES_TIMEOUT_MS + 2_000;
 
+/** The two caps above, overridable. WHY a seam: the only way to prove a wedged
+ *  probe stops on its own is to let one try, and at the real numbers that test
+ *  costs 15 s of every `vitest related` run on a subsystem still under active
+ *  change — which is how a suite stops being run. The MECHANISM is what is
+ *  under test, not the wall clock, so the test drives these down to
+ *  milliseconds. Production never passes them. */
+export interface DeviceProbeTimeouts { timeoutMs: number; deadlineMs: number }
+const DEFAULT_PROBE_TIMEOUTS: DeviceProbeTimeouts = {
+  timeoutMs: LIST_DEVICES_TIMEOUT_MS, deadlineMs: LIST_DEVICES_DEADLINE_MS,
+};
+
 export class EngineAcquisition {
   /** Installs whose device list we have already tried to backfill this process
    *  — success OR failure — each mapped to the RUN that did it.
@@ -130,6 +141,8 @@ export class EngineAcquisition {
      *  re-read it instead of showing "Processor only" until the next unrelated
      *  engine event. */
     private onMarkerUpdated?: () => void,
+    /** Test seam only — see DeviceProbeTimeouts. */
+    private probeTimeouts: DeviceProbeTimeouts = DEFAULT_PROBE_TIMEOUTS,
   ) {}
 
   installDir(version: string, backend: EngineBackend): string {
@@ -195,7 +208,7 @@ export class EngineAcquisition {
   }
 
   private async runBackfill(install: InstalledEngine): Promise<void> {
-    const probed = await listDevices(install.binaryPath);
+    const probed = await listDevices(install.binaryPath, this.probeTimeouts);
     try {
       const markerPath = path.join(install.dir, '.complete');
       const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')) as CompleteMarker;
@@ -405,7 +418,7 @@ export class EngineAcquisition {
       // visible — never a window where an install exists with no pool. A probe
       // that fails does NOT fail the install (the engine may still boot fine);
       // it records the engine's own words instead.
-      const probed = await listDevices(binaryPath);
+      const probed = await listDevices(binaryPath, this.probeTimeouts);
 
       // Marker LAST, then atomic rename into place — the only two orders that
       // can crash mid-way both leave either no finalDir or a fully-usable one.
@@ -626,7 +639,7 @@ export function firstGpuDevice(devices: EngineDevice[] | undefined): EngineDevic
  *  the engine's own words, so nothing downstream has to guess why the list is
  *  empty and nothing invents a number to fill the gap. */
 async function listDevices(
-  binaryPath: string,
+  binaryPath: string, timeouts: DeviceProbeTimeouts = DEFAULT_PROBE_TIMEOUTS,
 ): Promise<{ devices: EngineDevice[]; error?: string }> {
   let stdout = '';
   let stderr = '';
@@ -635,7 +648,7 @@ async function listDevices(
     // cwd = the binary's own folder so it finds the libraries and DLLs unpacked
     // beside it (the Windows CUDA runtime lands there).
     const run = execFileAsync(binaryPath, ['--list-devices'], {
-      timeout: LIST_DEVICES_TIMEOUT_MS,
+      timeout: timeouts.timeoutMs,
       // SIGKILL, not the default SIGTERM: a child stuck in a driver call — the
       // very case the cap is for — can ignore or never receive a catchable
       // signal, and then execFile's promise never settles at all.
@@ -652,7 +665,7 @@ async function listDevices(
     const r = await Promise.race([
       run,
       new Promise<typeof timedOut>((resolve) => {
-        deadline = setTimeout(() => resolve(timedOut), LIST_DEVICES_DEADLINE_MS);
+        deadline = setTimeout(() => resolve(timedOut), timeouts.deadlineMs);
         deadline.unref?.();   // never hold the process open on this alone
       }),
     ]);
@@ -663,7 +676,7 @@ async function listDevices(
       void run.catch(() => {});
       return {
         devices: [],
-        error: `llama-server --list-devices did not answer within ${LIST_DEVICES_DEADLINE_MS / 1000}s and would not stop`,
+        error: `llama-server --list-devices did not answer within ${timeouts.deadlineMs / 1000}s and would not stop`,
       };
     }
     stdout = r.stdout; stderr = r.stderr;
@@ -678,7 +691,7 @@ async function listDevices(
     return {
       devices: [],
       error: e?.killed
-        ? `llama-server --list-devices did not answer within ${LIST_DEVICES_TIMEOUT_MS / 1000}s`
+        ? `llama-server --list-devices did not answer within ${timeouts.timeoutMs / 1000}s`
         : `llama-server --list-devices failed: ${detail}`,
     };
   } finally {
