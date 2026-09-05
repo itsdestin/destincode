@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -26,6 +26,30 @@ function plantInstall(backend = 'cpu') {
   fs.writeFileSync(path.join(dir, '.complete'),
     JSON.stringify({ version: ENGINE_VERSION, backend, binaryRelPath: 'llama-server.exe' }));
 }
+
+describe.skipIf(process.platform === 'win32')('EngineManager — the device-list backfill reaches the UI', () => {
+  it('emits status-changed once acquisition fills in a pre-feature marker', async () => {
+    // status() is pull-only. An engine installed before the device list existed
+    // gets it filled in by a background probe, so without this push the user
+    // keeps seeing the wrong "runs on" line until some unrelated engine event
+    // happens to refetch. Guards the third EngineAcquisition constructor
+    // argument, which knip cannot see is unwired.
+    const dir = path.join(userData, 'engine', `${ENGINE_VERSION}-cpu`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'llama-server'),
+      "#!/bin/sh\ncat <<'EOF'\nAvailable devices:\n  Vulkan0: AMD Radeon 8060S Graphics (RADV STRIX_HALO) (86016 MiB, 83660 MiB free)\nEOF\n",
+      { mode: 0o755 });
+    fs.writeFileSync(path.join(dir, '.complete'),
+      JSON.stringify({ version: ENGINE_VERSION, backend: 'cpu', binaryRelPath: 'llama-server' }));
+
+    const mgr = new EngineManager(home, userData, 9999);
+    let changed = 0;
+    mgr.on('status-changed', () => { changed++; });
+    expect(mgr.status().installed).toBe(true);   // starts the backfill
+    await vi.waitFor(() => { expect(changed).toBeGreaterThan(0); });
+    expect(JSON.parse(fs.readFileSync(path.join(dir, '.complete'), 'utf8')).devices[0].totalMiB).toBe(86016);
+  });
+});
 
 describe('selectInstallAsset (Fix: platforms without the preferred backend)', () => {
   it('falls back to CPU when the preferred backend has no asset for this platform/arch (win arm64)', () => {

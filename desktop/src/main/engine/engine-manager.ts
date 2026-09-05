@@ -167,7 +167,15 @@ export class EngineManager extends EventEmitter {
     } = {}
   ) {
     super();
-    this.acquisition = new EngineAcquisition(path.join(userDataDir, 'engine'), opts.fetchImpl);
+    // The third argument matters: acquisition fills in the device list of an
+    // engine installed before that list existed, in the background, because
+    // status() is synchronous and cannot wait on a spawned process. status() is
+    // also PULL-only, so without this push a user upgrading from an older build
+    // would keep seeing the wrong "runs on" line until some unrelated engine
+    // event happened to refetch it.
+    this.acquisition = new EngineAcquisition(
+      path.join(userDataDir, 'engine'), opts.fetchImpl, () => this.emit('status-changed'),
+    );
   }
 
   /** The usable install, resolved with the CONFIGURED backend preference so a
