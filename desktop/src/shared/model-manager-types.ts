@@ -29,8 +29,13 @@ export interface QuantOption {
   sha256ByFile: Record<string, string | null>; // from lfs.oid; null when HF omits it
   /** The repo's vision projector (`mmproj-*.gguf`), downloaded WITH the model into a
    *  folder of its own so the engine pairs them (deck Q-3, pick c — always; S-3 for
-   *  models already on disk). Null/absent = a text-only model. Size is the F16 file. */
+   *  models already on disk). Null/absent = a text-only model. Size is the F16 file.
+   *
+   *  NOT a member of `files`: that list means "the split parts of this quant,
+   *  complete 1..N", and code elsewhere judges a download finished from it alone.
+   *  The projector is a separate leg of the same job (design §E2). */
   visionBytes?: number | null;
+  visionFile?: ManifestVisionFile;
 }
 
 export type FitLabel = 'fits' | 'tight' | 'too-large';
