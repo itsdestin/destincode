@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
 import { PRESETS } from '../../shared/harness-manifest';
-import { Button, SettingRow, StatusStrip, Toggle } from './ui';
+import { SettingRow, Toggle } from './ui';
 
 // The two built-in native harness presets (personality profiles, not capability
 // tiers). A native session is stamped with one at create time; it drives the
@@ -264,41 +264,37 @@ export function NativeExtras({ nb, preset, onPreset }: {
           and, for a warning, the remembered "don't warn me again" (S-2). A block
           ('too-large') unfolds the same way but has no checkbox: it is not a choice. */}
       {nb.memVerdict && nb.memVerdict.verdict !== 'ok' && (
-        <div className="text-2xs">
-          {/* K5 status strip: a state plus the one action that resolves it (here,
-              unfolding the reason). Not a Callout — that shape has no action slot —
-              and not a hand-rolled tinted pill (callout-authority.test.tsx). */}
-          <StatusStrip
-            tone="warn"
-            action={(
-              <Button size="sm" variant="ghost" onClick={() => nb.setMemDetailOpen((o) => !o)} aria-expanded={nb.memDetailOpen}>
-                {nb.memDetailOpen ? 'Less' : 'Why?'}
-              </Button>
-            )}
-            detail={nb.memDetailOpen ? (
-              // Round-3 P-18 (Destin): far fewer words, and no bare checkbox — the
-              // remembered choice is the app's toggle row, like every other boolean.
-              <span className="block mt-1.5 space-y-1.5">
-                <span className="block text-fg-2">{nb.memVerdict.headline}</span>
-                {nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
-                  <SettingRow
-                    variant="item"
-                    title="Warn me about this model"
-                    description="Off skips this next time."
-                    control={(
-                      <Toggle
-                        checked={!nb.memDismissed}
-                        aria-label="Warn me about this model"
-                        onChange={(next) => nb.dismissMemoryWarning?.(!next)}
-                      />
-                    )}
-                  />
-                )}
+        // Round-4 (Destin, screenshot): "doesn't look like any other surface in the
+        // app". So it IS another surface in the app — the expandable SettingRow every
+        // Settings screen uses (G-22): the sentence is the row title, the chevron on
+        // the right flips down, and what it reveals is one numbers line plus the
+        // "Warn me about this model" toggle row. No status dot, no Less button.
+        <div className="space-y-1.5">
+          <SettingRow
+            variant="item"
+            title={(
+              <span className={nb.memVerdict.verdict === 'too-large' ? 'text-destructive-fg' : 'text-amber-400'}>
+                {nb.memVerdict.verdict === 'too-large' ? 'This model is too large for this computer' : 'This model may not fit in available memory'}
               </span>
-            ) : undefined}
-          >
-            {nb.memVerdict.verdict === 'too-large' ? 'This model is too large for this computer' : 'This model may not fit in available memory'}
-          </StatusStrip>
+            )}
+            description={nb.memDetailOpen ? nb.memVerdict.headline : undefined}
+            onClick={() => nb.setMemDetailOpen((o) => !o)}
+            expanded={nb.memDetailOpen}
+          />
+          {nb.memDetailOpen && nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
+            <SettingRow
+              variant="item"
+              title="Warn me about this model"
+              description="Off skips this next time."
+              control={(
+                <Toggle
+                  checked={!nb.memDismissed}
+                  aria-label="Warn me about this model"
+                  onChange={(next) => nb.dismissMemoryWarning?.(!next)}
+                />
+              )}
+            />
+          )}
         </div>
       )}
     </>
