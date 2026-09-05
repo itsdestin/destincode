@@ -973,7 +973,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         ? { ...st, status: 'running', done: 0, usedTokens: 0,
             children: Array.from({ length: st.fanOut }, (_, k) => ({
               childId: `${p.planId}-${st.id}-${k}`, parentToolCallId: p.toolUseId, agentType: st.specialist,
-              title: `${['Wren', 'Idris', 'Mara', 'Tobin'][k % 4]} the ${st.specialist}`, background: true,
+              title: `${['Wren', 'Idris', 'Mara', 'Tobin'][k % 4]} the ${st.specialist.charAt(0).toUpperCase()}${st.specialist.slice(1)}`, background: true,
               status: 'running' as const, startedAt: Date.now(),
             })) }
         : st),
@@ -984,7 +984,12 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     addBudget: async (_sessionId: string, planId: string, tokens: number) => nextPlan(planId, (p) => ({
       ...p, status: 'running', paused: undefined, ceilingTokens: p.ceilingTokens + tokens,
       ceilingUsd: p.ceilingUsd == null ? null : p.ceilingUsd * ((p.ceilingTokens + tokens) / p.ceilingTokens),
-      steps: p.steps.map((st) => st.status === 'paused' ? { ...st, status: 'running', budgetTokens: st.budgetTokens + Math.ceil(tokens / Math.max(1, st.fanOut)) } : st),
+      // UX run 1, U7: the specialist that hit the cap goes back to work, so the
+      // card visibly resumes instead of keeping its "Stopped" line.
+      steps: p.steps.map((st) => st.status === 'paused'
+        ? { ...st, status: 'running', budgetTokens: st.budgetTokens + Math.ceil(tokens / Math.max(1, st.fanOut)),
+            children: st.children?.map((c) => c.status === 'interrupted' ? { ...c, status: 'running' as const, endedAt: undefined, startedAt: Date.now() } : c) }
+        : st),
     })),
     resume: async (_sessionId: string, planId: string) => nextPlan(planId, (p) => {
       const idx = p.steps.findIndex((st) => st.status !== 'done');

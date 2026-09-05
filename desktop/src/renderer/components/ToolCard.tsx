@@ -1376,7 +1376,9 @@ export default React.memo(function ToolCard({ tool, sessionId, inGroup = false }
       {run?.stale && run.status === 'running' && (
         <span className="text-4xs uppercase tracking-wide text-amber-500 shrink-0" title="No activity for a while — may be stuck">may be stuck</span>
       )}
-      {runIcon === 'stopped' && (
+      {/* UX run 1, U4: a plan replaced after a Comment is "revised", not
+          stopped — its header detail already says so, no tag. */}
+      {runIcon === 'stopped' && !tool.plan?.revisedBy && (
         <span className="text-4xs uppercase tracking-wide text-fg-muted shrink-0">stopped</span>
       )}
       {!isCompactSkill && (

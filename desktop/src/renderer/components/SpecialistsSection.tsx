@@ -355,21 +355,23 @@ function PlansAutoApproveRow() {
         description="A plan under the limit starts on its own; its card still shows the ceiling. Bigger plans always ask."
         control={<Toggle checked={on} onChange={(next) => void save(next ? (Number(draft) || 20000) : 0)} disabled={under === null} aria-label="Run small plans without asking" />}
       />
-      {on && (
-        <div className="flex items-center gap-2 flex-wrap px-3">
-          <span className="text-2xs text-fg-dim">when the plan's ceiling is under</span>
+      {/* UX run 1, U3: the limit is visible even while the switch is off, so
+          "small" always has a number next to it; the field just cannot be
+          edited until the switch is on. */}
+      <div className={`flex items-center gap-2 flex-wrap px-3 ${on ? '' : 'opacity-50'}`}>
+          <span className="text-2xs text-fg-dim">when the plan's limit is under</span>
           <TextInput
             size="sm"
             inputMode="numeric"
             className="w-24"
+            disabled={!on}
             value={draft}
             aria-label="Token limit for plans that run without asking"
             onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ''))}
             onBlur={() => { const n = Number(draft); if (n > 0 && n !== under) void save(n); }}
           />
           <span className="text-2xs text-fg-dim">tokens</span>
-        </div>
-      )}
+      </div>
       {error && <div className="px-3"><FieldError>{error}</FieldError></div>}
     </div>
   );

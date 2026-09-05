@@ -80,15 +80,23 @@ function usd(n: number): string {
 
 /** The ceiling, priced when the model has a price. */
 function ceiling(plan: PlanView): string {
-  const base = `Up to ${tokens(plan.ceilingTokens)}`;
+  // UX run 1, U9/U21: the dollar figure is the part a student understands, so it
+  // leads when the model has a price; the token limit always follows (spec §4).
+  // "specialists run on" says whose model this is — the chat may be on another.
   return plan.ceilingUsd == null
-    ? `${base} on ${plan.model.label} · no published price`
-    : `${base} · about ${usd(plan.ceilingUsd)} on ${plan.model.label}`;
+    ? `Up to ${tokens(plan.ceilingTokens)} · specialists run on ${plan.model.label}, which has no published price`
+    : `Up to about ${usd(plan.ceilingUsd)} (${tokens(plan.ceilingTokens)}) · specialists run on ${plan.model.label}`;
 }
 
 function spent(plan: PlanView): string {
   const t = tokens(plan.usedTokens ?? 0);
-  return plan.usedUsd == null ? t : `${t} · ${usd(plan.usedUsd)}`;
+  return plan.usedUsd == null ? t : `${usd(plan.usedUsd)} (${t})`;
+}
+
+/** "of the $0.12 limit" / "of the 40,000-token limit" — one word, "limit", for the
+ *  cap everywhere on the card (UX run 1, U8: budget/cap/ceiling were four words for one idea). */
+function limit(plan: PlanView): string {
+  return plan.ceilingUsd == null ? `the ${tokens(plan.ceilingTokens)} limit` : `the ${usd(plan.ceilingUsd)} limit (${tokens(plan.ceilingTokens)})`;
 }
 
 // ---- the block ---------------------------------------------------------------
@@ -98,7 +106,10 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
   const [commenting, setCommenting] = useState(false);
   const [comment, setComment] = useState('');
   const [adding, setAdding] = useState(false);
-  const [extra, setExtra] = useState('10000');
+  // UX run 1, U18: default to the paused step's own per-specialist cap (a
+  // sensible size for one more pass), shown with a thousands comma.
+  const pausedStep = plan.steps.find((st) => st.id === plan.paused?.stepId);
+  const [extra, setExtra] = useState(String(pausedStep?.budgetTokens ?? 10000));
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const revised = plan.status === 'stopped' && !!plan.revisedBy;
@@ -139,11 +150,14 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
 
           {/* ONE ceiling line (Q-2). While the plan moves it becomes "used of up to". */}
           <div className="text-xs text-fg-dim" data-testid="plan-ceiling">
-            {plan.status === 'proposed'
+            {plan.status === 'proposed' || revised
+              // A revised plan never ran, so it keeps its proposal line rather
+              // than a meaningless "Spent 0" (UX run 1 follow-up).
               ? <>{specialists} specialist{specialists === 1 ? '' : 's'} · {ceiling(plan)}</>
+              // UX run 1, U16: the header already says how long it took.
               : plan.status === 'completed'
-                ? <>Finished in {formatElapsed((plan.endedAt ?? 0) - (plan.startedAt ?? 0))} · used {spent(plan)} of up to {tokens(plan.ceilingTokens)}</>
-                : <>Used {spent(plan)} of up to {tokens(plan.ceilingTokens)}{plan.ceilingUsd != null ? ` (about ${usd(plan.ceilingUsd)})` : ''}</>}
+                ? <>Spent {spent(plan)} of {limit(plan)}</>
+                : <>Spent {spent(plan)} of {limit(plan)}</>}
           </div>
 
           {plan.autoApproved && (
@@ -154,13 +168,13 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
             // Amber: the same tone the held-ask and stale-run lines use — a
             // stop that needs a person, not an error.
             <div className="text-xs text-amber-500" data-testid="plan-paused-reason">
-              Paused — {plan.paused.reason} Nothing is spent past the ceiling you approved.
+              Paused — {plan.paused.reason} Nothing is spent past the limit you approved.
             </div>
           )}
 
           {plan.status === 'interrupted' && (
             <div className="text-xs text-fg-dim" data-testid="plan-interrupted-note">
-              The app closed while this plan was running. {done} of {plan.steps.length} steps finished and their results are kept; Continue runs only what is left.
+              The app closed mid-plan. {done === 0 ? 'Nothing had finished yet' : done === 1 ? 'Step 1 is saved' : `Steps 1–${done} are saved`}; Continue runs the rest.
             </div>
           )}
 
@@ -185,18 +199,18 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); if (comment.trim()) void sendComment(); } }}
-                placeholder="What should change? The assistant rewrites the plan and shows you a new one."
+                placeholder="What should change?"
                 autoFocus
               />
               <div className="flex items-center gap-2">
-                <Button size="sm" variant="primary" onClick={sendComment} disabled={busy !== null || !comment.trim()}>{busy === 'comment' ? 'Sending…' : 'Send'}</Button>
+                <Button size="sm" variant="primary" onClick={sendComment} disabled={busy !== null || !comment.trim()} title="The assistant rewrites the plan and shows you a new one">{busy === 'comment' ? 'Sending…' : 'Send'}</Button>
                 <Button size="sm" variant="ghost" onClick={() => { setCommenting(false); setComment(''); }} disabled={busy !== null}>Cancel</Button>
               </div>
             </div>
           )}
           {plan.status === 'running' && (
             <div className="flex items-center gap-2">
-              <Button size="sm" variant="ghost" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop the plan'}</Button>
+              <Button size="sm" variant="secondary" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop the plan'}</Button>
             </div>
           )}
           {plan.status === 'paused' && !adding && (
@@ -208,7 +222,7 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
           {plan.status === 'paused' && adding && (
             <div className="flex items-center gap-2 flex-wrap" data-testid="plan-add-budget">
               <span className="text-xs text-fg-dim">Allow</span>
-              <TextInput size="sm" inputMode="numeric" value={extra} onChange={(e) => setExtra(e.target.value.replace(/[^0-9]/g, ''))} className="w-24" aria-label="More tokens to allow" />
+              <TextInput size="sm" inputMode="numeric" value={Number(extra) ? Number(extra).toLocaleString() : extra} onChange={(e) => setExtra(e.target.value.replace(/[^0-9]/g, ''))} className="w-24" aria-label="More tokens to allow" />
               <span className="text-xs text-fg-dim">more tokens{plan.ceilingUsd != null && plan.ceilingTokens > 0 ? ` (about ${usd((Number(extra) || 0) * (plan.ceilingUsd / plan.ceilingTokens))})` : ''}</span>
               <Button size="sm" variant="primary" onClick={addBudget} disabled={busy !== null || !(Number(extra) > 0)}>{busy === 'budget' ? 'Continuing…' : 'Continue'}</Button>
               <Button size="sm" variant="ghost" onClick={() => setAdding(false)} disabled={busy !== null}>Cancel</Button>
@@ -235,7 +249,7 @@ function WritingLine({ plan }: { plan: PlanView }) {
   const elapsed = formatElapsed(Math.max(0, now - (plan.startedAt ?? now)));
   return (
     <div className="text-xs text-fg-dim" data-testid="plan-writing">
-      Writing the plan · {elapsed}. The assistant thinks through the steps before it writes them — on a model running on your computer this can take a few minutes.
+      Writing the plan · {elapsed}{plan.ceilingUsd == null ? ' — a model on your computer can take a few minutes.' : '.'}
     </div>
   );
 }
@@ -250,7 +264,7 @@ const STEP_GLYPH: Record<PlanStepView['status'], React.ReactNode> = {
 };
 
 const KIND_WORD: Record<PlanStepView['kind'], string> = {
-  map: 'in parallel',
+  map: 'at the same time',
   verify: 'checks each result',
   combine: 'combines the results',
   repeat: 'repeats until done',
@@ -264,7 +278,7 @@ function StepRow({ step, index, plan, sessionId }: { step: PlanStepView; index: 
   const who = `${step.fanOut} ${step.specialist}${step.fanOut === 1 ? '' : 's'}`;
   const right =
     step.status === 'pending' || plan.status === 'proposed' ? `up to ${tokens(step.budgetTokens * step.fanOut)}`
-    : step.status === 'running' || step.status === 'paused' ? `${step.done ?? 0} of ${step.fanOut} done · ${tokens(step.usedTokens ?? 0)}`
+    : step.status === 'running' || step.status === 'paused' ? `${step.done ?? 0} of ${step.fanOut} ${step.specialist}s done · ${tokens(step.usedTokens ?? 0)}`
     : step.status === 'done' ? tokens(step.usedTokens ?? 0)
     : '';
   return (
@@ -274,7 +288,7 @@ function StepRow({ step, index, plan, sessionId }: { step: PlanStepView; index: 
         <span className="shrink-0 inline-flex w-3.5 justify-center">{STEP_GLYPH[step.status]}</span>
         <span className="text-xs text-fg-muted tabular-nums shrink-0">{index + 1}.</span>
         <span className={`text-xs ${step.status === 'done' ? 'text-fg-dim' : 'text-fg-2'} truncate`}>{step.title}</span>
-        <span className="text-2xs text-fg-muted truncate">{who} · {KIND_WORD[step.kind]}</span>
+        <span className="text-2xs text-fg-dim truncate">{who} · {KIND_WORD[step.kind]}</span>
         <span className="ml-auto text-2xs text-fg-muted tabular-nums shrink-0">{right}</span>
         <ChevronIcon className="w-3 h-3 text-fg-muted shrink-0" expanded={open} />
       </button>
@@ -284,7 +298,7 @@ function StepRow({ step, index, plan, sessionId }: { step: PlanStepView; index: 
             step.children.map((c) => <ChildLine key={c.childId} run={c} sessionId={sessionId} />)
           ) : (
             <div className="text-2xs text-fg-muted">
-              Each {step.specialist} gets up to {tokens(step.budgetTokens)}; that cap is enforced, not estimated.
+              Each {step.specialist} stops at its {tokens(step.budgetTokens)} limit.
             </div>
           )}
         </div>
@@ -300,7 +314,7 @@ function ChildLine({ run, sessionId }: { run: SpecialistRunView; sessionId?: str
       <span className="text-xs text-fg-2 shrink-0">{run.title}</span>
       <div className="min-w-0"><RunStatusLine run={run} /></div>
       {run.status === 'running' && sessionId && (
-        <div className="basis-full"><SpecialistActions sessionId={sessionId} run={run} compact /></div>
+        <div className="basis-full"><SpecialistActions sessionId={sessionId} run={run} /></div>
       )}
     </div>
   );
