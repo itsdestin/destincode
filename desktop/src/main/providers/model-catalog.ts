@@ -256,7 +256,14 @@ export class ModelCatalog {
         // engine runs, cache scan when stopped). Failure degrades to "no
         // local rows" — get() keeps its never-throws contract.
         try { out.push(...await this.localModels()); } catch { /* engine unavailable */ }
-      } else if (p.type === 'chatgpt' && this.chatgptModels) {
+      } else if (p.type === 'chatgpt' && p.ready && this.chatgptModels) {
+        // `ready` here, not just `enabled` (§4.6): when OpenAI blocks the
+        // account the cached model list is deliberately kept (so the card can
+        // still say who is signed in), but those models must leave the
+        // catalog. The two pickers filter on ready themselves; the app's own
+        // ModelSearch tool does not — without this gate the assistant is
+        // offered plan models it cannot use, hands a task to one, and the user
+        // gets "Codex is disabled for this workspace." instead of an answer.
         // Rows are the plan's own manifest, parsed and cached by ChatGptAuth
         // (id = slug, no pricing — the plan is not per-token, and an absent
         // price must read as absent, never $0). A throwing source degrades

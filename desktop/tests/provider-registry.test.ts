@@ -8,6 +8,7 @@ import * as fs from 'fs'; import * as path from 'path'; import * as os from 'os'
 import { NativeHome } from '../src/main/native-home';
 import { SecretsStore } from '../src/main/providers/secrets-store';
 import { ProviderRegistry } from '../src/main/providers/provider-registry';
+import { ModelCatalog } from '../src/main/providers/model-catalog';
 import { openRouterCostExtractor } from '../src/main/harness/pricing';
 import type { LocalEngineHook } from '../src/main/engine/engine-manager';
 import type { ChatGptAuth } from '../src/main/providers/chatgpt-auth';
@@ -357,12 +358,41 @@ describe('ProviderRegistry', () => {
       return text;
     }
 
-    it('list(): the virtual row appears FIRST, builtIn, only when a ChatGptAuth is given', async () => {
+    it('list(): the virtual row appears LAST, builtIn, only when a ChatGptAuth is given', async () => {
       const without = await make(null).list();
       expect(without.map((p) => p.id)).not.toContain('chatgpt');
       const withAuth = await make(fakeChatGpt().auth).list();
-      expect(withAuth[0]).toMatchObject({ id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT Plan', enabled: true, builtIn: true, hasKey: false });
-      expect(withAuth.map((p) => p.id)).toEqual(['chatgpt', 'local', 'openrouter']);
+      expect(withAuth[withAuth.length - 1]).toMatchObject({ id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT Plan', enabled: true, builtIn: true, hasKey: false });
+      expect(withAuth.map((p) => p.id)).toEqual(['local', 'openrouter', 'chatgpt']);
+    });
+
+    // The new-session form defaults to the FIRST ready provider and blocks
+    // Create when that provider has no models to pick. ChatGPT's list is
+    // cache-first: right after signing in — and for as long as the manifest
+    // fetch keeps failing — it is ready with zero models. Putting the plan
+    // first made that the default and left Create dead with no explanation,
+    // with the user's OpenRouter models one dropdown away. So: last.
+    it('signed in with an EMPTY model cache, the first READY provider still has models — a session is still creatable', async () => {
+      const reg = make(fakeChatGpt({ signedIn: true }).auth);   // models() → []
+      await reg.setKey('openrouter', 'sk-or-abc');
+      const ready = (await reg.list()).filter((p) => p.ready);
+      expect(ready.map((p) => p.id)).toEqual(['openrouter', 'chatgpt']);
+
+      // End to end through the real catalog, because "ready" alone is not what
+      // unblocks Create — having a model to bind to is.
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'yc-provreg-cat-'));
+      try {
+        const catalog = new ModelCatalog(dir, async (url: string) => ({
+          ok: true,
+          json: async () => (String(url).includes('openrouter')
+            ? { data: [{ id: 'meta-llama/llama-3-8b', name: 'Llama 3 8B', context_length: 8192 }] }
+            : {}),
+        }) as any, { chatgptModels: async () => [] });
+        const rows = await catalog.get(await reg.list());
+        const first = ready[0];
+        expect(rows.some((m) => m.providerId === first.id)).toBe(true);
+        expect(rows.some((m) => m.providerId === 'chatgpt')).toBe(false);
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
     });
 
     it('init() after construction with a ChatGptAuth leaves NO chatgpt row in providers.json', async () => {
@@ -440,6 +470,22 @@ describe('ProviderRegistry', () => {
       expect(JSON.stringify(req.body)).not.toContain('Bearer chatgpt');
     });
 
+    // The `include` assertion on gpt-5.5 above cannot fail: the SDK recognises
+    // any gpt-5.x as a reasoning model and adds `reasoning.encrypted_content`
+    // itself whenever store is false. So this repeats it on an id the SDK does
+    // NOT recognise — which is the only case the middleware's own `include` is
+    // there for, and the normal case for a model the plan's manifest names
+    // before the SDK has heard of it. Without it, reasoning would come back
+    // with nothing we can carry to the next step of the same turn.
+    it('include: an id the SDK does not treat as a reasoning model still asks for encrypted reasoning', async () => {
+      const { auth, requests } = fakeChatGpt();
+      const model = await make(auth).languageModel({ providerId: 'chatgpt', modelId: 'codex-auto-review' });
+      const result = streamText({ model: model as any, prompt: 'hi' });
+      for await (const _ of result.textStream) { /* drain */ }
+      expect(requests[0].body.model).toBe('codex-auto-review');
+      expect(requests[0].body.include).toContain('reasoning.encrypted_content');
+    });
+
     it('sends the fixed instructions sentence when the harness has no system text', async () => {
       const { auth, requests } = fakeChatGpt();
       await turn(make(auth));
@@ -504,7 +550,10 @@ describe('ProviderRegistry', () => {
       const reg = make(null);
       expect((await reg.list()).some((p) => p.id === 'chatgpt')).toBe(false);
       await expect(reg.languageModel({ providerId: 'chatgpt', modelId: 'gpt-5.5' })).rejects.toThrow(TURNED_OFF);
-      expect(await reg.testConnection('chatgpt')).toEqual({ ok: false, message: "Provider 'chatgpt' is not configured." });
+      // ONE state, ONE explanation: Test on a leftover ChatGPT card used to say
+      // "not configured", which reads as "you forgot to set it up" and sends
+      // the user looking for a setting that isn't there.
+      expect(await reg.testConnection('chatgpt')).toEqual({ ok: false, message: TURNED_OFF });
     });
   });
 });

@@ -303,6 +303,24 @@ describe('ModelCatalog', () => {
       expect(models).toEqual([]);
     });
 
+    // §4.6: when OpenAI blocks the account the registry keeps the row listed
+    // (ready: false) so the card can still show who is signed in and offer Sign
+    // out — but the models must leave the catalog. ChatGptAuth deliberately
+    // keeps its cached list through a block, so `enabled` alone would still
+    // hand them out. The two pickers filter on ready themselves; the app's own
+    // ModelSearch tool reads the catalog raw, so without this gate the
+    // assistant would be offered plan models it cannot use and the user would
+    // get "Codex is disabled for this workspace." instead of an answer.
+    it('get(): a BLOCKED plan (ready:false) contributes no models even though the cache still holds them', async () => {
+      const cat = new ModelCatalog(dir, fetchMock, {
+        chatgptModels: async () => [{ id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5' }],
+      });
+      expect(await cat.get([{ ...CHATGPT_ROW, ready: false }])).toEqual([]);
+      // Sanity: the same source with ready:true DOES contribute — so the empty
+      // result above is the gate, not a broken fixture.
+      expect(await cat.get([CHATGPT_ROW])).toHaveLength(1);
+    });
+
     it('get(): no source injected (kill switch) or provider disabled → nothing for the plan', async () => {
       const none = new ModelCatalog(dir, fetchMock);
       expect(await none.get([CHATGPT_ROW])).toEqual([]);

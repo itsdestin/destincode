@@ -126,10 +126,16 @@ export async function foldStream(result: {
   let response: LanguageModelV4ResponseMetadata | undefined;
 
   const reader = result.stream.getReader();
+  // Set only when the loop reached the end of the stream on its own. If we
+  // leave early (an `error` part throws), the network connection underneath is
+  // still open: just letting go of the reader leaves the socket held until the
+  // garbage collector happens to notice, so a run of failed titles can pile up
+  // dead connections. Cancelling closes it there and then.
+  let drained = false;
   try {
     while (true) {
       const { done, value: part } = await reader.read();
-      if (done) break;
+      if (done) { drained = true; break; }
       switch (part.type) {
         case 'stream-start':
           warnings = part.warnings;
@@ -189,7 +195,11 @@ export async function foldStream(result: {
       }
     }
   } finally {
-    reader.releaseLock();
+    // cancel() also releases the lock, so it is one or the other. Its own
+    // failure is ignored on purpose: we are already on the way out, and a
+    // complaint from the cancel would replace the real reason we stopped.
+    if (drained) reader.releaseLock();
+    else await reader.cancel().catch(() => { /* already gone */ });
   }
 
   return {

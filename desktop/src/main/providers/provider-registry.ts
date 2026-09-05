@@ -87,11 +87,21 @@ export class ProviderRegistry {
   private readAll(): ProviderConfig[] {
     const onDisk = ((this.home.readJson(FILE) as ProvidersFile | null)?.providers) ?? [];
     if (!this.chatgpt) return onDisk;
-    // The virtual row goes FIRST: when the same model id exists on both the
-    // plan and an OpenAI-key provider, an id-only lookup finds the plan's row.
+    // The virtual row goes LAST, and that position is load-bearing. The
+    // new-session form defaults to the FIRST ready provider, and ChatGPT's
+    // model list is cache-first: for the first seconds after signing in — and
+    // indefinitely while the manifest fetch keeps failing (offline, or a 401)
+    // — the plan is "ready" with zero models. First position would make that
+    // the default pick, and Create would sit greyed out with nothing said,
+    // even though the user's OpenRouter models are one dropdown away. Last
+    // means the user only lands on the plan by choosing it.
+    // (It used to go first so an id-only model lookup would prefer the plan's
+    // row when an OpenAI-key provider lists the same id. That is handled on
+    // its own in the renderer's resolveProviderType, which explicitly prefers
+    // providerId === 'chatgpt' before any first-match fallback.)
     // Any on-disk row with the virtual id is dropped, so a file written by a
     // buggy build can never shadow the live one or list it twice.
-    return [CHATGPT_ROW, ...onDisk.filter((p) => !VIRTUAL_IDS.has(p.id))];
+    return [...onDisk.filter((p) => !VIRTUAL_IDS.has(p.id)), CHATGPT_ROW];
   }
 
   /**
@@ -425,6 +435,12 @@ export class ProviderRegistry {
     let p: ProviderConfig | undefined;
     try {
       p = this.readAll().find((x) => x.id === id);
+      // Kill switch (§6), the same guard languageModel() has: with chatgpt null
+      // the virtual row is not in readAll(), so a Test on a leftover ChatGPT
+      // card would read "not configured" — which sounds like the user forgot to
+      // set something up. Say what actually happened, in the same words the
+      // send path uses, so one state never gets two explanations.
+      if (!p && VIRTUAL_IDS.has(id)) return { ok: false, message: CHATGPT_TURNED_OFF_MESSAGE };
       if (!p) return { ok: false, message: `Provider '${id}' is not configured.` };
       // Bare trailing slashes 404 on strict routers (`/v1//models`) —
       // createOpenAICompatible normalizes internally, but these hand-built
