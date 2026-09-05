@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   MANIFEST_SUFFIX, manifestPathFor, writeManifest, readManifest, removeManifest,
+  markManifestComplete, isManifestComplete,
 } from '../src/main/models/download-manifest';
 import type { QuantOption } from '../src/shared/model-manager-types';
 
@@ -69,5 +70,80 @@ describe('download manifest', () => {
 
   it('remove is a no-op when there is nothing to remove', () => {
     expect(() => removeManifest(dir, 'nope.gguf')).not.toThrow();
+  });
+});
+
+// The manifest OUTLIVES the download (2026-09-05). Presence used to mean
+// "unfinished"; completedAt is the test now, and these pin it.
+describe('a manifest that outlives its download', () => {
+  const FIRST = 'M-UD-Q4_K_XL-00001-of-00002.gguf';
+
+  it('a fresh manifest is not complete; stamping it makes it complete', () => {
+    writeManifest(dir, 'unsloth/M-GGUF', quant, 1700000000000);
+    expect(isManifestComplete(readManifest(dir, FIRST))).toBe(false);
+
+    markManifestComplete(dir, FIRST, 1700000009999);
+    const got = readManifest(dir, FIRST);
+    expect(got?.completedAt).toBe(1700000009999);
+    expect(isManifestComplete(got)).toBe(true);
+    // Still on disk — that is the whole point.
+    expect(fs.existsSync(manifestPathFor(dir, FIRST))).toBe(true);
+  });
+
+  it('stamping keeps every other field, leaves no .tmp, and never re-stamps', () => {
+    writeManifest(dir, 'unsloth/M-GGUF', quant, 1700000000000);
+    markManifestComplete(dir, FIRST, 111);
+    markManifestComplete(dir, FIRST, 222);   // a second scan must not rewrite history
+    expect(readManifest(dir, FIRST)).toEqual({
+      v: 1,
+      repo: 'unsloth/M-GGUF',
+      quant: 'UD-Q4_K_XL',
+      files: quant.files,
+      totalSizeBytes: 1234,
+      sha256ByFile: quant.sha256ByFile,
+      startedAt: 1700000000000,
+      completedAt: 111,
+    });
+    expect(fs.readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('stamping a manifest that is not there is a no-op, not a throw', () => {
+    expect(() => markManifestComplete(dir, 'nope.gguf', 1)).not.toThrow();
+    expect(isManifestComplete(null)).toBe(false);
+  });
+
+  it('re-downloading the same model KEEPS visionFile and clears completedAt', () => {
+    // The finished download, with the projector its repo was found to ship.
+    fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({
+      v: 1, repo: 'unsloth/M-GGUF', quant: 'UD-Q4_K_XL', files: quant.files,
+      totalSizeBytes: 1234, sha256ByFile: quant.sha256ByFile, startedAt: 1,
+      completedAt: 2, visionFile: { path: 'mmproj-F16.gguf', size: 900, sha256: 'b'.repeat(64) },
+    }));
+
+    writeManifest(dir, 'unsloth/M-GGUF', quant, 3);   // the user downloads it again
+
+    const got = readManifest(dir, FIRST);
+    expect(got?.visionFile).toEqual({ path: 'mmproj-F16.gguf', size: 900, sha256: 'b'.repeat(64) });
+    expect(got?.completedAt).toBeUndefined();          // in flight again
+    expect(got?.startedAt).toBe(3);
+  });
+
+  it('reads a manifest with no completedAt or visionFile — every manifest written before this', () => {
+    fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({
+      v: 1, repo: 'a/b', quant: 'Q4_K_M', files: [FIRST],
+      totalSizeBytes: 10, sha256ByFile: {}, startedAt: 1,
+    }));
+    expect(readManifest(dir, FIRST)?.repo).toBe('a/b');
+  });
+
+  it('returns null when completedAt or visionFile is the wrong shape', () => {
+    const base = {
+      v: 1, repo: 'a/b', quant: 'Q4_K_M', files: [FIRST],
+      totalSizeBytes: 10, sha256ByFile: {}, startedAt: 1,
+    };
+    fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({ ...base, completedAt: 'yes' }));
+    expect(readManifest(dir, FIRST)).toBeNull();
+    fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({ ...base, visionFile: { size: 1 } }));
+    expect(readManifest(dir, FIRST)).toBeNull();
   });
 });

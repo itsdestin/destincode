@@ -82,9 +82,12 @@ export interface DownloadProgress {
  *  declared part is published — see docs/active/specs/2026-08-26-model-download-resume-design.md.
  *    complete    — every part present; the ordinary case
  *    unfinished  — short of parts (a .partial, or nothing but a manifest yet),
- *                  WITH a manifest → resumable
- *    untraceable — short of parts, NO manifest (downloaded before manifests
- *                  existed) → we cannot know where it came from, so no Resume */
+ *                  WITH an UNSTAMPED manifest → resumable
+ *    untraceable — short of parts, no usable manifest (downloaded before
+ *                  manifests existed, or the record is unreadable) → we cannot
+ *                  know where it came from, so no Resume
+ *  A manifest stamped `completedAt` describes a download that already landed,
+ *  so it never makes a row 'unfinished' — see download-manifest.ts. */
 export type LocalModelStatus = 'complete' | 'unfinished' | 'untraceable';
 
 export interface InstalledLocalModel {
@@ -122,10 +125,24 @@ export interface ModelSettings {
   extraFlags: string;             // raw llama-server flags, power users only
 }
 
+/** A downloaded model's vision projector (the `mmproj-*.gguf` file that lets a
+ *  model look at images) as the manifest records it. */
+export interface ManifestVisionFile {
+  path: string;                                 // repo-relative path
+  size: number;
+  sha256: string | null;                        // HF lfs.oid when the repo publishes one
+}
+
 /** Written next to a download BEFORE its first byte, so a leftover .partial can
  *  still be resumed after a crash. Carries the whole QuantOption, not just the
  *  repo name, so resume needs no Hugging Face round trip — the interruption
- *  that stranded the download is often the network itself. */
+ *  that stranded the download is often the network itself.
+ *
+ *  WHY it now OUTLIVES the download: the manifest is the only record of which
+ *  Hugging Face repo a model came from and whether that repo ships a vision
+ *  projector, and a finished model still needs both. So completion stamps
+ *  `completedAt` instead of deleting the file, and "a manifest exists" no
+ *  longer means "this download is unfinished" — `completedAt` is the test. */
 export interface DownloadManifest {
   v: 1;
   repo: string;
@@ -134,6 +151,8 @@ export interface DownloadManifest {
   totalSizeBytes: number;
   sha256ByFile: Record<string, string | null>;
   startedAt: number;                            // epoch ms
+  completedAt?: number;                         // epoch ms; absent = still unfinished
+  visionFile?: ManifestVisionFile;              // absent = this repo has no projector
 }
 
 export interface DetectedEndpoint {

@@ -8,7 +8,7 @@ import * as path from 'path';
 import { NativeHome } from '../native-home';
 import { EngineManager } from '../engine/engine-manager';
 import { readEngineConfig } from '../engine/engine-config';
-import { readManifest } from './download-manifest';
+import { readManifest, isManifestComplete } from './download-manifest';
 import { CuratedCatalog } from './curated-catalog';
 import { HfClient } from './hf-client';
 import { ModelDownloader } from './model-downloader';
@@ -171,6 +171,13 @@ export class ModelManager extends EventEmitter {
         "This download has no record of where it came from, so it can't be resumed automatically. "
         + 'Find the model in search and download it again — it will continue from where it stopped.'
       );
+    }
+    if (isManifestComplete(manifest)) {
+      // WHY this guard exists at all: the manifest now stays on disk after the
+      // download finishes, so its mere presence no longer proves there is
+      // something to resume. Its own message, because the cause is different
+      // from the one above and a shared one would be a guess.
+      throw new Error('This download already finished, so there is nothing to resume.');
     }
     return this.download(manifest.repo, {
       quant: manifest.quant,

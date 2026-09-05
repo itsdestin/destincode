@@ -1,6 +1,12 @@
 // Records WHERE a download came from, so a leftover .partial can still be
-// resumed after a crash or quit. Written BEFORE the first byte; removed only on
-// clean completion of the whole file set.
+// resumed after a crash or quit. Written BEFORE the first byte.
+//
+// WHY it is NOT deleted when the download finishes (2026-09-05): a finished
+// model still needs the facts in here — the Hugging Face repo it came from,
+// and whether that repo ships a vision projector. Completion stamps
+// `completedAt` instead, so "a manifest exists" no longer means "this download
+// is unfinished"; `completedAt` is the test. The only deletions left are the
+// model being deleted and an unreadable fragment being swept.
 //
 // A sidecar beside the files rather than a central registry: it travels with
 // the download, so it cannot drift out of sync with the cache dir, and it
@@ -22,6 +28,14 @@ export function manifestPathFor(cacheDir: string, firstFileBasename: string): st
 }
 
 export function writeManifest(cacheDir: string, repo: string, quant: QuantOption, startedAt: number): void {
+  const firstFileBasename = path.basename(quant.files[0]);
+  // WHY the prior manifest is read first: a manifest now survives completion, so
+  // starting the SAME model again (a re-download, or fetching a part that was
+  // deleted) would otherwise throw away the vision projector this repo was
+  // already known to ship. Carry that one fact forward; everything else is
+  // re-stated by the caller, and the fresh write deliberately drops
+  // `completedAt` because this download is in flight again.
+  const prior = readManifest(cacheDir, firstFileBasename);
   const manifest: DownloadManifest = {
     v: 1,
     repo,
@@ -30,8 +44,31 @@ export function writeManifest(cacheDir: string, repo: string, quant: QuantOption
     totalSizeBytes: quant.totalSizeBytes,
     sha256ByFile: quant.sha256ByFile,
     startedAt,
+    ...(prior?.visionFile ? { visionFile: prior.visionFile } : {}),
   };
-  const target = manifestPathFor(cacheDir, path.basename(quant.files[0]));
+  writeAtomic(manifestPathFor(cacheDir, firstFileBasename), manifest);
+}
+
+/** Stamp a manifest as finished — the download's LAST step, in place of the
+ *  delete it used to do (see the header). A missing or unreadable manifest is a
+ *  no-op: there is nothing to stamp, and completion must not fail over it.
+ *  Idempotent — an already-stamped manifest keeps its original `completedAt`. */
+export function markManifestComplete(
+  cacheDir: string, firstFileBasename: string, completedAt: number
+): void {
+  const manifest = readManifest(cacheDir, firstFileBasename);
+  if (!manifest || manifest.completedAt != null) return;
+  writeAtomic(manifestPathFor(cacheDir, firstFileBasename), { ...manifest, completedAt });
+}
+
+/** The question every caller used to answer with "does the file exist?".
+ *  A manifest with no `completedAt` is an unfinished download — resumable, and
+ *  shown as interrupted in Local Models. A stamped one is only a record. */
+export function isManifestComplete(manifest: DownloadManifest | null): boolean {
+  return manifest != null && manifest.completedAt != null;
+}
+
+function writeAtomic(target: string, manifest: DownloadManifest): void {
   // Write-then-rename: a crash mid-write must leave NO manifest rather than half
   // of one. readManifest would reject the fragment, but "absent" is the honest
   // state and "present but unreadable" invites someone to try to repair it.
@@ -44,8 +81,9 @@ export function writeManifest(cacheDir: string, repo: string, quant: QuantOption
 }
 
 /** The manifest for a download, or null. Absent, unreadable, malformed, and
- *  from-a-future-version all answer null — the caller's only question is
- *  "can I resume this?", and every one of those means no. */
+ *  from-a-future-version all answer null — each of those is a record nothing
+ *  can be trusted from. Whether the download it describes has FINISHED is a
+ *  separate question, answered by `completedAt` / isManifestComplete. */
 export function readManifest(cacheDir: string, firstFileBasename: string): DownloadManifest | null {
   let raw: any;
   try {
@@ -61,6 +99,18 @@ export function readManifest(cacheDir: string, firstFileBasename: string): Downl
   if (typeof raw.totalSizeBytes !== 'number' || !Number.isFinite(raw.totalSizeBytes)) return null;
   if (typeof raw.sha256ByFile !== 'object' || raw.sha256ByFile === null) return null;
   if (typeof raw.startedAt !== 'number') return null;
+  // The two fields a completed manifest carries. Both optional, so an unfinished
+  // manifest — and every manifest written before 2026-09-05 — still reads fine.
+  // A value of the WRONG SHAPE is corruption rather than an old file, so the
+  // rule above (a record nothing can be trusted from answers null) applies.
+  if (raw.completedAt !== undefined && typeof raw.completedAt !== 'number') return null;
+  if (raw.visionFile !== undefined) {
+    const v = raw.visionFile;
+    if (typeof v !== 'object' || v === null) return null;
+    if (typeof v.path !== 'string' || !v.path) return null;
+    if (typeof v.size !== 'number' || !Number.isFinite(v.size)) return null;
+    if (v.sha256 !== null && typeof v.sha256 !== 'string') return null;
+  }
   return raw as DownloadManifest;
 }
 

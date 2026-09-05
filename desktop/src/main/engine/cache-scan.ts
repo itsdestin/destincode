@@ -43,7 +43,10 @@ export interface LocalDownload {
   bytesPublished: number;
   bytesPartial: number;
   hasPartial: boolean;
-  hasManifest: boolean;    // a manifest file exists (parsed by engine-manager, not here)
+  // A manifest FILE exists (parsed by engine-manager, not here). Presence alone
+  // says nothing about whether the download finished — the manifest survives
+  // completion now, and its `completedAt` is what answers that.
+  hasManifest: boolean;
 }
 
 /** A download is usable only when every declared part is published. A stray

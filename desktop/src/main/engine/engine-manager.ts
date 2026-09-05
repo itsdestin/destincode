@@ -14,7 +14,7 @@ import { EngineSupervisor } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
 import { readEngineConfig, updateEngineConfig } from './engine-config';
-import { readManifest, removeManifest } from '../models/download-manifest';
+import { readManifest, removeManifest, markManifestComplete, isManifestComplete } from '../models/download-manifest';
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
 import { stripSplitSuffix } from '../../shared/gguf-split';
@@ -530,17 +530,29 @@ export class EngineManager extends EventEmitter {
     const rows: InstalledLocalModel[] = [];
     for (const d of scanLocalDownloads(cacheDir)) {
       const complete = isComplete(d);
+      const manifest = d.hasManifest ? readManifest(cacheDir, d.firstFileName) : null;
       if (complete && d.hasManifest) {
-        // The downloader removes the manifest on clean completion, so one here
-        // outlived a crash between publish and cleanup. A complete set has
-        // nothing to resume: best-effort cleanup, never a reason to fail the list.
-        try { removeManifest(cacheDir, d.firstFileName); } catch { /* best-effort */ }
+        // WHY this no longer deletes: the manifest OUTLIVES the download now, so
+        // one sitting beside a complete set is the normal, wanted state. Two
+        // exceptions, both best-effort and never a reason to fail the list:
+        // an unreadable fragment is swept, and a readable-but-unstamped manifest
+        // is a crash between publishing the last file and stamping it, so it is
+        // healed here rather than thrown away — it holds the only record of the
+        // repo this model came from.
+        if (!manifest) {
+          try { removeManifest(cacheDir, d.firstFileName); } catch { /* best-effort */ }
+        } else if (!isManifestComplete(manifest)) {
+          try { markManifestComplete(cacheDir, d.firstFileName, Date.now()); } catch { /* best-effort */ }
+        }
       }
-      const manifest = !complete && d.hasManifest ? readManifest(cacheDir, d.firstFileName) : null;
+      // The row's "unfinished" facts come only from a manifest that is still
+      // in flight; a stamped one describes a download that already landed.
+      const unfinished = !complete && manifest != null && !isManifestComplete(manifest);
       const bytesOnDisk = d.bytesPublished + d.bytesPartial;
-      if (!complete && bytesOnDisk === 0 && !manifest) {
-        // Only an unreadable manifest, no bytes: nothing to resume, nothing to
-        // delete, nothing to show. Remove the fragment so it cannot accumulate.
+      if (!complete && bytesOnDisk === 0 && !unfinished) {
+        // Only an unreadable manifest — or one stamped complete whose files are
+        // gone — and no bytes: nothing to resume, nothing to delete, nothing to
+        // show. Remove the leftover so it cannot accumulate.
         try { removeManifest(cacheDir, d.firstFileName); } catch { /* best-effort */ }
         continue;
       }
@@ -552,13 +564,13 @@ export class EngineManager extends EventEmitter {
         sizeBytes: complete ? d.bytesPublished : bytesOnDisk,
         // The manifest's quant is the exact string Hugging Face used — the one
         // live progress events carry, so the renderer can match them to this row.
-        quant: manifest?.quant ?? parsed?.quant ?? null,
+        quant: (unfinished ? manifest?.quant : undefined) ?? parsed?.quant ?? null,
         quantDescription: parsed ? quantDescription(parsed.quant) : null,
         parts: d.partsDeclared,
-        status: complete ? 'complete' : manifest ? 'unfinished' : 'untraceable',
+        status: complete ? 'complete' : unfinished ? 'unfinished' : 'untraceable',
         partsPresent: d.partsPresent,
-        totalSizeBytes: manifest?.totalSizeBytes ?? null,
-        repo: manifest?.repo ?? null,
+        totalSizeBytes: unfinished ? manifest!.totalSizeBytes : null,
+        repo: unfinished ? manifest!.repo : null,
       });
     }
     return rows;
