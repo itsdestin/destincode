@@ -362,8 +362,16 @@ declare global {
         status: () => Promise<any>;
         install: () => Promise<any>;
         restart: () => Promise<any>;
-        // Plan C context-length knob — persists -c and reboots the engine.
+        // Plan C context-length knob — a thin alias for setConfig({contextSize}).
         setContext: (contextSize: number) => Promise<any>;
+        /** Every engine-wide setting in one write: the context length and the two
+         *  speed switches. The value saves immediately; it reaches the engine
+         *  once the reply that is streaming right now has finished, which is what
+         *  the returned status's `configApplyPending` reports. */
+        setConfig: (patch: {
+          contextSize?: number;
+          speed?: Partial<import('../../shared/engine-types').EngineSpeedSettings>;
+        }) => Promise<any>;
         onInstallProgress: (cb: (p: any) => void) => () => void;
         onStatusChanged: (cb: (s: any) => void) => () => void;
         // Live per-model residency (2026-07-14).
@@ -378,8 +386,6 @@ declare global {
          *  session it made, which the renderer then selects (App.tsx's
          *  session-created handler already focuses a new session). */
         runInTerminal: (command: string) => Promise<{ sessionId: string }>;
-        /** The two engine-wide speed switches; restarts the engine. */
-        setSpeed: (patch: Partial<import('../../shared/engine-types').EngineSpeedSettings>) => Promise<any>;
       };
       // Model manager (Plan C) — curated catalog, HF search, downloads, endpoint
       // detectors, engine backend switch. Task 9's Local Models panel consumes

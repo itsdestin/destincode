@@ -1724,6 +1724,10 @@ export function installShim(): void {
       // Plan C context-length knob. Object payload matches remote-server's
       // WS case read (payload.contextSize).
       setContext: (contextSize: number) => invoke('engine:set-context', { contextSize }),
+      // Every engine-wide setting in one write. The payload IS the patch —
+      // remote-server reads the whole object, not a named field.
+      setConfig: (patch: { contextSize?: number; speed?: { speculative?: boolean; compressCache?: boolean } }) =>
+        invoke('engine:set-config', patch),
       // Opens a plain-shell session on the HOST machine and types the command
       // onto its prompt (never runs it). The remote client selects the returned
       // session the same way the desktop renderer does — through the

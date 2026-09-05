@@ -2967,6 +2967,13 @@ export function registerIpcHandlers(
   });
   ipcMain.handle(IPC.ENGINE_SET_BACKEND, async (_e, backend: string) => { await engineManager.setBackend(backend as any); return engineManager.status(); });
   ipcMain.handle(IPC.ENGINE_SET_CONTEXT, async (_e, contextSize: number) => { await engineManager.setContext(contextSize); return engineManager.status(); });
+  // Engine-wide settings (2026-09-05 §B). The answer is the status the moment
+  // the value was SAVED — `configApplyPending` on it says whether the engine has
+  // picked it up yet, and a 'status-changed' push follows when it has.
+  ipcMain.handle(IPC.ENGINE_SET_CONFIG, async (_e, patch: { contextSize?: number; speed?: any }) => {
+    await engineManager.setConfig(patch ?? {});
+    return engineManager.status();
+  });
   // "Run in terminal" (§F): open a plain-shell session and TYPE the set-up
   // command onto its prompt. Nothing runs — the user presses Enter, and the
   // password an installer asks for is typed into their own terminal, not into

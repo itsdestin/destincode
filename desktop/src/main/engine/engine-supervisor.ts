@@ -50,7 +50,11 @@ const MODELS_MAX = 2;
 // seconds (status → 'sleeping'); the next request wakes it. 5 min per product
 // decision 2026-07-14. This is FINER-grained than the engine-wide idle stop
 // (idleMs, 10 min) which tears down the whole process. Verified b9992.
-const SLEEP_IDLE_SECONDS = 300;
+// Exported because the preset file's `[*]` section now carries this value too
+// (design §C2: engine-wide values a model may override move OFF the command
+// line). One constant, two writers — a second copy would let the command line
+// and the preset disagree about when a model sleeps.
+export const SLEEP_IDLE_SECONDS = 300;
 // Crash strike-out (spec §3.2): 3 crashes within 5 minutes → error state,
 // stop retrying until the user acts (EngineCard's Restart button).
 const STRIKE_LIMIT = 3;
@@ -218,6 +222,16 @@ export class EngineSupervisor extends EventEmitter {
 
   /** Root URL for llama-server management endpoints (/health, /models). */
   private rootUrl(): string { return `http://127.0.0.1:${this.opts.port}`; }
+
+  /** True while at least one tracked request is still being read — i.e. a reply
+   *  is streaming through the engine RIGHT NOW.
+   *
+   *  WHY this is public: `stop()` has no in-flight guard of its own. The only
+   *  `inFlight > 0` check in this class is inside the idle timer, so anything
+   *  that restarts the engine on the user's behalf (a speed switch, design §B)
+   *  has to ask first — otherwise it SIGTERMs llama-server mid-answer and the
+   *  reply the user is watching dies halfway through a sentence. */
+  busy(): boolean { return this.inFlight > 0; }
 
   resetStrikes(): void {
     this.crashTimes = [];

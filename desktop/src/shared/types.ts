@@ -1787,6 +1787,11 @@ export const IPC = {
   // ---- Native runtime Plan C (Phase 1): model manager ----
   ENGINE_SET_BACKEND: 'engine:set-backend',
   ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
+  // One write for every engine-wide setting — { contextSize?, speed? } (design
+  // §B). Both are applied only once no reply is streaming, so a switch flipped
+  // mid-answer cannot kill the answer. ENGINE_SET_CONTEXT above is now a thin
+  // alias onto this for the callers already wired to it.
+  ENGINE_SET_CONFIG: 'engine:set-config',
   // Open a plain-shell session (SessionProvider 'shell') in the folder the
   // calling window is working in and TYPE the command onto its prompt —
   // invoke(command) → { sessionId }. Nothing is executed: the user presses

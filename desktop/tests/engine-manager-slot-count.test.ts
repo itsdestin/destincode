@@ -73,7 +73,12 @@ function plantInstall(backend = 'cpu') {
 function fetchWithProps(propsBody: unknown, propsSpy?: () => void): ReturnType<typeof vi.fn> {
   return vi.fn(async (url: string) => {
     if (String(url).endsWith('/health')) return { ok: true, status: 200, json: async () => ({ status: 'ok' }) } as any;
-    if (String(url).endsWith('/props')) {
+    // `includes`, not `endsWith`: effectiveContextWindow now asks
+    // `/props?model=<id>` (design §C3 — the bare /props is the router's own
+    // dummy and answers n_ctx 0 even with a model loaded). With endsWith, three
+    // of the tests below went on passing while never reaching /props at all —
+    // their expected numbers are also what the configured fallback returns.
+    if (String(url).includes('/props')) {
       propsSpy?.();
       return { ok: true, status: 200, json: async () => propsBody } as any;
     }

@@ -88,8 +88,11 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // Local-engine upgrades (2026-09-05, docs/active/design/2026-09-04-local-engine-upgrades).
   // Real channels given fixture data so the redesigned panel has something to show:
   'models.quants', 'models.search', 'models.download', 'models.setBackend',
+  // Also real now, and kept fake here so the workbench can walk the flows without a
+  // machine, a PTY or a running engine: the prereq check (2026-09-05), the shell
+  // session, and the engine-wide settings write.
+  'engine.prereqs', 'engine.runInTerminal', 'engine.setConfig',
   // No backend yet — registered in mock-only.ts; the fakes below are the spec of what to build.
-  'engine.prereqs', 'engine.runInTerminal', 'engine.setSpeed',
   'models.settings', 'models.setSettings', 'models.addVision', 'models.dismissMemoryWarning',
   // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
   // contract test actually covers them; a channel absent from HAND_WRITTEN
@@ -975,7 +978,13 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // The workbench has no main process and so no PTY — hand back a fixture id
     // so the caller's shape matches the real channel's { sessionId }.
     runInTerminal: async () => ({ sessionId: 'shell-mock' }),
-    setSpeed: async (patch: Partial<typeof speed>) => { speed = { ...speed, ...patch }; return engineStatus(); },
+    // Real since 2026-09-05 (engine:set-config). The fake keeps the workbench
+    // switches live without a main process; the real channel writes config.json
+    // and applies the change once no reply is streaming.
+    setConfig: async (patch: { contextSize?: number; speed?: Partial<typeof speed> }) => {
+      if (patch?.speed) speed = { ...speed, ...patch.speed };
+      return engineStatus();
+    },
     onInstallProgress: () => () => {},
     onStatusChanged: () => () => {},
     onModelsChanged: () => () => {},

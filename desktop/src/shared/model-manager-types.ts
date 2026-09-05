@@ -156,6 +156,27 @@ export interface ModelSettings {
   extraFlags: string;             // raw llama-server flags, power users only
 }
 
+/** What `config.json` → `engine.models[modelId]` actually holds (design
+ *  §Storage): the four settings the dialog writes, plus two fields the app
+ *  maintains for itself and never asks the user about. Kept apart from
+ *  `ModelSettings` so the settings dialog cannot be made to supply them.
+ *
+ *  `memoryWarningDismissed` records the **resolved effective** context length
+ *  the user dismissed the memory warning at — never a bare timestamp. WHY: the
+ *  question §D4 has to answer is "is this the same context length as when they
+ *  said don't warn me?", and a time cannot answer it. Storing the sibling
+ *  `contextLength` would not either, because that field is `null` for a model
+ *  on the engine-wide default — so raising the engine-wide context from 32k to
+ *  128k would keep the dismissal alive for exactly the model that now needs
+ *  four times the memory. */
+export interface StoredModelSettings extends ModelSettings {
+  memoryWarningDismissed: { at: number; contextLength: number } | null;
+  /** Set by a settings save; cleared when the change reaches the engine. The
+   *  save does NOT rewrite models.ini itself — every `?reload=1` would unload a
+   *  changed model mid-reply — so the apply waits for that model to go idle. */
+  pendingApply?: true;
+}
+
 /** A downloaded model's vision projector (the `mmproj-*.gguf` file that lets a
  *  model look at images) as the manifest records it. */
 export interface ManifestVisionFile {

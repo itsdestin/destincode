@@ -997,6 +997,10 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
   const channels: Array<[string, string]> = [
     ['engine:set-backend', 'ENGINE_SET_BACKEND'],
     ['engine:set-context', 'ENGINE_SET_CONTEXT'],
+    // One write for every engine-wide setting (2026-09-05 local-engine upgrades §B).
+    // set-context above stays as its alias, so BOTH must be on every surface: a
+    // caller wired to the old channel keeps working, new UI uses the new one.
+    ['engine:set-config', 'ENGINE_SET_CONFIG'],
     // Faster-engine prerequisites (2026-09-05 local-engine upgrades §A5).
     ['engine:prereqs', 'ENGINE_PREREQS'],
     ['models:curated', 'MODELS_CURATED'],

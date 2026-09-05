@@ -420,7 +420,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                     checked={speed.speculative}
                     disabled={busy}
                     aria-label="Speculative decoding"
-                    onChange={(next) => void run(() => window.claude.engine.setSpeed({ speculative: next }))}
+                    onChange={(next) => void run(() => window.claude.engine.setConfig({ speed: { speculative: next } }))}
                   />
                 )}
               />
@@ -442,7 +442,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                     checked={speed.compressCache}
                     disabled={busy}
                     aria-label="Compress context memory"
-                    onChange={(next) => void run(() => window.claude.engine.setSpeed({ compressCache: next }))}
+                    onChange={(next) => void run(() => window.claude.engine.setConfig({ speed: { compressCache: next } }))}
                   />
                 )}
               />

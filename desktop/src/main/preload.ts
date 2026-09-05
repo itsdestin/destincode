@@ -363,6 +363,7 @@ const IPC = {
   // ---- Native runtime Plan C (Phase 1): model manager ----
   ENGINE_SET_BACKEND: 'engine:set-backend',
   ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
+  ENGINE_SET_CONFIG: 'engine:set-config',     // one write for every engine-wide setting (2026-09-05)
   ENGINE_RUN_IN_TERMINAL: 'engine:run-in-terminal',  // plain-shell session + typed command
   ENGINE_PREREQS: 'engine:prereqs',           // faster-engine prerequisites (2026-09-05)
   MODELS_CURATED: 'models:curated',
@@ -1359,8 +1360,12 @@ contextBridge.exposeInMainWorld('claude', {
     status: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_STATUS),
     install: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_INSTALL),
     restart: (): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_RESTART),
-    // Plan C context-length knob — persists -c and reboots the engine.
+    // Plan C context-length knob. Now a thin alias for setConfig({contextSize}).
     setContext: (contextSize: number): Promise<unknown> => ipcRenderer.invoke(IPC.ENGINE_SET_CONTEXT, contextSize),
+    // Every engine-wide setting in one write. The value saves at once; it
+    // reaches the engine after the reply that is streaming right now.
+    setConfig: (patch: { contextSize?: number; speed?: { speculative?: boolean; compressCache?: boolean } }): Promise<unknown> =>
+      ipcRenderer.invoke(IPC.ENGINE_SET_CONFIG, patch),
     // Opens a plain-shell session in the folder this window is working in and
     // types `command` onto its prompt. It is NOT run — the user presses Enter.
     // The returned id is the session the caller then selects.
