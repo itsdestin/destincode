@@ -114,7 +114,18 @@ function SpecialistManager({ summary, sessionId, onJump }: { summary: Specialist
 function StatusPill({ h }: { h: HelperView }) {
   const base = 'inline-flex items-center gap-1 text-3xs font-medium px-1.5 py-0.5 rounded-full border';
   if (h.group === 'needs-you') return <span className={`${base} border-amber-500/40 text-amber-500 bg-amber-500/10`}><QuestionIcon className="w-3 h-3" />Needs you</span>;
-  if (h.run.status === 'running') return <span className={`${base} border-blue-400/40 text-blue-400 bg-blue-400/10`}><BrailleSpinner size="xs" />{h.run.stale ? 'May be stuck' : 'Working'}</span>;
+  // Green, not blue (Destin, 2026-09-05 deck note). The session pills in the
+  // header are this app's status vocabulary — StatusDot.tsx STATUS_LABEL reads
+  // green: 'Working', blue: 'Response Ready' — so a blue "Working" pill here
+  // said the OPPOSITE of the colour he reads on every session all day.
+  //
+  // The WORD stays on a theme text colour and the green lives in the ring and
+  // tint, which is SessionStrip's STATUS_PILL pattern and for the same measured
+  // reason: #4CAF50 as text over this pill's own fill measures 1.97:1 on light,
+  // 1.81:1 on creme and 1.50:1 on meadow-mist (floor is 4.5:1). Green text
+  // passes only on the three dark themes. Do not "fix" this back to
+  // text-green-400 — re-measure first.
+  if (h.run.status === 'running') return <span className={`${base} border-green-400/40 text-fg bg-green-400/15`}><BrailleSpinner size="xs" />{h.run.stale ? 'May be stuck' : 'Working'}</span>;
   if (h.run.status === 'interrupted') return <span className={`${base} border-edge text-fg-muted`}><StoppedIcon className="w-3 h-3" />Stopped</span>;
   // Fix: `danger` was never a real token (no --color-danger anywhere in globals.css,
   // confirmed by building the stylesheet and finding zero `danger` output) — this
