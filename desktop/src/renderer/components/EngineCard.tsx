@@ -294,9 +294,15 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
               <SettingRow
                 variant="item"
                 title={`Faster engine for your ${CHIP_WORDS[opt.backend] ?? opt.backend} chip`}
-                description={opt.state === 'needs-prereqs'
-                  ? `${BACKEND_WORDS[opt.backend] ?? opt.backend} needs AMD's software installed first.`
-                  : `${BACKEND_WORDS[opt.backend] ?? opt.backend} is usually much faster than ${BACKEND_WORDS[status.backend ?? ''] ?? 'the current engine'} on this chip.`}
+                description={[
+                  opt.state === 'needs-prereqs'
+                    ? `${BACKEND_WORDS[opt.backend] ?? opt.backend} needs AMD's software installed first.`
+                    : `${BACKEND_WORDS[opt.backend] ?? opt.backend} is usually much faster than ${BACKEND_WORDS[status.backend ?? ''] ?? 'the current engine'} on this chip.`,
+                  // main appends a sentence when it knows something this row
+                  // cannot: today, that with no model downloaded yet the switch
+                  // can only be checked as far as the engine starting (§A4).
+                  opt.note,
+                ].filter(Boolean).join(' ')}
                 control={(
                   <Button
                     variant="secondary"

@@ -10,6 +10,7 @@ import * as path from 'path';
 import * as fs from 'fs'; // Plan C: deleteModel needs fs.rmSync for model files
 import { NativeHome } from '../native-home';
 import { EngineAcquisition, InstalledEngine } from './engine-acquisition';
+import type { EngineDevice } from './engine-acquisition';
 import { EngineSupervisor } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
@@ -144,6 +145,125 @@ function deviceNameOf(inst: InstalledEngine | null): string | null | undefined {
   }
 }
 
+
+// ---------------------------------------------------------------------------
+// Switching to a GPU build: what has to be TRUE before the switch is kept
+// (design §A4). The whole point of this block is that a user who presses
+// "Switch to ROCm" and lands on a build their machine cannot run must end up
+// exactly where they started, told the truth about why. Every sentence below
+// either quotes the engine's own words or states something we measured — never
+// a guessed cause.
+// ---------------------------------------------------------------------------
+
+/** The device id each GPU build must actually report before we keep it. These
+ *  are PREFIXES of the engine's own printed device id (`CUDA0`, `ROCm0`), not
+ *  our EngineBackend names — engine-acquisition records `device.backend`
+ *  verbatim from `llama-server --list-devices`.
+ *
+ *  Absent for vulkan / cpu / metal on purpose: the Vulkan install's fall back
+ *  to the processor is by design (install() relies on it), so those builds are
+ *  never refused for running on the CPU. */
+const REQUIRED_DEVICE_PREFIX: Partial<Record<EngineBackend, string>> = { cuda: 'CUDA', rocm: 'ROCm' };
+
+/** How each build is named to the user. The card and these sentences must say
+ *  the same word for the same thing. */
+const BACKEND_WORD: Partial<Record<EngineBackend, string>> = { cuda: 'CUDA', rocm: 'ROCm' };
+
+/** The refusal a user reads when a GPU build is downloaded, found unusable and
+ *  thrown away again. `detail` is the engine's own words — quoted where the
+ *  engine produced a sentence, plain where it produced a list. */
+function keptCurrentEngine(word: string, detail: string): string {
+  return `Kept the current engine: the ${word} build found no graphics chip it can use — ${detail}. Nothing was changed.`;
+}
+
+/** Does the freshly installed build actually see a chip it can use?
+ *
+ *  Reads `devicesError` FIRST, and that ordering is the point (T2 handoff): a
+ *  binary that would not START (a missing `libamdhip64.so.7`, a linker error)
+ *  and a machine that genuinely has no matching graphics chip both leave the
+ *  marker's device list empty, and they are completely different answers for
+ *  the user. Flattening them into one sentence would tell someone whose ROCm
+ *  libraries are simply missing that their graphics card is unsupported.
+ *
+ *  Returns null when the install may be kept — including for every non-GPU
+ *  backend, which has nothing to prove here. */
+export function backendDeviceRefusal(
+  backend: EngineBackend,
+  devices: EngineDevice[] | undefined,
+  devicesError: string | undefined,
+): string | null {
+  const prefix = REQUIRED_DEVICE_PREFIX[backend];
+  if (!prefix) return null;
+  const word = BACKEND_WORD[backend] ?? backend;
+  // The binary could not be asked at all. Quote it verbatim; the reason is in
+  // its own text (a missing library, a timeout) and we do not paraphrase it.
+  if (devicesError) {
+    return `Kept the current engine: the ${word} build could not be asked which graphics chip it would use — "${devicesError}". Nothing was changed.`;
+  }
+  // No list AND no error: acquisition writes one or the other on every path, so
+  // this is a marker we cannot read rather than a machine with no chip. Say the
+  // absence, do not turn it into a claim about the hardware.
+  if (devices === undefined) {
+    return `Kept the current engine: the ${word} build could not be asked which graphics chip it would use — it recorded no device list. Nothing was changed.`;
+  }
+  if (devices.some((d) => typeof d?.backend === 'string' && d.backend.startsWith(prefix))) return null;
+  // It answered, and what it answered has no matching device in it. The engine's
+  // own words here are the device names it printed, so those are what we show.
+  const listed = devices
+    .map((d) => (typeof d?.name === 'string' ? d.name.trim() : ''))
+    .filter(Boolean)
+    .join(', ');
+  return keptCurrentEngine(word, listed ? `it reported: ${listed}` : 'it reported no devices at all');
+}
+
+/** The load failed because the BUILD cannot run on this chip, rather than
+ *  because the model file is bad (design §A4). These four are the messages a
+ *  wrong-architecture GPU build produces: llama.cpp/HIP/CUDA all report a
+ *  missing compiled kernel for the installed chip in one of these shapes.
+ *
+ *  Anything else — a corrupt GGUF, an architecture the engine cannot read, a
+ *  model too big for the memory — is a MODEL problem, and discarding a working
+ *  engine over one broken file is the wrong trade. Matched case-insensitively
+ *  because these strings reach us through several layers of error wrapping. */
+const DEVICE_CLASS_LOAD_ERRORS = ['no kernel image', 'invalid device function', 'hiperrornobinaryforgpu', 'cuda error'];
+
+export function isDeviceClassLoadError(text: string): boolean {
+  const lower = text.toLowerCase();
+  return DEVICE_CLASS_LOAD_ERRORS.some((needle) => lower.includes(needle));
+}
+
+/** The cheapest complete model to prove the switch with — a 1-token load has to
+ *  read the whole file into the graphics chip, so the smallest one costs the
+ *  user the least waiting. Null when the cache holds nothing complete. */
+export function smallestCompleteModel(models: EngineModel[]): EngineModel | null {
+  let best: EngineModel | null = null;
+  for (const m of models) {
+    if (typeof m.sizeBytes !== 'number') continue;
+    if (best === null || m.sizeBytes < (best.sizeBytes as number)) best = m;
+  }
+  return best;
+}
+
+/** The router's own message out of a failed completion. llama-server answers a
+ *  load failure with `{"error":{"message":"…"}}`; a proxy or a crash can answer
+ *  with anything at all, so the raw body is the last resort and the HTTP status
+ *  is the one after that. Never invents a cause — if the server said nothing we
+ *  say only what we know, which is the status code. */
+export function routerErrorText(status: number, body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { message?: unknown }; message?: unknown };
+    const msg = typeof parsed?.error?.message === 'string' ? parsed.error.message
+      : typeof parsed?.message === 'string' ? parsed.message
+      : null;
+    if (msg && msg.trim()) return msg.trim();
+  } catch { /* not JSON — fall through to the raw body */ }
+  const raw = body.trim();
+  // A whole HTML error page in a FieldError is unreadable; one line of it is
+  // still the server's own words.
+  if (raw) return raw.split(/\r?\n/)[0].slice(0, 300);
+  return `the engine answered HTTP ${status} with no message`;
+}
+
 export class EngineManager extends EventEmitter {
   private acquisition: EngineAcquisition;
   private supervisor: EngineSupervisor | null = null;
@@ -232,9 +352,17 @@ export class EngineManager extends EventEmitter {
    *  ROCm libraries are present (the user may have just installed them — the
    *  card's "Check again" refreshes that same reading). Undefined until the
    *  chip probe has answered. */
-  private currentBackendOptions(inst: InstalledEngine | null): BackendOption[] | undefined {
+  private currentBackendOptions(inst: InstalledEngine | null, cacheDir: string): BackendOption[] | undefined {
     const chip = this.chip;
     if (!chip) return undefined;
+    // §A4: with no model on disk there is nothing for a switch to load, so the
+    // last and most telling check cannot run. Say that on the row rather than
+    // let the user read a successful switch as a fully proven one. Recomputed
+    // per status() (a directory listing, the same one installedModels does) so
+    // the note disappears by itself the moment a download lands.
+    const note = scanGgufCache(cacheDir).length === 0
+      ? 'Checked when your first model loads.'
+      : undefined;
     return backendOptions({
       platform: process.platform,
       arch: process.arch,
@@ -244,7 +372,7 @@ export class EngineManager extends EventEmitter {
       // Free: the chip probe primed this cache on its own tick, and it is only
       // ever consulted on an AMD machine.
       rocmPrereqsSatisfied: chip.vendor === 'amd' ? checkRocmPrereqs().satisfied : false,
-    });
+    }).map((o) => (note ? { ...o, note } : o));
   }
 
   /** The compute devices the installed engine reported at install time, exactly
@@ -275,7 +403,7 @@ export class EngineManager extends EventEmitter {
       // Undefined (not []) until the chip probe has answered once. Both fields
       // are recomputed here rather than cached, so installing an engine or
       // switching backend is reflected in the very next status.
-      backendOptions: this.currentBackendOptions(inst),
+      backendOptions: this.currentBackendOptions(inst, cfg.cacheDir),
       deviceName: deviceNameOf(inst),
       installed: inst !== null,
       installedVersion: inst?.version ?? null,
@@ -657,19 +785,130 @@ export class EngineManager extends EventEmitter {
     return null;
   }
 
-  /** Plan C: switch GPU backend. Downloads that backend's build if missing
-   *  (progress rides the same install-progress event), verifies it boots,
-   *  THEN records the choice — a failed switch leaves config untouched. */
+  /** Switch the engine to a GPU build, and REFUSE the switch unless the new
+   *  build is proved to work on this machine (design §A4).
+   *
+   *  WHY this is so much more than "download it and record the choice": the
+   *  download is 204 MB (Linux ROCm) to 612 MB (Windows CUDA), and the failure
+   *  mode it guards is the worst one this feature has — a user takes the app's
+   *  advice, and their local models silently stop working. So the switch is
+   *  kept only after four things hold, in this order:
+   *
+   *    1. the marker's device list actually contains a CUDA/ROCm device
+   *       (`devicesError` read FIRST, so "the binary would not start" never
+   *        gets reported as "your graphics chip is unsupported"),
+   *    2. the binary boots and answers /health (verifyBoot),
+   *    3. a real 1-token load of the smallest model on disk does not fail with
+   *       a device- or kernel-class error,
+   *    4. and only then is the choice written to config.json.
+   *
+   *  Any of 1-3 failing throws away the install THIS CALL created — never one
+   *  that was already on disk (the same `preexisting` guard installAndVerify
+   *  has: pressing Switch twice must not delete a build that has been working)
+   *  — which restores the previous engine as the newest usable install. */
   async setBackend(backend: EngineBackend): Promise<void> {
     const asset = pickAsset(process.platform, process.arch, backend);
     if (!asset) {
       throw new Error(`That backend is not available for this platform (${process.platform}/${process.arch}).`);
     }
     const onProgress = (p: EngineInstallProgress) => this.emit('install-progress', p);
+    // Read BEFORE the install, because install() is idempotent: handed a
+    // version+backend already on disk it returns it untouched, so afterwards
+    // there is no way left to tell "I just made this" from "this was here".
+    const dir = this.acquisition.installDir(ENGINE_VERSION, asset.backend);
+    const preexisting = fs.existsSync(path.join(dir, '.complete'));
     const installed = await this.acquisition.install(asset, onProgress);
-    await this.verifyBoot(installed);
+
+    // 1. What does the build itself say it can run on?
+    const deviceRefusal = backendDeviceRefusal(backend, installed.devices, installed.devicesError);
+    if (deviceRefusal) {
+      await this.undoSwitch(installed, preexisting);
+      throw new Error(deviceRefusal);
+    }
+
+    // 2. It boots. A build that will not start leaves the previous one in place.
+    try {
+      await this.verifyBoot(installed);
+    } catch (bootErr) {
+      await this.undoSwitch(installed, preexisting);
+      throw bootErr;
+    }
+
+    // 3. It really runs a model. A ROCm build compiled for other chips lists a
+    //    ROCm device and boots perfectly — and then fails on the first token
+    //    with "no kernel image is available for execution on the device". Only
+    //    an actual load reaches that, which is why booting is not enough.
+    const cacheDir = readEngineConfig(this.home).cacheDir;
+    const model = smallestCompleteModel(scanGgufCache(cacheDir));
+    // No model on disk: there is nothing to load, so the check is deferred
+    // rather than failed. The card's faster-engine row says so in words
+    // (currentBackendOptions' note) instead of implying we checked.
+    const loadError = model ? await this.probeModelLoad(model.id) : null;
+    if (loadError && isDeviceClassLoadError(loadError)) {
+      await this.undoSwitch(installed, preexisting);
+      throw new Error(keptCurrentEngine(BACKEND_WORD[backend] ?? backend, `"${loadError}"`));
+    }
+
+    // 4. Every check that says anything about the BACKEND has passed.
     await updateEngineConfig(this.home, { backend });
     this.emit('status-changed');
+
+    // A load error that is not device-class is a MODEL problem — a corrupt
+    // file, an architecture this engine cannot read, a model too large for the
+    // memory — and throwing away a working engine over one bad file would be
+    // the wrong trade. The switch stands; the user is still told, because the
+    // alternative is discovering it on their next message. Thrown, because a
+    // thrown message is the only thing the card renders (its install-progress
+    // line is cleared the moment the action settles).
+    if (loadError) {
+      throw new Error(
+        `Switched to ${BACKEND_WORD[backend] ?? backend}. The engine started and found your graphics chip, `
+        + `but the model "${model!.id}" did not load — "${loadError}".`
+      );
+    }
+  }
+
+  /** Put the machine back exactly as the switch found it. Only ever removes an
+   *  install THIS call created — `preexisting` is read before install() for
+   *  precisely this decision. The supervisor goes too: verifyBoot pointed it at
+   *  the binary being deleted. */
+  private async undoSwitch(installed: InstalledEngine, preexisting: boolean): Promise<void> {
+    if (preexisting) return;
+    if (this.supervisor) { try { await this.supervisor.stop(); } catch { /* already dead */ } }
+    this.supervisor = null;
+    this.supervisorBinary = null;
+    this.acquisition.discard(installed);
+    // The card's own error line comes from the thrown message, but the STATUS
+    // it is drawn around (which engine is installed, which switch is offered)
+    // just changed back — and nothing else pushes that.
+    this.emit('status-changed');
+  }
+
+  /** Ask the running engine to load a model for one token, and report what it
+   *  said if it would not. Returns null when the load succeeded.
+   *
+   *  Deliberately awaited, unlike loadModel() — this is a verification, not a
+   *  warm-up, and its whole value is the engine's error text. Routed through
+   *  trackedFetch so the idle shutdown cannot reap the server mid-load (a large
+   *  model takes minutes to read off disk). */
+  private async probeModelLoad(modelId: string): Promise<string | null> {
+    const doFetch = this.supervisor ? this.supervisor.trackedFetch : (this.opts.fetchImpl ?? fetch);
+    try {
+      const res = await doFetch(`http://127.0.0.1:${this.port}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false,
+        }),
+      });
+      if (res.ok) return null;
+      return routerErrorText(res.status, await res.text().catch(() => ''));
+    } catch (e: any) {
+      // The request itself could not be made. Report what the network layer
+      // said — never a guess at why — and let the classifier decide; nothing in
+      // this shape names a device, so it is reported rather than acted on.
+      return (e?.message ?? String(e)).trim() || 'the engine could not be reached';
+    }
   }
 
   /** Plan C: installed models with quant metadata (spec §4.5). lastUsedAt +

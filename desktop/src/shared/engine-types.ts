@@ -16,6 +16,13 @@ export interface BackendOption {
   backend: EngineBackend;
   label: string;                     // 'Switch to ROCm (faster on AMD)'
   state: 'ready' | 'needs-prereqs';
+  /** An extra sentence the card appends to the row's description, when main
+   *  knows something the renderer cannot. Today there is exactly one: with no
+   *  model downloaded yet, the switch can be checked only as far as the engine
+   *  starting — the real proof is a model actually loading on the new build
+   *  (design §A4), so the row says "Checked when your first model loads."
+   *  rather than implying the whole check ran. */
+  note?: string;
 }
 
 /** What is missing before a backend can be installed, and how to get it.
