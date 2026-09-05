@@ -4356,8 +4356,12 @@ const ALL_SURFACES: CompareSurface[] = [
   {
     id: 'buddy-sleep',
     label: 'Buddy — falling asleep',
-    question: 'After a few quiet minutes the buddy goes to sleep. Which way of going under reads best at his real size?',
+    question: 'After a few quiet minutes the buddy goes to sleep. Which way of going under reads best at his real size? — SETTLED 2026-09-05: R1 loaf, then R2 docked arms.',
     frame: 'canvas',
+    // BOTH ROUNDS NOW RENDER WHAT SHIPPED. Destin picked the loaf in R1 and the
+    // docked arms in R2, and the losing poses were deleted rather than left in
+    // the shipped table — but the rounds stay, because the breadcrumb IS the
+    // record of how the design got here (same as session-strip-motion below).
     // FIXED at his real window width plus a little air. A sleep pose that only
     // reads when the pane is stretched has not been judged at all — he is 112px
     // in the corner of a screen, always.
@@ -4371,19 +4375,19 @@ const ALL_SURFACES: CompareSurface[] = [
             id: 'loaf',
             label: 'Loaf',
             note: "The film's own pose: he squats down and his arms swing under to the bottom corners.",
-            render: () => <BuddySleepDemo pose="sleep-loaf" />,
+            render: () => <BuddySleepDemo pose="sleep" />,
           },
           {
             id: 'slump',
             label: 'Slump',
             note: 'Dozed off where he stood — he leans, sinks a little, arms go slack. Barely changes his outline.',
-            render: () => <BuddySleepDemo pose="sleep-slump" />,
+            render: () => <BuddySleepDemo pose="sleep" />,
           },
           {
             id: 'deflate',
             label: 'Deflate + dim',
             note: 'Shrinks a touch and fades. Says "powered down" with brightness instead of posture.',
-            render: () => <BuddySleepDemo pose="sleep-deflate" />,
+            render: () => <BuddySleepDemo pose="sleep" />,
           },
         ],
       },
@@ -4395,19 +4399,19 @@ const ALL_SURFACES: CompareSurface[] = [
             id: 'tuck',
             label: 'Tuck',
             note: 'Barely moved — arms stay where you last saw them, just relaxed and dropped a little.',
-            render: () => <BuddySleepDemo pose="sleep-arms-tucked" />,
+            render: () => <BuddySleepDemo pose="sleep" />,
           },
           {
             id: 'dock',
             label: 'Dock',
             note: 'All the way down and pulled into the body, so his outline becomes one clean shape.',
-            render: () => <BuddySleepDemo pose="sleep-arms-docked" />,
+            render: () => <BuddySleepDemo pose="sleep" />,
           },
           {
             id: 'flop',
             label: 'Flop',
             note: 'The wildcard: arms swung out flat, flumped. Funny rather than tidy.',
-            render: () => <BuddySleepDemo pose="sleep-arms-flop" />,
+            render: () => <BuddySleepDemo pose="sleep" />,
           },
         ],
       },

@@ -47,7 +47,7 @@ describe('POSES', () => {
   // is the first behaviour that needs it, and a pose that declares a body
   // transform nothing applies is worse than one that declares none.
   it('a sleep pose settles the BODY, not just the limbs', () => {
-    const sleeps = Object.entries(POSES).filter(([name]) => name.startsWith('sleep-'));
+    const sleeps = Object.entries(POSES).filter(([name]) => name.startsWith('sleep'));
     expect(sleeps.length).toBeGreaterThan(0);
     for (const [name, pose] of sleeps) {
       const body = pose.parts['rig-body'];

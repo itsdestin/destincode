@@ -16,14 +16,7 @@ export type RigPartId = LimbId | 'rig-tail' | 'rig-body';
 export type FaceName = 'idle' | 'welcome' | 'curious' | 'shocked' | 'dizzy';
 export type PoseName =
   | 'idle' | 'pressed' | 'welcome' | 'curious' | 'shocked' | 'dizzy' | 'flap'
-  | 'peek' | 'peek-right' | 'peek-left'
-  // REVIEW CANDIDATES ONLY (2026-09-04) — four ways the buddy could fall
-  // asleep, up for Destin to pick between. THE LOSERS GET DELETED; do not
-  // build anything on one of these until the pick is recorded. The winner
-  // keeps its parts and is renamed `sleep`.
-  | 'sleep-loaf' | 'sleep-slump' | 'sleep-deflate'
-  // Round 2 — the loaf's BODY is settled; these vary only the arms.
-  | 'sleep-arms-tucked' | 'sleep-arms-docked' | 'sleep-arms-flop';
+  | 'peek' | 'peek-right' | 'peek-left' | 'sleep';
 
 /**
  * `scale` and the body:
@@ -47,10 +40,6 @@ export interface PoseDef {
    *  scheduler owns momentary blinks, a pose owns a sustained one (sleep). */
   face: FaceName | 'blink';
   wave?: boolean;
-  /** Dim the whole rig, 0-1. Sleep candidates use it to say "powered down"
-   *  through brightness rather than posture — the part that still reads when
-   *  the buddy is 112px in a screen corner. */
-  dim?: number;
 }
 
 // Rotation values assume limbs drawn HANGING DOWN from their pivot (the
@@ -95,90 +84,26 @@ export const POSES: Record<PoseName, PoseDef> = {
   'peek-right': { parts: { 'rig-arm-left': { hidden: true }, 'rig-arm-right': { hidden: true }, 'rig-leg-left': { rotate: -10 } }, face: 'curious' },
   'peek-left':  { parts: { 'rig-arm-left': { hidden: true }, 'rig-arm-right': { hidden: true }, 'rig-leg-right': { rotate: 10 } }, face: 'curious' },
 
-  // ── Sleep candidates, 2026-09-04. See PoseName's note: three of these four
-  // are going to be deleted. Every one closes the eyes and drops the arms; they
-  // differ in what the BODY does, because that is the half Destin is judging.
-  //
-  // A · Loaf — the film's `sitTuck`, as close as this rig can get: the body
-  // squats and the arms swing under to the bottom corners. Here so the winner
-  // is judged against the thing he half-remembers, not against nothing.
-  'sleep-loaf': {
-    parts: {
-      'rig-body': { ty: 2.2, scale: 0.94 },
-      'rig-arm-left': { ty: 4.2, rotate: 12 },
-      'rig-arm-right': { ty: 4.2, rotate: -12 },
-      'rig-leg-left': { hidden: true },
-      'rig-leg-right': { hidden: true },
-    },
-    face: 'blink',
-  },
-  // B · Slump — dozed off where he stood. The body leans and sinks a little,
-  // the arms go slack and drift outward, one leg cocks. Barely changes the
-  // silhouette, which is the point: it is the one that still reads at 112px
-  // WITHOUT the viewer having to work out what happened to his legs.
-  'sleep-slump': {
-    parts: {
-      'rig-body': { ty: 1.1, rotate: 6 },
-      'rig-arm-left': { rotate: 16, ty: 0.9 },
-      'rig-arm-right': { rotate: -9, ty: 0.9 },
-      'rig-leg-right': { rotate: 8 },
-    },
-    face: 'blink',
-  },
-  // C · Deflate — says "powered down" with BRIGHTNESS instead of posture: he
-  // shrinks a touch, settles, and dims. The only candidate whose message
-  // survives being small, docked, or half-behind a window edge, because it does
-  // not depend on you being able to read his legs.
-  'sleep-deflate': {
-    parts: {
-      'rig-body': { ty: 1.4, scale: 0.88 },
-      'rig-arm-left': { rotate: 8, ty: 1.4 },
-      'rig-arm-right': { rotate: -8, ty: 1.4 },
-      'rig-leg-left': { ty: 0.6 },
-      'rig-leg-right': { ty: 0.6 },
-    },
-    face: 'blink',
-    dim: 0.55,
-  },
-
-  // ── Round 2, 2026-09-05. Destin picked the loaf and asked to see the arms in
-  // a few more positions: "tucked just a bit, fully docked, wildcard". The BODY
-  // below is the loaf's, unchanged and not under review — only the arms differ,
-  // so the comparison is about one thing.
+  // Asleep. Destin picked this over two rounds (2026-09-04/05): the film's
+  // "loaf" body — he squats and shrinks a little — with the arms taken ALL THE
+  // WAY down and pulled in, so his outline becomes one clean shape with nothing
+  // sticking out. The rejected shapes and why are in the compare registry's
+  // `buddy-sleep` rounds; the decision is in
+  // docs/active/design/2026-09-04-mascot-restyle/.
   //
   // The arms are small nubs OUTSIDE the body silhouette (x 1-4 and 20-23,
-  // pivoting at y 9), which is why these are mostly TRANSLATIONS: a large
-  // rotation swings them up level with his face and reads as ears, not as arms.
-  'sleep-arms-tucked': {
+  // pivoting at y 9), which is why this is a TRANSLATION and not a rotation: a
+  // large rotation swings them up level with his face and reads as ears.
+  //
+  // `blink` as the pose's own face is what holds his eyes shut for the whole
+  // sleep — the blink scheduler owns momentary blinks, a pose owns a sustained
+  // one. Every rig already ships a rig-face-blink group, so no theme has to
+  // draw anything new to be able to sleep.
+  sleep: {
     parts: {
       'rig-body': { ty: 2.2, scale: 0.94 },
-      // Barely moved — they stay where you last saw them, just relaxed.
-      'rig-arm-left': { ty: 2, rotate: 6 },
-      'rig-arm-right': { ty: 2, rotate: -6 },
-      'rig-leg-left': { hidden: true },
-      'rig-leg-right': { hidden: true },
-    },
-    face: 'blink',
-  },
-  'sleep-arms-docked': {
-    parts: {
-      'rig-body': { ty: 2.2, scale: 0.94 },
-      // All the way down and pulled INTO the body, so the outline becomes one
-      // clean shape with nothing sticking out.
       'rig-arm-left': { ty: 5, tx: 1.7 },
       'rig-arm-right': { ty: 5, tx: -1.7 },
-      'rig-leg-left': { hidden: true },
-      'rig-leg-right': { hidden: true },
-    },
-    face: 'blink',
-  },
-  'sleep-arms-flop': {
-    parts: {
-      'rig-body': { ty: 2.2, scale: 0.94 },
-      // The wildcard: arms swung out flat, flumped on his face. The one that is
-      // funny rather than tidy.
-      'rig-arm-left': { ty: 3.4, rotate: 72 },
-      'rig-arm-right': { ty: 3.4, rotate: -72 },
       'rig-leg-left': { hidden: true },
       'rig-leg-right': { hidden: true },
     },

@@ -443,7 +443,7 @@ export function MascotRig({
 }
 
 /**
- * The body's own transform, plus the pose's dim.
+ * The body's own transform.
  *
  * Separate from the spring loop by design: springs are the carried-soft-toy
  * limb wobble, and a body that overshoots on its way into a nap reads as a
@@ -460,7 +460,7 @@ function applyBody(parts: Parts, pose: PoseName, instant: boolean): void {
     // heavy settle, waking is a quick one with a little overshoot at the end.
     // The same curve both ways is what made the change of state read as a jump
     // rather than as him doing something.
-    const asleep = pose.startsWith('sleep-');
+    const asleep = pose === 'sleep';
     el.style.transition = instant
       ? 'none'
       : asleep
@@ -468,14 +468,6 @@ function applyBody(parts: Parts, pose: PoseName, instant: boolean): void {
         : 'transform 300ms cubic-bezier(.2,1.5,.4,1)';
     el.style.transform =
       `translate(${p.tx ?? 0}px, ${p.ty ?? 0}px) rotate(${p.rotate ?? 0}deg) scale(${p.scale ?? 1})`;
-  }
-  // Dim the WHOLE rig, not the body alone — half a faded mascot is a bug, and
-  // the limbs are siblings of the body, not children of it.
-  if (parts.root) {
-    parts.root.style.transition = instant
-      ? 'none'
-      : POSES[pose].dim != null ? 'opacity 620ms ease-out' : 'opacity 240ms ease-out';
-    parts.root.style.opacity = String(def.dim ?? 1);
   }
 }
 

@@ -43,9 +43,9 @@ const rootOf = (c: HTMLElement) => c.querySelector<SVGGElement>('#rig-root');
 
 describe('a pose that moves the body', () => {
   it('writes the body transform the pose asks for', async () => {
-    const c = mount('sleep-loaf');
+    const c = mount('sleep');
     await waitFor(() => expect(bodyOf(c)).toBeTruthy());
-    const want = POSES['sleep-loaf'].parts['rig-body']!;
+    const want = POSES.sleep.parts['rig-body']!;
     await waitFor(() => {
       const t = bodyOf(c)!.style.transform;
       expect(t).toContain(`translate(0px, ${want.ty}px)`);
@@ -61,21 +61,10 @@ describe('a pose that moves the body', () => {
     await waitFor(() => {
       expect(bodyOf(c)!.style.transform).toBe('translate(0px, 0px) rotate(0deg) scale(1)');
     });
-    expect(rootOf(c)!.style.opacity).toBe('1');
-  });
-
-  it('dims the WHOLE rig, not the body on its own', async () => {
-    // The limbs are SIBLINGS of the body, not children of it — fading the body
-    // alone would leave four bright stubs around a faded box.
-    const c = mount('sleep-deflate');
-    await waitFor(() => expect(rootOf(c)).toBeTruthy());
-    await waitFor(() => {
-      expect(rootOf(c)!.style.opacity).toBe(String(POSES['sleep-deflate'].dim));
-    });
   });
 
   it('holds the eyes shut for the whole sleep, not for a blink', async () => {
-    const c = mount('sleep-slump');
+    const c = mount('sleep');
     await waitFor(() => expect(c.querySelector('#rig-face-blink')).toBeTruthy());
     await waitFor(() => {
       expect(c.querySelector<SVGGElement>('#rig-face-blink')!.style.display).toBe('');
@@ -114,10 +103,10 @@ describe('a pose change animates instead of teleporting', () => {
     const first = transformOf(container);
     await waitFor(() => expect(transformOf(container)).not.toBe(first), { timeout: 4000 });
     const before = tyOf(container);
-    const after = POSES['sleep-arms-docked'].parts['rig-arm-left']!.ty!;
+    const after = POSES['sleep'].parts['rig-arm-left']!.ty!;
     expect(before).not.toBe(after);   // the two poses must actually differ, or this proves nothing
 
-    rerender('sleep-arms-docked');
+    rerender('sleep');
     // Whatever it is, it is not the destination — it is still where the springs
     // were holding it. Before the fix this read `after` exactly.
     expect(tyOf(container)).not.toBe(after);
@@ -126,8 +115,8 @@ describe('a pose change animates instead of teleporting', () => {
   it('and gets there in the end', async () => {
     const { container, rerender } = mountLive('idle');
     await waitFor(() => expect(container.querySelector('#rig-arm-left')).toBeTruthy());
-    rerender('sleep-arms-docked');
-    const want = POSES['sleep-arms-docked'].parts['rig-arm-left']!.ty!;
+    rerender('sleep');
+    const want = POSES['sleep'].parts['rig-arm-left']!.ty!;
     await waitFor(() => expect(tyOf(container)).toBeCloseTo(want, 1), { timeout: 4000 });
   });
 });
