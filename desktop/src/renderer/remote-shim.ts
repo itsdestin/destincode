@@ -46,19 +46,26 @@ let targetUrl: string | null = null;
 /** Whether to preserve __PLATFORM__ on next auth:ok (prevents desktop overwriting 'android') */
 let preservePlatform = false;
 
-/** The one sentence the user is shown when they reach for voice typing from a
- *  remote browser tab.
+/** The one sentence shown when a voice call is refused because this device is
+ *  paired to another computer.
  *
- *  WHY voice is off there at all: a web browser only hands a page the microphone
- *  on an encrypted (https) connection, and YouCoded's remote access is still
- *  plain http on the local network. So the mic in a remote tab could not work
- *  even if we drew it. Destin decided (voice questions deck, Q-7) that it stays
- *  off until remote access is encrypted, rather than shipping a button that
- *  fails. This sentence says exactly that — it is not a guess at a cause, per
- *  docs/error-message-standards.md. */
+ *  WHO ACTUALLY READS THIS, which is not who the first draft addressed: a plain
+ *  remote browser tab never gets the namespace at all (it is deleted below), so it
+ *  draws no mic and reaches no sentence. The only reader is a PHONE that paired to
+ *  a desktop mid-session — and for that reader the old wording, about browsers and
+ *  encrypted connections, was an unverified cause for someone who is not in a
+ *  browser. Their real reason is simpler: while paired, the phone talks to the
+ *  desktop, and the desktop has no voice over that bridge. It is also actionable,
+ *  which the old sentence was not — disconnecting brings the mic straight back.
+ *  Found reviewing T7, 2026-09-05; see docs/error-message-standards.md.
+ *
+ *  (Why voice is off in a remote browser at all, for the reader of this file: a
+ *  browser only hands a page the microphone on an encrypted connection, and remote
+ *  access is still plain http. Destin decided on the voice questions deck, Q-7,
+ *  that it stays off until that changes rather than shipping a button that fails.) */
 const VOICE_REMOTE_REASON =
-  'Voice typing is not available over remote access yet. A browser only allows the '
-  + 'microphone on an encrypted connection, and remote access is not encrypted yet.';
+  'Voice typing is off while you are connected to another computer. '
+  + "Disconnect to use this phone's microphone.";
 
 /** Is this client the Android app talking to its OWN on-device bridge?
  *

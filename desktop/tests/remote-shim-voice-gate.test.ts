@@ -9,7 +9,7 @@
 //     on-device bridge — `file:` page AND no remote target. `!targetUrl` alone
 //     is also true of a plain browser tab, which is exactly where the mic must
 //     not appear (questions deck Q-7: a browser only grants the microphone on
-//     an encrypted connection, and remote access is not encrypted yet).
+//     the desktop has no voice over that bridge; disconnecting brings it back).
 //  2. Every method REFUSES at call time once a target is set, because pairing
 //     to a desktop mid-session flips a variable without rebuilding
 //     `window.claude` — a phone that paired mid-session would otherwise keep a
@@ -138,7 +138,11 @@ describe('remote-shim voice gate', () => {
       const before = FakeWebSocket.instances[FakeWebSocket.instances.length - 1].sent.length;
       const readiness = await voice.status();
       expect(readiness.state).toBe('unavailable');
-      expect(readiness.reason).toMatch(/encrypted/);
+      // The sentence must address the reader who can actually see it — a PHONE paired
+      // to a desktop, not a browser — and tell them what to do about it.
+      expect(readiness.reason).toMatch(/connected to another computer/);
+      expect(readiness.reason).toMatch(/Disconnect/);
+      expect(readiness.reason).not.toMatch(/encrypted/);
       // Nothing went over the wire: the refusal is local, so a desktop with no
       // voice:* handlers is never asked a question it cannot answer.
       expect(FakeWebSocket.instances[FakeWebSocket.instances.length - 1].sent.length).toBe(before);
@@ -146,14 +150,14 @@ describe('remote-shim voice gate', () => {
 
     it('start() refuses rather than opening a microphone', async () => {
       const before = FakeWebSocket.instances[FakeWebSocket.instances.length - 1].sent.length;
-      await expect(voice.start()).rejects.toThrow(/not available over remote access/);
+      await expect(voice.start()).rejects.toThrow(/connected to another computer/);
       expect(FakeWebSocket.instances[FakeWebSocket.instances.length - 1].sent.length).toBe(before);
     });
 
     it('download(), stop() and cancel() refuse too', async () => {
-      await expect(voice.download()).rejects.toThrow(/not available over remote access/);
-      await expect(voice.stop()).rejects.toThrow(/not available over remote access/);
-      await expect(voice.cancel()).rejects.toThrow(/not available over remote access/);
+      await expect(voice.download()).rejects.toThrow(/connected to another computer/);
+      await expect(voice.stop()).rejects.toThrow(/connected to another computer/);
+      await expect(voice.cancel()).rejects.toThrow(/connected to another computer/);
     });
 
     it('onEvent() subscribes to nothing and still returns a usable unsubscribe', async () => {
