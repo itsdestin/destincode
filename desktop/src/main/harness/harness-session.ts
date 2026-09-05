@@ -263,10 +263,13 @@ export interface HarnessSessionOpts {
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
-// parallel_tool_calls:false; cloud factories ignore it.
+// parallel_tool_calls:false; cloud factories ignore it. `cacheKey` is this
+// session's id: the ChatGPT-plan factory sends it as the endpoint's
+// prompt_cache_key so every step of one session shares a cached prefix
+// (chatgpt backend design §4.2); every other factory ignores it.
 export type ModelFactory = (
   binding: ModelBinding,
-  opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void },
+  opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void; cacheKey?: string },
 ) => Promise<LanguageModel>;
 
 // One collected tool-call from a step's stream (input already PARSED to an
@@ -1467,6 +1470,7 @@ export class HarnessSession extends EventEmitter {
       try {
         const model = await this.modelFactory(this.binding, {
           serialToolCalls: this.profile.constrainToolArgs && !this.profile.supportsParallelToolCalls,
+          cacheKey: this.opts.sessionId,
         });
         summary = await this.generateSummary(model, span);
       } catch {
@@ -1868,6 +1872,7 @@ export class HarnessSession extends EventEmitter {
         // already drives, so the UI upgrades from "reading N tokens" to a real
         // percentage and countdown without a second event type.
         onPrefillProgress: (p) => this.emitPrefillProgress(p),
+        cacheKey: this.opts.sessionId,
       });
       const aiTools = this.buildAiTools();       // {} when no tools → v0 chat path
 

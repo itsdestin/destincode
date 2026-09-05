@@ -278,4 +278,36 @@ describe('ModelCatalog', () => {
       expect(models).toEqual([]);
     });
   });
+
+  // Sign in with ChatGPT (backend design §4.3): rows come from an injected
+  // source (ChatGptAuth.models(), cache-first); the catalog never prices them.
+  describe('ChatGPT plan source', () => {
+    const CHATGPT_ROW = { id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT Plan', enabled: true, builtIn: true, hasKey: false, ready: true } as any;
+
+    it('get(): merges the injected ChatGPT rows for an enabled chatgpt provider, with no pricing', async () => {
+      const rows = [
+        { id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5', contextLength: 272000, supportsTools: true, supportsReasoning: true },
+        { id: 'gpt-5.4-mini', providerId: 'chatgpt', label: 'GPT-5.4 Mini', contextLength: 272000, supportsTools: true },
+      ];
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => rows });
+      const models = await cat.get([CHATGPT_ROW]);
+      expect(models).toEqual(rows);
+      // The plan is not per-token: absent means absent, never $0.
+      expect(models.every((m) => m.pricing === undefined)).toBe(true);
+      expect(await cat.contextLengthFor({ providerId: 'chatgpt', modelId: 'gpt-5.5' }, [CHATGPT_ROW])).toBe(272000);
+    });
+
+    it('get(): a throwing ChatGPT source degrades to no ChatGPT rows (never rejects)', async () => {
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => { throw new Error('boom'); } });
+      const models = await cat.get([CHATGPT_ROW]);
+      expect(models).toEqual([]);
+    });
+
+    it('get(): no source injected (kill switch) or provider disabled → nothing for the plan', async () => {
+      const none = new ModelCatalog(dir, fetchMock);
+      expect(await none.get([CHATGPT_ROW])).toEqual([]);
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => [{ id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5' }] });
+      expect(await cat.get([{ ...CHATGPT_ROW, enabled: false }])).toEqual([]);
+    });
+  });
 });
