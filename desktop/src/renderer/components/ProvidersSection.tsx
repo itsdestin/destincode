@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button, FieldError, InputGroup, Select, TextInput, Toggle } from './ui';
 import { isLocalEndpoint, type ProviderStatus, type ProviderConfig, type ProviderType } from '../../shared/provider-types';
+import { invalidateProviderTypeCache } from '../hooks/use-provider-type';
+
+/** Pass-through that forgets the provider-type cache once a write succeeded. */
+function afterWrite<T>(value: T): T {
+  invalidateProviderTypeCache();
+  return value;
+}
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
 // test, enable/disable, and remove the model providers the NATIVE runtime binds
@@ -58,12 +65,18 @@ async function normalize<T>(p: Promise<T>): Promise<T> {
 const safeProviders = {
   list: (): Promise<ProviderStatus[]> =>
     normalize(window.claude.providers.list() as Promise<ProviderStatus[]>),
+  // Each write below changes which provider rows (and models) exist, and the
+  // status bar / usage card resolve a session's provider through a cached
+  // copy of those rows (hooks/use-provider-type.ts). Dropping the cache here,
+  // on success, is what makes a just-added provider's sessions resolve
+  // without an app reload (design §4.9 / review R3-4). A throw leaves the
+  // cache alone: nothing changed.
   upsert: (config: Partial<ProviderConfig>): Promise<string> =>
-    normalize(window.claude.providers.upsert(config)),
+    normalize(window.claude.providers.upsert(config)).then(afterWrite),
   remove: (id: string): Promise<unknown> =>
-    normalize(window.claude.providers.remove(id)),
+    normalize(window.claude.providers.remove(id)).then(afterWrite),
   setKey: (id: string, key: string): Promise<unknown> =>
-    normalize(window.claude.providers.setKey(id, key)),
+    normalize(window.claude.providers.setKey(id, key)).then(afterWrite),
   // Never throws on ok:false — a failed test is a real result, not an error.
   // A genuinely rejected promise (or a transport { ok:false, error } with no
   // message) still degrades to a displayable { ok:false, message }.

@@ -140,7 +140,8 @@ export default function UsageCard({ snapshot: s }: Props) {
   const showTokens = s.inputTokens != null || s.outputTokens != null || cacheMeasured;
   const showLines = !!(s.linesAdded || s.linesRemoved);
   const showSessionSection = showCost || showUnpriced || s.duration != null || showTokens || showLines;
-  const showSubscription = s.fiveHourUtilization != null || s.sevenDayUtilization != null;
+  // Any window counts — a free ChatGPT plan has only a 30-day one (W-2 = a).
+  const showSubscription = s.fiveHourUtilization != null || s.sevenDayUtilization != null || !!s.otherWindows?.length;
   // Rule 1 taken to its end: when EVERY row is omitted the card was nothing but
   // a heading and a timestamp — furniture, and the normal state of a native
   // session that has not run a turn yet and has no Claude usage cache on disk.
@@ -272,6 +273,10 @@ export default function UsageCard({ snapshot: s }: Props) {
             <PlanWindows usage={{
               five_hour: s.fiveHourUtilization != null ? { utilization: s.fiveHourUtilization, resets_at: s.fiveHourResetsAt ?? '' } : null,
               seven_day: s.sevenDayUtilization != null ? { utilization: s.sevenDayUtilization, resets_at: s.sevenDayResetsAt ?? '' } : null,
+              // Odd-length windows, drawn after the two above and labelled by
+              // length (a free ChatGPT plan's "30-day limit"). Undefined when
+              // the plan has none, so the two-bar output is unchanged.
+              other: s.otherWindows ?? null,
             }} />
             {/* These two bars are ACCOUNT-wide, not session-scoped. Saying so
                 here is the whole reason the status bar can drop the chips in a

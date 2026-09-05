@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEscClose } from '../hooks/use-esc-close';
 import ProvidersSection from './ProvidersSection';
@@ -9,6 +9,7 @@ import { chatGptPlanLabel, type ChatGptAccountStatus } from '../../shared/chatgp
 import { AnchorTip, Button, Dialog, InputGroup, TextInput, SettingRow } from './ui';
 import BrailleSpinner from './BrailleSpinner';
 import { PlanWindows, type PlanUsage } from './plan-windows';
+import { invalidateProviderTypeCache } from '../hooks/use-provider-type';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -90,6 +91,13 @@ function ModelProvidersPopupInner({
   onOpenClaudePreferences?: () => void;
 }) {
   useEscClose(true, onClose);
+  // Kill switch (design §6): `YOUCODED_CHATGPT=0` makes preload report
+  // `chatgpt.supported: false`, and the card must disappear with it — the
+  // main side refuses the plan's models in that build, so a card offering the
+  // sign-in would be a dead button. Read as `=== true` (the native.supported
+  // pattern), so a shim with no `chatgpt` namespace at all hides it too;
+  // the workbench mock declares `supported: true` so the review rig sees it.
+  const chatgptSupported = (window as any).claude?.chatgpt?.supported === true;
 
   return createPortal(
     <>
@@ -123,7 +131,7 @@ function ModelProvidersPopupInner({
               />
               <div className="space-y-2">
                 <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
-                <ChatGptBlock />
+                {chatgptSupported && <ChatGptBlock />}
                 <OpenRouterBlock />
               </div>
             </section>
@@ -314,6 +322,20 @@ function ChatGptBlock() {
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // Every state change this card observes (signed-out → waiting → signed-in,
+  // a sign-out, a block) changes which provider rows exist, and the status
+  // bar's chips and /usage resolve a session's plan through a cached copy of
+  // those rows (hooks/use-provider-type.ts). Drop that cache on the
+  // transition so a session started right after signing in gets its chips
+  // without an app reload (design §4.9 / review R3-4). The first read
+  // (null → something) is skipped: nothing changed, the card just mounted.
+  const lastState = useRef<ChatGptAccountStatus['state'] | null>(null);
+  useEffect(() => {
+    const next = status?.state ?? null;
+    if (lastState.current !== null && next !== null && next !== lastState.current) invalidateProviderTypeCache();
+    if (next !== null) lastState.current = next;
+  }, [status?.state]);
+
   // While the browser round-trip is open, poll — the sign-in completes in a
   // tab this app does not own, so nothing else tells the row it is done.
   useEffect(() => {
@@ -329,6 +351,10 @@ function ChatGptBlock() {
       const ok = await verb();
       if (!ok) setNote(failText);
       await refresh();
+      // Belt and braces with the transition effect above: a sign-out that
+      // lands on the same state it left (a refused sign-in) still changed the
+      // rows main will report.
+      invalidateProviderTypeCache();
     } catch (e) {
       setNote(e instanceof Error ? e.message : failText);
     } finally {
