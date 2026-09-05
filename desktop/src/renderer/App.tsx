@@ -1202,7 +1202,9 @@ function AppInner() {
             toolInput: event.data.toolInput || {},
             // Carried so a specialist's mid-run note can be placed among its
             // tool rows by time (reconcileNoteSegments); the top-level card
-            // ignores it. Must stay identical to transcript-page-actions.ts.
+            // ignores it. Three mirrors must stay identical: this switch,
+            // BubbleFeed.tsx (buddy window) and transcript-page-actions.ts
+            // (replayed page) — pinned by transcript-event-surface-parity.test.ts.
             timestamp: event.timestamp,
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,

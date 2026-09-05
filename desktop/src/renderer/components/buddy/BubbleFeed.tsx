@@ -139,6 +139,12 @@ export function BubbleFeed({ sessionId }: Props) {
             toolUseId: event.data.toolUseId,
             toolName: event.data.toolName,
             toolInput: event.data.toolInput || {},
+            // Carried so a specialist's mid-run note can be placed among its
+            // tool rows by time (reconcileNoteSegments) in the buddy window
+            // too — without it buddy rows were unstamped and every note fell
+            // to the tail. Mirror App.tsx / transcript-page-actions.ts, must
+            // stay identical (pinned by transcript-event-surface-parity.test.ts).
+            timestamp: event.timestamp,
             // Route subagent tool_use into the parent Agent card's
             // subagentSegments — see assistant-text comment above.
             parentAgentToolUseId: event.data.parentAgentToolUseId,
