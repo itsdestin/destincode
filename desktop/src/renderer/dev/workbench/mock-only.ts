@@ -43,4 +43,10 @@ export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
   { channel: 'voice.stop', feature: 'voice-prompting' },
   { channel: 'voice.cancel', feature: 'voice-prompting' },
   { channel: 'voice.onEvent', feature: 'voice-prompting' },
+  // The two desktop-only members (renderer -> main audio, and the OS permission
+  // probe). Registered here for the same reason as the six above: the fake
+  // implements them, no real preload channel exists yet, and a hand-written
+  // channel that is neither real nor registered fails the contract test.
+  { channel: 'voice.sendAudio', feature: 'voice-prompting' },
+  { channel: 'voice.micAccess', feature: 'voice-prompting' },
 ];
