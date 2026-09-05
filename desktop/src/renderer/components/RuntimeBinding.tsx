@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
 import { PRESETS } from '../../shared/harness-manifest';
-import { Callout, Checkbox } from './ui';
+import { Button, Checkbox, StatusStrip } from './ui';
 
 // The two built-in native harness presets (personality profiles, not capability
 // tiers). A native session is stamped with one at create time; it drives the
@@ -258,41 +258,43 @@ export function NativeExtras({ nb, preset, onPreset }: {
       </div>
 
       {/* Memory guard (#2): block only when clearly too large; otherwise a
-          warning with a "Show more" detail (overflow + LRU eviction).
-          local-engine models only.
-          2026-09-05 (deck S-2): the shared Callout replaces the hand-rolled box
-          and its ⚠️/⛔ glyphs (the app's no-status-glyph rule); a 'tight' warning
-          carries "Don't warn me again for this model" — remembered per model at
-          the context length it was answered for, so the same warning does not
-          return every time the model is picked. A 'too-large' block has no such
-          box: it is not a choice. */}
+          warning. local-engine models only.
+          Round 2 (deck P-8): ONE line in a pill — "This model may not fit in
+          available memory" — that unfolds on click into the two numbers behind it
+          and, for a warning, the remembered "don't warn me again" (S-2). A block
+          ('too-large') unfolds the same way but has no checkbox: it is not a choice. */}
       {nb.memVerdict && nb.memVerdict.verdict !== 'ok' && (
-        <Callout
-          tone={nb.memVerdict.verdict === 'too-large' ? 'danger' : 'warning'}
-          title={nb.memVerdict.headline}
-          className="text-2xs"
-        >
-          <button
-            type="button"
-            onClick={() => nb.setMemDetailOpen((o) => !o)}
-            className="underline text-fg-muted hover:text-fg whitespace-nowrap"
+        <div className="text-2xs">
+          {/* K5 status strip: a state plus the one action that resolves it (here,
+              unfolding the reason). Not a Callout — that shape has no action slot —
+              and not a hand-rolled tinted pill (callout-authority.test.tsx). */}
+          <StatusStrip
+            tone="warn"
+            action={(
+              <Button size="sm" variant="ghost" onClick={() => nb.setMemDetailOpen((o) => !o)} aria-expanded={nb.memDetailOpen}>
+                {nb.memDetailOpen ? 'Less' : 'Why?'}
+              </Button>
+            )}
           >
-            {nb.memDetailOpen ? 'Show less' : 'Show more'}
-          </button>
+            {nb.memVerdict.verdict === 'too-large' ? 'This model is too large for this computer' : 'This model may not fit in available memory'}
+          </StatusStrip>
           {nb.memDetailOpen && (
-            <p className="mt-1 text-fg-muted leading-snug">{nb.memVerdict.detail}</p>
+            <div className="mt-1.5 px-1 space-y-1.5">
+              <p className="text-fg-2">{nb.memVerdict.headline}</p>
+              <p className="text-fg-muted leading-snug">{nb.memVerdict.detail}</p>
+              {nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
+                <label className="flex items-center gap-2 text-3xs text-fg-muted cursor-pointer">
+                  <Checkbox
+                    checked={nb.memDismissed}
+                    onChange={(next) => nb.dismissMemoryWarning?.(next)}
+                    aria-label="Don't warn me again for this model"
+                  />
+                  Don&rsquo;t warn me again for this model at this context length
+                </label>
+              )}
+            </div>
           )}
-          {nb.memVerdict.verdict === 'tight' && nb.dismissMemoryWarning && (
-            <label className="mt-2 flex items-center gap-2 text-3xs text-fg-muted cursor-pointer">
-              <Checkbox
-                checked={nb.memDismissed}
-                onChange={(next) => nb.dismissMemoryWarning?.(next)}
-                aria-label="Don't warn me again for this model"
-              />
-              Don&rsquo;t warn me again for this model at this context length
-            </label>
-          )}
-        </Callout>
+        </div>
       )}
     </>
   );

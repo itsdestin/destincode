@@ -873,10 +873,12 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     search: async () => [],
     download: async () => ({ downloadId: 'wb-download-1' }),
-    // S-1: the switch is refused, WITH the engine's own words, when no matching graphics
-    // chip answers — this fake always refuses so the refusal state can be photographed.
+    // S-1 (round 2): main only offers a switch it has pre-checked, so the fake succeeds —
+    // the engine now reports the new build; the device-check refusal stays a real error
+    // path in main but is no longer a featured workbench state (round-1 P-3).
     setBackend: async (backend: string) => {
-      throw new Error(`Kept the current engine: the ${backend.toUpperCase()} build found no graphics chip it can use — "ggml_cuda_init: no ROCm-capable device is detected". Nothing was changed.`);
+      currentBackend = backend as typeof currentBackend;
+      return engineStatus();
     },
     // Q-2: per-model settings, held in memory for the session.
     settings: async (modelId: string) => ({ ...(modelSettings[modelId] ?? DEFAULT_MODEL_SETTINGS) }),
@@ -941,14 +943,15 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // other scenario keeps the quiet stopped card the landing-page loop (row8) films.
   let speed = { speculative: true, compressCache: true };
   let prereqChecks = 0;
+  let currentBackend: 'vulkan' | 'rocm' | 'cuda' | 'cpu' | 'metal' = 'vulkan';
   const engineStatus = () => ({
-    installed: true, installedVersion: 'b10665', pinnedVersion: 'b10665', backend: 'vulkan' as const,
+    installed: true, installedVersion: 'b10665', pinnedVersion: 'b10665', backend: currentBackend,
     state: (activeScenario === 'stress' ? 'running' : 'stopped') as 'running' | 'stopped',
     cacheDir: '/home/you/.cache/llama.cpp', contextSize: 32768, port: 8080,
     deviceName: 'AMD Radeon 8060S Graphics',
     loadedModelsBytes: activeScenario === 'stress' ? 9_527_502_048 : 0,
     lastReply: activeScenario === 'stress' ? { promptPerSecond: 383, generatePerSecond: 16.4 } : null,
-    backendOptions: [{ backend: 'rocm' as const, label: 'Switch to ROCm (faster on AMD)', state: 'needs-prereqs' as const }],
+    backendOptions: currentBackend === 'rocm' ? [] : [{ backend: 'rocm' as const, label: 'Switch to ROCm (faster on AMD)', state: 'needs-prereqs' as const }],
     speed: { ...speed },
   });
   const engine: Ns<'engine'> = {

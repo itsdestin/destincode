@@ -11,7 +11,7 @@
 // consequence-gated destructive actions.
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import EngineCard from './EngineCard';
-import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip, Toggle, TextInput, Badge, Select, SettingRow } from './ui';
+import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip, Toggle, TextInput, Select, SettingRow } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettings,
@@ -41,22 +41,32 @@ function fitColor(fit: FitEstimate['fit']): string {
   return fit === 'fits' ? 'text-green-600' : fit === 'tight' ? 'text-amber-500' : 'text-red-500';
 }
 
-/** The size line under a downloadable model (deck S-2, Q-3 pick c). With a
- *  breakdown from main it reads "4.8 GB model + 1.6 GB for 32k context + 0.9 GB
- *  for images" — the two (or three) numbers the verdict is made of, so "tight"
- *  is no longer a mystery. An older main sends no breakdown and the line falls
- *  back to today's "4.8 GB · Q8_0". Context is shown in k because that is how
- *  every model card on the internet writes it. */
-function sizeLine(q: { totalSizeBytes: number; quant: string; fit: FitEstimate; visionBytes?: number | null }): string {
+/** The size under a downloadable model (deck S-2, Q-3 pick c; round 2 P-5): ONE
+ *  number — what the download takes on disk, model plus vision file — drawn with a
+ *  dotted underline. Hover (or tap) breaks it down: model, vision file, and the memory
+ *  the context adds while it runs, so "tight" is never a mystery but the row stays a
+ *  single line. An older main sends no breakdown: the number stands alone. */
+function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fit: FitEstimate; visionBytes?: number | null } }) {
   const b = q.fit.breakdown;
-  if (!b) {
-    const vision = q.visionBytes ? ` + ${gb(q.visionBytes)} for images` : '';
-    return `${gb(q.totalSizeBytes)} · ${q.quant}${vision}`;
-  }
-  const parts = [`${gb(b.modelBytes)} model`, `${gb(b.contextBytes)} for ${Math.round(b.contextLength / 1024)}k context`];
-  const vision = b.visionBytes ?? q.visionBytes;
-  if (vision) parts.push(`${gb(vision)} for images`);
-  return `${parts.join(' + ')} · ${q.quant}`;
+  const vision = b?.visionBytes ?? q.visionBytes ?? 0;
+  const download = q.totalSizeBytes + vision;
+  const number = <span className="underline decoration-dotted decoration-fg-faint underline-offset-2 cursor-help">{gb(download)}</span>;
+  if (!b) return <span className="text-fg-dim">{number} · {q.quant}</span>;
+  const ctxK = Math.round(b.contextLength / 1024);
+  return (
+    <span className="text-fg-dim">
+      <AnchorTip label={`What ${gb(download)} is made of`} title="What this needs" trigger="hover" placement="bottom" widthClass="w-64" anchor={number}>
+        <dl className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-0.5 text-2xs">
+          <dt className="text-fg-muted">Model file</dt><dd className="text-fg text-right">{gb(b.modelBytes)}</dd>
+          {vision > 0 && <><dt className="text-fg-muted">Vision file (sees images)</dt><dd className="text-fg text-right">{gb(vision)}</dd></>}
+          <dt className="text-fg-muted">Download</dt><dd className="text-fg text-right font-medium">{gb(download)}</dd>
+          <dt className="text-fg-muted pt-1">Memory while running</dt><dd className="text-fg text-right pt-1">{gb(download + b.contextBytes)}</dd>
+          <dt className="text-fg-faint col-span-2">includes {gb(b.contextBytes)} for a {ctxK}k context</dt>
+        </dl>
+      </AnchorTip>
+      {' · '}{q.quant}
+    </span>
+  );
 }
 
 // The few quants a non-technical user should see first (spec §4 — a raw 15–24
@@ -405,10 +415,9 @@ function RepoCard({
   return (
     <div className="bg-inset/50 rounded-lg px-3 py-2.5">
       <div className="flex items-start gap-2">
-        <button onClick={onToggle} className="flex items-start gap-2 min-w-0 flex-1 text-left">
-          <svg className={`w-3 h-3 mt-1 text-fg-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-          </svg>
+        {/* Round 2 (P-1 note): the expand affordance is the same right-hand chevron every
+            navigating row has, turned down while open — never a leading "›" text toggle. */}
+        <button onClick={onToggle} aria-expanded={expanded} className="flex items-start gap-2 min-w-0 flex-1 text-left">
           <LocalBrandMark id={repo} />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-fg font-medium truncate">{label}</p>
@@ -418,7 +427,7 @@ function RepoCard({
             )}
             {chosen && (
               <p className="text-3xs mt-0.5" data-testid="repo-size-line">
-                <span className="text-fg-dim">{sizeLine(chosen)}</span>
+                <SizeLine q={chosen} />
                 {' · '}
                 <span className={fitColor(chosen.fit.fit)}>{chosen.fit.label}</span>
               </p>
@@ -427,6 +436,9 @@ function RepoCard({
               <p className="text-3xs text-amber-500 mt-0.5">Couldn't reach Hugging Face — expand to retry</p>
             )}
           </div>
+          <svg className={`w-4 h-4 mt-0.5 text-fg-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
         </button>
         {/* Inline row action -> sm, matching EngineCard's Install/Restart. */}
         {chosen && !dl && (
@@ -759,8 +771,9 @@ export function LocalModelRow({
                 (ui/AnchorTip.tsx header). */}
             <p className="text-xs text-fg font-medium truncate flex items-center gap-1.5" title={model.id}>
               <span className="truncate">{displayName(model)}</span>
-              {/* S-3: a model that can see images says so — a tag, not a glyph. */}
-              {model.vision === 'ready' && <Badge>Sees images</Badge>}
+              {/* S-3 / round-2 P-6: an eye for a model that sees images, a page for
+                  text-only; the words live in the hover bubble. */}
+              {model.status === 'complete' && <ModalityMark vision={model.vision ?? 'none'} />}
             </p>
             {subtitle && <p className="text-3xs text-fg-muted">{subtitle}</p>}
             {/* Its own line, in full — Destin, 2026-08-27 (A3). It is free to wrap;
@@ -773,15 +786,14 @@ export function LocalModelRow({
                 button: three buttons beside the name squeezed it to one letter at
                 the dialog's width (seen in the first workbench capture). */}
             {model.status === 'complete' && model.vision === 'available' && !live && !confirming && (
-              <p className="text-3xs text-fg-muted">
-                Can see images once its vision file is added ·{' '}
+              <p className="text-3xs">
                 <button
                   type="button"
                   onClick={() => void addVision()}
                   disabled={busy}
                   className="underline text-fg-2 hover:text-fg disabled:opacity-50"
                 >
-                  {busy ? 'Adding…' : `Add vision${model.visionBytes ? ` (${gb(model.visionBytes)})` : ''}`}
+                  {busy ? 'Adding vision…' : `Add vision${model.visionBytes ? ` (${gb(model.visionBytes)})` : ''}`}
                 </button>
               </p>
             )}
@@ -869,14 +881,16 @@ export function LocalModelRow({
   );
 }
 
-// ── Per-model settings (deck Q-2, pick a) ─────────────────────────────────────
+// ── Per-model settings (deck Q-2, pick a; round 2 P-7) ───────────────────────
 
 const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'] as const;
 
-/** Four controls, each with a "use the default" state and an (i) that explains
- *  the concept in plain words (Destin, Q-2 note: non-developers first, anything
- *  confusing behind Advanced with explainers). Changes save on blur/toggle; the
- *  engine reloads THIS model with its new values on the next message. */
+/** One shape for every setting — the SettingRow every Settings screen uses — so
+ *  the panel reads as a list of labelled rows, not a form. Two rows in the open
+ *  (context length, keep loaded), two more behind an Advanced row that expands
+ *  in place. Explanations live in each row's description; an (i) only where a
+ *  concept needs more than a line. Saves on blur/toggle; the model reloads with
+ *  the new values on its next message. */
 function ModelSettingsPanel({ modelId }: { modelId: string }) {
   const [settings, setSettings] = useState<ModelSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -913,103 +927,115 @@ function ModelSettingsPanel({ modelId }: { modelId: string }) {
   const gpuValue = settings.gpuLayers === 'auto' ? 'auto' : String(settings.gpuLayers);
 
   return (
-    <div className="mt-2 pt-2 border-t border-edge-dim space-y-2" data-testid="model-settings">
-      {/* Context length — blank means "same as the engine". */}
-      <div className="flex items-center justify-between gap-3">
-        <label htmlFor={`ctx-${modelId}`} className="text-2xs text-fg-dim flex items-center gap-1 min-w-0">
-          Context length
-          <AnchorTip label="About this model's context length" title="Context length for this model" widthClass="w-72">
-            How much conversation this model keeps in mind at once. Blank uses the
-            engine&rsquo;s setting under Advanced. Smaller saves memory; a 2B helper model
-            rarely needs more than 16k, and a big model at 128k can need tens of gigabytes.
-          </AnchorTip>
-        </label>
-        <TextInput
-          id={`ctx-${modelId}`}
-          type="number"
-          size="sm"
-          min={1024}
-          step={1024}
-          placeholder="Same as engine"
-          value={ctxDraft}
-          onChange={(e) => setCtxDraft(e.target.value)}
-          onBlur={commitContext}
-          onKeyDown={(e) => { if (e.key === 'Enter') commitContext(); }}
-          className="w-32"
-        />
-      </div>
-
-      {/* Keep loaded — the shared SettingRow (design guide 4.6; guard setting-row-authority). */}
+    <div className="mt-2 pt-2 border-t border-edge-dim space-y-1.5" data-testid="model-settings">
       <SettingRow
         variant="item"
-        title={(
-          <span className="flex items-center gap-1">
-            Keep loaded
-            <AnchorTip label="About keeping a model loaded" title="Keep loaded" widthClass="w-72">
-              Normally a model is put to sleep after five idle minutes and woken on the
-              next message, which costs a few seconds. Keep loaded skips the nap — instant
-              replies, at the price of holding its memory the whole time the engine runs.
-            </AnchorTip>
-          </span>
+        title="Context length"
+        description="Blank uses the engine's setting."
+        control={(
+          <TextInput
+            id={`ctx-${modelId}`}
+            aria-label="Context length for this model"
+            type="number"
+            size="sm"
+            min={1024}
+            step={1024}
+            placeholder="Same as engine"
+            value={ctxDraft}
+            onChange={(e) => setCtxDraft(e.target.value)}
+            onBlur={commitContext}
+            onKeyDown={(e) => { if (e.key === 'Enter') commitContext(); }}
+            className="w-32"
+          />
         )}
+      />
+      <SettingRow
+        variant="item"
+        title="Keep loaded"
         description="Never put this model to sleep. Instant replies, memory held."
         control={<Toggle checked={settings.keepLoaded} aria-label="Keep loaded" onChange={(next) => void save({ keepLoaded: next })} />}
       />
-
-      {/* Advanced: GPU layers + extra flags — power users only, behind one more click. */}
-      <button
-        type="button"
+      <SettingRow
+        variant="item"
+        title="Advanced"
+        description={advanced ? undefined : 'Graphics-chip layers, extra engine flags'}
         onClick={() => setAdvanced((o) => !o)}
-        aria-expanded={advanced}
-        className="flex items-center gap-1.5 text-2xs text-fg-dim hover:text-fg"
-      >
-        <svg className={`w-3 h-3 transition-transform ${advanced ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
-        Advanced
-      </button>
+        expanded={advanced}
+      />
       {advanced && (
-        <div className="space-y-2">
-          <div className="flex items-center justify-between gap-3">
-            <span id={`ngl-${modelId}`} className="text-2xs text-fg-dim flex items-center gap-1 min-w-0">
-              Layers on graphics chip
-              <AnchorTip label="About GPU layers" title="Layers on graphics chip" widthClass="w-72">
-                A model is a stack of layers. Auto puts as many on the graphics chip as fit
-                and runs the rest on the processor. Set a number only when Auto guesses
-                wrong — for example to leave room for a second model.
-              </AnchorTip>
-            </span>
-            <Select
-              size="sm"
-              value={gpuValue}
-              onChange={(v) => void save({ gpuLayers: v === 'auto' ? 'auto' : Number(v) })}
-              options={GPU_LAYER_CHOICES.map((c) => ({ value: c === 'all' ? '999' : c, label: c === 'auto' ? 'Auto' : c === 'all' ? 'All' : c }))}
-              className="w-28"
-            />
-          </div>
-          <div>
-            <label htmlFor={`flags-${modelId}`} className="text-2xs text-fg-dim flex items-center gap-1">
+        <div className="space-y-1.5 pl-3">
+          <SettingRow
+            variant="item"
+            title={(
+              <span className="flex items-center gap-1">
+                Layers on graphics chip
+                <AnchorTip label="About GPU layers" title="Layers on graphics chip" widthClass="w-72">
+                  A model is a stack of layers. Auto puts as many on the graphics chip as fit
+                  and runs the rest on the processor. Set a number only when Auto guesses
+                  wrong — for example to leave room for a second model.
+                </AnchorTip>
+              </span>
+            )}
+            description="Auto fits as many as the chip holds."
+            control={(
+              <Select
+                size="sm"
+                value={gpuValue}
+                onChange={(v) => void save({ gpuLayers: v === 'auto' ? 'auto' : Number(v) })}
+                options={GPU_LAYER_CHOICES.map((c) => ({ value: c === 'all' ? '999' : c, label: c === 'auto' ? 'Auto' : c === 'all' ? 'All' : c }))}
+                className="w-24"
+              />
+            )}
+          />
+          <div className="rounded-lg bg-inset/50 px-3 py-2">
+            <p className="text-xs text-fg font-medium flex items-center gap-1">
               Extra engine flags
               <AnchorTip label="About extra engine flags" title="Extra engine flags" widthClass="w-72">
                 Anything else the llama.cpp engine accepts on its command line, passed
                 through as written when this model loads. A mistyped flag stops the model
                 from loading — the engine&rsquo;s own message appears here when that happens.
               </AnchorTip>
-            </label>
+            </p>
             <TextInput
               id={`flags-${modelId}`}
+              aria-label="Extra engine flags"
               size="sm"
               placeholder="e.g. --temp 0.6 --repeat-penalty 1.1"
               value={flagsDraft}
               onChange={(e) => setFlagsDraft(e.target.value)}
               onBlur={() => { if (flagsDraft !== settings.extraFlags) void save({ extraFlags: flagsDraft }); }}
-              className="w-full mt-1 font-mono"
+              className="w-full mt-1.5 font-mono"
             />
           </div>
         </div>
       )}
       {error && <FieldError as="p">{error}</FieldError>}
     </div>
+  );
+}
+
+/** P-6: the modality mark beside an installed model's name — an eye when it sees
+ *  images, a page when it is text-only — with the words in a hover bubble. */
+function ModalityMark({ vision }: { vision: 'ready' | 'available' | 'none' }) {
+  const sees = vision === 'ready';
+  const icon = sees ? (
+    <svg className="w-3.5 h-3.5 text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12z" />
+      <circle cx="12" cy="12" r="2.5" />
+    </svg>
+  ) : (
+    <svg className="w-3.5 h-3.5 text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M7 3h7l5 5v13H7z M14 3v5h5 M9.5 13h5 M9.5 16.5h5" />
+    </svg>
+  );
+  return (
+    <AnchorTip label={sees ? 'Sees images' : 'Text only'} title={sees ? 'Sees images' : 'Text only'} trigger="hover" widthClass="w-56" anchor={icon}>
+      {sees
+        ? 'You can attach pictures and screenshots; the model reads them.'
+        : vision === 'available'
+          ? 'Reads text only for now. Add its vision file below to let it see images.'
+          : 'Reads text only. This model family has no vision file.'}
+    </AnchorTip>
   );
 }
 
@@ -1035,7 +1061,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
           <p className="text-2xs text-fg font-medium">{q.quant}</p>
           <p className="text-3xs text-fg-muted">{q.description}</p>
           <p className="text-3xs mt-0.5">
-            <span className="text-fg-dim">{sizeLine(q)}</span>
+            <SizeLine q={q} />
             {' · '}
             <span className={fitColor(q.fit.fit)}>{q.fit.label}</span>
           </p>

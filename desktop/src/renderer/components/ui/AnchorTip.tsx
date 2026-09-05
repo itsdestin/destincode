@@ -40,6 +40,13 @@ export type AnchorTipProps = {
   /** Tailwind width class for the bubble. */
   widthClass?: string;
   className?: string;
+  /**
+   * Render THIS as the trigger instead of the (i) glyph — a dotted-underlined
+   * number that breaks down on hover, an eye icon that says "Sees images".
+   * Same bubble, same layer, same touch behaviour (focus opens it). Added
+   * 2026-09-05 for the Local Models screen (design deck P-5 / P-6).
+   */
+  anchor?: React.ReactNode;
 };
 
 export function AnchorTip({
@@ -50,6 +57,7 @@ export function AnchorTip({
   placement = 'bottom',
   widthClass = 'w-72',
   className = '',
+  anchor,
 }: AnchorTipProps) {
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ x: 0, y: 0 });
@@ -133,20 +141,22 @@ export function AnchorTip({
           if (trigger === 'click') setOpen((v) => !v);
         }}
         {...hoverProps}
-        className={`inline-flex items-center justify-center shrink-0 text-fg-muted hover:text-fg transition-colors ${className}`.trim()}
+        className={`inline-flex items-center justify-center shrink-0 ${anchor ? '' : 'text-fg-muted hover:text-fg'} transition-colors ${className}`.trim()}
       >
-        <svg
-          className="w-3.5 h-3.5 opacity-60 hover:opacity-100 transition-opacity"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-          strokeWidth={2}
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="9" />
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 11v5" />
-          <circle cx="12" cy="8" r="0.5" fill="currentColor" />
-        </svg>
+        {anchor ?? (
+          <svg
+            className="w-3.5 h-3.5 opacity-60 hover:opacity-100 transition-opacity"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="9" />
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 11v5" />
+            <circle cx="12" cy="8" r="0.5" fill="currentColor" />
+          </svg>
+        )}
       </button>
 
       {open &&
