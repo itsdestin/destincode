@@ -66,6 +66,7 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { reconcileInstalls } from './install-reconcile';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { registerArcadeHandlers } from './arcade-handlers';
+import { registerVoiceHandlers, shutdownVoiceHandlers } from './voice/voice-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
 import { BuddyOverlayManager, OVERLAY_TITLE } from './buddy-overlay-manager';
@@ -1667,6 +1668,12 @@ void app.whenReady().then(async () => {
   // Games arcade scores (spec §6.1). Same token-bound store; its own module for
   // the same reason social has one — the account file stays about auth.
   registerArcadeHandlers(marketplaceAuthStore);
+  // Voice typing (design 2026-09-05). WITHOUT THIS LINE the six `voice:*`
+  // channels exist in preload.ts and nothing answers them, so tapping the
+  // microphone would hang forever — the feature would ship dead. It takes only
+  // the userData path: everything else it needs (the downloaded speech engine,
+  // the window that opened the mic) it resolves for itself.
+  registerVoiceHandlers(app.getPath('userData'));
   // Named "accounts", not "auth-store": this window covers five registrations —
   // createAuthStore, registerMarketplaceApiHandlers, remoteServer.setAccountStore,
   // registerSocialHandlers and registerArcadeHandlers — not just the store.
@@ -2174,6 +2181,13 @@ async function runShutdown(): Promise<void> {
   // the fixed port bound for the next instance to wrongly adopt (2026-07-20 fix).
   const engineStopped = cleanupIpcHandlers ? cleanupIpcHandlers() : Promise.resolve();
   destroySocialHandlers(); // tear down the presence WebSocket + its timers
+  // Kill the speech engine's own program. WHY IT IS HERE and not in its own
+  // `app.on('before-quit')`: this function IS the before-quit path (see the
+  // header above — the app deliberately has exactly one teardown route, so that
+  // an OS shutdown or a Cmd+Q cleans up the same things a window close does).
+  // A second before-quit listener would run on only two of the three routes and
+  // leave a 1.14 GB speech process behind on the third.
+  try { shutdownVoiceHandlers(); } catch {}
   sessionManager.destroyAll();
   hookRelay.stop();
   remoteServer.stop();

@@ -1,0 +1,276 @@
+// @vitest-environment jsdom
+// Voice prompting — the composer's hook (T6).
+//
+// What these pin, in plain terms:
+//  - On a COMPUTER, what the hardware says beats what the model folder says: a
+//    downloaded speech model is worth nothing if the microphone is unplugged or
+//    the operating system refused it.
+//  - On a PHONE none of that happens. The phone's own recogniser owns the
+//    microphone, so the hook must not go looking for one — and must never show
+//    the phone the desktop's words about "your computer".
+//  - A refused microphone is a "check again" card, not the "voice stopped" error
+//    card. Those are two different screens with two different buttons.
+//  - The give-up clock is restarted by the host's "still working" pings, so a
+//    long sentence is never cut off — and if the words turn up after we gave up,
+//    they still land in the box.
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { renderHook, act } from '@testing-library/react';
+import type { VoiceEvent, VoiceReadiness } from '../src/shared/voice-types';
+
+// Only the microphone-opening half is faked. `probe()` runs for real against a
+// stubbed device list below, so the "is there a microphone" logic is under test
+// rather than mocked away.
+const cap = vi.hoisted(() => ({ open: vi.fn(), closes: 0 }));
+vi.mock('../src/renderer/voice-capture', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/renderer/voice-capture')>();
+  return { ...actual, open: (...args: unknown[]) => cap.open(...args) };
+});
+
+import { useVoiceInput } from '../src/renderer/hooks/useVoiceInput';
+
+const READY: VoiceReadiness = { state: 'ready', engine: 'Parakeet' };
+const REFUSED = "Microphone access was refused by your computer. Allow it for YouCoded in your system's privacy settings, then check again.";
+const NO_DEVICE = 'No microphone was found on this computer.';
+
+type Access = 'granted' | 'denied' | 'not-determined' | 'unknown';
+
+function installBridge(opts: { desktop: boolean; status?: VoiceReadiness; access?: Access; startRejects?: Error }) {
+  const handlers = new Set<(e: VoiceEvent) => void>();
+  const bridge: Record<string, unknown> = {
+    status: vi.fn(async () => opts.status ?? READY),
+    download: vi.fn(async () => {}),
+    start: vi.fn(async () => { if (opts.startRejects) throw opts.startRejects; }),
+    stop: vi.fn(async () => {}),
+    cancel: vi.fn(async () => {}),
+    onEvent: (cb: (e: VoiceEvent) => void) => { handlers.add(cb); return () => { handlers.delete(cb); }; },
+  };
+  if (opts.desktop) {
+    bridge.sendAudio = vi.fn();
+    bridge.micAccess = vi.fn(async () => opts.access ?? 'granted');
+  }
+  (window as unknown as { claude: unknown }).claude = { voice: bridge };
+  return { bridge, emit: (e: VoiceEvent) => { handlers.forEach((h) => h(e)); } };
+}
+
+function stubDevices(kinds: string[]) {
+  Object.defineProperty(navigator, 'mediaDevices', {
+    configurable: true,
+    value: { enumerateDevices: async () => kinds.map((kind, i) => ({ kind, deviceId: `d${i}`, label: '', groupId: 'g' })) },
+  });
+}
+
+function mount() {
+  const onPartial = vi.fn();
+  const onFinal = vi.fn();
+  const hook = renderHook(() => useVoiceInput({ onPartial, onFinal }));
+  return { ...hook, onPartial, onFinal };
+}
+
+/** Let the hook's mount-time status() and probe() promises settle. */
+async function settle() {
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+}
+
+beforeEach(() => {
+  cap.open.mockReset();
+  cap.closes = 0;
+  cap.open.mockImplementation(async () => ({ close: () => { cap.closes += 1; } }));
+  stubDevices(['audioinput', 'audiooutput']);
+  window.history.replaceState({}, '', '/');
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  delete (window as unknown as { claude?: unknown }).claude;
+});
+
+describe('useVoiceInput — readiness composition (desktop only)', () => {
+  it('a refused microphone beats a downloaded model, in the exact words', async () => {
+    installBridge({ desktop: true, status: READY, access: 'denied' });
+    const { result } = mount();
+    await settle();
+    expect(result.current.readiness).toEqual({ state: 'unavailable', reason: REFUSED });
+    // It is a CARD state, not the error card — nothing was thrown.
+    expect(result.current.error).toBeNull();
+  });
+
+  it('no audio input device, permission not refused → "No microphone was found on this computer."', async () => {
+    stubDevices(['audiooutput', 'videoinput']);
+    installBridge({ desktop: true, status: READY, access: 'not-determined' });
+    const { result } = mount();
+    await settle();
+    expect(result.current.readiness).toEqual({ state: 'unavailable', reason: NO_DEVICE });
+  });
+
+  it('a working microphone lets the host answer stand', async () => {
+    installBridge({ desktop: true, status: { state: 'needs-download', engine: 'Parakeet', sizeMb: 464 }, access: 'granted' });
+    const { result } = mount();
+    await settle();
+    expect(result.current.readiness).toEqual({ state: 'needs-download', engine: 'Parakeet', sizeMb: 464 });
+  });
+
+  it('ANDROID: nothing is composed — the host has the only say', async () => {
+    // A phone with no `sendAudio`/`micAccess`, and (as in a WebView) no device
+    // list at all. It must still report the recogniser's own "ready".
+    stubDevices([]);
+    installBridge({ desktop: false, status: READY });
+    const { result } = mount();
+    await settle();
+    expect(result.current.readiness).toEqual(READY);
+    expect(result.current.supported).toBe(true);
+  });
+});
+
+describe('useVoiceInput — who opens the microphone', () => {
+  it('ANDROID: start() is the bridge call alone and opens no microphone', async () => {
+    installBridge({ desktop: false });
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    expect(cap.open).not.toHaveBeenCalled();
+    expect((window as any).claude.voice.start).toHaveBeenCalledTimes(1);
+    expect(result.current.phase).toBe('listening');
+  });
+
+  it('DESKTOP: start() opens the microphone and only then says "Listening"', async () => {
+    installBridge({ desktop: true });
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    expect(cap.open).toHaveBeenCalledTimes(1);
+    expect(result.current.phase).toBe('listening');
+  });
+
+  it('the WORKBENCH is not a desktop for this purpose — its fake offers both members and still opens no microphone', async () => {
+    // The design-review tab would otherwise raise a real Chrome permission
+    // prompt over the mock-up, and report "no microphone" in the headless rig.
+    window.history.replaceState({}, '', '/?mode=workbench');
+    installBridge({ desktop: true, access: 'denied' });
+    const { result } = mount();
+    await settle();
+    // No composition either: the fake's scripted readiness is what is reviewed.
+    expect(result.current.readiness).toEqual(READY);
+    await act(async () => { await result.current.start(); });
+    expect(cap.open).not.toHaveBeenCalled();
+  });
+
+  it('a refusal at start time is the "check again" card, never the error card', async () => {
+    installBridge({ desktop: true });
+    const denied = new Error('Permission denied');
+    denied.name = 'NotAllowedError';
+    cap.open.mockRejectedValueOnce(denied);
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    expect(result.current.readiness).toEqual({ state: 'unavailable', reason: REFUSED });
+    expect(result.current.error).toBeNull();
+    // The strip never flashed, and the host was told to forget the start.
+    expect(result.current.phase).toBe('idle');
+    expect((window as any).claude.voice.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unplugged microphone at start time says so, and any other failure names the real error', async () => {
+    installBridge({ desktop: true });
+    const none = new Error('Requested device not found');
+    none.name = 'NotFoundError';
+    cap.open.mockRejectedValueOnce(none);
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    expect(result.current.readiness).toEqual({ state: 'unavailable', reason: NO_DEVICE });
+
+    const weird = new Error('Could not start audio source');
+    weird.name = 'NotReadableError';
+    cap.open.mockRejectedValueOnce(weird);
+    await act(async () => { await result.current.start(); });
+    const r = result.current.readiness as { state: string; reason: string };
+    expect(r.state).toBe('unavailable');
+    expect(r.reason).toContain('Voice could not open a microphone.');
+    expect(r.reason).toContain('NotReadableError: Could not start audio source');
+  });
+
+  it('the loudness of each slice goes to the host AND drives the meter here', async () => {
+    installBridge({ desktop: true });
+    let feed: ((chunk: ArrayBuffer, rms: number) => void) | undefined;
+    cap.open.mockImplementationOnce(async (cb: (c: ArrayBuffer, r: number) => void) => {
+      feed = cb;
+      return { close: () => { cap.closes += 1; } };
+    });
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    const chunk = new ArrayBuffer(3200);
+    act(() => { feed!(chunk, 0.05); });
+    expect((window as any).claude.voice.sendAudio).toHaveBeenCalledWith(chunk, 0.05);
+    // The ring moved without any round trip to the host.
+    expect(result.current.level).toBeGreaterThan(0);
+  });
+});
+
+describe('useVoiceInput — the give-up clock', () => {
+  it('is restarted by every "still working" ping, and only fires when they stop', async () => {
+    vi.useFakeTimers();
+    const { emit } = installBridge({ desktop: true });
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+
+    // A long sentence: pings keep arriving well past the 12-second window.
+    for (let i = 0; i < 5; i += 1) {
+      act(() => { vi.advanceTimersByTime(10_000); });
+      act(() => { emit({ type: 'heartbeat' }); });
+    }
+    expect(result.current.error).toBeNull();
+    expect(result.current.phase).toBe('listening');
+
+    // The pings stop.
+    act(() => { vi.advanceTimersByTime(13_000); });
+    expect(result.current.error).toContain('Voice stopped responding');
+    expect(result.current.phase).toBe('idle');
+    // The microphone was let go, not left open behind an error.
+    expect(cap.closes).toBe(1);
+  });
+
+  it('words that arrive after we gave up still land in the box', async () => {
+    vi.useFakeTimers();
+    const { emit } = installBridge({ desktop: true });
+    const { result, onFinal } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    act(() => { vi.advanceTimersByTime(13_000); });
+    expect(result.current.error).toContain('Voice stopped responding');
+
+    act(() => { emit({ type: 'final', text: 'the late sentence' }); });
+    expect(onFinal).toHaveBeenCalledWith('the late sentence');
+    // And the error it contradicts is gone.
+    expect(result.current.error).toBeNull();
+  });
+
+  it('ANDROID has no such clock — a phone sends no pings and a silent pause is not a failure', async () => {
+    vi.useFakeTimers();
+    installBridge({ desktop: false });
+    const { result } = mount();
+    await settle();
+    await act(async () => { await result.current.start(); });
+    act(() => { vi.advanceTimersByTime(60_000); });
+    expect(result.current.error).toBeNull();
+    expect(result.current.phase).toBe('listening');
+  });
+});
+
+describe('useVoiceInput — events while the mic is closed', () => {
+  it('a stray partial, final or level after the mic closed changes nothing', async () => {
+    const { emit } = installBridge({ desktop: true });
+    const { result, onPartial, onFinal } = mount();
+    await settle();
+    act(() => {
+      emit({ type: 'partial', committed: 'ghost.', tail: 'words' });
+      emit({ type: 'final', text: 'ghost words' });
+      emit({ type: 'level', value: 0.9 });
+    });
+    expect(onPartial).not.toHaveBeenCalled();
+    expect(onFinal).not.toHaveBeenCalled();
+    expect(result.current.level).toBe(0);
+    expect(result.current.phase).toBe('idle');
+  });
+});

@@ -32,21 +32,12 @@
 // the workbench can still show the you-alone, empty and stale-board states
 // without a live leaderboard. `no MOCK_ONLY entry has since gained a real
 // channel` in workbench-mock-contract.test.ts is what forces this cleanup.
+// The eight voice-prompting rows (`voice.status`, `.download`, `.start`,
+// `.stop`, `.cancel`, `.onEvent`, `.sendAudio`, `.micAccess`) came off the same
+// way on 2026-09-05, the moment preload.ts gained the real `voice` namespace and
+// main/voice/voice-handlers.ts registered the six channels behind it. The fake
+// in mock-shim.ts STAYS — the workbench still needs a mic that "hears" a
+// scripted sentence with no speech engine downloaded — only the "no real
+// backend" claim goes.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  // Voice prompting (design deck 2026-09-05) — the composer's mic is drawn and
-  // reviewed against a fake that "hears" a scripted sentence. The real backend
-  // is Parakeet TDT 0.6B v3 through sherpa-onnx (desktop main) and the phone's
-  // own recogniser (Android): docs/active/design/2026-09-05-voice-prompting/.
-  { channel: 'voice.status', feature: 'voice-prompting' },
-  { channel: 'voice.download', feature: 'voice-prompting' },
-  { channel: 'voice.start', feature: 'voice-prompting' },
-  { channel: 'voice.stop', feature: 'voice-prompting' },
-  { channel: 'voice.cancel', feature: 'voice-prompting' },
-  { channel: 'voice.onEvent', feature: 'voice-prompting' },
-  // The two desktop-only members (renderer -> main audio, and the OS permission
-  // probe). Registered here for the same reason as the six above: the fake
-  // implements them, no real preload channel exists yet, and a hand-written
-  // channel that is neither real nor registered fails the contract test.
-  { channel: 'voice.sendAudio', feature: 'voice-prompting' },
-  { channel: 'voice.micAccess', feature: 'voice-prompting' },
 ];

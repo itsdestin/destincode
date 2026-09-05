@@ -87,6 +87,12 @@ interface CompleteMarker {
   sherpaVersion: string;
   /** What must still exist for this directory to count as usable. */
   requiredRelPaths: string[];
+  /** The digest of the archive this directory was unpacked from, when it has one.
+   *  WHY: the runtime is identified by its version, but the MODEL is not — if the
+   *  pinned model archive is ever re-uploaded or re-pinned under the same name, a
+   *  version check alone would keep serving the old one forever and nothing would
+   *  re-download. Recording the digest makes the marker say WHICH model this is. */
+  archiveDigest?: string;
 }
 
 export class VoiceAssets {
@@ -118,7 +124,7 @@ export class VoiceAssets {
   installed(): InstalledVoiceAssets | null {
     const p = this.paths();
     if (!this.isComplete(runtimeDir(this.userDataPath))) return null;
-    if (!this.isComplete(this.modelRoot())) return null;
+    if (!this.isComplete(this.modelRoot(), VOICE_MODEL.digest.digest)) return null;
     return p;
   }
 
@@ -126,19 +132,37 @@ export class VoiceAssets {
     return path.join(voiceRoot(this.userDataPath), 'model');
   }
 
-  private isComplete(dir: string): boolean {
+  private isComplete(dir: string, expectDigest?: string): boolean {
     try {
       const marker = JSON.parse(fs.readFileSync(path.join(dir, '.complete'), 'utf8')) as CompleteMarker;
       if (marker.sherpaVersion !== SHERPA_VERSION) return false;
+      // A directory unpacked from a DIFFERENT archive than the one pinned today is
+      // not the thing we promised; re-download rather than serve the old model.
+      if (expectDigest && marker.archiveDigest !== expectDigest) return false;
       return marker.requiredRelPaths.every((rel) => fs.existsSync(path.join(dir, rel)));
     } catch {
       return false; // no marker, unreadable marker, or half-deleted → not usable
     }
   }
 
-  /** Download, verify and unpack both halves. Idempotent: an already-usable
-   *  install returns immediately, so pressing Download twice is harmless. */
+  /** In flight, if an install is running. WHY this exists: each unpack starts by
+   *  DELETING its scratch directory and every exit deletes both scratch dirs, so two
+   *  concurrent installs on one profile delete each other's work mid-unpack and BOTH
+   *  fail — measured 2026-09-05, with the user shown a sentence naming `tar` and a
+   *  temp path. The never-half-unpacked invariant held, but nobody got a download.
+   *  A second caller now waits for the first instead of racing it. */
+  private inFlight: Promise<InstalledVoiceAssets> | null = null;
+
+  /** Download, verify and unpack both halves. Idempotent: an already-usable install
+   *  returns immediately, and a second call while one is running joins it rather than
+   *  starting a competing one — so pressing Download twice really is harmless. */
   async install(onProgress: (p: VoiceAssetProgress) => void): Promise<InstalledVoiceAssets> {
+    if (this.inFlight) return this.inFlight;
+    this.inFlight = this.runInstall(onProgress).finally(() => { this.inFlight = null; });
+    return this.inFlight;
+  }
+
+  private async runInstall(onProgress: (p: VoiceAssetProgress) => void): Promise<InstalledVoiceAssets> {
     const already = this.installed();
     if (already) {
       onProgress({ phase: 'ready' });
@@ -210,7 +234,7 @@ export class VoiceAssets {
       fs.mkdirSync(modelPartial, { recursive: true });
       await unpackTarBz2(modelArchive, modelPartial);
       requireLayout(modelPartial, VOICE_MODEL.requiredRelPaths, 'speech model');
-      writeMarkerAndRename(modelPartial, modelFinal, VOICE_MODEL.requiredRelPaths);
+      writeMarkerAndRename(modelPartial, modelFinal, VOICE_MODEL.requiredRelPaths, VOICE_MODEL.digest.digest);
 
       fs.rmSync(runtimeArchive, { force: true });
       fs.rmSync(wrapperArchive, { force: true });
@@ -257,6 +281,18 @@ export class VoiceAssets {
   ): Promise<void> {
     let start = 0;
     try { start = fs.statSync(dest).size; } catch { /* no partial file yet */ }
+
+    // A part-file that is ALREADY the whole file: digest it and skip the network
+    // entirely. Without this, a crash or a quit between the last byte and the digest
+    // check costs a second 487 MB download — the Range request 416s, the file is
+    // deleted, and it starts from zero. Measured 2026-09-05: 290 of 290 bytes were
+    // re-served for a byte-perfect part-file.
+    if (start >= archive.bytes) {
+      const good = await digestMatches(dest, archive.digest);
+      if (good) { report(archive.bytes); return; }
+      fs.rmSync(dest, { force: true });
+      start = 0;
+    }
 
     let res: Response;
     try {
@@ -330,6 +366,12 @@ function fileDigest(file: string, pin: DigestPin): Promise<string> {
       .on('error', reject)
       .on('end', () => resolve(hash.digest(pin.encoding)));
   });
+}
+
+/** True when the file on disk already matches the pin. Used to reuse a part-file
+ *  that is already complete instead of re-downloading half a gigabyte. */
+async function digestMatches(file: string, pin: DigestPin): Promise<boolean> {
+  try { return (await fileDigest(file, pin)) === pin.digest; } catch { return false; }
 }
 
 /** "SHA-512 fingerprint (base64)" — so the mismatch message says which of the
@@ -407,9 +449,16 @@ async function unpackTarBz2(archive: string, destDir: string): Promise<void> {
  *  hung the whole test suite for 30 s a test before this was found (2026-09-05).
  *  'ignore' hands it /dev/null, which is an immediate end-of-input. */
 function probeProgram(program: string): Promise<boolean> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const probe = spawn(program, ['-V'], { stdio: 'ignore' });
-    probe.on('error', () => resolve(false)); // not installed
+    // ONLY "no such file" means the program is absent. EACCES, EMFILE or ENOMEM on a
+    // machine that HAS bzip2 would otherwise be reported as "this computer has no
+    // bzip2 program", which is a hardcoded guess replacing a real error — the exact
+    // shape docs/error-message-standards.md forbids.
+    probe.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'ENOENT') { resolve(false); return; }
+      reject(new Error(`Could not check for ${program}: ${err.message}`));
+    });
     probe.on('close', () => resolve(true));  // it ran, whatever it thought of -V
   });
 }
@@ -475,8 +524,10 @@ function requireLayout(dir: string, requiredRelPaths: string[], what: string): v
 
 /** Marker LAST, then an atomic rename into place. The only two orders a crash
  *  can interrupt both leave either no final directory or a fully usable one. */
-function writeMarkerAndRename(partialDir: string, finalDir: string, requiredRelPaths: string[]): void {
-  const marker: CompleteMarker = { sherpaVersion: SHERPA_VERSION, requiredRelPaths };
+function writeMarkerAndRename(
+  partialDir: string, finalDir: string, requiredRelPaths: string[], archiveDigest?: string,
+): void {
+  const marker: CompleteMarker = { sherpaVersion: SHERPA_VERSION, requiredRelPaths, archiveDigest };
   fs.writeFileSync(path.join(partialDir, '.complete'), JSON.stringify(marker));
   fs.rmSync(finalDir, { recursive: true, force: true });
   fs.renameSync(partialDir, finalDir);

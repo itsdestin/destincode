@@ -215,6 +215,44 @@ describe.skipIf(!HAS_BZ2)('VoiceAssets — installing', () => {
     expect(assets.installed()).not.toBeNull();
   });
 
+  // WHY: each unpack DELETES its scratch directory on the way in, and every exit
+  // deletes both scratch dirs. Two installs racing therefore used to delete each
+  // other's work mid-unpack and BOTH fail, leaving the user with no download and a
+  // message naming `tar` and a temp path. Found reviewing T2, 2026-09-05.
+  it('a second Download while one is running joins it instead of racing it', async () => {
+    const assets = new VoiceAssets(userData, fetchServing);
+    const [a, b] = await Promise.all([assets.install(() => {}), assets.install(() => {})]);
+    // Both callers got a real install, and there is exactly one of everything.
+    expect(fs.existsSync(a.addonPath)).toBe(true);
+    expect(b.addonPath).toBe(a.addonPath);
+    expect(fs.readdirSync(a.voiceRoot).sort()).toEqual(['model', 'runtime']);
+    expect(assets.installed()).not.toBeNull();
+  });
+
+  // WHY: a crash or a quit between an archive's last byte and its fingerprint check
+  // used to cost the whole download again — the resume request 416s, the file is
+  // deleted, and it starts from zero. On the real model that is 487 MB.
+  it('reuses a part-file that is already complete instead of fetching it again', async () => {
+    const assets = new VoiceAssets(userData, fetchServing);
+    await assets.install(() => {});               // one clean install to get the bytes
+    const served: string[] = [];
+    const counting: typeof fetchServing = (url, init) => { served.push(String(url)); return fetchServing(url, init); };
+
+    // Wipe only the unpacked halves, and leave the model's part-file behind, whole.
+    const root = assets.paths().voiceRoot;
+    const partial = path.join(root, `${MODEL_DIR_NAME}.tar.bz2.download`);
+    fs.mkdirSync(root, { recursive: true });
+    // The whole archive, straight from the same stub the installer would use.
+    const whole = Buffer.from(await (await fetchServing(fixtures.model.url)).arrayBuffer());
+    fs.writeFileSync(partial, whole);
+    fs.rmSync(path.join(root, 'model'), { recursive: true, force: true });
+    fs.rmSync(path.join(root, 'runtime'), { recursive: true, force: true });
+
+    await new VoiceAssets(userData, counting).install(() => {});
+    // The runtime halves were fetched; the model was not, because it was already here.
+    expect(served.some((u) => u === fixtures.model.url)).toBe(false);
+  });
+
   it('is idempotent — a second install returns straight away with ready', async () => {
     const assets = new VoiceAssets(userData, fetchServing);
     await assets.install(() => {});
