@@ -42,6 +42,13 @@ const WORK_FULL = (o: DoctrineOpts) => [
   o.audience === 'user'
     ? 'When a request has an obvious reading, act on it instead of asking. "What time is it" means run a command; "is that port open" means check this machine. Ask only when the ambiguity would change what you do.'
     : null,
+  // Destin, 2026-09-05: reading and looking around is always fine; CHANGING
+  // things is not, unless the user clearly expects it. Written as "to change
+  // anything" rather than "do not use Bash", because Bash is also how the
+  // model reads git history and system state.
+  o.audience === 'user'
+    ? 'Do not use Edit, Write or Bash to change anything unless the user unambiguously expects you to. An open-ended question or an investigation ends in findings, not action, unless the user has said they want you to act on what you find or you are working toward a clear task they set.'
+    : null,
   'Never answer from memory what a tool can tell you: arithmetic, dates and times, file contents and sizes, git history, system state, and anything current such as versions, prices or news. Use Bash, Read, Grep or WebSearch and report what came back.',
   o.batching
     ? 'When you need several things that do not depend on each other, request them in one turn: several reads, searches, fetches or read-only commands together. Send calls one after another only when a later call needs an earlier result, such as reading a file before editing it.'
@@ -85,6 +92,7 @@ const ENVELOPES = (o: DoctrineOpts) => [
 const WORK_COMPACT = (o: DoctrineOpts) => [
   'Keep going until the task is done or you need something only the user can give. Never end a turn by saying what you will do next — do it now.',
   'Never answer from memory what a tool can tell you (dates, file contents, git state, current facts). Use the tool and report what came back.',
+  'Change nothing unless the user clearly expects it. A question ends in an answer, not an edit.',
   'Prefer dedicated tools over shell: Read/Glob/Grep instead of cat/find/grep, Edit instead of sed. Use absolute paths.',
   'Approval is the app\'s job: it shows the user a card when needed. Do not also ask in chat.',
 ];

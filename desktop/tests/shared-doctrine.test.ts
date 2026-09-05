@@ -54,3 +54,13 @@ describe('sharedDoctrine — composition', () => {
     expect(sharedDoctrine(FULL)).toBe(sharedDoctrine({ ...FULL }));
   });
 });
+
+describe('sharedDoctrine — question vs action (Destin, 2026-09-05)', () => {
+  it('the root session is told not to change anything unless the user clearly expects it, in both sizes', () => {
+    expect(sharedDoctrine(FULL)).toContain('unless the user unambiguously expects you to');
+    expect(sharedDoctrine({ ...FULL, compact: true, batching: false })).toContain('A question ends in an answer, not an edit');
+  });
+  it('a specialist is not — it always works toward a task it was given', () => {
+    expect(sharedDoctrine({ ...FULL, audience: 'parent' })).not.toContain('unambiguously expects');
+  });
+});
