@@ -2190,8 +2190,20 @@ describe('NativeSessionHost', () => {
         const F = path.join(root, 'project-f');
         fs.mkdirSync(F, { recursive: true });
         const store = new PermissionStore(new NativeHome(root));
+        // Review fix (2026-09-04, F4): the memory leg used to read the REAL
+        // store too, and rememberRule kicks off the disk persist before the
+        // first ask() — so the "memory" assertions could be satisfied by the
+        // disk record alone. This host now writes through to disk (the disk
+        // leg below still needs the real persist) but is BLIND to it on read:
+        // rulesFor is always empty, so only the in-memory copy can answer.
+        const memoryOnlyStore = {
+          rulesFor: async () => [] as any[],
+          remember: (cwd: string, rule: PermissionRule) => store.remember(cwd, rule),
+          remove: async () => false,
+          removeProject: async () => false,
+        };
         const h = new NativeSessionHost(
-          new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null, undefined, store,
+          new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null, undefined, memoryOnlyStore,
         );
         await h.create({ sessionId: 'root-1', cwd: F, binding: { providerId: 'openrouter', modelId: 'm' } });
 
