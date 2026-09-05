@@ -268,16 +268,6 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
         <p className="text-2xs text-fg-muted mt-2">You can keep typing; the mic wakes up when it is done.</p>
       </>
     );
-  } else if (state === 'unavailable') {
-    card = (
-      <>
-        <p className="text-xs font-semibold text-fg mb-1.5">Voice isn&rsquo;t available</p>
-        <p className="text-2xs text-fg-2 leading-snug">{readiness?.state === 'unavailable' ? readiness.reason : 'Still checking whether this computer can listen.'}</p>
-        <div className="flex justify-end gap-2 mt-3">
-          <Button variant="ghost" size="sm" onClick={onRecheck}>Check again</Button>
-        </div>
-      </>
-    );
   }
 
   return (
