@@ -5,7 +5,10 @@ import ProvidersSection from './ProvidersSection';
 import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
+import { chatGptPlanLabel, type ChatGptAccountStatus } from '../../shared/chatgpt-types';
 import { AnchorTip, Button, Dialog, InputGroup, TextInput, SettingRow } from './ui';
+import BrailleSpinner from './BrailleSpinner';
+import { PlanWindows, type PlanUsage } from './plan-windows';
 
 // Settings → Model Providers. One settings row that opens an L2 popup gathering
 // every engine/provider surface in one place: Claude Code (the default engine),
@@ -63,7 +66,7 @@ export default function ModelProvidersSection({
           </svg>
         }
         title="Model Providers"
-        description="Claude Code, OpenRouter, and local models"
+        description="Claude Code, ChatGPT, OpenRouter, local models"
         onClick={() => setOpen(true)}
       />
 
@@ -92,13 +95,38 @@ function ModelProvidersPopupInner({
     <>
       <Dialog open onClose={onClose} title="Model Providers" size="panel">
             <p className="text-2xs text-fg-dim leading-relaxed">
-              Choose which AI engine powers your sessions. Claude Code is the default; OpenRouter and
-              local models are optional alternatives.
+              Choose which AI engine powers your sessions. Claude Code is the default; a ChatGPT plan,
+              OpenRouter and local models are optional alternatives.
             </p>
 
-            <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
-
-            <OpenRouterBlock />
+            {/* Round 4 (2026-09-05, P-1 note): two group headings — Cloud Models
+                and Local Models — and no per-provider eyebrow. The three cloud
+                cards sit two units apart inside one group. */}
+            <section>
+              <SectionHeader
+                title="Cloud Models"
+                info={{
+                  label: 'About cloud models',
+                  body: (
+                    <>
+                      <p>
+                        Cloud models run on a company's servers. Sign in with a plan you already pay for
+                        (Claude, ChatGPT), or connect OpenRouter or your own API key and pay per use.
+                      </p>
+                      <p>
+                        Each card shows how you're connected and, for a plan, how much of its limits is
+                        left. Your conversations use whichever model you pick in the model picker.
+                      </p>
+                    </>
+                  ),
+                }}
+              />
+              <div className="space-y-2">
+                <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
+                <ChatGptBlock />
+                <OpenRouterBlock />
+              </div>
+            </section>
 
             <LocalModelsBlock />
 
@@ -119,6 +147,59 @@ function SectionHeader({ title, info }: { title: string; info: { label: string; 
       <AnchorTip label={info.label} title={title}>{info.body}</AnchorTip>
     </div>
   );
+}
+
+// One row shape for every provider (review 2026-09-05, P-1 "all providers
+// formatted similarly with neutral treatment"): name · one status line in the
+// same muted grey · one action on the right · optional plan bars underneath.
+// No green "connected" text and no "Default engine" badge — the status line
+// says the state in words and the plan bars say how much is left.
+function ProviderRow({ title, info, status, detail, action, children }: {
+  title: string;
+  /** The (i) explainer, beside the name INSIDE the card (round 3, P-1): the
+   *  eyebrow heading above the card repeated the name, so it is gone. */
+  info?: { label: string; body: React.ReactNode };
+  status: React.ReactNode;
+  /** A second line under the status: OpenAI's refusal reason, a hint. Tone
+   *  'bad' is the destructive colour for a reason the user must read. */
+  detail?: { text: React.ReactNode; tone?: 'muted' | 'bad' } | null;
+  action?: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="bg-inset/50 rounded-lg px-3 py-2.5">
+      {/* items-start: the button sits on the title line, top-right, not
+          centred against however many lines the status grows to (P-1/P-2). */}
+      <div className="flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs text-fg font-medium inline-flex items-center gap-1.5">
+            {title}
+            {info && <AnchorTip label={info.label} title={title}>{info.body}</AnchorTip>}
+          </p>
+          <p className="text-2xs mt-0.5 text-fg-muted">{status}</p>
+          {detail && (
+            <p className={`text-2xs mt-0.5 ${detail.tone === 'bad' ? 'text-destructive-fg' : 'text-fg-muted'}`}>{detail.text}</p>
+          )}
+        </div>
+        {action && <div className="shrink-0">{action}</div>}
+      </div>
+      {children && <div className="mt-2.5">{children}</div>}
+    </div>
+  );
+}
+
+/** The Claude plan's windows, as the status bar receives them on status:data.
+ *  Subscribed here (not threaded from App) because this popup lives three
+ *  levels down Settings and nothing else on the way needs the number. */
+function useClaudePlanUsage(): PlanUsage | null {
+  const [usage, setUsage] = useState<PlanUsage | null>(null);
+  useEffect(() => {
+    const handler = window.claude.on.statusData((data: any) => {
+      setUsage(data?.usage ?? null);
+    });
+    return () => { window.claude.off('status:data', handler); };
+  }, []);
+  return usage;
 }
 
 // ── 1. Claude Code ───────────────────────────────────────────────────────────
@@ -153,28 +234,26 @@ function ClaudeCodeBlock({
   const installed = claudePrereq?.status === 'installed';
   const signedIn = state?.authComplete === true;
 
-  // Plain-word status line (no ●◐○ glyphs).
+  // Plain-word status line (no ●◐○ glyphs), in the same grey as every other row.
   let statusText: string;
-  let statusTone: 'ok' | 'warn';
   if (!loaded) {
     statusText = 'Checking…';
-    statusTone = 'warn';
   } else if (signedIn) {
     statusText = state?.authMode === 'apikey'
       ? 'Connected with an Anthropic API key'
       : 'Signed in with your Claude account';
-    statusTone = 'ok';
   } else if (installed) {
     statusText = 'Installed — not signed in yet';
-    statusTone = 'warn';
   } else {
     statusText = 'Not set up yet';
-    statusTone = 'warn';
   }
+  const claudeUsage = useClaudePlanUsage();
 
   return (
-    <section>
-      <SectionHeader
+    <>
+      {/* P-1 (2026-09-05): no eyebrow heading — the card's own name is the
+          label, and the (i) sits beside it. Same row as ChatGPT and OpenRouter. */}
+      <ProviderRow
         title="Claude Code"
         info={{
           label: 'About Claude Code',
@@ -182,7 +261,8 @@ function ClaudeCodeBlock({
             <>
               <p>
                 Claude Code is Anthropic's AI coding agent — the engine YouCoded is built around. It can
-                read your files, run commands, browse, and use tools.
+                read your files, run commands, browse, and use tools. Every session runs through it
+                unless you pick another provider below.
               </p>
               <p>
                 You sign in with your Claude Pro or Max plan (or an Anthropic API key) — there's no extra
@@ -191,31 +271,147 @@ function ClaudeCodeBlock({
             </>
           ),
         }}
-      />
-
-      <div className="bg-inset/50 rounded-lg px-3 py-2.5">
-        <p className="text-xs text-fg font-medium">Default engine</p>
-        <p className={`text-2xs mt-0.5 ${statusTone === 'ok' ? 'text-green-600' : 'text-fg-muted'}`}>
-          {statusText}
-        </p>
-        <p className="text-3xs text-fg-muted mt-1.5 leading-relaxed">
-          Every session runs through Claude Code unless you pick another provider below.
-        </p>
-
-        {/* Outline peer action — the shared secondary recipe replaces the
-            hand-rolled border-edge-dim/text-fg-2 copy of it. */}
-        {onOpenClaudePreferences && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}
-            className="mt-2.5"
-          >
-            Claude Code preferences
+        status={statusText}
+        action={onOpenClaudePreferences && (
+          <Button variant="secondary" size="sm" onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}>
+            Preferences
           </Button>
         )}
-      </div>
-    </section>
+      >
+        {signedIn && state?.authMode !== 'apikey' && <PlanWindows usage={claudeUsage} />}
+      </ProviderRow>
+    </>
+  );
+}
+
+// ── 1b. ChatGPT ──────────────────────────────────────────────────────────────
+// Sign in with ChatGPT (design 2026-09-04, questions deck Q-1a/Q-2a/Q-6a): the
+// user's own ChatGPT plan, used by YouCoded's assistant. A sign-in, not a key —
+// so this is its own block with the Claude Code and OpenRouter rows for
+// neighbours, not a row in the API-key list below. The (i) carries the one
+// honest sentence about the footing (Q-6a): OpenAI welcomes this out loud but
+// has not written it into its terms.
+
+/** Reads the account state through the (still MOCK_ONLY) `chatgpt` namespace —
+ *  reached with a cast like `firstRun`, until it joins the typed bridge. */
+function chatGptApi(): {
+  status: () => Promise<ChatGptAccountStatus>;
+  signIn: () => Promise<boolean>;
+  cancelSignIn: () => Promise<boolean>;
+  signOut: () => Promise<boolean>;
+} {
+  return (window as any).claude.chatgpt;
+}
+
+function ChatGptBlock() {
+  const [status, setStatus] = useState<ChatGptAccountStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try { setStatus(await chatGptApi().status()); }
+    catch (e) { setNote(e instanceof Error ? e.message : 'Could not read the ChatGPT sign-in state.'); }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  // While the browser round-trip is open, poll — the sign-in completes in a
+  // tab this app does not own, so nothing else tells the row it is done.
+  useEffect(() => {
+    if (status?.state !== 'waiting') return;
+    const t = setInterval(() => { void refresh(); }, 1000);
+    return () => clearInterval(t);
+  }, [status?.state, refresh]);
+
+  const run = async (verb: () => Promise<boolean>, failText: string) => {
+    setBusy(true);
+    setNote(null);
+    try {
+      const ok = await verb();
+      if (!ok) setNote(failText);
+      await refresh();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : failText);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Plain-word status line — no glyphs (the app's standing rule) — and, for
+  // the one state with a second thing to say, a detail line under it.
+  let line: React.ReactNode = 'Checking…';
+  let detail: { text: React.ReactNode; tone?: 'muted' | 'bad' } | null = null;
+  if (status?.state === 'signed-in') {
+    // Email on the status line, plan on the detail line: the two together
+    // wrapped onto a second line beside the button (round-2 self-check).
+    line = `Signed in as ${status.email}`;
+    detail = { text: chatGptPlanLabel(status.plan) };
+  } else if (status?.state === 'waiting') {
+    line = (
+      <span className="inline-flex items-center gap-1.5">
+        <BrailleSpinner size="sm" />
+        Waiting for the browser…
+      </span>
+    );
+  } else if (status?.state === 'blocked') {
+    // OpenAI's own words, verbatim — never a guessed cause.
+    line = `Signed in as ${status.email}`;
+    detail = { text: status.reason, tone: 'bad' };
+  } else if (status?.state === 'signed-out') {
+    line = 'Not signed in';
+    detail = { text: "Your plan's models, in YouCoded's assistant." };
+  }
+
+  // One action per state (G-4): the primary is the sign-in; everything after
+  // it is an outline peer.
+  const action = status?.state === 'waiting' ? (
+    <Button variant="secondary" size="sm" disabled={busy}
+      onClick={() => void run(() => chatGptApi().cancelSignIn(), 'Could not cancel the sign-in.')}>
+      Cancel
+    </Button>
+  ) : status?.state === 'signed-in' || status?.state === 'blocked' ? (
+    <Button variant="secondary" size="sm" disabled={busy}
+      onClick={() => void run(() => chatGptApi().signOut(), 'Could not sign out.')}>
+      Sign out
+    </Button>
+  ) : (
+    <Button size="sm" disabled={busy || !status}
+      onClick={() => void run(() => chatGptApi().signIn(), 'Could not open the sign-in page.')}>
+      Sign in with ChatGPT
+    </Button>
+  );
+
+  return (
+    <>
+      <ProviderRow
+        title="ChatGPT"
+        info={{
+          label: 'About ChatGPT sign-in',
+          body: (
+            <>
+              <p>
+                Sign in with your ChatGPT account and YouCoded's assistant can use the models your
+                plan includes — GPT-5.6 and the rest — with no API key and nothing extra to pay.
+              </p>
+              <p>
+                It runs on your plan's limits: a five-hour window and a weekly one, the same ones
+                the Codex app uses. The bars under the row, the usage card and the status bar show
+                how much is left.
+              </p>
+              <p>
+                OpenAI has publicly welcomed apps like this using your plan, but it is not written
+                into their terms yet. If OpenAI ever turns it off, this row will say so plainly and
+                everything else in the app keeps working.
+              </p>
+            </>
+          ),
+        }}
+        status={line}
+        detail={note ? { text: note, tone: 'bad' } : detail}
+        action={action}
+      >
+        {status?.state === 'signed-in' && <PlanWindows usage={status.usage} />}
+      </ProviderRow>
+    </>
   );
 }
 
@@ -252,61 +448,53 @@ function OpenRouterBlock() {
   };
 
   return (
-    <section>
-      <SectionHeader
-        title="OpenRouter/API"
-        info={{
-          label: 'About OpenRouter',
-          body: (
-            <>
-              <p>
-                OpenRouter is a single gateway to hundreds of AI models — GPT, Gemini, Llama, and many
-                more — from different companies.
-              </p>
-              <p>
-                Instead of making a separate account with each one, you get one API key and YouCoded routes
-                your sessions through it. You pay OpenRouter directly for what you use. You can also add your
-                own direct provider keys or a custom endpoint below.
-              </p>
-            </>
-          ),
-        }}
-      />
-
+    <>
       {/* OpenRouter connect state — the "To connect…" instructions + key entry
           now live inside the Connect modal, not an always-on banner. */}
-      <div className="bg-inset/50 rounded-lg px-3 py-2.5 mb-3">
-        <div className="flex items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <p className="text-xs text-fg font-medium">OpenRouter</p>
-            <p className="text-3xs text-fg-muted">
-              {openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
-            </p>
-          </div>
-          {/* Primary row action. hover:brightness-110 dropped — the primitive's
-              bg fade is the one hover idiom (it stays visible on near-black
-              accents, where brightness-110 does nothing). */}
-          <Button size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }} className="shrink-0">
-            {connected ? 'Replace key' : 'Connect to OpenRouter'}
-          </Button>
-        </div>
-        {connected && (
-          <div className="flex items-center gap-1.5 mt-2">
+      {/* Same row as Claude Code and ChatGPT above (P-1, 2026-09-05); its (i)
+          moved into the card with the OPENROUTER/API eyebrow's removal (round 4). */}
+      <div>
+        <ProviderRow
+          title="OpenRouter"
+          info={{
+            label: 'About OpenRouter',
+            body: (
+              <>
+                <p>
+                  OpenRouter is a single gateway to hundreds of AI models — GPT, Gemini, Llama, and many
+                  more — from different companies.
+                </p>
+                <p>
+                  Instead of making a separate account with each one, you get one API key and YouCoded routes
+                  your sessions through it. You pay OpenRouter directly for what you use. You can also add your
+                  own direct provider keys or a custom endpoint below.
+                </p>
+              </>
+            ),
+          }}
+          status={openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
+          detail={testNote ? { text: testNote.text, tone: testNote.tone === 'ok' ? 'muted' : 'bad' } : null}
+          action={connected ? (
+            <Button variant="secondary" size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }}>
+              Replace key
+            </Button>
+          ) : (
+            <Button size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }}>
+              Connect to OpenRouter
+            </Button>
+          )}
+        >
+          {connected && (
             <Button variant="secondary" size="sm" onClick={() => void runTest()}>
               Test
             </Button>
-          </div>
-        )}
-        {testNote && (
-          <p className={`text-3xs mt-2 ${testNote.tone === 'ok' ? 'text-green-600' : 'text-red-500'}`}>
-            {testNote.text}
-          </p>
-        )}
+          )}
+        </ProviderRow>
       </div>
 
       {/* Other API providers — direct keys (Anthropic/OpenAI/Google) + custom
           endpoints. Embedded hides the openrouter + local-engine rows. */}
-      <ProvidersSection embedded />
+      <ProvidersSection embedded="cloud" />
 
       {connectOpen && openrouter && (
         <ConnectOpenRouterModal
@@ -316,7 +504,7 @@ function OpenRouterBlock() {
           onSaved={refresh}
         />
       )}
-    </section>
+    </>
   );
 }
 
@@ -447,6 +635,11 @@ function LocalModelsBlock() {
 
       {/* Embedded: no standalone header (this section supplies it). */}
       <LocalModelsSection embedded />
+      {/* Custom endpoints on this computer — Ollama, LM Studio — file here,
+          not under the OpenRouter card (Destin, 2026-09-05). */}
+      <div className="mt-2">
+        <ProvidersSection embedded="local" />
+      </div>
     </section>
   );
 }

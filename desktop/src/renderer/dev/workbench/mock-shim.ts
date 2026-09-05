@@ -1,4 +1,5 @@
 import { MARKETPLACE_API_HOST } from '../../state/marketplace-api-client';
+import type { ChatGptAccountStatus } from '../../../shared/chatgpt-types';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
@@ -317,6 +318,9 @@ const NAMESPACES = [
   'account', 'social', 'marketplaceApi', 'detach', 'defaults', 'analytics', 'dev',
   'performance', 'app', 'native', 'providers', 'engine', 'models', 'theme',
   'commands', 'tags', 'artifacts', 'firstRun', 'clipboard', 'window',
+  // Sign in with ChatGPT (design 2026-09-04) — MOCK_ONLY until main grows the
+  // OAuth round-trip; typed by shared/chatgpt-types.ts, not useIpc.ts yet.
+  'chatgpt',
 ];
 
 export function createMockShim(store: MockStore): Window['claude'] {
@@ -500,8 +504,32 @@ function mergeMeta(
 // Numbers here are the brief's linesAdded/linesRemoved/costUsd verbatim; the
 // rest (tokens, cache, duration, usage %) are plausible fixture data made up
 // for this dev-only mock, internally consistent (cacheReadTokens < inputTokens).
+// The ChatGPT plan's two windows (Sign in with ChatGPT, 2026-09-04). Pushed for
+// EVERY scenario — App only reads them for a session bound to a 'chatgpt'
+// provider (wb-3), so Claude Code and OpenRouter sessions are untouched.
+function chatgptUsageFixture() {
+  return {
+    five_hour: { utilization: 34, resets_at: new Date(Date.now() + 2 * 3_600_000 + 10 * 60_000).toISOString() },
+    seven_day: { utilization: 12, resets_at: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+  };
+}
+
 function statusBarFixtureFor(scenario: string): { usage: unknown; sessionStatsMap: Record<string, unknown> } | null {
-  if (scenario !== 'statusbar-cc') return null;
+  // Every other scenario used to return null here (no status:data push at all).
+  // It now pushes an empty Claude side so the ChatGPT windows can ride along;
+  // `usage: null` and an empty stats map leave those scenarios exactly as they were.
+  // `?planUsage=1` puts the Claude plan's windows on status:data in any
+  // scenario, so the Model Providers row can be reviewed with its bars.
+  const planUsage = typeof location !== 'undefined' && new URLSearchParams(location.search).get('planUsage') === '1';
+  if (scenario !== 'statusbar-cc') {
+    return {
+      usage: planUsage ? {
+        five_hour: { utilization: 42, resets_at: new Date(Date.now() + 3 * 3_600_000).toISOString() },
+        seven_day: { utilization: 61, resets_at: new Date(Date.now() + 4 * 86_400_000).toISOString() },
+      } : null,
+      sessionStatsMap: {},
+    };
+  }
   return {
     usage: {
       five_hour: { utilization: 42, resets_at: new Date(Date.now() + 3 * 3_600_000).toISOString() },
@@ -738,8 +766,56 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     }),
   };
 
+  // ── Sign in with ChatGPT ───────────────────────────────────────────────────
+  // The account state machine (shared/chatgpt-types.ts), pinned by `?chatgpt=`
+  // (signed-out | waiting | signed-in | blocked; default signed-in so the
+  // model picker shows the plan's models). Without a pin, Sign in walks
+  // signed-out → waiting → signed-in on its own after ~2.5s, which is what a
+  // reviewer clicking through the Settings row should see.
+  const chatgptPin = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('chatgpt')) || null;
+  const CHATGPT_SIGNED_IN: ChatGptAccountStatus = {
+    state: 'signed-in', email: 'destin@example.com', plan: 'plus',
+    usage: {
+      five_hour: { utilization: 34, resets_at: new Date(Date.now() + 2 * 3_600_000 + 10 * 60_000).toISOString() },
+      seven_day: { utilization: 12, resets_at: new Date(Date.now() + 5 * 86_400_000).toISOString() },
+    },
+  };
+  let chatgptStatus: ChatGptAccountStatus =
+    chatgptPin === 'signed-out' ? { state: 'signed-out' }
+    : chatgptPin === 'waiting' ? { state: 'waiting' }
+    : chatgptPin === 'blocked' ? { state: 'blocked', email: 'destin@example.com', reason: 'Your workspace admin has turned off Codex for this account.' }
+    : CHATGPT_SIGNED_IN;
+  let chatgptTimer: ReturnType<typeof setTimeout> | null = null;
+  const chatgpt = {
+    status: async () => chatgptStatus,
+    signIn: async () => {
+      if (store.refuseWrites) return false;
+      chatgptStatus = { state: 'waiting' };
+      if (chatgptTimer) clearTimeout(chatgptTimer);
+      // A pinned state stays pinned — a review shot of "waiting" must not
+      // resolve itself while the rig is still cutting crops.
+      if (!chatgptPin) chatgptTimer = setTimeout(() => { chatgptStatus = CHATGPT_SIGNED_IN; }, 2500);
+      return true;
+    },
+    cancelSignIn: async () => {
+      if (chatgptTimer) clearTimeout(chatgptTimer);
+      chatgptTimer = null;
+      chatgptStatus = { state: 'signed-out' };
+      return true;
+    },
+    signOut: async () => {
+      if (store.refuseWrites) return false;
+      chatgptStatus = { state: 'signed-out' };
+      return true;
+    },
+  };
+
   const providers: Ns<'providers'> = {
-    list: async () => store.getState().providers,
+    // The ChatGPT row is keyless: `ready` IS "signed in", derived here so the
+    // picker, the Settings row and the runtime selector never disagree.
+    list: async () => store.getState().providers.map((p) =>
+      // `&&` so a scenario that turns every provider off (no-providers) still wins.
+      p.type === 'chatgpt' ? { ...p, ready: p.ready && chatgptStatus.state === 'signed-in' } : p),
     catalog: async () => store.getState().catalog,
   };
 
@@ -1612,7 +1688,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       prerequisites: [],
       overallProgress: 100,
       statusMessage: '',
-      authMode: 'none',
+      // `?authMode=chatgpt|oauth|apikey` pins the sign-in screen's in-flight
+      // state (design 2026-09-04: the ChatGPT round-trip has its own waiting copy).
+      authMode: (typeof location !== 'undefined' && new URLSearchParams(location.search).get('authMode')) || 'none',
       authComplete: true,
       needsDevMode: false,
     }),
@@ -1734,6 +1812,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       if (fixture) {
         cb({
           usage: fixture.usage,
+          chatgptUsage: chatgptUsageFixture(),
           announcement: null,
           updateStatus: null,
           syncWarnings: [],
@@ -1956,6 +2035,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, ...(remote ? { remote } : {}),
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, chatgpt, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
 }

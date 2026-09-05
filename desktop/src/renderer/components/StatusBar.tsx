@@ -354,6 +354,11 @@ interface Props {
    *  auto-detect the brand color when the model id alone is ambiguous. Unused
    *  for CC sessions (they use MODEL_DISPLAY keyed on the alias). */
   modelProviderType?: string | null;
+  /** Whose windows `statusData.usage` holds. 'chatgpt' (a native session bound
+   *  to a Sign-in-with-ChatGPT provider, 2026-09-04) un-hides the two usage
+   *  chips that are otherwise Claude-Code-only and points them at Model
+   *  Providers instead of claude.ai. Absent → 'claude'. */
+  usagePlan?: 'claude' | 'chatgpt';
   /** The session's runtime. Gates the two Claude-subscription chips and the
    *  Fast toggle — see status-widgets.ts. Absent → treated as 'claude', so a
    *  caller that hasn't been wired yet hides nothing (spec §11). */
@@ -894,7 +899,7 @@ const formatCostUsd = (usd: number) => (usd < 0.01 ? '<$0.01' : `$${usd.toFixed(
 const INPUT_NOTE = 'Input is counted per request — a long turn re-sends its history each step, and that is what you are billed for.';
 
 export default function StatusBar({
-  statusData, onRunSync, onOpenSync, model, modelProviderType, provider,
+  statusData, onRunSync, onOpenSync, model, modelProviderType, provider, usagePlan,
   permissionMode, onCyclePermission, fast, effort, onOpenModelPicker,
   sessionId, onDispatch,
   openTasksCounts, onOpenOpenTasks,
@@ -918,7 +923,18 @@ export default function StatusBar({
   // never renders here, whatever the user's saved on/off choice says. The choice
   // itself is untouched and returns the moment they switch back.
   const runtime: SessionRuntime = provider ?? 'claude';
-  const show = (id: WidgetId) => visible.has(id) && widgetApplies(id, runtime);
+  // A ChatGPT-plan session HAS rolling windows, so the two chips the runtime
+  // gate reserves for Claude Code apply again — fed with the ChatGPT windows
+  // App put in `usage` for exactly this session.
+  const chatgptWindows = usagePlan === 'chatgpt';
+  const show = (id: WidgetId) => visible.has(id)
+    && (widgetApplies(id, runtime) || (chatgptWindows && (id === 'usage-5h' || id === 'usage-7d')));
+  // Where a usage chip goes when clicked: the Claude account page, or — for a
+  // ChatGPT plan — the Model Providers row that shows the plan and its windows.
+  const openUsage = () => chatgptWindows
+    ? window.dispatchEvent(new CustomEvent('youcoded:open-model-providers'))
+    : window.claude.shell.openExternal('https://claude.ai/settings/usage');
+  const usageTitle = chatgptWindows ? 'Your ChatGPT plan — click to open Model Providers' : 'View usage on claude.ai';
   const ss = sessionStats; // shorthand
 
   // Native-runtime chips (Task 12). Non-null only for native sessions that have
@@ -1089,9 +1105,9 @@ export default function StatusBar({
       {/* Rate limits */}
       {show('usage-5h') && usage?.five_hour != null && (
         <button
-          onClick={() => window.claude.shell.openExternal('https://claude.ai/settings/usage')}
+          onClick={openUsage}
           className="flex items-center gap-1 sm:gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:bg-inset transition-colors"
-          title="View usage on claude.ai"
+          title={usageTitle}
         >
           <span>5h:</span>
           <span className={utilizationColor(usage.five_hour.utilization)}>
@@ -1102,9 +1118,9 @@ export default function StatusBar({
       )}
       {show('usage-7d') && usage?.seven_day != null && (
         <button
-          onClick={() => window.claude.shell.openExternal('https://claude.ai/settings/usage')}
+          onClick={openUsage}
           className="flex items-center gap-1 sm:gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:bg-inset transition-colors"
-          title="View usage on claude.ai"
+          title={usageTitle}
         >
           <span>7d:</span>
           <span className={utilizationColor(usage.seven_day.utilization)}>

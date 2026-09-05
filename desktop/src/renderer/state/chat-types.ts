@@ -131,6 +131,10 @@ export interface UsageSnapshot {
   fiveHourResetsAt: string | null;
   sevenDayUtilization: number | null;
   sevenDayResetsAt: string | null;
+  /** Whose windows the four fields above are: the Claude subscription (the
+   *  default, and the only plan before 2026-09-04) or the ChatGPT plan a
+   *  native session is bound to. The card names the plan in its scope line. */
+  subscriptionPlan?: 'claude' | 'chatgpt';
 
   // --- Native (YouCoded-runtime) sessions (spec §10) ---
   // A native session runs no Claude Code statusline, so the fields above are

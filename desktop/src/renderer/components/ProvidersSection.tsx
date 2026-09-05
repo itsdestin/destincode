@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button, FieldError, InputGroup, Select, TextInput, Toggle } from './ui';
-import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/provider-types';
+import { isLocalEndpoint, type ProviderStatus, type ProviderConfig, type ProviderType } from '../../shared/provider-types';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
 // test, enable/disable, and remove the model providers the NATIVE runtime binds
@@ -88,6 +88,8 @@ const safeProviders = {
 // below the row carries the detailed install/status controls.
 function stateWord(p: ProviderStatus): string {
   if (p.type === 'local-engine') return p.ready ? 'Installed' : 'Not installed';
+  // Keyless like the local engine: `ready` is "signed in" (shared/chatgpt-types.ts).
+  if (p.type === 'chatgpt') return p.ready ? 'Signed in' : 'Not signed in';
   if (!p.enabled) return 'Disabled';
   if (p.ready) return 'Connected';
   // enabled && !ready && not local → the key is missing (ready already accounts
@@ -115,7 +117,12 @@ const ADD_TYPE_SELECT_OPTIONS = ADD_TYPE_OPTIONS.map((o) => ({ value: o.value as
 // BOTH the local-engine row (managed in Local Models) and the openrouter row
 // (managed by the section's own Connect-to-OpenRouter control). What's left is
 // the "add your own API provider" list.
-export default function ProvidersSection({ embedded = false }: { embedded?: boolean } = {}) {
+// `embedded`: which GROUP of the Model Providers popup this list is inside.
+// 'cloud' = the API-key providers and custom endpoints on other machines, under
+// the OpenRouter card; 'local' = custom endpoints on this computer (Ollama, LM
+// Studio), under Local Models. Only the cloud list offers "Add provider" — a
+// local endpoint added there files itself under Local Models once saved.
+export default function ProvidersSection({ embedded = false }: { embedded?: false | 'cloud' | 'local' } = {}) {
   // Gate the ENTIRE section on native support — hidden in production until
   // Phase 2 ungates. Read once (it's a static boolean, no IPC round-trip).
   const supported = window.claude?.native?.supported === true;
@@ -142,11 +149,18 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
 
   if (!supported) return null;
 
-  // In embedded mode the local-engine row (managed in Local Models) AND the
-  // openrouter row (managed by the section's own Connect control) are hidden.
+  // Embedded, the rows the popup draws as its own cards (local engine,
+  // OpenRouter, ChatGPT) are hidden, and custom endpoints split by address:
+  // this computer → the 'local' list, anywhere else → the 'cloud' list.
   const visibleRows = rows === null
     ? null
-    : (embedded ? rows.filter((p) => p.type !== 'local-engine' && p.type !== 'openrouter') : rows);
+    : !embedded ? rows
+    : rows.filter((p) => {
+        if (p.type === 'local-engine' || p.type === 'openrouter' || p.type === 'chatgpt') return false;
+        const local = p.type === 'openai-compatible' && isLocalEndpoint(p.baseUrl);
+        return embedded === 'local' ? local : !local;
+      });
+  const canAdd = embedded !== 'local';
 
   return (
     <section>
@@ -180,7 +194,7 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
             <ProviderRow key={p.id} provider={p} onChanged={refresh} />
           ))}
 
-          {adding ? (
+          {!canAdd ? null : adding ? (
             <AddProviderForm onDone={async () => { setAdding(false); await refresh(); }} onCancel={() => setAdding(false)} />
           ) : (
             <Button variant="secondary" onClick={() => setAdding(true)} className="w-full py-2.5">
