@@ -145,8 +145,14 @@ export class EngineManager extends EventEmitter {
     // `private` modifier was storing a dead reference on every instance.
     userDataDir: string,
     private port: number,
-    /** Test seams (spec §5: mocked subprocess + fetch). */
-    private opts: { fetchImpl?: typeof fetch; supervisorOpts?: Record<string, unknown> } = {}
+    /** Test seams (spec §5: mocked subprocess + fetch). `readHardware` stands in
+     *  for the chip/prerequisite probe so a test can drive its FAILURE path —
+     *  the real one asks the machine, and a machine cannot be made to fail. */
+    private opts: {
+      fetchImpl?: typeof fetch;
+      supervisorOpts?: Record<string, unknown>;
+      readHardware?: (inst: InstalledEngine | null) => Promise<{ options: BackendOption[]; deviceName: string | null }>;
+    } = {}
   ) {
     super();
     this.acquisition = new EngineAcquisition(path.join(userDataDir, 'engine'), opts.fetchImpl);
@@ -162,25 +168,44 @@ export class EngineManager extends EventEmitter {
   /** The hardware answers the card needs: which faster builds this machine may
    *  be offered, and the name of the chip the engine says it will run on.
    *
-   *  Cached and filled OFF the first status() call, not during it. Reading them
-   *  shells out (nvidia-smi, PowerShell, ldconfig), and status() is called on
-   *  every engine event and every IPC status request — blocking the main process
-   *  there would freeze the window for as long as a hung driver tool takes to
-   *  time out. So the first call answers instantly with the fields absent, the
-   *  reading happens on the next tick, and the 'status-changed' push carries the
-   *  filled-in version a moment later. `hardwareWarming` makes that happen once. */
+   *  WHY these are not simply computed inside status(): finding them out means
+   *  ASKING THE MACHINE — running `nvidia-smi`, a PowerShell query against the
+   *  display-driver registry, and `ldconfig` — and every one of those can take a
+   *  moment, or a long moment if a graphics driver is wedged (the Windows probes
+   *  are capped at four seconds EACH). status() is called on every engine event
+   *  and on every status request from the screen, and it is synchronous, so
+   *  doing that work inside it would freeze the whole window each time.
+   *
+   *  So: the first status() answers instantly with these two fields simply
+   *  absent (the screen reads an absent list as "not known yet", not as
+   *  "nothing to offer"), the asking happens on the next tick, and the
+   *  'status-changed' push delivers the filled-in answer a moment later.
+   *  `hardwareWarming` makes that happen exactly once per app run.
+   *
+   *  The push MUST fire on the failure path too. It is the only thing that ever
+   *  delivers these fields, so a missed one leaves the card waiting forever for
+   *  a second status that never comes — which looks exactly like a hung app. */
   private hardware: { options: BackendOption[]; deviceName: string | null } | null = null;
   private hardwareWarming = false;
 
   private warmHardware(inst: InstalledEngine | null): void {
     if (this.hardware || this.hardwareWarming) return;
     this.hardwareWarming = true;
+    const read = this.opts.readHardware ?? readHardwareOffer;
     setImmediate(() => {
-      void readHardwareOffer(inst)
-        .then((h) => { this.hardware = h; })
-        // A probe that throws must not take the card down: no offer, no name.
-        .catch(() => { this.hardware = { options: [], deviceName: null }; })
-        .finally(() => { this.hardwareWarming = false; this.emit('status-changed'); });
+      void (async () => {
+        try {
+          this.hardware = await read(inst);
+        } catch {
+          // A probe that throws still has to SETTLE: record "nothing to offer,
+          // no name" so the push below carries a real answer instead of nothing.
+          this.hardware = { options: [], deviceName: null };
+        }
+        this.hardwareWarming = false;
+        // Deliberately outside the try/catch, and after both assignments: this
+        // one line is what the card is waiting on, on both paths.
+        this.emit('status-changed');
+      })();
     });
   }
 

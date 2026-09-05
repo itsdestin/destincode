@@ -41,6 +41,69 @@ describe('selectInstallAsset (Fix: platforms without the preferred backend)', ()
   });
 });
 
+// The chip/prerequisite probe runs OFF the first status() call, so the two
+// fields it fills arrive on a 'status-changed' push rather than in the answer
+// that triggered it. That push is the only delivery there is — if it can be
+// missed, the card waits forever for a second status that never comes.
+// (2026-09-05 local-engine upgrades §A3.)
+describe('EngineManager — the deferred hardware probe', () => {
+  const settled = () => new Promise((r) => setTimeout(r, 0));
+
+  it('status() answers immediately without the fields, then pushes them', async () => {
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999, {
+      readHardware: async () => ({
+        options: [{ backend: 'rocm', label: 'Switch to ROCm (faster on AMD)', state: 'ready' }],
+        deviceName: 'AMD Radeon 8060S Graphics',
+      }),
+    });
+    let pushes = 0;
+    mgr.on('status-changed', () => { pushes += 1; });
+
+    // The first answer must not block on the probe, so it cannot carry it.
+    const first = mgr.status();
+    expect(first.backendOptions).toBeUndefined();
+    expect(first.deviceName).toBeUndefined();
+
+    await settled();
+    expect(pushes).toBe(1);
+    const second = mgr.status();
+    expect(second.backendOptions?.map((o) => o.backend)).toEqual(['rocm']);
+    expect(second.deviceName).toBe('AMD Radeon 8060S Graphics');
+  });
+
+  it('a probe that THROWS still pushes, and settles on "nothing to offer"', async () => {
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999, {
+      readHardware: async () => { throw new Error('nvidia-smi wedged'); },
+    });
+    let pushes = 0;
+    mgr.on('status-changed', () => { pushes += 1; });
+
+    mgr.status();
+    await settled();
+    // The push fired on the failure path — this is the assertion that keeps the
+    // card from hanging when a graphics driver misbehaves.
+    expect(pushes).toBe(1);
+    const s = mgr.status();
+    expect(s.backendOptions).toEqual([]);
+    expect(s.deviceName).toBeNull();
+  });
+
+  it('asks the machine ONCE, however many times status() is called', async () => {
+    plantInstall();
+    let calls = 0;
+    const mgr = new EngineManager(home, userData, 9999, {
+      readHardware: async () => { calls += 1; return { options: [], deviceName: null }; },
+    });
+    mgr.status(); mgr.status(); mgr.status();
+    await settled();
+    mgr.status();
+    await settled();
+    expect(calls).toBe(1);
+  });
+});
+
 describe('EngineManager', () => {
   it('status(): not-installed before any install; installed afterwards', () => {
     const mgr = new EngineManager(home, userData, 9999);

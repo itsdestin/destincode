@@ -280,19 +280,34 @@ describe('backendOptions — every gate', () => {
 });
 
 describe('gpuDeviceName — the marker\'s device list', () => {
+  // The shape engine-acquisition writes (T2): the engine's own device id
+  // verbatim, the name with its parentheses intact, totalMiB/freeMiB that are
+  // null when unmeasured, and the writer's own isGpu classification.
   it('takes the first GPU device and strips the driver\'s parenthetical', () => {
-    const devices = [{ backend: 'ROCm0', name: 'AMD Radeon 8060S Graphics (RADV GFX1151)', totalMiB: 65536, freeMiB: 60000 }];
+    const devices = [{ backend: 'ROCm0', name: 'AMD Radeon 8060S Graphics (RADV GFX1151)', totalMiB: 65536, freeMiB: 60000, isGpu: true }];
     expect(gpuDeviceName(devices)).toBe('AMD Radeon 8060S Graphics');
   });
-  it('skips CPU rows and returns the GPU behind them', () => {
-    const devices = [
-      { backend: 'CPU', name: 'llvmpipe (LLVM 19.1.0, 256 bits)', totalMiB: 0, freeMiB: 0 },
-      { backend: 'Vulkan0', name: 'AMD Radeon 8060S Graphics', totalMiB: 65536, freeMiB: 60000 },
-    ];
-    expect(gpuDeviceName(devices)).toBe('AMD Radeon 8060S Graphics');
+  // The exact two-device reading captured from this machine's own
+  // `llama-server --list-devices` (engine-acquisition.test.ts, 2026-09-05),
+  // parsed into the marker shape. Note the software renderer's 124406 MiB:
+  // that is system RAM, not a graphics chip.
+  const REAL_GPU = { backend: 'Vulkan0', name: 'AMD Radeon 8060S Graphics (RADV STRIX_HALO)', totalMiB: 86016, freeMiB: 83633, isGpu: true };
+  const REAL_LLVMPIPE = { backend: 'Vulkan1', name: 'llvmpipe (LLVM 22.1.6, 256 bits)', totalMiB: 124406, freeMiB: 80073, isGpu: false };
+
+  it('skips a software renderer BY ITS isGpu FLAG, not by its backend id', () => {
+    // The bug this pins: llvmpipe is reported as `Vulkan0`/`Vulkan1`, NEVER as
+    // `CPU`, so a guess based on the backend id would have shown the user
+    // "llvmpipe" as their graphics chip while the processor did all the work.
+    expect(gpuDeviceName([REAL_GPU, REAL_LLVMPIPE])).toBe('AMD Radeon 8060S Graphics');
+    // …and device order is not a contract, so the reverse must work too.
+    expect(gpuDeviceName([REAL_LLVMPIPE, REAL_GPU])).toBe('AMD Radeon 8060S Graphics');
   });
-  it('a CPU-only install has no GPU name — the card says "Processor only"', () => {
-    expect(gpuDeviceName([{ backend: 'CPU', name: 'llvmpipe', totalMiB: 0, freeMiB: 0 }])).toBeNull();
+  it('a machine with only a software renderer has no GPU name — "Processor only"', () => {
+    expect(gpuDeviceName([REAL_LLVMPIPE])).toBeNull();
+  });
+  it('a device with unmeasured memory is still a GPU — null MiB is not "absent"', () => {
+    expect(gpuDeviceName([{ backend: 'ROCm0', name: 'AMD Radeon 8060S Graphics', totalMiB: null, freeMiB: null, isGpu: true }]))
+      .toBe('AMD Radeon 8060S Graphics');
   });
   it('a marker written before the devices field existed degrades to null, not a crash', () => {
     // Installs made before T2 landed simply have no `devices` key.
@@ -300,12 +315,16 @@ describe('gpuDeviceName — the marker\'s device list', () => {
     expect(gpuDeviceName(null)).toBeNull();
     expect(gpuDeviceName([])).toBeNull();
   });
+  it('a row whose isGpu cannot be read is skipped, never assumed', () => {
+    expect(gpuDeviceName([{ backend: 'ROCm0', name: 'Some Card' }])).toBeNull();
+    expect(gpuDeviceName([{ backend: 'ROCm0', name: 'Some Card', isGpu: 'yes' }])).toBeNull();
+  });
   it('junk in the marker is ignored rather than rendered', () => {
     expect(gpuDeviceName('ROCm0: a card')).toBeNull();
-    expect(gpuDeviceName([null, 7, { name: '' }])).toBeNull();
+    expect(gpuDeviceName([null, 7, { name: '', isGpu: true }])).toBeNull();
   });
   it('a name that is nothing BUT a parenthetical keeps its original text', () => {
     // Stripping to an empty string would put a blank where a name should be.
-    expect(gpuDeviceName([{ backend: 'ROCm0', name: '(unknown device)' }])).toBe('(unknown device)');
+    expect(gpuDeviceName([{ backend: 'ROCm0', name: '(unknown device)', isGpu: true }])).toBe('(unknown device)');
   });
 });

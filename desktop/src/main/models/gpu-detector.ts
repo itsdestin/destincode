@@ -427,23 +427,34 @@ export function backendOptions(input: BackendOptionInput): BackendOption[] {
 /** The device name to show on the card, from the `.complete` marker's `devices`
  *  list (written by engine-acquisition from `llama-server --list-devices`).
  *
- *  Deliberately shape-checked rather than typed: the marker is written by a
- *  different module, an install made before that field existed has no `devices`
- *  key at all, and a marker is a file on disk that can be anything. Returns null
- *  for "no GPU device" — the card renders that as "Processor only".
+ *  "Is this a real graphics chip?" is answered by the writer's own `isGpu`
+ *  flag, NEVER re-derived here. An earlier draft guessed at it by looking for a
+ *  `backend` id starting with 'CPU', which never fires: the engine prints its
+ *  own device id verbatim, and on this machine the software renderer llvmpipe
+ *  comes back as `backend: 'Vulkan0'` with `isGpu: false`. Two modules deciding
+ *  separately what counts as a GPU is how the card ends up claiming hardware
+ *  acceleration for work the processor is doing.
  *
- *  The parenthetical is stripped because llama.cpp appends the driver's own
- *  suffix: 'AMD Radeon 8060S Graphics (RADV GFX1151)' is one chip described
- *  twice, and the half in brackets means nothing to a reader. */
+ *  Matches `firstGpuDevice()` in engine-acquisition.ts, which is the same rule
+ *  in the module that owns the marker. It is not imported because that function
+ *  lands with T2, which is not merged here yet; when it is, this can call it.
+ *
+ *  Deliberately shape-checked rather than typed: an install made before the
+ *  field existed has no `devices` key at all, and a marker is a file on disk
+ *  that can be anything. A device whose `isGpu` cannot be read is skipped
+ *  rather than assumed — we never claim a graphics chip we could not confirm.
+ *  Returns null for "no GPU device", which the card renders as "Processor only".
+ *
+ *  The parenthetical is stripped because the driver appends its own name:
+ *  'AMD Radeon 8060S Graphics (RADV GFX1151)' is one chip described twice, and
+ *  the half in brackets means nothing to a reader. */
 export function gpuDeviceName(devices: unknown): string | null {
   if (!Array.isArray(devices)) return null;
   for (const d of devices) {
     if (!d || typeof d !== 'object') continue;
-    const { backend, name } = d as { backend?: unknown; name?: unknown };
+    const { isGpu, name } = d as { isGpu?: unknown; name?: unknown };
+    if (isGpu !== true) continue;
     if (typeof name !== 'string' || !name.trim()) continue;
-    // A CPU row is labelled by its backend ('CPU'); llvmpipe and SwiftShader are
-    // software renderers and are classified CPU by the writer for the same reason.
-    if (typeof backend === 'string' && /^cpu/i.test(backend.trim())) continue;
     const stripped = name.replace(/\s*\([^)]*\)\s*$/, '').trim();
     return stripped || name.trim();
   }
