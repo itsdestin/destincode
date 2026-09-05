@@ -418,3 +418,108 @@ persists across the two "runs" as scripted (they are not isolated fresh
 server starts). This does not weaken the verdict — b2 (the first-ever
 occurrence of prefix B) is the true cold-prefix comparison point, and it cost
 2207 prompt tokens vs a2's 17.
+
+## Stage-two probes — re-run on the pinned build (2026-09-04)
+
+The specialists spec (§8) names three live probes that must be answered before the
+stage-two (plans) design is final. The 2026-08-12 numbers above were taken on a
+non-pinned build (`b9957`) and probe 2 was *sequential*. All three were re-run on
+2026-09-04 on the Linux dev box (Strix Halo, 121 GB unified memory, Vulkan) against the
+app's **pinned `b10665`** binary (the copy under `~/.config/youcoded-dev/engine/`),
+launched by hand on port 8199 with the supervisor's exact router-mode arg list and
+`-c 16384`, in two shapes: **the app's real shape (no slot flag)** and `--parallel 4`.
+Destin's live engine on 9920 was left alone.
+
+### Probe 1 — how many helpers really run at once (`probe-parallel.mjs`, now takes an N list)
+
+Qwen3.5-2B-Q8_0, `max_tokens: 24`, N simultaneous requests, **app shape (no `--parallel`)**:
+
+| N | total_ms | avg_req_ms | min_ms | max_ms | vs N×single | classification (the script's) |
+|---|----------|------------|--------|--------|-------------|----------------|
+| 1 | 475 | 475 | 475 | 475 | 100% | batched |
+| 2 | 528 | 522 | 517 | 528 | 56% | batched |
+| 4 | 907 | 900 | 892 | 907 | 48% | partial |
+| 8 | 1890 | 1465 | 878 | 1889 | 50% | partial |
+
+Reading the N=8 row: `min` 878 ms and `max` 1889 ms are two waves — four requests finish in
+about one wave's time and four wait for the first four — which is what a four-slot ceiling
+looks like from outside. N=4's average is 1.9× the single-request baseline. `--parallel 4`
+gave the same picture (390 / 556 / 799 / 1160 ms; N=8 split 787 / 1533).
+`/props?model=<id>` and the server log both say **`total_slots = 4`** in either shape.
+
+**Findings that matter to the plan card:**
+
+1. **Four helpers at once is the ceiling on this build, with or without the flag, and an
+   N=8 fan-out serializes into two waves.** `HOSTED_MAX_CONCURRENT_SPECIALISTS = 4` stands.
+2. **The two shapes divide the context differently.** With an explicit `--parallel 4` the
+   engine splits `-c` evenly (`n_ctx_slot = 4096`, `kv_unified = false`): every request gets a
+   quarter. With **the app's real shape** the engine reports `kv_unified = true` and
+   `n_ctx_slot = 16384`: every request may use the whole window, but all concurrent
+   requests draw from ONE pool of that size. Four helpers with 32k of context each on
+   Destin's `-c 128000` engine fill it; one helper alone can use all 128k. A plan's
+   per-child budgets therefore have to be summed against the shared pool, not checked one
+   at a time against `-c`. **Do not add `--parallel` to the supervisor** (the plan-1a note
+   above suggested it) without also deciding to give up the shared pool.
+
+Side finding, filed as a bug the same day: the app reads the slot count as `n_slots` from
+a model-less `GET /props`. On `b10665` the field is **`total_slots`** and only present on
+`GET /props?model=<id>` (the model-less call answers `model_path: "none"`, `n_ctx: 0`, no
+slot field). So `totalSlots` is always null in the shipped app and
+`capability-profile.ts`'s `localSlotCap(null)` caps every local model at **one** concurrent
+helper. Fix branch: `fix/engine-slot-count-field`.
+
+### Probe 2 — does prefix reuse survive PARALLEL fan-out (`probe-prefix-fanout.mjs`, new)
+
+`probe-prefix-cache.mjs` sends its requests one after another, so they share a slot; a
+plan fans children out at once, into different slots. The new probe measures that.
+Qwen3.5-2B-Q8_0, a ~2,150-token shared system prefix already seen once, N=4;
+`timings.prompt_n` = tokens actually prefilled, `cache_n` = tokens taken from cache.
+
+| shape | wave 1 (first simultaneous fan-out) | wave 2 (same prefix again) |
+|---|---|---|
+| app shape (unified KV) | 1 of 4 reused (22 tokens); 3 paid the full 2,151 — avg **71%** of a cold prefill, ~2.3 s each | all 4 reused (23 tokens, **1%**), ~0.7 s each |
+| `--parallel 4` | 2 of 4 reused; 2 paid in full — avg **48%** | all 4 reused, **1%** |
+
+Cold prefill for reference: 2,264 tokens in ~0.9 s alone; a full prefill inside a wave of
+four costs ~2–2.9 s because four prefills contend for one GPU.
+
+**Verdict: partial, in both shapes.** The engine does not copy a cached prefix into every
+slot the moment a wave arrives; whichever slots have not held that prefix pay for it. After
+one wave every slot has it and reuse is total. For the plan card: **the worst-case
+ceiling must charge a full prefill per child on the first wave** (the spec's "honest
+arithmetic" rule); a re-planning second wave over the same helpers is cheap. The 2026-08-12
+sequential result is unchanged.
+
+### Probe 3 — can a local model author a valid plan through the tool-call grammar (`probe-plan-grammar.mjs`, new)
+
+The probe defines `propose_plan` with a faithful draft of the spec §4 schema — a tree of
+steps, four kinds (`map` / `verify` / `combine` / `repeat`), enums, required lists, integer
+bounds, `additionalProperties: false`, and recursion through `$ref` for `repeat.steps` — and
+asks for a three-file review → verify → combine plan, three trials per model, through the
+harness's local-engine request shape (`tools`, `tool_choice: auto`,
+`parallel_tool_calls: false`, `max_tokens: 2048`). Ajv (strict) validates the arguments.
+
+| model | schema-valid | valid AND sensible | seconds per trial | what went wrong |
+|---|---|---|---|---|
+| gemma-4-E2B-it-Q8_0 | 0/3 | 0/3 | 14–21 | Emitted `{name, description}` steps — keys the schema forbids. The grammar was **not enforced at all** for this template, even though `/props` reports `supports_tools: true` |
+| Qwen3.5-2B-Q8_0 | 2/3 | 1/3 | 8–28 | One plan cut off mid-JSON (ran out of output budget); one valid plan mapped over one file and had no combine |
+| Qwen3.5-9B-Q8_0 | 3/3 | 3/3 | 40–44 | — |
+| Qwen3.6-35B-A3B-UD-Q6_K_XL | 2/3 | 2/3 | 47–143 | One trial answered in prose and never called the tool |
+| Qwen3.8-27B-UD-Q8_K_XL | 3/3 | 3/3 | 108–253 | — |
+
+**Verdict: plan authoring is a model-class gate, not cloud-only.** From the 9B class up,
+every local model on this machine produced a schema-valid, sensible plan every time (the
+35B's single miss was a refusal to call the tool, not a bad plan). Below that, the grammar
+is unreliable or absent. Three design consequences:
+
+1. **Gate `propose_plan` on the same model class as the `Task` tool** (spec §4 already
+   allows this); the 2B class must not be offered it.
+2. **Validate on the app side and allow one retry** (spec §8 "one-retry schema validation")
+   — the engine's grammar cannot be trusted to have run, as the gemma case proves, and a
+   truncated JSON body is a real failure mode even when it did.
+3. **Plan authoring on a local model is slow**: 40 s on the 9B, two to four minutes on the
+   27B, because the model reasons at length before the call. The plan card needs a
+   "writing the plan…" state, not a spinner that looks hung.
+
+Re-run all three (`probe-parallel.mjs <base> <model> 1,2,4,8`, `probe-prefix-fanout.mjs`,
+`probe-plan-grammar.mjs`) on every engine bump; results replace this section.
