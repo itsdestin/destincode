@@ -27,13 +27,26 @@ const assetRowsFrom = (release: unknown, tag: string, gfx: Record<string, string
   buildAssetRows(release, tag, gfx) as { rows: GeneratedRow[]; problems: string[] };
 const aliasesFrom = (help: string) => parseArgAliases(help) as Record<string, string>;
 
-// Trimmed to the assets the ROCm/CUDA rows need; digests are the real ones.
+// EVERY asset a pinned row is built from, digests verbatim from the b10665
+// release API. All of them, not just the new ROCm/CUDA ones: with a partial
+// fixture the "emits exactly the rows that are committed" test below silently
+// checks only the rows the fixture happens to cover, and a hand-edited Vulkan
+// or Metal checksum would ship green.
 const RELEASE = {
   assets: [
     { name: 'cudart-llama-bin-win-cuda-12.4-x64.zip', digest: 'sha256:8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6' },
+    { name: 'llama-b10665-bin-win-vulkan-x64.zip', digest: 'sha256:9bee8af29495148c04c62cd2e254cf6310686d89025f04a4884eb3d7c4031f0d' },
+    { name: 'llama-b10665-bin-win-cpu-x64.zip', digest: 'sha256:4b039869c48c2f5842ccc0c005cb36437bac33476be2d661f85e2814a7681af0' },
+    { name: 'llama-b10665-bin-win-cpu-arm64.zip', digest: 'sha256:fa296ac9312b894e8ca1c620623a0620907202ae023b957959997b64abf7ec02' },
     { name: 'llama-b10665-bin-win-cuda-12.4-x64.zip', digest: 'sha256:d9b05b81a3f60d30f6625e5561139af505a7ac1fd933c82ee9067ebbada0887a' },
     { name: 'llama-b10665-bin-win-rocm-7.14-x64.zip', digest: 'sha256:081c1a079e7987ee9d36d8cd90a16e0b8e04f1c80c2e5183d694bf31d1c3db61' },
+    { name: 'llama-b10665-bin-macos-arm64.tar.gz', digest: 'sha256:bea206745e751cf8957eb729cc8f2950ca5e5340e29aaa9a055a0e4100dabdd1' },
+    { name: 'llama-b10665-bin-macos-x64.tar.gz', digest: 'sha256:6c976150c7f74509c60b7cfa04ee31d734d54bcb35fe272cccaa3a2f7f6946aa' },
+    { name: 'llama-b10665-bin-ubuntu-vulkan-x64.tar.gz', digest: 'sha256:92f8d63384132e6a70b3b106996a5dce06121bbf770eef68500b1cfb7ff22bcc' },
+    { name: 'llama-b10665-bin-ubuntu-x64.tar.gz', digest: 'sha256:7d065b7fe283eac932929bbc92b6e39b58551132a6291d7ab10ea9116997cb4e' },
     { name: 'llama-b10665-bin-ubuntu-rocm-7.14-x64.tar.gz', digest: 'sha256:e5ac52287056b9bd35b6e01e6f5d07210f081313691a7d958944833ab90232e4' },
+    { name: 'llama-b10665-bin-ubuntu-vulkan-arm64.tar.gz', digest: 'sha256:746df9199ddfcc11f135f2750d1b38ce73564557642c38bef735fd2f08a9b8f6' },
+    { name: 'llama-b10665-bin-ubuntu-arm64.tar.gz', digest: 'sha256:36983c882d7a88cbc02c190a3980cf397e526d588dd66c684b8cd53385a242a6' },
   ],
 };
 
@@ -130,7 +143,10 @@ describe('generate-engine-pin: asset rows', () => {
   });
 
   it('emits exactly the rows that are committed in engine-pin.ts', () => {
-    const { rows } = assetRowsFrom(RELEASE, TAG, gfxTargetsFrom(WORKFLOW));
+    const { rows, problems } = assetRowsFrom(RELEASE, TAG, gfxTargetsFrom(WORKFLOW));
+    expect(problems).toEqual([]);
+    // Both directions, so neither a dropped row nor a hand-added one passes.
+    expect(rows.length).toBe(ENGINE_ASSETS.length);
     for (const row of rows) {
       const pinned = pickAsset(row.platform, row.arch, row.backend as EngineBackend)!;
       expect(formatAssetRow(row)).toBe(formatAssetRow(pinned));
@@ -177,6 +193,19 @@ describe('generate-engine-pin: CLI alias table', () => {
     expect(table['-']).toBeUndefined();
     expect(table['size']).toBeUndefined();
     expect(table['whether']).toBeUndefined();
+  });
+
+  it('answers an inherited Object member with the key, not with a function', () => {
+    // ARG_ALIASES is prototype-less on purpose. On a plain object literal
+    // `ARG_ALIASES['valueOf'] ?? 'valueOf'` returns a FUNCTION — not nullish,
+    // so the fallback never fires — and that Function goes on to be treated as
+    // a canonical option name by whatever normalises through this table.
+    const canonical = (k: string) => ARG_ALIASES[k] ?? k;
+    for (const k of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__', 'isPrototypeOf']) {
+      expect(canonical(k)).toBe(k);
+      expect(typeof canonical(k)).toBe('string');
+    }
+    expect(Object.getPrototypeOf(ARG_ALIASES)).toBeNull();
   });
 
   it('the committed ARG_ALIASES agrees with the parser on every fixture line', () => {

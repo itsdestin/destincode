@@ -27,8 +27,17 @@ export interface EngineAsset {
   // A SECOND archive that must be unpacked next to the engine for it to start
   // at all. The Windows CUDA zips ship ggml-cuda.dll but not the CUDA runtime,
   // so on a PC without the toolkit on PATH the engine dies at load; upstream
-  // publishes that runtime as its own `cudart-…` asset. Unset for every backend
-  // that is self-contained — the ROCm zip already bundles amdhip64_7.dll.
+  // publishes that runtime as its own `cudart-…` asset.
+  //
+  // The two ROCm rows are unset for TWO DIFFERENT reasons, and the Linux one is
+  // not "it ships everything it needs". The Windows ROCm zip genuinely is
+  // self-contained — it bundles amdhip64_7.dll. The LINUX tarball is NOT:
+  // listing b10665's 62 entries on 2026-09-05 found libggml-hip.so but no
+  // libamdhip64, hipblas, rocblas or amd_comgr at all. It has no runtime row
+  // because upstream publishes none to point at; the HIP and BLAS libraries
+  // have to already be on the machine, which is why Linux ROCm needs the
+  // system-prerequisite check in rocm-prereqs.ts (design §A3) and Windows
+  // does not.
   runtime?: { assetName: string; sha256: string };
   // The AMD compute targets this ROCm build was COMPILED for, straight out of
   // upstream's release workflow at the tag. A chip outside this list has no
@@ -67,7 +76,15 @@ export const ENGINE_ASSETS: EngineAsset[] = [
 // would rewrite a user's `--no-mmap` into `mmap` and silently do the opposite
 // of what they asked; a caller that wants one bucket for both strips the
 // leading `no-` itself.
-export const ARG_ALIASES: Record<string, string> = {
+// PROTOTYPE-LESS ON PURPOSE. Read as `ARG_ALIASES[key] ?? key`, a plain object
+// literal would answer `constructor`, `toString`, `valueOf`, `hasOwnProperty`
+// and `__proto__` with an inherited FUNCTION — not nullish, so the `?? key`
+// fallback never fires. A user typing `--valueOf 1` into Advanced settings
+// would then get a Function as their "canonical" option name, sail past a
+// string denylist, and be stringified into the preset file, where any
+// unrecognised key makes llama-server exit 1 at startup — with nothing on
+// screen tracing "the engine won't start" back to what they typed.
+export const ARG_ALIASES: Record<string, string> = Object.assign(Object.create(null), {
   C: 'cpu-mask', Cb: 'cpu-mask-batch', Cbd: 'cpu-mask-batch-draft', Cd: 'cpu-mask-draft',
   Cr: 'cpu-range', Crb: 'cpu-range-batch', Crd: 'cpu-range-draft', HF_TOKEN: 'hf-token',
   LLAMA_API_KEY: 'api-key', LLAMA_ARG_AGENT: 'agent', LLAMA_ARG_ALIAS: 'alias',
@@ -183,7 +200,7 @@ export const ARG_ALIASES: Record<string, string> = {
   ub: 'ubatch-size', v: 'log-verbose', verbose: 'log-verbose', verbosity: 'log-verbosity',
   webui: 'ui', 'webui-config': 'ui-config', 'webui-config-file': 'ui-config-file',
   'webui-mcp-proxy': 'ui-mcp-proxy',
-};
+});
 
 export function pickAsset(
   platform: NodeJS.Platform | string, arch: string, backend: EngineBackend

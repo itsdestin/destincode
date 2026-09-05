@@ -235,8 +235,11 @@ async function main() {
   const binaryIdx = args.indexOf('--binary');
   const binary = binaryIdx >= 0 ? args[binaryIdx + 1] : null;
   // Drop --binary AND its value before looking for the tag, or a path argument
-  // gets mistaken for the release tag and every asset lookup misses.
-  const positional = args.filter((a, i) => !a.startsWith('--') && i !== binaryIdx + 1);
+  // gets mistaken for the release tag and every asset lookup misses. The
+  // binaryIdx >= 0 guard is load-bearing: without --binary, binaryIdx is -1 and
+  // the test collapses to `i !== 0`, which throws the TAG away and makes the
+  // documented tag-only invocation exit with a usage error.
+  const positional = args.filter((a, i) => !a.startsWith('--') && !(binaryIdx >= 0 && i === binaryIdx + 1));
   const tag = positional[0];
   if (!tag || (binaryIdx >= 0 && !binary)) {
     console.error('usage: generate-engine-pin.mjs <release-tag> [--binary <path/to/llama-server>]');
@@ -263,7 +266,10 @@ async function main() {
   // `--help` only prints and exits; it opens no port and loads no model.
   const { stdout } = await execFileAsync(binary, ['--help'], { maxBuffer: 8 * 1024 * 1024 });
   const table = parseArgAliases(stdout);
-  console.log(`\n// ARG_ALIASES (${Object.keys(table).length} aliases, from ${tag} --help)\n{\n${formatArgAliases(table)}\n}`);
+  // Emitted WITH the Object.assign(Object.create(null), …) wrapper, so pasting
+  // it keeps the table prototype-less — see the WHY on ARG_ALIASES itself.
+  console.log(`\n// ARG_ALIASES (${Object.keys(table).length} aliases, from ${tag} --help)`);
+  console.log(`export const ARG_ALIASES: Record<string, string> = Object.assign(Object.create(null), {\n${formatArgAliases(table)}\n});`);
 }
 
 // Run the fetching half ONLY when executed directly. Importing this file (the
