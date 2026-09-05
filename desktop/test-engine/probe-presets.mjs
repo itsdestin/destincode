@@ -45,7 +45,8 @@ const modelId = gguf.replace(/\.gguf$/i, '');
 // and, worse, would mean the real option's name moved and is no longer covered.
 const RESERVED_KEYS = [
   'ctx-size', 'n-gpu-layers', 'sleep-idle-seconds', 'host', 'port', 'model', 'models-dir',
-  'models-preset', 'models-max', 'mmproj', 'alias', 'hf-repo', 'hf-file', 'hf-token',
+  'models-preset', 'models-max', 'mmproj', 'alias', 'cache-type-k', 'cache-type-v',
+  'hf-repo', 'hf-file', 'hf-token',
   'hf-repo-draft', 'model-url', 'docker-repo', 'mmproj-url', 'embd-gemma-default',
   'fim-qwen-1.5b-default', 'fim-qwen-3b-default', 'fim-qwen-7b-default', 'fim-qwen-7b-spec',
   'fim-qwen-14b-spec', 'fim-qwen-30b-default', 'gpt-oss-20b-default', 'gpt-oss-120b-default',

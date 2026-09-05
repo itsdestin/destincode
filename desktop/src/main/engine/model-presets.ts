@@ -60,6 +60,7 @@ const FLAG_TOKEN_RE = /^--[A-Za-z_][A-Za-z0-9_.-]*$/;
 type ReservedReason =
   | 'controls'    // the three the Context length / GPU layers / Keep loaded controls write
   | 'managed'     // ours, with no control to point the user at
+  | 'engine-wide' // ours, and set for EVERY model at once — a per-model value is ignored
   | 'network' | 'remote' | 'writes' | 'runs' | 'exposes' | 'connection';
 
 const RESERVED: ReadonlyMap<string, ReservedReason> = new Map<string, ReservedReason>([
@@ -76,6 +77,17 @@ const RESERVED: ReadonlyMap<string, ReservedReason> = new Map<string, ReservedRe
   ['host', 'managed'], ['port', 'managed'], ['model', 'managed'],
   ['models-dir', 'managed'], ['models-preset', 'managed'], ['models-max', 'managed'],
   ['mmproj', 'managed'], ['alias', 'managed'],
+
+  // --- Set once, for every model, on the engine's command line ---------------
+  // The compressed-cache speed switch spawns as `--cache-type-k q8_0` on the
+  // ROUTER's own command line, and llama.cpp merges that command line over every
+  // per-model preset (`preset.merge(base_preset)`, server-models.cpp) — so a
+  // per-model `cache-type-k` is read, accepted, and then silently overridden.
+  // Its own reason because its own sentence is different: these are not managed
+  // out of reach like --host, they LOOK settable and would do nothing. Without
+  // this entry a user could type `--cache-type-k f16`, watch it pass the binary
+  // check, save it, and get no change at all with nothing to explain why.
+  ['cache-type-k', 'engine-wide'], ['cache-type-v', 'engine-wide'],
 
   // --- Fetches over the network --------------------------------------------
   // llama.cpp strips `models-dir/max/preset/autoload`, `api-key` and the two
@@ -145,6 +157,7 @@ export const RESERVED_KEYS: ReadonlySet<string> = new Set(RESERVED.keys());
 const RESERVED_SENTENCE: Record<ReservedReason, string> = {
   controls: 'is set from the controls above. Change it there instead.',
   managed: 'is set by YouCoded and cannot be changed here.',
+  'engine-wide': 'is set by YouCoded for every model at once, so setting it for one model here would have no effect.',
   network: 'is not allowed here: it would make the engine fetch files from the internet on its own.',
   remote: "is not allowed here: it would send this model's work — your prompts and the model itself — to another computer over the network.",
   writes: 'is not allowed here: it would make the engine write files outside your models folder.',

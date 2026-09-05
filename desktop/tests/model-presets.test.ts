@@ -241,7 +241,7 @@ describe('model-presets — alias normalisation and the reserved list', () => {
   });
 
   it('keeps the whole reserved list accounted for, by reason', () => {
-    // A count, so the list cannot quietly shrink. Every one of these 43 is
+    // A count, so the list cannot quietly shrink. Every one of these 45 is
     // verified to be a REAL llama-server option by probe-presets.mjs — a
     // phantom entry would refuse a flag that never existed and would mean the
     // real option's name had moved out from under the guard.
@@ -254,6 +254,7 @@ describe('model-presets — alias normalisation and the reserved list', () => {
     expect(Object.fromEntries(byReason)).toEqual({
       controls: 3,     // ctx-size, n-gpu-layers, sleep-idle-seconds — the ones with a control
       managed: 8,      // the rest of the design's signed list, with no control to point at
+      'engine-wide': 2, // cache-type-k/-v — the app sets them for every model on the router CLI
       network: 18,     // anything that fetches: hf-*, model-url, docker-repo, mmproj-url, 11 model presets
       remote: 1,       // rpc — the model's work leaves the computer
       writes: 4,       // log-file, log-prompts-dir, slot-save-path, lookup-cache-dynamic
@@ -276,6 +277,14 @@ describe('model-presets — alias normalisation and the reserved list', () => {
       ['--m /tmp/x.gguf', 'set by YouCoded and cannot be changed here'],
       ['--alias x', 'set by YouCoded and cannot be changed here'],
       ['--host 0.0.0.0', 'set by YouCoded and cannot be changed here'],
+      // …and the two the app sets for EVERY model say so, because the mechanism
+      // is different: llama.cpp merges the router's command line over every
+      // preset, so a per-model value here is read and then silently overridden.
+      // "cannot be changed here" would be a half-truth; "would have no effect"
+      // is the thing the user needs to know. Alias too — `--ctk` is the same option.
+      ['--cache-type-k f16', 'for every model at once, so setting it for one model here would have no effect'],
+      ['--ctk f16', 'for every model at once, so setting it for one model here would have no effect'],
+      ['--cache-type-v f16', 'for every model at once, so setting it for one model here would have no effect'],
     ] as Array<[string, string]>) {
       const r = parseExtraFlags(raw);
       expect(r.ok, raw).toBe(false);

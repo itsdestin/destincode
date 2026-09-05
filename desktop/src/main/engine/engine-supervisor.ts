@@ -133,10 +133,11 @@ function runTool(file: string, args: string[]): string | null {
  *  in ANY section and then exits 1 before serving anything. Returns null for the
  *  global `[*]` section: there is no model to drop, so dropping one cannot help.
  *
- *  Non-greedy up to the LAST quote on the line would swallow a model id that
- *  itself contains a quote; ids are filenames, so `it's-a-model.gguf` is real.
- *  Anchoring on `preset '` and taking everything to the end-quote of the message
- *  is what keeps such an id intact. */
+ *  The match is GREEDY on purpose — do not "fix" it to `(.+?)`. Model ids are
+ *  filenames, so `it's-a-model.gguf` is a real id; a non-greedy match would stop
+ *  at the FIRST quote inside it and hand back a truncated id that matches no
+ *  section. Greedy runs to the message's closing quote, which is the last one on
+ *  the line, and keeps such an id intact. */
 export function rejectedPresetModel(engineOutput: string): string | null {
   for (const line of engineOutput.split(/\r?\n/).reverse()) {
     const m = /not recognized in preset '(.+)'/.exec(line);
@@ -160,19 +161,30 @@ export function presetErrorLine(engineOutput: string): string {
 }
 
 /** Did the engine die because of the PRESET FILE (as opposed to a bad driver, a
- *  busy port, a broken build)? Only these three sentences mean the preset, and
- *  all three are the engine's own words:
+ *  busy port, a broken build)? Four sentences, all the engine's own words:
  *    - `option 'x' not recognized in preset 'y'`  — a key it does not know
  *    - `failed to parse server config file: <p>`  — the grammar rejected a line
  *    - `preset file does not exist`               — probed: a missing --models-preset
  *                                                   is itself a fatal startup error
- *  Anything else must NOT trigger a preset-less retry: retrying without the
- *  preset would be a second spawn that fails for the same unrelated reason, and
- *  would silently drop every per-model setting on its way. */
+ *    - `failed to open server preset file: <p>`   — probed with a chmod 000 file
+ *
+ *  The fourth is why the last clause matches the WRAPPER instead of a fifth
+ *  transcribed sentence: llama-server prints `failed to initialize router
+ *  models: %s` for every exception out of that one constructor, so matching the
+ *  wrapper tracks the binary rather than a list copied out of it at one moment.
+ *  A reworded, renamed or localised inner message then still reaches the
+ *  fallback. The three specific patterns stay because they are what the unit
+ *  tests name, and because the wrapper alone would not catch a message printed
+ *  from anywhere else.
+ *
+ *  It costs one wasted second spawn when the router fails to initialise for a
+ *  reason that is NOT the preset. That is the right trade: the wasted spawn
+ *  costs a second, and the case it buys is an engine that never starts again. */
 export function isPresetStartupFailure(engineOutput: string): boolean {
   return /not recognized in preset '/.test(engineOutput)
     || /failed to parse server config file/i.test(engineOutput)
-    || /preset file does not exist/i.test(engineOutput);
+    || /preset file does not exist/i.test(engineOutput)
+    || /failed to initialize router models/i.test(engineOutput);
 }
 
 /** Linux `ss -ltnp` → PID of the process listening on `port`. Port match is exact
@@ -374,11 +386,19 @@ export class EngineSupervisor extends EventEmitter {
    *  drops exactly that model's section: that model loses its settings and gets
    *  a `lastLoadError`; every other model runs.
    *
-   *  The second branch is the same promise for the file as a whole — a preset
-   *  the engine will not read at all (its grammar rejected a line, or the file
-   *  vanished between the write and the spawn) boots WITHOUT the preset rather
-   *  than not at all. Both branches lose per-model settings for that run and
-   *  say so through presetInForce(); a dead engine is not an option. */
+   *  Booting WITHOUT the preset is the last resort under BOTH branches, and it
+   *  is nested inside the omit-retry rather than being its alternative. The
+   *  binary names only the FIRST bad section, so with two bad models the retry
+   *  drops one and dies on the other — and if the omit-retry merely CONSUMED the
+   *  one recovery attempt, that would be a permanently dead engine by exactly
+   *  the route this code exists to prevent. That is not hypothetical: the next
+   *  engine bump that renames or drops an option turns every saved copy of it
+   *  into a bad section at once (b10665 already prints "deprecated --webui"),
+   *  and a user who put such a flag on two models would lose every local model
+   *  at the next launch with no way back from inside the app.
+   *
+   *  Both fallbacks lose per-model settings for that run and say so through
+   *  presetInForce(); a dead engine is not an option. */
   private async start(): Promise<string> {
     try {
       return await this.attemptStart({});
@@ -390,7 +410,13 @@ export class EngineSupervisor extends EventEmitter {
         // into that model's `lastLoadError` — it never got a router row to fail
         // on, so this startup rejection is the only place its failure is visible.
         this.emit('preset-model-rejected', { modelId: rejected, message: presetErrorLine(output) });
-        return this.attemptStart({ omitModelId: rejected });
+        try {
+          return await this.attemptStart({ omitModelId: rejected });
+        } catch {
+          // A second bad section (or anything else the preset does to this boot).
+          // Drop the file entirely rather than leave the user with no engine.
+          return this.attemptStart({ withoutPreset: true });
+        }
       }
       if (isPresetStartupFailure(output)) return this.attemptStart({ withoutPreset: true });
       throw err;
@@ -738,7 +764,14 @@ export class EngineSupervisor extends EventEmitter {
    *  Reads the last polled rows, so a model that has already been evicted or
    *  never loaded does not hold the engine open forever. */
   private hasKeepLoadedResident(): boolean {
-    const settings = this.config().models;
+    // Read inside a try: this runs in a setInterval callback, and NativeHome
+    // deliberately RETHROWS a non-ENOENT I/O error on config.json (EACCES, EIO).
+    // An exception thrown from a timer is uncaught — it would take the whole
+    // Electron main process down, i.e. the app would vanish because a config
+    // read failed. Unreadable config means "no keep-loaded model I can see",
+    // which lets the engine idle out exactly as it did before this setting.
+    let settings: EngineSpawnConfig['models'];
+    try { settings = this.config().models; } catch { return false; }
     if (!settings) return false;
     for (const m of this.lastModels) {
       if (m.state !== 'loaded' && m.state !== 'loading') continue;

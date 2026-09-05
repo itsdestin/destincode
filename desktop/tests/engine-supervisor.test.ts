@@ -120,18 +120,27 @@ describe('EngineSupervisor', () => {
   });
 
   it('surfaces the child\'s OWN output (the real cause) when it exits during startup', async () => {
-    const child = makeFakeChild();
-    mockSpawn.mockReturnValue(child);
-    sup = makeSupervisor(vi.fn(async () => { throw new Error('ECONNREFUSED'); }), { readyDeadlineMs: 5_000 });
-    const p = sup.ensureRunning();
-    setImmediate(() => {
-      child.stderr!.emit('data', Buffer.from(
-        "failed to initialize router models: error: '/home/x/.cache/llama.cpp' does not exist or is not a directory"
-      ));
-      child.emit('exit', 1);
+    // Every spawn gets a fresh child that dies the same way. This message comes
+    // through llama-server's `failed to initialize router models: %s` wrapper —
+    // the same wrapper a bad preset uses — so the supervisor spends ONE retry
+    // without the preset before giving up. That wasted second is deliberate: the
+    // wrapper is what makes the preset fallback track the binary instead of a
+    // list of sentences transcribed from it (see isPresetStartupFailure).
+    mockSpawn.mockImplementation(() => {
+      const child = makeFakeChild();
+      setImmediate(() => {
+        child.stderr!.emit('data', Buffer.from(
+          "failed to initialize router models: error: '/home/x/.cache/llama.cpp' does not exist or is not a directory"
+        ));
+        child.emit('exit', 1);
+      });
+      return child;
     });
+    sup = makeSupervisor(vi.fn(async () => { throw new Error('ECONNREFUSED'); }), { readyDeadlineMs: 5_000 });
     // The thrown error carries the engine's real message, NOT a hardware guess.
-    await expect(p).rejects.toThrow(/does not exist or is not a directory/i);
+    await expect(sup.ensureRunning()).rejects.toThrow(/does not exist or is not a directory/i);
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(mockSpawn.mock.calls[1][1]).not.toContain('--models-preset');
   });
 
   it('ensureRunning spawns router-mode llama-server (no -m) with the pinned flag set and LLAMA_CACHE', async () => {
@@ -509,6 +518,12 @@ describe('EngineSupervisor', () => {
 // takes every local model down with no way back from inside the app.
 // ---------------------------------------------------------------------------
 /** The router-only flags every spawn carries, whatever the settings say. */
+const BASE_ARGS_FOR = (cacheDir: string): string[] => ([
+  '--host', '127.0.0.1', '--port', '9999',
+  '--no-webui', '--jinja',
+  '--models-dir', cacheDir,
+  '--models-max', '2',
+]);
 const BASE_ARGS = [
   '--host', '127.0.0.1', '--port', '9999',
   '--no-webui', '--jinja',
@@ -638,6 +653,40 @@ describe('EngineSupervisor — a model the engine refuses', () => {
     return { dir, cleanup: () => realFs.rmSync(dir, { recursive: true, force: true }) };
   }
 
+  /** A fake llama-server that behaves like the real one: it reads the preset the
+   *  supervisor just wrote and exits 1 naming the FIRST section in the file that
+   *  carries a key it does not know. With no preset — or none of those sections
+   *  left — it comes up. `badKeys` maps model id → the flag that build refuses. */
+  function fakeEngineRefusing(_cacheDir: string, badKeys: Record<string, string>) {
+    let up = false;
+    mockSpawn.mockImplementation((_bin: string, args: string[]) => {
+      const child = makeFakeChild();
+      const ini = args.includes('--models-preset') ? (presetStore.get(PRESET_PATH) ?? '') : '';
+      const offending = Object.entries(badKeys)
+        .map(([id, flag]) => ({ id, flag, at: ini.indexOf(`[${id}]`) }))
+        .filter((e) => e.at >= 0)
+        .sort((a, b) => a.at - b.at)[0];
+      if (offending) {
+        setImmediate(() => {
+          child.stderr!.emit('data', Buffer.from(
+            'E srv llama_server: failed to initialize router models: '
+            + `option '${offending.flag}' not recognized in preset '${offending.id}'`
+          ));
+          child.emit('exit', 1);
+        });
+      } else {
+        up = true; // nothing left for it to refuse
+      }
+      return child;
+    });
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (!up) throw new Error('ECONNREFUSED');
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      return { ok: true, status: 200, json: async () => ({ data: [] }) } as any;
+    });
+    return { fetchImpl };
+  }
+
   const settings = {
     'good-model-Q4_K_M': { contextLength: 8192 },
     'bad-model-Q4_K_M': { extraFlags: '--not-a-real-flag 7' },
@@ -717,6 +766,84 @@ describe('EngineSupervisor — a model the engine refuses', () => {
       '--sleep-idle-seconds', '42', '-c', '4096',
     ]);
     expect(sup.presetInForce()).toBe(false);
+  });
+
+  // THE case the nesting exists for. The binary names only the FIRST bad
+  // section, so two bad models means the omit-retry drops one and dies on the
+  // other. If that retry merely CONSUMED the one recovery attempt, the result
+  // would be a permanently dead engine — the exact outcome this whole path is
+  // here to prevent, reached by its own recovery.
+  it('two rejected models still end in a booted engine: omit one, then boot without the preset', async () => {
+    const { dir, cleanup } = await twoModelCacheDir();
+    try {
+      // BOTH models carry a flag this engine build does not know — which is what
+      // one renamed option at the next engine bump looks like on a real machine.
+      // The fake engine reads the file the supervisor ACTUALLY wrote and refuses
+      // the first bad section in it, exactly as the binary does, so the test
+      // cannot pass on a preset that still contains the offending model.
+      const engine = fakeEngineRefusing(dir, { 'bad-model-Q4_K_M': 'flag-two', 'good-model-Q4_K_M': 'flag-one' });
+      sup = makeSupervisor(engine.fetchImpl, {
+        cacheDir: dir,
+        models: {
+          'good-model-Q4_K_M': { extraFlags: '--flag-one 7' },
+          'bad-model-Q4_K_M': { extraFlags: '--flag-two 7' },
+        },
+        contextSize: 4096,
+        sleepIdleSeconds: 42,
+        readyDeadlineMs: 5_000,
+      });
+      await sup.ensureRunning();
+
+      expect(mockSpawn).toHaveBeenCalledTimes(3);
+      expect(sup.status()).toBe('running');
+      // The engine is UP, on the pre-preset command line.
+      expect(spawnArgs(2)).toEqual([
+        ...BASE_ARGS_FOR(dir), '--spec-default', '--cache-type-k', 'q8_0',
+        '--sleep-idle-seconds', '42', '-c', '4096',
+      ]);
+      expect(spawnArgs(2)).not.toContain('--models-preset');
+      expect(sup.presetInForce()).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  // The guard that makes the retry safe in the presence of the OTHER instance
+  // sharing ~/.youcoded: if the error names a section we did not write, omitting
+  // it changes nothing and the second attempt would fail identically. Boot
+  // without the preset instead.
+  it('boots without the preset when the rejected section is not one WE wrote', async () => {
+    const first = makeFakeChild();
+    const second = makeFakeChild();
+    mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    let alive = false;
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (!alive) throw new Error('ECONNREFUSED');
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      return { ok: true, status: 200, json: async () => ({ data: [] }) } as any;
+    });
+    // No models on disk, so our preset has NO model sections at all — the id the
+    // engine names can only have come from a file another instance wrote.
+    sup = makeSupervisor(fetchImpl, { readyDeadlineMs: 5_000, contextSize: 4096, sleepIdleSeconds: 42 });
+    const rejected: any[] = [];
+    sup.on('preset-model-rejected', (e) => rejected.push(e));
+    const p = sup.ensureRunning();
+    setImmediate(() => {
+      first.stderr!.emit('data', Buffer.from(
+        "E srv llama_server: failed to initialize router models: option 'x' not recognized in preset 'someone-elses-model-Q4_K_M'"
+      ));
+      alive = true;
+      first.emit('exit', 1);
+    });
+    await p;
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    expect(spawnArgs(1)).not.toContain('--models-preset');
+    expect(spawnArgs(1)).toEqual([
+      ...BASE_ARGS, '--spec-default', '--cache-type-k', 'q8_0',
+      '--sleep-idle-seconds', '42', '-c', '4096',
+    ]);
+    // And no model is blamed for a section we never wrote.
+    expect(rejected).toEqual([]);
   });
 
   it('does NOT retry a startup failure that has nothing to do with the preset', async () => {
@@ -836,6 +963,37 @@ describe('EngineSupervisor — per-model activity', () => {
 
       // The setting is read fresh, so turning it off lets the engine idle out.
       keepLoaded = false;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(sup.status()).toBe('stopped');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The idle check reads config.json on a TIMER, and NativeHome deliberately
+  // rethrows a non-ENOENT I/O error (EACCES, EIO). An exception out of a timer
+  // callback is uncaught: it would take the whole Electron main process down, so
+  // the app would vanish because a config read failed.
+  it('an unreadable config.json does not kill the app from inside the idle timer', async () => {
+    vi.useFakeTimers();
+    try {
+      mockSpawn.mockImplementation(() => makeFakeChild());
+      let broken = false;
+      const readConfig = () => {
+        if (broken) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        return { cacheDir: 'C:/fake/cache', contextSize: 32768 };
+      };
+      const fetchImpl = vi.fn(async (url: string) => {
+        if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+        return { ok: true, status: 200, json: async () => ({ data: [] }) } as any;
+      });
+      sup = makeSupervisor(fetchImpl, {
+        readConfig, idleMs: 1_000, idleCheckMs: 100, modelPollMs: 10, readyPollMs: 1,
+      });
+      await sup.ensureRunning();
+      broken = true;
+      // The tick still completes, and an engine whose settings cannot be read
+      // has no visible keep-loaded model — so it idles out exactly as before.
       await vi.advanceTimersByTimeAsync(5_000);
       expect(sup.status()).toBe('stopped');
     } finally {
