@@ -44,11 +44,14 @@ export interface EngineDevice {
   totalMiB: number | null;
   freeMiB: number | null;
   /** False for software renderers. llvmpipe and SwiftShader are the CPU
-   *  pretending to be a graphics card: on this machine llvmpipe reports
-   *  124406 MiB of "VRAM", which is simply system RAM. Counting one as a GPU
-   *  would tell the user their model is running on hardware acceleration while
-   *  every token is actually being computed by the processor — and would hand
-   *  the memory estimator a 121 GB pool that does not exist. */
+   *  pretending to be a graphics card. Counting one as a GPU would tell the
+   *  user their model is running on hardware acceleration while every token is
+   *  actually being computed by the processor — and would hand the memory
+   *  estimator a pool that does not exist: forced into view on this machine,
+   *  llvmpipe reports 124406 MiB of "VRAM", which is simply system RAM.
+   *  b10665 filters CPU-type Vulkan devices out by default (it took
+   *  GGML_VK_VISIBLE_DEVICES to see one here), so this is insurance against
+   *  other machines and other builds, not a bug being papered over today. */
   isGpu: boolean;
 }
 
@@ -86,16 +89,36 @@ interface CompleteMarker {
 // cap is for the pathological case — a wedged GPU driver blocking on device
 // enumeration — where hanging the install (or, for the lazy backfill, leaking a
 // stuck process on every status read) is the real failure.
+//
+// TWO mechanisms, because one is not enough and the gap is exactly the case
+// this exists for. execFile's own `timeout` only SIGNALS the child, and a
+// process wedged inside a driver call (or one that ignores the signal) never
+// dies — measured: a child with `trap '' TERM` left the promise unsettled past
+// 30 s, i.e. an install frozen forever with a stuck progress bar and no error.
+// So the signal is SIGKILL, which cannot be trapped, AND the whole call races a
+// hard deadline so this function returns even if the process somehow outlives
+// it (uninterruptible sleep in a kernel driver is not killable at all).
 const LIST_DEVICES_TIMEOUT_MS = 15_000;
+// A little past the signal, so the ordinary path reports the child's own
+// failure and the race is genuinely the last resort.
+const LIST_DEVICES_DEADLINE_MS = LIST_DEVICES_TIMEOUT_MS + 2_000;
 
 export class EngineAcquisition {
   /** Installs whose device list we have already tried to backfill this process
-   *  — success OR failure. WHY it records failures too: `installed()` is called
-   *  from `status()`, which runs on every engine event, so a binary that cannot
-   *  answer `--list-devices` would otherwise be re-spawned dozens of times a
-   *  minute. It also makes the backfill single-flight: two callers racing
-   *  `status()` find the dir already claimed and only one process is spawned. */
-  private devicesBackfilled = new Set<string>();
+   *  — success OR failure — each mapped to the RUN that did it.
+   *
+   *  WHY it records failures too: `installed()` is called from `status()`,
+   *  which runs on every engine event, so a binary that cannot answer
+   *  `--list-devices` would otherwise be re-spawned dozens of times a minute.
+   *
+   *  WHY it holds the promise and not just a flag: `install()` awaits this to
+   *  guarantee a device list before it returns, and with a bare "already
+   *  claimed" flag that await would return INSTANTLY while the first run was
+   *  still in flight — handing back `devices: undefined`. Since `status()` runs
+   *  constantly, the first run is nearly always already in flight by then, so
+   *  that was the likely path rather than the exotic one. Everyone now joins
+   *  the same run. */
+  private devicesBackfilled = new Map<string, Promise<void>>();
 
   /** engineRoot = <userData>/engine — per-machine, never synced (Phase 0 §1). */
   constructor(
@@ -125,6 +148,12 @@ export class EngineAcquisition {
     try { entries = fs.readdirSync(this.engineRoot); } catch { return null; }
     const found: InstalledEngine[] = [];
     for (const name of entries) {
+      // Never treat an in-progress unpack as an install. The marker inside
+      // `<dir>.unpacking` is real and valid for the instant before the rename,
+      // so a status() landing in that window would adopt a directory that is
+      // about to be renamed out from under it — and would now also spawn a
+      // binary out of it for the device backfill.
+      if (name.endsWith('.unpacking')) continue;
       const dir = path.join(this.engineRoot, name);
       try {
         const marker = JSON.parse(fs.readFileSync(path.join(dir, '.complete'), 'utf8')) as CompleteMarker;
@@ -157,9 +186,15 @@ export class EngineAcquisition {
    *  marker that `installed()` can no longer parse — which would make a working
    *  engine look uninstalled). Never throws: a failure records the engine's own
    *  words in `devicesError` and stops there. */
-  private async backfillDevices(install: InstalledEngine): Promise<void> {
-    if (this.devicesBackfilled.has(install.dir)) return;
-    this.devicesBackfilled.add(install.dir);
+  private backfillDevices(install: InstalledEngine): Promise<void> {
+    const inFlight = this.devicesBackfilled.get(install.dir);
+    if (inFlight) return inFlight;
+    const run = this.runBackfill(install);
+    this.devicesBackfilled.set(install.dir, run);
+    return run;
+  }
+
+  private async runBackfill(install: InstalledEngine): Promise<void> {
     const probed = await listDevices(install.binaryPath);
     try {
       const markerPath = path.join(install.dir, '.complete');
@@ -283,6 +318,20 @@ export class EngineAcquisition {
     const runtimePath = asset.runtime
       ? path.join(this.engineRoot, `${asset.runtime.assetName}.download`)
       : null;
+    // Scratch archives from an install that never finished are only removed on
+    // SUCCESS, so a failure between download and rename strands them — and with
+    // two archives a failed CUDA attempt strands 612 MB, on a disk that may
+    // have run out of room in the first place. Sweep every `.download` that is
+    // not one of the two this install is about to use, so a retry (and a pin
+    // bump, which changes every filename) reclaims the old ones while keeping
+    // the bytes it can actually resume from.
+    const keep = new Set([archivePath, ...(runtimePath ? [runtimePath] : [])]);
+    for (const name of fs.readdirSync(this.engineRoot)) {
+      if (!name.endsWith('.download')) continue;
+      const p = path.join(this.engineRoot, name);
+      if (keep.has(p)) continue;
+      try { fs.rmSync(p, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
     try {
       // Both sizes first, so the ONE progress stream can quote the real total
       // from its very first event rather than discovering the second archive
@@ -290,7 +339,9 @@ export class EngineAcquisition {
       const planned = await this.probeDownloadSize(asset);
       onProgress({ kind: 'download', receivedBytes: 0, totalBytes: planned.totalBytes });
 
-      await this.download(assetUrl(asset), archivePath, onProgress, 0, planned.totalBytes);
+      await this.download(assetUrl(asset), archivePath, onProgress, {
+        plannedTotal: planned.totalBytes, expectedBytes: planned.parts[0].bytes,
+      });
 
       onProgress({ kind: 'verify' });
       const hash = await sha256File(archivePath);
@@ -307,19 +358,18 @@ export class EngineAcquisition {
         const already = fs.statSync(archivePath).size;
         await this.download(
           assetUrl({ ...asset, assetName: asset.runtime.assetName }),
-          runtimePath, onProgress, already, planned.totalBytes,
+          runtimePath, onProgress,
+          { offsetBytes: already, plannedTotal: planned.totalBytes, expectedBytes: planned.parts[1].bytes },
         );
         onProgress({ kind: 'verify' });
         const runtimeHash = await sha256File(runtimePath);
         if (runtimeHash !== asset.runtime.sha256) {
-          // Both scratch files go, not just the corrupt one. The two archives
-          // are a matched set — half a CUDA install is not a thing to resume —
-          // and download() restarts from zero when it finds a COMPLETE file
-          // anyway (a Range request past the end answers 416), so keeping the
-          // engine archive would leave hundreds of MB on disk that the retry
-          // re-downloads regardless.
+          // ONLY the corrupt one goes. The engine archive beside it passed its
+          // own checksum moments ago, and now that download() skips a file that
+          // is already complete, the retry genuinely reuses those bytes instead
+          // of re-fetching them — 239 MB of someone's connection that we would
+          // otherwise be throwing away to save nothing.
           fs.rmSync(runtimePath, { force: true });
-          fs.rmSync(archivePath, { force: true });
           throw new Error(
             `The ${asset.backend.toUpperCase()} runtime files failed their integrity check — please try installing again.`
           );
@@ -413,20 +463,34 @@ export class EngineAcquisition {
    *  downloads report as one continuous stream. `plannedTotal` null (a size we
    *  could not read) falls back to this archive's own Content-Length plus the
    *  offset — the bar then still only ever moves forwards, it just doesn't know
-   *  the finish line until the last archive starts. */
+   *  the finish line until the last archive starts.
+   *
+   *  `expectedBytes` = what the server said this archive weighs, so a file that
+   *  is ALREADY complete is left alone. Without it, resuming a finished file
+   *  asks for `Range: bytes=<size>-`, gets a 416, deletes it and re-downloads
+   *  every byte — which now costs real money: an interruption during the 373 MB
+   *  CUDA runtime leaves the 239 MB engine archive complete on disk, and the
+   *  retry would re-fetch all of it. The checksum a moment later is what proves
+   *  the kept bytes are good, so this can never install a corrupt archive. */
   private async download(
     url: string, dest: string, onProgress: (p: EngineInstallProgress) => void,
-    offsetBytes = 0, plannedTotal: number | null = null,
+    opts: { offsetBytes?: number; plannedTotal?: number | null; expectedBytes?: number | null } = {},
   ): Promise<void> {
+    const { offsetBytes = 0, plannedTotal = null, expectedBytes = null } = opts;
     let start = 0;
     try { start = fs.statSync(dest).size; } catch { /* no partial */ }
+
+    if (expectedBytes !== null && start === expectedBytes) {
+      onProgress({ kind: 'download', receivedBytes: offsetBytes + start, totalBytes: plannedTotal ?? offsetBytes + start });
+      return;
+    }
 
     const res = await this.fetchImpl(url, {
       headers: start > 0 ? { Range: `bytes=${start}-` } : undefined,
     });
     if (res.status === 416) {
       fs.rmSync(dest, { force: true });
-      return this.download(url, dest, onProgress, offsetBytes, plannedTotal);
+      return this.download(url, dest, onProgress, opts);
     }
     if (!res.ok && res.status !== 206) {
       throw new Error(`Engine download failed: the server responded with HTTP ${res.status}.`);
@@ -515,6 +579,13 @@ export function parseDeviceList(output: string): EngineDevice[] | null {
   const devices: EngineDevice[] = [];
   for (const line of lines.slice(headerAt + 1)) {
     if (!line.trim()) continue;
+    // The block has no terminator of its own, so it ends at the first line that
+    // is NOT indented. Without this, any later `  note: built with RPC support`
+    // would be filed as a device — and one printed above the real card would
+    // become "the first GPU", handing the memory estimator a null pool for a
+    // machine that has 86 GB. Cheap insurance against an engine bump changing
+    // what else `--list-devices` prints.
+    if (!/^\s/.test(line)) break;
     // `  (none)` carries no colon, so neither pattern claims it — the empty
     // list it implies is exactly what we return.
     const m = DEVICE_LINE.exec(line);
@@ -559,15 +630,42 @@ async function listDevices(
 ): Promise<{ devices: EngineDevice[]; error?: string }> {
   let stdout = '';
   let stderr = '';
+  let deadline: NodeJS.Timeout | undefined;
   try {
     // cwd = the binary's own folder so it finds the libraries and DLLs unpacked
     // beside it (the Windows CUDA runtime lands there).
-    const r = await execFileAsync(binaryPath, ['--list-devices'], {
+    const run = execFileAsync(binaryPath, ['--list-devices'], {
       timeout: LIST_DEVICES_TIMEOUT_MS,
+      // SIGKILL, not the default SIGTERM: a child stuck in a driver call — the
+      // very case the cap is for — can ignore or never receive a catchable
+      // signal, and then execFile's promise never settles at all.
+      killSignal: 'SIGKILL',
       cwd: path.dirname(binaryPath),
       maxBuffer: 1024 * 1024,
       windowsHide: true,
     });
+    // …and even SIGKILL cannot reap a process asleep in an uninterruptible
+    // kernel call, so this function stops waiting on its own. Installing an
+    // engine must never be able to hang forever on a question that is only
+    // informational.
+    const timedOut = Symbol('list-devices-deadline');
+    const r = await Promise.race([
+      run,
+      new Promise<typeof timedOut>((resolve) => {
+        deadline = setTimeout(() => resolve(timedOut), LIST_DEVICES_DEADLINE_MS);
+        deadline.unref?.();   // never hold the process open on this alone
+      }),
+    ]);
+    if (r === timedOut) {
+      // Don't leave the child running behind us, and don't let its eventual
+      // rejection surface as an unhandled promise (which crashes main).
+      try { run.child?.kill('SIGKILL'); } catch { /* already gone */ }
+      void run.catch(() => {});
+      return {
+        devices: [],
+        error: `llama-server --list-devices did not answer within ${LIST_DEVICES_DEADLINE_MS / 1000}s and would not stop`,
+      };
+    }
     stdout = r.stdout; stderr = r.stderr;
   } catch (e: any) {
     // A non-zero exit or a timeout still often prints the block first; take it
@@ -583,6 +681,8 @@ async function listDevices(
         ? `llama-server --list-devices did not answer within ${LIST_DEVICES_TIMEOUT_MS / 1000}s`
         : `llama-server --list-devices failed: ${detail}`,
     };
+  } finally {
+    clearTimeout(deadline);
   }
   const parsed = parseDeviceList(stdout);
   if (parsed) return { devices: parsed };

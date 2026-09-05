@@ -270,11 +270,53 @@ describe('parseDeviceList — against the real b10665 output', () => {
     expect(parseDeviceList('')).toBeNull();
   });
 
+  it('stops at the first unindented line, so a trailing note is not filed as a device', () => {
+    const out = [
+      'Available devices:',
+      '  Vulkan0: AMD Radeon 8060S Graphics (RADV STRIX_HALO) (86016 MiB, 83660 MiB free)',
+      'note: built with RPC support',
+      '  rpc: some later section',
+      '',
+    ].join('\n');
+    expect(parseDeviceList(out)!.map((d) => d.backend)).toEqual(['Vulkan0']);
+  });
+
   it('a device line in an unknown shape keeps its name and reports NO memory (never 0)', () => {
     const devices = parseDeviceList('Available devices:\n  SYCL0: Some Future Device\n')!;
     expect(devices).toEqual([
       { backend: 'SYCL0', name: 'Some Future Device', totalMiB: null, freeMiB: null, isGpu: true },
     ]);
+  });
+});
+
+describe('EngineAcquisition — scratch and in-progress directories', () => {
+  it('never adopts a half-finished `.unpacking` directory as an install', () => {
+    const partial = path.join(engineRoot, `${ENGINE_VERSION}-cpu.unpacking`);
+    const bin = path.join(partial, 'build', 'bin', 'llama-server');
+    fs.mkdirSync(path.dirname(bin), { recursive: true });
+    fs.writeFileSync(bin, 'fake');
+    // A real, valid marker — this directory IS complete for the instant before
+    // the rename. It still must not be picked up.
+    fs.writeFileSync(path.join(partial, '.complete'), JSON.stringify({
+      version: ENGINE_VERSION, backend: 'cpu', binaryRelPath: path.join('build', 'bin', 'llama-server'),
+    }));
+    expect(new EngineAcquisition(engineRoot, fetchServing(archivePath)).installed()).toBeNull();
+  });
+
+  it('sweeps scratch downloads a previous failed install stranded, keeping the one it can resume', async () => {
+    fs.mkdirSync(engineRoot, { recursive: true });
+    // What a failed CUDA attempt on an older pin leaves behind.
+    const stale = path.join(engineRoot, 'llama-b9992-bin-win-cuda-12.4-x64.zip.download');
+    fs.writeFileSync(stale, 'x'.repeat(1024));
+    // …and a partial of the archive this install is about to fetch, which must
+    // survive so the download resumes instead of restarting.
+    const mine = path.join(engineRoot, `${asset.assetName}.download`);
+    fs.writeFileSync(mine, fs.readFileSync(archivePath).subarray(0, 10));
+
+    const acq = new EngineAcquisition(engineRoot, fetchServing(archivePath));
+    await acq.install(asset, () => {});
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.readdirSync(engineRoot).filter((f) => f.endsWith('.download'))).toEqual([]);
   });
 });
 
@@ -340,18 +382,39 @@ describe('EngineAcquisition — the runtime archive (design §A2)', () => {
     expect(partial.parts.map((p) => p.bytes !== null)).toEqual([true, false]);
   });
 
-  it('REFUSES a runtime whose checksum is wrong, and installs nothing', async () => {
+  it('REFUSES a runtime whose checksum is wrong, installs nothing, and KEEPS the good engine archive', async () => {
     const runtime = makeRuntimeArchive(tmp);
-    const acq = new EngineAcquisition(
-      engineRoot,
-      fetchServingMany({ [asset.assetName]: archivePath, 'cudart-fixture.tar.gz': runtime }),
-    );
+    const files = { [asset.assetName]: archivePath, 'cudart-fixture.tar.gz': runtime };
+    const log: string[] = [];
+    const inner = fetchServingMany(files);
+    const counting = (async (url: any, init?: any) => {
+      log.push(`${init?.method ?? 'GET'} ${String(url).split('/').pop()}`);
+      return inner(url, init);
+    }) as typeof fetch;
+    const acq = new EngineAcquisition(engineRoot, counting);
+
     await expect(acq.install(
       { ...asset, backend: 'cuda', runtime: { assetName: 'cudart-fixture.tar.gz', sha256: '0'.repeat(64) } },
       () => {},
     )).rejects.toThrow('The CUDA runtime files failed their integrity check — please try installing again.');
     expect(acq.installed()).toBeNull();
-    expect(fs.readdirSync(engineRoot).filter((f) => f.endsWith('.download'))).toEqual([]);
+    // The corrupt one is gone; the engine archive, which passed its OWN
+    // checksum, is kept — it is 239 MB of the user's connection in the real
+    // case, and the retry below reuses it.
+    expect(fs.readdirSync(engineRoot).filter((f) => f.endsWith('.download')))
+      .toEqual([`${asset.assetName}.download`]);
+
+    log.length = 0;
+    await acq.install(
+      { ...asset, backend: 'cuda', runtime: { assetName: 'cudart-fixture.tar.gz', sha256: sha256(runtime) } },
+      () => {},
+    );
+    // The retry asks the server how big the engine archive is and then does NOT
+    // fetch it. Before this, a complete file was Range-requested, answered 416,
+    // deleted and pulled again from byte zero.
+    expect(log).not.toContain(`GET ${asset.assetName}`);
+    expect(log).toContain('GET cudart-fixture.tar.gz');
+    expect(acq.installed()).not.toBeNull();
   });
 });
 
@@ -392,6 +455,35 @@ describe.skipIf(!posix)('EngineAcquisition — devices in the marker (design §A
     // install stands.
     expect(acq.installed()?.dir).toBe(installed.dir);
   });
+});
+
+describe.skipIf(!posix)('EngineAcquisition — a probe that will not stop', () => {
+  // The cap exists for a binary wedged in a driver call. That is precisely the
+  // case where a catchable signal does nothing, so a SIGTERM-only cap would
+  // leave install() unsettled forever behind a frozen progress bar. This binary
+  // ignores SIGTERM the way a wedged one effectively does.
+  const HANG_TEST_TIMEOUT_MS = 40_000;   // > the 17s deadline the code enforces
+
+  it('gives up on an unkillable --list-devices and installs anyway, saying why', async () => {
+    const hang = makeFixtureArchive(
+      tmp, "#!/bin/sh\ntrap '' TERM\nwhile true; do sleep 1; done\n", 'hang',
+    );
+    const acq = new EngineAcquisition(engineRoot, fetchServing(hang));
+    const started = Date.now();
+    const installed = await acq.install({ ...asset, sha256: sha256(hang) }, () => {});
+    const took = Date.now() - started;
+
+    const marker = JSON.parse(fs.readFileSync(path.join(installed.dir, '.complete'), 'utf8'));
+    expect(marker.devices).toEqual([]);
+    // EXACT string, because the two escape hatches say different things and only
+    // one of them means the child was actually killed. This is the 15s
+    // child-timeout message; the 17s outer deadline says "…and would not stop".
+    // Weaken this to /did not answer/ and reverting killSignal to SIGTERM passes.
+    expect(marker.devicesError).toBe('llama-server --list-devices did not answer within 15s');
+    // It returned on its own, not by luck, and the install still stands.
+    expect(took).toBeLessThan(HANG_TEST_TIMEOUT_MS);
+    expect(acq.installed()?.dir).toBe(installed.dir);
+  }, HANG_TEST_TIMEOUT_MS);
 });
 
 describe.skipIf(!posix)('EngineAcquisition — the lazy backfill (design §A2)', () => {
@@ -449,6 +541,19 @@ describe.skipIf(!posix)('EngineAcquisition — the lazy backfill (design §A2)',
     expect(again.dir).toBe(dir);
     expect(again.devices?.[0]?.totalMiB).toBe(86016);
     expect(JSON.parse(fs.readFileSync(path.join(dir, '.complete'), 'utf8')).devices).toHaveLength(1);
+  });
+
+  it('install() JOINS a backfill status() already started, instead of returning before it finished', async () => {
+    // The shipping order: status() runs on every engine event, so by the time
+    // the user presses Install the background backfill is nearly always already
+    // in flight. A single-flight guard that only records "claimed" would let
+    // this await return instantly and hand back devices: undefined.
+    const dir = plantOldInstall();
+    const acq = new EngineAcquisition(engineRoot, fetchServing(archivePath));
+    acq.installed();                       // starts the backfill
+    const again = await acq.install(asset, () => {});
+    expect(again.dir).toBe(dir);
+    expect(again.devices?.[0]?.totalMiB).toBe(86016);
   });
 
   it('a binary that cannot answer is retried NEVER, and records the real reason', async () => {
