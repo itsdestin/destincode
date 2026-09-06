@@ -1168,8 +1168,70 @@ export interface AttentionApi {
   report(payload: AttentionReport): void;
 }
 
+/**
+ * What the desktop answers when the settings screen asks about the Linux/KDE
+ * buddy helper (docs/active/design/2026-09-04-linux-buddy-helper/ §4).
+ *
+ * THREE facts, not two, and the first one is the one that keeps a working buddy
+ * working. `needed` says "this app cannot move its own windows here" — true only
+ * on a native-Wayland Linux session. On Windows, macOS, Linux/X11 and Linux
+ * Wayland that is really running through XWayland it is false, and there the
+ * buddy already works exactly as it always has: no helper, no consent card, no
+ * mention of any of this. `supported` is the separate question of whether a
+ * helper could work here at all (KDE 6 on Wayland), and it is only ever asked
+ * once `needed` is true.
+ *
+ * `installed` is reported TRUTHFULLY whatever `needed` says, because a user can
+ * add the helper on Wayland and then log into X11: the script is still sitting
+ * in their KDE settings, and the Remove helper button is the only way back out.
+ */
+export interface BuddyHelperStatus {
+  /** The app cannot position its own windows here, so a helper is required. */
+  needed: boolean;
+  /** A helper can work on this desktop at all (KDE Plasma 6 on Wayland). */
+  supported: boolean;
+  /** The helper script is loaded in the compositor right now. */
+  installed: boolean;
+  /** Why this desktop is unsupported — shown, never guessed at. */
+  reason?: string;
+}
+
+/**
+ * What `show()` answers. `ok: false` means MAIN REFUSED to put the buddy on
+ * screen — see design §5: the refusal is enforced in the main process, because
+ * the settings screen is not the only thing that switches the buddy on.
+ */
+export interface BuddyShowResult {
+  ok: boolean;
+  /** Main's own words for the refusal. Surfaced as-is; never re-worded. */
+  reason?: string;
+}
+
 export interface BuddyApi {
-  show(): Promise<void>;
+  // The Linux/KDE helper (docs/active/design/2026-09-04-linux-buddy-helper/).
+  // These had no backend while the popup was being designed; the real one landed
+  // 2026-09-04 (kwin-helper.ts + three channels on preload, remote-shim and the
+  // workbench mock), so they are no longer MOCK_ONLY.
+  //
+  // They keep the `?` because every caller optional-chains them anyway: the
+  // settings screen runs inside remote browsers and Android too, where the whole
+  // buddy surface is a set of stubs, and a `?.()` call site that silently does
+  // nothing is the behaviour we want there.
+  helperStatus?(): Promise<BuddyHelperStatus>;
+  installHelper?(): Promise<{ ok: boolean }>;
+  // Added 2026-09-04 (decide-uninstall#D-1). The consent card used to promise the
+  // helper was "removed when you uninstall YouCoded", which is false: the AppImage
+  // build has no uninstall step at all. Destin chose a Remove helper control the
+  // user owns instead, so the app needs a channel that takes the helper back out
+  // of KDE's settings — see design §6 for the order the main side must use.
+  removeHelper?(): Promise<{ ok: boolean }>;
+  /**
+   * Widened 2026-09-04 (design §5): this used to resolve to nothing, and now
+   * reports whether the buddy was actually shown. A Wayland user without the
+   * helper is REFUSED, and the settings switch must not sit in the "on"
+   * position after a refusal — that would be a switch that lies.
+   */
+  show(): Promise<BuddyShowResult | void>;
   hide(): Promise<void>;
   toggleChat(): Promise<void>;
   setSession(sessionId: string): Promise<void>;
@@ -1180,7 +1242,7 @@ export interface BuddyApi {
   // places the mascot at the supplied target (clamped to visible workArea).
   // Anchor-based, not delta-based, so per-move rounding on HiDPI displays
   // cannot accumulate drift between the cursor and the mascot.
-  moveMascot(target: { targetX: number; targetY: number }): void;
+  moveMascot(target: { localDx: number; localDy: number }): void;
   onAttentionSummary(cb: (summary: AttentionSummary) => void): () => void;
   // Pre-existing preload methods that were missing from this interface —
   // added while typing the buddy-upgrades members so call sites don't need
@@ -1705,6 +1767,20 @@ export const IPC = {
   // rare/user-driven, not a hover-hot path). Settings' keep-above toggle:
   // persists to BUDDY_POS_FILE and runs the KWin script live.
   BUDDY_OVERLAY_KEEP_ABOVE: 'buddy:overlay-keep-above',
+  // ── The Linux/KDE buddy helper (docs/active/design/2026-09-04-linux-buddy-helper/) ──
+  // On a native-Wayland desktop an app is not allowed to move its own windows,
+  // so the buddy appears but cannot be dragged. A small script that runs inside
+  // KDE's window manager can move it. These three channels are the app's side
+  // of that script: ask whether it is needed/possible/present, put it in the
+  // user's KDE settings, and take it back out again.
+  //
+  // Deliberately three surfaces, not five: buddy has NO Android (SessionService.kt)
+  // or remote-server presence today, and adding one would turn this feature into
+  // a platform-parity sweep (design §4). ipc-channels.test.ts's `buddy:*` block
+  // records that omission so it does not read as an oversight.
+  BUDDY_HELPER_STATUS: 'buddy:helper-status',
+  BUDDY_INSTALL_HELPER: 'buddy:install-helper',
+  BUDDY_REMOVE_HELPER: 'buddy:remove-helper',
   // Main → main window: switch active session (sent by buddy:open-main).
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
@@ -1827,6 +1903,18 @@ export const IPC = {
   NATIVE_SHELL_EVENT: 'native:shell-event',       // push → one background command's run record changed (G-1)
   MODELS_MEMORY_CHECK: 'models:memory-check',     // invoke(modelId) → MemoryVerdict
   MODELS_LOAD: 'models:load',                     // invoke(modelId) → true ([Reload Model])
+  // ---- Voice prompting (design 2026-09-05) ----
+  // Mirrors preload.ts. Added here when the buddy-helper branch's channel-map
+  // guard caught them as preload-only: the voice work declared them on one side
+  // of the pair only, which is exactly the drift that guard exists to name.
+  VOICE_STATUS: 'voice:status',
+  VOICE_DOWNLOAD: 'voice:download',
+  VOICE_START: 'voice:start',
+  VOICE_STOP: 'voice:stop',
+  VOICE_CANCEL: 'voice:cancel',
+  VOICE_MIC_ACCESS: 'voice:mic-access',
+  VOICE_AUDIO: 'voice:audio',
+  VOICE_EVENT: 'voice:event',   // push
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.

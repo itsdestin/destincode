@@ -25,7 +25,7 @@ import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { WindowRegistry } from './window-registry';
 import { PendingAcquireQueue } from './pending-acquire';
-import { registerIpcHandlers } from './ipc-handlers';
+import { registerIpcHandlers, buddyShowRefusal, cachedBuddyHelperStatus, refreshBuddyHelperStatus, setBuddyHelperLostHandler } from './ipc-handlers';
 import { RemoteServer } from './remote-server';
 import { RemoteConfig } from './remote-config';
 import { LocalSkillProvider } from './skill-provider';
@@ -82,6 +82,10 @@ import { chooseBuddyStrategy } from './buddy-manager';
 import type { BuddyManager } from './buddy-manager';
 import { applyKwinKeepAbove } from './kwin-keep-above';
 import { BAR_SIZE, MASCOT_SIZE, CHAT_SIZE } from './buddy-bar-geometry';
+// The KDE script that lets the buddy move itself on a Wayland desktop, and
+// the lookup that asks KDE how much of the screen the taskbar has taken.
+import { syncHelperOnLaunch } from './kwin-helper';
+import { WorkAreaResolver } from './buddy-work-area';
 import { excludeFromCapture, nativeCaptureExclusionAvailable } from './window-exclude-capture';
 import { cleanupStaleDownloads } from './update-installer';
 import { runAnalyticsOnLaunch } from './analytics-service';
@@ -319,6 +323,14 @@ const DEV_WINDOW_TITLE =
   : DEV_PROFILE && DEV_PROFILE !== 'dev' ? `YouCoded Dev (${DEV_PROFILE})`
   : DEV_PROFILE ? 'YouCoded Dev'
   : undefined;
+
+// The name a buddy window carries when it is NOT being positioned by rename
+// (i.e. everywhere except native-Wayland Linux with the helper running). It is
+// exactly the title src/renderer/index.html supplies, so freezing the name here
+// changes nothing anybody can see: buddy windows are frameless and kept out of
+// the taskbar, and the only reason to freeze it at all is that the page's own
+// title event would otherwise overwrite a rename mid-drag.
+const BUDDY_WINDOW_TITLE = 'YouCoded';
 
 // Windows AUMID alignment: electron-builder's NSIS installer stamps the Start
 // Menu shortcut with an AppUserModelID derived from `appId`. If the runtime
@@ -597,7 +609,7 @@ function wireDevLoadRecovery(win: BrowserWindow, devUrl: string): void {
   });
 }
 
-function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'bar' | 'overlay' }): BrowserWindow {
+function createAppWindow(opts?: { x?: number; y?: number; width?: number; height?: number; maximize?: boolean; inactive?: boolean; buddy?: 'mascot' | 'chat' | 'bar' | 'overlay'; buddyTitle?: string }): BrowserWindow {
   const iconPath = path.join(__dirname, '../../assets/icon.png');
   const icon = nativeImage.createFromPath(iconPath);
   const isMac = process.platform === 'darwin';
@@ -664,9 +676,14 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     x: opts?.x,
     y: opts?.y,
     icon,
-    // Dev-only distinguishing title (see DEV_WINDOW_TITLE). undefined in
-    // production and for buddy floaters, which have no taskbar presence.
-    title: opts?.buddy ? undefined : DEV_WINDOW_TITLE,
+    // A buddy window's NAME IS HOW IT GETS POSITIONED on native-Wayland Linux
+    // (see shared/buddy-caption.ts), and it has to be right in the constructor:
+    // the KWin helper decides whether to watch a window the instant the window
+    // appears, so a window born nameless is never watched and the buddy would
+    // appear and then refuse to move. Everywhere else buddyTitle is absent and
+    // the window simply keeps the plain "YouCoded" name it has today.
+    // Non-buddy windows keep the dev-only distinguishing title (DEV_WINDOW_TITLE).
+    title: opts?.buddy ? (opts.buddyTitle ?? BUDDY_WINDOW_TITLE) : DEV_WINDOW_TITLE,
     titleBarStyle: opts?.buddy ? undefined : (isMac ? 'hiddenInset' as const : 'hidden' as const),
     // Live tear-off spawns this window mid-drag and needs the source window to
     // keep keyboard/pointer focus. show: false + showInactive() below prevents
@@ -697,11 +714,27 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     excludeFromCapture(win);
   }
 
-  // Keep the dev title stuck. index.html ships `<title>YouCoded</title>`, which
-  // fires page-title-updated on load and would clobber the constructor title;
-  // the renderer never sets document.title otherwise, so blocking that one event
-  // is all it takes. Only in dev (DEV_WINDOW_TITLE set) and never on buddies.
-  if (DEV_WINDOW_TITLE && !opts?.buddy) {
+  // Keep the window's name stuck. index.html ships `<title>YouCoded</title>`,
+  // which fires page-title-updated on load and would clobber the constructor
+  // title; the renderer never sets document.title otherwise, so blocking that
+  // one event is all it takes.
+  //
+  // WHY buddy windows are now included, where before they were explicitly
+  // excluded: on native-Wayland Linux the buddy's name is the channel that
+  // moves him, so the page load would overwrite his coordinates with the word
+  // "YouCoded" a fraction of a second after he appeared — and he would sit
+  // there, unmovable, for the rest of the session. On every other platform the
+  // name it is pinned to is the very same "YouCoded" the page would have set,
+  // so nothing observable changes.
+  //
+  // preventDefault BEFORE setTitle, always: register the block first and the
+  // name we set can never be clobbered. Doing it the other way round is a real
+  // bug this repo has already shipped once — buddy-overlay-manager.ts:203-209,
+  // found live on 2026-07-23.
+  if (opts?.buddy) {
+    win.on('page-title-updated', (e) => e.preventDefault());
+    win.setTitle(opts.buddyTitle ?? BUDDY_WINDOW_TITLE);
+  } else if (DEV_WINDOW_TITLE) {
     win.on('page-title-updated', (e) => e.preventDefault());
     win.setTitle(DEV_WINDOW_TITLE);
   }
@@ -1782,6 +1815,71 @@ void app.whenReady().then(async () => {
   }
   const buddyPositions = loadBuddyPositions();
 
+  // ─── The Linux/KDE buddy helper: launch housekeeping, before any buddy ────
+  //
+  // On a native-Wayland desktop an app is not allowed to move its own windows,
+  // so the buddy appears and then refuses to be dragged. A small script running
+  // inside KDE's window manager can move it. This runs BEFORE the buddy exists,
+  // and it is awaited rather than fired off, because everything below depends on
+  // the answer.
+  //
+  // On Windows, macOS, Linux/X11 and a Wayland desktop running this app through
+  // XWayland, both calls return immediately without touching anything, and
+  // everything after this point behaves exactly as it did before.
+  //
+  // syncHelperOnLaunch does two chores: it removes helper scripts left behind by
+  // profiles that no longer exist (each one keeps running inside the window
+  // manager and fights over the buddy on every drag frame), and it quietly
+  // replaces our own copy when the app has been updated.
+  // Wrapped, and deliberately so: every buddy IPC handler below is registered
+  // AFTER these two awaits, so a throw here would silently leave the buddy — and
+  // the session-attention indicator — with no handlers at all, and the process
+  // unhandledRejection listener would swallow it. The helper is optional; the
+  // launch is not. (B4 review, F2.)
+  await syncHelperOnLaunch().catch(() => { /* an un-swept orphan is inert; launch matters more */ });
+  const helperAtLaunch = await refreshBuddyHelperStatus().catch(
+    () => ({ needed: false, supported: false, installed: false }) as const,
+  );
+
+  // WHY this lookup exists and is built only where it is needed: on native
+  // Wayland the desktop will not tell an app how much of the screen the taskbar
+  // has reserved — Electron reports the WHOLE screen (measured: 1707x1067 while
+  // KDE had reserved 52 px). Believing it puts the mascot 52 px too low, standing
+  // on the clock and system tray, and nothing ever corrects it because the app is
+  // never told where the compositor really put him. This asks KDE directly.
+  // Everywhere else Electron's own answer is right and stays in use, untouched.
+  const buddyWorkArea = helperAtLaunch.needed ? new WorkAreaResolver() : null;
+  if (buddyWorkArea) {
+    // Start the lookup now instead of at the first show(): the buddy's first
+    // appearance waits for this answer either way (BuddyWindowManager.show
+    // defers until it settles), and starting it here means the wait is normally
+    // already over by the time the user switches him on.
+    void buddyWorkArea.refresh();
+
+    // Screens being plugged in, unplugged or rearranged all invalidate which
+    // KDE screen each of Electron's displays is, so all three events re-ask.
+    //
+    // Debounced because KDE fires display-metrics-changed THREE TIMES within
+    // 200 ms of a window appearing (measured — buddy-overlay-manager.ts:110),
+    // so an undebounced handler would run the whole lookup three times over
+    // every time the buddy is shown.
+    //
+    // Moving a taskbar, or setting it to auto-hide, fires NO event at all —
+    // nothing in KDE publishes one (verified: its strut service has zero
+    // signals) — so that case is caught when the buddy is shown and again at
+    // the start of each drag, which BuddyWindowManager already does.
+    const reresolveWorkArea = (() => {
+      let t: NodeJS.Timeout | null = null;
+      return () => {
+        if (t) clearTimeout(t);
+        t = setTimeout(() => { void buddyWorkArea.refresh(); }, 250);
+      };
+    })();
+    screen.on('display-metrics-changed', reresolveWorkArea);
+    screen.on('display-added', reresolveWorkArea);
+    screen.on('display-removed', reresolveWorkArea);
+  }
+
   // WHY branch here (not inside BuddyWindowManager/BuddyOverlayManager
   // themselves): main.ts is the only place that knows both which strategy
   // is active AND how to build a BrowserWindow (createAppWindow) — the two
@@ -1821,7 +1919,9 @@ void app.whenReady().then(async () => {
         applyKeepAbove: (_win) => { void applyKwinKeepAbove(OVERLAY_TITLE, true); },
       })
     : new BuddyWindowManager({
-        createBuddyWindow: (variant, { x, y }) => createAppWindow({ x, y, buddy: variant }),
+        // `title` is the caption that positions the window on native-Wayland
+        // Linux; it is undefined on every other platform (see buddy-caption.ts).
+        createBuddyWindow: (variant, { x, y, title }) => createAppWindow({ x, y, buddy: variant, buddyTitle: title }),
         getPersistedPosition: (key) => buddyPositions[key] ?? null,
         setPersistedPosition: (key, pos) => {
           buddyPositions[key] = pos;
@@ -1842,11 +1942,59 @@ void app.whenReady().then(async () => {
             if (!w.isDestroyed()) w.webContents.send(IPC.BUDDY_STATUS_CHANGED, status);
           }
         },
+        // Where the buddy is allowed to sit on each screen. Supplied ONLY on
+        // native-Wayland Linux; `undefined` everywhere else, which is what makes
+        // every other platform keep Electron's own number, byte for byte.
+        //
+        // The RESOLVER is handed over, not a rectangle: the lookup is async and
+        // show() places the mascot synchronously, so pre-resolving here would
+        // still leave the first buddy of a session placed against a number that
+        // had not arrived. The manager waits for it instead.
+        workArea: buddyWorkArea ?? undefined,
+        // "Does moving this window mean renaming it?" — asked on EVERY FRAME of
+        // a drag, which is why it reads a value already in memory and never
+        // makes a call. True only where the app cannot move its own windows AND
+        // the KDE script that can is actually running; false on every other
+        // platform, always, so every position is applied the ordinary way.
+        captionChannelLive: () => {
+          const s = cachedBuddyHelperStatus();
+          return s?.needed === true && s.installed === true;
+        },
       });
   // Publish to module scope so createAppWindow's 'closed' handler can see it.
   buddyManagerRef = buddyManager;
 
-  ipcMain.handle(IPC.BUDDY_SHOW, () => buddyManager.show());
+  // If the helper stops being live while the buddy is up — the user switches the
+  // KWin script off in KDE's System Settings, or KWin is briefly unreachable —
+  // put the buddy away rather than leaving one that cannot be dragged and whose
+  // chat and bar open in the screen corner. Design §4 added the re-check to
+  // NOTICE this; without a reaction, noticing changed nothing.
+  setBuddyHelperLostHandler(() => buddyManager.hide());
+
+  // ─── CONSENT IS ENFORCED HERE, not in the settings screen (design §5) ────
+  //
+  // The product promise is "decline the helper and you get no buddy at all",
+  // and a check in the settings screen cannot keep it: the settings screen is
+  // not the only thing that turns the buddy on — the app also brings him back
+  // at launch from a saved preference, with no helper check anywhere on that
+  // path. Without this line, a user who declined (or who never got asked,
+  // because the status lookup failed) gets a buddy who appears and then refuses
+  // to be dragged: the exact bug this feature exists to remove.
+  //
+  // It refuses on "a helper is needed here", NEVER on "this is Linux". A KDE
+  // user on X11 — or on Wayland whose windows are actually X11-backed, which
+  // looks identical from every environment variable — moves his own windows
+  // perfectly well and must never lose a buddy that already works.
+  //
+  // The status is re-read on every show rather than trusted from launch,
+  // because the user can switch the script off in KDE's own System Settings
+  // while YouCoded is running (design §4).
+  ipcMain.handle(IPC.BUDDY_SHOW, async () => {
+    const refusal = buddyShowRefusal(await refreshBuddyHelperStatus());
+    if (refusal) return { ok: false, reason: refusal };
+    buddyManager.show();
+    return { ok: true };
+  });
   ipcMain.handle(IPC.BUDDY_HIDE, () => buddyManager.hide());
   ipcMain.handle(IPC.BUDDY_TOGGLE_CHAT, () => buddyManager.toggleChat());
   ipcMain.handle(IPC.BUDDY_SET_SESSION, (_evt, sessionId: string) => {
@@ -1870,8 +2018,14 @@ void app.whenReady().then(async () => {
   // Windows Electron implements it via WM_NCHITTEST → HTCAPTION, which makes
   // the OS consume all pointer events for window dragging — the renderer
   // never gets pointerup, so click-to-toggle-chat never fires.
-  ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, target: { targetX: number; targetY: number }) => {
-    buddyManager.moveMascot(target.targetX, target.targetY);
+  // The payload is WINDOW-LOCAL on purpose — how far the cursor has strayed
+  // from the pixel it grabbed him by, inside the mascot's own window. A
+  // renderer's screen coordinates are a lie on Wayland (probe Round 8:
+  // window.screenX stayed 0 through three real moves), and feeding them back
+  // made the buddy bounce between two points every frame. See
+  // BuddyWindowManager.moveMascotFromPointer.
+  ipcMain.on(IPC.BUDDY_MOVE_MASCOT, (_evt, target: { localDx: number; localDy: number }) => {
+    buddyManager.moveMascotFromPointer(target.localDx, target.localDy);
   });
   // Drag release → edge-snap detection against the window's final bounds.
   ipcMain.on(IPC.BUDDY_DRAG_ENDED, () => buddyManager.dragEnded());

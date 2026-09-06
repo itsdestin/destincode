@@ -310,6 +310,12 @@ const IPC = {
   // Task 8: Settings' KDE keep-above toggle — invoke/handle, not fire-and-
   // forget, since it returns whether the KWin script actually ran.
   BUDDY_OVERLAY_KEEP_ABOVE: 'buddy:overlay-keep-above',
+  // The Linux/KDE buddy helper. Kept byte-identical to shared/types.ts's copy —
+  // preload cannot import that file (Electron sandbox), so the two maps are
+  // duplicated on purpose and ipc-channels.test.ts is what stops them drifting.
+  BUDDY_HELPER_STATUS: 'buddy:helper-status',
+  BUDDY_INSTALL_HELPER: 'buddy:install-helper',
+  BUDDY_REMOVE_HELPER: 'buddy:remove-helper',
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
@@ -1172,7 +1178,7 @@ contextBridge.exposeInMainWorld('claude', {
     getViewedSession: () => ipcRenderer.invoke(IPC.BUDDY_GET_VIEWED_SESSION),
     // Fire-and-forget: pointer drag fires ~60 events/sec; invoke() round-trips
     // would starve the renderer. Main clamps target to visible workArea.
-    moveMascot: (target: { targetX: number; targetY: number }) => ipcRenderer.send(IPC.BUDDY_MOVE_MASCOT, target),
+    moveMascot: (target: { localDx: number; localDy: number }) => ipcRenderer.send(IPC.BUDDY_MOVE_MASCOT, target),
     onAttentionSummary: (cb: (summary: AttentionSummary) => void) => {
       const listener = (_: unknown, summary: AttentionSummary) => cb(summary);
       ipcRenderer.on(IPC.SESSION_ATTENTION_SUMMARY, listener);
@@ -1256,6 +1262,28 @@ contextBridge.exposeInMainWorld('claude', {
     // "couldn't reach KWin" hint, not to render the toggle's own state.
     setKeepAbove: (enabled: boolean): Promise<boolean> =>
       ipcRenderer.invoke(IPC.BUDDY_OVERLAY_KEEP_ABOVE, enabled),
+    // ── The Linux/KDE buddy helper (design §4) ──
+    //
+    // `needed` is the fact that decides whether ANY of this UI appears: it is
+    // true only where the app genuinely cannot move its own windows. It is NOT
+    // "is this Linux" — the same binary on the same KDE desktop reports
+    // Wayland from every environment variable while its windows are actually
+    // X11-backed and move perfectly well (probe Round 7), and a user in that
+    // state must keep the buddy they already have.
+    //
+    // `installed` is asked freshly every time rather than cached in the
+    // renderer: the user can switch the script off in KDE's own System
+    // Settings mid-session, and a stale "installed" would leave the buddy
+    // switched on and unable to move.
+    helperStatus: (): Promise<{ needed: boolean; supported: boolean; installed: boolean; reason?: string }> =>
+      ipcRenderer.invoke(IPC.BUDDY_HELPER_STATUS),
+    installHelper: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC.BUDDY_INSTALL_HELPER),
+    // The undo half (decide-uninstall#D-1). The consent card can no longer
+    // promise the helper leaves when YouCoded is uninstalled — the AppImage
+    // build has no uninstall step — so removal is a control the user owns.
+    removeHelper: (): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC.BUDDY_REMOVE_HELPER),
   },
   // Renderer pushes per-session attention state to main whenever the chat
   // reducer's ATTENTION_STATE_CHANGED fires. Main aggregates across all windows

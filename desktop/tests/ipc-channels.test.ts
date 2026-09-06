@@ -6,94 +6,126 @@ import path from 'path';
 // Preload can't import from shared/types due to Electron sandbox restrictions,
 // so channel names are duplicated. This test catches drift.
 
+// The two IPC constant maps and how they are compared.
+//
+// preload.ts cannot import shared/types.ts (Electron's sandbox), so the channel
+// map is written out TWICE and the two copies are kept identical by this file.
+//
+// Fixed 2026-09-04 (linux-buddy-helper design §11): this test used to
+// console.warn when a constant was in one map and not the other, which means it
+// could not catch the mistake it exists to catch — a channel added to one copy
+// and forgotten in the other. It now FAILS, against a recorded baseline of the
+// drift that already existed on the day the check was tightened. Adding to that
+// baseline is not the way to make a new failure go away: add the constant to the
+// other map.
+const readSource = (...parts: string[]) => fs.readFileSync(path.join(__dirname, '..', ...parts), 'utf8');
+
+/**
+ * NAME → channel string for one map.
+ *
+ * Anchored to the start of a line and to a CONSTANT-shaped name, because the old
+ * `(\w+)\s*:` pattern also matched ordinary words inside the maps' comments
+ * ("Task 1:", "push:"), which put ~30 non-existent constants into the comparison
+ * and is part of why it could never have been made to fail.
+ */
+function ipcConstants(source: string, decl: RegExp): Map<string, string> {
+  // Anchored to the block's `} as const;` terminator at line start: a `[^}]+`
+  // body stops at the FIRST `}`, which occurs inside a mid-block comment
+  // ("Caller passes a {x,y} offset") and silently truncated the map to a third
+  // of its keys.
+  const block = source.match(decl);
+  const out = new Map<string, string>();
+  if (!block) return out;
+  const entry = /^\s*([A-Z][A-Z0-9_]*)\s*:\s*'([^']+)'/gm;
+  let m: RegExpExecArray | null;
+  while ((m = entry.exec(block[1])) !== null) out.set(m[1], m[2]);
+  return out;
+}
+
+// The drift that already existed on 2026-09-04, measured, not guessed. Every
+// name here is a constant one map carries and the other does not. Most are
+// namespaces preload owns end-to-end (account:, social:, marketplace:) or that
+// main owns end-to-end (specialists:, permissions:, search:).
+const PRELOAD_ONLY_ON_2026_09_04 = [
+  'ACCOUNT_DELETE', 'ACCOUNT_EXPORT', 'ACCOUNT_POLL', 'ACCOUNT_REFRESH', 'ACCOUNT_SET_HANDLE',
+  'ACCOUNT_SIGNED_IN', 'ACCOUNT_SIGN_OUT', 'ACCOUNT_START', 'ACCOUNT_UPDATE_PROFILE',
+  'ACCOUNT_USER', 'ANALYTICS_GET_OPT_IN', 'ANALYTICS_SET_OPT_IN', 'APPEARANCE_GET',
+  'APPEARANCE_SET', 'CHAT_EXPORT_SNAPSHOT', 'CHAT_SNAPSHOT_RESPONSE', 'DEFAULTS_GET',
+  'DEFAULTS_SET', 'MARKETPLACE_COMMENT', 'MARKETPLACE_INSTALL', 'MARKETPLACE_RATE',
+  'MARKETPLACE_RATE_DELETE', 'MARKETPLACE_REPORT', 'MARKETPLACE_THEME_LIKE',
+  'MARKETPLACE_THUMB', 'MARKETPLACE_THUMB_GET', 'MODEL_GET_PREFERENCE', 'MODEL_READ_LAST',
+  'MODEL_SET_PREFERENCE', 'MODES_GET', 'MODES_SET', 'PTY_RAW_BYTES',
+  'REMOTE_ATTENTION_CHANGED', 'SETTINGS_GET', 'SETTINGS_SET', 'SOCIAL_ACCEPT_REQUEST',
+  'SOCIAL_BLOCK', 'SOCIAL_CANCEL_REQUEST', 'SOCIAL_DECLINE_REQUEST', 'SOCIAL_LIST_BLOCKS',
+  'SOCIAL_LIST_FRIENDS', 'SOCIAL_LIST_REQUESTS', 'SOCIAL_LOOKUP_HANDLE',
+  'SOCIAL_PRESENCE_CONNECT', 'SOCIAL_PRESENCE_DISCONNECT', 'SOCIAL_PRESENCE_EVENT',
+  'SOCIAL_PRESENCE_SEND', 'SOCIAL_SEND_REQUEST', 'SOCIAL_UNBLOCK', 'SOCIAL_UNFRIEND',
+];
+const TYPES_ONLY_ON_2026_09_04 = [
+  'FS_READ_HEAD', 'NATIVE_SUPPORTED', 'PERMISSIONS_LIST', 'PERMISSIONS_REMOVE',
+  'PERMISSIONS_REMOVE_PROJECT', 'SEARCH_LIST', 'SEARCH_REMOVE_KEY', 'SEARCH_SET_KEY',
+  'SEARCH_TEST', 'SPECIALISTS_DELEGATED_GET', 'SPECIALISTS_DELEGATED_SET',
+  'SPECIALISTS_EVENT', 'SPECIALISTS_INTERRUPT', 'SPECIALISTS_LIST', 'SPECIALISTS_STEER',
+];
+
 describe('IPC channel consistency', () => {
-  test('preload channel names match shared/types.ts', () => {
-    const preloadSource = fs.readFileSync(
-      path.join(__dirname, '../src/main/preload.ts'), 'utf8'
-    );
-    const typesSource = fs.readFileSync(
-      path.join(__dirname, '../src/shared/types.ts'), 'utf8'
-    );
+  const preloadSource = readSource('src', 'main', 'preload.ts');
+  const typesSource = readSource('src', 'shared', 'types.ts');
+  const preloadIpc = ipcConstants(preloadSource, /const IPC\s*=\s*\{([\s\S]*?)\n\} as const;/);
+  const typesIpc = ipcConstants(typesSource, /export const IPC\s*=\s*\{([\s\S]*?)\n\} as const;/);
 
-    // Extract channel strings from preload (pattern: 'channel-name' in ipcRenderer calls)
-    const preloadChannels = new Set<string>();
-    const ipcPattern = /ipcRenderer\.\w+\('([^']+)'/g;
-    let match;
-    while ((match = ipcPattern.exec(preloadSource)) !== null) {
-      preloadChannels.add(match[1]);
+  // Without this, every assertion below passes vacuously the moment one of the
+  // two extractions stops matching — which has happened here before.
+  test('both IPC maps were actually parsed', () => {
+    expect(preloadIpc.size).toBeGreaterThan(250);
+    expect(typesIpc.size).toBeGreaterThan(250);
+    expect(preloadIpc.get('BUDDY_SHOW')).toBe('buddy:show');
+    expect(typesIpc.get('BUDDY_SHOW')).toBe('buddy:show');
+  });
+
+  test('a constant in both maps has the same channel string in both', () => {
+    const mismatched = [...preloadIpc]
+      .filter(([name, value]) => typesIpc.has(name) && typesIpc.get(name) !== value)
+      .map(([name, value]) => `${name}: preload '${value}' vs types '${typesIpc.get(name)}'`);
+    expect(mismatched).toEqual([]);
+  });
+
+  test('no constant is added to one map and forgotten in the other', () => {
+    const preloadOnly = [...preloadIpc.keys()].filter((n) => !typesIpc.has(n)).sort();
+    const typesOnly = [...typesIpc.keys()].filter((n) => !preloadIpc.has(n)).sort();
+    // Compared as ARRAYS so a failure names the exact constant that drifted.
+    // SUBSET-PLUS-CAP, not equality (B4 review, F4). Equality pins BOTH
+    // directions: fixing a legitimate piece of drift — adding one of the
+    // types-only constants to preload — would turn this red until someone
+    // hand-edited the baseline, and the failure would be a raw array diff that
+    // does not say which direction is the good one. This way a fix passes
+    // silently, a NEW one-sided constant fails and names itself, and quietly
+    // appending to the baseline no longer works: the count is a hard number that
+    // has to be edited too, which is a visible change in review.
+    const strays = preloadOnly.filter((n) => !PRELOAD_ONLY_ON_2026_09_04.includes(n));
+    expect(strays, 'new preload-only channel constant(s); add them to shared/types.ts too').toEqual([]);
+    expect(preloadOnly.length).toBeLessThanOrEqual(PRELOAD_ONLY_ON_2026_09_04.length);
+    const typesStrays = typesOnly.filter((n) => !TYPES_ONLY_ON_2026_09_04.includes(n));
+    expect(typesStrays, 'new types-only channel constant(s); add them to preload.ts too').toEqual([]);
+    expect(typesOnly.length).toBeLessThanOrEqual(TYPES_ONLY_ON_2026_09_04.length);
+  });
+
+  // Channel strings preload passes to ipcRenderer directly, without going
+  // through its map at all. Measured 2026-09-04: 59 of these exist and are
+  // legitimate (artifacts:*, git:*, project:*, sync:* are reached this way), so
+  // this stays a report rather than an assertion — the constant-map checks
+  // above are the ones that had to become real.
+  test('inline ipcRenderer channel strings are reported, not asserted', () => {
+    const inline = new Set<string>();
+    const pattern = /ipcRenderer\.\w+\('([^']+)'/g;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(preloadSource)) !== null) inline.add(m[1]);
+    const known = new Set([...typesIpc.values(), ...preloadIpc.values()]);
+    const unlisted = [...inline].filter((ch) => !known.has(ch) && !ch.includes(':output:'));
+    if (unlisted.length > 0) {
+      console.warn('preload.ts calls these channels without a map entry:', unlisted);
     }
-
-    // Also extract channels from the preload IPC constant object.
-    // Anchor the capture to the block's `} as const;` terminator at line start —
-    // the old `[^}]+` pattern stopped at the FIRST `}`, which occurs inside a
-    // mid-block comment ("Caller passes a {x,y} offset"), silently truncating
-    // the extracted block to ~1/3 of its keys and skipping the parity check
-    // for everything after it.
-    const preloadIpcBlock = preloadSource.match(/const IPC\s*=\s*\{([\s\S]*?)\n\} as const;/);
-    if (preloadIpcBlock) {
-      const constPattern = /:\s*'([^']+)'/g;
-      while ((match = constPattern.exec(preloadIpcBlock[1])) !== null) {
-        preloadChannels.add(match[1]);
-      }
-    }
-
-    // Extract channel strings from types.ts IPC object. Same terminator-anchored
-    // pattern as the preload extraction above — the types block has no stray `}`
-    // today, but a future comment containing one would silently truncate it too.
-    const typesChannels = new Set<string>();
-    const typesIpcBlock = typesSource.match(/export const IPC\s*=\s*\{([\s\S]*?)\n\} as const;/);
-    if (typesIpcBlock) {
-      const typesPattern = /:\s*'([^']+)'/g;
-      while ((match = typesPattern.exec(typesIpcBlock[1])) !== null) {
-        typesChannels.add(match[1]);
-      }
-    }
-
-    // Every preload channel should exist in types (or be a dynamic/ad-hoc channel)
-    const missing = [...preloadChannels].filter(ch =>
-      !typesChannels.has(ch) && !ch.includes(':output:')
-    );
-
-    // This is informational — log drift rather than hard-fail, since preload
-    // may legitimately have channels not in the IPC enum (dynamic channels, etc.)
-    if (missing.length > 0) {
-      console.warn('Channels in preload.ts but not in shared/types.ts:', missing);
-    }
-
-    // Both files should define the same core IPC constant object keys
-    const preloadIpcKeys = new Set<string>();
-    if (preloadIpcBlock) {
-      const keyPattern = /(\w+)\s*:/g;
-      while ((match = keyPattern.exec(preloadIpcBlock[1])) !== null) {
-        preloadIpcKeys.add(match[1]);
-      }
-    }
-
-    const typesIpcKeys = new Set<string>();
-    if (typesIpcBlock) {
-      const keyPattern = /(\w+)\s*:/g;
-      while ((match = keyPattern.exec(typesIpcBlock[1])) !== null) {
-        typesIpcKeys.add(match[1]);
-      }
-    }
-
-    // Channels defined in preload's IPC object should all exist in types' IPC object
-    const missingKeys = [...preloadIpcKeys].filter(k => !typesIpcKeys.has(k));
-    if (missingKeys.length > 0) {
-      console.warn('IPC keys in preload but not in types:', missingKeys);
-    }
-
-    // Verify that the channel values match for shared keys
-    for (const key of preloadIpcKeys) {
-      if (!typesIpcKeys.has(key)) continue;
-
-      const preloadVal = preloadIpcBlock?.[1].match(new RegExp(`${key}\\s*:\\s*'([^']+)'`));
-      const typesVal = typesIpcBlock?.[1].match(new RegExp(`${key}\\s*:\\s*'([^']+)'`));
-
-      if (preloadVal && typesVal) {
-        expect(preloadVal[1]).toBe(typesVal[1]);
-      }
-    }
+    expect(inline.size).toBeGreaterThan(0);
   });
 });
 
@@ -1433,6 +1465,74 @@ describe('arcade:* channel parity', () => {
       expect(arg === '' || arg.startsWith('{'),
         `invoke('${t}') must pass an object literal or nothing, got: ${arg}`).toBe(true);
     }
+  });
+});
+
+// Regression net for the three Linux/KDE buddy helper channels
+// (docs/active/design/2026-09-04-linux-buddy-helper/, §4). Hand-written, like
+// every block above — this file does NOT pick a new channel up for free.
+//
+// THREE surfaces, not five, and that is deliberate. The blocks above assert
+// four or five because those features exist on Android and in the remote
+// browser too. The buddy does not: it is desktop-Electron only, SessionService.kt
+// contains no `buddy` string at all today (`buddy:show` / `buddy:hide` are not
+// stubbed there either), and remote-server.ts has no buddy entry. Adding either
+// would turn a three-channel feature into a platform-parity sweep, so the gap is
+// left exactly as wide as it already was — recorded here so a later reader sees
+// a decision rather than an oversight.
+describe('buddy:* helper channel parity', () => {
+  const TYPES = ['buddy:helper-status', 'buddy:install-helper', 'buddy:remove-helper'];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('declared in the shared/types.ts channel map', () => {
+    const src = read('src', 'shared', 'types.ts');
+    for (const t of TYPES) expect(src, `${t} missing from shared/types.ts`).toContain(`'${t}'`);
+  });
+
+  it("declared in preload.ts's duplicate of that map", () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const t of TYPES) expect(src, `${t} missing from preload.ts`).toContain(`'${t}'`);
+  });
+
+  it('handled in ipc-handlers.ts', () => {
+    const src = read('src', 'main', 'ipc-handlers.ts');
+    // Asserted through the constant, not the string: this file imports the map
+    // rather than writing channel names out, so a literal search would fail on
+    // correct code.
+    for (const name of ['BUDDY_HELPER_STATUS', 'BUDDY_INSTALL_HELPER', 'BUDDY_REMOVE_HELPER']) {
+      expect(src, `IPC.${name} has no handler in ipc-handlers.ts`).toContain(`IPC.${name}`);
+    }
+  });
+
+  it('exposed on the buddy API preload hands the renderer', () => {
+    const src = read('src', 'main', 'preload.ts');
+    for (const m of ['helperStatus', 'installHelper', 'removeHelper']) {
+      expect(src, `buddy.${m} is not exposed by preload.ts`).toContain(`${m}: (`);
+    }
+  });
+
+  it('answered by remote-shim.ts, so a remote browser cannot fall through', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    // The shim answers these locally instead of sending them over the wire, so
+    // it never names the channel — the methods are what must exist.
+    for (const m of ['helperStatus', 'installHelper', 'removeHelper']) {
+      expect(src, `buddy.${m} is missing from remote-shim.ts`).toContain(`${m}: `);
+    }
+  });
+
+  it('has NO Android or remote-server arm, deliberately', () => {
+    // Pinned so the omission stays a decision. If the buddy ever grows an
+    // Android or remote presence, this test is the thing that has to change,
+    // and changing it is the prompt to add all three channels there properly.
+    const kt = read('..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt');
+    const remoteServer = read('src', 'main', 'remote-server.ts');
+    for (const t of TYPES) {
+      expect(kt, `${t} appeared in SessionService.kt — update this block`).not.toContain(`"${t}"`);
+      expect(remoteServer, `${t} appeared in remote-server.ts — update this block`).not.toContain(`'${t}'`);
+    }
+    // Sanity: the buddy really has no Android surface at all, which is the
+    // premise of the paragraph above. `buddy:show` predates this feature.
+    expect(kt).not.toContain('"buddy:show"');
   });
 });
 

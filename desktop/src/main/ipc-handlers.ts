@@ -73,6 +73,8 @@ import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THE
 import { isBundledPlugin } from '../shared/bundled-plugins';
 import { ThemeMarketplaceProvider } from './theme-marketplace-provider';
 import { generateThemePreview } from './theme-preview-generator';
+// The KDE script that lets the buddy move itself on a Wayland desktop.
+import { helperStatus, installHelper, removeHelper, type HelperStatus } from './kwin-helper';
 import { getSyncStatus, getSyncConfig, setSyncConfig, forceSync, getSyncLog, dismissWarning, addBackend, removeBackend, updateBackend, pushBackend, type SyncWarning } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — the folder-based sync engine.
 import {
@@ -195,6 +197,119 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 // send a resume into the wrong (empty) directory (Task 9).
 function nativeTranscriptExists(cwd: string, sessionId: string): boolean {
   return fs.existsSync(path.join(os.homedir(), '.youcoded', 'sessions', nativeStoreSlug(cwd), `${sessionId}.jsonl`));
+}
+
+// ─── The Linux/KDE buddy helper: one cached answer, shared by main.ts ────────
+//
+// WHY a cache at all: two things ask "is the helper live right now?" and
+// neither can afford to wait. The drag path asks on EVERY FRAME (60×/second),
+// and the answer costs two subprocess calls — so it has to be a value already
+// in memory, never a fresh lookup. main.ts is the other reader; it lives here
+// rather than there because these handlers are the things that change it.
+let helperStatusCache: HelperStatus | null = null;
+
+/**
+ * The last answer, or null if we have never had one.
+ *
+ * Synchronous and allocation-free on purpose — this is what the buddy's drag
+ * loop reads.
+ */
+export function cachedBuddyHelperStatus(): HelperStatus | null {
+  return helperStatusCache;
+}
+
+/**
+ * Ask the desktop again and remember the answer.
+ *
+ * Called at launch, on every helper-status request, and after a successful
+ * add/remove — the last two matter because the user can switch the script off
+ * in KDE's own System Settings while YouCoded is running, and a stale "yes it
+ * is installed" would leave the buddy switched on and unable to move.
+ */
+let onHelperLost: (() => void) | null = null;
+
+/**
+ * Told what to do when the helper stops being live under a buddy that is
+ * already on screen. Wired by main.ts to `buddyManager.hide()`.
+ *
+ * WHY this exists rather than trusting the Remove button (B4 review, F1):
+ * `buddy-window-manager.ts` records that `captionChannelLive` MUST NOT flip
+ * true→false while buddy windows exist — after the flip, moves take the
+ * `setPosition` branch, which is a silent no-op on Wayland, and `rectOf` starts
+ * returning `getBounds()`, frozen at the constructor position, so the chat and
+ * bar re-anchor to the screen corner while the mascot stays put. It claimed
+ * removal-forces-hide as the guarantee, but removal is not the only writer:
+ * design §4 added the on-show re-check EXACTLY so that switching the script off
+ * in KDE's own System Settings mid-session is noticed, and a momentary DBus
+ * failure does the same. Noticing without acting produced the undraggable,
+ * corner-anchored buddy this whole feature exists to eliminate.
+ */
+export function setBuddyHelperLostHandler(fn: (() => void) | null): void {
+  onHelperLost = fn;
+}
+
+export async function refreshBuddyHelperStatus(): Promise<HelperStatus> {
+  const wasLive = helperStatusCache?.needed === true && helperStatusCache.installed === true;
+  try {
+    helperStatusCache = await helperStatus();
+  } catch (err) {
+    // WHY the previous answer is kept rather than thrown away: `needed` is
+    // decided from two facts that cannot change while the app runs (which OS
+    // this is, and whether Electron's own windows are Wayland-native), so an
+    // answer we already have is still true about THAT half. What a failed call
+    // costs us is only whether the helper is live right now — so that half is
+    // forced to "no", which makes the consent gate refuse instead of guess.
+    //
+    // WHY a total failure (no previous answer at all) reports needed:false
+    // instead of refusing: design §4's failing-safe rule. Getting this wrong in
+    // the "false" direction costs a Wayland user exactly today's behaviour — a
+    // buddy that cannot be dragged. Getting it wrong the other way TAKES AWAY a
+    // working buddy from a Windows, macOS or KDE-X11 user, who never needed a
+    // helper in the first place.
+    //
+    // BUT THIS BRANCH IS NOT THE RULE THAT GOVERNS IN PRACTICE (B4 review, F3).
+    // helperStatus() has no rejecting path today — supportGate() turns an
+    // unreachable KWin into { supported: false }, and kdeCall catches its own
+    // exec errors — so a real mid-session KDE outage lands on the NON-throwing
+    // path above: { needed: true, supported: false, installed: false }, which
+    // the consent gate refuses. That is the right direction (no buddy beats an
+    // undraggable one), and it is the behaviour to reason about. This branch is
+    // insurance against a future throw, not the live decision.
+    helperStatusCache = helperStatusCache
+      ? { ...helperStatusCache, installed: false, reason: err instanceof Error ? err.message : String(err) }
+      : { needed: false, supported: false, installed: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+  const isLive = helperStatusCache.needed === true && helperStatusCache.installed === true;
+  // The transition, not the button, is the trigger. See setBuddyHelperLostHandler.
+  if (wasLive && !isLive) onHelperLost?.();
+  return helperStatusCache;
+}
+
+/**
+ * Why the buddy is being refused, or null when he may be shown.
+ *
+ * PURE, and exported so buddy-consent-gate.test.ts can drive every state
+ * without a compositor. The rule the design asks for (§5) is that consent is
+ * enforced HERE, in the main process, and not by an `if` in the settings
+ * screen: the settings screen is not the only thing that turns the buddy on —
+ * the app also restores him at launch from a saved preference — and a refusal
+ * the renderer forgets to make is a helper-less buddy that appears and then
+ * refuses to move, which is the exact bug this feature exists to remove.
+ *
+ * It refuses on `needed`, NEVER on "is this Linux". A KDE user on X11, or on
+ * Wayland whose windows are actually X11-backed, positions his own windows
+ * perfectly well and must never be refused a buddy he already has.
+ */
+export function buddyShowRefusal(status: HelperStatus | null): string | null {
+  // No helper is needed here — Windows, macOS, Linux/X11, and Wayland running
+  // through XWayland. Identical to today, and the most important line here.
+  if (!status || !status.needed) return null;
+  // Needed and running: the buddy moves by being renamed, so let him through.
+  if (status.installed) return null;
+  // Needed and NOT running. Report what we actually know — the support gate's
+  // own reason when it has one, and otherwise a plain statement of the fact,
+  // never a guess at a cause (docs/error-message-standards.md).
+  return status.reason ?? 'The buddy needs its KDE helper on this desktop, and the helper is not running.';
 }
 
 
@@ -465,6 +580,35 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.ZOOM_GET, () => {
     if (!mainWindow || mainWindow.isDestroyed()) return 100;
     return zoomLevelToPercent(mainWindow.webContents.getZoomLevel());
+  });
+
+  // --- The Linux/KDE buddy helper (design §4) ---
+  // Three channels, and only three surfaces (here, preload.ts, remote-shim.ts).
+  // The buddy has no Android or remote-server presence at all today, so adding
+  // one for the helper would grow this feature into a platform-parity sweep —
+  // deliberately not done, and recorded in ipc-channels.test.ts so it does not
+  // read as an oversight later.
+
+  // Always a LIVE read, never the cache: the user can turn the script off in
+  // KDE's own System Settings at any moment, and the settings popup asks for
+  // this every time it opens (design §4 — "re-checked on window-show").
+  ipcMain.handle(IPC.BUDDY_HELPER_STATUS, () => refreshBuddyHelperStatus());
+
+  ipcMain.handle(IPC.BUDDY_INSTALL_HELPER, async () => {
+    const res = await installHelper();
+    // Re-read after a change, not before: the buddy's drag path reads this
+    // cached value on every frame, and until it says "installed" the buddy is
+    // still gated off. Doing it here means the user's very next click works.
+    if (res.ok) await refreshBuddyHelperStatus();
+    return res;
+  });
+
+  ipcMain.handle(IPC.BUDDY_REMOVE_HELPER, async () => {
+    const res = await removeHelper();
+    // Same reason in reverse: once the script is out of KDE, the buddy can no
+    // longer be moved, so the cache has to know before the next show().
+    if (res.ok) await refreshBuddyHelperStatus();
+    return res;
   });
 
   // --- Performance / GPU pref ---
