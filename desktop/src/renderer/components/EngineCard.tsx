@@ -9,10 +9,12 @@
 // local-engine-upgrades, round 2). Hierarchy, top to bottom: the card title with
 // the state word beside it · ONE fact line (chip · models loaded · last reply
 // speed while running; version · backend otherwise) · the row actions. Then two
-// SettingRows: "Faster engine" (only when main found a matching chip) and
-// "Advanced" (expands in place — the right-hand chevron every row has, turned
-// down; never a leading "›" text toggle, which Destin rejected in round 1).
-// Advanced holds the two speed switches, the context length and the folder.
+// SettingRows: "Faster engine" (only when main found a matching chip AND that
+// build is one we recommend — 2026-09-06: ROCm no longer is) and "Advanced"
+// (expands in place — the right-hand chevron every row has, turned down; never
+// a leading "›" text toggle, which Destin rejected in round 1). Advanced holds
+// the two speed switches, the context length, the optional engine builds and
+// the folder.
 import { useEffect, useState } from 'react';
 import { AnchorTip, Button, Callout, ErrorState, FieldError, SettingRow, TextInput, Toggle } from './ui';
 import { BugReportPopup } from './development/BugReportPopup';
@@ -72,6 +74,18 @@ const BACKEND_WORDS: Record<string, string> = {
   rocm: 'ROCm (AMD)',
 };
 const CHIP_WORDS: Record<string, string> = { cuda: 'NVIDIA', rocm: 'AMD', metal: 'Apple' };
+
+// Builds we offer but do NOT recommend: they live under Advanced instead of in
+// the card body, and their row describes a trade rather than a win.
+//
+// WHY ROCm is here and CUDA is not: CUDA's advantage is not in question, but
+// ROCm was measured (2026-09-05, engine b10665, AMD Strix Halo / Radeon 8060S,
+// two models) reading prompts ~20% faster and WRITING replies 24–46% slower
+// than the Vulkan build it would replace. Writing is the half a user watches
+// happen, so pushing ROCm at everyone with an AMD chip made most of them
+// slower. It stays available — findable, not sold. Numbers and method:
+// docs/engine-dependencies.md → "ROCm vs Vulkan, measured".
+const OPTIONAL_BACKENDS = new Set<string>(['rocm']);
 
 export default function EngineCard({ showDetails = false }: { showDetails?: boolean }) {
   const [status, setStatus] = useState<EngineStatusView | null>(null);
@@ -242,6 +256,11 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
     : facts.filter(Boolean).join(' · ');
 
   const options = (status.backendOptions ?? []).filter((o) => o.backend !== status.backend);
+  // Two shelves, not one list. A recommended build (CUDA) keeps its place in the
+  // card body; an optional one (ROCm) is rendered inside Advanced, which is shut
+  // by default — see OPTIONAL_BACKENDS for why that distinction exists.
+  const recommendedOptions = options.filter((o) => !OPTIONAL_BACKENDS.has(o.backend));
+  const optionalOptions = options.filter((o) => OPTIONAL_BACKENDS.has(o.backend));
   // WHY there is no `?? { speculative: true, compressCache: true }` here any
   // more: that was a THIRD copy of a default already written down twice (main's
   // DEFAULT_ENGINE_SPEED and the spawn config), and every producer of this
@@ -252,6 +271,128 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   // guessed: showing a switch we cannot read is a claim about the user's
   // machine we have no basis for.
   const speed = status.speed;
+
+  /** One "another engine build" row. Extracted into a function so the
+   *  recommended builds can render in the card body and the optional ones
+   *  inside Advanced from the SAME markup — two hand-kept copies of a row with
+   *  a set-up box inside it would drift apart. */
+  const backendOptionRow = (opt: BackendOption) => {
+    const optional = OPTIONAL_BACKENDS.has(opt.backend);
+    const build = BACKEND_WORDS[opt.backend] ?? opt.backend;
+    const current = BACKEND_WORDS[status.backend ?? ''] ?? 'the current engine';
+    return (
+      <div key={opt.backend} className="space-y-1.5">
+        <SettingRow
+          variant="item"
+          title={optional
+            ? `Optional engine for your ${CHIP_WORDS[opt.backend] ?? opt.backend} chip`
+            : `Faster engine for your ${CHIP_WORDS[opt.backend] ?? opt.backend} chip`}
+          description={[
+            // A recommended build is described as the win it is; an optional one
+            // is described as the trade it measured as (see OPTIONAL_BACKENDS).
+            // Deliberately no numbers: they came off one machine, and a figure
+            // on screen reads as a promise about the reader's.
+            optional
+              ? (opt.state === 'needs-prereqs'
+                  ? `Not recommended. ${build} needs AMD's software installed first, and it writes replies more slowly than ${current}.`
+                  : `Not recommended. ${build} begins reading a long message sooner, but writes its reply more slowly than ${current}.`)
+              : (opt.state === 'needs-prereqs'
+                  ? `${build} needs AMD's software installed first.`
+                  : `${build} is usually much faster than ${current} on this chip.`),
+            optional ? 'Worth trying only if you want to compare the two.' : null,
+            // main appends a sentence when it knows something this row cannot:
+            // today, that with no model downloaded yet the switch can only be
+            // checked as far as the engine starting (§A4).
+            opt.note,
+          ].filter(Boolean).join(' ')}
+          control={(
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void chooseBackend(opt)}
+              disabled={busy}
+              aria-expanded={opt.state === 'needs-prereqs' ? setupOpen : undefined}
+            >
+              {opt.state === 'needs-prereqs' ? (setupOpen ? 'Hide' : 'Set up') : 'Switch'}
+            </Button>
+          )}
+        />
+
+        {/* Q-1 pick a: the set-up box. One sentence, the command for THIS
+            Linux flavour with Copy inside it, two buttons. The terminal is
+            where the password is typed — nothing installs behind your back. */}
+        {setupOpen && opt.state === 'needs-prereqs' && (
+          <Callout
+            tone="info"
+            className="text-2xs"
+            title={(
+              <span className="flex items-center gap-1">
+                Install AMD&rsquo;s ROCm software first
+                <AnchorTip label="What is ROCm?" title="What is ROCm?" widthClass="w-72">
+                  ROCm is AMD&rsquo;s software for running heavy math on its graphics chips.
+                  This engine build is made with it, so it has to be on this computer first.
+                  It installs with your system&rsquo;s package manager and can be removed
+                  the same way.
+                </AnchorTip>
+              </span>
+            )}
+          >
+            {!prereqs && <p className="text-fg-muted">Checking this computer…</p>}
+            {prereqs && !prereqs.satisfied && prereqs.command && (
+              <div className="space-y-2">
+                <p className="text-fg-muted">
+                  Run this in a terminal{prereqs.distro ? ` (${prereqs.distro})` : ''}. It will ask for your password.
+                </p>
+                <div className="flex items-start gap-1.5 rounded-md bg-well px-2.5 py-2">
+                  <pre className="flex-1 min-w-0 text-3xs font-mono whitespace-pre-wrap break-words select-all">{prereqs.command}</pre>
+                  <Button size="sm" variant="ghost" onClick={() => void copyCommand(prereqs.command!)} className="shrink-0 -my-1">
+                    {copied ? 'Copied' : 'Copy'}
+                  </Button>
+                </div>
+                <div className="flex gap-1.5">
+                  <Button size="sm" disabled={busy} onClick={() => void openTerminalWithCommand(prereqs.command!)}>
+                    Run in terminal
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => void recheck(opt.backend)} disabled={busy}>
+                    Check again
+                  </Button>
+                </div>
+                {terminalError && <FieldError as="p">{terminalError}</FieldError>}
+              </div>
+            )}
+            {prereqs && !prereqs.satisfied && !prereqs.command && (
+              <div className="space-y-2">
+                {/* Two very different reasons there is nothing to paste, and
+                    they must not read the same. On Ubuntu and Debian we know
+                    exactly which system this is — the packages simply come
+                    from AMD's own repository, which has to be added first.
+                    Telling that user we could not recognise their Linux,
+                    one line under the words "Ubuntu 24.04", reads as the
+                    app being broken. */}
+                <p className="text-fg-muted">
+                  {prereqs.reason === 'needs-amd-repo'
+                    ? <>On {prereqs.distro ?? 'this system'}, AMD&rsquo;s software comes from AMD&rsquo;s own
+                      download site rather than your system&rsquo;s. Their guide has the steps;
+                      press Check again when it is installed.</>
+                    : <>We could not tell which Linux this is. AMD&rsquo;s guide covers every supported system;
+                      press Check again when it is installed.</>}
+                </p>
+                <div className="flex gap-1.5">
+                  <Button size="sm" variant="secondary" onClick={() => void window.claude.shell.openExternal(prereqs.docsUrl)}>
+                    Open AMD&rsquo;s guide
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => void recheck(opt.backend)} disabled={busy}>
+                    Check again
+                  </Button>
+                </div>
+              </div>
+            )}
+            {prereqs?.satisfied && <p>Everything is in place — switching…</p>}
+          </Callout>
+        )}
+      </div>
+    );
+  };
 
   return (
     // Change 25: the in-panel row surface — bg-inset/50, borderless. Was
@@ -370,108 +511,10 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
       {showDetails && status.installed && (
         <div className="mt-2.5 space-y-1.5">
           {/* S-1: a faster engine, as a row. Present only when main detected the
-              matching chip (and its software, where the build needs some). */}
-          {options.map((opt) => (
-            <div key={opt.backend} className="space-y-1.5">
-              <SettingRow
-                variant="item"
-                title={`Faster engine for your ${CHIP_WORDS[opt.backend] ?? opt.backend} chip`}
-                description={[
-                  opt.state === 'needs-prereqs'
-                    ? `${BACKEND_WORDS[opt.backend] ?? opt.backend} needs AMD's software installed first.`
-                    : `${BACKEND_WORDS[opt.backend] ?? opt.backend} is usually much faster than ${BACKEND_WORDS[status.backend ?? ''] ?? 'the current engine'} on this chip.`,
-                  // main appends a sentence when it knows something this row
-                  // cannot: today, that with no model downloaded yet the switch
-                  // can only be checked as far as the engine starting (§A4).
-                  opt.note,
-                ].filter(Boolean).join(' ')}
-                control={(
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => void chooseBackend(opt)}
-                    disabled={busy}
-                    aria-expanded={opt.state === 'needs-prereqs' ? setupOpen : undefined}
-                  >
-                    {opt.state === 'needs-prereqs' ? (setupOpen ? 'Hide' : 'Set up') : 'Switch'}
-                  </Button>
-                )}
-              />
-
-              {/* Q-1 pick a: the set-up box. One sentence, the command for THIS
-                  Linux flavour with Copy inside it, two buttons. The terminal is
-                  where the password is typed — nothing installs behind your back. */}
-              {setupOpen && opt.state === 'needs-prereqs' && (
-                <Callout
-                  tone="info"
-                  className="text-2xs"
-                  title={(
-                    <span className="flex items-center gap-1">
-                      Install AMD&rsquo;s ROCm software first
-                      <AnchorTip label="What is ROCm?" title="What is ROCm?" widthClass="w-72">
-                        ROCm is AMD&rsquo;s software for running heavy math on its graphics chips.
-                        The faster engine is built on it, so it has to be on this computer first.
-                        It installs with your system&rsquo;s package manager and can be removed
-                        the same way.
-                      </AnchorTip>
-                    </span>
-                  )}
-                >
-                  {!prereqs && <p className="text-fg-muted">Checking this computer…</p>}
-                  {prereqs && !prereqs.satisfied && prereqs.command && (
-                    <div className="space-y-2">
-                      <p className="text-fg-muted">
-                        Run this in a terminal{prereqs.distro ? ` (${prereqs.distro})` : ''}. It will ask for your password.
-                      </p>
-                      <div className="flex items-start gap-1.5 rounded-md bg-well px-2.5 py-2">
-                        <pre className="flex-1 min-w-0 text-3xs font-mono whitespace-pre-wrap break-words select-all">{prereqs.command}</pre>
-                        <Button size="sm" variant="ghost" onClick={() => void copyCommand(prereqs.command!)} className="shrink-0 -my-1">
-                          {copied ? 'Copied' : 'Copy'}
-                        </Button>
-                      </div>
-                      <div className="flex gap-1.5">
-                        <Button size="sm" disabled={busy} onClick={() => void openTerminalWithCommand(prereqs.command!)}>
-                          Run in terminal
-                        </Button>
-                        <Button size="sm" variant="secondary" onClick={() => void recheck(opt.backend)} disabled={busy}>
-                          Check again
-                        </Button>
-                      </div>
-                      {terminalError && <FieldError as="p">{terminalError}</FieldError>}
-                    </div>
-                  )}
-                  {prereqs && !prereqs.satisfied && !prereqs.command && (
-                    <div className="space-y-2">
-                      {/* Two very different reasons there is nothing to paste, and
-                          they must not read the same. On Ubuntu and Debian we know
-                          exactly which system this is — the packages simply come
-                          from AMD's own repository, which has to be added first.
-                          Telling that user we could not recognise their Linux,
-                          one line under the words "Ubuntu 24.04", reads as the
-                          app being broken. */}
-                      <p className="text-fg-muted">
-                        {prereqs.reason === 'needs-amd-repo'
-                          ? <>On {prereqs.distro ?? 'this system'}, AMD&rsquo;s software comes from AMD&rsquo;s own
-                            download site rather than your system&rsquo;s. Their guide has the steps;
-                            press Check again when it is installed.</>
-                          : <>We could not tell which Linux this is. AMD&rsquo;s guide covers every supported system;
-                            press Check again when it is installed.</>}
-                      </p>
-                      <div className="flex gap-1.5">
-                        <Button size="sm" variant="secondary" onClick={() => void window.claude.shell.openExternal(prereqs.docsUrl)}>
-                          Open AMD&rsquo;s guide
-                        </Button>
-                        <Button size="sm" variant="secondary" onClick={() => void recheck(opt.backend)} disabled={busy}>
-                          Check again
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                  {prereqs?.satisfied && <p>Everything is in place — switching…</p>}
-                </Callout>
-              )}
-            </div>
-          ))}
+              matching chip (and its software, where the build needs some).
+              Only RECOMMENDED builds render here; the optional ones are further
+              down, inside Advanced. */}
+          {recommendedOptions.map(backendOptionRow)}
 
           {/* Advanced (Q-4 pick a): the one expandable-row shape — SettingRow with
               its chevron turned down while open. */}
@@ -590,6 +633,11 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                   long before applying it went wrong, so without this line the
                   change silently never lands. */}
               {status.configApplyError && <FieldError as="p">{status.configApplyError}</FieldError>}
+
+              {/* The optional engine builds (ROCm). Deliberately down HERE, inside
+                  a section that is shut by default, rather than in the card body
+                  beside the recommended ones — see OPTIONAL_BACKENDS. */}
+              {optionalOptions.map(backendOptionRow)}
 
               {/* Engine build + folder — read-only facts, one quiet row. */}
               <SettingRow

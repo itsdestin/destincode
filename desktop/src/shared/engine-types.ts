@@ -14,7 +14,7 @@ export type EngineRunState = 'not-installed' | 'stopped' | 'starting' | 'running
  *  guide (Q-1 pick a) instead of switching. */
 export interface BackendOption {
   backend: EngineBackend;
-  label: string;                     // 'Switch to ROCm (faster on AMD)'
+  label: string;                     // 'Switch to CUDA (faster on NVIDIA)'
   state: 'ready' | 'needs-prereqs';
   /** An extra sentence the card appends to the row's description, when main
    *  knows something the renderer cannot. Today there is exactly one: with no
