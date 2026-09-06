@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as zlib from 'zlib';
 import { execFileSync } from 'child_process';
 
 // The fixture pins, built fresh for each test. `vi.hoisted` because the mock
@@ -54,6 +55,32 @@ vi.mock('../src/main/voice/voice-pin', async (importOriginal) => {
 import { VoiceAssets } from '../src/main/voice/voice-assets';
 import type { VoiceAssetProgress, VoiceFetch } from '../src/main/voice/voice-assets';
 import { MODEL_DIR_NAME, SHERPA_VERSION } from '../src/main/voice/voice-pin';
+
+/** A one-file .tgz whose entry is named EXACTLY `name`, traversal and all.
+ *
+ *  This used to be `tar --transform`, which is GNU-only: macOS ships BSD tar and
+ *  Windows ships bsdtar, and both answer "Option --transform is not supported",
+ *  so two thirds of the release matrix went red the day this test landed. Writing
+ *  the 512-byte header here needs no tar at all, and says out loud what the test
+ *  is actually about — an archive entry whose name escapes the folder. */
+function tarballWithEntry(name: string, content: string): Buffer {
+  const body = Buffer.from(content, 'utf8');
+  const header = Buffer.alloc(512);
+  const put = (text: string, at: number, len: number) => header.write(text.slice(0, len - 1), at, 'utf8');
+  const octal = (n: number, at: number, len: number) => put(n.toString(8).padStart(len - 1, '0'), at, len);
+  put(name, 0, 100);
+  octal(0o644, 100, 8); octal(0, 108, 8); octal(0, 116, 8);
+  octal(body.length, 124, 12); octal(Math.floor(Date.now() / 1000), 136, 12);
+  header[156] = '0'.charCodeAt(0);            // typeflag: a regular file
+  put('ustar', 257, 6); header.write('00', 263);
+  // The checksum is computed with its own field read as eight spaces.
+  header.fill(0x20, 148, 156);
+  let sum = 0; for (const b of header) sum += b;
+  put(sum.toString(8).padStart(6, '0'), 148, 7); header[154] = 0; header[155] = 0x20;
+  const pad = Buffer.alloc((512 - (body.length % 512)) % 512);
+  // Two zero blocks end the archive.
+  return zlib.gzipSync(Buffer.concat([header, body, pad, Buffer.alloc(1024)]));
+}
 
 const TAR_BIN = process.platform === 'win32'
   ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
@@ -405,7 +432,7 @@ describe('the install runs no other program', () => {
     fs.mkdirSync(path.join(stage, 'package'), { recursive: true });
     fs.writeFileSync(path.join(stage, 'package', 'x'), 'x');
     const evil = path.join(tmp, 'evil.tgz');
-    execFileSync(TAR_BIN, ['-czf', evil, '-C', stage, '--transform', 's|package/x|../../escaped|', 'package/x']);
+    fs.writeFileSync(evil, tarballWithEntry('../../escaped', 'x'));
 
     fixtures.wrappers.url = 'https://registry.test/evil.tgz';
     fixtures.wrappers.digest = { algo: 'sha512', encoding: 'base64', digest: digestOf(evil, 'sha512', 'base64') };
