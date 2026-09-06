@@ -53,20 +53,35 @@ describe('no bridge failure reaches the screen wearing its wrapper', () => {
     'src/renderer/components/ProvidersSection.tsx',
   ];
 
-  /** Every `catch (…) { … }` body in a file, by brace matching. */
-  function catchBodies(src: string): Array<{ line: number; body: string }> {
-    const out: Array<{ line: number; body: string }> = [];
+  /** Every `catch (…) { … }` body in a file, by brace matching.
+   *
+   *  Braces inside string and template literals are SKIPPED. WHY: a `}` in a
+   *  string truncates the scanner's idea of where the block ends, so every line
+   *  after it becomes invisible to the rule — a hole that reads as a pass. (An
+   *  unmatched OPENING brace is harmless the other way: it over-extends the
+   *  block, so the rule sees more code, not less.) */
+  function catchBodies(src: string): Array<{ line: number; binding: string; body: string }> {
+    const out: Array<{ line: number; binding: string; body: string }> = [];
     const re = /\bcatch\s*(\([^)]*\))?\s*\{/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(src)) !== null) {
       let depth = 1;
       let i = m.index + m[0].length;
+      let quote: string | null = null;
       for (; i < src.length && depth > 0; i++) {
-        if (src[i] === '{') depth++;
-        else if (src[i] === '}') depth--;
+        const c = src[i];
+        if (quote) {
+          if (c === '\\') i++;
+          else if (c === quote) quote = null;
+          continue;
+        }
+        if (c === '"' || c === "'" || c === '`') quote = c;
+        else if (c === '{') depth++;
+        else if (c === '}') depth--;
       }
       out.push({
         line: src.slice(0, m.index).split('\n').length,
+        binding: m[1] ?? '',
         body: src.slice(m.index + m[0].length, i - 1),
       });
     }
@@ -78,13 +93,20 @@ describe('no bridge failure reaches the screen wearing its wrapper', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', files[1]), 'utf8');
     expect(catchBodies(src).length).toBeGreaterThan(3);
     expect(catchBodies("try { a(); } catch (e) { show(e.message); }")[0].body).toContain('e.message');
+    // The hole the quote-skipping closes: without it the block ends at the `}`
+    // inside the string and `e.message` after it is never scanned.
+    expect(catchBodies("try { a(); } catch (e) { t('a } b'); show(e.message); }")[0].body)
+      .toContain('e.message');
   });
 
-  it('no catch block in these files reads a .message directly', () => {
+  it('no catch block in these files reads a caught error\u2019s message directly', () => {
     const offenders: string[] = [];
     for (const f of files) {
       const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
-      for (const { line, body } of catchBodies(src)) {
+      for (const { line, binding, body } of catchBodies(src)) {
+        // `catch ({ message }: any)` reads the message with no `.message`
+        // anywhere in the body, so the body rule alone never sees it.
+        if (/\{[^}]*\bmessage\b/.test(binding)) { offenders.push(`${f}:${line} (destructured)`); continue; }
         // Comments explain WHY plainMessage is used and legitimately say
         // "e.message"; only code counts.
         const code = body.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');

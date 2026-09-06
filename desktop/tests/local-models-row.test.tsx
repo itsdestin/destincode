@@ -76,6 +76,44 @@ describe('LocalModelRow', () => {
     )).toBeTruthy());
   });
 
+  // The start-up window this branch deliberately created: over the remote link
+  // the host can have no engine wired yet, and its honest answer to both of
+  // these is nothing at all. Neither may become developer text or a spinner
+  // that never ends.
+  it('says so plainly when the engine is not ready to READ a model\u2019s settings', async () => {
+    setupModelsMock({ settings: vi.fn().mockResolvedValue(null) });
+    render(<LocalModelRow model={{ ...unfinished, status: 'complete' }} onRefresh={async () => {}} />);
+    await act(async () => { fireEvent.click(screen.getByText('Settings')); });
+    // Not "Cannot read properties of null (reading 'contextLength')".
+    await waitFor(() => expect(screen.getByText(
+      'This model\u2019s settings are not available yet. Try again in a moment.',
+    )).toBeTruthy());
+    expect(screen.queryByText(/Cannot read properties/)).toBeNull();
+  });
+
+  it('says so plainly when the engine is not ready to SAVE, instead of blanking the dialog', async () => {
+    const ready = {
+      contextLength: null, keepLoaded: false, gpuLayers: 'auto' as const,
+      extraFlags: '', memoryWarningDismissed: null,
+    };
+    setupModelsMock({
+      settings: vi.fn().mockResolvedValue(ready),
+      setSettings: vi.fn().mockResolvedValue(null),
+    });
+    render(<LocalModelRow model={{ ...unfinished, status: 'complete' }} onRefresh={async () => {}} />);
+    await act(async () => { fireEvent.click(screen.getByText('Settings')); });
+    await waitFor(() => expect(screen.getByLabelText('Keep loaded')).toBeTruthy());
+
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+
+    await waitFor(() => expect(screen.getByText(
+      'That did not save \u2014 the engine is not ready yet. Try again in a moment.',
+    )).toBeTruthy());
+    // The dialog is still a dialog, not "Loading settings…" for ever.
+    expect(screen.queryByText('Loading settings…')).toBeNull();
+    expect(screen.getByLabelText('Keep loaded')).toBeTruthy();
+  });
+
   it('a refused ADD VISION shows the reason without Electron\u2019s wrapper', async () => {
     const models = setupModelsMock({
       addVision: vi.fn().mockRejectedValue(new Error(

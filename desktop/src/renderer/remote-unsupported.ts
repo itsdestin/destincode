@@ -36,7 +36,7 @@ const FEATURE_NAMES: Array<[string, string]> = [
   // Desktop-only on a phone too, and both are called on ordinary screens
   // (provider:list runs every time the model picker opens), so a missing name
   // here is a toast reading a raw channel id at somebody.
-  ['provider:', 'Model providers'],
+  ['provider:', 'The model providers list'],
   ['native:', 'The built-in assistant'],
 ];
 

@@ -926,7 +926,20 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     const api = window.claude.models as { settings?: (id: string) => Promise<StoredModelSettings> };
     if (typeof api.settings !== 'function') { setError('This version cannot read per-model settings.'); return; }
     api.settings(modelId)
-      .then((st) => { if (alive) { setSettings(st); setCtxDraft(st.contextLength == null ? '' : String(st.contextLength)); setFlagsDraft(st.extraFlags); } })
+      .then((st) => {
+        if (!alive) return;
+        // WHY the null check: over the remote link there is a window at start-up
+        // where the host has no engine wired yet, and the honest answer to
+        // "what are this model's settings" is then nothing at all. Reading
+        // `st.contextLength` off it throws, and what the user would read is the
+        // raw JavaScript — "Cannot read properties of null" — because
+        // plainMessage passes a message it did not wrap straight through. Say
+        // the true thing instead, and say nothing about why.
+        if (!st) { setError('This model\u2019s settings are not available yet. Try again in a moment.'); return; }
+        setSettings(st);
+        setCtxDraft(st.contextLength == null ? '' : String(st.contextLength));
+        setFlagsDraft(st.extraFlags);
+      })
       .catch((e) => { if (alive) setError(plainMessage(e, 'Could not read this model\u2019s settings.')); });
     return () => { alive = false; };
   }, [modelId]);
@@ -937,8 +950,15 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     // option it refused, so we never paraphrase or guess. plainMessage strips
     // Electron's "Error invoking remote method …" wrapper and nothing else, so
     // what the user reads is exactly what the engine said.
-    try { setSettings(await window.claude.models.setSettings(modelId, patch)); }
-    catch (e) { setError(plainMessage(e, 'Could not save.')); }
+    try {
+      const saved = await window.claude.models.setSettings(modelId, patch);
+      // Same start-up window as the read above. Storing a null answer would blank
+      // the whole dialog back to "Loading settings…" and leave it there for ever:
+      // the user flips a switch and the panel becomes a spinner that never
+      // resolves and never explains itself. Keep what is on screen and say so.
+      if (saved) setSettings(saved);
+      else setError('That did not save \u2014 the engine is not ready yet. Try again in a moment.');
+    } catch (e) { setError(plainMessage(e, 'Could not save.')); }
   };
 
   const commitContext = () => {
