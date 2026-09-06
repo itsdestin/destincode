@@ -1496,10 +1496,11 @@ export class EngineManager extends EventEmitter {
       //     live reading wins and any server-side clamp is respected.
       //   - effectiveContextForModel then clamps to the registry's documented
       //     maxContextWindow for every known family.
-      //   - trainedContextFor() is inert today (no GGUF header reader), so the
-      //     "trained max" guard the comment relies on provides nothing either way.
-      // Closing the gap properly means parsing <arch>.context_length from the GGUF
-      // — tracked as the trainedContextFor TODO below, not solved by guessing low.
+      //   - trainedContextFor() is inert today, so the "trained max" guard the
+      //     comment relies on provides nothing either way. NOT for want of a
+      //     parser any more — see its own comment below.
+      // Closing the gap means handing this function the header reader's
+      // contextLength, not guessing low.
       //
       // 2026-09-05 (§C3): the number to fall back on is THIS MODEL's configured
       // context length, not the engine-wide one — a model the user set to 128k
@@ -1525,13 +1526,19 @@ export class EngineManager extends EventEmitter {
     }
   }
 
-  /** The model's GGUF-trained max context, if known. CONCERN: today the cache
-   *  scan (scanGgufCache → EngineModel) carries no trained-context field — that
-   *  value lives in the GGUF header (<arch>.context_length), which nothing here
-   *  parses yet — so this returns null and clampContextWindow falls back to the
-   *  loaded /props value alone. When a GGUF-metadata reader lands, surface the
-   *  trained max here so a model whose file was trained smaller than the loaded
-   *  -c can't be over-driven. */
+  /** The model's GGUF-trained max context, if known. Returns null, so
+   *  clampContextWindow falls back to the loaded /props value alone.
+   *
+   *  CORRECTED 2026-09-06 — the reader this was waiting for EXISTS. It used to
+   *  say "nothing here parses the GGUF header yet"; `models/gguf-header.ts` now
+   *  reads <arch>.context_length into `GgufHeader.contextLength` (cached in
+   *  userData, probe-pinned by test-engine/probe-headers.mjs) and the memory
+   *  estimator already depends on it. The only thing still missing is the wire:
+   *  the cache scan (scanGgufCache → EngineModel) carries no trained-context
+   *  field, so this function has nothing local to read. Anyone closing this gap
+   *  should surface the existing reader's number here — a model whose file was
+   *  trained smaller than the loaded context can then no longer be over-driven —
+   *  and must NOT write a second parser. */
   private trainedContextFor(_modelId: string): number | null {
     return null;
   }
