@@ -174,7 +174,11 @@ describe('a shell session in the renderer', () => {
       // The form's `runtime` is typed by RuntimeBinding's Runtime union, which
       // has no 'shell' member — so no code path in the form can produce one.
       expect(bindingSrc).toContain("export type Runtime = 'claude' | 'native';");
-      expect(stripSrc).toContain("useState<Runtime>('claude')");
+      // The INITIAL value moved to defaultRuntime() upstream, so pinning the literal
+      // 'claude' pinned an incidental detail. What this guard is actually for is that
+      // the state is typed by the union above — that is what makes a shell runtime
+      // unrepresentable here, whatever the initial value is computed from.
+      expect(stripSrc).toContain("useState<Runtime>(");
       // ...and nothing sets it to a shell anyway.
       expect(stripSrc).not.toContain("setRuntime('shell')");
     });

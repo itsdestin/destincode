@@ -465,7 +465,13 @@ describe('engine:set-config — a refused reload is REPORTED (should-fix 1)', ()
 describe('effectiveContextWindow asks the MODEL, not the router (§C3)', () => {
   /** /props answers `body` only when asked about a named model; the bare /props
    *  answers what the router really answers — a dummy with n_ctx 0. */
-  function fetchProps(body: unknown) {
+  //  `loadedId` matters: the manager only NAMES a model in /props when GET /models
+  //  already reports it `loaded`, because on this build naming an unloaded model
+  //  autoloads it — a status read that pulls gigabytes into memory and, at
+  //  --models-max 2, can evict the model a live conversation is using. A stub that
+  //  reports nothing loaded therefore exercises the model-LESS path, which is what
+  //  the fallback cases below want and what the named cases must opt out of.
+  function fetchProps(body: unknown, loadedId?: string) {
     urls = [];
     return vi.fn(async (input: any) => {
       const url = String(input);
@@ -475,14 +481,18 @@ describe('effectiveContextWindow asks the MODEL, not the router (§C3)', () => {
         const named = url.includes('?model=');
         return { ok: true, status: 200, json: async () => (named ? body : { model_path: 'none', n_ctx: 0 }) } as any;
       }
-      return { ok: true, status: 200, json: async () => ({ data: [] }) } as any;
+      // The router reports residency in `status` (a string on b10665, an object on
+      //  b9992) — NOT `state`, which is the manager's own mapped field. A stub using
+      //  `state` reports nothing loaded and silently exercises the model-less path.
+      const data = loadedId ? [{ id: loadedId, status: 'loaded' }] : [];
+      return { ok: true, status: 200, json: async () => ({ data }) } as any;
     });
   }
 
   it('names the model in the query, url-encoded', async () => {
     plantInstall();
     await home.mutateJson('config.json', () => ({ v: 1, engine: { cacheDir, contextSize: 32_768 } }));
-    mgr = makeManager(fetchProps({ default_generation_settings: { n_ctx: 16_384 }, n_slots: 4 }));
+    mgr = makeManager(fetchProps({ default_generation_settings: { n_ctx: 16_384 }, n_slots: 4 }, 'gemma 4/E2B-it-Q8_0'));
 
     const result = await mgr.effectiveContextWindow('gemma 4/E2B-it-Q8_0');
     // The exact URL: a bare /props answers `n_ctx: 0` even with a model loaded
@@ -526,7 +536,7 @@ describe('effectiveContextWindow asks the MODEL, not the router (§C3)', () => {
       engine: { cacheDir, contextSize: 32_768, models: { 'clamped-model': { contextLength: 131_072 } } },
     }));
     // The server clamped the request down to what the VRAM allowed: believe it.
-    mgr = makeManager(fetchProps({ default_generation_settings: { n_ctx: 8_192 } }));
+    mgr = makeManager(fetchProps({ default_generation_settings: { n_ctx: 8_192 } }, 'clamped-model'));
 
     expect((await mgr.effectiveContextWindow('clamped-model')).contextLength).toBe(8_192);
   });
