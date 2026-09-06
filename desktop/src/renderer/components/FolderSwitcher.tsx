@@ -35,6 +35,12 @@ interface Props {
   /** Opens Project View ("Manage projects…"). Omitted where Project View
    *  doesn't exist (the buddy window) — the footer row hides itself. */
   onManageProjects?: () => void;
+  /** Assistant settings only (review round 4, R4-2): the open list is exactly
+   *  as wide as the closed control and left-aligned to it, and each row puts
+   *  the name and the path on ONE line. Everywhere else the panel keeps its
+   *  fixed 320px, centred and overhanging its host — the shape Destin chose
+   *  for the new-session menu on 2026-07-17, which this must not disturb. */
+  panelMatchesTrigger?: boolean;
 }
 
 // Dot colors: status colors are theme-independent by design-system rule.
@@ -45,7 +51,7 @@ const DOT_CLASS: Record<'green' | 'red' | 'gray', string> = {
   gray: 'bg-fg-faint',
 };
 
-export default function FolderSwitcher({ value, onChange, autoSelect = true, onManageProjects }: Props) {
+export default function FolderSwitcher({ value, onChange, autoSelect = true, onManageProjects, panelMatchesTrigger = false }: Props) {
   const [folders, setFolders] = useState<SavedFolder[]>([]);
   const [open, setOpen] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatusData | null>(null);
@@ -58,7 +64,7 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
   const listRef = useScrollFade<HTMLDivElement>();
   // Fixed-position coordinates for the portaled dropdown, computed from the
   // trigger button's screen rect whenever the dropdown opens (and on resize).
-  const [panelPos, setPanelPos] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
+  const [panelPos, setPanelPos] = useState<{ top: number; left: number; maxHeight: number; width: number } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -115,15 +121,20 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
     const margin = 8;
-    const left = Math.min(
-      Math.max(rect.left + rect.width / 2 - PANEL_WIDTH / 2, margin),
-      window.innerWidth - PANEL_WIDTH - margin
-    );
+    // R4-2: match-the-trigger mode measures the control instead of using the
+    // fixed width, and hangs the panel off its left edge rather than centring.
+    const width = panelMatchesTrigger ? rect.width : PANEL_WIDTH;
+    const left = panelMatchesTrigger
+      ? Math.min(Math.max(rect.left, margin), Math.max(window.innerWidth - width - margin, margin))
+      : Math.min(
+          Math.max(rect.left + rect.width / 2 - width / 2, margin),
+          window.innerWidth - width - margin,
+        );
     const top = rect.bottom + 4;
     // Never extend past the viewport bottom — the panel scrolls instead.
     const maxHeight = Math.max(window.innerHeight - top - margin, 120);
-    setPanelPos({ top, left, maxHeight });
-  }, []);
+    setPanelPos({ top, left, maxHeight, width });
+  }, [panelMatchesTrigger]);
 
   useLayoutEffect(() => {
     if (!open) { setPanelPos(null); return; }
@@ -213,8 +224,8 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
           // see it — without this attribute the host closes (and unmounts us)
           // on the mousedown, and our click never fires.
           data-folder-switcher-portal=""
-          className="layer-surface fixed w-80 overflow-hidden flex flex-col"
-          style={{ top: panelPos.top, left: panelPos.left, maxHeight: panelPos.maxHeight, zIndex: POPOVER_Z, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
+          className="layer-surface fixed overflow-hidden flex flex-col"
+          style={{ top: panelPos.top, left: panelPos.left, width: panelPos.width, maxHeight: panelPos.maxHeight, zIndex: POPOVER_Z, animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both' }}
         >
           {/* Saved folders list — min-h-0 lets flexbox shrink the list first
               when the viewport-clamped panel height is tight. */}
@@ -248,12 +259,21 @@ export default function FolderSwitcher({ value, onChange, autoSelect = true, onM
                     {/* Nickname + path. Rename/remove hover actions were
                         deliberately removed (2026-07-09) — both live in
                         Project View via "Manage projects…". Don't re-add. */}
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs truncate">{shown}</div>
-                      <div className="text-3xs text-fg-muted truncate" title={f.path}>
-                        {f.path}
+                    {panelMatchesTrigger ? (
+                      // R4-2: name and path on one line, the path taking
+                      // whatever room is left after the name.
+                      <div className="flex-1 min-w-0 flex items-baseline gap-1.5">
+                        <span className="text-xs shrink-0">{shown}</span>
+                        <span className="text-3xs text-fg-muted truncate" title={f.path}>{f.path}</span>
                       </div>
-                    </div>
+                    ) : (
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs truncate">{shown}</div>
+                        <div className="text-3xs text-fg-muted truncate" title={f.path}>
+                          {f.path}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Stale warning */}
                     {!f.exists && (

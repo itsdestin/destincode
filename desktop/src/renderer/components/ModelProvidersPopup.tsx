@@ -194,10 +194,7 @@ export function ClaudeCodeBlock({
           exactly what the command list already tells people. So this says
           where to go, in the same words. */}
       <Dialog open={signOutOpen} onClose={() => setSignOutOpen(false)} title="Sign out of Claude Code" size="prompt">
-        <div className="space-y-3 text-xs text-fg-2 leading-relaxed">
-          <p>
-            Claude Code keeps its own sign-in, and YouCoded cannot clear it for you.
-          </p>
+        <div className="space-y-3 text-xs text-fg leading-relaxed">
           <p>
             Open any conversation, switch it to Terminal view, and type <code className="font-mono bg-inset px-1 rounded">/logout</code>.
             That signs Claude Code out on this computer.

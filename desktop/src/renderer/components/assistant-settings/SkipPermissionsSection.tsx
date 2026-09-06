@@ -62,21 +62,13 @@ export default function SkipPermissionsSection({ defaults, onDefaultsChange }: {
       {/* layer 3 + destructive: this is the app's shape for a confirmation
           that must not be lost behind the thing it is confirming. */}
       <Dialog open={confirming} onClose={close} title="Skip Permissions Mode" size="prompt" layer={3} destructive>
-        <div className="space-y-3 text-xs text-fg-2 leading-relaxed">
-          <p className="text-destructive-fg font-medium">
-            Claude Code will not ask for your approval before it edits files, runs commands, or goes online.
-          </p>
-          {/* Every claim here is the measured behaviour from
-              docs/active/investigations/2026-08-09-native-skip-permissions.md,
-              the same source the hover explainer uses. A safety net that is not
-              there must not be advertised. */}
+        <div className="space-y-3 text-xs text-fg leading-relaxed">
+          {/* Destin's copy (round 4, R4-3) — the three measured paragraphs it
+              replaced read as a wall of grey. */}
           <p>
-            The only refusal we have measured is a command that would delete your whole project folder or a
-            system folder. Everything else went through without asking — reading private files, changing
-            files outside your project, and editing your project's saved history.
-          </p>
-          <p>
-            Use it only in a folder you would not mind redoing.
+            When you begin a session in skip permissions mode, Claude Code will not ask before taking
+            actions or running commands. You should be cautious when attempting to use this mode with
+            Haiku- or Sonnet-class models.
           </p>
           <div className="flex items-start gap-2 pt-1">
             <span className="mt-0.5">

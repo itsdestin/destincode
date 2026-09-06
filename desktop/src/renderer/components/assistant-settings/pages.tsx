@@ -130,6 +130,7 @@ function ProjectFolderRow({ defaults, onDefaultsChange }: PageContext) {
         value={defaults.projectFolder}
         onChange={(path) => onDefaultsChange({ projectFolder: path })}
         autoSelect={false}
+        panelMatchesTrigger
       />
     </FieldRow>
   );
