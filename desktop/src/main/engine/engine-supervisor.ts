@@ -1128,11 +1128,28 @@ export class EngineSupervisor extends EventEmitter {
    *  as activity (never reaped mid-load). */
   async loadModel(modelId: string): Promise<void> {
     const base = await this.ensureRunning(); // http://127.0.0.1:port/v1
+    // The outcome is EMITTED rather than returned. This warm-up is deliberately
+    // not awaited (the caller returns at once so the UI can show 'loading'), and
+    // /models rows carry no failure text — so a push is the only way this
+    // model's load failure can reach its settings dialog, where EngineManager
+    // records it as `lastLoadError` (design §C2). The engine's own words are
+    // carried out raw; the caller decides how to phrase them, never this class.
     void this.trackedFetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
-    }).catch(() => { /* best-effort — the poll reflects the outcome */ });
+    }).then(async (res: Response) => {
+      let body = '';
+      // Read the body only on a failure, and never let a body that cannot be
+      // read turn a real HTTP answer into a "could not be reached".
+      if (!res.ok) { try { body = await res.text(); } catch { body = ''; } }
+      this.emit('model-load-result', { modelId, ok: res.ok, status: res.status, body });
+    }).catch((e: any) => {
+      // The request could not be made at all — report what happened, not a guess.
+      this.emit('model-load-result', {
+        modelId, ok: false, status: null, body: (e?.message ?? String(e)).trim(),
+      });
+    });
     // Nudge the poll so 'loading' + the progress bar appear promptly (don't wait
     // for the next lazy tick). The adaptive poll then takes over at fast cadence.
     void this.emitModelsIfChanged();
