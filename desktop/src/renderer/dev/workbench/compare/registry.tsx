@@ -45,6 +45,12 @@ import { PRIORITY_TAG, PRIORITY_HINT } from '../../../components/tags/built-in-t
 // app does, or the comparison is against something that doesn't exist.
 import { TagGlyph, NotePageGlyph, PencilGlyph } from '../../../components/tags/glyphs';
 import type { TagRecord } from '../../../../shared/tags';
+// voice-mic: the REAL composer against a per-pane fake of window.claude.voice.
+import InputBar from '../../../components/InputBar';
+import { ChatProvider } from '../../../state/chat-context';
+import { SkillProvider } from '../../../state/skill-context';
+import { createVoiceMock } from '../mock-shim';
+import { VoiceStyleContext, DEFAULT_VOICE_STYLE, type VoiceStyle } from '../../../components/VoiceButton';
 // chatsearch-present Round 6: the real label→color resolver ChatsearchFindCard
 // uses — reused (not re-derived) so a tag rendered here can never disagree
 // with a tag rendered on the search-result row about what color it gets, and
@@ -72,6 +78,10 @@ import type { CompareSurface } from './types';
 // differed only in a data-motion / data-arrival attribute the host set — a
 // review scaffold in globals.css, since deleted — never in code.
 import { SessionStripMotionDemo } from '../mockups/SessionStripMotion';
+// buddy-sleep: the REAL MascotRig on the app's own default rig, running the
+// actual settle → breathe → wake. A sleep pose cannot be judged from a still —
+// two thirds of it is motion.
+import { BuddySleepDemo } from '../mockups/BuddySleep';
 // The REAL derivation the shipping card will use — a candidate that hardcoded
 // its options would be comparing wording against something that cannot happen.
 import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
@@ -1846,7 +1856,7 @@ function FullAutoAskShell({ children }: { children: React.ReactNode }) {
         <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         <span className="text-fg-faint text-xs select-none">|</span>
         <span className="text-xs font-medium text-fg-2">Push local commits</span>
-        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">↳ git push origin master</span>
+        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">· git push origin master</span>
       </div>
       {children}
     </div>
@@ -2148,7 +2158,7 @@ function GrantAskShell({ row, children }: {
         <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         <span className="text-fg-faint text-xs select-none">|</span>
         <span className="text-xs font-medium text-fg-2">{row.title}</span>
-        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">↳ {row.command}</span>
+        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">· {row.command}</span>
       </div>
       <div
         className={amber ? 'px-3 py-2 space-y-2 border-t' : 'px-3 py-2 space-y-2 border-t border-edge bg-inset/30'}
@@ -4350,6 +4360,70 @@ function PresentRefTable() {
 
 const ALL_SURFACES: CompareSurface[] = [
   {
+    id: 'buddy-sleep',
+    label: 'Buddy — falling asleep',
+    question: 'After a few quiet minutes the buddy goes to sleep. Which way of going under reads best at his real size? — SETTLED 2026-09-05: R1 loaf, then R2 docked arms.',
+    frame: 'canvas',
+    // BOTH ROUNDS NOW RENDER WHAT SHIPPED. Destin picked the loaf in R1 and the
+    // docked arms in R2, and the losing poses were deleted rather than left in
+    // the shipped table — but the rounds stay, because the breadcrumb IS the
+    // record of how the design got here (same as session-strip-motion below).
+    // FIXED at his real window width plus a little air. A sleep pose that only
+    // reads when the pane is stretched has not been judged at all — he is 112px
+    // in the corner of a screen, always.
+    paneWidth: 150,
+    rounds: [
+      {
+        n: 1,
+        basis: "Destin, 2026-09-04: \"i didn't entirely love the shut down pose as written.\" A is that pose, ported as faithfully as this rig allows, so the other three are judged against the thing he is reacting to rather than against nothing. The ten candidates drawn during the promo (docs/archive/prototypes/promo-2026-09/storyboard-v3/power-down-poses{,-2}.png) were judged for the END OF A FILM at large size beside the wordmark; these are judged for 112px in a screen corner, where he may also be docked half-off an edge. Every pane loops settle → breathe → wake by itself and has a Wake him button, because the wake is half of whether a sleep reads as sleep or as a glitch.",
+        candidates: [
+          {
+            id: 'loaf',
+            label: 'Loaf',
+            note: "The film's own pose: he squats down and his arms swing under to the bottom corners.",
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+          {
+            id: 'slump',
+            label: 'Slump',
+            note: 'Dozed off where he stood — he leans, sinks a little, arms go slack. Barely changes his outline.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+          {
+            id: 'deflate',
+            label: 'Deflate + dim',
+            note: 'Shrinks a touch and fades. Says "powered down" with brightness instead of posture.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'R1 · A (loaf), picked 2026-09-05: "i quite like loaf. the animation to transition between states can be improved though. also wanna see a few more variants with the arms in different positions (tucked just a bit, fully docked, wildcard)." The body is the loaf\'s and is NOT under review here — only the arms move, so the choice is about one thing. The transition complaint was fixed rather than offered as an option: limb translation now rides the same springs the rotations do (it used to teleport while the body eased), and the body\'s settle is directional — 620ms heavy going under, 300ms with a little overshoot coming back.',
+        candidates: [
+          {
+            id: 'tuck',
+            label: 'Tuck',
+            note: 'Barely moved — arms stay where you last saw them, just relaxed and dropped a little.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+          {
+            id: 'dock',
+            label: 'Dock',
+            note: 'All the way down and pulled into the body, so his outline becomes one clean shape.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+          {
+            id: 'flop',
+            label: 'Flop',
+            note: 'The wildcard: arms swung out flat, flumped. Funny rather than tidy.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: 'session-strip-motion',
     label: 'Session strip — motion',
     question: 'How fast, and on what curve, should a click open a name, a hover peek it, and a drag move a pill?',
@@ -5366,9 +5440,120 @@ const ALL_SURFACES: CompareSurface[] = [
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'session-strip-motion';
+const ACTIVE_FIRST = 'buddy-sleep';
+
+// ── voice-mic ────────────────────────────────────────────────────────────────
+// The real InputBar, compact (no quick chips), each pane born against its own
+// voice fake. WHY the swap happens in THIS component's render body: React walks
+// the tree depth-first, so the InputBar below mounts (and its useVoiceInput
+// captures window.claude.voice ONCE, via a useState initializer) before the
+// next sibling pane's demo renders and swaps the next fake in. Dev-only; the
+// workbench page's own fake is restored by the last pane that mounts. A short
+// assistant turn sits above the composer so the mic is judged in its context.
+function VoiceComposerDemo({ state, style, loop }: { state: 'ready' | 'needs-download' | 'unavailable'; style?: Partial<VoiceStyle>; loop?: boolean }) {
+  const mockRef = React.useRef<ReturnType<typeof createVoiceMock> | null>(null);
+  if (!mockRef.current) mockRef.current = createVoiceMock(state, { loopReset: !!loop });
+  window.claude.voice = mockRef.current;
+  const boxRef = React.useRef<HTMLDivElement>(null);
+  // Round 2 judges the LISTENING state, so a looping pane keeps the mic open:
+  // whenever the fake has closed it, tap it again. Dev harness only — it drives
+  // the real button through a click, the way a finger would.
+  React.useEffect(() => {
+    if (!loop) return;
+    const id = window.setInterval(() => {
+      const btn = boxRef.current?.querySelector<HTMLButtonElement>('[aria-label="Speak your message"]');
+      btn?.click();
+    }, 900);
+    return () => window.clearInterval(id);
+  }, [loop]);
+  return (
+    <ChatProvider>
+      <SkillProvider>
+      <VoiceStyleContext.Provider value={{ ...DEFAULT_VOICE_STYLE, ...style }}>
+        <div ref={boxRef} className="flex flex-col gap-3">
+          <div className="px-3">
+            <div className="bg-inset rounded-xl px-3 py-2 text-sm text-fg max-w-[85%]">
+              Sure — which spreadsheet, and what should I change?
+            </div>
+          </div>
+          <InputBar sessionId="voice-demo" compact />
+        </div>
+      </VoiceStyleContext.Provider>
+      </SkillProvider>
+    </ChatProvider>
+  );
+}
 
 export const COMPARE_SURFACES: CompareSurface[] = [
+  {
+    id: 'voice-listening-feedback',
+    label: 'Message box — listening feedback',
+    question: 'While the mic listens, where should the loudness meter and the clock live?',
+    frame: 'canvas',
+    paneWidth: { min: 440, max: 700 },
+    rounds: [
+      {
+        n: 1,
+        basis: 'Round 1 of the voice deck (V-1, 2026-09-05): Destin approved the mic and asked for "a few alternatives for the counter/feedback location and styling". Every pane loops the listening state; the mic motion is the round-1 breathing ring in all three.',
+        candidates: [
+          { id: 'beside', label: 'A · Beside the mic', note: 'Round 1: bars and m:ss left of the glowing mic, inside the box. NOT PICKED (2026-09-05).', render: () => <VoiceComposerDemo state="ready" loop style={{ feedback: 'beside' }} /> },
+          { id: 'strip', label: 'B · Strip above the box', note: 'The model-loading band, reused: dot, "Listening", bars and clock above the box. Pushes the chat up one row while listening. PICKED 2026-09-05 — now the default.', render: () => <VoiceComposerDemo state="ready" loop style={{ feedback: 'strip' }} /> },
+          { id: 'placeholder', label: 'C · In the empty line', note: 'Bars and clock where the placeholder was; they step aside as the first words arrive, leaving only the glowing mic. NOT PICKED (2026-09-05).', render: () => <VoiceComposerDemo state="ready" loop style={{ feedback: 'placeholder' }} /> },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'voice-mic-motion',
+    label: 'Message box — mic motion',
+    question: 'How should the mic button move while it listens?',
+    frame: 'canvas',
+    paneWidth: { min: 440, max: 700 },
+    rounds: [
+      {
+        n: 1,
+        basis: 'Round 1 of the voice deck (V-1, 2026-09-05): "…and the animation on the mic icon". Every pane loops the listening state; the feedback is the round-1 beside-the-mic meter in all three.',
+        candidates: [
+          { id: 'breathe', label: 'A · Breathing ring', note: 'Round 1: a stepped ring grows out of the filled mic every 1.4 s, regardless of loudness. NOT PICKED (2026-09-05).', render: () => <VoiceComposerDemo state="ready" loop style={{ motion: 'breathe' }} /> },
+          { id: 'level', label: 'B · Ring follows your voice', note: 'No timer: the ring\'s size is the loudness, 2 to 12 px. Reacts the instant you speak, still when you pause. PICKED 2026-09-05 ("make the max size a tad smaller tho") — now 2 to 9 px and the default.', render: () => <VoiceComposerDemo state="ready" loop style={{ motion: 'level' }} /> },
+          { id: 'dot', label: 'C · Recording dot', note: 'The mic sits still; a red dot on its corner blinks every 1.2 s, the way a recorder does. NOT PICKED (2026-09-05).', render: () => <VoiceComposerDemo state="ready" loop style={{ motion: 'dot' }} /> },
+        ],
+      },
+    ],
+  },
+  {
+    id: 'voice-mic',
+    label: 'Message box — the mic',
+    question: 'Tap the mic (or hold Space in the empty box), watch the words land, open the first-run card: does the composer with a mic feel right?',
+    frame: 'canvas',
+    // The composer is wide and short: judged at the width the page can give it.
+    paneWidth: { min: 440, max: 760 },
+    rounds: [
+      {
+        n: 1,
+        candidates: [
+          {
+            id: 'ready',
+            label: 'Ready',
+            note: 'The engine is installed. Tap the mic, or hold Space in the empty box: a scripted sentence lands live, the last two words grey until they settle, then the mic closes itself after two quiet seconds and the text waits for Send.',
+            render: () => <VoiceComposerDemo state="ready" />,
+          },
+          {
+            id: 'first-run',
+            label: 'First tap',
+            note: 'Nothing downloaded yet. The first tap opens the card: what the mic does, that your voice stays on this computer, the 650 MB one-time download. Download runs a fake progress and the mic wakes up with a toast.',
+            render: () => <VoiceComposerDemo state="needs-download" />,
+          },
+          {
+            id: 'no-mic',
+            label: 'No microphone',
+            note: 'What the tap shows on a computer with no microphone: the specific reason and a Check again.',
+            render: () => <VoiceComposerDemo state="unavailable" />,
+          },
+        ],
+      },
+    ],
+  },
   ...ALL_SURFACES.filter((s) => s.id === ACTIVE_FIRST),
   ...ALL_SURFACES.filter((s) => s.id !== ACTIVE_FIRST),
 ];

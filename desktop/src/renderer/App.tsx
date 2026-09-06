@@ -34,6 +34,7 @@ import { runNativeSlashAction, routeSlashResult } from './state/native-slash-act
 import { GameProvider, useGameState, useGameDispatch } from './state/game-context';
 import { hookEventToAction } from './state/hook-dispatcher';
 import { buildUsageSnapshot, pruneExpiredUsage, type SubscriptionUsage } from './state/usage-snapshot';
+import { invalidateProviderTypeCache, resolveProviderType, useModelProviderType } from './hooks/use-provider-type';
 import { hasPendingInteraction, canPtySend } from './state/pty-input-gate';
 import { buildOutgoingMessage } from './components/outgoing-message';
 import type { SyncWarning } from '../main/sync-state';
@@ -60,7 +61,7 @@ import SettingsPanel from './components/SettingsPanel';
 import ResumeBrowser from './components/ResumeBrowser';
 import CloseSessionPrompt, { CLOSE_PROMPT_SUPPRESS_KEY } from './components/CloseSessionPrompt';
 import PreferencesPopup from './components/PreferencesPopup';
-import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './components/RuntimeBinding';
+import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, defaultRuntime, type Runtime, type Binding } from './components/RuntimeBinding';
 import ModelPicker, { type ModelChoice } from './components/model/ModelPicker';
 import ModelPickerPopup from './components/ModelPickerPopup';
 import type { ModelBinding } from '../shared/provider-types';
@@ -137,6 +138,10 @@ interface SessionStats {
 
 interface StatusDataState {
   usage: any;
+  /** The ChatGPT plan's rolling windows (Sign in with ChatGPT, 2026-09-04),
+   *  pushed beside Claude's on status:data. Shown only for a session bound to
+   *  a 'chatgpt' provider — see the StatusBar props below. */
+  chatgptUsage: any;
   announcement: any;
   updateStatus: any;
   model: string | null;
@@ -208,7 +213,7 @@ function AppInner() {
   const isLeader = myWindowId != null && leaderWindowId === myWindowId;
   const [viewModes, setViewModes] = useState<Map<string, ViewMode>>(new Map());
   const [statusData, setStatusData] = useState<StatusDataState>({
-    usage: null, announcement: null, updateStatus: null,
+    usage: null, chatgptUsage: null, announcement: null, updateStatus: null,
     model: null, contextMap: {}, gitBranchMap: {}, sessionStatsMap: {},
     syncWarnings: [],
     lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
@@ -413,7 +418,9 @@ function AppInner() {
   // Runtime (Claude Code vs YouCoded native harness) + native binding for the
   // welcome/app-open new-session form — mirrors the SessionStrip form via the
   // shared RuntimeBinding hook so the two forms can't drift.
-  const [welcomeRuntime, setWelcomeRuntime] = useState<Runtime>('claude');
+  // Opens on the install's remembered default (see RuntimeBinding.defaultRuntime):
+  // 'claude' normally, 'native' on an install that signed in with ChatGPT.
+  const [welcomeRuntime, setWelcomeRuntime] = useState<Runtime>(() => defaultRuntime());
   const [welcomeBinding, setWelcomeBinding] = useState<Binding | null>(() => loadLastBinding());
   const welcomeNb = useNativeBinding({ active: welcomeFormOpen, runtime: welcomeRuntime, binding: welcomeBinding, setBinding: setWelcomeBinding });
   // Native harness preset for the welcome form — shared lifecycle hook (see
@@ -808,6 +815,17 @@ function AppInner() {
   // when nothing changed; without this guard the unconditional setStatusData
   // re-rendered the whole app tree at idle, forever.
   const lastStatusJsonRef = useRef<string | null>(null);
+  // Did the last status push carry ChatGPT plan usage? Main starts (and stops)
+  // that usage poll the moment the browser sign-in completes or the user signs
+  // out, so this yes/no answer flipping is a reliable, app-wide "the ChatGPT
+  // account just changed" signal. WHY we need one at all: the only other place
+  // that notices a sign-in is the card inside the Settings popup, and the
+  // sign-in happens in a BROWSER TAB — close Settings on the way back from the
+  // browser and the card is gone before the sign-in lands, so a conversation on
+  // a plan model would show no usage chips and no plan on /usage until the app
+  // was restarted. For anyone who never signs in with ChatGPT this value is
+  // `false` on every push forever and nothing below ever runs.
+  const hadChatGptUsageRef = useRef(false);
   useEffect(() => {
     const prev = prevStatusSoundRef.current;
     for (const [id, color] of sessionStatuses) {
@@ -1215,6 +1233,12 @@ function AppInner() {
             toolUseId: event.data.toolUseId,
             toolName: event.data.toolName,
             toolInput: event.data.toolInput || {},
+            // Carried so a specialist's mid-run note can be placed among its
+            // tool rows by time (reconcileNoteSegments); the top-level card
+            // ignores it. Three mirrors must stay identical: this switch,
+            // BubbleFeed.tsx (buddy window) and transcript-page-actions.ts
+            // (replayed page) — pinned by transcript-event-surface-parity.test.ts.
+            timestamp: event.timestamp,
             parentAgentToolUseId: event.data.parentAgentToolUseId,
             agentId: event.data.agentId,
           });
@@ -1464,10 +1488,21 @@ function AppInner() {
       const json = JSON.stringify(data);
       if (json === lastStatusJsonRef.current) return;
       lastStatusJsonRef.current = json;
+      const chatgptUsage = pruneExpiredUsage(data.chatgptUsage);
+      // Signed in or signed out since the last push → the list of providers and
+      // models has changed, so anything showing "which plan is this session on"
+      // has to look again. See hadChatGptUsageRef above for why the Settings
+      // card cannot be relied on to notice this itself.
+      const hasChatGptUsage = chatgptUsage != null;
+      if (hasChatGptUsage !== hadChatGptUsageRef.current) {
+        hadChatGptUsageRef.current = hasChatGptUsage;
+        invalidateProviderTypeCache();
+      }
       setStatusData((prev) => ({
         ...prev,
         // A window past its reset time is stale, not current — see pruneExpiredUsage.
         usage: pruneExpiredUsage(data.usage),
+        chatgptUsage,
         announcement: data.announcement,
         updateStatus: data.updateStatus,
         syncWarnings: Array.isArray(data.syncWarnings) ? data.syncWarnings : [],
@@ -2281,16 +2316,24 @@ function AppInner() {
     // The derivation itself lives in state/usage-snapshot.ts — a pure function,
     // so the thing /usage is entirely made of can be tested without rendering
     // App (no test imports this file). This wrapper only gathers the inputs.
-    (sid: string) =>
-      buildUsageSnapshot({
+    (sid: string) => {
+      const info = sessionsRef.current.find((x) => x.id === sid);
+      // A session bound to the ChatGPT plan reports THAT plan's windows on the
+      // card (questions deck Q-4a); every other session keeps Claude's.
+      // info.providerType is what the session itself says it is billed to; the
+      // model-id lookup is only the fallback (see hooks/use-provider-type.ts).
+      const onChatGpt = info?.provider === 'native' && resolveProviderType(info.model, info.providerType) === 'chatgpt';
+      return buildUsageSnapshot({
         sessionId: sid,
         now: Date.now(),
         stats: statusData.sessionStatsMap[sid],
         contextPercent: statusData.contextMap[sid] ?? null,
-        usage: statusData.usage as SubscriptionUsage | null,
-        isNative: sessionsRef.current.find((x) => x.id === sid)?.provider === 'native',
+        usage: (onChatGpt ? statusData.chatgptUsage : statusData.usage) as SubscriptionUsage | null,
+        subscriptionPlan: onChatGpt ? 'chatgpt' : 'claude',
+        isNative: info?.provider === 'native',
         session: chatStateMapRef.current.get(sid),
-      }),
+      });
+    },
     [statusData],
   );
 
@@ -2761,6 +2804,13 @@ function AppInner() {
   // Native sessions: permission modes are a harness policy (Phase 2), not a
   // PTY shift+tab cycle — hide the badge + cycle affordance for them.
   const isNativeSession = currentSession?.provider === 'native';
+  // Sign in with ChatGPT (2026-09-04): which provider the bound model runs on,
+  // and what to offer when its plan window runs out (the plan-limit card).
+  const activeProviderType = useModelProviderType(
+    isNativeSession ? currentSession?.model : null,
+    isNativeSession ? currentSession?.providerType : null,
+  );
+  const onChatGptPlan = activeProviderType === 'chatgpt';
   // What the StatusBar model chip renders — see model-chip.ts for why native
   // sessions bypass the Claude Code alias matcher entirely.
   const modelChip = modelChipFor(currentSession, currentModel);
@@ -3107,6 +3157,9 @@ function AppInner() {
                       // Provider-config error bubble → open Settings straight to
                       // the Model Providers section so the key can be fixed.
                       onOpenProviderSettings={() => { setProvidersAutoOpen(true); setSettingsOpen(true); }}
+                      // Plan-limit card (review round 2, P-9): Switch Providers
+                      // opens the same picker the status-bar chip opens.
+                      onSwitchProviders={() => setModelPickerOpen(true)}
                       onCancelQueued={handleCancelQueued}
                       onEditQueued={handleEditQueued}
                     />
@@ -3224,7 +3277,7 @@ function AppInner() {
                 <ChatInputBar ref={inputBarRef} sessionId={sessionId} view={currentViewMode} onOpenDrawer={handleOpenDrawer} onCloseDrawer={handleCloseDrawer} onDrawerSearch={setDrawerFilter} disabled={trustGateActive || !!movedGate || !sessionInitialized} minimal={isTerminalTouch} onResumeCommand={() => setResumeRequested(true)} getUsageSnapshot={getUsageSnapshot} onOpenPreferences={() => setPreferencesOpen(true)} onToast={(msg) => setToast(msg)} onSendBlocked={(retry) => setToast({ message: 'Claude is waiting for your response — answer the prompt first.', durationMs: 8000, action: { label: 'Send anyway', onClick: () => { setToast(null); retry(); } } })} getSessionState={(sid) => chatStateMapRef.current.get(sid)} onOpenModelPicker={() => setModelPickerOpen(true)} initialInput={currentSession?.initialInput} provider={currentSession?.provider} />
                 <StatusBar
                   statusData={{
-                    usage: statusData.usage,
+                    usage: onChatGptPlan ? statusData.chatgptUsage : statusData.usage,
                     updateStatus: statusData.updateStatus,
                     announcement: statusData.announcement,
                     contextPercent: sessionId ? (statusData.contextMap[sessionId] ?? null) : null,
@@ -3245,6 +3298,8 @@ function AppInner() {
                     dispatch({ type: 'USER_PROMPT', sessionId, content: '/sync', timestamp: Date.now() });
                   } : undefined}
                   model={modelChip}
+                  modelProviderType={activeProviderType}
+                  usagePlan={onChatGptPlan ? 'chatgpt' : 'claude'}
                   provider={isNativeSession ? 'native' : 'claude'}
                   permissionMode={isNativeSession ? currentNativeMode : currentPermissionMode}
                   onCyclePermission={isNativeSession ? cycleNativePermission : cyclePermission}
@@ -3430,7 +3485,10 @@ function AppInner() {
                           welcomeRuntime === 'native' ? welcomePreset : undefined,
                         );
                         setWelcomeFormOpen(false);
-                        setWelcomeRuntime('claude');
+                        // Reset to the remembered default, NOT the literal 'claude' --
+                        // otherwise a ChatGPT-only install's default would last one
+                        // session (review R2-3).
+                        setWelcomeRuntime(defaultRuntime());
                       }}
                       disabled={welcomeNb.nativeCreateBlocked}
                       variant={welcomeDangerous && welcomeRuntime !== 'native' ? 'danger' : 'primary'}
@@ -3908,6 +3966,104 @@ function AppInnerProfiler({ children }: { children: React.ReactNode }) {
   return <React.Profiler id="AppInner" onRender={onRender}>{children}</React.Profiler>;
 }
 
+// ─── R12: the one-time Linux buddy hide ────────────────────────────────────
+// Design §6 of docs/active/design/2026-09-04-linux-buddy-helper/.
+//
+// WHAT THE USER SEES: a Linux user who already had the buddy switched on finds it
+// OFF exactly once, the first time they launch the version that adds the KDE
+// helper. Turning it back on is one click in Settings → Buddy Floater, and that
+// click is where the helper is offered. Nothing pops up at launch (R13).
+//
+// WHY it has to happen at all: before this version the buddy appeared on Wayland
+// but could not be dragged. Leaving it switched on would put a stuck buddy back on
+// screen with no explanation; hiding it once turns "it's broken" into "it's off,
+// switch it on and it asks you a question".
+//
+// WHY IT IS NOT "every Linux user" (design §4, revision 7): only a buddy that is
+// actually broken gets hidden. On Linux X11 — and on Wayland sessions whose
+// windows are really XWayland ones, which look identical from every environment
+// variable — the app moves its own windows perfectly well and the buddy has
+// always worked. Hiding THEIR buddy would take away something that was fine, and
+// they could not get it back: the switch is where the hiding is undone, and a
+// user who never needed a helper would be handed a consent card for one. So the
+// question this asks the desktop is "does the buddy need a helper here, and is
+// one missing?" — nothing else qualifies.
+//
+// WHY IN THE RENDERER, not the main process: the preference is
+// localStorage['youcoded-buddy-enabled'], which only the renderer can read or
+// write — a main-process one-shot cannot clear it.
+const BUDDY_LINUX_HIDE_MIGRATION_KEY = 'youcoded-buddy-linux-hidden-once';
+
+// Exported for tests/buddy-linux-migration.test.ts. Resolves to what it did, so a
+// test can prove "exactly once" rather than inferring it from storage.
+export async function runBuddyLinuxHideMigration(): Promise<
+  'hid' | 'nothing-to-hide' | 'already-run' | 'skipped'
+> {
+  // The three buddy renderers (and the dormant overlay one) are separate windows
+  // running this same App module. They share the profile's localStorage, so
+  // without this guard the migration would run up to four times per launch and,
+  // worse, could fire inside a buddy window after the main window had already
+  // been re-enabled by the user.
+  if (buddyMode) return 'skipped';
+  // Remote browsers and Android: same Electron-only probe the boot effect uses
+  // below. A phone has no buddy and no KDE, and every buddy method there throws.
+  if (!(window as any).claude?.window) return 'skipped';
+  if (localStorage.getItem(BUDDY_LINUX_HIDE_MIGRATION_KEY) === '1') return 'already-run';
+  // The desktop's own three-fact answer, NOT "is this Linux". This one call is
+  // the difference between hiding a broken buddy and taking a working one away.
+  let helper: { needed?: boolean; installed?: boolean } | undefined;
+  try {
+    helper = await window.claude.buddy?.helperStatus?.();
+  } catch {
+    // Never let a boot-time IPC failure take the launch path down: if we cannot
+    // tell what kind of desktop this is, we change nothing and try again next
+    // launch. Doing nothing costs the user exactly today's behaviour.
+    return 'skipped';
+  }
+  // No helper is wanted here (Windows, macOS, Linux/X11, XWayland): the buddy is
+  // not broken, so there is nothing to hide. Deliberately WITHOUT writing the
+  // marker — someone who is on X11 today and logs into a Wayland session
+  // tomorrow still gets their one hide on the launch where it would matter.
+  if (!helper?.needed) return 'skipped';
+  // The helper is already in place, so the buddy can be dragged and works as
+  // promised. Hiding it would be a mystery, not a rescue.
+  if (helper.installed) return 'skipped';
+  // The marker is written whether or not the buddy was on, so this is a true
+  // one-shot: a user who switches the buddy back on is never hidden again.
+  localStorage.setItem(BUDDY_LINUX_HIDE_MIGRATION_KEY, '1');
+  if (localStorage.getItem('youcoded-buddy-enabled') !== '1') return 'nothing-to-hide';
+  localStorage.setItem('youcoded-buddy-enabled', '0');
+  return 'hid';
+}
+
+// The launch path for the buddy, extracted from the effect below so the ordering
+// it depends on is testable: the R12 one-shot must finish BEFORE the preference
+// is read, or a launch would still re-open the buddy this version means to hide.
+export async function bootBuddyOnLaunch(): Promise<void> {
+  if (buddyMode) return;
+  // Fix: buddy.show() is an error-throwing stub in remote-shim (browser and
+  // Android). Optional chaining does NOT help — the stub exists, it throws —
+  // so a remote client with this flag set in localStorage threw out of this
+  // effect and RootErrorBoundary replaced the whole app with "YouCoded failed
+  // to start". Gate on window.claude.window, the Electron-only window-controls
+  // surface the shim deliberately omits; getPlatform() is NOT usable here
+  // because the shim sets __PLATFORM__ to the host's 'desktop' on auth:ok, so
+  // a remote browser does not report as 'browser'.
+  if (!(window as any).claude?.window) return;
+  await runBuddyLinuxHideMigration();
+  if (localStorage.getItem('youcoded-buddy-enabled') !== '1') return;
+  // show() can now answer "no" (design §5) — a Wayland desktop whose helper has
+  // gone missing since last launch refuses rather than putting a buddy on screen
+  // that cannot be dragged. When it does, the stored preference is cleared, so
+  // Settings → Buddy Floater does not sit there reading "On" with nothing on the
+  // desktop. The refusal itself is main's to explain; the launch path stays
+  // silent (R13: no dialog interrupts you).
+  try {
+    const res = await window.claude.buddy?.show?.();
+    if (res && res.ok === false) localStorage.setItem('youcoded-buddy-enabled', '0');
+  } catch { /* a throwing bridge is not a refusal — leave the preference alone */ }
+}
+
 export default function App() {
   // Perf lab: React has mounted the app shell (first commit).
   useEffect(() => { performance.mark('yc:app-mounted'); }, []);
@@ -3917,30 +4073,23 @@ export default function App() {
   // buddy windows themselves — only the main window should re-open the
   // buddy. Optional chaining guards against preload not being ready.
   useEffect(() => {
-    if (buddyMode) return;
-    // Fix: buddy.show() is an error-throwing stub in remote-shim (browser and
-    // Android). Optional chaining does NOT help — the stub exists, it throws —
-    // so a remote client with this flag set in localStorage threw out of this
-    // effect and RootErrorBoundary replaced the whole app with "YouCoded failed
-    // to start". Gate on window.claude.window, the Electron-only window-controls
-    // surface the shim deliberately omits; getPlatform() is NOT usable here
-    // because the shim sets __PLATFORM__ to the host's 'desktop' on auth:ok, so
-    // a remote browser does not report as 'browser'.
-    if (!(window as any).claude?.window) return;
-    if (localStorage.getItem('youcoded-buddy-enabled') === '1') {
-      window.claude.buddy?.show?.();
-    }
+    void bootBuddyOnLaunch();
   }, []);
 
   // Buddy windows render as isolated placeholders without main-app providers
   if (buddyMode === 'buddy-mascot') return <BuddyMascotApp />;
   if (buddyMode === 'buddy-chat') return <BuddyChatApp />;
   if (buddyMode === 'buddy-bar') return <BuddyBarApp />;
-  // Linux Wayland can't reposition BrowserWindows, so the whole floater
-  // (mascot + chat + bar) mounts as DOM inside one screen-sized overlay
-  // window instead of the three separate windows above — see
-  // BuddyOverlayManager (main) / chooseBuddyStrategy for how a platform ends
-  // up on this route. Other platforms never set ?mode=buddy-overlay.
+  // The overlay strategy: the whole floater (mascot + chat + bar) mounted as DOM
+  // inside one screen-sized window instead of the three separate windows above.
+  //
+  // Correction 2026-09-04 (design §7): this comment used to say Linux Wayland
+  // takes this route. It does not, and has not — chooseBuddyStrategy
+  // (buddy-manager.ts) returns 'windows' on every path except an explicit
+  // YOUCODED_BUDDY_STRATEGY env override, so NO platform reaches
+  // ?mode=buddy-overlay on its own. The overlay code is dormant, kept behind that
+  // override; on Linux Wayland the buddy is three real windows moved by the KWin
+  // helper. Believing the old sentence sends a session to the wrong file.
   if (buddyMode === 'buddy-overlay') return <BuddyOverlayApp />;
 
   // Main app wrapped in providers

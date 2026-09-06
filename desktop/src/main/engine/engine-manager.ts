@@ -107,11 +107,11 @@ export function clampContextWindow(loaded: number | null, trainedMax: number | n
 
 // Task 13 fix pass — DiscoveredModel.totalSlots (capability-profile.ts) is fed
 // by the SAME /props response effectiveContextWindow already reads for
-// n_ctx, at the SAME "absent/zero/non-numeric means unknown" posture: router
-// mode reports either a missing n_slots or (once a model IS loaded but the
-// build predates this field) leaves it undefined, and a literal 0 must never
-// be read as "zero slots" any more than n_ctx's literal 0 means "zero
-// context" above. Extracted as its own pure function (mirroring
+// n_ctx, at the SAME "absent/zero/non-numeric means unknown" posture: a
+// model-less router-mode /props carries NO slot field at all (measured
+// 2026-09-04 on b10665), an older build may leave it undefined, and a literal
+// 0 must never be read as "zero slots" any more than n_ctx's literal 0 means
+// "zero context" above. Extracted as its own pure function (mirroring
 // resolveEffectiveContext just above, for the identical reason: the n_ctx
 // router-mode bug shipped once already because the parsing lived inline
 // where no test could reach it).
@@ -1431,7 +1431,7 @@ export class EngineManager extends EventEmitter {
    *  status read must not break session create; on any failure we return the same
    *  conservative default clampContextWindow uses.
    *
-   *  Task 13 fix pass: also returns `totalSlots` (llama-server's n_slots) —
+   *  Task 13 fix pass: also returns `totalSlots` (llama-server's total_slots) —
    *  the local concurrency cap needs this, and it lives in the exact same
    *  /props response this function already fetches. Folding it into this one
    *  return value (rather than a second method with its own fetch) is WHY
@@ -1452,28 +1452,61 @@ export class EngineManager extends EventEmitter {
       // namespace) — same 127.0.0.1:port convention as /models and /health. Plain
       // fetch, not trackedFetch: a status read must not bump the idle-shutdown clock.
       //
-      // ?model=<id> IS REQUIRED (design §C3, probed 2026-09-05): the bare /props
-      // is the ROUTER's own dummy and answers `n_ctx: 0` even while a model is
-      // loaded and serving. Named, the router forwards the question to that
-      // model's child process and the answer is that model's real window — which
-      // matters now that each model can carry its own context length. The id is
-      // a filename and can contain anything a filename can, so it is encoded.
-      const propsUrl = `http://127.0.0.1:${this.port}/props?model=${encodeURIComponent(modelId)}`;
+      // WHY `?model=` (fixed 2026-09-04, measured live on the pinned b10665 in
+      // router mode): the router only describes a model's slots and context
+      // when the request NAMES the model. A bare `/props` answers
+      // `{model_path:"none", default_generation_settings.n_ctx: 0}` with no
+      // slot field at all, so the app had been reading "unknown" for every
+      // local model — which capability-profile.ts turns into a cap of ONE
+      // helper at a time, while the engine actually had four slots. With the
+      // model named, n_ctx is whatever the engine holds for THAT model: under
+      // the app's real spawn (no `--parallel`, so b10665 turns on a unified KV
+      // cache) that is the FULL `-c` shared by all slots — 16384 with 4 slots,
+      // measured; only an explicit `--parallel N` splits it into `-c` / N. We
+      // pass the engine's number through either way, never recompute it.
+      //
+      // WHY the status check first (2026-09-04 review, F1 + F4): on this build
+      // `GET /props?model=<id>` is NOT a read — the router AUTOLOADS the named
+      // model (`--models-autoload` defaults on; the supervisor passes no
+      // `--no-models-autoload`) and blocks, with no timeout on this fetch,
+      // until gigabytes are in RAM/VRAM. This method runs on every session
+      // create / resume / model swap BEFORE the user has sent anything, and at
+      // `--models-max 2` an autoload can evict the model a live conversation
+      // is mid-way through using. A status read must never have that side
+      // effect, so we ask `GET /models` (the supervisor's listModels — the same
+      // fetch its model poll already makes, no `?reload=1`, which the engine
+      // rule forbids as a write) and name the model ONLY when it is already
+      // `loaded`. Everything else — `unloaded`, `sleeping` (naming a sleeping
+      // model would wake it: same autoload, F4), `loading`, or a model the
+      // router has never listed — takes the model-less `/props` master always
+      // used: instant, n_ctx 0 → the configured -c below, no slot field →
+      // totalSlots null → the conservative one-helper cap until the first
+      // real send loads the model and a later read sees `loaded`.
+      const models = await this.supervisor!.listModels();
+      const resident = models.find((m) => m.id === modelId)?.state === 'loaded';
+      const propsUrl = resident
+        ? `http://127.0.0.1:${this.port}/props?model=${encodeURIComponent(modelId)}`
+        : `http://127.0.0.1:${this.port}/props`;
       const res = await (this.opts.fetchImpl ?? fetch)(propsUrl, { method: 'GET' });
       const props: any = await res.json();
       // The field carrying the loaded context has drifted across llama.cpp builds
       // (default_generation_settings.n_ctx vs a top-level n_ctx) — read both.
       const loadedRaw = props?.default_generation_settings?.n_ctx ?? props?.n_ctx ?? null;
-      // Task 13 fix pass: n_slots rides the SAME response body — see
+      // Task 13 fix pass: the slot count rides the SAME response body — see
       // resolveSlotCount's own comment for why an absent/zero/non-numeric
       // reading resolves to null ("unknown") rather than a guessed count.
-      const totalSlots = resolveSlotCount(props?.n_slots);
+      // WHY two names: the pinned b10665 calls it `total_slots` (there is no
+      // `n_slots` key on that build — the old code read a field that never
+      // existed, and its tests pinned the wrong name); `n_slots` stays as a
+      // fallback for older llama.cpp builds a user may still be running.
+      const totalSlots = resolveSlotCount(props?.total_slots ?? props?.n_slots);
       const trained = this.trainedContextFor(modelId);
       // Fall back to the -c WE spawned the server with, not a blind constant.
       //
       // WHY (found 2026-07-26 dogfooding): in `--models-dir` ROUTER mode — the
-      // default — /props answers `{model_path: "none", n_ctx: 0}` whenever no
-      // model is currently resident. clampContextWindow discards any value <= 0,
+      // default — a model-less /props answers `{model_path: "none", n_ctx: 0}`,
+      // and that is the URL this method sends whenever the model is not
+      // already `loaded` (see the status check above). clampContextWindow discards any value <= 0,
       // so it fell through to its hardcoded 32_768 and every local session
       // believed it had half the window it was actually given. A read of
       // ROADMAP.md that fits comfortably in 64k then overflowed a phantom 32k
@@ -1492,8 +1525,11 @@ export class EngineManager extends EventEmitter {
       // far larger than the 4k-trained model the warning describes. The old default
       // over-sized that model too; it just over-sized everything else DOWNWARD as
       // well. Three things bound the risk here:
-      //   - /props only reports 0 when NOTHING is resident. Once a model loads, the
-      //     live reading wins and any server-side clamp is respected.
+      //   - the model-less /props (sent while the model is not resident) reports
+      //     0. Once the model is loaded, the next read names it and the live
+      //     n_ctx the engine holds for it wins — the full -c under the app's
+      //     spawn, -c / slots only with an explicit --parallel — so any
+      //     server-side clamp is respected.
       //   - effectiveContextForModel then clamps to the registry's documented
       //     maxContextWindow for every known family.
       //   - trainedContextFor() is inert today, so the "trained max" guard the

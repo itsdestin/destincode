@@ -5,7 +5,11 @@ export type ProviderType =
   | 'local-engine'        // supervised llama-server (registered in Plan B; entry exists from day one)
   | 'openai-compatible'   // Ollama, LM Studio, custom endpoints
   | 'openrouter'
-  | 'anthropic' | 'openai' | 'google';  // direct-key providers
+  | 'anthropic' | 'openai' | 'google'   // direct-key providers
+  // Sign in with ChatGPT: the user's own plan, reached through OpenAI's sign-in
+  // rather than a key. Keyless like 'local-engine' — `ready` means signed in.
+  // shared/chatgpt-types.ts carries the account state.
+  | 'chatgpt';
 
 export interface ProviderConfig {
   id: string;             // 'local' | 'openrouter' | ulid for user-created entries
@@ -14,6 +18,21 @@ export interface ProviderConfig {
   baseUrl?: string;       // openai-compatible + overrides
   secretRef?: string;     // pointer into the userData secrets store; never the key itself
   enabled: boolean;
+}
+
+/** True when a custom endpoint's address points at this computer — Ollama,
+ *  LM Studio and the like. The only signal the app has to file a custom
+ *  endpoint under Local Models rather than Cloud Models (Destin, 2026-09-05:
+ *  "wouldn't that be local?"); a server elsewhere keeps its cloud placement. */
+export function isLocalEndpoint(baseUrl: string | undefined | null): boolean {
+  if (!baseUrl) return false;
+  try {
+    const host = new URL(baseUrl).hostname.replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1'
+      || host.endsWith('.localhost');
+  } catch {
+    return false;
+  }
 }
 
 /** What a native session is bound to: one model on one provider. */

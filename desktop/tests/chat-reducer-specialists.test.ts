@@ -357,3 +357,144 @@ describe('SPECIALIST_RUN_CHANGED — ask plumbing (pinning existing behavior)', 
     expect(seg.requestId).toBe('req-2');
   });
 });
+
+describe('SPECIALIST_RUN_CHANGED — a note lands WHERE it happened in the Activity trail, not at the bottom', () => {
+  // Investigation 2026-09-01 (specialist-notes-not-interleaved): the ledger
+  // always resends the FULL notes array, and reconcileNoteSegments used to
+  // APPEND every unseen note to the tail of the segment list. Live that is
+  // usually right (nothing later has arrived yet), but on a card replay —
+  // reattach, restart, a late run push — every tool row is already on the
+  // card, so a note sent mid-run showed up AFTER tool calls that happened
+  // after it. The trail is an audit log; the order has to be true.
+  let state: ChatState;
+
+  /** A child tool-use event the way the harness stamps it — parented to the
+   *  Task card so the reducer routes it to applySubagentEvent. */
+  function childTool(toolUseId: string, timestamp: number): ChatAction {
+    return {
+      type: 'TRANSCRIPT_TOOL_USE',
+      sessionId: SESSION,
+      uuid: `uuid-${toolUseId}`,
+      toolUseId,
+      toolName: 'Read',
+      toolInput: { file_path: `${toolUseId}.ts` },
+      timestamp,
+      parentAgentToolUseId: TASK_ID,
+      agentId: CHILD_ID,
+    } as ChatAction;
+  }
+
+  function trail(s: ChatState): string[] {
+    const card = s.get(SESSION)!.toolCalls.get(TASK_ID)!;
+    return (card.subagentSegments ?? []).map((seg) => seg.type === 'note' ? `note:${seg.content}` : `tool:${(seg as any).toolUseId}`);
+  }
+
+  beforeEach(() => {
+    state = seedTaskCard(initState());
+  });
+
+  it('a note timestamped between two tool calls is placed between them', () => {
+    state = dispatch(state, childTool('t1', 100));
+    state = dispatch(state, childTool('t2', 300));
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('mid', 200)] }) });
+    expect(trail(state)).toEqual(['tool:t1', 'note:mid', 'tool:t2']);
+  });
+
+  it('a note later than every segment still appends (the live case)', () => {
+    state = dispatch(state, childTool('t1', 100));
+    state = dispatch(state, childTool('t2', 300));
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('late', 400)] }) });
+    expect(trail(state)).toEqual(['tool:t1', 'tool:t2', 'note:late']);
+  });
+
+  it('a note earlier than every segment goes first', () => {
+    state = dispatch(state, childTool('t1', 100));
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('early', 50)] }) });
+    expect(trail(state)).toEqual(['note:early', 'tool:t1']);
+  });
+
+  it('the same run re-sent leaves the order and count untouched (index ids still dedupe)', () => {
+    state = dispatch(state, childTool('t1', 100));
+    state = dispatch(state, childTool('t2', 300));
+    const run = baseRun({ notes: [note('mid', 200)] });
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run });
+    // A later push with MORE notes (steps moved so the short-circuit does not
+    // absorb it) must keep 'mid' where it is and place the new note by time.
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ steps: 2, notes: [note('mid', 200), note('after', 350)] }) });
+    expect(trail(state)).toEqual(['tool:t1', 'note:mid', 'tool:t2', 'note:after']);
+    // Order stays true even when a tool row arrives AFTER the note that
+    // precedes it (a replay that splices child events late).
+    state = dispatch(state, childTool('t3', 500));
+    expect(trail(state)).toEqual(['tool:t1', 'note:mid', 'tool:t2', 'note:after', 'tool:t3']);
+  });
+
+  it('a tool row with no timestamp (an older event shape) never blocks placement — the note appends after it', () => {
+    state = dispatch(state, { ...(childTool('t1', 100) as any), timestamp: undefined });
+    state = dispatch(state, childTool('t2', 300));
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('mid', 200)] }) });
+    // t1 carries no time, so it cannot be ordered against the note; t2 (300)
+    // can, and the note belongs before it.
+    expect(trail(state)).toEqual(['tool:t1', 'note:mid', 'tool:t2']);
+  });
+
+  // Review of fix/specialists-ledger-bugs (2026-09-04, F2/F6): placement used
+  // to be one-directional — a note was slotted by time among rows already on
+  // the card, but a ROW arriving after a later-stamped note was still appended
+  // below it. Reachable live: transcript events are rAF-batched (one frame),
+  // `specialists:event` is dispatched synchronously, so a child tool-use
+  // stamped in the frame before the user's note lands after it.
+  it('a tool row stamped EARLIER than a note already on the card is inserted before that note, not appended', () => {
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('mid', 200)] }) });
+    state = dispatch(state, childTool('t1', 100));
+    expect(trail(state)).toEqual(['tool:t1', 'note:mid']);
+  });
+
+  it('a child text or thinking segment stamped earlier than a note goes before it too', () => {
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('mid', 200)] }) });
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid: 'u-txt', text: 'looking',
+      timestamp: 100, parentAgentToolUseId: TASK_ID, agentId: CHILD_ID,
+    } as ChatAction);
+    state = dispatch(state, {
+      type: 'TRANSCRIPT_ASSISTANT_REASONING', sessionId: SESSION, uuid: 'u-thk', text: 'hmm',
+      timestamp: 150, parentAgentToolUseId: TASK_ID, agentId: CHILD_ID,
+    } as ChatAction);
+    const card = state.get(SESSION)!.toolCalls.get(TASK_ID)!;
+    expect((card.subagentSegments ?? []).map((s) => s.type)).toEqual(['text', 'thinking', 'note']);
+  });
+
+  it('a later delta of the same partId still merges into its text segment after a note was slotted behind it', () => {
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('mid', 200)] }) });
+    const delta = (uuid: string, text: string) => ({
+      type: 'TRANSCRIPT_ASSISTANT_TEXT', sessionId: SESSION, uuid, text, partId: 'p1',
+      timestamp: 100, parentAgentToolUseId: TASK_ID, agentId: CHILD_ID,
+    } as ChatAction);
+    state = dispatch(state, delta('d1', 'look'));
+    state = dispatch(state, delta('d2', 'ing'));
+    const card = state.get(SESSION)!.toolCalls.get(TASK_ID)!;
+    const segs = card.subagentSegments ?? [];
+    expect(segs.map((s) => s.type)).toEqual(['text', 'note']);
+    expect((segs[0] as any).content).toBe('looking');
+  });
+
+  it('F6: once an early row has been slotted before a note, a second note is still placed by time (no compounding misorder)', () => {
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('mid', 200)] }) });
+    state = dispatch(state, childTool('t1', 100));
+    state = dispatch(state, childTool('t2', 300));
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ steps: 2, notes: [note('mid', 200), note('later', 250)] }) });
+    expect(trail(state)).toEqual(['tool:t1', 'note:mid', 'note:later', 'tool:t2']);
+  });
+
+  it('a row with no timestamp is never reordered — it appends even behind a later-stamped note', () => {
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('mid', 200)] }) });
+    state = dispatch(state, { ...(childTool('t1', 100) as any), timestamp: undefined });
+    expect(trail(state)).toEqual(['note:mid', 'tool:t1']);
+  });
+
+  it('two rows stamped the same millisecond keep arrival order', () => {
+    state = dispatch(state, childTool('t1', 100));
+    state = dispatch(state, childTool('t2', 100));
+    state = dispatch(state, { type: 'SPECIALIST_RUN_CHANGED', sessionId: SESSION, run: baseRun({ notes: [note('mid', 100)] }) });
+    expect(trail(state)).toEqual(['tool:t1', 'tool:t2', 'note:mid']);
+  });
+});

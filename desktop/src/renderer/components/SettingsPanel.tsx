@@ -29,6 +29,9 @@ import SpecialistsSection, { SPECIALISTS_EXPLAINER_INTRO, SPECIALISTS_EXPLAINER_
 import { PERMISSIONS_EXPLAINER_INTRO, PERMISSIONS_EXPLAINER_SECTIONS } from './permissions/permissions-explainer';
 import { DonateConfirm } from './DonateConfirm';
 import { formatVersionLine } from '../../shared/version-line';
+// The Linux/KDE buddy helper's three-state answer. Typed centrally so the popup
+// and the launch path in App.tsx cannot drift apart on what `needed` means.
+import type { BuddyHelperStatus } from '../../shared/types';
 // UiToggle is aliased because this file still exports its own `Toggle` (the
 // compat wrapper below) that AboutPopup imports by that name.
 import { Button, CloseButton, Toggle as UiToggle, TextInput, InputGroup, LoadingState, RadioGroup, SegmentedTabs, Dialog, SettingRow, Callout, StatusStrip, ErrorState, FieldError } from './ui';
@@ -778,10 +781,18 @@ function BuddyIcon() {
 // usable because the shim sets __PLATFORM__ to the host's 'desktop' on auth:ok.
 const isDesktopShell = () => !!(window as any).claude?.window;
 
-function BuddyButton() {
+// Exported for tests/buddy-helper-states.test.tsx, which drives design §4's
+// three-state table through this component directly. Rendering the whole
+// SettingsPanel to reach one popup would pull in every other settings screen.
+export function BuddyButton() {
   const [enabled, setEnabled] = useState<boolean>(() =>
     localStorage.getItem('youcoded-buddy-enabled') === '1',
   );
+  // The preference is the single source of truth, and this row is not its only
+  // writer — see the status-broadcast effect below for the full list.
+  const syncEnabledToPreference = useCallback(() => {
+    setEnabled(localStorage.getItem('youcoded-buddy-enabled') === '1');
+  }, []);
   // "Hidden until restart": the bar's hide button dismisses the buddy for
   // this run only (localStorage preference untouched). Main broadcasts
   // buddy:status-changed so this row updates live, with an inline Show-now
@@ -789,69 +800,96 @@ function BuddyButton() {
   const [dismissed, setDismissed] = useState(false);
   const [open, setOpen] = useState(false);
   const popupRef = useRef<HTMLDivElement>(null);
-  // Task 8: KDE-only "pin above other windows" toggle. Gated on the real OS
-  // platform (not the app-shell 'electron'/'android'/'browser' axis in
-  // ../platform) since it must not render on Windows/macOS desktop builds.
+  // Gates the KDE helper lookup below. The real OS platform, not the app-shell
+  // 'electron'/'android'/'browser' axis in ../platform, because it must not fire
+  // on Windows or macOS desktop builds.
   const platform = useCurrentPlatform();
-  const [keepAboveEnabled, setKeepAboveEnabled] = useState(false);
-  // Transient, non-persisted: set when a toggle action's setKeepAbove
-  // resolves false (KWin unreachable right now), cleared on the next
-  // successful apply or when the popup is reopened. Never a guessed cause —
-  // see toggleKeepAbove below for why this specific copy is accurate.
-  const [keepAboveHint, setKeepAboveHint] = useState<string | null>(null);
+
+  // The Linux/KDE helper (docs/active/design/2026-09-04-linux-buddy-helper/ §4).
+  // THREE facts, not two:
+  //   needed    — this app cannot move its own windows here (native Wayland only)
+  //   supported — a helper could work on this desktop at all (KDE 6 on Wayland)
+  //   installed — the helper script is loaded in the compositor right now
+  // null until we've asked; on Windows and macOS we never ask, and none of this
+  // renders. Reading `supported` WITHOUT `needed` is the mistake this comment
+  // exists to prevent: on Linux X11 the desktop reports supported:false (KWin is
+  // not Wayland) while the buddy works perfectly, so a gate on `supported` alone
+  // would tell those users their buddy is "not yet supported" and take it away.
+  const [helper, setHelper] = useState<BuddyHelperStatus | null>(null);
+  const [consent, setConsent] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
+  // The undo half (decide-uninstall#D-1). Separate flags from the install ones:
+  // the two actions live in different states of the popup and must never share a
+  // spinner or an error line.
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  // Why the buddy would not appear, in the desktop's own words (design §5). The
+  // main process is what refuses — the settings switch is not the only thing
+  // that turns the buddy on — so this holds ITS reason rather than a guess made
+  // here. Cleared on the next attempt.
+  const [showError, setShowError] = useState<string | null>(null);
+
+  // Re-asked every time the popup opens, not once at launch (B5 review, F2).
+  // `supported` is not a stable fact: a DBus timeout during a busy boot comes
+  // back as "not supported", and asking once would then read "Not yet supported
+  // on this desktop" with a dead switch for the rest of the session, on a
+  // desktop the helper fully supports. The row is mounted for the whole session,
+  // so "once" really did mean "once, at app launch". One DBus call per open.
+  useEffect(() => {
+    if (!isDesktopShell() || platform !== 'linux' || !open) return;
+    let alive = true;
+    window.claude.buddy?.helperStatus?.()
+      .then((h: BuddyHelperStatus) => { if (alive) setHelper(h); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [platform, open]);
 
   useEffect(() => {
     if (!isDesktopShell()) return;
     let alive = true;
     window.claude.buddy?.getStatus?.()
-      .then((s: { dismissed: boolean; keepAbove?: boolean }) => {
+      .then((s: { dismissed: boolean; visible?: boolean }) => {
         if (!alive) return;
         setDismissed(!!s?.dismissed);
-        setKeepAboveEnabled(!!s?.keepAbove);
+        syncEnabledToPreference();
       })
       .catch(() => {});
     const off = window.claude.buddy?.onStatusChanged?.(
-      (s: { dismissed: boolean }) => setDismissed(!!s?.dismissed),
+      (s: { dismissed: boolean; visible?: boolean }) => {
+        setDismissed(!!s?.dismissed);
+        // WHY re-read the preference on every broadcast (B5 review, F1): this
+        // row is mounted for the whole session and seeded its switch ONCE, from
+        // localStorage, during the first render — before three other things can
+        // turn the buddy off. The one-shot "hidden after the update" migration
+        // writes the preference from App.tsx; so does a refused show() on the
+        // launch path; and main puts the buddy away by itself if the KDE script
+        // stops running mid-session. None of them could reach this switch.
+        //
+        // The user-visible cost was the headline flow of the whole feature:
+        // update, buddy correctly gone, open Settings — and the row says "On —
+        // floating on your desktop" with the switch on. The first click reads as
+        // "turn off" and does nothing visible; only the second offers the
+        // helper. A switch that says on while nothing is on screen is a switch
+        // that lies, which is the standard the refusal path already meets.
+        syncEnabledToPreference();
+      },
     );
     return () => { alive = false; off?.(); };
   }, []);
 
-  // Controller ruling (2026-07-22): the toggle is a saved PREFERENCE, not a
-  // live KWin-state indicator — the plan copy itself ("KDE only. No effect
-  // on other desktops.") already establishes that semantics, and it must
-  // display/persist the user's request in both directions, exactly like
-  // `toggle` below and like getStatus()'s mount re-hydration (which reads
-  // the persisted request, not a live probe).
+  // The "Pin buddy above other windows (KDE only)" switch was removed on
+  // 2026-09-04 (review B-2). It existed because raising the window was the only
+  // thing the app could do on Wayland; the helper now pins the buddy itself, and
+  // without the helper the buddy cannot be switched on at all — so the control
+  // had nothing left to control.
   //
-  // Reconciling the visual state against applyKwinKeepAbove's result was
-  // tried and rejected in two forms: symmetric revert makes the toggle
-  // permanently un-flippable on GNOME (every apply resolves false, so it
-  // would always snap back); asymmetric (enable-only) revert let a failed
-  // OFF silently display "off" while the window stayed pinned — a new,
-  // opposite contradiction, not a fix (see the WHY comment on
-  // BuddyOverlayManager's applyKeepAbove call site for why that stale-
-  // pinned edge is acceptable to just leave alone).
-  //
-  // So: flip and keep the local state unconditionally. The REAL result only
-  // drives a transient, honest inline hint — never a guessed cause (Destin's
-  // error-message rule): `false` means exactly "qdbus was missing or the
-  // DBus call failed", which is what the copy below says, nothing more.
-  const toggleKeepAbove = useCallback(() => {
-    const next = !keepAboveEnabled;
-    setKeepAboveEnabled(next);
-    const KWIN_UNREACHABLE_HINT =
-      "Couldn't reach KWin — the preference is saved; it's applied whenever the buddy window is (re)created on KDE Plasma.";
-    window.claude.buddy?.setKeepAbove?.(next)
-      .then((ok: boolean) => setKeepAboveHint(ok ? null : KWIN_UNREACHABLE_HINT))
-      .catch(() => setKeepAboveHint(KWIN_UNREACHABLE_HINT));
-  }, [keepAboveEnabled]);
-
-  // The hint describes the last toggle action, not persistent state —
-  // clear it whenever the popup is reopened so a stale failure from a
-  // previous session/click doesn't linger indefinitely.
-  useEffect(() => {
-    if (open) setKeepAboveHint(null);
-  }, [open]);
+  // Correction 2026-09-04 (design §7): the sentence that used to sit here said
+  // kwin-keep-above.ts "stays; the helper is what drives them". That is wrong and
+  // would have sent a future session to the wrong file. kwin-keep-above.ts is
+  // DEAD on this path — both its call sites pass the overlay window's caption,
+  // and chooseBuddyStrategy never picks the overlay strategy on Linux. The helper
+  // script sets keepAbove on the buddy window itself and does not call it.
 
   useEffect(() => {
     if (!open) return;
@@ -862,19 +900,164 @@ function BuddyButton() {
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  const toggle = useCallback(() => {
-    const next = !enabled;
-    setEnabled(next);
-    localStorage.setItem('youcoded-buddy-enabled', next ? '1' : '0');
-    if (next) window.claude.buddy?.show?.();
-    else window.claude.buddy?.hide?.();
-  }, [enabled]);
+  // WHY a generation counter (B5 review, F7): switching on now AWAITS main,
+  // which itself awaits a DBus round trip before creating the window. Two quick
+  // clicks — on, then off — let the hide land first, after which the pending
+  // show() resolves and puts the buddy on screen with the switch reading Off.
+  // A stale resolution is ignored rather than allowed to overwrite the newer
+  // intent.
+  const applyGeneration = useRef(0);
 
-  const showNow = useCallback(() => {
-    window.claude.buddy?.show?.(); // show() clears the dismissed flag main-side
+  const applyEnabled = useCallback(async (next: boolean) => {
+    const generation = ++applyGeneration.current;
+    setEnabled(next);
+    setShowError(null);
+    localStorage.setItem('youcoded-buddy-enabled', next ? '1' : '0');
+    if (!next) {
+      window.claude.buddy?.hide?.();
+      return;
+    }
+    // WHY switching on is no longer fire-and-forget (design §5): the app itself
+    // can refuse to put the buddy on screen — on a Wayland desktop with no
+    // helper it would appear stuck in one spot and refuse to be dragged, which
+    // is the whole bug this feature removes. If it refuses, the switch must not
+    // be left sitting in the "on" position: a switch that says on while nothing
+    // is on screen is a switch that lies.
+    let refusal: { ok: boolean; reason?: string } | void;
+    try {
+      refusal = await window.claude.buddy?.show?.();
+      if (generation !== applyGeneration.current) return; // the user changed their mind
+    } catch {
+      // A throwing bridge (remote/Android stubs) is not a refusal, and this
+      // control does not render there anyway — leave the switch as the user set
+      // it rather than snapping it back for a reason we cannot name.
+      return;
+    }
+    if (refusal && refusal.ok === false) {
+      setEnabled(false);
+      localStorage.setItem('youcoded-buddy-enabled', '0');
+      // The desktop's OWN sentence, shown as it was written. Never replaced with
+      // a guess here (docs/error-message-standards.md).
+      if (refusal.reason) setShowError(refusal.reason);
+    }
   }, []);
 
-  const status = !enabled
+  const toggle = useCallback(() => {
+    const next = !enabled;
+    // WHY switching ON is intercepted: on a Linux desktop where the app cannot
+    // move its own windows, the buddy cannot be dragged unless a small helper
+    // sits in the user's KDE settings, and adding that changes their desktop.
+    // Deck Q-1 — ask at the moment the buddy is turned on, never during
+    // first-run and never silently.
+    //
+    // Gated on `needed`, NOT on "this is Linux" and not on `supported`: a KDE
+    // user on X11, or on Wayland whose windows are really XWayland ones, moves
+    // his own buddy perfectly well today and must never be stopped by a consent
+    // card for something he does not need.
+    if (next && helper?.needed && helper.supported && !helper.installed) {
+      setInstallError(null);
+      setConsent(true);
+      return;
+    }
+    void applyEnabled(next);
+  }, [enabled, helper, applyEnabled]);
+
+  const addHelper = useCallback(async () => {
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      const r = await window.claude.buddy?.installHelper?.();
+      if (r?.ok) {
+        // Keep `needed`/`supported` from the answer we already have instead of
+        // re-asserting them: this path is only reachable when both were true,
+        // and rebuilding the whole status here is how the third fact would get
+        // silently dropped the next time one is added.
+        setHelper((h) => ({ ...(h ?? { needed: true, supported: true }), installed: true }));
+        setConsent(false);
+        await applyEnabled(true);
+        return;
+      }
+    } catch { /* falls through to the same honest message */ }
+    // Fix 2026-09-04 (design §11): the button used to stay on "Adding…" forever
+    // when the install failed — `installing` was only ever set true, so the only
+    // way back was to close and reopen the popup. Clear it before showing the
+    // error so "Add helper" is clickable again for a retry.
+    setInstalling(false);
+    // Non-committal on purpose (docs/error-message-standards.md): we know the
+    // install did not succeed, we do not know why, so we do not guess a cause.
+    setInstallError("Couldn't add the helper to your KDE settings.");
+  }, [applyEnabled]);
+
+  // R10, amended by decide-uninstall#D-1: removal is the user's to run, from this
+  // popup, on any Linux. The old consent card promised the helper went away when
+  // YouCoded was uninstalled, which is false — the AppImage build has no uninstall
+  // step at all — so this control is what makes the new sentence true.
+  //
+  // On success the buddy is switched OFF as well: no helper, no buddy (R4). Doing
+  // it here rather than leaving the buddy running keeps the popup honest, since
+  // the moment the script leaves KWin the buddy can no longer be moved.
+  //
+  // …but ONLY where the helper is what makes the buddy movable. This button also
+  // appears in the state where no helper is needed at all — the user added one on
+  // Wayland and has since logged into X11 — and there the buddy moves by itself.
+  // Switching it off there would take away something that was working, for no
+  // reason the user could trace back to the button they pressed.
+  const removeHelper = useCallback(async () => {
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      const r = await window.claude.buddy?.removeHelper?.();
+      if (r?.ok) {
+        // `needed` and `supported` are preserved, not re-asserted. This control
+        // is reachable in a state where NO helper is needed here at all — the
+        // user added it on Wayland and is now logged into X11 — and hardcoding
+        // `needed: true` there would flip a working buddy into the consent flow
+        // the moment they removed a helper they were not using.
+        setHelper((h) => ({ ...(h ?? { needed: false, supported: false }), installed: false }));
+        if (helper?.needed) await applyEnabled(false);
+        setRemoving(false);
+        return;
+      }
+    } catch { /* falls through to the same honest message */ }
+    setRemoving(false);
+    // Same shape as the install failure above, and for the same reason: we know
+    // it did not succeed and we do not know why, so we say exactly that and
+    // nothing more (docs/error-message-standards.md).
+    setRemoveError("Couldn't remove the helper from your KDE settings.");
+  }, [applyEnabled, helper]);
+
+  const showNow = useCallback(() => {
+    // Routed through applyEnabled so a refusal is handled the same way here as
+    // it is at the switch: show() clears the dismissed flag main-side, but it
+    // can also come back "no" (design §5), and the row must not go on claiming
+    // the buddy is on when the desktop just declined to put it there.
+    void applyEnabled(true);
+  }, [applyEnabled]);
+
+  // ── Design §4's three-state table, resolved once and read everywhere below ──
+  //
+  // THE ONE THAT MATTERS MOST is that all of this stays false when no helper is
+  // needed. Windows, macOS, Linux/X11 and Linux-Wayland-through-XWayland all
+  // report needed:false, and there this popup must look exactly as it looked
+  // before the helper existed — no consent card, no disabled row, no mention of
+  // a helper at all. The earlier version of this file keyed off `supported`
+  // alone, which is false on X11 for the unrelated reason that KWin is not
+  // running Wayland, and would have greeted every KDE X11 user with "Not yet
+  // supported on this desktop" and a dead switch — taking away a buddy that
+  // works today.
+  //
+  // The one exception is Remove helper, which follows `installed` on its own:
+  // someone can add the helper on Wayland and then log into X11, and R10
+  // promises they can take it out again from these settings whenever they like.
+  const helperUnsupported = !!helper?.needed && !helper.supported;
+  const canRemoveHelper = !!helper?.installed;
+
+  // On a Linux desktop the helper cannot run on, the buddy is genuinely
+  // unavailable rather than off — deck Q-2R. Saying "Off" there would invite
+  // the user to switch on something that cannot work.
+  const status = helperUnsupported
+    ? 'Not yet supported on this desktop'
+    : !enabled
     ? 'Off'
     : dismissed
     ? 'Hidden until restart'
@@ -890,13 +1073,19 @@ function BuddyButton() {
         icon={<BuddyIcon />}
         title="Buddy Floater"
         description={status}
-        onClick={() => setOpen(true)}
+        // The failure line is cleared on the way IN, so a warning from an earlier
+        // attempt is never the first thing in a freshly-opened popup. This row is
+        // always mounted (only the dialog closes), so the state would otherwise
+        // survive indefinitely.
+        onClick={() => { setRemoveError(null); setShowError(null); setOpen(true); }}
       />
 
       {/* maxHeight="none" preserves this one's existing behavior — it was the only
           popup of the seven with no height ceiling, and it has no scroll container,
-          so inheriting the shell's 80vh default would silently CLIP the Linux
-          keep-above row instead of letting the popup grow. */}
+          so inheriting the shell's 80vh default would silently CLIP the popup's
+          taller states instead of letting it grow. (Written for the Linux
+          keep-above row, which review B-2 deleted; the consent card and the
+          Remove helper action are what make this popup tall now.) */}
       <Dialog
         open={open}
         onClose={() => setOpen(false)}
@@ -911,49 +1100,97 @@ function BuddyButton() {
                 descriptions now, and the border-t between them goes: the rows
                 are carded, so the rule was drawing a line between two things
                 that were already separated. */}
+            {/* Deck Q-1: the one-time ask lives HERE — at the moment the buddy is
+                switched on. Not in first-run setup, and never silently, because
+                saying yes writes a file into the user's own KDE settings. */}
+            {consent ? (
+              <div className="px-4 py-4 space-y-3">
+                <div className="text-sm font-medium text-fg">Let the buddy be moved?</div>
+                <div className="text-xs text-fg-dim leading-relaxed">
+                  On Linux, apps aren&rsquo;t allowed to move their own windows. YouCoded can add a
+                  small helper to your KDE settings that moves it on the buddy&rsquo;s behalf.
+                  Without this helper, the buddy floater cannot be enabled.
+                  <br /><br />
+                  {/* Replaced 2026-09-04 (decide-uninstall#D-1, design §6). The old
+                      sentence ended "and it is removed when you uninstall YouCoded",
+                      which is not true for most Linux users: the AppImage build has
+                      no uninstall step, and on deb/rpm/pacman the cleanup would run
+                      as root against a per-user KDE config. Destin picked the honest
+                      wording plus the Remove helper control below. Verbatim — do not
+                      reword without another deck. */}
+                  It only ever touches the buddy&rsquo;s own window. You can remove it again any
+                  time from this menu.
+                </div>
+                {installError && <Callout tone="warning">{installError}</Callout>}
+                <div className="flex gap-2 pt-1">
+                  <Button onClick={addHelper} disabled={installing}>
+                    {installing ? 'Adding\u2026' : 'Add helper'}
+                  </Button>
+                  <Button variant="ghost" onClick={() => setConsent(false)}>Not now</Button>
+                </div>
+              </div>
+            ) : (
             <div className="px-4 py-4 space-y-2">
-              <SettingRow
-                variant="item"
-                title="Show buddy floater"
-                description={
-                  <>
-                    A small always-on-top mascot that stays visible even when the app is minimized.
-                    {enabled && dismissed && (
-                      <>
-                        <br />
-                        Hidden until restart{' · '}
-                        <button onClick={showNow} className="text-accent hover:underline">Show now</button>
-                      </>
-                    )}
-                  </>
-                }
-                control={<Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />}
-              />
-              {/* Task 8: Linux-only — Electron's setAlwaysOnTop is a no-op on
-                  Wayland; this opt-in runs a KWin scripting DBus call instead,
-                  which only does anything on KDE Plasma (see kwin-keep-above.ts). */}
-              {platform === 'linux' && (
+              {/* Deck Q-2R: on a Linux desktop the helper cannot run on, this is
+                  not a switch the user should be invited to flip — the buddy
+                  cannot be positioned there at all. Row goes read-only and says
+                  so, instead of offering an action that would do nothing. */}
+              {helperUnsupported ? (
                 <SettingRow
                   variant="item"
-                  title="Pin buddy above other windows (KDE only)"
+                  title="Show buddy floater"
+                  description="Not yet supported on this desktop. The buddy needs KDE Plasma on Linux — other desktops do not let apps place their own windows."
+                  disabled
+                />
+              ) : (
+                <SettingRow
+                  variant="item"
+                  title="Show buddy floater"
                   description={
                     <>
-                      Requires KDE Plasma. No effect on other desktops.
-                      {/* Honest, non-committal per-action feedback — NOT the toggle's
-                          own state (that's the preference, above). Only appears right
-                          after a click that couldn't reach KWin; see toggleKeepAbove. */}
-                      {keepAboveHint && (
+                      A small always-on-top mascot that stays visible even when the app is minimized.
+                      {enabled && dismissed && (
                         <>
                           <br />
-                          {keepAboveHint}
+                          Hidden until restart{' \u00b7 '}
+                          <button onClick={showNow} className="text-accent hover:underline">Show now</button>
                         </>
                       )}
                     </>
                   }
-                  control={<Toggle enabled={keepAboveEnabled} onToggle={toggleKeepAbove} label="Pin buddy above other windows" />}
+                  control={<Toggle enabled={enabled} onToggle={toggle} label="Show buddy floater" />}
                 />
               )}
+
+              {/* The switch bounced back because the app refused to put the buddy
+                  on screen (design §5). The sentence is the desktop's own — this
+                  file does not write one, and does not guess a cause. */}
+              {showError && <Callout tone="warning">{showError}</Callout>}
+
+              {/* R10 (amended by decide-uninstall#D-1): the undo for "Add helper".
+                  It renders ONLY when the helper is actually in the user's KDE
+                  settings, so the single-row popup Destin signed off (R6) is still
+                  exactly what a new Linux user sees — this second control cannot
+                  appear until they have added the helper themselves. It is also
+                  never shown on Windows or macOS, where there is no helper.
+
+                  Gated on `installed` ALONE, not on `needed` (design §4, second
+                  row). Someone can add the helper on Wayland and then log into
+                  X11: the script is still sitting in their KDE settings, and if
+                  this button vanished with the rest of the helper UI, hand-editing
+                  a KDE config file would be the only way to get it back out. */}
+              {canRemoveHelper && (
+                <>
+                  {removeError && <Callout tone="warning">{removeError}</Callout>}
+                  <div className="flex justify-end">
+                    <Button variant="ghost" size="sm" onClick={removeHelper} disabled={removing}>
+                      {removing ? 'Removing\u2026' : 'Remove helper'}
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
+            )}
       </Dialog>
     </>
   );

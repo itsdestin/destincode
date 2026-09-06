@@ -47,6 +47,33 @@
 // models.setSettings, so one write covers everything a model's settings own. Every fake in
 // mock-shim.ts stays — the workbench still has no machine, no PTY and no engine — only the
 // "no real backend" claim goes.
+// The three Linux/KDE buddy helper rows (`buddy.helperStatus`,
+// `buddy.installHelper`, `buddy.removeHelper`) came off on 2026-09-04 when their
+// real backend landed: kwin-helper.ts plus the `buddy:helper-status`,
+// `buddy:install-helper` and `buddy:remove-helper` channels on all three of the
+// surfaces this feature has (shared/types.ts + preload.ts, ipc-handlers.ts,
+// remote-shim.ts). Exactly the lifecycle this registry is for — the popup was
+// designed and reviewed against a fake, and the fake told us what to build. The
+// fakes in mock-shim.ts stay, so the workbench can still show the not-added,
+// added and not-supported states without a KDE desktop; only the "no real
+// backend" claim goes. `no MOCK_ONLY entry has since gained a real channel` in
+// workbench-mock-contract.test.ts is what forces this deletion.
+// The eight voice-prompting rows (`voice.status`, `.download`, `.start`,
+// `.stop`, `.cancel`, `.onEvent`, `.sendAudio`, `.micAccess`) came off the same
+// way on 2026-09-05, the moment preload.ts gained the real `voice` namespace and
+// main/voice/voice-handlers.ts registered the six channels behind it. The fake
+// in mock-shim.ts STAYS — the workbench still needs a mic that "hears" a
+// scripted sentence with no speech engine downloaded — only the "no real
+// backend" claim goes.
+// The four Sign-in-with-ChatGPT rows (`chatgpt.status`, `chatgpt.signIn`,
+// `chatgpt.cancelSignIn`, `chatgpt.signOut`) were listed here while the Settings
+// card and the first-run screen were designed against a fake account (design
+// 2026-09-04), and came off when the real backend landed on all five surfaces
+// (backend design 2026-09-05: main/providers/chatgpt-auth.ts, the four
+// `chatgpt:*` handlers, preload / remote-shim / remote-server / Android). Same
+// rule, same reason as the rows above: the fake in mock-shim.ts stays so the
+// workbench can still pin signed-out / waiting / signed-in / blocked without a
+// browser round-trip — only the "no real backend" claim goes.
 //
 // The list is EMPTY, and that is the healthy state: it means nothing on screen in the
 // workbench is pretending to be a feature that does not exist yet. Add a row the moment you

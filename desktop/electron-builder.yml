@@ -37,6 +37,14 @@ mac:
   # we ship unsigned. Safe on Linux/Windows runners: signing is skipped before this is
   # consulted. Complements the CI check, which additionally proves the seal is valid.
   forceCodeSigning: true
+  # WHY: macOS does not ask the user for microphone permission unless the app has
+  # already declared, in its Info.plist, WHY it wants the microphone. With this
+  # string missing, the first touch of the mic does not produce a denied prompt -
+  # the system KILLS the app outright, which would look to a user like YouCoded
+  # crashing the moment they press the voice button. extendInfo is how
+  # electron-builder writes extra keys into the packaged Info.plist.
+  extendInfo:
+    NSMicrophoneUsageDescription: YouCoded turns your speech into text on this computer.
 linux:
   # AppImage runs on any distro but stays a loose file. deb / rpm / pacman are
   # real installers (Debian-Ubuntu / Fedora / Arch) that install to a fixed
@@ -75,6 +83,15 @@ asarUnpack:
   - node_modules/pdfjs-dist/cmaps/**
   - scripts/**/*
   - hook-scripts/**/*
+  # The KWin script the Linux buddy installs into the user's own
+  # ~/.local/share/kwin/scripts/. `assets/**` is packaged INSIDE app.asar, and
+  # the recursive copy helpers (fs.cpSync and friends) are not asar-aware — they
+  # see the archive as a single file. kwin-helper.ts therefore copies the
+  # package one file at a time with readFileSync/writeFileSync, which IS
+  # asar-aware, so this entry is belt-and-braces rather than the only defence:
+  # it also puts the package on disk as real files, so anything added later that
+  # walks the directory keeps working.
+  - assets/kwin-helper/**
 files:
   - dist/**/*
   - node_modules/**/*

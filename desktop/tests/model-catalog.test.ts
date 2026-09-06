@@ -326,4 +326,54 @@ describe('ModelCatalog', () => {
       expect(models).toEqual([]);
     });
   });
+
+  // Sign in with ChatGPT (backend design §4.3): rows come from an injected
+  // source (ChatGptAuth.models(), cache-first); the catalog never prices them.
+  describe('ChatGPT plan source', () => {
+    const CHATGPT_ROW = { id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT Plan', enabled: true, builtIn: true, hasKey: false, ready: true } as any;
+
+    it('get(): merges the injected ChatGPT rows for an enabled chatgpt provider, with no pricing', async () => {
+      const rows = [
+        { id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5', contextLength: 272000, supportsTools: true, supportsReasoning: true },
+        { id: 'gpt-5.4-mini', providerId: 'chatgpt', label: 'GPT-5.4 Mini', contextLength: 272000, supportsTools: true },
+      ];
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => rows });
+      const models = await cat.get([CHATGPT_ROW]);
+      expect(models).toEqual(rows);
+      // The plan is not per-token: absent means absent, never $0.
+      expect(models.every((m) => m.pricing === undefined)).toBe(true);
+      expect(await cat.contextLengthFor({ providerId: 'chatgpt', modelId: 'gpt-5.5' }, [CHATGPT_ROW])).toBe(272000);
+    });
+
+    it('get(): a throwing ChatGPT source degrades to no ChatGPT rows (never rejects)', async () => {
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => { throw new Error('boom'); } });
+      const models = await cat.get([CHATGPT_ROW]);
+      expect(models).toEqual([]);
+    });
+
+    // §4.6: when OpenAI blocks the account the registry keeps the row listed
+    // (ready: false) so the card can still show who is signed in and offer Sign
+    // out — but the models must leave the catalog. ChatGptAuth deliberately
+    // keeps its cached list through a block, so `enabled` alone would still
+    // hand them out. The two pickers filter on ready themselves; the app's own
+    // ModelSearch tool reads the catalog raw, so without this gate the
+    // assistant would be offered plan models it cannot use and the user would
+    // get "Codex is disabled for this workspace." instead of an answer.
+    it('get(): a BLOCKED plan (ready:false) contributes no models even though the cache still holds them', async () => {
+      const cat = new ModelCatalog(dir, fetchMock, {
+        chatgptModels: async () => [{ id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5' }],
+      });
+      expect(await cat.get([{ ...CHATGPT_ROW, ready: false }])).toEqual([]);
+      // Sanity: the same source with ready:true DOES contribute — so the empty
+      // result above is the gate, not a broken fixture.
+      expect(await cat.get([CHATGPT_ROW])).toHaveLength(1);
+    });
+
+    it('get(): no source injected (kill switch) or provider disabled → nothing for the plan', async () => {
+      const none = new ModelCatalog(dir, fetchMock);
+      expect(await none.get([CHATGPT_ROW])).toEqual([]);
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => [{ id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5' }] });
+      expect(await cat.get([{ ...CHATGPT_ROW, enabled: false }])).toEqual([]);
+    });
+  });
 });

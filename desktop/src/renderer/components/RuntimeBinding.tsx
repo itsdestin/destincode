@@ -103,6 +103,41 @@ function isNativeSupported(): boolean {
   return !isAndroid() && !isRemoteMode() && (window as any).claude?.native?.supported === true;
 }
 
+// Which runtime a brand-new session form should open on. Plain 'claude' unless
+// this install has asked for the native harness as its default.
+//
+// WHY THIS EXISTS. Someone who set up YouCoded by signing in with ChatGPT has no
+// Claude login at all. If every new-session form still opened on "Claude Code",
+// their very next session would try to start Claude Code and fail. So the
+// first-run completion path stores 'native' under this key once, and both forms
+// (the session-strip dropdown and the welcome screen) read it here.
+//
+// WHY BOTH FORMS MUST ALSO USE THIS FOR THEIR POST-CREATE RESET (review R2-3):
+// after every create, each form resets its runtime back to a default so the next
+// open starts clean. When that reset was the literal 'claude', the ChatGPT
+// default lasted exactly ONE session -- the second New Session was Claude Code
+// again, with no Claude login behind it. Resetting to defaultRuntime() instead
+// makes the default hold for every session, not just the first.
+//
+// WHY THE isNativeSupported() GATE (review R3-6): under the desktop kill switch
+// (YOUCODED_NATIVE=0) no native providers are loaded, so a stored 'native' would
+// open both forms with Create disabled and no way to fix it. Falling back to
+// 'claude' there keeps the forms usable; the stored value is left untouched so it
+// takes effect again once native is back.
+export function defaultRuntime(): Runtime {
+  try {
+    if (localStorage.getItem('youcoded-runtime-default') === 'native' && isNativeSupported()) return 'native';
+  } catch { /* storage blocked -- fall through to the safe default */ }
+  return 'claude';
+}
+
+// The ONLY writer of the runtime-default key (a source-scan test pins that). The
+// first-run completion path calls it with 'native' when setup finished through
+// ChatGPT; nothing else should decide the install-wide default.
+export function persistRuntimeDefault(runtime: Runtime): void {
+  try { localStorage.setItem('youcoded-runtime-default', runtime); } catch { /* storage full/blocked -- non-fatal */ }
+}
+
 // Create-time memory-fit verdict for a local-engine model (from main's
 // models.memoryCheck). 'too-large' blocks create; 'tight' is a warning.
 export interface MemVerdict { verdict: 'ok' | 'tight' | 'too-large'; headline: string; detail: string }

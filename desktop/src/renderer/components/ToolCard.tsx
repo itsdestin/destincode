@@ -23,17 +23,13 @@ import { PERMISSION_DISPLAY } from './StatusBar';
 // Same parser ToolBody uses to pick the card body, so header and body agree.
 import { describeChatsearchCall, COPY } from '../../shared/chatsearch-refs';
 import { CLAUDE_CODE_LINK_TOOL, SEND_USER_LINK_TOOL } from '../../shared/send-user-link';
+import { toolActionLabel } from '../utils/tool-group-summary';
 
 // --- Helpers for friendly display ---
 
 function basename(filepath: string): string {
   const parts = filepath.replace(/\\/g, '/').split('/');
   return parts[parts.length - 1] || parts[parts.length - 2] || filepath;
-}
-
-function parentDir(filepath: string): string {
-  const parts = filepath.replace(/\\/g, '/').split('/').filter(Boolean);
-  return parts.length >= 2 ? parts[parts.length - 2] + '/' : '';
 }
 
 function titleCase(s: string): string {
@@ -69,7 +65,7 @@ export function taskDisplay(
     const label = ctx?.targetRunning === true ? `Note to ${who}`
       : ctx?.targetRunning === false ? `Resuming ${who}`
       : `Message to ${who}`;
-    return { label, detail: prompt ? `↳ ${truncate(prompt.replace(/\n/g, ' '), 80)}` : '' };
+    return { label, detail: prompt ? `· ${truncate(prompt.replace(/\n/g, ' '), 80)}` : '' };
   }
   const desc = asString(input.description);
   const agent = asString(input.agent) || 'specialist';
@@ -78,7 +74,7 @@ export function taskDisplay(
   // "· in the background" only while it is still there — a finished background
   // hire reads like any finished hire.
   const bg = input.background === true && (!ctx?.runStatus || ctx.runStatus === 'running') ? ' · in the background' : '';
-  return { label: label + bg, detail: desc ? `↳ ${desc}` : '' };
+  return { label: label + bg, detail: desc ? `· ${desc}` : '' };
 }
 
 /** The skill's name as English: the plugin namespace is stripped
@@ -152,6 +148,14 @@ export function friendlyToolDisplay(
     };
   }
   const { toolName, input } = tool;
+  // Q1-Q5's group verbs, reused here so a single card's label tracks status
+  // the same way a group's does — past tense once done, "-ing" while running
+  // — instead of showing "Reading foo.ts" forever, complete or not (Destin,
+  // 2026-09-06 follow-up). The specific file/command/pattern moves into the
+  // detail line so the label stays the plain-language action, not the argument.
+  // awaiting-approval counts as "active" too — it hasn't happened yet, so the
+  // past-tense form ("Ran a command") would claim something that isn't true.
+  const active = tool.status === 'running' || tool.status === 'awaiting-approval';
 
   switch (toolName) {
     case 'Bash': {
@@ -168,24 +172,19 @@ export function friendlyToolDisplay(
       const bg = tool.shellRun
         ? (tool.shellRun.status === 'running' ? ' · in the background' : '')
         : (input.run_in_background ? ' ⟳' : '');
-      let label: string;
-      if (desc) {
-        label = desc;
-      } else if (cmd) {
-        const firstBin = cmd.trimStart().split(/\s+/)[0] || 'command';
-        label = `Running ${basename(firstBin)}`;
-      } else {
-        label = 'Run Command';
-      }
-      return { label: label + bg, detail: cmd ? `↳ ${truncate(cmd, 80)}` : '' };
+      const label = toolActionLabel('Bash', active) + bg;
+      // The model's own description reads better quoted than the raw shell
+      // command — fall back to the command itself when there's no description.
+      const detail = desc ? `· "${truncate(desc, 60)}"` : cmd ? `· ${truncate(cmd, 80)}` : '';
+      return { label, detail };
     }
 
     case 'Read': {
       // Fix: a non-string file_path crashed basename(); non-number offset/limit
       // and non-string pages rendered "[object Object]" in the detail line.
       const fp = asString(input.file_path);
-      const label = fp ? `Reading ${basename(fp)}` : 'Reading File';
-      let detail = fp ? `↳ ${parentDir(fp)}` : '';
+      const label = toolActionLabel('Read', active);
+      let detail = fp ? `· ${fp}` : '';
       const offset = typeof input.offset === 'number' ? input.offset : undefined;
       const limit = typeof input.limit === 'number' ? input.limit : undefined;
       const pages = asString(input.pages);
@@ -211,7 +210,7 @@ export function friendlyToolDisplay(
       return {
         // Fix: a non-array `files` (malformed input) used to read "Sent 0 files".
         label: files.length === 1 ? 'Sent a file' : files.length ? `Sent ${files.length} files` : 'Sent files',
-        detail: names.length ? `↳ ${names.join(', ')}` : '',
+        detail: names.length ? `· ${names.join(', ')}` : '',
       };
     }
 
@@ -229,7 +228,7 @@ export function friendlyToolDisplay(
       const labels = links.map((u) => { try { return new URL(u).host; } catch { return u; } });
       return {
         label: links.length === 1 ? 'Sent a link' : links.length ? `Sent ${links.length} links` : 'Sent links',
-        detail: labels.length ? `↳ ${labels.join(', ')}` : '',
+        detail: labels.length ? `· ${labels.join(', ')}` : '',
       };
     }
 
@@ -237,8 +236,8 @@ export function friendlyToolDisplay(
       // Fix: a non-string file_path crashed basename().
       const fp = asString(input.file_path);
       return {
-        label: fp ? `Writing ${basename(fp)}` : 'Writing File',
-        detail: fp ? `↳ ${parentDir(fp)}` : '',
+        label: toolActionLabel('Write', active),
+        detail: fp ? `· ${fp}` : '',
       };
     }
 
@@ -246,13 +245,13 @@ export function friendlyToolDisplay(
       // Fix: a non-string file_path crashed basename(); a non-string old_string
       // crashed .replace().
       const fp = asString(input.file_path);
-      let detail = fp ? `↳ ${parentDir(fp)}` : '';
+      let detail = fp ? `· ${fp}` : '';
       const oldStr = asString(input.old_string);
       if (oldStr) {
         detail += ` ${truncate(oldStr.replace(/\n/g, '⏎'), 40)}`;
       }
       return {
-        label: fp ? `Editing ${basename(fp)}` : 'Editing File',
+        label: toolActionLabel('Edit', active),
         detail,
       };
     }
@@ -260,19 +259,19 @@ export function friendlyToolDisplay(
     case 'Grep': {
       // Fix: a non-string pattern rendered `Searching for "[object Object]"`.
       const pattern = asString(input.pattern);
-      const label = pattern ? `Searching for "${truncate(pattern, 30)}"` : 'Searching Code';
+      const label = toolActionLabel('Grep', active);
       // Fix: validate each field before interpolating — a malformed (non-string)
       // glob/path/type used to render "[object Object]" or crash basename().
       const glob = asString(input.glob);
       const grepPath = asString(input.path);
       const grepType = asString(input.type);
-      let detail = '';
+      let detail = pattern ? `· "${truncate(pattern, 30)}"` : '';
       if (glob) {
-        detail = `↳ in ${glob} files`;
+        detail += `${detail ? ' ' : '· '}in ${glob} files`;
       } else if (grepPath) {
-        detail = `↳ in ${basename(grepPath)}/`;
+        detail += `${detail ? ' ' : '· '}in ${basename(grepPath)}/`;
       } else if (grepType) {
-        detail = `↳ in .${grepType} files`;
+        detail += `${detail ? ' ' : '· '}in .${grepType} files`;
       }
       return { label, detail };
     }
@@ -281,15 +280,18 @@ export function friendlyToolDisplay(
       // Fix: a non-string pattern crashed .replace() (objects survive `|| ''`).
       const pattern = asString(input.pattern);
       const simplified = pattern.replace(/^\*\*\//, '');
-      const label = pattern ? `Finding ${simplified} files` : 'Finding Files';
+      const label = toolActionLabel('Glob', active);
       // Fix: same hardening as Grep — a non-string path must not reach basename().
       const globPath = asString(input.path);
-      const detail = globPath ? `↳ in ${basename(globPath)}/` : '';
+      let detail = pattern ? `· ${simplified} files` : '';
+      if (globPath) {
+        detail += `${detail ? ' ' : '· '}in ${basename(globPath)}/`;
+      }
       return { label, detail };
     }
 
     // Native specialists (1c). Header reads as the hire — "Wren the Whistling
-    // Worker ↳ Run the release checklist" — once the run record names the
+    // Worker · Run the release checklist" — once the run record names the
     // child; before that, "Hiring a worker". `task_id` calls read as the
     // management verb they are.
     case 'Task':
@@ -307,7 +309,7 @@ export function friendlyToolDisplay(
       const label = desc ? `Agent: ${desc}` : 'Running Sub-Agent';
       // Fix: a malformed (non-string) subagent_type used to render "[object Object]".
       const subagentType = asString(input.subagent_type);
-      const detail = subagentType ? `↳ ${subagentType}` : '';
+      const detail = subagentType ? `· ${subagentType}` : '';
       return { label: label + bg, detail };
     }
 
@@ -315,8 +317,8 @@ export function friendlyToolDisplay(
       // Fix: a non-string query rendered "[object Object]" in the detail line.
       const query = asString(input.query);
       return {
-        label: 'Searching the Web',
-        detail: query ? `↳ ${query}` : '',
+        label: toolActionLabel('WebSearch', active),
+        detail: query ? `· ${query}` : '',
       };
     }
 
@@ -333,8 +335,8 @@ export function friendlyToolDisplay(
         }
       }
       return {
-        label: 'Fetching Webpage',
-        detail: domain ? `↳ ${domain}` : '',
+        label: toolActionLabel('WebFetch', active),
+        detail: domain ? `· ${domain}` : '',
       };
     }
 
@@ -348,8 +350,33 @@ export function friendlyToolDisplay(
       const bareName = skillBareName(input);
       return {
         label: bareName ? `Invoked skill: ${bareName}` : 'Invoked skill',
-        detail: args ? `↳ ${args}` : '',
+        detail: args ? `· ${args}` : '',
       };
+    }
+
+    case 'TodoWrite': {
+      // Fix: a non-array todos (an object survives `|| []` — it's truthy)
+      // must never crash .filter()/.find(). Fell all the way through to the
+      // generic default before this case existed, showing the bare internal
+      // name "TodoWrite" with no detail at all (Destin, 2026-09-06).
+      const raw = input.todos;
+      const todos = Array.isArray(raw) ? raw : [];
+      const isTodoItem = (t: unknown): t is Record<string, unknown> => !!t && typeof t === 'object';
+      const total = todos.length;
+      const doneCount = todos.filter((t) => isTodoItem(t) && t.status === 'completed').length;
+      const inProgress = todos.find((t) => isTodoItem(t) && t.status === 'in_progress');
+      const label = toolActionLabel('TodoWrite', active);
+      let detail = '';
+      if (total > 0) {
+        if (inProgress) {
+          const activeForm = asString((inProgress as Record<string, unknown>).activeForm)
+            || asString((inProgress as Record<string, unknown>).content);
+          detail = activeForm ? `· ${truncate(activeForm, 50)} (${doneCount}/${total})` : `· ${doneCount}/${total} done`;
+        } else {
+          detail = doneCount === total ? `· all ${total} done` : `· ${doneCount}/${total} done`;
+        }
+      }
+      return { label, detail };
     }
 
     case 'TaskCreate': {
@@ -380,7 +407,7 @@ export function friendlyToolDisplay(
       // Fix: a non-string taskId rendered "#[object Object]" (task ids are
       // strings throughout — see task-state.ts).
       const taskId = asString(input.taskId);
-      return { label, detail: taskId ? `↳ #${taskId}` : '' };
+      return { label, detail: taskId ? `· #${taskId}` : '' };
     }
 
     case 'AskUserQuestion': {
@@ -388,14 +415,14 @@ export function friendlyToolDisplay(
       // Fix: only accept string values — String(header) on a malformed object
       // input produced an "[object Object]" label.
       // P-18: read like every other card — short topic as the label, the
-      // question itself as the "↳" detail (Read shows "Reading X ↳ path").
+      // question itself as the "·" detail (Read shows "Reading X · path").
       // Header missing → plain "Question" so the detail still carries the text.
       const questions = input.questions as any[];
       const header = asString(questions?.[0]?.header);
       const question = asString(questions?.[0]?.question);
       return {
         label: header ? truncate(header, 40) : 'Question',
-        detail: question ? `↳ ${truncate(question, 60)}` : '',
+        detail: question ? `· ${truncate(question, 60)}` : '',
       };
     }
 
@@ -410,7 +437,7 @@ export function friendlyToolDisplay(
       const steps = Number(input.steps) || 0;
       return {
         label: 'Continue?',
-        detail: `↳ Claude has taken ${steps} steps on this task without stopping`,
+        detail: `· Claude has taken ${steps} steps on this task without stopping`,
       };
     }
 
@@ -419,8 +446,8 @@ export function friendlyToolDisplay(
       return {
         label: 'Continue?',
         detail: repeated
-          ? `↳ Claude keeps repeating the same action (${repeated})`
-          : '↳ Claude appears to be repeating the same action',
+          ? `· Claude keeps repeating the same action (${repeated})`
+          : '· Claude appears to be repeating the same action',
       };
     }
 
@@ -435,7 +462,7 @@ export function friendlyToolDisplay(
         let detail = '';
         const values = Object.values(input).filter(v => typeof v === 'string' && v.length > 0) as string[];
         if (values.length > 0) {
-          detail = `↳ ${truncate(values[0], 60)}`;
+          detail = `· ${truncate(values[0], 60)}`;
         }
         return { label, detail };
       }

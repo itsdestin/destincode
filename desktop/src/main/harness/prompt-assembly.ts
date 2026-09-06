@@ -12,6 +12,7 @@ import { execFileSync } from 'child_process';
 import type { PromptVariant } from './capability-profile';
 import { variantOverlay } from './prompts/variants';
 import { fitProjectInstructions } from './injection/injection-budget';
+import { sharedDoctrine } from './prompts/shared-doctrine';
 
 // promptVariant is the capability-profile steering overlay (see prompts/variants.ts).
 // Optional so pre-variant callers assemble byte-identically; only local-small adds text.
@@ -25,7 +26,12 @@ import { fitProjectInstructions } from './injection/injection-budget';
 // allowance, i.e. "assume roomy" for a caller that never told us the model.
 const DEFAULT_INSTRUCTION_BUDGET_TOKENS = 20_000;
 
-export interface PromptInputs { presetBody: string; cwd: string; appVersion: string; promptVariant?: PromptVariant; hasTools?: boolean; instructionBudgetTokens?: number }
+// supportsParallelToolCalls (profile.supportsParallelToolCalls) gates the
+// batching rule in the shared doctrine; default false so pre-existing callers
+// (and the evaluator, which passes no profile) never tell a model to batch.
+// audience: 'parent' for a specialist (its reader is the parent model, not the
+// person) — drops the writing-for-the-user block. Default 'user'.
+export interface PromptInputs { presetBody: string; cwd: string; appVersion: string; promptVariant?: PromptVariant; hasTools?: boolean; instructionBudgetTokens?: number; supportsParallelToolCalls?: boolean; audience?: 'user' | 'parent' }
 
 function gitSnapshot(cwd: string): string {
   try {
@@ -74,7 +80,11 @@ export function assembleSystemPrompt(i: PromptInputs): string {
   // instructions) is tool-agnostic and stays. Default true → unchanged behavior.
   const hasTools = i.hasTools !== false;
   const sections = [
-    'You are the YouCoded assistant, an agentic AI running inside the YouCoded app.',
+    // WHY the second sentence (Destin, 2026-09-04): the same prompt serves every
+    // model the user can pick, and a model that assumes it is a specific vendor's
+    // product answers questions about itself wrongly and reaches for that
+    // vendor's conventions.
+    'You are the YouCoded assistant, an agentic AI running inside the YouCoded app. You may be running on any model the user chose, cloud or local — Claude, GPT, Grok, Gemini, Qwen, Gemma and others.',
     i.presetBody,
     [
       '<env note="snapshot at session start — use tools (Bash, Read) for current state">',
@@ -86,10 +96,18 @@ export function assembleSystemPrompt(i: PromptInputs): string {
       '</env>',
     ].join('\n'),
     projectInstructions(i.cwd, i.instructionBudgetTokens ?? DEFAULT_INSTRUCTION_BUDGET_TOKENS),
-    // Tool-guidance line — only when the model actually HAS tools.
-    hasTools
-      ? 'Prefer dedicated tools over shell: Read/Glob/Grep instead of cat/find/grep. Keep edits minimal and verify your work by running relevant commands after changing code.'
-      : null,
+    // Shared doctrine (prompts/shared-doctrine.ts) replaced the single
+    // tool-guidance line on 2026-09-04: how to finish, what to trust, how to
+    // write, what the app's envelope messages mean. Composed by capability so a
+    // tool-less model still gets the honesty and writing rules, a small local
+    // model gets the compact form, and only a parallel-capable model is told to
+    // batch. The "Prefer dedicated tools over shell" sentence lives inside it.
+    sharedDoctrine({
+      audience: i.audience ?? 'user',
+      tools: hasTools,
+      batching: hasTools && i.supportsParallelToolCalls === true && i.promptVariant !== 'local-small',
+      compact: i.promptVariant === 'local-small',
+    }),
     // Capability-steering overlay, appended LAST: personality (preset body) and
     // tool-calling steering (variant) are orthogonal axes composed by append. The
     // no-op variants return '' and are dropped by the empty-string filter below,

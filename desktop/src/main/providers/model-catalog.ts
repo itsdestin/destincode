@@ -34,6 +34,12 @@ export class ModelCatalog {
   private readonly cachePath: string;
   // Plan B: injected by ipc-handlers as () => engineManager.catalogModels().
   private readonly localModels: (() => Promise<CatalogModel[]>) | null;
+  // Sign in with ChatGPT (backend design §4.3): injected as
+  // () => chatgptAuth.models(). That function is cache-first and never waits
+  // on the network — get() runs in front of sessions on EVERY provider, so a
+  // stale hourly stamp kicks a background refresh and the cached rows come
+  // back now. Null under the kill switch or in tests without it.
+  private readonly chatgptModels: (() => Promise<CatalogModel[]>) | null;
   // In-memory copy of the last cache we returned (ROADMAP 2026-08-11: every
   // ensureFresh() re-read + re-parsed the whole catalog file from disk, twice
   // per session start). SERVED only while its own fetchedAt is inside the TTL
@@ -51,10 +57,15 @@ export class ModelCatalog {
               // opts.ttlMs is TEST-ONLY (same convention as SecretsStore's
               // maxRetries) — lets the stale-fallback tests force expiry
               // without poking private fields. Production callers omit it.
-              opts?: { ttlMs?: number; localModels?: () => Promise<CatalogModel[]> }) {
+              opts?: {
+                ttlMs?: number;
+                localModels?: () => Promise<CatalogModel[]>;
+                chatgptModels?: () => Promise<CatalogModel[]>;
+              }) {
     this.cachePath = path.join(cacheDir, CACHE_FILE);
     this.ttlMs = opts?.ttlMs ?? TTL_MS;
     this.localModels = opts?.localModels ?? null;
+    this.chatgptModels = opts?.chatgptModels ?? null;
   }
 
   /** null on missing/corrupt. Unlike providers.json (user data — read errors
@@ -262,6 +273,19 @@ export class ModelCatalog {
         // engine runs, cache scan when stopped). Failure degrades to "no
         // local rows" — get() keeps its never-throws contract.
         try { out.push(...await this.localModels()); } catch { /* engine unavailable */ }
+      } else if (p.type === 'chatgpt' && p.ready && this.chatgptModels) {
+        // `ready` here, not just `enabled` (§4.6): when OpenAI blocks the
+        // account the cached model list is deliberately kept (so the card can
+        // still say who is signed in), but those models must leave the
+        // catalog. The two pickers filter on ready themselves; the app's own
+        // ModelSearch tool does not — without this gate the assistant is
+        // offered plan models it cannot use, hands a task to one, and the user
+        // gets "Codex is disabled for this workspace." instead of an answer.
+        // Rows are the plan's own manifest, parsed and cached by ChatGptAuth
+        // (id = slug, no pricing — the plan is not per-token, and an absent
+        // price must read as absent, never $0). A throwing source degrades
+        // to no ChatGPT rows; get() keeps its never-throws contract.
+        try { out.push(...await this.chatgptModels()); } catch { /* account unavailable */ }
       }
       // openai-compatible custom endpoints still have no catalog (user types a model id).
     }

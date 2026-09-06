@@ -2494,7 +2494,9 @@ export class NativeSessionHost extends EventEmitter {
       // buildAiTools when the profile can afford its catalog. Threading the
       // catalog (rather than letting the session scan on its own) means the host
       // and the session agree on one source, and a test can inject a fake.
-      ...(this.skillCatalog ? { skillCatalog: this.skillCatalog } : {}),
+      // Fix: project .claude/skills are session-scoped. Build their catalog from
+      // this session's cwd so one workspace's workflows never appear in another.
+      skillCatalog: this.skillCatalog ?? createSkillCatalog(undefined, cwd),
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       // Stamp the CURRENT mode on every ask (read at call time, not wiring
       // time — a mid-session mode flip must show on the next ask). The
@@ -2558,7 +2560,7 @@ export class NativeSessionHost extends EventEmitter {
       // reassembled, not even by setBinding's mid-session model swap (that is what
       // keeps the KV-cache prefix stable). Sizing therefore follows the model the
       // session STARTED on. Deliberate; revisit only if prompt reassembly ever is.
-      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools, instructionBudgetTokens: profile.injectionBudgetTokens }),
+      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools, instructionBudgetTokens: profile.injectionBudgetTokens, supportsParallelToolCalls: profile.supportsParallelToolCalls, audience: 'user' }),
     };
   }
 
@@ -3004,6 +3006,10 @@ export class NativeSessionHost extends EventEmitter {
           presetBody: specialist.systemPrompt, cwd: workDir, appVersion: this.appVersion,
           promptVariant: profile.promptVariant, hasTools: profile.supportsTools,
           instructionBudgetTokens: profile.injectionBudgetTokens,
+          // audience 'parent': the shared doctrine's writing-for-the-user block is
+          // for the person; a specialist's reader is the parent model, and its
+          // report rules live in specialists/builtins.ts.
+          supportsParallelToolCalls: profile.supportsParallelToolCalls, audience: 'parent',
         }),
         // Project rules / nested instructions for the CHILD's directory. Project
         // state, not conversation state, so it does not violate the cold start —
@@ -3868,7 +3874,9 @@ export class NativeSessionHost extends EventEmitter {
 
     let loaded;
     try {
-      loaded = (this.skillCatalog ?? createSkillCatalog()).load(skill);
+      // Match the session's Skill tool: a slash invocation must see this
+      // project's .claude/skills too, including on smaller models without Skill.
+      loaded = (this.skillCatalog ?? createSkillCatalog(undefined, entry.cwd)).load(skill);
     } catch (err: any) {
       // SkillNotFound is the ordinary case — the user typed a Claude Code command
       // or a skill they haven't installed — so it is a coded refusal, not an error.

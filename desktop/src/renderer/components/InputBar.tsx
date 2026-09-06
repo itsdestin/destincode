@@ -1,10 +1,13 @@
-import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, useContext } from 'react';
 import { useChatDispatch } from '../state/chat-context';
 import QuickChips, { QuickChip } from './QuickChips';
 import TerminalToolbar from './TerminalToolbar';
 import { Button } from './ui';
 import { AttachmentChip } from './AttachmentChip';
 import { AttachIcon, CompassIcon } from './Icons';
+import { VoiceButton, VoiceMeter, VoiceStyleContext } from './VoiceButton';
+import { StatusStrip } from './ui/StatusStrip';
+import { useVoiceInput } from '../hooks/useVoiceInput';
 import BrailleBurst from './BrailleBurst';
 import FlowingKeywordsText from './FlowingKeywords';
 import StopButton from './StopButton';
@@ -122,6 +125,136 @@ function sendFailureCopy(result: NativeSendResult | undefined): string {
 const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId, disabled, minimal, compact, view, onOpenDrawer, onCloseDrawer, onDrawerSearch, onResumeCommand, getUsageSnapshot, onOpenPreferences, onToast, onSendBlocked, getSessionState, onOpenModelPicker, initialInput, provider }, ref) {
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+
+  // Voice prompting (deck 2026-09-05). The draft stays the one source of truth:
+  // `text` holds what was typed plus the words the engine has SETTLED on;
+  // `voiceTail` is the engine's newest few words, still liable to change, drawn
+  // grey in the mirror layer and appended to the textarea value so both layers
+  // measure the same height (Q-2: "the newest few in grey until they settle").
+  // `voiceBaseRef` is the draft as it stood when the mic opened — every partial
+  // replaces everything after it, so a rewritten word never leaves a stale copy.
+  const [voiceTail, setVoiceTail] = useState('');
+  const voiceBaseRef = useRef('');
+  const textRef = useRef('');
+  const voice = useVoiceInput({
+    onPartial: (committed, tail) => {
+      setText(voiceBaseRef.current + committed);
+      setVoiceTail(tail ? (committed ? ' ' : '') + tail : '');
+    },
+    onFinal: (final) => {
+      setVoiceTail('');
+      // Q-4: the text waits in the box with the caret at the end — nothing is
+      // sent until the user presses Send.
+      const next = voiceBaseRef.current + final + (final ? ' ' : '');
+      setText(next);
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(next.length, next.length);
+      });
+    },
+  });
+  const startVoice = useCallback(() => {
+    // The textarea is the truth here, not React state: a keystroke from a
+    // fraction of a second ago may not have reached state yet. (There is no
+    // space to take back — a space bar held for the walkie-talkie never types
+    // one in the first place. See the gesture note below.)
+    const cur = inputRef.current?.value ?? textRef.current;
+    // Dictation continues the draft: a typed half-sentence keeps its place and
+    // the spoken words follow after one space.
+    voiceBaseRef.current = cur.trim() ? cur.replace(/\s*$/, ' ') : '';
+    setText(voiceBaseRef.current);
+    void voice.start();
+  }, [voice.start]); // eslint-disable-line react-hooks/exhaustive-deps -- reads the draft through the textarea on purpose
+  // Q-3 note (Destin): "press and hold the spacebar in a bare input box for
+  // walkie-talkie mode" — since widened to any box, with or without text.
+  //
+  // HOW THE GESTURE IS DECIDED, and why it is decided this way (Destin,
+  // 2026-09-05: "still seems like a bit of a gamble as to whether the spacebar
+  // does voice mode or just enters a bunch of spaces").
+  //
+  // The space bar goes down and NOTHING is typed. If it comes back up, or any
+  // other key goes down, before the hold matures, the space is typed then — one
+  // space, at the caret. If the hold matures, dictation starts and no space is
+  // typed at all.
+  //
+  // The rule that stops it feeling like a coin flip: nothing here may depend on
+  // the browser's `event.repeat` flag. The first attempt suppressed auto-repeat
+  // with `if (e.repeat)`, and Electron on Linux does not reliably set it — when
+  // it is missing every repeated space is typed, which is the run of spaces
+  // instead of the microphone. Whether a hold is open is OUR state
+  // (`spaceHoldTimer`), and every space arriving while it is open is swallowed
+  // whatever the event says about itself. At most one space can ever come out.
+  //
+  // Typing is unharmed: a normal space is released in about a tenth of a second,
+  // and the next key aborts the hold and puts the space in AHEAD of itself — so
+  // "hello world" typed at speed cannot come out "hellow orld", which is what a
+  // naive "insert it on key-up" would produce.
+  const SPACE_HOLD_MS = 350;
+  const spaceHoldTimer = useRef<number | null>(null);
+  const spaceHeld = useRef(false);
+  /** Type the space a pending hold swallowed, at the caret. */
+  const commitPendingSpace = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const at = el.selectionStart ?? el.value.length;
+    const to = el.selectionEnd ?? at;
+    const next = `${el.value.slice(0, at)} ${el.value.slice(to)}`;
+    setText(next);
+    // Keep the caret after the space, or it jumps to the end of the draft.
+    requestAnimationFrame(() => {
+      const again = inputRef.current;
+      if (again) again.setSelectionRange(at + 1, at + 1);
+    });
+  }, []);
+  /** Call off the countdown; answers whether one was actually running. */
+  const cancelSpaceHold = useCallback(() => {
+    if (spaceHoldTimer.current === null) return false;
+    window.clearTimeout(spaceHoldTimer.current);
+    spaceHoldTimer.current = null;
+    return true;
+  }, []);
+  const voiceCanStart = voice.supported && voice.readiness?.state === 'ready' && voice.phase === 'idle';
+  // Round-2 alternatives for WHERE the listening feedback lives (see VoiceStyle).
+  const voiceStyle = useContext(VoiceStyleContext);
+  const voiceListening = voice.phase === 'listening';
+  // Read by the window-level key handler further down, which is installed once
+  // and must not be torn down and rebuilt every time the mic's phase changes.
+  const voiceListeningRef = useRef(false);
+  voiceListeningRef.current = voiceListening;
+  const voiceStopRef = useRef(voice.stop);
+  voiceStopRef.current = voice.stop;
+  // Read by `send`, which cannot depend on them without rebuilding on every
+  // partial — the same reason voiceListeningRef exists.
+  const voicePhaseRef = useRef(voice.phase);
+  voicePhaseRef.current = voice.phase;
+  const voiceCancelRef = useRef(voice.cancel);
+  voiceCancelRef.current = voice.cancel;
+
+  // Let go of the walkie-talkie, whatever the reason.
+  //
+  // WHY this is not simply "on key-up": the hold has TWO stages, and both can
+  // leak. For the first quarter second nothing is listening yet — only a timer
+  // is counting down — and if the user alt-tabs in that window the timer still
+  // fires, the microphone opens with the app in the background, and no key-up
+  // ever arrives to close it. After that quarter second the microphone IS open,
+  // and the same alt-tab would leave it open until the two-second silence stop
+  // drops whatever the room said into the message box. So losing the box (or
+  // the window, or the whole tab) cancels the countdown AND closes the mic.
+  const releaseSpaceHold = useCallback(() => {
+    if (spaceHoldTimer.current !== null) { window.clearTimeout(spaceHoldTimer.current); spaceHoldTimer.current = null; }
+    if (spaceHeld.current) { spaceHeld.current = false; void voice.stop(); }
+  }, [voice.stop]); // eslint-disable-line react-hooks/exhaustive-deps -- voice.stop is the only member read
+  useEffect(() => {
+    const onVisibility = () => { if (document.visibilityState === 'hidden') releaseSpaceHold(); };
+    window.addEventListener('blur', releaseSpaceHold);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('blur', releaseSpaceHold);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [releaseSpaceHold]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Drive the same fade-edge treatment on the textarea itself. The mask fades
   // wrapped text that sits above/below the 3-line max-height viewport.
@@ -245,6 +378,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       inputRef.current?.focus();
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
         e.preventDefault();
+        // The second of the two keyboard sites that stop the mic instead of
+        // sending (the other is the textarea's own Enter branch). Enter with
+        // the mic open closes it and leaves the words in the box; a second
+        // Enter sends. The guard is deliberately NOT inside send(), which the
+        // Send button and the "Send anyway" retry also call — see the note at
+        // the textarea's Enter branch.
+        if (voiceListeningRef.current) { void voiceStopRef.current(); return; }
         sendRef.current();
       }
     };
@@ -275,6 +415,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     const resetTimer = () => {
       if (idleBlurTimer.current) clearTimeout(idleBlurTimer.current);
       idleBlurTimer.current = setTimeout(() => {
+        // Never blur out from under a space-hold dictation. The hold releases on
+        // blur, and this timer fires 750 ms after the last keydown — which is
+        // fine while a held key repeats faster than that, but the repeat delay is
+        // a system setting that can be longer, or switched off entirely. On such
+        // a machine a walkie-talkie dictation would have been cut off silently,
+        // three-quarters of a second in. Found reviewing T9, 2026-09-05.
+        if (spaceHeld.current || spaceHoldTimer.current !== null) return;
         if (document.activeElement === el) el.blur();
       }, 750);
     };
@@ -581,6 +728,16 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     // in the input bar so the user's text isn't lost. `force` is the "Send
     // anyway" override, which re-enters here past the gate (see sendMessage).
     if (!sendMessage(currentText, attachments, force)) return;
+    // The message has gone, so the dictation behind it goes too. Without this,
+    // sending mid-sentence sent the unsettled GREY words along with it AND left
+    // them in the box, and the next thing the engine said re-typed the whole
+    // utterance — so the user had to delete a copy of what they had just sent,
+    // with the microphone still open. `cancel` emits nothing (the event contract
+    // in voice-types.ts), so no late words can arrive after this either.
+    // Found reviewing T9, 2026-09-05.
+    setVoiceTail('');
+    voiceBaseRef.current = '';
+    if (voicePhaseRef.current !== 'idle') void voiceCancelRef.current();
     setText('');
     setAttachments([]);
     draftsRef.current.delete(sessionId); // Clear stored draft after sending
@@ -663,6 +820,8 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     e.preventDefault();
   }, []);
 
+  textRef.current = text;
+
   return (
     <div
       className="input-bar-container shrink-0"
@@ -693,6 +852,17 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
         </div>
       )}
 
+      {/* Feedback B: the app's thin status band, above the box, while listening. */}
+      {voiceListening && voiceStyle.feedback === 'strip' && (
+        <div className="px-2 sm:px-3 pb-1.5">
+          <StatusStrip
+            tone="ok"
+            action={<Button variant="secondary" size="sm" onClick={() => { void voice.stop(); }}>Stop</Button>}
+          >
+            <span className="inline-flex items-center gap-3">Listening <VoiceMeter level={voice.level} seconds={voice.seconds} /></span>
+          </StatusStrip>
+        </div>
+      )}
       <div className="px-2 sm:px-3 pb-1 sm:pb-1.5">
         <form onSubmit={handleSubmit} className="flex items-center gap-1.5 sm:gap-2 bg-inset rounded-xl px-2 sm:px-3 py-2">
           <BrailleBurst
@@ -714,6 +884,13 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             </BrailleBurst>
           )}
           <div className="relative flex-1">
+            {/* Feedback C: meter and clock in the empty line, gone once words arrive. */}
+            {voiceListening && voiceStyle.feedback === 'placeholder' && !text && !voiceTail && (
+              <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 left-0 flex items-center gap-2 text-sm text-fg-muted">
+                <span>Listening</span>
+                <VoiceMeter level={voice.level} seconds={voice.seconds} />
+              </div>
+            )}
             {/* Mirror layer: renders the same text behind the transparent
                 textarea, with keyword spans that animate via CSS. aria-hidden
                 because the textarea still owns the accessible value. */}
@@ -732,13 +909,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                 className="input-bar-mirror-content text-sm text-fg leading-snug whitespace-pre-wrap break-words"
               >
                 <FlowingKeywordsText text={text} />
+                {voiceTail && <span className="text-fg-muted">{voiceTail}</span>}
                 {/* Zero-width char keeps a trailing newline visible in the mirror */}
                 {'\u200B'}
               </div>
             </div>
           <textarea
             ref={inputRef}
-            value={text}
+            value={text + voiceTail}
             rows={1}
             // Disable spellcheck — with transparent text + mirror overlay, the
             // red/blue squiggles render on top of the mirror and look like bugs.
@@ -752,6 +930,18 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             }}
             onChange={(e) => {
               const val = e.target.value;
+              // Typing while the mic is open ends dictation, and EVERYTHING in the
+              // box stays — including the grey, still-being-reconsidered words.
+              //
+              // Fix (whole-branch review F4): this comment used to say the grey
+              // words were dropped, which is the opposite of what happens. The
+              // textarea's value is the solid text plus the grey tail, so a
+              // keystroke arrives as all of it plus the new character, and the
+              // line below promotes the lot to solid. That is the RIGHT behaviour
+              // — words the user watched appear must not vanish when they reach
+              // for the keyboard — but the comment claiming otherwise would have
+              // sent the next session "fixing" it in the wrong direction.
+              if (voice.phase !== 'idle') { void voice.cancel(); setVoiceTail(''); }
               setText(val);
               // Detect "/" typed as first character — open drawer in search mode
               if (val === '/' && text === '') {
@@ -766,9 +956,47 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               }
             }}
             onKeyDown={(e) => {
+              // Hold Space anywhere in the box = walkie-talkie (see spaceHoldTimer).
+              if (e.key === ' ' && !minimal) {
+                // Already talking: the space bar belongs to the microphone.
+                if (spaceHeld.current) { e.preventDefault(); return; }
+                // A hold is already counting down, so this is the keyboard
+                // repeating itself — swallowed WITHOUT asking the event whether
+                // it is a repeat, which is the question that made this a gamble.
+                if (spaceHoldTimer.current !== null) { e.preventDefault(); return; }
+                if (voiceCanStart) {
+                  // Type nothing yet. Either the hold matures and this was never
+                  // meant to be a space, or it does not and the space goes in
+                  // below — in the right place, exactly once.
+                  e.preventDefault();
+                  spaceHoldTimer.current = window.setTimeout(() => {
+                    spaceHoldTimer.current = null;
+                    spaceHeld.current = true;
+                    startVoice();
+                  }, SPACE_HOLD_MS);
+                  return;
+                }
+              }
+              // Any other key while a hold is counting down means the user was
+              // typing, not reaching for the microphone. The swallowed space goes
+              // in BEFORE this key does.
+              if (spaceHoldTimer.current !== null && e.key !== ' ') {
+                cancelSpaceHold();
+                commitPendingSpace();
+              }
               // Enter sends, Shift+Enter inserts newline
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
+                // Enter while the mic is open STOPS it and sends nothing: the
+                // words wait in the box and a second Enter sends them, exactly
+                // as if they had been typed (deck V-6, contract R3).
+                //
+                // WHY the guard is here and in the window-level handler above,
+                // and NOT inside send(): the Send button submits the form
+                // through send(), and so does the "Send anyway" retry after a
+                // blocked send. A guard inside send() would silently turn both
+                // of those into a stop — a button that says Send and doesn't.
+                if (voiceListening) { void voice.stop(); return; }
                 if (minimal && sessionId) {
                   // Terminal mode: send text + Enter directly to PTY.
                   // pty-worker auto-splits text+\r with a 600ms gap so Ink
@@ -785,8 +1013,20 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
                 }
               }
             }}
+            onKeyUp={(e) => {
+              if (e.key !== ' ') return;
+              // Let go before the hold matured: that was a space, not a walkie-
+              // talkie. This is the only place a held space ever becomes text.
+              const wasPending = cancelSpaceHold();
+              releaseSpaceHold();
+              if (wasPending) commitPendingSpace();
+            }}
+            // The box losing focus mid-hold ends the hold too — see
+            // releaseSpaceHold. (The idle-unfocus timer below cannot trip this:
+            // a held key repeats, and every repeat resets that timer.)
+            onBlur={releaseSpaceHold}
             onPaste={handlePaste}
-            placeholder={disabled ? 'Waiting for approval...' : 'Message Claude...'}
+            placeholder={disabled ? 'Waiting for approval...' : voiceListening ? (voiceStyle.feedback === 'placeholder' ? '' : 'Listening…') : 'Message Claude...'}
             disabled={disabled}
             // Text color is transparent so the mirror div behind it shows
             // through (with animated keyword spans). caret-color keeps the
@@ -819,6 +1059,25 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               stall warning and the red parked card, because those turns are
               still running and that is precisely when a user with no ESC key
               needs a way out. See useStreamingGate.ts. */}
+          {/* Voice prompting: the mic sits where the eye already goes to
+              send. Hidden entirely when the host has no speech engine
+              (remote browser, older builds) and in terminal view. */}
+          {!minimal && voice.supported && (
+            <VoiceButton
+              phase={voice.phase}
+              readiness={voice.readiness}
+              level={voice.level}
+              seconds={voice.seconds}
+              error={voice.error}
+              disabled={disabled}
+              onStart={startVoice}
+              onStop={() => { void voice.stop(); }}
+              onDownload={() => { void voice.download(); }}
+              onRecheck={() => { void voice.recheck(); }}
+              onClearError={voice.clearError}
+              onReady={() => onToast?.('Voice is ready — tap the mic to talk.')}
+            />
+          )}
           <StopButton sessionId={sessionId} provider={provider} visible={showStop} />
           {/* The app's most-used control. Geometry is unchanged — 28x28 is exactly
               what size="icon" emits — and it keeps `bg-accent`, which matters:

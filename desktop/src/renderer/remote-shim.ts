@@ -3,9 +3,13 @@
  * Provides the same API surface as the Electron preload bridge.
  */
 
+// Type-only, so nothing is added to the bundle the Android WebView loads.
+import type { VoiceReadiness } from '../shared/voice-types';
+
 // ── Marketplace types re-declared locally ─────────────────────────────────────
 // WHY: remote-shim.ts lives in renderer/ and cannot import from main/ (Node.js
 import { REMOTE_UNSUPPORTED_EVENT, remoteFeatureName, remoteUnsupportedMessage } from './remote-unsupported';
+import type { FirstRunState } from '../shared/first-run-types';
 // boundary). These interfaces mirror marketplace-auth-store.ts and
 // marketplace-api-handlers.ts exactly — keep in sync if those change.
 interface MarketplaceUser {
@@ -42,6 +46,37 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 let targetUrl: string | null = null;
 /** Whether to preserve __PLATFORM__ on next auth:ok (prevents desktop overwriting 'android') */
 let preservePlatform = false;
+
+/** The one sentence shown when a voice call is refused because this device is
+ *  paired to another computer.
+ *
+ *  WHO ACTUALLY READS THIS, which is not who the first draft addressed: a plain
+ *  remote browser tab never gets the namespace at all (it is deleted below), so it
+ *  draws no mic and reaches no sentence. The only reader is a PHONE that paired to
+ *  a desktop mid-session — and for that reader the old wording, about browsers and
+ *  encrypted connections, was an unverified cause for someone who is not in a
+ *  browser. Their real reason is simpler: while paired, the phone talks to the
+ *  desktop, and the desktop has no voice over that bridge. It is also actionable,
+ *  which the old sentence was not — disconnecting brings the mic straight back.
+ *  Found reviewing T7, 2026-09-05; see docs/error-message-standards.md.
+ *
+ *  (Why voice is off in a remote browser at all, for the reader of this file: a
+ *  browser only hands a page the microphone on an encrypted connection, and remote
+ *  access is still plain http. Destin decided on the voice questions deck, Q-7,
+ *  that it stays off until that changes rather than shipping a button that fails.) */
+const VOICE_REMOTE_REASON =
+  'Voice typing is off while you are connected to another computer. '
+  + "Disconnect to use this phone's microphone.";
+
+/** Is this client the Android app talking to its OWN on-device bridge?
+ *
+ *  `file:` means the page was loaded out of the APK (a browser tab is http/https),
+ *  and no `targetUrl` means it has not been pointed at someone's desktop. Both
+ *  halves are needed: `!targetUrl` ALONE is also true of a plain remote browser
+ *  tab, which is precisely where the microphone must not appear. */
+function isAndroidLocal(): boolean {
+  return location.protocol === 'file:' && !targetUrl;
+}
 
 // Fix: queue application messages sent before the WS auth handshake completes,
 // then flush on auth:ok. Without this, first-mount fetches (skills.list etc.)
@@ -461,6 +496,13 @@ function handleMessage(data: string): void {
       // G-1 — push-only (ipc-handlers.ts's nativeHost.on('shell-event', …)
       // forwarder). window.claude.on.shellEvent subscribers get the ShellEvent.
       dispatchEvent('native:shell-event', payload);
+      break;
+    case 'voice:event':
+      // Voice typing push events from the ANDROID host (readiness / level /
+      // partial words / final / heartbeat / error). window.claude.voice.onEvent
+      // subscribers get the payload verbatim. Broadcast — no sessionId, because
+      // there is one microphone on the device, not one per conversation.
+      dispatchEvent('voice:event', payload);
       break;
     case 'social:presence-event':
       // Presence relay (Task 6). The host forwards one presence event (server
@@ -1463,6 +1505,59 @@ export function installShim(): void {
       read: (req: { provider: string; id: string; tail: number; before?: number }) =>
         invoke('chatsearch:read', req),
     },
+    // Voice typing — the PHONE's half of window.claude.voice.
+    //
+    // Written as a plain, unconditional `voice: {` rather than a conditional
+    // spread on purpose: the workbench's contract scan
+    // (tests/workbench-mock-contract.test.ts) finds a namespace by looking for
+    // its name at exactly this indentation, and `...(androidLocal ? {voice} : {})`
+    // would be invisible to it. The namespace is instead DELETED after this
+    // object is built, whenever this client is not the Android app on its own
+    // bridge — see the isAndroidLocal() check at the end of installShim().
+    //
+    // `sendAudio` and `micAccess` are deliberately missing, unlike preload's
+    // copy: on a phone Android's own speech recognition owns the microphone, and
+    // the app window's permission prompt owns the permission question, so no
+    // audio and no permission query ever passes through here. Every caller tests
+    // `typeof bridge.sendAudio === 'function'` instead of assuming. Both gaps are
+    // written down in the workspace rule .claude/rules/ipc-bridge.md.
+    voice: {
+      // Every method below refuses the moment this client is pointed at someone
+      // else's desktop.
+      //
+      // WHY a test inside each method, when the namespace is already deleted for
+      // anything but the Android app: pairing to a desktop mid-session only flips
+      // the `targetUrl` variable — it does NOT rebuild window.claude, and the
+      // composer captured this bridge once when it mounted. Without these tests a
+      // phone that pairs to a desktop while the mic is open would keep a live
+      // microphone running and send voice:* to a host that has no such handlers,
+      // which is a hang, not an error. This is the same per-call shape the
+      // `android` namespace below already uses.
+      status: (): Promise<VoiceReadiness> =>
+        targetUrl
+          // Answer, don't reject: the composer shows this sentence on its card,
+          // so the user reads why there is no microphone instead of watching a
+          // button go quietly dead.
+          ? Promise.resolve({ state: 'unavailable', reason: VOICE_REMOTE_REASON })
+          : invoke('voice:status'),
+      download: (): Promise<void> =>
+        targetUrl ? Promise.reject(new Error(VOICE_REMOTE_REASON)) : invoke('voice:download'),
+      start: (): Promise<void> =>
+        targetUrl ? Promise.reject(new Error(VOICE_REMOTE_REASON)) : invoke('voice:start'),
+      stop: (): Promise<void> =>
+        targetUrl ? Promise.reject(new Error(VOICE_REMOTE_REASON)) : invoke('voice:stop'),
+      cancel: (): Promise<void> =>
+        targetUrl ? Promise.reject(new Error(VOICE_REMOTE_REASON)) : invoke('voice:cancel'),
+      onEvent: (cb: (e: unknown) => void) => {
+        // Refuses the same way: once we are talking to a desktop, no voice event
+        // can ever arrive, so subscribe to nothing and hand back an unsubscribe
+        // that callers can still call unconditionally.
+        if (targetUrl) return () => {};
+        const handler: Callback = (payload: any) => cb(payload);
+        addListener('voice:event', handler);
+        return () => removeListener('voice:event', handler);
+      },
+    },
     // System namespace — hardware back button bridge for Android.
     // notifyStackState: React tells Android whether the dismissal stack is
     //   non-empty. Android sets OnBackPressedCallback.isEnabled accordingly
@@ -1511,7 +1606,8 @@ export function installShim(): void {
     firstRun: {
       getState: () => Promise.resolve({ currentStep: 'COMPLETE' }),
       retry: () => Promise.resolve(),
-      startAuth: (_mode: string) => Promise.resolve(),
+      // Same widened type as preload's (FirstRunState['authMode']); still a no-op here.
+      startAuth: (_mode: FirstRunState['authMode']) => Promise.resolve(),
       submitApiKey: (_key: string) => Promise.resolve(),
       devModeDone: () => Promise.resolve(),
       skip: () => Promise.resolve(),
@@ -1642,7 +1738,7 @@ export function installShim(): void {
       // the pointer; throwing would spam the console on any platform where
       // the buddy mascot window somehow loaded remote-shim (shouldn't happen,
       // but the cost of being defensive is one line).
-      moveMascot: (_t: { targetX: number; targetY: number }) => { /* desktop-only */ },
+      moveMascot: (_t: { localDx: number; localDy: number }) => { /* desktop-only */ },
       onAttentionSummary: () => () => { /* no-op unsubscribe */ },
       // ── Buddy upgrades — same desktop-only contract as the methods above.
       // dragEnded is a no-op (not a throw): it fires from a pointer handler and
@@ -1668,6 +1764,23 @@ export function installShim(): void {
       // no browser/Android equivalent); same desktop-only-throw contract as
       // openMain/dismiss/getStatus above.
       setKeepAbove: () => { throw new Error('Buddy is desktop-only in this version'); },
+      // ── The Linux/KDE buddy helper (design §4) ──
+      // Answered locally, not thrown and not sent over the wire. Two reasons.
+      // First, the honest answer really is this one: a phone or a remote browser
+      // has no buddy window at all, so nothing here needs a helper and the whole
+      // helper UI stays hidden — which is exactly what needed:false renders.
+      // Second, asking the DESKTOP would be wrong even though it can answer:
+      // the reply would describe the desktop's screen, not this browser's, and
+      // an "Add helper" button on a phone would change a machine the user is not
+      // looking at.
+      //
+      // The two actions still throw, matching openMain/dismiss/getStatus above:
+      // they are user-driven writes that genuinely cannot happen from here, and
+      // the file's contract is that a stray remote call is loud rather than
+      // silently successful.
+      helperStatus: async () => ({ needed: false, supported: false, installed: false }),
+      installHelper: () => { throw new Error('Buddy is desktop-only in this version'); },
+      removeHelper: () => { throw new Error('Buddy is desktop-only in this version'); },
     },
     // Remote clients do not participate in buddy attention aggregation —
     // main-process aggregation is desktop-Electron only.
@@ -1741,6 +1854,21 @@ export function installShim(): void {
       test: (id: string) => invoke('provider:test', { id }),
       setKey: (id: string, key: string) => invoke('provider:set-key', { id, key }),
       catalog: () => invoke('provider:catalog'),
+    },
+    // Sign in with ChatGPT (backend design 2026-09-05 §5) — WS transport, no
+    // payload (none of the four takes an argument). `supported: false` on
+    // purpose (review R1-9): the renderer gates the card on `=== true`, and a
+    // remote browser cannot run the sign-in — the browser tab and the
+    // 127.0.0.1:1455 listener live on the desktop. The four invokes still exist
+    // so the five-surface parity test holds and a remote caller gets an honest
+    // answer (status real, sign-in false, cancel / sign-out real) instead of
+    // an undefined namespace.
+    chatgpt: {
+      supported: false,
+      status: () => invoke('chatgpt:status'),
+      signIn: () => invoke('chatgpt:sign-in'),
+      cancelSignIn: () => invoke('chatgpt:cancel-sign-in'),
+      signOut: () => invoke('chatgpt:sign-out'),
     },
     // WebSearch providers (Phase 2 Plan B) — WS transport. Object payloads match
     // remote-server's WS case reads (payload.backend / payload.key).
@@ -1856,4 +1984,14 @@ export function installShim(): void {
       },
     },
   };
+
+  // The one intentional gap in the shared shape: voice typing exists on the
+  // Android app and on the desktop, and NOWHERE else. Deleting the namespace
+  // here — rather than never writing it above — is what lets the workbench's
+  // indent-anchored contract scan still see it in the source.
+  //
+  // A remote browser tab reaches this line (its page is http/https, not file:),
+  // so it gets no `voice` at all, the composer's `supported` is false, and no
+  // microphone button is drawn: contract row R7.
+  if (!isAndroidLocal()) delete (window as any).claude.voice;
 }
