@@ -15,6 +15,6 @@ export function defaults(): MockDefaults {
   return {
     skipPermissions: false,
     model: 'claude-sonnet-4-6',
-    projectFolder: '/home/destin/youcoded-dev/youcoded',
+    projectFolder: '/home/you/code/youcoded',
   };
 }

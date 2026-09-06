@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { CLOSE_PROMPT_SUPPRESS_KEY } from '../CloseSessionPrompt';
 import ModelPicker, { type ModelChoice } from '../model/ModelPicker';
 import PermissionsSection from '../PermissionsSection';
@@ -10,7 +10,7 @@ import {
   LOCAL_MODELS_INFO,
 } from '../ModelProvidersPopup';
 import SkipPermissionsSection, { type PermissionOverrides } from './SkipPermissionsSection';
-import { Button, SettingRow, Toggle } from '../ui';
+import { Select, SettingRow, Toggle } from '../ui';
 
 // The pages of Assistant settings. Five, in one flat list (review round 1,
 // 2026-09-05 — P-5 note: one "Cloud providers" page for the three sign-in /
@@ -97,13 +97,51 @@ export function startSummary(defaults: AssistantDefaults, labels?: Map<string, {
   return known ? `${known.provider} · ${known.model}` : c.modelId;
 }
 
-function GeneralPage({ defaults, onDefaultsChange }: PageContext) {
-  // Close-session prompt suppression — reads/writes localStorage directly since
-  // this is a UI preference, not a session default backed by sessionDefaults.
-  const [closePromptDisabled, setClosePromptDisabled] = useState(
-    () => localStorage.getItem(CLOSE_PROMPT_SUPPRESS_KEY) === '1',
+/** Title + hint + a full-width control, the shape both dropdown rows share
+ *  (round 2, R2-1: "default model and default project folder should both have
+ *  correctly styled dropdowns"; R2-2: the project folder gets the same hint
+ *  line the model row has). */
+function FieldRow({ title, hint, children }: { title: string; hint: string; children: React.ReactNode }) {
+  return (
+    <div className="bg-inset/50 rounded-lg px-3 py-2.5 space-y-1.5">
+      <div>
+        <p className="text-xs font-medium text-fg">{title}</p>
+        <p className="text-3xs text-fg-muted">{hint}</p>
+      </div>
+      {children}
+    </div>
   );
-  const handleBrowseFolder = useCallback(async () => {
+}
+
+/** The value that opens the system folder picker instead of setting a path. */
+const BROWSE = '__browse__';
+
+function ProjectFolderRow({ defaults, onDefaultsChange }: PageContext) {
+  // The app's own saved project folders (the same list the folder switcher in
+  // the header shows), so the dropdown offers real places instead of asking
+  // every user to go browsing.
+  const [folders, setFolders] = useState<Array<{ path: string; nickname: string }>>([]);
+  useEffect(() => {
+    let alive = true;
+    void (window as any).claude?.folders?.list?.()
+      .then((rows: any[]) => { if (alive && Array.isArray(rows)) setFolders(rows); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const current = defaults.projectFolder || '';
+  const options = useMemo(() => {
+    const rows = [{ value: '', label: 'Home directory (default)' }];
+    for (const f of folders) rows.push({ value: f.path, label: f.nickname || f.path });
+    // A folder chosen through the system picker need not be one of the saved
+    // ones — keep it in the list so the dropdown shows what is actually set.
+    if (current && !folders.some((f) => f.path === current)) rows.push({ value: current, label: current });
+    rows.push({ value: BROWSE, label: 'Choose another folder…' });
+    return rows;
+  }, [folders, current]);
+
+  const change = useCallback(async (v: string) => {
+    if (v !== BROWSE) { onDefaultsChange({ projectFolder: v }); return; }
     try {
       const folder = await (window as any).claude.dialog.openFolder();
       if (folder) onDefaultsChange({ projectFolder: folder });
@@ -111,17 +149,40 @@ function GeneralPage({ defaults, onDefaultsChange }: PageContext) {
   }, [onDefaultsChange]);
 
   return (
+    <FieldRow
+      title="Show Project Folder"
+      hint="This folder will be pre-filled when you start a new conversation, but you may still choose another at any time."
+    >
+      <Select
+        options={options}
+        value={current}
+        onChange={(v) => void change(v)}
+        size="sm"
+        aria-label="Show Project Folder"
+        className="w-full bg-well border-edge"
+      />
+    </FieldRow>
+  );
+}
+
+function GeneralPage(ctx: PageContext) {
+  const { defaults, onDefaultsChange } = ctx;
+  // Close-session prompt suppression — reads/writes localStorage directly since
+  // this is a UI preference, not a session default backed by sessionDefaults.
+  const [closePromptDisabled, setClosePromptDisabled] = useState(
+    () => localStorage.getItem(CLOSE_PROMPT_SUPPRESS_KEY) === '1',
+  );
+
+  return (
     <div className="space-y-5">
       <section className="space-y-2">
         {/* Q-3a: the same picker the chat uses, so any connected model can be
             the default. Title and hint are Destin's words from round 1 (P-3
-            note). Stacked like the Specialists tier rows: label + hint, then
-            the picker at full width. */}
-        <div className="bg-inset/50 rounded-lg px-3 py-2.5 space-y-1.5">
-          <div>
-            <p className="text-xs font-medium text-fg">Default model</p>
-            <p className="text-3xs text-fg-muted">This model will be pre-filled in the model picker, but you may still switch models at any time.</p>
-          </div>
+            note). */}
+        <FieldRow
+          title="Default model"
+          hint="This model will be pre-filled in the model picker, but you may still switch models at any time."
+        >
           <ModelPicker
             value={startChoice(defaults)}
             onSelect={(choice) => onDefaultsChange({
@@ -131,24 +192,8 @@ function GeneralPage({ defaults, onDefaultsChange }: PageContext) {
               ...(choice.runtime === 'claude' ? { model: choice.alias } : {}),
             })}
           />
-        </div>
-        <SettingRow
-          variant="item"
-          title="Project folder"
-          description={defaults.projectFolder || 'Home directory (default)'}
-          control={
-            <div className="flex items-center gap-1 shrink-0">
-              {defaults.projectFolder && (
-                <Button variant="ghost" size="sm" onClick={() => onDefaultsChange({ projectFolder: '' })}>
-                  Reset
-                </Button>
-              )}
-              <Button variant="secondary" size="sm" onClick={() => void handleBrowseFolder()}>
-                Change
-              </Button>
-            </div>
-          }
-        />
+        </FieldRow>
+        <ProjectFolderRow {...ctx} />
         <SettingRow
           variant="item"
           title="Close-session prompt"
@@ -168,10 +213,10 @@ function GeneralPage({ defaults, onDefaultsChange }: PageContext) {
         />
       </section>
 
-      {/* Round 1, P-10 note: web search lives here, with the popup's own
-          heading and (i). Only where the native runtime is (the search keys
-          are its). */}
-      {(window as any).claude?.native?.supported === true && <SearchProvidersBlock />}
+      {/* Round 1, P-10 note: web search lives here. Round 2, R2-1: as one card
+          holding the Tavily and Exa rows, not a bare heading over loose cards.
+          Only where the native runtime is (the search keys are its). */}
+      {(window as any).claude?.native?.supported === true && <SearchProvidersBlock card />}
     </div>
   );
 }

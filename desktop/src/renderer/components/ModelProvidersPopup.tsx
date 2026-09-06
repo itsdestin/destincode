@@ -36,7 +36,7 @@ function SectionHeader({ title, info }: { title: string; info: { label: string; 
 // same muted grey · one action on the right · optional plan bars underneath.
 // No green "connected" text and no "Default engine" badge — the status line
 // says the state in words and the plan bars say how much is left.
-function ProviderRow({ title, info, status, detail, action, children }: {
+function ProviderRow({ title, info, status, detail, action, account, children }: {
   title: string;
   /** The (i) explainer, beside the name INSIDE the card (round 3, P-1): the
    *  eyebrow heading above the card repeated the name, so it is gone. */
@@ -46,6 +46,10 @@ function ProviderRow({ title, info, status, detail, action, children }: {
    *  'bad' is the destructive colour for a reason the user must read. */
   detail?: { text: React.ReactNode; tone?: 'muted' | 'bad' } | null;
   action?: React.ReactNode;
+  /** Round 2 (R2-3): a "My Account" button, top right, that opens the
+   *  provider's own account page in the browser. Only passed when signed in —
+   *  an account page is no use to someone who has no account here yet. */
+  account?: string;
   children?: React.ReactNode;
 }) {
   return (
@@ -63,7 +67,17 @@ function ProviderRow({ title, info, status, detail, action, children }: {
             <p className={`text-2xs mt-0.5 ${detail.tone === 'bad' ? 'text-destructive-fg' : 'text-fg-muted'}`}>{detail.text}</p>
           )}
         </div>
-        {action && <div className="shrink-0">{action}</div>}
+        {(account || action) && (
+          <div className="shrink-0 flex items-center gap-1.5">
+            {account && (
+              <Button variant="secondary" size="sm"
+                onClick={() => void (window as any).claude.shell.openExternal(account)}>
+                My Account
+              </Button>
+            )}
+            {action}
+          </div>
+        )}
       </div>
       {children && <div className="mt-2.5">{children}</div>}
     </div>
@@ -130,6 +144,23 @@ export function ClaudeCodeBlock({
     statusText = 'Not set up yet';
   }
   const claudeUsage = useClaudePlanUsage();
+  const [busy, setBusy] = useState(false);
+
+  // Round 2 (R2-3): "make the claude code card mirror the gpt card with usage
+  // limits and such and a sign out button". The bars were already here; this is
+  // the sign-out. NO REAL BACKEND YET — `claudeCode.signOut` is registered in
+  // mock-only.ts, because signing out of Claude Code means clearing the CLI's
+  // stored credentials and the app has never done that (its /logout builtin is
+  // listed as not-clickable). The build stage owns it.
+  const signOut = async () => {
+    setBusy(true);
+    try {
+      await (window as any).claude.claudeCode?.signOut?.();
+      const s2: FirstRunState = await (window as any).claude.firstRun.getState();
+      setState(s2);
+    } catch {}
+    finally { setBusy(false); }
+  };
 
   return (
     <>
@@ -154,11 +185,21 @@ export function ClaudeCodeBlock({
           ),
         }}
         status={statusText}
-        action={onOpenClaudePreferences && (
-          <Button variant="secondary" size="sm" onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}>
-            Preferences
-          </Button>
-        )}
+        account={signedIn ? 'https://claude.ai/settings/usage' : undefined}
+        action={
+          <>
+            {onOpenClaudePreferences && (
+              <Button variant="secondary" size="sm" onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}>
+                Preferences
+              </Button>
+            )}
+            {signedIn && (
+              <Button variant="secondary" size="sm" disabled={busy} onClick={() => void signOut()}>
+                Sign out
+              </Button>
+            )}
+          </>
+        }
       >
         {signedIn && state?.authMode !== 'apikey' && <PlanWindows usage={claudeUsage} />}
       </ProviderRow>
@@ -289,6 +330,7 @@ export function ChatGptBlock() {
         }}
         status={line}
         detail={note ? { text: note, tone: 'bad' } : detail}
+        account={status?.state === 'signed-in' || status?.state === 'blocked' ? 'https://chatgpt.com/#settings/Account' : undefined}
         action={action}
       >
         {status?.state === 'signed-in' && <PlanWindows usage={status.usage} />}
@@ -355,6 +397,7 @@ export function OpenRouterBlock({ keysHeading }: { keysHeading?: string } = {}) 
             ),
           }}
           status={openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
+          account={connected ? 'https://openrouter.ai/settings/credits' : undefined}
           detail={testNote ? { text: testNote.text, tone: testNote.tone === 'ok' ? 'muted' : 'bad' } : null}
           action={connected ? (
             <Button variant="secondary" size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }}>
@@ -567,7 +610,7 @@ export const WEB_SEARCH_INFO = {
   ),
 };
 
-export function SearchProvidersBlock({ withHeader = true }: { withHeader?: boolean } = {}) {
+export function SearchProvidersBlock({ withHeader = true, card = false }: { withHeader?: boolean; card?: boolean } = {}) {
   const [rows, setRows] = useState<Array<{ id: SearchBackendId; label: string; hasKey: boolean }>>([]);
   // Which backend's key input is open (only one at a time).
   const [editing, setEditing] = useState<SearchBackendId | null>(null);
@@ -630,21 +673,31 @@ export function SearchProvidersBlock({ withHeader = true }: { withHeader?: boole
     }
   };
 
+  // `card` (round 2, R2-1: "websearch should not be a bare header, but a card
+  // that contains the tavily/exa cards. tight spacing on it") — the whole block
+  // becomes one card on Assistant settings → General, with its name and (i)
+  // inside it and the two backend rows one surface deeper. Everywhere else the
+  // block keeps the bare-section shape the Model Providers popup gave it.
   return (
-    <section>
-      {withHeader && <SectionHeader title="Web Search" info={WEB_SEARCH_INFO} />}
+    <section className={card ? 'bg-inset/50 rounded-lg px-3 py-2.5' : undefined}>
+      {card ? (
+        <div className="flex items-center gap-1.5">
+          <p className="text-xs text-fg font-medium">Web search</p>
+          <AnchorTip label={WEB_SEARCH_INFO.label} title="Web search">{WEB_SEARCH_INFO.body}</AnchorTip>
+        </div>
+      ) : withHeader && <SectionHeader title="Web Search" info={WEB_SEARCH_INFO} />}
 
-      <p className="text-3xs text-fg-muted mb-2.5 leading-relaxed">
+      <p className={`text-3xs text-fg-muted leading-relaxed ${card ? 'mb-1.5' : 'mb-2.5'}`}>
         Web search works for free with no setup. Add an optional key to make it faster and more reliable.
       </p>
 
-      <div className="space-y-2">
+      <div className={card ? 'space-y-1.5' : 'space-y-2'}>
         {rows.map((row) => {
           const meta = SEARCH_BACKEND_META[row.id];
           const isEditing = editing === row.id;
           const note = testMsg[row.id];
           return (
-            <div key={row.id} className="bg-inset/50 rounded-lg px-3 py-2.5">
+            <div key={row.id} className={card ? 'bg-well rounded-md px-2.5 py-2' : 'bg-inset/50 rounded-lg px-3 py-2.5'}>
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-xs text-fg font-medium">{row.label}</p>

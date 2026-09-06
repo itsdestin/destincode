@@ -123,7 +123,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // because the catch-all's `[]` is a truthy non-status that crashed the panel.
   'sync.getStatus', 'sync.getLog', 'sync.force', 'sync.dismissWarning',
   'sync.pushBackend', 'sync.updateBackend', 'sync.removeBackend', 'sync.addBackend',
-  'folders.rename', 'folders.setDescription',
+  'folders.list', 'folders.rename', 'folders.setDescription',
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
@@ -161,6 +161,7 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // (main/preload.ts), not unbuilt features, so they belong here and not in
   // mock-only.ts.
   'on.statusData', 'modes.get', 'modes.set',
+  'claudeCode.signOut',
   // Promo switches (Task 4) — ?remote= / ?lease= — real preload channels
   // (remote:, syncSpaces.lease*), hand-written so a filmed take shows the QR/
   // takeover states on demand instead of whatever the catch-all's [] renders as.
@@ -328,6 +329,8 @@ const NAMESPACES = [
   // was missing, which left Assistant settings → Web search an empty page in
   // the workbench (UX review 1, U1).
   'search',
+  // Assistant settings round 2 (R2-3): signing out of Claude Code. MOCK_ONLY.
+  'claudeCode',
 ];
 
 export function createMockShim(store: MockStore): Window['claude'] {
@@ -1251,9 +1254,21 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     addBackend: async () => ({ ok: true }),
   };
 
+  // MOCK_ONLY (mock-only.ts) — signing out of Claude Code. No real backend:
+  // nothing in the app clears the CLI's stored credentials today.
+  const claudeCode = { signOut: async () => ({ ok: true }) };
+
   // MOCK_ONLY — the LOCAL-folder half of the same field, mirroring how
   // folders.rename already writes the nickname that becomes the display name.
   const folders = {
+    // Assistant settings → General's default-folder dropdown reads this list
+    // (the same one the header's folder switcher shows). The catch-all's `[]`
+    // left the dropdown with nothing but "Home directory".
+    list: async () => [
+      { path: '/home/you/projects/econ-201', nickname: 'Econ 201', addedAt: 0, exists: true },
+      { path: '/home/you/projects/thesis', nickname: 'Thesis', addedAt: 0, exists: true },
+      { path: '/home/you/code/youcoded', nickname: 'youcoded', addedAt: 0, exists: true },
+    ],
     rename: async () => ({ ok: true }),
     setDescription: async (path: string, description: string) => {
       descriptions[path] = description.trim() || null;
@@ -2056,6 +2071,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, chatgpt, search, ...(remote ? { remote } : {}),
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, chatgpt, claudeCode, search, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
 }

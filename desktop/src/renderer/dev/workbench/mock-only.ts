@@ -40,4 +40,9 @@ export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
   { channel: 'chatgpt.signIn', feature: 'Sign in with ChatGPT — open the browser round-trip' },
   { channel: 'chatgpt.cancelSignIn', feature: 'Sign in with ChatGPT — abandon a waiting round-trip' },
   { channel: 'chatgpt.signOut', feature: 'Sign in with ChatGPT — forget the account on this computer' },
+  // Assistant settings (round 2, R2-3): the Claude Code card mirrors the
+  // ChatGPT one, which means a Sign out button. Nothing in the app clears the
+  // Claude Code CLI's credentials today — its /logout builtin is listed as
+  // not-clickable — so this verb is designed here first.
+  { channel: 'claudeCode.signOut', feature: 'Assistant settings — sign out of Claude Code on this computer' },
 ];

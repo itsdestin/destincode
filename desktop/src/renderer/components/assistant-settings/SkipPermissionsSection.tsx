@@ -15,8 +15,9 @@ import { Callout, SettingRow, Toggle } from '../ui';
 // users' machines; the build stage decides what to do with a value that was
 // switched on and now has no switch (the deck's R2 step names the risk).
 //
-// Wording (P-13, pick b): the name stays Skip Permissions — Claude Code calls
-// it that too — and the hint and banner say what happens in plain words.
+// Wording (P-13, pick b, then round 2's R2-4): Destin rewrote the row himself
+// — "Enable Skip Permissions Mode?" over a hint that names the Claude Code
+// flag it sets. His copy, used verbatim.
 
 export interface PermissionOverrides {
   approveAll: boolean;
@@ -33,16 +34,18 @@ export default function SkipPermissionsSection({ defaults, onDefaultsChange }: {
   return (
     <section>
       <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Claude Code</h3>
+      {/* Title and hint are Destin's words verbatim (round 2, R2-4). They name
+          the Claude Code flag on purpose: this switch does nothing but set it. */}
       <SettingRow
         variant="item"
-        title="Skip Permissions"
-        description="New Claude Code conversations won't ask before changing files or running commands"
+        title="Enable Skip Permissions Mode?"
+        description="Allows you to toggle claude code's --dangerously-skip-permissions flag when creating a session. Claude won't ask before taking action"
         control={
           <Toggle
             checked={defaults.skipPermissions}
             onChange={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
             tone="danger"
-            aria-label="Skip Permissions"
+            aria-label="Enable Skip Permissions Mode?"
           />
         }
       />
