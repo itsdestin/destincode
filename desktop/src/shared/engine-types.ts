@@ -131,4 +131,15 @@ export interface EngineModel {
    *  model child's VmRSS, monotonic + clamped to sizeBytes) — drives the "N GB /
    *  M GB" progress bar. Undefined off Linux or when not loading. */
   loadedBytes?: number;
+  /** What kinds of input the ROUTER says this model accepts, straight off
+   *  `GET /models`'s `architecture.input_modalities` (design §E5). `['text']`
+   *  for an ordinary model; `['text','image']` once llama-server paired an
+   *  `mmproj-*.gguf` beside it — which is how the rest of the app learns that a
+   *  local model can actually look at an attached picture.
+   *
+   *  `undefined` means NOBODY ASKED THE ROUTER, not "text only": a row that came
+   *  from the engine-off disk scan (or from the post-boot union inside
+   *  listModels) has no modality data at all. Callers must degrade to "don't
+   *  know" there — never to a guessed `false`. */
+  inputModalities?: string[];
 }

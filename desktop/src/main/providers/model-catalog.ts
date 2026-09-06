@@ -232,7 +232,24 @@ export class ModelCatalog {
 
   /** Catalog rows scoped to the ENABLED providers passed in. Never throws. */
   async get(providers: ProviderStatus[]): Promise<CatalogModel[]> {
-    const cache = await this.ensureFresh();
+    // ensureFresh() IS the network — it fetches OpenRouter and models.dev
+    // unconditionally, 15 s abort apiece, and on a total failure it returns
+    // WITHOUT memoizing, so the next call pays the same price again. Only two
+    // provider families can consume what it fetches; a call that has none of
+    // them must not pay for it.
+    //
+    // WHY this matters more than it looks: a purely LOCAL, offline user — the
+    // exact person the bundled engine exists for — has one enabled provider,
+    // 'local'. Before this gate, every session create, resume and model swap
+    // stalled inside the profile resolver on two doomed fetches. MEASURED
+    // 2026-09-05 against a network that accepts and never answers: 4 fetches
+    // and 15.1 s per get(), repeated on every single call. With the gate: 0
+    // fetches, 0 ms.
+    //
+    // Reads `p.enabled` because the loop below does: a DISABLED OpenRouter row
+    // contributes no models, so it must not drag the network in either.
+    const needsNetwork = providers.some((p) => p.enabled && (p.type === 'openrouter' || MODELSDEV_KEY[p.type]));
+    const cache = needsNetwork ? await this.ensureFresh() : EMPTY_CACHE;
     const out: CatalogModel[] = [];
     for (const p of providers) {
       if (!p.enabled) continue; // disabled providers contribute nothing

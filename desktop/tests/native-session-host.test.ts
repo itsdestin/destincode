@@ -813,6 +813,36 @@ describe('NativeSessionHost', () => {
       await h.destroyAll();
     });
 
+    // T18 / design §E5 — the same wiring, now for a LOCAL model. This is the
+    // whole point of the task: a local model that ships a vision projector must
+    // reach a session with supportsVision: true, exactly as an OpenRouter
+    // vision model does. local-engine is deliberately NOT in VISION_PROVIDERS
+    // (it is a transport — the same engine serves vision and text-only GGUFs),
+    // and 'mystery-3b' matches no KNOWN_MODELS entry, so the closure's `true`
+    // is the ONLY thing in the system that can make this assertion pass.
+    it('a discovered supportsVision:true reaches the profile of a LOCAL-ENGINE binding too (T18)', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any,
+        async () => true,
+      );
+      await h.create({ sessionId: 'lv', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
+      expect(profileOf(h, 'lv').supportsVision).toBe(true);
+      await h.destroyAll();
+    });
+
+    // And the text-only half: a local model whose router row said `["text"]`
+    // resolves to a hard false, so the harness tells it the picture cannot be
+    // delivered rather than sending bytes the model cannot read.
+    it('a discovered supportsVision:false keeps a LOCAL-ENGINE profile text-only (T18)', async () => {
+      const h = new NativeSessionHost(
+        new SessionStore(new NativeHome(root)), factory, contextAndSlotsFor as any, providerTypeFor as any,
+        async () => false,
+      );
+      await h.create({ sessionId: 'lt', cwd: root, binding: { providerId: 'local', modelId: 'mystery-3b' } });
+      expect(profileOf(h, 'lt').supportsVision).toBe(false);
+      await h.destroyAll();
+    });
+
     // The other half of the same wiring: a closure that can't answer (null —
     // "no source could answer", e.g. an OpenRouter cache miss or a non-OpenRouter
     // provider) must leave the profile EXACTLY as it resolved before this task —

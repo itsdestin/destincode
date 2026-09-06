@@ -896,12 +896,27 @@ export class EngineSupervisor extends EventEmitter {
         const statusValue = typeof row?.status === 'object' && row?.status
           ? row.status.value : row?.status;
         const state = mapModelState(statusValue);
+        // Design §E5 — carry the router's own answer to "can this model look at
+        // a picture?" through untouched. b10665 reports it as
+        // `architecture.input_modalities`: `["text"]` for an ordinary model,
+        // `["text","image"]` for one llama-server paired an mmproj beside
+        // (captured live from the pinned binary, 2026-09-05). Parsed as
+        // defensively as `status` above — /models is untrusted JSON and the
+        // whole `architecture` object is optional — and a shape we cannot read
+        // leaves the field UNSET rather than reporting "text only", because a
+        // guessed `false` here silently drops a user's attached image with
+        // nothing on screen to explain it.
+        const architecture = typeof row?.architecture === 'object' && row?.architecture ? row.architecture : null;
+        const rawModalities = architecture?.input_modalities;
+        const inputModalities = Array.isArray(rawModalities) && rawModalities.every((x: unknown) => typeof x === 'string')
+          ? (rawModalities as string[]) : undefined;
         out.push({
           id,
           sizeBytes: typeof row?.size === 'number' ? row.size
             : (sizeById.has(id) ? sizeById.get(id)! : null),
           loaded: state === 'loaded',
           state,
+          ...(inputModalities ? { inputModalities } : {}),
         });
       }
       // Amendment K2: the router discovers GGUFs at BOOT, so union in the fresh
