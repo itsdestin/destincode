@@ -143,14 +143,24 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       });
     },
   });
-  const startVoice = useCallback(() => {
-    const cur = textRef.current;
+  const startVoice = useCallback((opts?: { dropSpaceBeforeCaret?: boolean }) => {
+    // The textarea is the truth here, not React state: the space that started a
+    // walkie-talkie hold was typed a quarter of a second ago and may not have
+    // been committed to state yet.
+    const el = inputRef.current;
+    let cur = el?.value ?? textRef.current;
+    // Take back the space the hold itself typed — including one typed with the
+    // caret in the middle of a sentence, where trimming the END would leave it.
+    if (opts?.dropSpaceBeforeCaret && el) {
+      const caret = el.selectionStart ?? cur.length;
+      if (caret > 0 && cur[caret - 1] === ' ') cur = cur.slice(0, caret - 1) + cur.slice(caret);
+    }
     // Dictation continues the draft: a typed half-sentence keeps its place and
     // the spoken words follow after one space.
     voiceBaseRef.current = cur.trim() ? cur.replace(/\s*$/, ' ') : '';
     setText(voiceBaseRef.current);
     void voice.start();
-  }, [voice.start]); // eslint-disable-line react-hooks/exhaustive-deps -- reads the draft through textRef on purpose
+  }, [voice.start]); // eslint-disable-line react-hooks/exhaustive-deps -- reads the draft through the textarea on purpose
   // Q-3 note (Destin): "press and hold the spacebar in a bare input box for
   // walkie-talkie mode". Hold Space for 250 ms in an EMPTY box to start, let go
   // to stop; a quick tap does nothing (a leading space in an empty box is
@@ -898,16 +908,28 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               }
             }}
             onKeyDown={(e) => {
-              // Hold Space in an empty box = walkie-talkie (see spaceHoldTimer).
+              // Hold Space anywhere in the box = walkie-talkie (see spaceHoldTimer).
               if (e.key === ' ' && !minimal) {
                 if (spaceHeld.current) { e.preventDefault(); return; }
-                if (voiceCanStart && !text.trim() && !voiceTail) {
-                  e.preventDefault();
+                if (voiceCanStart) {
+                  // An EMPTY box swallows the space — a leading space is useless
+                  // either way, so nothing has to be undone if the hold matures.
+                  // With text in the box the space is TYPED as normal and taken
+                  // back only if the hold matures. Fix (Destin, 2026-09-05: "it
+                  // should work basically any time I press and hold in the input
+                  // area, not just when it's empty").
+                  //
+                  // WHY not swallow it in both cases and put it back on a quick
+                  // tap: a fast typist overlaps keys — space down, next letter
+                  // down, space up — so a space inserted at key-UP lands after
+                  // the letter and spells "hellow orld".
+                  if (!text) e.preventDefault();
+                  else if (e.repeat) e.preventDefault();   // one space per hold, not a run of them
                   if (!e.repeat && spaceHoldTimer.current === null) {
                     spaceHoldTimer.current = window.setTimeout(() => {
                       spaceHoldTimer.current = null;
                       spaceHeld.current = true;
-                      startVoice();
+                      startVoice({ dropSpaceBeforeCaret: true });
                     }, 250);
                   }
                   return;
@@ -995,7 +1017,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               seconds={voice.seconds}
               error={voice.error}
               disabled={disabled}
-              onStart={startVoice}
+              onStart={() => startVoice()}
               onStop={() => { void voice.stop(); }}
               onDownload={() => { void voice.download(); }}
               onRecheck={() => { void voice.recheck(); }}

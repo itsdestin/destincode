@@ -143,6 +143,22 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
     captureRef.current = null;
   }, []);
 
+  /** Close the microphone the way a STOP should: last words first.
+   *
+   *  Fix (Destin, 2026-09-05: "the last bit of whatever I said doesn't get
+   *  transcribed when I let go"). `close()` stops the hardware, then nulls the
+   *  message handler — which discards the worklet's part-filled bucket, every
+   *  slice already posted and not yet handled, and whatever was still inside the
+   *  browser's own microphone pipeline. All three are the END of the sentence,
+   *  which is exactly the part that went missing. A cancel still uses the blunt
+   *  close: nothing is being kept, so there is nothing to wait for. */
+  const finishCapture = useCallback((): Promise<void> | null => {
+    const cap = captureRef.current;
+    if (!cap) return null;   // a phone: Android owns the microphone, nothing here to drain
+    captureRef.current = null;
+    return cap.finish();
+  }, []);
+
   const armWatchdog = useCallback(() => {
     // Only where heartbeats exist. A phone's recogniser sends none, so arming
     // this there would end a perfectly good silent pause with an error.
@@ -331,15 +347,18 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
     // never open — so the start unwinds as a cancel.
     if (startingRef.current) { abortStartRef.current = true; return; }
     if (!bridge || phaseRef.current !== 'listening') return;
-    // The mic goes dead the instant he asks, not when the engine finishes.
-    closeCapture();
+    // The strip says "Finishing" the instant he asks — the wait below is a fifth
+    // of a second and happens behind that, so nothing about it is visible except
+    // the words that used to go missing now being there.
     setPhaseBoth('finishing');
     setLevel(0);
+    const draining = finishCapture();
+    if (draining) await draining;
     // Not armed here either, for the same reason: the last pass is variable-length
     // and the host defends its own deadline against it. If the engine is alive it
     // is heartbeating, and a heartbeat arms this.
     try { await bridge.stop(); } catch (err) { clearWatchdog(); setPhaseBoth('idle'); setError(describe(err)); }
-  }, [armWatchdog, bridge, clearWatchdog, closeCapture, setPhaseBoth]);
+  }, [armWatchdog, bridge, clearWatchdog, finishCapture, setPhaseBoth]);
 
   const cancel = useCallback(async () => {
     if (startingRef.current) { abortStartRef.current = true; return; }

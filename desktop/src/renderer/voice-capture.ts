@@ -23,9 +23,21 @@ export interface MicProbe {
   access: MicAccess;
 }
 
+/** How long the microphone stays open past the moment the user let go, so the
+ *  sound still inside the browser's own audio pipeline arrives. Short enough
+ *  that nobody sees it; long enough that the last syllable is not eaten. */
+const RUN_OUT_MS = 200;
+
+/** How long to wait for the worklet to hand back its part-filled bucket before
+ *  giving up on it. It answers in one audio quantum (~3 ms) or never. */
+const FLUSH_REPLY_MS = 60;
+
 /** An open microphone. `close()` is safe to call twice. */
 export interface CaptureHandle {
   close: () => void;
+  /** Close, but let the last words out first. See the implementation for what
+   *  three things were being dropped before this existed. */
+  finish: () => Promise<void>;
 }
 
 /** One 100 ms slice of sound: the raw samples, and how loud that slice was (0..1). */
@@ -58,6 +70,23 @@ class YouCodedVoiceCapture extends AudioWorkletProcessor {
     this.buf = new Int16Array(this.size);
     this.n = 0;
     this.energy = 0;
+    // "Hand back whatever you are holding, right now."
+    //
+    // WHY this exists: the bucket only empties when it is FULL, so at any moment
+    // it holds up to a tenth of a second of sound that has not been sent
+    // anywhere. Closing the microphone used to throw that away — along with the
+    // last word it usually contained. This is asked for once, on the way out.
+    this.port.onmessage = (e) => {
+      if (!e.data || e.data.type !== 'flush') return;
+      if (this.n > 0) {
+        const partial = this.buf.slice(0, this.n).buffer;
+        const rms = Math.sqrt(this.energy / this.n);
+        this.port.postMessage({ chunk: partial, rms }, [partial]);
+        this.n = 0;
+        this.energy = 0;
+      }
+      this.port.postMessage({ flushed: true });
+    };
   }
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
@@ -159,6 +188,7 @@ export async function open(onChunk: ChunkHandler): Promise<CaptureHandle> {
   let node: AudioWorkletNode | undefined;
   let sink: GainNode | undefined;
   let closed = false;
+  let flushedResolve: (() => void) | undefined;
 
   const close = () => {
     if (closed) return;
@@ -187,9 +217,11 @@ export async function open(onChunk: ChunkHandler): Promise<CaptureHandle> {
     source = ctx.createMediaStreamSource(stream);
     node = new AudioWorkletNode(ctx, PROCESSOR_NAME);
     node.port.onmessage = (e: MessageEvent) => {
-      const data = e.data as { chunk: ArrayBuffer; rms: number } | undefined;
-      if (!data || !data.chunk) return;
-      onChunk(data.chunk, data.rms);
+      const data = e.data as { chunk?: ArrayBuffer; rms?: number; flushed?: boolean } | undefined;
+      if (!data) return;
+      if (data.flushed) { flushedResolve?.(); return; }
+      if (!data.chunk) return;
+      onChunk(data.chunk, data.rms ?? 0);
     };
 
     // WHY the silent gain node: a browser only runs the parts of an audio graph
@@ -211,5 +243,39 @@ export async function open(onChunk: ChunkHandler): Promise<CaptureHandle> {
     throw err;
   }
 
-  return { close };
+  /**
+   * Let go of the microphone WITHOUT eating the last thing that was said.
+   *
+   * WHY a plain `close()` is not enough, and this is the bug it fixes: three
+   * separate bits of sound were being dropped every time dictation ended.
+   *  1. The browser's own microphone pipeline (echo cancellation, noise
+   *     suppression, gain) holds a moment of sound before it reaches this code,
+   *     and stopping the hardware track throws that away. The RUN_OUT wait is
+   *     for that: the microphone stays open a fifth of a second past the moment
+   *     the user let go, which is roughly how far behind the pipeline runs.
+   *  2. The worklet's bucket only empties when it is full, so up to a tenth of
+   *     a second sits in it unsent. `flush` is what asks for it.
+   *  3. `close()` sets the message handler to null, which DISCARDS every slice
+   *     already posted and not yet handled — under load that is several.
+   *     Everything above happens before that line is reached now.
+   *
+   * Safe to call more than once, and safe to call after `close()`.
+   */
+  const finish = async (): Promise<void> => {
+    if (closed) return;
+    await new Promise<void>((r) => { setTimeout(r, RUN_OUT_MS); });
+    if (closed) return;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finishOnce = () => { if (!done) { done = true; resolve(); } };
+      flushedResolve = finishOnce;
+      // A worklet that has already gone away answers nothing; never hang on it.
+      setTimeout(finishOnce, FLUSH_REPLY_MS);
+      try { node?.port.postMessage({ type: 'flush' }); } catch { finishOnce(); }
+    });
+    flushedResolve = undefined;
+    close();
+  };
+
+  return { close, finish };
 }

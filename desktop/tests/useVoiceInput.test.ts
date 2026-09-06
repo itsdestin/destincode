@@ -77,7 +77,7 @@ async function settle() {
 beforeEach(() => {
   cap.open.mockReset();
   cap.closes = 0;
-  cap.open.mockImplementation(async () => ({ close: () => { cap.closes += 1; } }));
+  cap.open.mockImplementation(async () => ({ close: () => { cap.closes += 1; }, finish: async () => { cap.closes += 1; } }));
   stubDevices(['audioinput', 'audiooutput']);
   window.history.replaceState({}, '', '/');
 });
@@ -197,7 +197,7 @@ describe('useVoiceInput — who opens the microphone', () => {
     let feed: ((chunk: ArrayBuffer, rms: number) => void) | undefined;
     cap.open.mockImplementationOnce(async (cb: (c: ArrayBuffer, r: number) => void) => {
       feed = cb;
-      return { close: () => { cap.closes += 1; } };
+      return { close: () => { cap.closes += 1; }, finish: async () => { cap.closes += 1; } };
     });
     const { result } = mount();
     await settle();
@@ -207,6 +207,57 @@ describe('useVoiceInput — who opens the microphone', () => {
     expect((window as any).claude.voice.sendAudio).toHaveBeenCalledWith(chunk, 0.05);
     // The ring moved without any round trip to the host.
     expect(result.current.level).toBeGreaterThan(0);
+  });
+});
+
+describe('the last thing you said', () => {
+  // Destin, 2026-09-05: "the last bit of whatever I said doesn't get
+  // transcribed when I let go of spacebar". Three things were being thrown
+  // away at the moment the mic closed — the worklet's part-filled bucket, any
+  // slice already posted but not yet handled, and whatever was still inside the
+  // browser's own microphone pipeline — and all three are the END of a sentence.
+  it('drains the microphone before telling the host to stop', async () => {
+    const { bridge } = installBridge({ desktop: true });
+    const order: string[] = [];
+    let releaseDrain!: () => void;
+    const drained = new Promise<void>((r) => { releaseDrain = r; });
+    cap.open.mockImplementation(async () => ({
+      close: () => { order.push('close'); },
+      finish: async () => { order.push('finish-start'); await drained; order.push('finish-done'); },
+    }));
+    bridge.stop = vi.fn(async () => { order.push('host-stop'); });
+
+    const h = mount();
+    await settle();
+    await act(async () => { await h.result.current.start(); });
+    expect(h.result.current.phase).toBe('listening');
+
+    let stopping!: Promise<void>;
+    await act(async () => { stopping = h.result.current.stop(); await Promise.resolve(); });
+
+    // The strip already says Finishing — the drain is invisible.
+    expect(h.result.current.phase).toBe('finishing');
+    // And the host has NOT been told to stop yet: it would decode without the
+    // last words if it had been.
+    expect(order).toEqual(['finish-start']);
+
+    await act(async () => { releaseDrain(); await stopping; });
+    expect(order).toEqual(['finish-start', 'finish-done', 'host-stop']);
+  });
+
+  it('cancelling does not wait — nothing is being kept', async () => {
+    installBridge({ desktop: true });
+    const order: string[] = [];
+    cap.open.mockImplementation(async () => ({
+      close: () => { order.push('close'); },
+      finish: async () => { order.push('finish'); },
+    }));
+    const h = mount();
+    await settle();
+    await act(async () => { await h.result.current.start(); });
+    await act(async () => { await h.result.current.cancel(); });
+    // The blunt close, not the drain: a cancelled turn keeps no words at all.
+    expect(order).toEqual(['close']);
   });
 });
 
@@ -251,7 +302,7 @@ describe('letting go before the microphone is even open', () => {
     let release!: () => void;
     const held = new Promise<void>((r) => { release = r; });
     // This time the host answers at once and the MICROPHONE is what is slow.
-    cap.open.mockImplementation(async () => { await held; return { close: () => { cap.closes += 1; } }; });
+    cap.open.mockImplementation(async () => { await held; return { close: () => { cap.closes += 1; }, finish: async () => { cap.closes += 1; } }; });
 
     const h = mount();
     await settle();

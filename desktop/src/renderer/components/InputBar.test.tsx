@@ -694,8 +694,9 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
       start: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
       cancel: vi.fn(async () => {}),
-      onEvent: () => () => {},
+      onEvent: (cb: (e: VoiceEvent) => void) => { holdHandlers.add(cb); return () => { holdHandlers.delete(cb); }; },
     };
+    holdHandlers.clear();
     (window as any).claude = {
       native: { supported: true, send: vi.fn().mockResolvedValue({ status: 'sent' }) },
       session: { sendInput: vi.fn() },
@@ -708,6 +709,10 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
       voice: voiceBridge,
     };
   });
+
+  /** Deliver an engine event to the composer under test. */
+  const holdHandlers = new Set<(e: VoiceEvent) => void>();
+  const emitHold = (e: VoiceEvent) => { act(() => { holdHandlers.forEach((h) => h(e)); }); };
 
   afterEach(() => {
     cleanup();
@@ -770,17 +775,64 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
     expect(voiceBridge.stop).not.toHaveBeenCalled();
   });
 
-  it('with any text in the box the space bar is just a space', async () => {
+  // Destin, 2026-09-05: "the spacebar walkie-talkie is very inconsistent. It
+  // should work basically any time I press and hold in the input area, not just
+  // when it's empty. Should append to the end of existing text." This replaces
+  // the earlier rule (contract R19), which only armed the hold in an empty box.
+  it('holding the space bar with text in the box starts dictation and keeps the text', async () => {
+    const textarea = await renderComposer();
+    fireEvent.change(textarea, { target: { value: 'Tell Sam' } });
+
+    // The space is TYPED as normal — a fast typist must never lose one.
+    const notCancelled = fireEvent.keyDown(textarea, { key: ' ' });
+    expect(notCancelled).toBe(true);
+    fireEvent.change(textarea, { target: { value: 'Tell Sam ' } });
+    textarea.setSelectionRange(9, 9);
+
+    await hold(250);
+    expect(voiceBridge.start).toHaveBeenCalledTimes(1);
+    // Exactly one space between the typed half and the spoken half — the one the
+    // hold itself typed is taken back, not left to double up.
+    expect(textarea.value).toBe('Tell Sam ');
+
+    emitHold({ type: 'final', text: 'the meeting moved.' });
+    expect(textarea.value).toBe('Tell Sam the meeting moved. ');
+  });
+
+  it('a quick tap with text in the box is still just a space', async () => {
     const textarea = await renderComposer();
     fireEvent.change(textarea, { target: { value: 'already typing' } });
 
-    // fireEvent returns false when the handler called preventDefault — a true
-    // here is the browser being left alone to type the space.
     const notCancelled = fireEvent.keyDown(textarea, { key: ' ' });
-    await hold(500);
+    await hold(100);                       // let go well before the quarter second
+    fireEvent.keyUp(textarea, { key: ' ' });
+    await hold(400);
 
-    expect(notCancelled).toBe(true);
+    expect(notCancelled).toBe(true);       // the browser typed it
     expect(voiceBridge.start).not.toHaveBeenCalled();
+  });
+
+  it('takes back the space even when the caret is mid-sentence', async () => {
+    const textarea = await renderComposer();
+    fireEvent.change(textarea, { target: { value: 'Tell Sam about it' } });
+    // Caret after "Tell", where the hold's space landed.
+    fireEvent.keyDown(textarea, { key: ' ' });
+    fireEvent.change(textarea, { target: { value: 'Tell  Sam about it' } });
+    textarea.setSelectionRange(5, 5);
+
+    await hold(250);
+    expect(voiceBridge.start).toHaveBeenCalledTimes(1);
+    // The stray double space is gone, and dictation still appends at the END.
+    expect(textarea.value).toBe('Tell Sam about it ');
+  });
+
+  it('an empty box still swallows the space — a leading space is useless', async () => {
+    const textarea = await renderComposer();
+    const cancelled = fireEvent.keyDown(textarea, { key: ' ' });
+    expect(cancelled).toBe(false);         // preventDefault: nothing is typed
+    await hold(250);
+    expect(voiceBridge.start).toHaveBeenCalledTimes(1);
+    expect(textarea.value).toBe('');
   });
 
   it('focus leaving the box mid-hold closes the mic', async () => {
