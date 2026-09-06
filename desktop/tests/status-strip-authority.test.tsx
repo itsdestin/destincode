@@ -34,6 +34,22 @@ describe('StatusStrip', () => {
     expect(seen.size, 'tone must not change the container').toBe(1);
   });
 
+  it('the tinted surface fills per tone, and only when asked for', () => {
+    // Destin, 2026-09-06: a strip INSIDE a card needs a visible pill around the
+    // words and their buttons; flat bg-inset vanishes there. Opt-in, so the
+    // settings screens' strips keep the one geometry asserted above.
+    const seen = new Set<string>();
+    for (const tone of ['ok', 'warn', 'idle'] as const) {
+      cleanup();
+      render(<StatusStrip tone={tone} surface="tinted" action={<button>Fix</button>}>message</StatusStrip>);
+      const box = screen.getByText('message').closest('div.rounded-lg') as HTMLElement;
+      expect(box.className, 'a tinted strip is outlined, not flat').toContain('border');
+      expect(screen.getByRole('button', { name: 'Fix' })).toBeInTheDocument();
+      seen.add(box.className);
+    }
+    expect(seen.size, 'each tone gets its own fill').toBe(3);
+  });
+
   it('a state at rest gets a dot; a state in motion gets a spinner', () => {
     render(<StatusStrip tone="ok">message</StatusStrip>);
     expect(strip().querySelector('.rounded-full')).not.toBeNull();

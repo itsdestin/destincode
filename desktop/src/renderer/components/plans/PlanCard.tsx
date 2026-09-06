@@ -186,6 +186,7 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
           {plan.status === 'paused' && plan.paused && (
             <StatusStrip
               tone="warn"
+              surface="tinted"
               className="!py-2"
               action={!adding ? (
                 <div className="flex items-center gap-2 shrink-0">
@@ -211,6 +212,7 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
             // nothing went wrong and nothing is at risk.
             <StatusStrip
               tone="idle"
+              surface="tinted"
               className="!py-2"
               action={(
                 <div className="flex items-center gap-2 shrink-0">

@@ -27,6 +27,22 @@ const DOT: Record<Exclude<StatusTone, 'busy'>, string> = {
   idle: 'bg-fg-muted/40',
 };
 
+/**
+ * The tinted surfaces, added 2026-09-06 on Destin's direction: "I want a
+ * container/visible pill that goes around both the warning and the buttons".
+ * K5's flat `bg-inset` is nearly invisible inside a card that is already inset,
+ * so a strip sitting in chat needs the fill to carry its tone. The values are
+ * K4 Callout's, deliberately — one colour vocabulary for the two shapes — and
+ * the option is opt-in, so every settings-screen strip is untouched.
+ */
+const TINT: Record<StatusTone, string> = {
+  ok: 'bg-green-500/10 border border-green-500/25',
+  // Status colours stay hardcoded per the standing rule, same as Callout's.
+  warn: 'bg-amber-500/10 border border-amber-500/30',
+  idle: 'bg-inset border border-edge',
+  busy: 'bg-inset border border-edge',
+};
+
 export type StatusStripProps = {
   /** `busy` swaps the dot for a spinner — a state in motion, not a state at rest. */
   tone?: StatusTone;
@@ -40,12 +56,19 @@ export type StatusStripProps = {
   detail?: React.ReactNode;
   /** The single action that resolves this state. Usually a <Button size="sm">. */
   action?: React.ReactNode;
+  /**
+   * `flat` (default) is K5 as designed: one `bg-inset` geometry for every tone,
+   * for a strip sitting on a settings surface. `tinted` fills and outlines the
+   * strip in its tone's colour, for a strip sitting INSIDE another card where a
+   * flat inset fill disappears. Opt-in, so `flat` callers cannot drift.
+   */
+  surface?: 'flat' | 'tinted';
   className?: string;
 };
 
-export function StatusStrip({ tone = 'idle', children, detail, action, className = '' }: StatusStripProps) {
+export function StatusStrip({ tone = 'idle', children, detail, action, surface = 'flat', className = '' }: StatusStripProps) {
   return (
-    <div className={`px-3 py-2.5 rounded-lg bg-inset flex items-center gap-3 ${className}`.trim()}>
+    <div className={`px-3 py-2.5 rounded-lg ${surface === 'tinted' ? TINT[tone] : 'bg-inset'} flex items-center gap-3 ${className}`.trim()}>
       <span className="shrink-0 flex items-center justify-center w-2">
         {tone === 'busy' ? (
           <BrailleSpinner size="xs" />
