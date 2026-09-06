@@ -27,7 +27,9 @@ const MAIN = 'src/main/main.ts';
 const RENDERER = 'src/renderer';
 
 function src(rel: string): string {
-  return readFileSync(join(__dirname, '..', rel), 'utf8');
+  // Normalised to '\n': a Windows checkout has CRLF endings, and any line split or
+  // multi-line comparison below silently stops matching without this.
+  return readFileSync(join(__dirname, '..', rel), 'utf8').replace(/\r\n/g, '\n');
 }
 
 function walk(dir: string): string[] {
@@ -49,7 +51,7 @@ describe('the buddy window’s name', () => {
 
     it('no screen anywhere sets document.title', () => {
       const offenders = files.flatMap((file) =>
-        readFileSync(file, 'utf8')
+        readFileSync(file, 'utf8').replace(/\r\n/g, '\n')
           .split('\n')
           .map((line, i) => ({ line, n: i + 1 }))
           .filter(({ line }) => /\bdocument\.title\s*=/.test(line))

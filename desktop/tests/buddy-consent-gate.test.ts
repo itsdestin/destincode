@@ -194,7 +194,8 @@ describe('the cached status the drag path reads', () => {
 // The unit tests above prove the RULE. These prove main.ts actually applies it —
 // a correct gate nothing calls is the same bug with extra steps.
 describe('main.ts wires the gate to the window that gets created', () => {
-  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.ts'), 'utf8');
+  // Normalised: a Windows checkout is CRLF; source-text assertions must not depend on it.
+  const main = fs.readFileSync(path.join(__dirname, '..', 'src', 'main', 'main.ts'), 'utf8').replace(/\r\n/g, '\n');
   const handler = main.slice(main.indexOf('IPC.BUDDY_SHOW'), main.indexOf('IPC.BUDDY_HIDE'));
 
   it('found the show handler (otherwise every assertion below is vacuous)', () => {

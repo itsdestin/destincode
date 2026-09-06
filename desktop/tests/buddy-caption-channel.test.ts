@@ -172,7 +172,9 @@ describe('the caption channel', () => {
     // thought to drive; this covers the file. If a future change adds a tenth
     // way to move the buddy and calls setPosition directly, the Wayland buddy
     // silently stops moving on that path — and this fails instead.
-    const SRC = readFileSync(join(__dirname, '../src/main/buddy-window-manager.ts'), 'utf8');
+    // Normalised: a Windows checkout is CRLF, and the line split below would keep
+    // a trailing '\r' on every line.
+    const SRC = readFileSync(join(__dirname, '../src/main/buddy-window-manager.ts'), 'utf8').replace(/\r\n/g, '\n');
     const lines = SRC.split('\n');
 
     it('no window-moving API is called outside place()', () => {
