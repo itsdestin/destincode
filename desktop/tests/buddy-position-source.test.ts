@@ -29,7 +29,11 @@ import { describe, it, expect } from 'vitest';
 const MANAGER = 'src/main/buddy-window-manager.ts';
 
 function read(rel: string): string[] {
-  return readFileSync(join(__dirname, '..', rel), 'utf8').split('\n');
+  // Split on \r?\n, not '\n': a Windows checkout has CRLF endings, so splitting
+  // on '\n' alone leaves a trailing '\r' on every line and any exact comparison
+  // below (`l === '  }'`) silently never matches. That failed only on the
+  // Windows runner, and only as "expected -1 to be greater than 246".
+  return readFileSync(join(__dirname, '..', rel), 'utf8').split(/\r?\n/);
 }
 
 function isComment(line: string): boolean {
