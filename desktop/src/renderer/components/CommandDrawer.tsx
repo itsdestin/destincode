@@ -293,7 +293,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
           <div className="pb-4">
           {isSearching ? (
             // Search mode: flat filtered list of skills + commands, no chip row
-            <div className="px-4 grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <div className="px-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
               {searchFiltered.map(renderSkillCard)}
               {commandSearchFiltered.map(renderCommandCard)}
               <AddSkillsCard onClick={openMarketplace} />
@@ -333,7 +333,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               {showFavs && (
                 <section className="px-2 pt-2">
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 px-1">Favorites</h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5">
                     {favsSorted.map(renderSkillCard)}
                     {addSkillsIn === 'favorites' && <AddSkillsCard onClick={openMarketplace} />}
                   </div>
@@ -346,7 +346,7 @@ export default function CommandDrawer({ open, searchMode, externalFilter, onSele
               {showOthers && (
                 <section className="px-2 pt-3">
                   <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 px-1">All installed</h3>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-1.5">
                     {othersSorted.map(renderSkillCard)}
                     <AddSkillsCard onClick={openMarketplace} />
                   </div>

@@ -52,6 +52,41 @@ describe('scanSkills', () => {
     expect(skills.every((s: any) => s.source === 'plugin')).toBe(true);
   });
 
+  it('reads a plugin skill\'s real SKILL.md description instead of the generic fallback', () => {
+    // Regression test: Pass 1/2 used to pass '' as fallbackDesc unconditionally,
+    // so every plugin skill without a curated registry entry showed "Run the X
+    // skill" in the drawer even though its SKILL.md has a real description.
+    const root = path.join(tmpHome, '.claude', 'plugins', 'test-plugin');
+    write(path.join(root, 'plugin.json'), '{"name":"test-plugin"}');
+    write(path.join(root, 'skills', 'setup-wizard', 'SKILL.md'),
+      '---\nname: setup-wizard\ndescription: Walks the user through first-run setup.\n---\n\nBody\n');
+
+    const skill = scanSkills().find((s: any) => s.id === 'test-plugin:setup-wizard');
+    expect(skill?.description).toBe('Walks the user through first-run setup.');
+  });
+
+  it('falls back to the generic description when a plugin skill has no SKILL.md', () => {
+    const root = path.join(tmpHome, '.claude', 'plugins', 'test-plugin');
+    write(path.join(root, 'plugin.json'), '{"name":"test-plugin"}');
+    mkdir(path.join(root, 'skills', 'setup-wizard'));
+
+    const skill = scanSkills().find((s: any) => s.id === 'test-plugin:setup-wizard');
+    expect(skill?.description).toBe('Run the setup-wizard skill');
+  });
+
+  it('joins a YAML folded block-scalar description ("description: >") instead of capturing the ">"', () => {
+    // Regression test: a naive single-line regex captures the block indicator
+    // itself, not the text — worse than the fallback it was meant to replace.
+    // youcoded-encyclopedia's real skills all use this form for long trigger text.
+    const root = path.join(tmpHome, '.claude', 'plugins', 'test-plugin');
+    write(path.join(root, 'plugin.json'), '{"name":"test-plugin"}');
+    write(path.join(root, 'skills', 'encyclopedia-compile', 'SKILL.md'),
+      '---\nname: encyclopedia-compile\ndescription: >\n  Compiles the user\'s Encyclopedia from eight\n  modular source files.\n---\n\nBody\n');
+
+    const skill = scanSkills().find((s: any) => s.id === 'test-plugin:encyclopedia-compile');
+    expect(skill?.description).toBe("Compiles the user's Encyclopedia from eight modular source files.");
+  });
+
   it('discovers a project skill from its .claude/skills directory', () => {
     mkdir(path.join(tmpHome, '.claude', 'plugins'));
     const project = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-project-skill-'));
