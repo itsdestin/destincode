@@ -5,7 +5,8 @@ This doc tracks every place YouCoded couples to Claude Code's behavior — every
 > **Sibling registries:** `engine-dependencies.md` (bundled llama.cpp) and
 > `provider-dependencies.md` (cloud provider APIs + AI SDK) track the
 > non-Claude backends introduced by the platform roadmap (Phase 0 seam:
-> `SessionProvider = 'claude' | 'native'`).
+> `SessionProvider = 'claude' | 'native' | 'shell'` — 'shell' is a plain terminal with
+> no assistant in it, added 2026-09-05, and couples to nothing in Claude Code).
 
 ## When to update
 
