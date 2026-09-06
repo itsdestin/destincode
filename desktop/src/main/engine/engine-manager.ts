@@ -22,7 +22,7 @@ import {
 import type { ModelSettingsPatch } from './engine-config';
 import {
   presetFilePath, renderPresetFile, writePresetFile, parsePresetSections,
-  parseExtraFlags, checkFlagsAgainstBinary,
+  presetGlobalValue, parseExtraFlags, checkFlagsAgainstBinary,
 } from './model-presets';
 import type { BinaryCheckOptions, BinaryCheckResult } from './model-presets';
 import { contextLengthFor } from '../models/fit-estimator';
@@ -349,8 +349,13 @@ export class EngineManager extends EventEmitter {
   // The same idea, one level down: per-MODEL settings changes that are saved but
   // not yet in force. A Set, not a queue, for the reason the two flags above are
   // flags — any number of saves to one model during one wait costs one apply.
-  private pendingModelApplies = new Set<string>();
-  private modelApplyDeadline = 0;                 // owned by the OLDEST pending model change
+  // model id -> the moment that model's change lands whether or not it is quiet.
+  // PER ID, not one shared deadline: a shared one let a change saved nine
+  // minutes into another model's wedged stream be swept in sixty seconds later
+  // with NO idle check — cutting that model's reply after a fraction of a bound
+  // that is supposed to be ten minutes. "The oldest change owns the deadline" is
+  // about repeated saves to ONE model, and the map's first-write-wins does that.
+  private pendingModelApplies = new Map<string, number>();
   private modelApplyWaiter: Promise<void> | null = null;
   /** The supervisor state we last acted on, so "the engine just came up" can be
    *  told from "the engine is still up" (see notePresetInForce). */
@@ -600,14 +605,35 @@ export class EngineManager extends EventEmitter {
     // (design §C2). Its old lines come out of the file already on disk.
     const held = new Map<string, readonly string[]>();
     const waiting = Object.keys(cfg.models).filter((id) => cfg.models[id].pendingApply === true);
-    if (waiting.length > 0) {
-      let existing = '';
+    // `[*]` needs the SAME hold, and for the same reason. An engine-wide context
+    // change is deferred too (setConfig writes config.json and queues the apply),
+    // and `[*] ctx-size` is what every model with no section of its own
+    // inherits — so rendering it from config here would let that queued change
+    // ride out on somebody else's reload. A download finishing calls
+    // refreshModels(), and the reply the user is reading dies mid-sentence with
+    // nothing connecting it to the setting they changed. `needsReload` is
+    // exactly "an engine-wide value is saved but not yet applied".
+    const holdGlobal = this.needsReload;
+    let existing = '';
+    if (waiting.length > 0 || holdGlobal) {
       try { existing = fs.readFileSync(filePath, 'utf8'); } catch { existing = ''; } // no file yet = no section
+    }
+    if (waiting.length > 0) {
       const sections = parsePresetSections(existing);
+      // NOTE what is NOT held here: a section the SPAWN omitted because the
+      // engine refused it (T7's omitModelId). This render puts it back, so the
+      // next reload 500s and the OTHER models' settings in that same write are
+      // silently not applied until the next spawn. It degrades safely — the
+      // engine keeps running on the presets it already has — but it is a real
+      // hole, and the supervisor is the only thing that knows which id was
+      // dropped.
       for (const id of waiting) held.set(id, sections.get(id) ?? []);
     }
+    // Fall back to config when the file has no `[*] ctx-size` to hold — there is
+    // then no engine reading a different number, so nothing can be cut.
+    const onDiskContext = holdGlobal ? Number(presetGlobalValue(existing, 'ctx-size')) : NaN;
     const contents = renderPresetFile({
-      contextSize: cfg.contextSize,
+      contextSize: Number.isFinite(onDiskContext) && onDiskContext > 0 ? onDiskContext : cfg.contextSize,
       sleepIdleSeconds: SLEEP_IDLE_SECONDS,
       modelIds: scanGgufCache(cfg.cacheDir).map((m) => m.id),
       settings: cfg.models,
@@ -844,10 +870,14 @@ export class EngineManager extends EventEmitter {
    *  a reply that never ends would wait out the bound AFTER the first one
    *  already had, and the design says ten minutes regardless. */
   private noteModelApply(modelId: string): void {
-    if (this.pendingModelApplies.size === 0) {
-      this.modelApplyDeadline = Date.now() + (this.opts.configApplyMaxWaitMs ?? CONFIG_APPLY_MAX_WAIT_MS);
+    // First write wins: a second save to the SAME model joins the deadline the
+    // first one bought. Resetting it here would mean a user who keeps adjusting
+    // one model during a wedged reply never reaches the bound at all.
+    if (!this.pendingModelApplies.has(modelId)) {
+      this.pendingModelApplies.set(
+        modelId, Date.now() + (this.opts.configApplyMaxWaitMs ?? CONFIG_APPLY_MAX_WAIT_MS),
+      );
     }
-    this.pendingModelApplies.add(modelId);
     this.startModelApplyWaiter();
     this.emit('status-changed');
   }
@@ -871,9 +901,10 @@ export class EngineManager extends EventEmitter {
   private async drainModelApplies(): Promise<void> {
     const pollMs = this.opts.configApplyPollMs ?? CONFIG_APPLY_POLL_MS;
     while (this.pendingModelApplies.size > 0) {
-      const expired = Date.now() >= this.modelApplyDeadline;
+      const now = Date.now();
       const ready = [...this.pendingModelApplies]
-        .filter((id) => expired || this.inFlightForModel(id) === 0);
+        .filter(([id, deadline]) => now >= deadline || this.inFlightForModel(id) === 0)
+        .map(([id]) => id);
       if (ready.length === 0) {
         await new Promise((resolve) => { const t = setTimeout(resolve, pollMs); t.unref?.(); });
         continue;
@@ -900,6 +931,15 @@ export class EngineManager extends EventEmitter {
     // The flags come off FIRST, and that is what selects them: writeModelPresets
     // holds back every model that is STILL pending, so clearing is how a model
     // says "render me from config now".
+    // This run's engine may never have opened the preset at all: T7 falls back
+    // to the old command line when the file cannot be written or is refused. A
+    // reload then cannot read these settings, and the unload after it would cost
+    // the user a full model load for nothing. Leave the change PENDING and say
+    // nothing new — the card already reports that per-model settings are not in
+    // force this run (presetInForce()), and the next spawn is where they really
+    // take effect. Removing them from the map above is what stops the waiter
+    // spinning on a change it cannot land.
+    if (this.supervisor?.status() === 'running' && !this.supervisor.presetInForce()) return;
     for (const id of ids) await updateModelSettings(this.home, id, { pendingApply: false });
     this.writeModelPresets();
     await this.applyReload();
@@ -916,7 +956,7 @@ export class EngineManager extends EventEmitter {
    *  reload does not touch it (design §C2, "only for idle models"). */
   private async mergeIdlePendingSettings(): Promise<string[]> {
     const done: string[] = [];
-    for (const id of [...this.pendingModelApplies]) {
+    for (const id of [...this.pendingModelApplies.keys()]) {
       if (this.inFlightForModel(id) !== 0) continue;
       try {
         await updateModelSettings(this.home, id, { pendingApply: false });
@@ -1777,7 +1817,10 @@ export class EngineManager extends EventEmitter {
       removeManifest(cfg.cacheDir, `${id}.gguf`);
     }
     // The model's own settings go with it, or they would be inherited by a
-    // re-download and meanwhile name a model that no longer exists.
+    // re-download and meanwhile name a model that no longer exists. The queued
+    // apply goes too: without this, the refreshModels() below would clear the
+    // pending flag on the model we just removed and WRITE THE ENTRY BACK.
+    this.pendingModelApplies.delete(id);
     try { await removeModelSettings(this.home, id); } catch { /* best-effort — the files are already gone */ }
     // Tell the router the file is gone, or it keeps advertising a model that
     // 400s on use — the delete-side twin of the post-download refresh.

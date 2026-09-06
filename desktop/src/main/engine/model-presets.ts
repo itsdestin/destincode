@@ -387,6 +387,32 @@ export interface PresetFileInput {
   preserve?: ReadonlyMap<string, readonly string[]>;
 }
 
+/** The `[*]` section's value for one key in a preset file we wrote earlier, or
+ *  null when the file has no such line.
+ *
+ *  WHY the GLOBAL section needs reading back: an engine-wide context change is
+ *  deferred exactly as a per-model one is — `setConfig` writes config.json at
+ *  once and queues the apply, because reloading mid-reply kills the answer. But
+ *  `[*]` is what every model with no section of its own inherits, so rendering
+ *  it from config on somebody ELSE'S reload (a finished download calls
+ *  `refreshModels`) would apply that queued change anyway and cut the reply.
+ *  This is how `[*]` gets held at what the engine actually read. */
+export function presetGlobalValue(contents: string, key: string): string | null {
+  let inGlobal = false;
+  for (const raw of (contents ?? '').split(/\r?\n/)) {
+    const line = raw.trim();
+    const header = /^\[(.+)\]$/.exec(line);
+    if (header) { inGlobal = header[1] === GLOBAL_SECTION; continue; }
+    if (!inGlobal || line === '') continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    if (line.slice(0, eq).trim() !== key) continue;
+    const value = line.slice(eq + 1).trim();
+    return value === '' ? null : value;
+  }
+  return null;
+}
+
 /** The per-model sections of a preset file we wrote earlier, as their raw lines.
  *  `[*]` is deliberately NOT returned — it is rendered from config every time,
  *  and it is never the thing being held. The last `[id]` header wins, which is

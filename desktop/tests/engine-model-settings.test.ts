@@ -410,6 +410,175 @@ describe('the apply waits on the PER-MODEL count, not the engine-wide one (§C2)
   });
 });
 
+describe('a deferred ENGINE-WIDE change cannot ride out on somebody else\'s reload (§B/§C2)', () => {
+  it('a finished download does not apply a context length the user is still waiting on', async () => {
+    const { reply } = await bootWithStream('alpha');
+    expect(readPreset()).toBe(BARE_PRESET);
+
+    // Destin raises the engine-wide context while a reply is streaming. This is
+    // CORRECTLY deferred — the card says "Applies after the current reply".
+    await mgr!.setConfig({ contextSize: 65_536 });
+    expect(engineSection().contextSize).toBe(65_536);   // saved at once
+    expect(mgr!.status().configApplyPending).toBe(true); // not applied
+    urls.length = 0;
+
+    // A model he started downloading earlier finishes; ipc-handlers calls this.
+    await mgr!.refreshModels();
+
+    // `[*]` is what every model with no section of its own inherits. Rendering
+    // it from config here would put the new length in the file, and the reload
+    // this call makes would cut the reply he is reading — with nothing
+    // connecting it to the setting he changed. The whole file, exactly.
+    expect(readPreset()).toBe(BARE_PRESET);
+    expect(reloads()).toHaveLength(1);   // the refresh's own reload still happened
+    expect(unloaded).toEqual([]);
+
+    // The reply survives whole…
+    await reply.finish();
+    expect(reply.received()).toBe('the first half and the second.');
+    // …and only then does the context change land.
+    await vi.waitFor(() => {
+      expect(readPreset()).toBe('[*]\nctx-size = 65536\nsleep-idle-seconds = 300\n');
+    }, { timeout: 2_000 });
+  });
+
+  it('a per-model apply carries the OLD engine-wide value while that one is still queued', async () => {
+    // Two deferred changes at once, one engine-wide and one per-model, with only
+    // the per-model one ready to land: beta is quiet, so its section is written
+    // and reloaded — and that write must not smuggle `[*]` out with it.
+    const { reply } = await bootWithStream('alpha');
+    await mgr!.setConfig({ contextSize: 65_536 });
+    urls.length = 0;
+
+    await mgr!.setModelSettings('beta', { contextLength: 4_096 });
+    await vi.waitFor(() => { expect(unloaded).toEqual(['beta']); }, { timeout: 2_000 });
+
+    expect(readPreset()).toBe(`${BARE_PRESET}\n[beta]\nctx-size = 4096\n`);
+    await reply.finish();
+    expect(reply.received()).toBe('the first half and the second.');
+  });
+});
+
+describe('each model\'s bound is its OWN, and a fallback boot applies nothing (§C2)', () => {
+  // Long enough that a MISSING per-id deadline is what fails these, not the
+  // machine's speed: the two saves are a second apart and the bound is two, so
+  // one model landing before the other is an ordering fact, never a clock
+  // reading (`.claude/rules/test-suite-hygiene.md` — never assert wall time).
+  const BOUND_MS = 2_000;
+  const GAP_MS = 1_000;
+
+  /** Both models wedged: two streams that are never finished. */
+  async function twoWedgedReplies() {
+    plantInstall();
+    await plantConfig();
+    const fetchImpl = makeFetch();
+    mgr = makeManager(fetchImpl, { configApplyMaxWaitMs: BOUND_MS });
+    await startStreamingReply(mgr, fetchImpl, 'alpha');
+    await startStreamingReply(mgr, fetchImpl, 'beta');
+    return fetchImpl;
+  }
+
+  it('a second model\'s change gets its own full wait, not what is left of the first\'s', async () => {
+    await twoWedgedReplies();
+
+    await mgr!.setModelSettings('alpha', { contextLength: 4_096 });
+    await new Promise((r) => setTimeout(r, GAP_MS));
+    await mgr!.setModelSettings('beta', { contextLength: 8_192 });
+
+    // Alpha's bound runs out first because alpha's change is older.
+    await vi.waitFor(() => { expect(unloaded).toContain('alpha'); }, { timeout: 5_000 });
+    // And beta is NOT swept in with it. This is the whole point: with one shared
+    // deadline, beta's reply would be cut a second after it was saved, on a
+    // bound that is supposed to be the full wait.
+    expect(unloaded).not.toContain('beta');
+    // It still lands, on its own clock.
+    await vi.waitFor(() => { expect(unloaded).toContain('beta'); }, { timeout: 5_000 });
+  });
+
+  it('saving the same model twice does not push its own deadline out', async () => {
+    await twoWedgedReplies();
+
+    await mgr!.setModelSettings('alpha', { contextLength: 4_096 });
+    await new Promise((r) => setTimeout(r, GAP_MS));
+    // The second save to alpha joins the wait the first one bought. Beta, saved
+    // at the same moment, starts its own — so alpha must still land first.
+    await mgr!.setModelSettings('alpha', { contextLength: 5_120 });
+    await mgr!.setModelSettings('beta', { contextLength: 8_192 });
+
+    await vi.waitFor(() => { expect(unloaded).toContain('alpha'); }, { timeout: 5_000 });
+    expect(unloaded).not.toContain('beta');
+    // One apply for the two alpha saves, carrying the LAST value.
+    expect(readPreset()).toContain('[alpha]\nctx-size = 5120');
+  });
+
+  /** Boot an engine that refuses the preset file outright, so it falls back to
+   *  the old command line (T7) and `presetInForce()` is false. */
+  async function bootWithoutPreset(models: Record<string, unknown> = {}) {
+    plantInstall();
+    await plantConfig(models);
+    const first = makeFakeChild();
+    const second = makeFakeChild();
+    mockSpawn.mockReset();
+    mockSpawn.mockReturnValueOnce(first).mockReturnValueOnce(second);
+    let firstDead = false;
+    urls = [];
+    unloaded = [];
+    const fetchImpl: any = vi.fn(async (input: any, init?: any) => {
+      const url = String(input);
+      urls.push(url);
+      if (!firstDead) throw new Error('ECONNREFUSED');
+      if (url.endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (url.includes('/models/unload')) {
+        try { unloaded.push(JSON.parse(String(init?.body)).model); } catch { unloaded.push('?'); }
+        return { ok: true, status: 200, json: async () => ({}) } as any;
+      }
+      return { ok: true, status: 200, json: async () => ({ data: [] }) } as any;
+    });
+    mgr = makeManager(fetchImpl, { supervisorOpts: { pidOnPort: () => 4242, readyDeadlineMs: 5_000, readyPollMs: 5 } });
+    const booting = mgr.registryHook().ensureRunning();
+    setImmediate(() => {
+      // The engine's own words for "I could not read that file at all" — no
+      // model is named, so there is no section to drop and T7 boots without it.
+      first.stderr!.emit('data', Buffer.from(
+        '0.00.050.247 E srv    llama_server: failed to parse server config file: models.ini'
+      ));
+      firstDead = true;
+      first.emit('exit', 1);
+    });
+    await booting;
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    return fetchImpl;
+  }
+
+  it('an engine running WITHOUT its preset does not reload or unload to apply a change', async () => {
+    await bootWithoutPreset();
+    urls.length = 0;
+
+    // Nothing is streaming, so the apply would normally run at once.
+    await mgr!.setModelSettings('alpha', { contextLength: 4_096 });
+    await settled();
+
+    // This engine never opened models.ini. A reload could not read the change,
+    // and the unload after it would cost a full model load for nothing.
+    expect(reloads()).toEqual([]);
+    expect(unloaded).toEqual([]);
+    // …and the change is still honestly marked as not in force.
+    expect(storedFor('alpha').pendingApply).toBe(true);
+  });
+
+  it('a fallback boot does NOT clear a pending change — nothing was read to put it in force', async () => {
+    // The gate that makes this true is `presetInForce()` in notePresetInForce.
+    // Its sibling — only acting on the TRANSITION into running — has no test:
+    // the supervisor emits no status-changed while it is already running, so the
+    // only way to reach a second one is restart(), and the check is there as
+    // insurance rather than for a path that exists today.
+    await bootWithoutPreset({ alpha: { contextLength: 4_096, pendingApply: true } });
+    await settled();
+
+    expect(storedFor('alpha').pendingApply).toBe(true);
+  });
+});
+
 describe('refreshModels() merges pending changes only for IDLE models (§C2)', () => {
   it('lands the quiet model\'s change and leaves the busy model\'s alone', async () => {
     plantInstall();
@@ -473,6 +642,28 @@ describe('keep loaded, and deleting a model (§C2, R2-6)', () => {
     expect(unloaded).toEqual(['beta', 'alpha']);
   });
 
+  it('deleting a model with a change still queued does not write the entry back', async () => {
+    plantInstall();
+    await plantConfig();
+    const fetchImpl = makeFetch();
+    // The waiter sleeps for the whole test, so the queued change is still queued
+    // when the delete arrives — which is the state this probe is about.
+    mgr = makeManager(fetchImpl, { configApplyPollMs: 60_000, configApplyMaxWaitMs: 60_000 });
+
+    const reply = await startStreamingReply(mgr, fetchImpl, 'alpha');
+    await mgr.setModelSettings('alpha', { contextLength: 4_096 });
+    expect(storedFor('alpha').pendingApply).toBe(true);
+    await reply.finish();   // alpha is now idle, but the waiter is asleep
+
+    await mgr.deleteModel('alpha');
+
+    // deleteModel prunes the entry and THEN refreshes the router. The refresh
+    // folds in pending changes for idle models — so without dropping alpha from
+    // the queue first, it would clear a flag on the model just deleted and
+    // recreate the whole entry a line after removing it.
+    expect(storedFor('alpha')).toBeUndefined();
+  });
+
   it('deleting a model takes its settings with it', async () => {
     plantInstall();
     await plantConfig({
@@ -514,8 +705,10 @@ describe('lastLoadError has TWO sources, and both reach the model (§C2)', () =>
     // Only the model that failed.
     expect(storedFor('beta')).toBeUndefined();
 
-    // And it clears the moment the same model loads, or it would be on screen
-    // for ever after one bad afternoon.
+    // And it clears when that model is LOADED again — an explicit load, which is
+    // what pressing Reload Model and what resuming a session both do. A plain
+    // chat send does not clear it; it would otherwise be on screen for ever
+    // after one bad afternoon.
     failing = false;
     await mgr.loadModel('alpha');
     await vi.waitFor(() => { expect(storedFor('alpha').lastLoadError).toBeUndefined(); });

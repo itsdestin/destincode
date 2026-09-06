@@ -1176,10 +1176,16 @@ export function sumLoadedModelBytes(models: EngineModel[]): number {
 /** The model an OpenAI-compatible request names, read out of its JSON body.
  *
  *  The body is the only place it appears — the router takes one URL for every
- *  model and dispatches on this field — so there is nothing else to read. A body
- *  that is not JSON, or carries no `model`, returns null and that request simply
- *  is not counted against any model; guessing one would be worse than not
- *  counting, because the count decides when it is safe to reconfigure a model. */
+ *  model and dispatches on this field — so there is nothing else to read.
+ *
+ *  A body that is not JSON, or carries no `model`, returns null and that request
+ *  is not counted against ANY model. Be clear about which way that errs: this
+ *  count gates a settings apply, so an uncounted request makes the apply MORE
+ *  eager, not less — an unreadable body would let a reload land on a reply it
+ *  could not see. It is safe today because every local chat body is a JSON
+ *  string built by the AI SDK, and null then only means a management call that
+ *  belongs to no model. Anything that starts sending a stream or a Buffer body
+ *  here has to count it some other way. */
 export function requestModelId(init: unknown): string | null {
   const body = (init as { body?: unknown } | null | undefined)?.body;
   if (typeof body !== 'string' || !body.startsWith('{')) return null;
