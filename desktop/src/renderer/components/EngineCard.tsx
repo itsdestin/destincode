@@ -16,6 +16,10 @@
 import { useEffect, useState } from 'react';
 import { AnchorTip, Button, Callout, FieldError, SettingRow, TextInput, Toggle } from './ui';
 import type { BackendOption, EnginePrereqs, EngineSpeedSettings } from '../../shared/engine-types';
+// WHY imported rather than defined here: this card is no longer the only place a
+// rejected bridge call reaches the user — the model settings dialog and “Add
+// vision” show one too, and each copy is a call site that can forget to strip.
+import { plainMessage } from '../utils/ipc-error';
 
 interface EngineStatusView {
   installed: boolean;
@@ -55,17 +59,6 @@ const BACKEND_WORDS: Record<string, string> = {
   rocm: 'ROCm (AMD)',
 };
 const CHIP_WORDS: Record<string, string> = { cuda: 'NVIDIA', rocm: 'AMD', metal: 'Apple' };
-
-/** Electron wraps every rejected `invoke` as
- *  `Error invoking remote method 'engine:set-backend': Error: <the real
- *  message>`. That prefix is machinery — a non-developer cannot read past it,
- *  and every sentence main writes for this card (the refusals that explain why
- *  a faster engine was not kept, the set-up failures) arrives wearing it. One
- *  stripper for all of them, so a new call site cannot forget. */
-function plainMessage(e: any): string {
-  const raw = e?.message ?? String(e);
-  return raw.replace(/^Error invoking remote method '[^']*':\s*(Error:\s*)?/, '');
-}
 
 export default function EngineCard({ showDetails = false }: { showDetails?: boolean }) {
   const [status, setStatus] = useState<EngineStatusView | null>(null);

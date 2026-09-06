@@ -377,8 +377,9 @@ declare global {
         // Live per-model residency (2026-07-14).
         models: () => Promise<import('../../shared/engine-types').EngineModel[]>;
         onModelsChanged: (cb: (models: import('../../shared/engine-types').EngineModel[]) => void) => () => void;
-        // 2026-09-05 local-engine upgrades — designed in the workbench ahead of their
-        // backend (mock-only.ts lists them until main serves them).
+        // 2026-09-05 local-engine upgrades. Real on every surface now; the
+        // workbench keeps a fake for each so the flows can be walked without a
+        // machine, a PTY or a running engine.
         /** What a faster backend needs before it can be installed (Linux ROCm). */
         prereqs: (backend: string) => Promise<import('../../shared/engine-types').EnginePrereqs>;
         /** Open a plain-shell session in the app and TYPE an install command onto
@@ -407,14 +408,22 @@ declare global {
         // Create-time / swap memory guard + [Reload Model] (2026-07-14).
         memoryCheck: (modelId: string) => Promise<{ verdict: 'ok' | 'tight' | 'too-large'; headline: string; detail: string }>;
         load: (modelId: string) => Promise<boolean>;
-        // 2026-09-05 local-engine upgrades (workbench-first; see mock-only.ts).
-        /** Per-model engine settings (deck Q-2). */
-        settings: (modelId: string) => Promise<import('../../shared/model-manager-types').ModelSettings>;
-        setSettings: (modelId: string, patch: Partial<import('../../shared/model-manager-types').ModelSettings>) => Promise<import('../../shared/model-manager-types').ModelSettings>;
+        // 2026-09-05 local-engine upgrades. Real on every surface now.
+        /** One model's engine settings as STORED (deck Q-2). The stored shape,
+         *  not the four fields the dialog writes: the dialog also shows whether
+         *  the last save is still waiting on a streaming reply, and why the
+         *  model last failed to load. */
+        settings: (modelId: string) => Promise<import('../../shared/model-manager-types').StoredModelSettings>;
+        /** Save one model's settings, and remember (or forget) the memory
+         *  warning for it — `dismissMemoryWarning` replaced the separate
+         *  `models.dismissMemoryWarning` channel, so there is ONE write for
+         *  everything this dialog owns. */
+        setSettings: (
+          modelId: string,
+          patch: import('../../shared/model-manager-types').ModelSettingsWrite,
+        ) => Promise<import('../../shared/model-manager-types').StoredModelSettings>;
         /** Fetch the vision projector for a model already on disk and move both into a folder (S-3). */
         addVision: (modelId: string) => Promise<{ downloadId: string }>;
-        /** Remember "don't warn me again" for this model at this context length (S-2). */
-        dismissMemoryWarning: (modelId: string) => Promise<void>;
       };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState

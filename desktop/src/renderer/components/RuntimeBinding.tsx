@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { isAndroid, isRemoteMode } from '../platform';
 import { PRESETS } from '../../shared/harness-manifest';
-import { SettingRow, Toggle } from './ui';
+import { FieldError, SettingRow, Toggle } from './ui';
+import { plainMessage } from '../utils/ipc-error';
 
 // The two built-in native harness presets (personality profiles, not capability
 // tiers). A native session is stamped with one at create time; it drives the
@@ -127,6 +128,10 @@ export interface NativeBinding {
    *  context length). Undefined when the bridge has no such channel (older main). */
   memDismissed: boolean;
   dismissMemoryWarning?: (next: boolean) => void;
+  /** Why the last "don't warn me again" save did not stick — null when it did.
+   *  Shown beside the checkbox; a silent failure would leave the box ticked
+   *  over a preference that was never stored. */
+  memDismissError: string | null;
 }
 
 // All derived binding state. Pure derivation (no state writes) apart from the one
@@ -205,11 +210,33 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
   // re-opens, which is when the remembered answer takes effect.
   const [memDismissed, setMemDismissed] = useState(false);
   useEffect(() => { setMemDismissed(false); }, [resolvedModelId]);
-  // Optional-chained: the SessionStrip unit tests' bridge stub has no `models` at all.
-  const dismissMemoryWarning = typeof (window.claude.models as any)?.dismissMemoryWarning === 'function' && resolvedModelId
+  // One write for everything this model's settings own: the separate
+  // `models.dismissMemoryWarning` channel is gone, and the tick is now
+  // `setSettings(id, { dismissMemoryWarning })`. Main stamps the context length
+  // it was dismissed at — a number the renderer cannot work out, because only
+  // main knows how this model's setting and the engine-wide default combine.
+  //
+  // WHY still optional-chained after dropping the `as any` cast: the bridge is
+  // real on every shipping surface, but SessionStrip's unit tests stub
+  // `window.claude` with no `models` namespace at all, so an unguarded call
+  // would throw during their render.
+  const [memDismissError, setMemDismissError] = useState<string | null>(null);
+  const dismissMemoryWarning = resolvedModelId
     ? (next: boolean) => {
       setMemDismissed(next);
-      if (next) void (window.claude.models as any).dismissMemoryWarning(resolvedModelId);
+      setMemDismissError(null);
+      // NOT fire-and-forget. A rejected save here used to be invisible AND an
+      // unhandled promise rejection: the box stayed ticked, nothing was
+      // remembered, and the warning came back next time with no explanation.
+      // On a phone this rejects every time, because there is no local engine to
+      // remember anything.
+      window.claude.models?.setSettings(resolvedModelId, { dismissMemoryWarning: next })
+        .catch((e: unknown) => {
+          // Put the tick back where it really is, then say what happened in the
+          // words the failure gave us — never a guessed cause.
+          setMemDismissed(!next);
+          setMemDismissError(plainMessage(e, 'Could not remember your answer.'));
+        });
     }
     : undefined;
 
@@ -219,6 +246,7 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
     nativeSupported, readyProviders, modelCatalog, selectedProviderId, selectedProvider,
     providerModels, needsFreeformModel, selectedModelId, effectiveBinding, nativeCreateBlocked,
     memVerdict, memDetailOpen, setMemDetailOpen, setBinding, memDismissed, dismissMemoryWarning,
+    memDismissError,
   };
 }
 
@@ -300,6 +328,9 @@ export function NativeExtras({ nb, preset, onPreset }: {
                   />
                 )}
               />
+              {/* A save that did not stick has to say so. Silence here leaves the
+                  toggle showing a preference nothing remembered. */}
+              {nb.memDismissError && <FieldError as="p" className="px-3 pb-1.5">{nb.memDismissError}</FieldError>}
             </div>
           )}
         </div>

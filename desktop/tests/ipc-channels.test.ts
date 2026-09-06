@@ -1003,6 +1003,11 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     ['engine:set-config', 'ENGINE_SET_CONFIG'],
     // Faster-engine prerequisites (2026-09-05 local-engine upgrades §A5).
     ['engine:prereqs', 'ENGINE_PREREQS'],
+    // "Run in terminal" (2026-09-05 §A5/§F): opens a plain-shell session and
+    // types the set-up command onto its prompt. The remote client rides it too
+    // — the shell runs on the HOST — so it is on every surface, Android's stub
+    // included.
+    ['engine:run-in-terminal', 'ENGINE_RUN_IN_TERMINAL'],
     ['models:curated', 'MODELS_CURATED'],
     ['models:search', 'MODELS_SEARCH'],
     ['models:quants', 'MODELS_QUANTS'],
@@ -1014,27 +1019,123 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     // models:orphaned-partials, whose listing folded into models:installed —
     // two lists over one directory could disagree, which was the bug.
     ['models:resume', 'MODELS_RESUME'],
+    // Per-model settings + vision (2026-09-05 local-engine upgrades §C/§E4).
+    // These read and write the HOST's engine config and model folder, so a
+    // remote browser gets the real answer and a phone gets a fast "desktop
+    // only" instead of a 30-second wait.
+    ['models:settings', 'MODELS_SETTINGS'],
+    ['models:set-settings', 'MODELS_SET_SETTINGS'],
+    ['models:add-vision', 'MODELS_ADD_VISION'],
     ['endpoints:detect', 'ENDPOINTS_DETECT'],
   ];
   const pushChannels = ['models:download-progress'];
 
-  it('preload exposes every channel (request + push)', () => {
+  // Both halves, deliberately: the channel NAME has to be declared, and the
+  // constant has to be USED. Checking the name alone passes on a constant
+  // nobody wired to a method, which is a channel the renderer cannot call —
+  // exactly the drift this file exists to catch.
+  it('preload declares AND wires every request-response channel', () => {
     const src = read('src', 'main', 'preload.ts');
-    for (const [ch] of channels) expect(src).toContain(`'${ch}'`);
+    for (const [ch, konst] of channels) {
+      expect(src).toContain(`'${ch}'`);
+      expect(src).toContain(`IPC.${konst}`);
+    }
     for (const ch of pushChannels) expect(src).toContain(`'${ch}'`);
   });
-  it('remote-shim exposes every channel (request + push)', () => {
+  // `invoke('name'`, not the bare name: every one of these is a request the
+  // remote client makes, and the bare name also matches a mention in a list
+  // (REJECT_ON_NOT_OK names three of them), which would keep this green with the
+  // method itself deleted.
+  it('remote-shim invokes every request-response channel', () => {
     const src = read('src', 'renderer', 'remote-shim.ts');
-    for (const [ch] of channels) expect(src).toContain(`'${ch}'`);
+    for (const [ch] of channels) expect(src).toContain(`invoke('${ch}'`);
     for (const ch of pushChannels) expect(src).toContain(`'${ch}'`);
   });
-  it('ipc-handlers registers every request-response channel via its IPC.* constant', () => {
+  // `ipcMain.handle(IPC.X`, not the bare constant: this is the surface where
+  // "registered" decides whether the feature works at all, and the bare name
+  // also matches a COMMENT. Proven, not assumed — replacing the whole
+  // add-vision handler with `// FIXME reinstate the IPC.MODELS_ADD_VISION
+  // handler` kept this test green until the call shape was required.
+  it('ipc-handlers registers every request-response channel via ipcMain.handle', () => {
     const src = read('src', 'main', 'ipc-handlers.ts');
-    for (const [, konst] of channels) expect(src).toContain(`IPC.${konst}`);
+    for (const [, konst] of channels) expect(src).toContain(`ipcMain.handle(IPC.${konst}`);
   });
+  // On a line that is NOT commented out, for the same reason: commenting the
+  // Kotlin string leaves it in the file, so a bare text scan stays green while
+  // the phone falls through to "Unknown message" and the shared UI waits.
   it('SessionService.kt stubs every request-response channel', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
-    for (const [ch] of channels) expect(src).toContain(`"${ch}"`);
+    const live = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    for (const [ch] of channels) expect(live).toContain(`"${ch}"`);
+  });
+  // A dropped SECOND argument is invisible everywhere else: main receives an
+  // empty patch, changes nothing, returns the settings unchanged, and the dialog
+  // renders that as a save that worked — the user toggles "Keep loaded" on,
+  // reopens, and it is off again with no error. preload cannot be imported (it
+  // calls contextBridge at load), so the call shape is pinned as text.
+  it('preload forwards every argument of the two-argument channels', () => {
+    const src = read('src', 'main', 'preload.ts');
+    expect(src).toContain('ipcRenderer.invoke(IPC.MODELS_SET_SETTINGS, modelId, patch)');
+    expect(src).toContain('ipcRenderer.invoke(IPC.MODELS_DOWNLOAD, repo, quant)');
+  });
+  // Android answers these six — and ONLY these six — with `unsupported`, not the
+  // plain not-implemented error every other desktop-only channel sends.
+  //
+  // WHY the set has to be checked for EQUALITY and not just for presence: a
+  // Kotlin `when` branch runs from its FIRST comma-separated value down to the
+  // one carrying the `-> {`. Written into the middle of the long
+  // not-implemented list, this branch's `-> {` silently swallowed the eighteen
+  // native:* / provider:* channels above it — `provider:list` runs every time
+  // the model picker opens, so a phone doing no remote access started popping
+  // "provider:list isn't available via remote access yet." A presence-only
+  // check called that green, because the six were all still present.
+  it('SessionService.kt marks exactly the six local-engine channels unsupported', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+
+    // Walk the `when` the way Kotlin does: labels accumulate until a line
+    // carries `->`, and everything accumulated belongs to THAT branch.
+    const armOf = new Map<string, string>();
+    let pending: string[] = [];
+    for (const line of src.split('\n')) {
+      const t = line.trim();
+      if (t.startsWith('//')) continue;
+      const labels = [...t.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+      if (labels.length === 0) continue;
+      if (t.includes('->')) {
+        const terminator = labels[labels.length - 1];
+        for (const l of [...pending, ...labels]) if (!armOf.has(l)) armOf.set(l, terminator);
+        pending = [];
+      } else if (/^("[^"]+",\s*)+$/.test(t)) {
+        pending.push(...labels);
+      }
+    }
+
+    // Sanity: if the walk found nothing the equality below would pass vacuously.
+    expect(armOf.get('provider:list')).toBe('github:disconnect');
+
+    const six = [
+      'engine:prereqs', 'engine:run-in-terminal', 'engine:set-config',
+      'models:add-vision', 'models:set-settings', 'models:settings',
+    ];
+    const inTheArm = [...armOf.entries()]
+      .filter(([, terminator]) => terminator === 'models:add-vision')
+      .map(([ch]) => ch).sort();
+    expect(inTheArm).toEqual(six);
+
+    // …and the branch actually answers `unsupported`.
+    const arrow = src.indexOf('"models:add-vision" -> {');
+    expect(src.slice(arrow, arrow + 400)).toContain('.put("unsupported", true)');
+  });
+
+  // The FIFTH surface. remote-server.ts is where a remote browser's request
+  // actually lands, and it is the one surface the original four-surface check
+  // never looked at — a channel missing here answers nothing at all over the
+  // remote link, and nothing else in the suite would notice. Every channel in
+  // the list above is served here today, so there are no exemptions.
+  it('remote-server.ts answers every request-response channel (the fifth surface)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    const missing = channels.map(([ch]) => ch).filter((ch) => !src.includes(`case '${ch}':`));
+    expect(missing).toEqual([]);
   });
 });
 

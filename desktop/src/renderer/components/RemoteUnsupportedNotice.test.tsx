@@ -29,6 +29,21 @@ describe('remoteFeatureName', () => {
     expect(remoteFeatureName('theme:list')).toBe('Theme editing');
   });
 
+  // The four names the local-engine work added (2026-09-05). WHY pinned: they
+  // were the only rows in the table with no test, and deleting one is silent —
+  // the notice falls back to the raw channel, so a phone opening its model
+  // picker reads "provider:list isn't available via remote access yet." That
+  // exact sentence was the regression this feature had to fix.
+  it('names the local-engine and provider channels', () => {
+    expect(remoteFeatureName('models:settings')).toBe('The local model manager');
+    expect(remoteFeatureName('engine:prereqs')).toBe('The local engine');
+    expect(remoteFeatureName('provider:list')).toBe('The model providers list');
+    expect(remoteFeatureName('native:send')).toBe('The built-in assistant');
+    // …and each reads as a sentence, which a plural noun would not.
+    expect(remoteUnsupportedMessage('provider:list'))
+      .toBe("The model providers list isn't available via remote access yet.");
+  });
+
   it('falls back to the raw channel so the message is still specific', () => {
     expect(remoteFeatureName('wibble:frob')).toBe('wibble:frob');
   });

@@ -42,7 +42,7 @@ import type {
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
 import type {
-  InstalledLocalModel, ModelSettings, StoredModelSettings,
+  InstalledLocalModel, ModelSettingsWrite, StoredModelSettings,
 } from '../../shared/model-manager-types';
 
 /** What ProviderRegistry's local-engine branch consumes (replaces Plan A's
@@ -800,8 +800,11 @@ export class EngineManager extends EventEmitter {
    *  context length and only main knows how the per-model setting and the
    *  engine-wide default combine. */
   async setModelSettings(
+    // WHY the named shared type rather than the shape spelled out here: this is
+    // the ONE patch every surface sends (preload, remote shim, WS server,
+    // workbench fake). Spelled out in five places it drifts in four of them.
     modelId: string,
-    patch: Partial<ModelSettings> & { dismissMemoryWarning?: boolean },
+    patch: ModelSettingsWrite,
   ): Promise<StoredModelSettings> {
     if (typeof modelId !== 'string' || !modelId) throw new Error('A model settings save needs a model id.');
     const current = this.modelSettings(modelId);

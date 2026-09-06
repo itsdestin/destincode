@@ -375,6 +375,10 @@ const IPC = {
   MODELS_DELETE: 'models:delete',
   MODELS_INSTALLED: 'models:installed',
   MODELS_RESUME: 'models:resume',
+  // Per-model settings + vision (2026-09-05) — keep in sync with shared/types.ts.
+  MODELS_SETTINGS: 'models:settings',
+  MODELS_SET_SETTINGS: 'models:set-settings',
+  MODELS_ADD_VISION: 'models:add-vision',
   ENDPOINTS_DETECT: 'endpoints:detect',
   // Model memory lifecycle (2026-07-14) — keep in sync with shared/types.ts.
   ENGINE_MODELS: 'engine:models',
@@ -1407,6 +1411,19 @@ contextBridge.exposeInMainWorld('claude', {
     // (2026-08-26) — no Hugging Face round trip, so it works when the network
     // is the reason the download stopped.
     resume: (modelId: string) => ipcRenderer.invoke(IPC.MODELS_RESUME, modelId),
+    // One model's stored settings (2026-09-05). The answer is the STORED shape,
+    // which carries two things the user never sets: whether the last save is
+    // still waiting on the reply that is streaming, and why the model last
+    // failed to load.
+    settings: (modelId: string) => ipcRenderer.invoke(IPC.MODELS_SETTINGS, modelId),
+    // Save one model's settings. The patch holds the four fields the dialog
+    // owns, plus `dismissMemoryWarning: true|false` — a signal, not a value:
+    // main works out the context length to remember it against, because only
+    // main knows how this model's setting and the engine-wide default combine.
+    setSettings: (modelId: string, patch: unknown) => ipcRenderer.invoke(IPC.MODELS_SET_SETTINGS, modelId, patch),
+    // Give a downloaded model its eye: fetch the vision file and move the model
+    // into a folder of its own. Progress rides the ordinary download stream.
+    addVision: (modelId: string) => ipcRenderer.invoke(IPC.MODELS_ADD_VISION, modelId),
     detectEndpoints: () => ipcRenderer.invoke(IPC.ENDPOINTS_DETECT),
     setBackend: (backend: string) => ipcRenderer.invoke(IPC.ENGINE_SET_BACKEND, backend),
     // Create-time / swap memory guard + [Reload Model] (2026-07-14).

@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button, FieldError, InputGroup, Select, TextInput, Toggle } from './ui';
 import type { ProviderStatus, ProviderConfig, ProviderType } from '../../shared/provider-types';
+// WHY: this panel's error lines are where a phone's "desktop only" refusal and
+// Electron's "Error invoking remote method …" wrapper both land verbatim.
+import { plainMessage } from '../utils/ipc-error';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
 // test, enable/disable, and remove the model providers the NATIVE runtime binds
@@ -77,7 +80,7 @@ const safeProviders = {
       const err = errorMessageOf(res);
       return { ok: false, message: err ?? 'Could not test this provider.' };
     } catch (e) {
-      return { ok: false, message: e instanceof Error ? e.message : 'Could not test this provider.' };
+      return { ok: false, message: plainMessage(e, 'Could not test this provider.') };
     }
   },
 };
@@ -130,7 +133,7 @@ export default function ProvidersSection({ embedded = false }: { embedded?: bool
       setRows(list);
       setListError(null);
     } catch (e) {
-      setListError(e instanceof Error ? e.message : 'Something went wrong');
+      setListError(plainMessage(e, 'Could not load your providers.'));
       setRows((prev) => prev ?? []); // stop the skeleton; show the error line
     }
   }, []);
@@ -221,7 +224,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       setKeyOpen(false);
       await onChanged(); // refresh hasKey/ready
     } catch (e) {
-      setNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not save the key.' });
+      setNote({ tone: 'bad', text: plainMessage(e, 'Could not save the key.') });
     } finally {
       setBusy(false);
     }
@@ -246,7 +249,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       await safeProviders.upsert({ ...config, enabled: !provider.enabled });
       await onChanged();
     } catch (e) {
-      setNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not update the provider.' });
+      setNote({ tone: 'bad', text: plainMessage(e, 'Could not update the provider.') });
     } finally {
       setBusy(false);
     }
@@ -260,7 +263,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       setConfirmingRemove(false);
       await onChanged();
     } catch (e) {
-      setNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not remove the provider.' });
+      setNote({ tone: 'bad', text: plainMessage(e, 'Could not remove the provider.') });
     } finally {
       // Reset in finally (mirrors saveKey/toggleEnabled): a success that somehow
       // leaves this row mounted must not strand it permanently disabled.
@@ -416,7 +419,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
       }
       await onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not add the provider.');
+      setError(plainMessage(e, 'Could not add the provider.'));
       setBusy(false);
     }
   };

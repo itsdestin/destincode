@@ -3981,6 +3981,39 @@ class SessionService : Service() {
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
             }
 
+            // The six local-engine upgrade channels (2026-09-05). Desktop-only for
+            // the same reason as every other branch here — a phone runs no local
+            // engine, holds no model folder and has no terminal to open — but they
+            // answer `unsupported` as well as `ok:false`, and the difference is
+            // something the user reads.
+            //
+            // WHY: the shared shim RE-THROWS an `ok:false` answer for exactly these
+            // six (remote-shim.ts REJECT_ON_NOT_OK), because over the remote link
+            // that shape means "the host's handler failed". Answered the plain way,
+            // a phone would put the literal words "not-implemented-on-mobile" in the
+            // model settings dialog as if the engine had said them. `unsupported`
+            // takes the shim's other path instead: one plain-language notice naming
+            // the feature, and a rejection the caller can recognise.
+            //
+            // WHY IT IS ITS OWN BRANCH, WHOLE, HERE: a Kotlin `when` branch runs
+            // from its FIRST comma-separated value to the one carrying the `-> {`.
+            // Written into the middle of the long not-implemented list below, this
+            // `-> {` silently captured the eighteen native:* / provider:* channels
+            // above it — so `provider:list`, which the model picker calls every time
+            // it opens, started answering `unsupported` and popping a toast on a
+            // phone doing no remote access. Six labels, one branch, its own
+            // boundaries. The label set is pinned by ipc-channels.test.ts.
+            "engine:set-config",
+            "engine:prereqs",
+            "engine:run-in-terminal",
+            "models:settings",
+            "models:set-settings",
+            "models:add-vision" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("unsupported", true)
+                        .put("error", "not-implemented-on-mobile")) }
+            }
+
             // Native runtime (YouCoded's first-party harness) + provider registry
             // are desktop-only in Plan A. Reply not-implemented so the shared React
             // UI degrades to a "desktop only" state instead of timing out.
@@ -4053,12 +4086,6 @@ class SessionService : Service() {
             "engine:install",
             "engine:restart",
             "engine:set-context",   // Plan C context-length knob — desktop-only
-            // Every engine-wide setting in one write (2026-09-05) — desktop-only,
-            // same as the knob above: a phone runs no local engine to configure.
-            "engine:set-config",
-            // Faster-engine prerequisites (2026-09-05) — reads the DESKTOP machine's
-            // graphics libraries; a phone has no engine to switch, so it stubs out.
-            "engine:prereqs",
             // Model manager (Plan C) — curated catalog, HF search, downloads,
             // endpoint detectors, backend switch. Desktop-only; no Android runtime.
             "engine:set-backend",

@@ -14,8 +14,9 @@ import EngineCard from './EngineCard';
 import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip, Toggle, TextInput, Select, SettingRow, Dialog } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
-  InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettings,
+  InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettingsWrite, StoredModelSettings,
 } from '../../shared/model-manager-types';
+import { plainMessage } from '../utils/ipc-error';
 import { stripSplitSuffix } from '../../shared/gguf-split';
 import { matchesQuery } from '../../shared/text-match';
 import { resolveModelBrand } from './provider-brand';
@@ -408,7 +409,7 @@ function RepoCard({
     if (!chosen) return;
     setDlError(null);
     try { await window.claude.models.download(repo, chosen); }
-    catch (e) { setDlError(e instanceof Error ? e.message : 'Could not start the download.'); }
+    catch (e) { setDlError(plainMessage(e, 'Could not start the download.')); }
   };
 
   // Recommended quants first; the rest hide behind "Show all N".
@@ -626,8 +627,12 @@ export function LocalModelRow({
   const addVision = async () => {
     setBusy(true);
     setActionError(null);
+    // plainMessage, not e.message: Electron wraps the reason in "Error invoking
+    // remote method 'models:add-vision': …", and the reason here is often the
+    // operating system's own words about a file it could not move — which the
+    // user needs, and cannot find behind the prefix.
     try { await window.claude.models.addVision(model.id); await onRefresh(); }
-    catch (e) { setActionError(e instanceof Error ? e.message : 'Could not add vision to this model.'); }
+    catch (e) { setActionError(plainMessage(e, 'Could not add vision to this model.')); }
     finally { setBusy(false); }
   };
 
@@ -652,6 +657,10 @@ export function LocalModelRow({
   const downloadError = progress?.state === 'error' ? (progress.message ?? 'Download failed') : null;
   const error = actionError ?? downloadError;
 
+  // Every catch in this file goes through plainMessage, not e.message: Electron
+  // wraps the real reason in "Error invoking remote method '<channel>': Error: …",
+  // and these lines are the ONLY place the real reason (the disk guard's number,
+  // Hugging Face's status, the OS's word about a file) reaches the user.
   const resume = async () => {
     setBusy(true);
     setActionError(null);
@@ -661,7 +670,7 @@ export function LocalModelRow({
     } catch (e) {
       // Surface the real refusal (disk guard, already downloading, no manifest).
       // A resume that silently did nothing was the original PartialRow bug.
-      setActionError(e instanceof Error ? e.message : 'Could not resume the download.');
+      setActionError(plainMessage(e, 'Could not resume the download.'));
     } finally {
       setBusy(false);
     }
@@ -690,7 +699,7 @@ export function LocalModelRow({
       setConfirming(false);
       await onRefresh();
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : 'Could not delete the model.');
+      setActionError(plainMessage(e, 'Could not delete the model.'));
     } finally {
       setBusy(false);
     }
@@ -901,7 +910,10 @@ const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'
  *  concept needs more than a line. Saves on blur/toggle; the model reloads with
  *  the new values on its next message. */
 function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; modelId: string; name: string; onClose: () => void }) {
-  const [settings, setSettings] = useState<ModelSettings | null>(null);
+  // The STORED shape: the same four fields the dialog writes, plus the two the
+  // app maintains and the user never sets — whether the last save is still
+  // waiting on a streaming reply, and why the model last failed to load.
+  const [settings, setSettings] = useState<StoredModelSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ctxDraft, setCtxDraft] = useState('');
   const [flagsDraft, setFlagsDraft] = useState('');
@@ -911,18 +923,42 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     let alive = true;
     // Mounted only while open (the row gates it), so this fetch happens on demand —
     // an older bridge without the channel shows the error line instead of throwing.
-    const api = window.claude.models as { settings?: (id: string) => Promise<ModelSettings> };
+    const api = window.claude.models as { settings?: (id: string) => Promise<StoredModelSettings> };
     if (typeof api.settings !== 'function') { setError('This version cannot read per-model settings.'); return; }
     api.settings(modelId)
-      .then((st) => { if (alive) { setSettings(st); setCtxDraft(st.contextLength == null ? '' : String(st.contextLength)); setFlagsDraft(st.extraFlags); } })
-      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : 'Could not read this model\u2019s settings.'); });
+      .then((st) => {
+        if (!alive) return;
+        // WHY the null check: over the remote link there is a window at start-up
+        // where the host has no engine wired yet, and the honest answer to
+        // "what are this model's settings" is then nothing at all. Reading
+        // `st.contextLength` off it throws, and what the user would read is the
+        // raw JavaScript — "Cannot read properties of null" — because
+        // plainMessage passes a message it did not wrap straight through. Say
+        // the true thing instead, and say nothing about why.
+        if (!st) { setError('This model\u2019s settings are not available yet. Try again in a moment.'); return; }
+        setSettings(st);
+        setCtxDraft(st.contextLength == null ? '' : String(st.contextLength));
+        setFlagsDraft(st.extraFlags);
+      })
+      .catch((e) => { if (alive) setError(plainMessage(e, 'Could not read this model\u2019s settings.')); });
     return () => { alive = false; };
   }, [modelId]);
 
-  const save = async (patch: Partial<ModelSettings>) => {
+  const save = async (patch: ModelSettingsWrite) => {
     setError(null);
-    try { setSettings(await window.claude.models.setSettings(modelId, patch)); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not save.'); }
+    // The engine binary's own line, VERBATIM (design §J): only it knows which
+    // option it refused, so we never paraphrase or guess. plainMessage strips
+    // Electron's "Error invoking remote method …" wrapper and nothing else, so
+    // what the user reads is exactly what the engine said.
+    try {
+      const saved = await window.claude.models.setSettings(modelId, patch);
+      // Same start-up window as the read above. Storing a null answer would blank
+      // the whole dialog back to "Loading settings…" and leave it there for ever:
+      // the user flips a switch and the panel becomes a spinner that never
+      // resolves and never explains itself. Keep what is on screen and say so.
+      if (saved) setSettings(saved);
+      else setError('That did not save \u2014 the engine is not ready yet. Try again in a moment.');
+    } catch (e) { setError(plainMessage(e, 'Could not save.')); }
   };
 
   const commitContext = () => {
@@ -1072,7 +1108,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
     try {
       await window.claude.models.download(repo, q);
     } catch (e) {
-      setDlError(e instanceof Error ? e.message : 'Could not start the download.');
+      setDlError(plainMessage(e, 'Could not start the download.'));
     }
   };
 
@@ -1134,7 +1170,7 @@ function OtherLocalApps() {
       });
       setAdded((prev) => ({ ...prev, [hit.baseUrl]: true }));
     } catch (e) {
-      setAddError((prev) => ({ ...prev, [hit.baseUrl]: e instanceof Error ? e.message : 'Could not add this endpoint.' }));
+      setAddError((prev) => ({ ...prev, [hit.baseUrl]: plainMessage(e, 'Could not add this endpoint.') }));
     }
   };
 

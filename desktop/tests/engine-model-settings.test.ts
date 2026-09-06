@@ -316,6 +316,56 @@ describe('models:set-settings — the save writes config, and NOTHING else (§C2
       .rejects.toThrow("option 'not-a-real-flag' not recognized in preset 'alpha'");
     expect(storedFor('alpha')).toBeUndefined();
   });
+
+  it('ignores the two fields the app owns, even when a caller sends them', async () => {
+    plantInstall();
+    await plantConfig();
+    mgr = makeManager(makeFetch());
+
+    // WHY this is a test and not left to TypeScript: TypeScript stops at the
+    // process boundary. A remote client is a browser on the network, and
+    // remote-server passes the patch it receives straight through — so a
+    // hand-written WebSocket message can carry anything at all. `pendingApply`
+    // forged true would make the dialog say "Applies after the current reply"
+    // forever, and a forged `lastLoadError` would show the user an engine
+    // failure that never happened.
+    const saved = await mgr.setModelSettings('alpha', {
+      keepLoaded: true,
+      pendingApply: true,
+      lastLoadError: 'the engine never said this',
+      memoryWarningDismissed: { at: 1, contextLength: 999_999 },
+    } as never);
+
+    expect(saved.lastLoadError).toBeUndefined();
+    expect(storedFor('alpha').lastLoadError).toBeUndefined();
+    // A dismissal can only be made by asking for one, and main stamps the
+    // number — a caller cannot post its own.
+    expect(saved.memoryWarningDismissed).toBeNull();
+    expect(storedFor('alpha').memoryWarningDismissed).toBeNull();
+    // keepLoaded IS a field the dialog owns, so it lands, and pendingApply is
+    // true here because keepLoaded genuinely changed — not because it was sent.
+    expect(saved.keepLoaded).toBe(true);
+  });
+
+  it('hands the settings dialog the two fields the app maintains (T23 reads these)', async () => {
+    plantInstall();
+    // A model whose last load failed and whose save has not reached the engine.
+    await plantConfig({
+      alpha: {
+        contextLength: 8_192, keepLoaded: false, gpuLayers: 'auto', extraFlags: '',
+        pendingApply: true, lastLoadError: 'failed to load model: out of device memory',
+      },
+    });
+    mgr = makeManager(makeFetch());
+
+    // WHY pinned: the renderer's declared type says the read returns the STORED
+    // record, and the dialog draws a line from each of these. If the read ever
+    // narrowed to the four user-settable fields, both lines would go blank in
+    // the shipped app with every test still green.
+    const read = mgr.modelSettings('alpha');
+    expect(read.pendingApply).toBe(true);
+    expect(read.lastLoadError).toBe('failed to load model: out of device memory');
+  });
 });
 
 describe('the apply waits on the PER-MODEL count, not the engine-wide one (§C2)', () => {

@@ -26,6 +26,18 @@ const FEATURE_NAMES: Array<[string, string]> = [
   ['theme:', 'Theme editing'],
   ['skills:', 'Skills'],
   ['dev:', 'Developer tools'],
+  // The local llama.cpp engine and the models it runs. Both stub out on a
+  // phone, which has neither, and without a name here the notice would read
+  // "models:settings isn't available via remote access yet." — a channel name,
+  // which means nothing to anyone. Phrased as singular nouns because the
+  // sentence below appends "isn't available…".
+  ['models:', 'The local model manager'],
+  ['engine:', 'The local engine'],
+  // Desktop-only on a phone too, and both are called on ordinary screens
+  // (provider:list runs every time the model picker opens), so a missing name
+  // here is a toast reading a raw channel id at somebody.
+  ['provider:', 'The model providers list'],
+  ['native:', 'The built-in assistant'],
 ];
 
 /** Plain-language name for the feature a channel belongs to. Falls back to the

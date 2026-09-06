@@ -189,6 +189,25 @@ export interface StoredModelSettings extends ModelSettings {
   lastLoadError?: string;
 }
 
+/** What the `models:set-settings` channel accepts — the ONE patch shape every
+ *  surface uses (preload, the remote shim, the WS server, the workbench fake and
+ *  main's `setModelSettings`).
+ *
+ *  WHY it is a Partial of `ModelSettings` and not of `StoredModelSettings`: the
+ *  four fields above are exactly what the settings dialog is allowed to write.
+ *  `pendingApply` and `lastLoadError` are things the app observes and records,
+ *  so a renderer must not be able to set them, and `memoryWarningDismissed`
+ *  cannot be sent as a value at all — see below.
+ *
+ *  `dismissMemoryWarning` is a BOOLEAN SIGNAL, deliberately not the stored
+ *  `memoryWarningDismissed` record. The stored record has to carry the RESOLVED
+ *  effective context length (per-model setting ?? engine-wide default), and only
+ *  main can work that out; a renderer-supplied number would silence the memory
+ *  warning for a model that has since been given four times the memory to
+ *  reserve. So the renderer says "they ticked don't-warn-me" and main stamps the
+ *  record itself. `false` clears it. */
+export type ModelSettingsWrite = Partial<ModelSettings> & { dismissMemoryWarning?: boolean };
+
 /** A downloaded model's vision projector (the `mmproj-*.gguf` file that lets a
  *  model look at images) as the manifest records it. */
 export interface ManifestVisionFile {

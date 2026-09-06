@@ -2,7 +2,9 @@ import { MARKETPLACE_API_HOST } from '../../state/marketplace-api-client';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
-import type { InstalledLocalModel, DownloadProgress, ModelSettings } from '../../../shared/model-manager-types';
+import type {
+  InstalledLocalModel, DownloadProgress, ModelSettingsWrite, StoredModelSettings,
+} from '../../../shared/model-manager-types';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
@@ -92,11 +94,17 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // machine, a PTY or a running engine: the prereq check (2026-09-05), the shell
   // session, and the engine-wide settings write.
   'engine.prereqs', 'engine.runInTerminal', 'engine.setConfig',
-  // No backend yet — registered in mock-only.ts; the fakes below are the spec of what to build.
-  'models.settings', 'models.setSettings', 'models.addVision', 'models.dismissMemoryWarning',
-  // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
-  // contract test actually covers them; a channel absent from HAND_WRITTEN
-  // escapes the real-or-registered check entirely.
+  // Real on every surface as of 2026-09-05 too (per-model settings + vision).
+  // Kept fake so the workbench can open the settings dialog and walk "Add
+  // vision" without a config file, a model on disk or a running engine.
+  // `models.dismissMemoryWarning` used to sit here and is GONE: the tick is now
+  // part of `models.setSettings`, so there is one write, not two.
+  'models.settings', 'models.setSettings', 'models.addVision',
+  // Real backend since M5 2a (permissions:* on preload + remote-shim). Listed
+  // here so the contract test actually covers them; a channel absent from
+  // HAND_WRITTEN escapes the real-or-registered check entirely. (They used to
+  // say "registered in mock-only.ts", which stopped being true when that list
+  // was emptied.)
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
   // G-1 — real backend as of 2026-08-28; hand-written so the gallery's Bash
   // cards keep their fixture state instead of talking to a real process.
@@ -132,9 +140,11 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
-  // Games arcade Step 1 — NO real backend yet; both are declared in
-  // mock-only.ts so the contract test knows they are deliberately unbuilt
-  // rather than a fake quietly standing in for something real.
+  // Games arcade — real backend since Step 2 (the Worker's /games/scores routes
+  // + main/arcade-handlers.ts on all five surfaces); hand-written here so the
+  // workbench can still show the you-alone, empty and stale-board states without
+  // a live leaderboard. (They used to be declared in mock-only.ts; that list is
+  // empty now, so this comment no longer claims they are unbuilt.)
   'arcade.status', 'arcade.leaderboard', 'arcade.submitScore',
   // Multiplayer games (Task 7c) — friends graph + presence socket. Real
   // backend (social-handlers.ts / preload.ts), hand-written here so Connect
@@ -752,7 +762,8 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     catalog: async () => store.getState().catalog,
   };
 
-  // M5 2a. NO real backend yet — registered in MOCK_ONLY. Removal matches on
+  // M5 2a. Real backend since (permissions:* on preload + remote-shim); the fake
+  // stays so the workbench has rules to show. Removal matches on
   // (tool, pattern, action) because remember() dedupes exact repeats, so that
   // triple is unique within a project; no rule id is needed.
   const permissions: Ns<'permissions'> = {
@@ -788,8 +799,12 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // round ones that hide formatting bugs. NOTE the app's gb() divides by 1024^3:
   // 79_674_559_677 renders as 74.2 GB, 121_334_654_784 as 113.0 GB.
   // Q-2: per-model settings the panel reads and writes during a workbench session.
-  const DEFAULT_MODEL_SETTINGS: ModelSettings = { contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '' };
-  const modelSettings: Record<string, ModelSettings> = {};
+  // The STORED shape, matching the real channel: the dialog reads `pendingApply`
+  // and `lastLoadError` off it as well as the four fields it writes.
+  const DEFAULT_MODEL_SETTINGS: StoredModelSettings = {
+    contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '', memoryWarningDismissed: null,
+  };
+  const modelSettings: Record<string, StoredModelSettings> = {};
   const LOCAL_MODELS: InstalledLocalModel[] = [
     {
       id: 'Qwen3.5-9B-Q8_0',
@@ -886,8 +901,19 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     // Q-2: per-model settings, held in memory for the session.
     settings: async (modelId: string) => ({ ...(modelSettings[modelId] ?? DEFAULT_MODEL_SETTINGS) }),
-    setSettings: async (modelId: string, patch: Partial<ModelSettings>) => {
-      modelSettings[modelId] = { ...(modelSettings[modelId] ?? DEFAULT_MODEL_SETTINGS), ...patch };
+    setSettings: async (modelId: string, patch: ModelSettingsWrite) => {
+      const { dismissMemoryWarning, ...fields } = patch;
+      const before = modelSettings[modelId] ?? DEFAULT_MODEL_SETTINGS;
+      // The fake stamps the record the way main does, so the workbench shows a
+      // dismissal that survives re-opening the picker. The context length it
+      // records is this model's own setting, falling back to the engine-wide
+      // 32k the fake status reports.
+      const memoryWarningDismissed = dismissMemoryWarning === undefined
+        ? before.memoryWarningDismissed
+        : dismissMemoryWarning
+          ? { at: Date.now(), contextLength: fields.contextLength ?? before.contextLength ?? 32_768 }
+          : null;
+      modelSettings[modelId] = { ...before, ...fields, memoryWarningDismissed };
       return { ...modelSettings[modelId] };
     },
     // S-3: after a moment the model "has" its vision file.
@@ -896,7 +922,6 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       if (m) setTimeout(() => { m.vision = 'ready'; }, 800);
       return { downloadId: 'wb-vision-1' };
     },
-    dismissMemoryWarning: async () => undefined,
     delete: async () => true,
     onDownloadProgress: (cb: (p: DownloadProgress) => void) => {
       progressListeners.add(cb);
@@ -1185,8 +1210,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
           ],
       syncHub: 'connected',
     }),
-    // MOCK_ONLY — no backend yet. The real one becomes setProjectDescription in
-    // sync-spaces/service.ts, writing the synced project registry.
+    // Real channel (syncspaces:set-project-description); the fake stays so the
+    // description editor works in the workbench without a synced registry.
+    // Its real half is setProjectDescription in sync-spaces/service.ts.
     setProjectDescription: async (folderName: string, description: string) => {
       const root = folderName === 'recipes' ? '/home/destin/recipes' : `/home/destin/youcoded-dev/${folderName}`;
       descriptions[root] = description.trim() || null;
@@ -1263,7 +1289,8 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     addBackend: async () => ({ ok: true }),
   };
 
-  // MOCK_ONLY — the LOCAL-folder half of the same field, mirroring how
+  // Real channel (folders:set-description) — the LOCAL-folder half of the same
+  // field, faked here for the same reason, mirroring how
   // folders.rename already writes the nickname that becomes the display name.
   const folders = {
     rename: async () => ({ ok: true }),
@@ -1313,8 +1340,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   };
 
   // Session references (spec 2026-08-10): the fake IPC pair backing the
-  // Preview/Resume cards, both MOCK_ONLY (mock-only.ts) since no real backend
-  // exists yet. resolve() reuses the SAME fixture table the tool-gallery and
+  // Preview/Resume cards. The real chatsearch:* backend landed since, so these
+  // are fakes over a REAL channel — kept so the tool gallery can show every row
+  // state on demand without a live index. resolve() reuses the SAME fixture table the tool-gallery and
   // scenario fixtures reference by uuid, so a card built here shows exactly
   // the state its short id was chosen to demonstrate. read() fabricates a
   // fake transcript tail rather than reading anything real; CS_ERR_READ is
