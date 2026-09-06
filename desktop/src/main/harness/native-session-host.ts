@@ -2094,21 +2094,24 @@ export class NativeSessionHost extends EventEmitter {
     // the two are resolved together for every create/resume/swap.
     private providerTypeFor: (binding: ModelBinding) => Promise<ProfileProviderType | null>,
     // Per-model vision fact read from the provider catalog's declared input
-    // modalities (Task 6c). Today only OpenRouter's catalog can actually
-    // answer this — everyone else (direct-key providers, openai-compatible,
-    // local-engine) has no such signal, so the real (ipc-handlers) wiring
-    // returns null for them WITHOUT ever touching the catalog, same as an
-    // OpenRouter cache miss or fetch failure returning null after touching
-    // it. null degrades to resolveProfile's existing registry/provider-default
-    // behavior (DiscoveredModel.supportsVision left undefined) — it is never
-    // allowed to throw. It is also never allowed to block a NON-OpenRouter
-    // session start; for a live OpenRouter binding it does await the same
-    // bounded (AbortSignal.timeout-guarded) catalog fetch contextAndSlotsFor
-    // already pays for that binding, so it is not fully non-blocking there —
-    // see the ipc-handlers.ts construction site for the short-circuit that
-    // makes this true. Positioned right after providerTypeFor for the same
-    // reason that one sits after contextAndSlotsFor: all three are resolved
-    // together for every create/resume/swap.
+    // modalities (Task 6c; local models added by design §E5). TWO catalogs can
+    // answer it, both from a field called `architecture.input_modalities`:
+    // OpenRouter's, and the local engine's own GET /models (a local model reads
+    // `["text","image"]` exactly when llama-server paired a vision projector
+    // beside it). Everyone else (direct-key providers, openai-compatible) has
+    // no such signal, so the real (ipc-handlers) wiring returns null for them
+    // WITHOUT ever touching the catalog, same as a cache miss or fetch failure
+    // returning null after touching it. null degrades to resolveProfile's
+    // existing registry/provider-default behavior
+    // (DiscoveredModel.supportsVision left undefined) — it is never allowed to
+    // throw. It is also never allowed to block a session start it does not
+    // apply to; for a live OpenRouter or local binding it does await the same
+    // bounded catalog read contextAndSlotsFor already pays for that binding, so
+    // it is not fully non-blocking there — see the ipc-handlers.ts construction
+    // site for the short-circuit that makes this true. Positioned right after
+    // providerTypeFor for the same reason that one sits after
+    // contextAndSlotsFor: all three are resolved together for every
+    // create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
     // Fourth per-binding catalog fact (Task 11), resolved at the same three
     // moments as its siblings above (create / resume / swap): what the bound

@@ -37,15 +37,25 @@ vi.mock('../src/main/harness/mcp/mcp-client', async (importOriginal) => {
 
 // Fix 2 regression seam: spies on ModelCatalog.get() (extends + delegates to
 // the real implementation, same pattern as the NativeSessionHost spy below)
-// so a test can prove the ipc-handlers-wired visionSupportFor closure never
-// calls it for a non-OpenRouter binding — without needing a real network
-// fetch, since super.get() is never reached in that path either.
+// so a test can prove which bindings the ipc-handlers-wired visionSupportFor
+// closure consults the catalog for — without needing a real network fetch,
+// since super.get() is never reached in the short-circuited paths either.
+//
+// T18 adds `catalogRowsOverride`: set it and get() answers with those rows
+// instead of delegating. That is what lets a test prove the OTHER half — not
+// just that the closure READS the catalog for a local binding, but that the
+// row's supportsVision is what comes back out of it. Without the override the
+// real get() would answer "no local rows" (no engine installed in this
+// fixture) and every assertion would be null, which is also what a completely
+// unwired closure returns.
 const modelCatalogGetSpy = vi.fn();
+let catalogRowsOverride: unknown[] | null = null;
 vi.mock('../src/main/providers/model-catalog', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/main/providers/model-catalog')>();
   class SpyModelCatalog extends actual.ModelCatalog {
     get(...args: Parameters<InstanceType<typeof actual.ModelCatalog>['get']>) {
       modelCatalogGetSpy(...args);
+      if (catalogRowsOverride) return Promise.resolve(catalogRowsOverride as any);
       return super.get(...args);
     }
   }
@@ -247,18 +257,46 @@ describe('McpManager startup wiring (Task 7b)', () => {
 // Fix 2 regression: visionSupportFor (the 5th positional constructor arg —
 // see the "3rd closure" test above) used to call modelCatalog.get()
 // UNCONDITIONALLY, for every provider type — adding a second full catalog
-// fetch/parse to every cloud session start and a first one to every local
-// session start, neither of which can ever produce a non-null answer (only
-// OpenRouter's catalog carries modality data). This proves the fix: a
-// non-OpenRouter binding's session start never reaches the catalog at all.
-describe('visionSupportFor short-circuits for non-OpenRouter bindings (Fix 2)', () => {
+// fetch/parse to every cloud session start, which can never produce a non-null
+// answer (a direct-key or openai-compatible catalog carries no modality data).
+// This proves the fix still holds: such a binding's session start never
+// reaches the catalog at all.
+//
+// T18 (design §E5) narrows the short-circuit by one provider: a LOCAL binding
+// now DOES consult the catalog, because llama-server's own GET /models answers
+// the same question for a model it paired a vision projector with, and that
+// answer arrives on the very same CatalogModel.supportsVision field OpenRouter
+// uses. The local tests below are the ones that changed direction.
+describe('visionSupportFor: which bindings consult the catalog (Fix 2, T18)', () => {
   beforeEach(() => {
     // Same "leave it, don't race ProviderRegistry.init()'s write" reasoning
     // as the describe block above.
     testHome = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-vision-shortcircuit-'));
     capturedCtorArgs = undefined;
+    catalogRowsOverride = null;
     modelCatalogGetSpy.mockClear();
   });
+
+  /** Registers the handlers with a single provider written straight to
+   *  providers.json, and hands back the wired visionSupportFor closure. */
+  async function wiredVisionResolver(provider: Record<string, unknown>) {
+    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
+    fs.writeFileSync(
+      path.join(testHome, '.youcoded', 'providers.json'),
+      JSON.stringify({ v: 1, providers: [provider] }),
+    );
+    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
+    registerIpcHandlers(
+      makeMockIpcMain() as any,
+      makeMockSessionManager() as any,
+      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
+      makeMockSkillProvider() as any,
+    );
+    expect(capturedCtorArgs).toBeDefined();
+    return capturedCtorArgs![4] as (binding: { providerId: string; modelId: string }) => Promise<boolean | null>;
+  }
+
+  const LOCAL_PROVIDER = { id: 'local', type: 'local-engine', label: 'Local models (llama.cpp)', enabled: true };
 
   it('never calls modelCatalog.get() for an anthropic binding', async () => {
     // Write providers.json directly (rather than relying on
@@ -287,27 +325,34 @@ describe('visionSupportFor short-circuits for non-OpenRouter bindings (Fix 2)', 
     expect(modelCatalogGetSpy).not.toHaveBeenCalled();
   });
 
-  it('never calls modelCatalog.get() for a local-engine binding', async () => {
-    // 'local' is a BUILT_IN id (provider-registry.ts) — same race-avoidance
-    // reasoning as above, write it directly rather than waiting on init().
-    fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
-    fs.writeFileSync(
-      path.join(testHome, '.youcoded', 'providers.json'),
-      JSON.stringify({ v: 1, providers: [{ id: 'local', type: 'local-engine', label: 'Local models (llama.cpp)', enabled: true }] }),
-    );
+  // T18 — the three local cases, and the reason this task exists: a local
+  // vision model has to be read out of the SAME catalog field an OpenRouter
+  // vision model is, through the SAME closure. Before T18 this returned null
+  // for every local binding without ever looking.
+  it('reads a LOCAL model\'s supportsVision straight out of the catalog (T18)', async () => {
+    // 'local' is a BUILT_IN id (provider-registry.ts) — write providers.json
+    // directly rather than waiting on ProviderRegistry.init().
+    catalogRowsOverride = [{ id: 'SmolVLM-256M-Instruct-Q8_0', providerId: 'local', label: 'SmolVLM', supportsVision: true }];
+    const visionSupportFor = await wiredVisionResolver(LOCAL_PROVIDER);
+    expect(await visionSupportFor({ providerId: 'local', modelId: 'SmolVLM-256M-Instruct-Q8_0' })).toBe(true);
+    expect(modelCatalogGetSpy).toHaveBeenCalled();
+  });
 
-    const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
-    registerIpcHandlers(
-      makeMockIpcMain() as any,
-      makeMockSessionManager() as any,
-      { webContents: { send: vi.fn() }, isDestroyed: () => false } as any,
-      makeMockSkillProvider() as any,
-    );
+  it('a LOCAL text-only row resolves to false, not to "don\'t know" (T18)', async () => {
+    catalogRowsOverride = [{ id: 'text-only-Q8_0', providerId: 'local', label: 'Text only', supportsVision: false }];
+    const visionSupportFor = await wiredVisionResolver(LOCAL_PROVIDER);
+    expect(await visionSupportFor({ providerId: 'local', modelId: 'text-only-Q8_0' })).toBe(false);
+  });
 
-    const visionSupportFor = capturedCtorArgs![4] as (binding: { providerId: string; modelId: string }) => Promise<boolean | null>;
-    const result = await visionSupportFor({ providerId: 'local', modelId: 'some-gguf' });
-    expect(result).toBeNull();
-    expect(modelCatalogGetSpy).not.toHaveBeenCalled();
+  it('a LOCAL row the catalog cannot answer for degrades to null, and does not throw (T18)', async () => {
+    // The engine was stopped when the catalog was built (so the row carries no
+    // modality data), or the model is not in the catalog at all. null is the
+    // closure's "no source could answer" — resolveProfile then falls back to
+    // its registry/provider-type default exactly as before.
+    catalogRowsOverride = [{ id: 'other-model', providerId: 'local', label: 'Other' }];
+    const visionSupportFor = await wiredVisionResolver(LOCAL_PROVIDER);
+    expect(await visionSupportFor({ providerId: 'local', modelId: 'missing-model' })).toBeNull();
+    expect(await visionSupportFor({ providerId: 'local', modelId: 'other-model' })).toBeNull();
   });
 });
 

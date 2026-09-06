@@ -357,6 +357,100 @@ describe('EngineSupervisor', () => {
     expect(byId).toEqual({ a: 'loaded', b: 'sleeping', c: 'loading', d: 'unloaded', e: 'unloaded' });
   });
 
+  // ---- input_modalities: how a local model says it can look at a picture ----
+  //
+  // Design §E5. The two rows below are a REAL `GET /models` response, captured
+  // 2026-09-05 from the PINNED binary (b10665, the vulkan build under
+  // ~/.config/youcoded-dev) spawned with --models-dir over a directory holding
+  // SmolVLM-256M twice: once in a folder beside its mmproj-*.gguf, and once as
+  // a lone flat .gguf. Verbatim except for the absolute cache path inside
+  // `status.args` / `status.preset`, shortened to keep the fixture readable —
+  // nothing this code reads. If this shape ever drifts, probe-vision.mjs is the
+  // live check and docs/engine-dependencies.md is where the schema is pinned.
+  const REAL_MODELS_RESPONSE = {
+    data: [
+      {
+        id: 'SmolVLM-256M-Instruct-Q8_0',
+        aliases: [], tags: [], object: 'model', owned_by: 'llamacpp', created: 1788656122,
+        status: {
+          value: 'unloaded',
+          args: ['/engine/llama-server', '--host', '127.0.0.1', '--jinja', '--port', '0', '--no-webui',
+            '--alias', 'SmolVLM-256M-Instruct-Q8_0', '--ctx-size', '4096',
+            '--model', '/cache/SmolVLM-256M-Instruct-Q8_0/SmolVLM-256M-Instruct-Q8_0.gguf',
+            '--mmproj', '/cache/SmolVLM-256M-Instruct-Q8_0/mmproj-SmolVLM-256M-Instruct-f16.gguf'],
+          preset: '[SmolVLM-256M-Instruct-Q8_0]\njinja = 1\nwebui = 0\nctx-size = 4096\n',
+        },
+        architecture: { input_modalities: ['text', 'image'], output_modalities: ['text'] },
+        source: 'models_dir', can_remove: false,
+      },
+      {
+        id: 'SmolVLM-256M-TextOnly-Q8_0',
+        aliases: [], tags: [], object: 'model', owned_by: 'llamacpp', created: 1788656122,
+        status: {
+          value: 'unloaded',
+          args: ['/engine/llama-server', '--host', '127.0.0.1', '--jinja', '--port', '0', '--no-webui',
+            '--alias', 'SmolVLM-256M-TextOnly-Q8_0', '--ctx-size', '4096',
+            '--model', '/cache/SmolVLM-256M-TextOnly-Q8_0.gguf'],
+          preset: '[SmolVLM-256M-TextOnly-Q8_0]\njinja = 1\nwebui = 0\nctx-size = 4096\n',
+        },
+        architecture: { input_modalities: ['text'], output_modalities: ['text'] },
+        source: 'models_dir', can_remove: false,
+      },
+    ],
+    object: 'list',
+  };
+
+  /** Boots a supervisor whose router answers `GET /models` with `payload`.
+   *  The URL test is `includes('/models')`, NOT `endsWith` — refreshModels asks
+   *  `/models?reload=1`, and an endsWith stub silently stops matching the day a
+   *  query string is added (the exact trap engine-manager-slot-count.test.ts
+   *  documents for /props). */
+  async function supervisorServing(payload: unknown) {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (String(url).includes('/models')) return { ok: true, status: 200, json: async () => payload } as any;
+      return { ok: false, status: 404 } as any;
+    });
+    const s = makeSupervisor(fetchImpl);
+    await s.ensureRunning();
+    return s;
+  }
+
+  it('listModels keeps architecture.input_modalities off a REAL /models response (design §E5)', async () => {
+    sup = await supervisorServing(REAL_MODELS_RESPONSE);
+    const byId = Object.fromEntries((await sup.listModels()).map((m) => [m.id, m.inputModalities]));
+    // Exact arrays, not "contains image": the whole list is what the app keeps,
+    // and a matcher that only looked for 'image' would pass on a row that had
+    // lost 'text' too.
+    expect(byId['SmolVLM-256M-Instruct-Q8_0']).toEqual(['text', 'image']);
+    expect(byId['SmolVLM-256M-TextOnly-Q8_0']).toEqual(['text']);
+  });
+
+  it('listModels leaves inputModalities UNSET when the row carries no architecture — no throw', async () => {
+    // Every pre-§E5 fixture in this file looks like this, and so does a row
+    // from an older llama.cpp build. "Don't know" must NOT collapse into
+    // "text only", or a vision model would be told it cannot see.
+    sup = await supervisorServing({ object: 'list', data: [{ id: 'no-arch-Q4_K_M', status: { value: 'loaded' } }] });
+    const models = await sup.listModels();
+    expect(models).toEqual([{ id: 'no-arch-Q4_K_M', sizeBytes: null, loaded: true, state: 'loaded' }]);
+    expect('inputModalities' in models[0]).toBe(false);
+  });
+
+  it.each([
+    ['architecture: null', { architecture: null }],
+    ['architecture: a string', { architecture: 'image' }],
+    ['architecture: an array', { architecture: ['image'] }],
+    ['architecture with no input_modalities', { architecture: { output_modalities: ['text'] } }],
+    ['input_modalities: not an array', { architecture: { input_modalities: 'image' } }],
+    ['input_modalities: an array of non-strings', { architecture: { input_modalities: [1, 2] } }],
+  ])('listModels leaves inputModalities UNSET for a malformed shape: %s', async (_label, extra) => {
+    sup = await supervisorServing({ object: 'list', data: [{ id: 'malformed-Q4_K_M', status: { value: 'unloaded' }, ...extra }] });
+    const models = await sup.listModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].inputModalities).toBeUndefined();
+  });
+
   it('emits models-changed after boot with the live model set (drives the per-session banner)', async () => {
     mockSpawn.mockReturnValue(makeFakeChild());
     const fetchImpl = vi.fn(async (url: string) => {

@@ -2392,26 +2392,36 @@ export function registerIpcHandlers(
       const p = (await providerRegistry.list()).find((x) => x.id === binding.providerId);
       return (p?.type as ProfileProviderType) ?? null;
     },
-    // Vision-support resolver (Task 6c): only OpenRouter's catalog carries real
-    // per-model modality data (architecture.input_modalities, parsed in
-    // model-catalog.ts's openrouterModels()) — every other provider type has no
-    // such signal, so this returns null for them and lets resolveProfile fall
-    // back to the registry/provider-type default, same as today. Mirrors the
-    // context/slots closure's short-circuit above (same `providers`/`p`
-    // lookup, just gated on a different provider type): every non-openrouter
-    // binding — INCLUDING local-engine — returns before modelCatalog is ever
-    // touched, so this closure adds no fetch/readFileSync/JSON.parse/engine-query
-    // cost to a session start it doesn't apply to. Only a live OpenRouter
-    // binding pays modelCatalog.get()'s cost, same as the context/slots closure
-    // already pays modelCatalog.contextLengthFor()'s for that same binding.
+    // Vision-support resolver (Task 6c; local models added by T18, design §E5).
+    // TWO provider types can answer "does THIS model accept images" from real
+    // per-model data rather than a hand-maintained guess, and both answer it
+    // through the SAME catalog field — so there is ONE lookup here, not two
+    // mechanisms:
+    //   - OpenRouter, from `architecture.input_modalities` on its /models rows
+    //     (parsed in model-catalog.ts's openrouterModels());
+    //   - the LOCAL engine, from the identically-named field on llama-server's
+    //     own `GET /models` (kept by EngineSupervisor.listModels, turned into
+    //     CatalogModel.supportsVision by EngineManager.catalogModels) — which
+    //     is `["text","image"]` exactly when the router paired an mmproj
+    //     projector beside the model.
+    // Every OTHER provider type has no such signal, so this still returns null
+    // for them and lets resolveProfile fall back to the registry/provider-type
+    // default. That short-circuit mirrors the context/slots closure above (same
+    // `providers`/`p` lookup, just gated on provider type) and is what keeps
+    // this closure off a session start it does not apply to: a direct-key or
+    // openai-compatible binding never touches modelCatalog at all.
+    // A local binding DOES now pay a catalog read — but the same session start
+    // already asked the engine for its context window one closure above, so the
+    // engine is running and the read is a localhost GET, not an engine boot.
     // modelCatalog.get() never throws (its own contract — a dead network
-    // degrades to stale cache or an empty list), so there is nothing to catch
-    // here; a cache miss or unknown model just falls through the
-    // `?.supportsVision` chain to null.
+    // degrades to stale cache or an empty list, and an unavailable engine
+    // degrades to no local rows), so there is nothing to catch here; a cache
+    // miss, an unknown model, or a router that reported no modalities all fall
+    // through the `?.supportsVision` chain to null, which means "don't know".
     async (binding) => {
       const providers = await providerRegistry.list();
       const p = providers.find((x) => x.id === binding.providerId);
-      if (p?.type !== 'openrouter') return null;
+      if (p?.type !== 'openrouter' && p?.type !== 'local-engine') return null;
       const models = await modelCatalog.get(providers);
       const hit = models.find((m) => m.providerId === binding.providerId && m.id === binding.modelId);
       return hit?.supportsVision ?? null;

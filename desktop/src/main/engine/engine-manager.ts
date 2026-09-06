@@ -953,16 +953,29 @@ export class EngineManager extends EventEmitter {
     const cfg = readEngineConfig(this.home);
     await this.rebuildSupervisor(inst);
     const models = await this.supervisor!.listModels();
-    return models.map((m) => ({
-      id: m.id,
-      providerId: 'local',
-      // The id stays the raw first-part filename (that IS the engine's address
-      // for the whole set); only the label drops the -00001-of-00004 marker, so
-      // one split model reads as one model in the picker.
-      label: stripSplitSuffix(m.id),
-      contextLength: cfg.contextSize,
-      local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true, state: m.state },
-    }));
+    return models.map((m) => {
+      const row: CatalogModel = {
+        id: m.id,
+        providerId: 'local',
+        // The id stays the raw first-part filename (that IS the engine's address
+        // for the whole set); only the label drops the -00001-of-00004 marker, so
+        // one split model reads as one model in the picker.
+        label: stripSplitSuffix(m.id),
+        contextLength: cfg.contextSize,
+        local: { sizeBytes: m.sizeBytes ?? 0, quant: 'unknown', installed: true, state: m.state },
+      };
+      // Design §E5 — a local model that the router paired a projector with can
+      // see images, and this is where the rest of the app finds that out: the
+      // catalog row is what the session's vision resolver reads, exactly as it
+      // already does for an OpenRouter row. Assigned CONDITIONALLY, like
+      // model-catalog.ts's openrouterModels() does with the same field: when the
+      // router was never asked (engine stopped, so listModels answered from the
+      // disk scan) the answer is "don't know", and CatalogModel.supportsVision
+      // must stay undefined rather than become a `false` a caller would read as
+      // "this model cannot see" and quietly drop the user's attachment.
+      if (m.inputModalities) row.supportsVision = m.inputModalities.includes('image');
+      return row;
+    });
   }
 
   /** The REAL context window HarnessSession should size its history + compaction

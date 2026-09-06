@@ -91,12 +91,15 @@ export type ProfileProviderType =
 // LAYER 1 — discovered truth (a later task fills contextLength from the real engine).
 export interface DiscoveredModel {
   providerType: ProfileProviderType; modelId: string; contextLength: number | null;
-  /** Per-model vision fact sourced from a catalog that can actually answer it
-   *  (today: OpenRouter's architecture.input_modalities — see model-catalog.ts).
-   *  Optional because most construction sites cannot answer this yet (no
-   *  catalog lookup wired at the call site) — `undefined` here means "not
-   *  discovered", not "no". visionFor() treats it as the middle precedence
-   *  layer: below the KNOWN_MODELS registry, above the provider-type default. */
+  /** Per-model vision fact sourced from a catalog that can actually answer it:
+   *  OpenRouter's architecture.input_modalities (see model-catalog.ts), and —
+   *  since design §E5 — the identically-named field llama-server reports for a
+   *  LOCAL model it paired a vision projector with (see
+   *  EngineManager.catalogModels). Optional because most construction sites
+   *  cannot answer this (no catalog lookup wired at the call site) —
+   *  `undefined` here means "not discovered", not "no". visionFor() treats it
+   *  as the middle precedence layer: below the KNOWN_MODELS registry, above the
+   *  provider-type default. */
   supportsVision?: boolean;
   /** Task 13 — the engine's live parallel-slot count (llama-server's
    *  n_slots), read from the SAME /props call that already supplies
@@ -345,8 +348,9 @@ export function effectiveContextForModel(loadedContext: number | null, modelId: 
 // multimodal. openrouter / openai-compatible / local-engine are deliberately NOT
 // here: they are transports, not models — the same endpoint serves vision and
 // text-only models — so those resolve from the registry, then a DISCOVERED
-// per-model fact (openrouter's catalog can supply one — see DiscoveredModel's
-// supportsVision comment), and only then this provider-type default.
+// per-model fact (openrouter's catalog supplies one, and so does the local
+// engine's own /models — see DiscoveredModel's supportsVision comment), and
+// only then this provider-type default.
 const VISION_PROVIDERS = new Set<ProfileProviderType>(['anthropic', 'openai', 'google']);
 
 function visionFor(d: DiscoveredModel, registry: KnownModelEntry[]): boolean {

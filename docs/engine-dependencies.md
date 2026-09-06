@@ -164,6 +164,18 @@ Observed b9992 shape:
   `engine-supervisor.test.ts`.
 - **No `size` field** on `/models` rows — `sizeBytes` comes from the cache scan,
   merged in by id (the loading banner needs the model size).
+- **`architecture.input_modalities` is now CONSUMED, not just observed (design
+  §E5).** `listModels` keeps the array on `EngineModel.inputModalities`,
+  `EngineManager.catalogModels` turns `includes('image')` into
+  `CatalogModel.supportsVision`, and the session's vision resolver in
+  `ipc-handlers.ts` reads that field for a local binding exactly as it already
+  did for an OpenRouter one. Re-captured verbatim from **b10665, 2026-09-05**:
+  a model in a folder beside its `mmproj-*.gguf` reports
+  `{"input_modalities":["text","image"],"output_modalities":["text"]}`, the same
+  model flat reports `["text"]`. If this field is ever renamed or dropped
+  upstream, every local vision model silently becomes text-only — a row we
+  cannot read leaves `supportsVision` UNSET (never a guessed `false`), and
+  `probe-vision.mjs` is the check that catches it on an engine bump.
 - **Per-model state polling (2026-07-14):** the supervisor polls `GET /models`
   every 1.5 s while running (400 ms while a load is in flight) and emits `models-changed` only on an (id→state)
   diff (llama-server has no push channel). `ipc-handlers` joins this with the
