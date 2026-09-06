@@ -10,9 +10,9 @@
 // not zero: this feature already shipped a guard that passed because a timeout
 // produced the same value as success.
 import React from 'react';
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeAll, afterAll } from 'vitest';
 import { render, cleanup, fireEvent, act, screen, waitFor } from '@testing-library/react';
-import { SizeLine, LocalModelRow } from '../src/renderer/components/LocalModelsSection';
+import { SizeLine, LocalModelRow, setModelSettingsPollMs } from '../src/renderer/components/LocalModelsSection';
 import EngineCard from '../src/renderer/components/EngineCard';
 import type { FitEstimate, InstalledLocalModel, StoredModelSettings } from '../src/shared/model-manager-types';
 
@@ -43,6 +43,20 @@ function openBubble() {
   fireEvent.mouseEnter(screen.getByLabelText(/is made of$/));
 }
 
+// The dialog's own poll interval, wound down. Every guard below still watches a
+// REAL poll happen against the real component — this only shortens the gap
+// between them, using the value the dialog itself reads, so no test can drift
+// away from the shipped number by keeping a copy of it.
+let shippedPollMs = 0;
+/** Comfortably longer than one poll tick, so "nothing happened" means the poll
+ *  really did get its chance and chose not to act. */
+const APOLL = 250;
+/** Waiting on something the poll must eventually do. Generous next to a 50 ms
+ *  interval, so a loaded machine cannot fail a correct guard. */
+const POLLED = { timeout: 3_000, interval: 20 } as const;
+
+beforeAll(() => { shippedPollMs = setModelSettingsPollMs(50); });
+afterAll(() => { setModelSettingsPollMs(shippedPollMs); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('the size breakdown bubble', () => {
@@ -226,7 +240,7 @@ describe('a model’s settings dialog', () => {
     expect(screen.getByText('Applies after the current reply.')).toBeTruthy();
     await waitFor(
       () => expect(screen.queryByText('Applies after the current reply.')).toBeNull(),
-      { timeout: 10_000, interval: 100 },
+      POLLED,
     );
   });
 
@@ -237,7 +251,7 @@ describe('a model’s settings dialog', () => {
     await openSettings({ ...SETTINGS, contextLength: 8192, pendingApply: true });
     const box = screen.getByLabelText('Context length for this model') as HTMLInputElement;
     fireEvent.change(box, { target: { value: '4096' } });
-    await new Promise((r) => setTimeout(r, 2600));
+    await new Promise((r) => setTimeout(r, APOLL));
     expect((screen.getByLabelText('Context length for this model') as HTMLInputElement).value).toBe('4096');
   });
 
@@ -250,7 +264,7 @@ describe('a model’s settings dialog', () => {
     const { reads, saves } = deferredModels({ ...SETTINGS, keepLoaded: false });
     await openDialog();
     // A poll goes out, and is still in the air…
-    await waitFor(() => expect(reads.length).toBeGreaterThan(0), { timeout: 10_000, interval: 50 });
+    await waitFor(() => expect(reads.length).toBeGreaterThan(0), POLLED);
     // …when the user turns the switch on, and the save comes back first.
     await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
     await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
@@ -265,7 +279,7 @@ describe('a model’s settings dialog', () => {
     // outstanding, and order of arrival is not order of issue.
     const { reads } = deferredModels({ ...SETTINGS, keepLoaded: false });
     await openDialog();
-    await waitFor(() => expect(reads.length).toBeGreaterThanOrEqual(2), { timeout: 10_000, interval: 50 });
+    await waitFor(() => expect(reads.length).toBeGreaterThanOrEqual(2), POLLED);
     // The NEWER read answers first…
     await act(async () => { reads[1].resolve({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
     expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
@@ -299,7 +313,7 @@ describe('a model’s settings dialog', () => {
     await waitFor(() => expect(screen.getByText('Could not read this model’s settings.')).toBeTruthy());
     await waitFor(
       () => expect(screen.queryByText('Could not read this model’s settings.')).toBeNull(),
-      { timeout: 10_000, interval: 100 },
+      POLLED,
     );
     expect(screen.getByText('Context length')).toBeTruthy();
   });
@@ -322,7 +336,7 @@ describe('a model’s settings dialog', () => {
     await openDialog();
     await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
     await waitFor(() => expect(screen.getByText('Disk is full.')).toBeTruthy());
-    await waitFor(() => expect(screen.getByText('error: out of memory')).toBeTruthy(), { timeout: 10_000, interval: 100 });
+    await waitFor(() => expect(screen.getByText('error: out of memory')).toBeTruthy(), POLLED);
     // …and the save failure is still on screen: it is the user's, not the
     // poll's, and a successful read must not wipe it.
     expect(screen.getByText('Disk is full.')).toBeTruthy();
@@ -336,12 +350,35 @@ describe('a model’s settings dialog', () => {
     await openDialog();
     const before = models.settings.mock.calls.length;
     await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
-    await new Promise((r) => setTimeout(r, 2600));     // a poll tick passes
+    await new Promise((r) => setTimeout(r, APOLL));     // a poll tick passes
     expect(models.settings.mock.calls.length).toBe(before);
     // …and once the save lands, polling resumes.
     await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
-    await waitFor(() => expect(models.settings.mock.calls.length).toBeGreaterThan(before), { timeout: 10_000, interval: 100 });
+    await waitFor(() => expect(models.settings.mock.calls.length).toBeGreaterThan(before), POLLED);
     expect(reads.length).toBeGreaterThan(0);
+  });
+
+  it('§C2: two saves in flight — the SLOWER one cannot repaint the older value', async () => {
+    // Reachable without contriving anything: saving Extra engine flags makes
+    // main RUN the engine binary to check them, which takes seconds, while
+    // saving a toggle comes back at once. Type a flag, blur, then hit Keep
+    // loaded, and the flags answer lands last carrying the value from before
+    // the toggle — the switch turns itself back off under the user's hand.
+    const { saves } = deferredModels({ ...SETTINGS, keepLoaded: false, extraFlags: '' });
+    await openDialog();
+    // The slow save first: a flag, which main validates by running the binary.
+    // The flags box lives behind Advanced.
+    await act(async () => { fireEvent.click(screen.getByText('Advanced')); });
+    const flags = screen.getByLabelText('Extra engine flags');
+    await act(async () => { fireEvent.change(flags, { target: { value: '--temp 0.6' } }); fireEvent.blur(flags); });
+    // Then the fast one, which answers straight away.
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+    expect(saves).toHaveLength(2);
+    await act(async () => { saves[1]({ ...SETTINGS, extraFlags: '', keepLoaded: true }); await Promise.resolve(); });
+    expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
+    // …and now the slow one lands, carrying the world as it was before the click.
+    await act(async () => { saves[0]({ ...SETTINGS, extraFlags: '--temp 0.6', keepLoaded: false }); await Promise.resolve(); });
+    expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
   });
 
   it('§C2: two overlapping saves — the first one finishing does not unblock the poll', async () => {
@@ -356,19 +393,19 @@ describe('a model’s settings dialog', () => {
     await act(async () => { fireEvent.change(box, { target: { value: '8192' } }); fireEvent.blur(box); });
     expect(saves).toHaveLength(2);
     await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
-    await new Promise((r) => setTimeout(r, 2600));
+    await new Promise((r) => setTimeout(r, APOLL));
     expect(models.settings.mock.calls.length).toBe(before);
   });
 
   it('§C2: closing the dialog stops the polling, and a late answer changes nothing', async () => {
     const { reads, models } = deferredModels(SETTINGS);
     await openDialog();
-    await waitFor(() => expect(reads.length).toBeGreaterThan(0), { timeout: 10_000, interval: 50 });
+    await waitFor(() => expect(reads.length).toBeGreaterThan(0), POLLED);
     cleanup();
     const after = models.settings.mock.calls.length;
     // A late answer to a closed dialog must not try to draw into it.
     await act(async () => { reads[0].resolve({ ...SETTINGS, lastLoadError: 'too late' }); await Promise.resolve(); });
-    await new Promise((r) => setTimeout(r, 2600));
+    await new Promise((r) => setTimeout(r, APOLL));
     expect(models.settings.mock.calls.length).toBe(after);
     expect(screen.queryByText('too late')).toBeNull();
   });
@@ -380,7 +417,7 @@ describe('a model’s settings dialog', () => {
     expect(screen.queryByText(LOAD_ERROR_TITLE)).toBeNull();
     await waitFor(
       () => expect(screen.getByText('error: out of memory')).toBeTruthy(),
-      { timeout: 10_000, interval: 100 },
+      POLLED,
     );
   });
 });

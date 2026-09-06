@@ -910,6 +910,26 @@ export function LocalModelRow({
 
 // ── Per-model settings (deck Q-2, pick a; round 2 P-7) ───────────────────────
 
+/** How often a model's open Settings dialog re-asks main, in milliseconds.
+ *
+ *  ONE value, which the dialog itself reads — never a number the tests keep a
+ *  second copy of. This feature has already deleted one default that lived in
+ *  three places, and a test asserting against its own copy of an interval would
+ *  be the same mistake with a stopwatch.
+ *
+ *  It is overridable because eight guards have to watch a poll actually happen:
+ *  at the shipped two seconds they spent about 28 seconds of every suite run
+ *  waiting, and roughly double that on a FAILING run, since each broken guard
+ *  burns its whole timeout before giving up — heaviest exactly when somebody is
+ *  debugging. Same idiom as the engine manager's own `configApplyPollMs` seam.
+ *  Nothing in the app calls the setter. */
+const POLL = { ms: 2000 };
+export function setModelSettingsPollMs(ms: number): number {
+  const previous = POLL.ms;
+  POLL.ms = ms;
+  return previous;
+}
+
 const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'] as const;
 
 /** One shape for every setting — the SettingRow every Settings screen uses — so
@@ -1001,15 +1021,26 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     // the dialog would sit there saying "Applies after the current reply" for
     // as long as it is open, and the user would close it, reopen it and
     // conclude the setting never stuck.
-    const timer = setInterval(read, 2000);
+    const timer = setInterval(read, POLL.ms);
     return () => { alive = false; clearInterval(timer); };
   }, [modelId]);
 
   const save = async (patch: Partial<ModelSettings>) => {
     setSaveError(null);
     savesInFlight.current += 1;
-    saveTick.current += 1;
-    try { setSettings(await window.claude.models.setSettings(modelId, patch)); }
+    const myTick = ++saveTick.current;
+    try {
+      const next = await window.claude.models.setSettings(modelId, patch);
+      // SAVES ARE ORDERED THE SAME WAY READS ARE, and for a reachable reason:
+      // saving Extra engine flags makes main RUN the engine binary to check
+      // them, which takes seconds, while saving a toggle comes back at once.
+      // Type a flag, blur, then hit Keep loaded, and the slow flags answer lands
+      // last carrying the value from before the toggle — and the switch turns
+      // itself back off under the user's hand. Only the NEWEST save may repaint.
+      if (saveTick.current === myTick) setSettings(next);
+    }
+    // A failure is shown whichever save it came from: the user pressed that,
+    // and it did not work.
     catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not save.'); }
     // `finally`, so a save that THROWS still lets the poll run again. Left
     // suppressed, one failed save would freeze every live value in the dialog
