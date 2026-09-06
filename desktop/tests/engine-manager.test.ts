@@ -117,6 +117,22 @@ describe('selectInstallAsset (Fix: platforms without the preferred backend)', ()
 describe('EngineManager — the deferred chip probe and the live device line', () => {
   const settled = () => new Promise((r) => setTimeout(r, 0));
   const AMD_CHIP = { vendor: 'amd' as const, gfxTarget: 'gfx1151' };
+  // WHY: these cases assert an AMD machine is OFFERED ROCm, but EngineManager
+  // reads process.platform/arch straight from the runner (currentBackendOptions
+  // → backendOptions), and backendOptions correctly offers Apple nothing. Left
+  // to the real machine the expectations only hold on linux/win32 x64, so the
+  // macOS leg went red the moment this landed. Same pin, and the same reason,
+  // as the 'faster engine row' block below.
+  const realPlatform = process.platform;
+  const realArch = process.arch;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    Object.defineProperty(process, 'arch', { value: 'x64', configurable: true });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    Object.defineProperty(process, 'arch', { value: realArch, configurable: true });
+  });
   // The real two-device reading from this machine (engine-acquisition.test.ts):
   // the software renderer reports 124406 MiB of system RAM and is not a GPU.
   const REAL_DEVICES = [

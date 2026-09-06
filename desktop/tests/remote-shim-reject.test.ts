@@ -10,8 +10,15 @@ import { REMOTE_UNSUPPORTED_EVENT } from '../src/renderer/remote-unsupported';
 // handing the caller a failure object dressed as a success. Deleting an entry
 // silently restores a screen that lies to the user, and until this test existed
 // the whole suite stayed green while it did.
-const shim = fs.readFileSync(path.join(__dirname, '../src/renderer/remote-shim.ts'), 'utf8');
-const server = fs.readFileSync(path.join(__dirname, '../src/main/remote-server.ts'), 'utf8');
+// WHY .replace(): git checks these sources out with CRLF on Windows, and the
+// scans below look for LF-anchored shapes — `indexOf('\n}\n')` returns -1, so
+// `slice(0, -1)` silently widens "inside applyResponse" to the whole file and
+// the settle-site count reads 5 instead of 3. Normalise at the read, the way
+// every other source-scanning test in this suite does.
+const read = (rel: string) =>
+  fs.readFileSync(path.join(__dirname, rel), 'utf8').replace(/\r\n/g, '\n');
+const shim = read('../src/renderer/remote-shim.ts');
+const server = read('../src/main/remote-server.ts');
 
 /** Every channel remote-server can answer `{ ok:false, error }` to: a `case`
  *  whose body reaches the `{ ok: false, error: … }` responder before the next
