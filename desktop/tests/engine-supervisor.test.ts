@@ -1423,3 +1423,69 @@ describe('EngineSupervisor — router rescan', () => {
     expect(await sup.ensureServable('boot-model-Q4_K_M')).toBe(true);
   });
 });
+
+// The one reading "Add vision" renames a user's model on the strength of
+// (design §E4). Every branch here is the difference between "the child has let
+// go of the file" and "we could not find out" — read the second as the first and
+// the rename lands on an open file.
+describe('EngineSupervisor — routerModelState', () => {
+  /** A router answering /models with exactly these rows. */
+  function routerRows(rows: any[], ok = true) {
+    return vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      if (String(url).includes('/models')) return { ok, status: ok ? 200 : 500, json: async () => ({ data: rows }) } as any;
+      return { ok: false, status: 404 } as any;
+    });
+  }
+
+  it("reads b10665's status OBJECT, and an older bare string too", async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    sup = makeSupervisor(routerRows([
+      { id: 'obj-Q4_K_M', status: { value: 'loaded' } },
+      { id: 'str-Q4_K_M', status: 'sleeping' },
+    ]));
+    await sup.ensureRunning();
+    expect(await sup.routerModelState('obj-Q4_K_M')).toBe('loaded');
+    expect(await sup.routerModelState('str-Q4_K_M')).toBe('sleeping');
+  });
+
+  it('a model the router does not list at all IS unloaded — it cannot be resident', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    sup = makeSupervisor(routerRows([{ id: 'other-Q4_K_M', status: { value: 'loaded' } }]));
+    await sup.ensureRunning();
+    expect(await sup.routerModelState('mine-Q4_K_M')).toBe('unloaded');
+  });
+
+  it('polls a PLAIN GET — never reload=1, which is a write', async () => {
+    mockSpawn.mockReturnValue(makeFakeChild());
+    const fetchImpl = routerRows([{ id: 'a-Q4_K_M', status: { value: 'unloaded' } }]);
+    sup = makeSupervisor(fetchImpl);
+    await sup.ensureRunning();
+    await sup.routerModelState('a-Q4_K_M');
+    const urls = fetchImpl.mock.calls.map((c) => String(c[0]));
+    expect(urls.filter((u) => u.includes('reload'))).toEqual([]);
+  });
+
+  const dontKnow: Array<[string, () => any]> = [
+    ['the router answers an error', () => routerRows([], false)],
+    ['the router cannot be reached', () => vi.fn(async (url: string) => {
+      if (String(url).endsWith('/health')) return { ok: true, status: 200 } as any;
+      throw new Error('ECONNRESET');
+    })],
+    ['the status word is one nothing here recognises', () =>
+      routerRows([{ id: 'a-Q4_K_M', status: { value: 'evicting' } }])],
+  ];
+  for (const [what, impl] of dontKnow) {
+    it(`answers null — "do not know", never "unloaded" — when ${what}`, async () => {
+      mockSpawn.mockReturnValue(makeFakeChild());
+      sup = makeSupervisor(impl());
+      await sup.ensureRunning();
+      expect(await sup.routerModelState('a-Q4_K_M')).toBe(null);
+    });
+  }
+
+  it('answers null when no engine is running (there is nobody to ask)', async () => {
+    sup = makeSupervisor(routerRows([]));
+    expect(await sup.routerModelState('a-Q4_K_M')).toBe(null);
+  });
+});

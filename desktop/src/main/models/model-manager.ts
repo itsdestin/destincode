@@ -12,6 +12,7 @@ import { readManifest, isManifestComplete, downloadDirFor, installedDirFor } fro
 import { CuratedCatalog } from './curated-catalog';
 import { HfClient, hfResolveUrl } from './hf-client';
 import { ModelDownloader } from './model-downloader';
+import { addVisionToModel, type AddVisionTiming } from './add-vision';
 import {
   estimateFit, checkDiskSpace, checkMemoryForLoad, kvCacheBytes, contextLengthFor,
   poolFromDevices, availableMemoryBytes, isResident, type MemoryVerdict, type KvCacheTypes, type MemoryPool,
@@ -66,6 +67,10 @@ export class ModelManager extends EventEmitter {
        *  a refusal message with real numbers in it — would otherwise be
        *  untestable. */
       freeDiskBytes?: number;
+      /** Test seam: "Add vision" waits up to ten minutes for a model to go idle
+       *  and fifteen seconds for it to unload (design §E4). A guard that has to
+       *  wait out either bound for real is a guard that gets deleted. */
+      addVisionTiming?: AddVisionTiming;
     } = {}
   ) {
     super();
@@ -400,6 +405,31 @@ export class ModelManager extends EventEmitter {
   }
 
   cancel(downloadId: string): void { this.getDownloader().cancel(downloadId); }
+
+  /** `models:add-vision` (design §E4): fetch the vision projector for a model
+   *  that is already installed without one. When the model is still flat it is
+   *  first moved into a folder of its own, because the engine only pairs a model
+   *  with its projector inside one subdirectory — the ordering that keeps the
+   *  user's model safe through that move lives in add-vision.ts.
+   *
+   *  The projector is fetched by this.download, the ordinary path: the same disk
+   *  guard, the same in-flight reservation, and the same 'download-progress'
+   *  stream the row already listens on. */
+  async addVision(modelId: string): Promise<{ downloadId: string }> {
+    return addVisionToModel(
+      this.cacheDir(),
+      modelId,
+      {
+        running: () => this.engine.engineRunning(),
+        inFlightFor: (id) => this.engine.inFlightFor(id),
+        unload: (id) => this.engine.unloadModel(id),
+        modelState: (id) => this.engine.routerModelState(id),
+        refreshModels: () => this.engine.refreshModels(),
+      },
+      (repo, quant) => this.download(repo, quant),
+      this.opts.addVisionTiming ?? {},
+    );
+  }
 
   /** Continue an interrupted download from the manifest beside it. Deliberately
    *  no network: the interruption that stranded the download is often the
