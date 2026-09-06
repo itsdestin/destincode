@@ -97,6 +97,13 @@ const TINT = /bg-(amber-500|accent|destructive|red-500|green-500|emerald-500)\/(
  * rest of K5, not overlooked.
  */
 const NOT_CALLOUTS: Record<string, { count: number; why: string }> = {
+  'StatusStrip.tsx': {
+    count: 2,
+    why: "K5's own opt-in tinted surface (2026-09-06): a strip sitting INSIDE a card needs a visible "
+      + 'fill, and it borrows K4 Callout\'s ok/warn colours so the app keeps one colour vocabulary. '
+      + 'These are the strip carrying its own tone, never a hand-rolled callout — a block with a '
+      + 'button is this component by definition',
+  },
   'Button.tsx': { count: 1, why: "danger-outline's hover fill — a control's own state" },
   'ResumeBrowser.tsx': { count: 1, why: 'filter pill selected state (rounded-full, has an inactive branch)' },
   'ThemeShareSheet.tsx': { count: 1, why: 'an <a> styled as a button — it has a hover fill' },
