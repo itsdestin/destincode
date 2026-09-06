@@ -143,18 +143,12 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       });
     },
   });
-  const startVoice = useCallback((opts?: { dropSpaceBeforeCaret?: boolean }) => {
-    // The textarea is the truth here, not React state: the space that started a
-    // walkie-talkie hold was typed a quarter of a second ago and may not have
-    // been committed to state yet.
-    const el = inputRef.current;
-    let cur = el?.value ?? textRef.current;
-    // Take back the space the hold itself typed — including one typed with the
-    // caret in the middle of a sentence, where trimming the END would leave it.
-    if (opts?.dropSpaceBeforeCaret && el) {
-      const caret = el.selectionStart ?? cur.length;
-      if (caret > 0 && cur[caret - 1] === ' ') cur = cur.slice(0, caret - 1) + cur.slice(caret);
-    }
+  const startVoice = useCallback(() => {
+    // The textarea is the truth here, not React state: a keystroke from a
+    // fraction of a second ago may not have reached state yet. (There is no
+    // space to take back — a space bar held for the walkie-talkie never types
+    // one in the first place. See the gesture note below.)
+    const cur = inputRef.current?.value ?? textRef.current;
     // Dictation continues the draft: a typed half-sentence keeps its place and
     // the spoken words follow after one space.
     voiceBaseRef.current = cur.trim() ? cur.replace(/\s*$/, ' ') : '';
@@ -162,11 +156,53 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     void voice.start();
   }, [voice.start]); // eslint-disable-line react-hooks/exhaustive-deps -- reads the draft through the textarea on purpose
   // Q-3 note (Destin): "press and hold the spacebar in a bare input box for
-  // walkie-talkie mode". Hold Space for 250 ms in an EMPTY box to start, let go
-  // to stop; a quick tap does nothing (a leading space in an empty box is
-  // useless anyway, so it is swallowed either way).
+  // walkie-talkie mode" — since widened to any box, with or without text.
+  //
+  // HOW THE GESTURE IS DECIDED, and why it is decided this way (Destin,
+  // 2026-09-05: "still seems like a bit of a gamble as to whether the spacebar
+  // does voice mode or just enters a bunch of spaces").
+  //
+  // The space bar goes down and NOTHING is typed. If it comes back up, or any
+  // other key goes down, before the hold matures, the space is typed then — one
+  // space, at the caret. If the hold matures, dictation starts and no space is
+  // typed at all.
+  //
+  // The rule that stops it feeling like a coin flip: nothing here may depend on
+  // the browser's `event.repeat` flag. The first attempt suppressed auto-repeat
+  // with `if (e.repeat)`, and Electron on Linux does not reliably set it — when
+  // it is missing every repeated space is typed, which is the run of spaces
+  // instead of the microphone. Whether a hold is open is OUR state
+  // (`spaceHoldTimer`), and every space arriving while it is open is swallowed
+  // whatever the event says about itself. At most one space can ever come out.
+  //
+  // Typing is unharmed: a normal space is released in about a tenth of a second,
+  // and the next key aborts the hold and puts the space in AHEAD of itself — so
+  // "hello world" typed at speed cannot come out "hellow orld", which is what a
+  // naive "insert it on key-up" would produce.
+  const SPACE_HOLD_MS = 350;
   const spaceHoldTimer = useRef<number | null>(null);
   const spaceHeld = useRef(false);
+  /** Type the space a pending hold swallowed, at the caret. */
+  const commitPendingSpace = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const at = el.selectionStart ?? el.value.length;
+    const to = el.selectionEnd ?? at;
+    const next = `${el.value.slice(0, at)} ${el.value.slice(to)}`;
+    setText(next);
+    // Keep the caret after the space, or it jumps to the end of the draft.
+    requestAnimationFrame(() => {
+      const again = inputRef.current;
+      if (again) again.setSelectionRange(at + 1, at + 1);
+    });
+  }, []);
+  /** Call off the countdown; answers whether one was actually running. */
+  const cancelSpaceHold = useCallback(() => {
+    if (spaceHoldTimer.current === null) return false;
+    window.clearTimeout(spaceHoldTimer.current);
+    spaceHoldTimer.current = null;
+    return true;
+  }, []);
   const voiceCanStart = voice.supported && voice.readiness?.state === 'ready' && voice.phase === 'idle';
   // Round-2 alternatives for WHERE the listening feedback lives (see VoiceStyle).
   const voiceStyle = useContext(VoiceStyleContext);
@@ -910,30 +946,31 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             onKeyDown={(e) => {
               // Hold Space anywhere in the box = walkie-talkie (see spaceHoldTimer).
               if (e.key === ' ' && !minimal) {
+                // Already talking: the space bar belongs to the microphone.
                 if (spaceHeld.current) { e.preventDefault(); return; }
+                // A hold is already counting down, so this is the keyboard
+                // repeating itself — swallowed WITHOUT asking the event whether
+                // it is a repeat, which is the question that made this a gamble.
+                if (spaceHoldTimer.current !== null) { e.preventDefault(); return; }
                 if (voiceCanStart) {
-                  // An EMPTY box swallows the space — a leading space is useless
-                  // either way, so nothing has to be undone if the hold matures.
-                  // With text in the box the space is TYPED as normal and taken
-                  // back only if the hold matures. Fix (Destin, 2026-09-05: "it
-                  // should work basically any time I press and hold in the input
-                  // area, not just when it's empty").
-                  //
-                  // WHY not swallow it in both cases and put it back on a quick
-                  // tap: a fast typist overlaps keys — space down, next letter
-                  // down, space up — so a space inserted at key-UP lands after
-                  // the letter and spells "hellow orld".
-                  if (!text) e.preventDefault();
-                  else if (e.repeat) e.preventDefault();   // one space per hold, not a run of them
-                  if (!e.repeat && spaceHoldTimer.current === null) {
-                    spaceHoldTimer.current = window.setTimeout(() => {
-                      spaceHoldTimer.current = null;
-                      spaceHeld.current = true;
-                      startVoice({ dropSpaceBeforeCaret: true });
-                    }, 250);
-                  }
+                  // Type nothing yet. Either the hold matures and this was never
+                  // meant to be a space, or it does not and the space goes in
+                  // below — in the right place, exactly once.
+                  e.preventDefault();
+                  spaceHoldTimer.current = window.setTimeout(() => {
+                    spaceHoldTimer.current = null;
+                    spaceHeld.current = true;
+                    startVoice();
+                  }, SPACE_HOLD_MS);
                   return;
                 }
+              }
+              // Any other key while a hold is counting down means the user was
+              // typing, not reaching for the microphone. The swallowed space goes
+              // in BEFORE this key does.
+              if (spaceHoldTimer.current !== null && e.key !== ' ') {
+                cancelSpaceHold();
+                commitPendingSpace();
               }
               // Enter sends, Shift+Enter inserts newline
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -966,7 +1003,11 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             }}
             onKeyUp={(e) => {
               if (e.key !== ' ') return;
+              // Let go before the hold matured: that was a space, not a walkie-
+              // talkie. This is the only place a held space ever becomes text.
+              const wasPending = cancelSpaceHold();
               releaseSpaceHold();
+              if (wasPending) commitPendingSpace();
             }}
             // The box losing focus mid-hold ends the hold too — see
             // releaseSpaceHold. (The idle-unfocus timer below cannot trip this:
@@ -1017,7 +1058,7 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
               seconds={voice.seconds}
               error={voice.error}
               disabled={disabled}
-              onStart={() => startVoice()}
+              onStart={startVoice}
               onStop={() => { void voice.stop(); }}
               onDownload={() => { void voice.download(); }}
               onRecheck={() => { void voice.recheck(); }}

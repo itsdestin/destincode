@@ -739,10 +739,10 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
     await act(async () => { vi.advanceTimersByTime(ms); });
   }
 
-  it('a quarter second of holding starts the mic; letting go stops it', async () => {
+  it('holding the space bar starts the mic; letting go stops it', async () => {
     const textarea = await renderComposer();
     fireEvent.keyDown(textarea, { key: ' ' });
-    await hold(250);
+    await hold(350);
     expect(voiceBridge.start).toHaveBeenCalledTimes(1);
 
     fireEvent.keyUp(textarea, { key: ' ' });
@@ -755,7 +755,7 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
   it('the page being hidden mid-hold closes the microphone', async () => {
     const textarea = await renderComposer();
     fireEvent.keyDown(textarea, { key: ' ' });
-    await hold(250);
+    await hold(350);
     expect(voiceBridge.start).toHaveBeenCalledTimes(1);
 
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
@@ -775,62 +775,98 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
     expect(voiceBridge.stop).not.toHaveBeenCalled();
   });
 
-  // Destin, 2026-09-05: "the spacebar walkie-talkie is very inconsistent. It
-  // should work basically any time I press and hold in the input area, not just
-  // when it's empty. Should append to the end of existing text." This replaces
-  // the earlier rule (contract R19), which only armed the hold in an empty box.
+  // Destin, 2026-09-05, twice. First: "it should work basically any time I press
+  // and hold in the input area, not just when it's empty. Should append to the
+  // end of existing text." Then, on the first attempt at that: "still seems like
+  // a bit of a gamble as to whether the spacebar does voice mode or just enters
+  // a bunch of spaces lmao."
+  //
+  // The gamble was real and these pin it shut. The gesture is now: nothing is
+  // typed while the bar is down; the space appears only if the hold is
+  // abandoned; and the decision NEVER consults the browser's `repeat` flag,
+  // which Electron on Linux does not reliably set. Together those mean at most
+  // ONE space can ever come out of a hold, whatever the keyboard does.
   it('holding the space bar with text in the box starts dictation and keeps the text', async () => {
     const textarea = await renderComposer();
     fireEvent.change(textarea, { target: { value: 'Tell Sam' } });
 
-    // The space is TYPED as normal — a fast typist must never lose one.
-    const notCancelled = fireEvent.keyDown(textarea, { key: ' ' });
-    expect(notCancelled).toBe(true);
-    fireEvent.change(textarea, { target: { value: 'Tell Sam ' } });
-    textarea.setSelectionRange(9, 9);
+    const cancelled = fireEvent.keyDown(textarea, { key: ' ' });
+    expect(cancelled).toBe(false);          // nothing typed while the bar is down
+    await hold(350);
 
-    await hold(250);
     expect(voiceBridge.start).toHaveBeenCalledTimes(1);
-    // Exactly one space between the typed half and the spoken half — the one the
-    // hold itself typed is taken back, not left to double up.
+    // One space between the typed half and the spoken half, added by startVoice.
     expect(textarea.value).toBe('Tell Sam ');
 
     emitHold({ type: 'final', text: 'the meeting moved.' });
     expect(textarea.value).toBe('Tell Sam the meeting moved. ');
   });
 
-  it('a quick tap with text in the box is still just a space', async () => {
+  it('a keyboard that repeats produces ONE space, not a run of them', async () => {
+    // THE bug Destin hit. These repeats carry no `repeat: true`, exactly as they
+    // arrive from Electron on Linux — the old code asked the event and believed
+    // it, so every one of them was typed.
+    const textarea = await renderComposer();
+    fireEvent.change(textarea, { target: { value: 'hello' } });
+
+    fireEvent.keyDown(textarea, { key: ' ' });
+    for (let i = 0; i < 8; i += 1) {
+      expect(fireEvent.keyDown(textarea, { key: ' ' })).toBe(false);   // swallowed
+      await hold(30);
+    }
+    fireEvent.keyUp(textarea, { key: ' ' });
+
+    // 8 repeats over 240 ms — short of the hold, so this is a space, and exactly one.
+    expect(voiceBridge.start).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('hello ');
+  });
+
+  it('a quick tap with text in the box types exactly one space', async () => {
     const textarea = await renderComposer();
     fireEvent.change(textarea, { target: { value: 'already typing' } });
+    textarea.setSelectionRange(14, 14);
 
-    const notCancelled = fireEvent.keyDown(textarea, { key: ' ' });
-    await hold(100);                       // let go well before the quarter second
+    fireEvent.keyDown(textarea, { key: ' ' });
+    await hold(100);                        // let go well before the hold matures
     fireEvent.keyUp(textarea, { key: ' ' });
-    await hold(400);
+    await hold(500);
 
-    expect(notCancelled).toBe(true);       // the browser typed it
+    expect(voiceBridge.start).not.toHaveBeenCalled();
+    expect(textarea.value).toBe('already typing ');
+  });
+
+  it('typing straight through a space puts it in ahead of the next letter', async () => {
+    // "hello world" at speed: the w goes down before the space comes up. The
+    // space must land BEFORE the w, or the box reads "hellow orld".
+    const textarea = await renderComposer();
+    fireEvent.change(textarea, { target: { value: 'hello' } });
+    textarea.setSelectionRange(5, 5);
+
+    fireEvent.keyDown(textarea, { key: ' ' });
+    await hold(80);
+    fireEvent.keyDown(textarea, { key: 'w' });
+
+    expect(textarea.value).toBe('hello ');   // the space, already in, before the w types
     expect(voiceBridge.start).not.toHaveBeenCalled();
   });
 
-  it('takes back the space even when the caret is mid-sentence', async () => {
+  it('puts the space where the caret is, not at the end', async () => {
     const textarea = await renderComposer();
-    fireEvent.change(textarea, { target: { value: 'Tell Sam about it' } });
-    // Caret after "Tell", where the hold's space landed.
-    fireEvent.keyDown(textarea, { key: ' ' });
-    fireEvent.change(textarea, { target: { value: 'Tell  Sam about it' } });
-    textarea.setSelectionRange(5, 5);
+    fireEvent.change(textarea, { target: { value: 'TellSam about it' } });
+    textarea.setSelectionRange(4, 4);        // between "Tell" and "Sam"
 
-    await hold(250);
-    expect(voiceBridge.start).toHaveBeenCalledTimes(1);
-    // The stray double space is gone, and dictation still appends at the END.
-    expect(textarea.value).toBe('Tell Sam about it ');
+    fireEvent.keyDown(textarea, { key: ' ' });
+    await hold(100);
+    fireEvent.keyUp(textarea, { key: ' ' });
+
+    expect(textarea.value).toBe('Tell Sam about it');
   });
 
-  it('an empty box still swallows the space — a leading space is useless', async () => {
+  it('an empty box types no space either way', async () => {
     const textarea = await renderComposer();
     const cancelled = fireEvent.keyDown(textarea, { key: ' ' });
-    expect(cancelled).toBe(false);         // preventDefault: nothing is typed
-    await hold(250);
+    expect(cancelled).toBe(false);
+    await hold(350);
     expect(voiceBridge.start).toHaveBeenCalledTimes(1);
     expect(textarea.value).toBe('');
   });
@@ -838,7 +874,7 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
   it('focus leaving the box mid-hold closes the mic', async () => {
     const textarea = await renderComposer();
     fireEvent.keyDown(textarea, { key: ' ' });
-    await hold(250);
+    await hold(350);
     expect(voiceBridge.start).toHaveBeenCalledTimes(1);
 
     // Clicking away, alt-tabbing — no key-up will ever arrive.
@@ -849,7 +885,7 @@ describe('InputBar — hold the space bar to talk (T9)', () => {
   it('the whole window losing focus mid-hold closes the mic', async () => {
     const textarea = await renderComposer();
     fireEvent.keyDown(textarea, { key: ' ' });
-    await hold(250);
+    await hold(350);
 
     act(() => { window.dispatchEvent(new Event('blur')); });
     expect(voiceBridge.stop).toHaveBeenCalledTimes(1);
