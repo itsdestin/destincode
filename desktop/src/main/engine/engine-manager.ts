@@ -26,8 +26,8 @@ import { detectGpu, backendOptions, gpuDeviceName } from '../models/gpu-detector
 import type { GpuVendor } from '../../shared/model-manager-types';
 import { checkRocmPrereqs } from './rocm-prereqs';
 import type {
-  EngineBackend, EngineInstallProgress, EngineStatus, EngineModel, BackendOption, ReplyTimings,
-  EngineSpeedSettings,
+  EngineBackend, EngineInstallProgress, EngineStatus, EngineModel, EngineModelState, BackendOption,
+  ReplyTimings, EngineSpeedSettings,
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
 import type { InstalledLocalModel } from '../../shared/model-manager-types';
@@ -885,6 +885,28 @@ export class EngineManager extends EventEmitter {
     await this.rebuildSupervisor(inst);
     await this.supervisor!.ensureServable(modelId);
     await this.supervisor!.loadModel(modelId);
+  }
+
+  /** Is a llama-server process running right now? Asked by "Add vision" (design
+   *  §E4) before it unloads and polls: with no process there is nothing holding
+   *  the model's file open and no router to ask, so both steps are skipped
+   *  rather than spent waiting for an answer that can never come. */
+  engineRunning(): boolean {
+    return this.supervisor?.status() === 'running';
+  }
+
+  /** Requests naming this model in flight right now — the per-model count, which
+   *  is what says a model is safe to take out from under (see
+   *  EngineSupervisor.inFlightFor). Zero when there is no engine at all. */
+  inFlightFor(modelId: string): number {
+    return this.supervisor?.inFlightFor(modelId) ?? 0;
+  }
+
+  /** The router's own word on one model's residency; `null` = could not be
+   *  determined, NEVER "unloaded" (EngineSupervisor.routerModelState). */
+  async routerModelState(modelId: string): Promise<EngineModelState | null> {
+    if (!this.supervisor) return null;
+    return this.supervisor.routerModelState(modelId);
   }
 
   /** Make the running router re-scan --models-dir. Called after a download lands

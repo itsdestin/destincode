@@ -967,6 +967,46 @@ export class EngineSupervisor extends EventEmitter {
     }
   }
 
+  /** The ROUTER's own word on one model's residency, or `null` for "could not be
+   *  determined". Read WITHOUT `?reload=1` — a plain GET is a read, and this is
+   *  polled (design §E4).
+   *
+   *  WHY it does not reuse listModels(): that one degrades to a cache scan on
+   *  every failure, and a cache scan reports EVERY model as 'unloaded'. The one
+   *  caller here — "Add vision", which is about to rename the model's file —
+   *  needs "I could not find out" to be distinguishable from "it is unloaded",
+   *  because renaming a file the model child still has open fails on Windows and
+   *  moves an open file on Linux. For the same reason an unrecognised status
+   *  value answers null rather than mapModelState's permissive 'unloaded'.
+   *
+   *  A model the router does not list at all IS unloaded: the router lists
+   *  everything it knows about, so nothing it has never heard of can be
+   *  resident. */
+  async routerModelState(modelId: string): Promise<EngineModelState | null> {
+    if (this.state !== 'running') return null;
+    try {
+      const res = await (this.opts.fetchImpl ?? fetch)(`${this.rootUrl()}/models`, { method: 'GET' });
+      if (!res.ok) return null;
+      const payload: any = await res.json();
+      const rows: any[] = Array.isArray(payload?.data) ? payload.data
+        : Array.isArray(payload?.models) ? payload.models
+        : Array.isArray(payload) ? payload : [];
+      for (const row of rows) {
+        const id = typeof row?.id === 'string' ? row.id : typeof row?.name === 'string' ? row.name : null;
+        if (id !== modelId) continue;
+        // b10665 reports status as an OBJECT ({value:'loaded'|…}); older shapes
+        // sent a bare string. Both are read, anything else is "don't know".
+        const statusValue = typeof row?.status === 'object' && row?.status ? row.status.value : row?.status;
+        return statusValue === 'loaded' || statusValue === 'loading'
+          || statusValue === 'sleeping' || statusValue === 'unloaded'
+          ? statusValue as EngineModelState : null;
+      }
+      return 'unloaded';
+    } catch {
+      return null;
+    }
+  }
+
   /** Make the running router re-scan --models-dir. Call after a download lands or
    *  a model is deleted — NEVER from the poll: a rescan is a WRITE. Upstream's
    *  load_models() unloads a running model whose source changed or vanished, so on

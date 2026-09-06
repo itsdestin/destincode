@@ -321,3 +321,63 @@ describe('a foldered model is found by the header reader and by the loaded-memor
     expect(withProjector - withoutProjector).toBeCloseTo(1.0, 5);
   });
 });
+
+describe('ModelManager.addVision — the projector arrives on the ordinary download stream', () => {
+  const PROJECTOR = Buffer.from('an-eye-for-this-model');
+
+  /** Serves the mmproj by trailing filename; anything else is a 404, so a fetch
+   *  of the WEIGHTS (which are already on disk and must not be re-downloaded)
+   *  would fail the download loudly rather than pass unnoticed. */
+  const servingProjector = (async (url: any) => {
+    urls.push(String(url));
+    if (!String(url).endsWith('mmproj-F16.gguf')) return new Response(null, { status: 404 });
+    return new Response(new Blob([PROJECTOR]).stream(), {
+      status: 200, headers: { 'content-length': String(PROJECTOR.length) },
+    });
+  }) as typeof fetch;
+
+  it('moves the model into its folder, fetches the projector beside it, and the row becomes vision-ready', async () => {
+    fs.writeFileSync(path.join(cacheDir, 'Eye-Q4_K_M.gguf'), Buffer.alloc(64));
+    fs.writeFileSync(path.join(cacheDir, 'Eye-Q4_K_M.gguf.download.json'), JSON.stringify({
+      v: 1, repo: 'unsloth/Eye-GGUF', quant: 'Q4_K_M', files: ['Eye-Q4_K_M.gguf'],
+      totalSizeBytes: 64, sha256ByFile: {}, startedAt: 1, completedAt: 2,
+      visionFile: { path: 'mmproj-F16.gguf', size: PROJECTOR.length, sha256: null },
+    }));
+    const userData = path.join(root, 'userData');
+    const engine = new EngineManager(home, userData, 9999);
+    const mm = new ModelManager(home, engine, userData, {
+      fetchImpl: servingProjector, totalVramBytes: null, freeDiskBytes: 1_000_000_000,
+    });
+    const events: DownloadProgress[] = [];
+    mm.on('download-progress', (p: DownloadProgress) => events.push(p));
+    // The event, not a timer: the download is started by addVision and finishes
+    // later, and asserting against the fixture before it settles is how a test
+    // reads green while the work it is checking never happened.
+    const settled = new Promise<DownloadProgress>((resolve) => {
+      mm.on('download-progress', (p: DownloadProgress) => {
+        if (p.state === 'done' || p.state === 'error') resolve(p);
+      });
+    });
+
+    const { downloadId } = await mm.addVision('Eye-Q4_K_M');
+    const last = await settled;
+
+    expect(last.state).toBe('done');
+    expect(last.downloadId).toBe(downloadId);
+    // The SAME stream every other download uses, carrying the repo + quant the
+    // Local Models row matches a live download on.
+    expect(events.every((e) => e.repo === 'unsloth/Eye-GGUF' && e.quant === 'Q4_K_M')).toBe(true);
+    expect(events.some((e) => e.state === 'downloading')).toBe(true);
+    // Only the projector is fetched: the weights were already published.
+    expect(urls).toEqual(['https://huggingface.co/unsloth/Eye-GGUF/resolve/main/mmproj-F16.gguf']);
+    // On disk: the folder holds both files and the flat copy is gone, so there
+    // is no pair for the engine to pick between.
+    expect(fs.existsSync(path.join(cacheDir, 'Eye-Q4_K_M.gguf'))).toBe(false);
+    expect(fs.readFileSync(path.join(cacheDir, 'Eye-Q4_K_M', 'mmproj-F16.gguf'))).toEqual(PROJECTOR);
+    expect(fs.existsSync(path.join(cacheDir, 'Eye-Q4_K_M', 'Eye-Q4_K_M.gguf'))).toBe(true);
+    // And the app now reports the state the eye is drawn from.
+    const rows = await engine.installedModels();
+    expect(rows.map((r) => [r.id, r.status, r.vision]))
+      .toEqual([['Eye-Q4_K_M', 'complete', 'ready']]);
+  });
+});
