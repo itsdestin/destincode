@@ -45,10 +45,15 @@ keeps reasoning about the previous build's option names; the script says so.
 
 ## Probes
 
-- `node probe-health.mjs --binary <path>` — spawn shape: router mode boots with
-  our exact flag set; `GET /health` returns 200 when ready. (Observed on b9992:
-  200 with an EMPTY body — the supervisor only checks `res.ok`, never parses the
-  body, so this is fine.)
+- `node probe-health.mjs --binary <path>` — the router SKELETON boots and
+  `GET /health` returns 200 when ready. (Observed on b9992: 200 with an EMPTY
+  body — the supervisor only checks `res.ok`, never parses the body, so this is
+  fine.) **It does NOT boot the shipped flag set**: it spawns the RECOVERY shape,
+  with `-c` on the command line and no `--models-preset`, `--spec-default` or
+  `--cache-type-k`. The shipped shape is covered by `probe-presets` (the preset
+  path) and `probe-speed` (the two speed flags reaching the model child), so
+  nothing is unguarded — but do not read this probe's arg list as "what the app
+  runs", and do not widen this bullet back to "our exact flag set".
 - `node probe-models.mjs --binary <path>` — TWO assertions. (1) `GET /models`
   schema + id parity: the router's model ids match `cache-scan.ts`'s
   filename-derived ids for the same directory. PRINTS both lists — on mismatch,

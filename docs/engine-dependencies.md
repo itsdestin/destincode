@@ -502,7 +502,8 @@ first part and cache-scan sums the parts' sizes into one entry.
 
 `desktop/test-engine/` holds twelve `probe-*.mjs` files against the real binary, of
 which **NINE are engine-bump gates** — analogous to `test-conpty/` on a CC bump:
-`probe-health` (the spawn shape boots), `probe-models` (id parity + `?reload=1`
+`probe-health` (the router SKELETON boots and answers `/health` — it spawns the
+RECOVERY shape, not the shipped one; see its header), `probe-models` (id parity + `?reload=1`
 picking up a post-boot file), `probe-chat` (streamed round-trip), `probe-download`
 (flat-basename ↔ router id, single AND split), `probe-tools` (`--jinja` constrained
 tool call + real `/props` `n_ctx`), `probe-speed` (both speed flags reach the model
