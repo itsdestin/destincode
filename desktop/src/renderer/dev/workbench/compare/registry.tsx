@@ -78,6 +78,10 @@ import type { CompareSurface } from './types';
 // differed only in a data-motion / data-arrival attribute the host set — a
 // review scaffold in globals.css, since deleted — never in code.
 import { SessionStripMotionDemo } from '../mockups/SessionStripMotion';
+// buddy-sleep: the REAL MascotRig on the app's own default rig, running the
+// actual settle → breathe → wake. A sleep pose cannot be judged from a still —
+// two thirds of it is motion.
+import { BuddySleepDemo } from '../mockups/BuddySleep';
 // The REAL derivation the shipping card will use — a candidate that hardcoded
 // its options would be comparing wording against something that cannot happen.
 import { bashGrantOptions } from '../../../../shared/bash-grant-shapes';
@@ -4356,6 +4360,70 @@ function PresentRefTable() {
 
 const ALL_SURFACES: CompareSurface[] = [
   {
+    id: 'buddy-sleep',
+    label: 'Buddy — falling asleep',
+    question: 'After a few quiet minutes the buddy goes to sleep. Which way of going under reads best at his real size? — SETTLED 2026-09-05: R1 loaf, then R2 docked arms.',
+    frame: 'canvas',
+    // BOTH ROUNDS NOW RENDER WHAT SHIPPED. Destin picked the loaf in R1 and the
+    // docked arms in R2, and the losing poses were deleted rather than left in
+    // the shipped table — but the rounds stay, because the breadcrumb IS the
+    // record of how the design got here (same as session-strip-motion below).
+    // FIXED at his real window width plus a little air. A sleep pose that only
+    // reads when the pane is stretched has not been judged at all — he is 112px
+    // in the corner of a screen, always.
+    paneWidth: 150,
+    rounds: [
+      {
+        n: 1,
+        basis: "Destin, 2026-09-04: \"i didn't entirely love the shut down pose as written.\" A is that pose, ported as faithfully as this rig allows, so the other three are judged against the thing he is reacting to rather than against nothing. The ten candidates drawn during the promo (docs/archive/prototypes/promo-2026-09/storyboard-v3/power-down-poses{,-2}.png) were judged for the END OF A FILM at large size beside the wordmark; these are judged for 112px in a screen corner, where he may also be docked half-off an edge. Every pane loops settle → breathe → wake by itself and has a Wake him button, because the wake is half of whether a sleep reads as sleep or as a glitch.",
+        candidates: [
+          {
+            id: 'loaf',
+            label: 'Loaf',
+            note: "The film's own pose: he squats down and his arms swing under to the bottom corners.",
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+          {
+            id: 'slump',
+            label: 'Slump',
+            note: 'Dozed off where he stood — he leans, sinks a little, arms go slack. Barely changes his outline.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+          {
+            id: 'deflate',
+            label: 'Deflate + dim',
+            note: 'Shrinks a touch and fades. Says "powered down" with brightness instead of posture.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+        ],
+      },
+      {
+        n: 2,
+        basis: 'R1 · A (loaf), picked 2026-09-05: "i quite like loaf. the animation to transition between states can be improved though. also wanna see a few more variants with the arms in different positions (tucked just a bit, fully docked, wildcard)." The body is the loaf\'s and is NOT under review here — only the arms move, so the choice is about one thing. The transition complaint was fixed rather than offered as an option: limb translation now rides the same springs the rotations do (it used to teleport while the body eased), and the body\'s settle is directional — 620ms heavy going under, 300ms with a little overshoot coming back.',
+        candidates: [
+          {
+            id: 'tuck',
+            label: 'Tuck',
+            note: 'Barely moved — arms stay where you last saw them, just relaxed and dropped a little.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+          {
+            id: 'dock',
+            label: 'Dock',
+            note: 'All the way down and pulled into the body, so his outline becomes one clean shape.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+          {
+            id: 'flop',
+            label: 'Flop',
+            note: 'The wildcard: arms swung out flat, flumped. Funny rather than tidy.',
+            render: () => <BuddySleepDemo pose="sleep" />,
+          },
+        ],
+      },
+    ],
+  },
+  {
     id: 'session-strip-motion',
     label: 'Session strip — motion',
     question: 'How fast, and on what curve, should a click open a name, a hover peek it, and a drag move a pill?',
@@ -5372,7 +5440,7 @@ const ALL_SURFACES: CompareSurface[] = [
 // so whichever entry is first is the one a plain ?view=compare lands on. Order by
 // what is under active design rather than by authoring order — otherwise every
 // visit starts with a dropdown hunt for the round actually being worked on.
-const ACTIVE_FIRST = 'session-strip-motion';
+const ACTIVE_FIRST = 'buddy-sleep';
 
 // ── voice-mic ────────────────────────────────────────────────────────────────
 // The real InputBar, compact (no quick chips), each pane born against its own
