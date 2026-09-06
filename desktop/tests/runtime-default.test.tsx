@@ -9,7 +9,7 @@
 // their initial runtime AND for the reset they do after every create (review
 // R2-3: a reset to the literal 'claude' made the default last one session).
 import { readFileSync, readdirSync, statSync } from 'fs';
-import { join } from 'path';
+import { join, sep } from 'path';
 import { describe, it, expect, beforeEach, afterEach, beforeAll } from 'vitest';
 import { stripComments } from './helpers/guard-scope';
 import { defaultRuntime, persistRuntimeDefault } from '../src/renderer/components/RuntimeBinding';
@@ -101,7 +101,13 @@ describe('runtime default — source guards', () => {
     // the key is either the one reader/writer pair or a new direct access.
     const mentions = walk(SRC)
       .filter((path) => read(path).includes(KEY))
-      .map((path) => path.replace(SRC, ''));
+      // Fix (2026-09-05): the expected value below is written with forward
+      // slashes, but `join()` builds these paths with the PLATFORM separator —
+      // so on Windows this compared "\\renderer\\components\\…" against
+      // "/renderer/components/…" and the guard failed for a reason that has
+      // nothing to do with what it guards. Windows CI had been red on master
+      // since a8062964 landed. Normalise to forward slashes before comparing.
+      .map((path) => path.replace(SRC, '').split(sep).join('/'));
     expect(
       mentions,
       'The install-wide runtime default has ONE reader/writer pair: defaultRuntime() and '
