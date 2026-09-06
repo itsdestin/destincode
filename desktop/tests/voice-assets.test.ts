@@ -132,7 +132,6 @@ beforeEach(() => {
     // npm's shape: SHA-512 in base64.
     digest: { algo: 'sha512', encoding: 'base64', digest: digestOf(runtimeTgz, 'sha512', 'base64') },
     bytes: fs.statSync(runtimeTgz).size,
-    addonRelPath: 'package/sherpa-onnx.node',
     requiredRelPaths: ['package/sherpa-onnx.node'],
   };
   fixtures.wrappers = {
@@ -141,7 +140,6 @@ beforeEach(() => {
     url: 'https://registry.test/wrappers.tgz',
     digest: { algo: 'sha512', encoding: 'base64', digest: digestOf(wrapperTgz, 'sha512', 'base64') },
     bytes: fs.statSync(wrapperTgz).size,
-    entryRelPath: 'package/sherpa-onnx.js',
     requiredRelPaths: ['package/sherpa-onnx.js', 'package/non-streaming-asr.js', 'package/addon.js'],
   };
   const modelFiles = Object.keys(modelBodies).map((name) => ({

@@ -19,6 +19,8 @@
 //  - No microphone, and a refused microphone, each say exactly what happened and
 //    give one Check again.
 import '@testing-library/jest-dom/vitest';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/react';
@@ -196,5 +198,19 @@ describe('VoiceButton card — a download that failed (R3-6, R12)', () => {
     expect(screen.getByText('Voice stopped')).toBeInTheDocument();
     expect(screen.getByText('The speech engine stopped: exit code 1')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'OK' })).toBeInTheDocument();
+  });
+});
+
+describe('the ring size the deck approved (R14)', () => {
+  // Guard for whole-branch review F11. "Ring 2 to 9 px" is a number Destin chose
+  // on a review deck — round 2 showed 2 to 12 and he asked for the biggest a tad
+  // smaller — and nothing checked it. A source pin, because the ring is an inline
+  // style computed per level event and jsdom paints nothing.
+  const source = readFileSync(
+    join(__dirname, 'VoiceButton.tsx'), 'utf8',
+  );
+
+  it('grows from 2 px to 9 px and no further', () => {
+    expect(source).toMatch(/\$\{2 \+ Math\.round\(level \* 7\)\}px/);
   });
 });

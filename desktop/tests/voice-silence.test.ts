@@ -126,3 +126,19 @@ describe('voice-service: the silence stop', () => {
     expect(h.worker.sent.slice(stopAt).some((m) => m.type === 'audio')).toBe(false);
   });
 });
+
+describe('the numbers the contract promises', () => {
+  // Guard for whole-branch review F11. Every test here was written AGAINST the
+  // constants, so changing "two quiet seconds" to ten kept them all green and
+  // nothing but a human on a review deck would ever have noticed. A promise made
+  // to Destin as a number gets a test that names the number.
+  it('closes the mic after two quiet seconds (R3)', () => {
+    expect(SILENCE_STOP_MS).toBe(2_000);
+  });
+
+  it('treats sound below 0.02 as room noise rather than speech', () => {
+    // Raise this and quiet speakers stop being heard at all; lower it and a fan
+    // keeps the microphone open until the user notices.
+    expect(SPEECH_RMS_FLOOR).toBe(0.02);
+  });
+});

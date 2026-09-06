@@ -58,7 +58,6 @@ export interface VoiceRuntimePin extends VoiceArchive {
   /** The native addon inside the archive. Verified 2026-09-05 by listing all
    *  six tarballs: every one is rooted at `package/` with the addon and its
    *  sibling shared libraries (.so/.dylib/.dll) flat beside it. */
-  addonRelPath: string;
 }
 
 /** npm serves every tarball from the same predictable path. */
@@ -82,7 +81,6 @@ export const VOICE_RUNTIMES: VoiceRuntimePin[] = [
     url: npmTarballUrl('sherpa-onnx-linux-x64', SHERPA_VERSION),
     digest: { algo: 'sha512', encoding: 'base64', digest: 'npmxn5WwmAmlthgBhmbZ33t3i2j4mJwQt46dMEb3j7d41y1/uJrjrVAfa/DkvV+vn49ZWfcQ2UEWDipaZBVhuw==' },
     bytes: 10810981,
-    addonRelPath: 'package/sherpa-onnx.node',
     requiredRelPaths: ['package/sherpa-onnx.node'],
   },
   {
@@ -91,7 +89,6 @@ export const VOICE_RUNTIMES: VoiceRuntimePin[] = [
     url: npmTarballUrl('sherpa-onnx-linux-arm64', SHERPA_VERSION),
     digest: { algo: 'sha512', encoding: 'base64', digest: 'TFCVpXyTh69buhOtTS8KIfkRXOVKY4Y1qjAktSItrKS4A0chnnrlXO5bKWoNAPeI6fMxTF/uvMYbYgcvjEMfNg==' },
     bytes: 13605393,
-    addonRelPath: 'package/sherpa-onnx.node',
     requiredRelPaths: ['package/sherpa-onnx.node'],
   },
   {
@@ -100,7 +97,6 @@ export const VOICE_RUNTIMES: VoiceRuntimePin[] = [
     url: npmTarballUrl('sherpa-onnx-win-x64', SHERPA_VERSION),
     digest: { algo: 'sha512', encoding: 'base64', digest: 'wBV1o+/zgsMrOjfCFIgGrH6S28xq6CqRCLSavCOjTZ6cqr80yGc07DUHxqsHFPZvfoJU+2JF5L2l3gyWFWoWdQ==' },
     bytes: 8705089,
-    addonRelPath: 'package/sherpa-onnx.node',
     requiredRelPaths: ['package/sherpa-onnx.node'],
   },
   {
@@ -109,7 +105,6 @@ export const VOICE_RUNTIMES: VoiceRuntimePin[] = [
     url: npmTarballUrl('sherpa-onnx-win-ia32', SHERPA_VERSION),
     digest: { algo: 'sha512', encoding: 'base64', digest: 'sTwtpxPQ76XLn0giAbvknIDEDKD3XXi2mo2AVROEucf1pIK1DjQl+LjLkalTeFoQqbC4J3xGx/g+xgcHQD1dsw==' },
     bytes: 7572131,
-    addonRelPath: 'package/sherpa-onnx.node',
     requiredRelPaths: ['package/sherpa-onnx.node'],
   },
   {
@@ -118,7 +113,6 @@ export const VOICE_RUNTIMES: VoiceRuntimePin[] = [
     url: npmTarballUrl('sherpa-onnx-darwin-x64', SHERPA_VERSION),
     digest: { algo: 'sha512', encoding: 'base64', digest: 'N3o+T+wn9WaQmsKV5DD8bTHdo+WN2+sXwmZcGJZiDjtOMR2zFz7uVCZnYCmEAMgvChC+oHcF5RvEEKcRCAu6Pw==' },
     bytes: 11151181,
-    addonRelPath: 'package/sherpa-onnx.node',
     requiredRelPaths: ['package/sherpa-onnx.node'],
   },
   {
@@ -127,7 +121,6 @@ export const VOICE_RUNTIMES: VoiceRuntimePin[] = [
     url: npmTarballUrl('sherpa-onnx-darwin-arm64', SHERPA_VERSION),
     digest: { algo: 'sha512', encoding: 'base64', digest: '5NCE50hAvr3n2pdett0SgfPBJXaFZE0bqHwbHyiq+IKZ8Ids0l4M0VrG+ImGYIafCwie+oC3uAJ+pKj9xg/k+w==' },
     bytes: 10015211,
-    addonRelPath: 'package/sherpa-onnx.node',
     requiredRelPaths: ['package/sherpa-onnx.node'],
   },
 ];
@@ -144,13 +137,12 @@ export const VOICE_RUNTIMES: VoiceRuntimePin[] = [
  *
  *  Both tarballs are rooted at `package/`, so this one is unpacked SECOND and
  *  its package.json (whose `main` is sherpa-onnx.js) deliberately wins. */
-export const VOICE_WRAPPERS: VoiceArchive & { npmPackage: string; entryRelPath: string } = {
+export const VOICE_WRAPPERS: VoiceArchive & { npmPackage: string } = {
   npmPackage: 'sherpa-onnx-node',
   label: 'the speech runtime',
   url: npmTarballUrl('sherpa-onnx-node', SHERPA_VERSION),
   digest: { algo: 'sha512', encoding: 'base64', digest: '0XGV7arGngBCnol0m8OLyqlnaUm19Q1KmetVj1DDBdymXa1upmAHZDwNdN47gjsEhqE5hXUEyc1vRQoXrNhNVg==' },
   bytes: 11954,
-  entryRelPath: 'package/sherpa-onnx.js',
   requiredRelPaths: ['package/sherpa-onnx.js', 'package/non-streaming-asr.js', 'package/addon.js'],
 };
 

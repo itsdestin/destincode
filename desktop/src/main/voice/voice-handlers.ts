@@ -68,6 +68,11 @@ export function registerVoiceHandlers(userDataPath: string): void {
   // hot-reload dev sessions (scripts/run-dev.sh) from crashing on reload.
   for (const ch of CHANNELS) ipcMain.removeHandler(ch);
   ipcMain.removeAllListeners(AUDIO_CHANNEL);
+  // Fix (whole-branch review F9): and let go of the engine the previous
+  // registration owned. Without this the reload this function exists to survive
+  // leaked a live 1.14 GB utilityProcess every time — the module-level `service`
+  // below was simply overwritten, leaving nothing able to reach the old one.
+  service?.shutdown();
 
   const assets = new VoiceAssets(userDataPath);
   const instance = new VoiceService({
