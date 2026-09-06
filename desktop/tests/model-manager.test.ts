@@ -321,3 +321,150 @@ describe('a foldered model is found by the header reader and by the loaded-memor
     expect(withProjector - withoutProjector).toBeCloseTo(1.0, 5);
   });
 });
+
+// ── The remembered memory warning (design §D4) ──────────────────────────────
+//
+// The rule these pin, end to end through config.json: "don't warn me about this
+// model again" is a promise made AT ONE CONTEXT LENGTH. The same model at four
+// times the context needs about four times the memory, so the promise cannot
+// outlive a change to that length — the model's own setting or the engine-wide
+// default it inherits. fit-estimator.test.ts pins the same rule on the pure
+// function, which takes the context length as an argument; only these can reach
+// the half the design note is actually about, where nothing about the MODEL
+// changed and the engine-wide number moved underneath it.
+
+/** A model on disk with a real GGUF header, so its context memory is measured
+ *  rather than guessed — the whole rule turns on a context length, so the number
+ *  it turns on has to be a real reading of this file. Sparse: no bytes written. */
+function plantModel(id: string, bytes: number): void {
+  const file = path.join(cacheDir, `${id}.gguf`);
+  fs.writeFileSync(file, miniGguf());
+  fs.truncateSync(file, bytes);
+}
+
+/** A manager for a machine with plenty of memory in total but little free right
+ *  now — the `tight` tier, which is the ONLY verdict §D4 lets anyone dismiss.
+ *  Rebuilt per call because the settings are read from config.json at each
+ *  check, and a stale instance would answer from the file as it was. */
+function warnMachine(ids: string[], sizeBytes = 8 * GB): ModelManager {
+  const userData = path.join(root, 'userData');
+  plantEngine(userData);
+  const engine = new EngineManager(home, userData, 9999);
+  engine.liveModels = async () => ids.map((id) => ({
+    id, sizeBytes, loaded: false, state: 'unloaded' as const,
+  }));
+  return new ModelManager(home, engine, userData, {
+    fetchImpl: recordingFetch, totalVramBytes: null,
+    totalMemBytes: 64 * GB, availableMemBytes: 4 * GB,
+  });
+}
+
+/** Write one model's `engine.models` entry, as the settings save will. */
+async function writeModelSettings(modelId: string, entry: unknown): Promise<void> {
+  await updateEngineConfig(home, { models: { [modelId]: entry } } as any);
+}
+
+const dismissedAt = (contextLength: number) => ({ at: 1_757_000_000_000, contextLength });
+
+describe('ModelManager.memoryCheck — the remembered warning (§D4)', () => {
+  it('a dismissal made at 32k silences the warning at 32k', async () => {
+    plantModel('M-Q4_K_M', 8 * GB);
+    // Before: this machine really does warn about this model. Without this
+    // line the test below would pass on a fixture that never warned at all.
+    expect((await warnMachine(['M-Q4_K_M']).memoryCheck('M-Q4_K_M')).verdict).toBe('tight');
+
+    await writeModelSettings('M-Q4_K_M', { memoryWarningDismissed: dismissedAt(32768) });
+    const after = await warnMachine(['M-Q4_K_M']).memoryCheck('M-Q4_K_M');
+    expect(after.verdict).toBe('ok');
+    // A silenced warning draws nothing — the row is hidden, not emptied of text.
+    expect(after.headline).toBe('');
+  });
+
+  it("raising the ENGINE-WIDE context asks again, though this model's own setting never moved", async () => {
+    // The case the whole design note is about (R3-4/R3-23). This model is on the
+    // engine-wide default, so its own `contextLength` stays null throughout —
+    // storing THAT number, or a bare timestamp, would keep the dismissal alive
+    // for exactly the model that now needs four times the memory.
+    plantModel('M-Q4_K_M', 8 * GB);
+    await writeModelSettings('M-Q4_K_M', {
+      contextLength: null, memoryWarningDismissed: dismissedAt(32768),
+    });
+    expect((await warnMachine(['M-Q4_K_M']).memoryCheck('M-Q4_K_M')).verdict).toBe('ok');
+
+    await updateEngineConfig(home, { contextSize: 131072 });
+    const after = await warnMachine(['M-Q4_K_M']).memoryCheck('M-Q4_K_M');
+    expect(after.verdict).toBe('tight');
+    // Still the same tier, scored at the NEW length: had the raise pushed it to
+    // a hard block instead, this test would pass for a reason that has nothing
+    // to do with the dismissal.
+    expect(after.headline).toContain('for 128k context');
+  });
+
+  it("a model's own context setting moving asks again too", async () => {
+    plantModel('M-Q4_K_M', 8 * GB);
+    await writeModelSettings('M-Q4_K_M', {
+      contextLength: 32768, memoryWarningDismissed: dismissedAt(32768),
+    });
+    expect((await warnMachine(['M-Q4_K_M']).memoryCheck('M-Q4_K_M')).verdict).toBe('ok');
+
+    await writeModelSettings('M-Q4_K_M', {
+      contextLength: 131072, memoryWarningDismissed: dismissedAt(32768),
+    });
+    const after = await warnMachine(['M-Q4_K_M']).memoryCheck('M-Q4_K_M');
+    expect(after.verdict).toBe('tight');
+    expect(after.headline).toContain('for 128k context');
+  });
+
+  it('a dismissal belongs to ONE model and does not answer for another', async () => {
+    plantModel('A-Q4_K_M', 8 * GB);
+    plantModel('B-Q4_K_M', 8 * GB);
+    await writeModelSettings('A-Q4_K_M', { memoryWarningDismissed: dismissedAt(32768) });
+    const mm = warnMachine(['A-Q4_K_M', 'B-Q4_K_M']);
+    expect((await mm.memoryCheck('A-Q4_K_M')).verdict).toBe('ok');
+    expect((await mm.memoryCheck('B-Q4_K_M')).verdict).toBe('tight');
+  });
+
+  it('a too-large model is never silenced — it is a hard block, not a warning', async () => {
+    // 8 GB of weights on an 8 GB machine: too large before a single byte of
+    // context cache is counted, so the "KV may reach tight, never too-large"
+    // clamp does not rescue it either. RuntimeBinding refuses to create the
+    // session on this verdict, so a dismissal must not be able to reach it.
+    plantModel('H-Q4_K_M', 8 * GB);
+    await writeModelSettings('H-Q4_K_M', { memoryWarningDismissed: dismissedAt(32768) });
+    const userData = path.join(root, 'userData');
+    plantEngine(userData);
+    const engine = new EngineManager(home, userData, 9999);
+    engine.liveModels = async () => ([
+      { id: 'H-Q4_K_M', sizeBytes: 8 * GB, loaded: false, state: 'unloaded' as const },
+    ]);
+    const mm = new ModelManager(home, engine, userData, {
+      fetchImpl: recordingFetch, totalVramBytes: null,
+      totalMemBytes: 8 * GB, availableMemBytes: 1 * GB,
+    });
+    expect((await mm.memoryCheck('H-Q4_K_M')).verdict).toBe('too-large');
+  });
+
+  it('a stored dismissal missing EITHER half is no dismissal', async () => {
+    // config.json is a plain file a person can edit and an older build can have
+    // written. A record without the length it was made at cannot answer "is this
+    // the same length?", and one without a time is not a record of an answer —
+    // both mean "ask again", never "assume yes".
+    plantModel('M-Q4_K_M', 8 * GB);
+    const broken = [
+      { contextLength: 32768 },                    // no `at`
+      { at: 1_757_000_000_000 },                   // no length
+      1_757_000_000_000,                           // the bare timestamp R3-4 rejects
+      { at: 1_757_000_000_000, contextLength: 0 }, // a length no model runs at
+      null,
+    ];
+    for (const record of broken) {
+      await writeModelSettings('M-Q4_K_M', { memoryWarningDismissed: record });
+      expect((await warnMachine(['M-Q4_K_M']).memoryCheck('M-Q4_K_M')).verdict).toBe('tight');
+    }
+    // The positive control: the SAME fixture with a well-formed record does go
+    // quiet. Without it, every line above would pass on a dismissal path that
+    // was wired to nothing at all.
+    await writeModelSettings('M-Q4_K_M', { memoryWarningDismissed: dismissedAt(32768) });
+    expect((await warnMachine(['M-Q4_K_M']).memoryCheck('M-Q4_K_M')).verdict).toBe('ok');
+  });
+});

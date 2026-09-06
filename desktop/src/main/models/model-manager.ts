@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { NativeHome } from '../native-home';
 import { EngineManager } from '../engine/engine-manager';
-import { readEngineConfig } from '../engine/engine-config';
+import { readEngineConfig, modelSettingsFor } from '../engine/engine-config';
 import { readManifest, isManifestComplete, downloadDirFor, installedDirFor } from './download-manifest';
 import { CuratedCatalog } from './curated-catalog';
 import { HfClient, hfResolveUrl } from './hf-client';
@@ -32,12 +32,16 @@ import type {
  *  writes it may not exist yet, and a dismissal without the context length it
  *  was made at is unusable — the whole rule is "same model, same length". A
  *  malformed record therefore means "not dismissed", which asks again rather
- *  than silently swallowing a warning. */
+ *  than silently swallowing a warning.
+ *
+ *  WHY it now asks config.json's own reader instead of checking the fields here
+ *  (T12): `modelSettingsFor` refuses a record missing EITHER half, and the copy
+ *  that used to live here checked only the context length. So a record with no
+ *  `at` — what a half-finished or hand-edited write leaves behind — was dropped
+ *  when the file was read and TRUSTED here, and the two answers to "did they
+ *  dismiss this?" disagreed. One reader, one answer. */
 function dismissedWarning(modelsSection: unknown, modelId: string): { contextLength: number } | null {
-  const models = modelsSection && typeof modelsSection === 'object' ? (modelsSection as Record<string, any>) : null;
-  const record = models?.[modelId]?.memoryWarningDismissed;
-  const ctx = record && typeof record === 'object' ? record.contextLength : undefined;
-  return typeof ctx === 'number' && Number.isFinite(ctx) && ctx > 0 ? { contextLength: ctx } : null;
+  return modelSettingsFor(modelsSection, modelId).memoryWarningDismissed;
 }
 
 export class ModelManager extends EventEmitter {
