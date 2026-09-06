@@ -2960,7 +2960,9 @@ export function registerIpcHandlers(
   });
   // --- Per-model residency → per-session model-state coordinator (2026-07-14) ---
   // #1: when the last session using a model releases it, unload it immediately.
-  nativeHost.setModelReleasedHandler((modelId) => { void engineManager.unloadModel(modelId); });
+  // releaseModel, not unloadModel: a model the user asked to KEEP LOADED must
+  // survive the last chat on it closing, or the setting is a lie (design §C2).
+  nativeHost.setModelReleasedHandler((modelId) => { void engineManager.releaseModel(modelId); });
   // Join per-model residency (engine) with session→model (host): push each live
   // native session its bound model's state so ChatView can show the unloaded /
   // loading banner (#4/#5). Only push on change per session.

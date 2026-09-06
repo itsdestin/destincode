@@ -15,8 +15,16 @@ import { EngineSupervisor, SLEEP_IDLE_SECONDS } from './engine-supervisor';
 import type { EngineSpawnConfig } from './engine-supervisor';
 import { ENGINE_VERSION, pickAsset, defaultBackend } from './engine-pin';
 import type { EngineAsset } from './engine-pin';
-import { readEngineConfig, updateEngineConfig, updateEngineSpeed, removeModelSettings } from './engine-config';
-import { presetFilePath, renderPresetFile, writePresetFile } from './model-presets';
+import {
+  readEngineConfig, updateEngineConfig, updateEngineSpeed, removeModelSettings,
+  updateModelSettings, modelSettingsFor,
+} from './engine-config';
+import type { ModelSettingsPatch } from './engine-config';
+import {
+  presetFilePath, renderPresetFile, writePresetFile, parsePresetSections,
+  presetGlobalValue, parseExtraFlags, checkFlagsAgainstBinary,
+} from './model-presets';
+import type { BinaryCheckOptions, BinaryCheckResult } from './model-presets';
 import { contextLengthFor } from '../models/fit-estimator';
 import { readManifest, removeManifest, markManifestComplete, isManifestComplete } from '../models/download-manifest';
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
@@ -31,7 +39,9 @@ import type {
   ReplyTimings, EngineSpeedSettings,
 } from '../../shared/engine-types';
 import type { CatalogModel } from '../../shared/provider-types';
-import type { InstalledLocalModel } from '../../shared/model-manager-types';
+import type {
+  InstalledLocalModel, ModelSettings, StoredModelSettings,
+} from '../../shared/model-manager-types';
 
 /** What ProviderRegistry's local-engine branch consumes (replaces Plan A's
  *  bare localBaseUrl callback). Defined here, imported by provider-registry. */
@@ -337,6 +347,20 @@ export class EngineManager extends EventEmitter {
   private applyDeadline = 0;                      // when the OLDEST pending change lands regardless
   private applyWaiter: Promise<void> | null = null;
   private configApplyError: string | null = null;
+  // The same idea, one level down: per-MODEL settings changes that are saved but
+  // not yet in force. A Set, not a queue, for the reason the two flags above are
+  // flags — any number of saves to one model during one wait costs one apply.
+  // model id -> the moment that model's change lands whether or not it is quiet.
+  // PER ID, not one shared deadline: a shared one let a change saved nine
+  // minutes into another model's wedged stream be swept in sixty seconds later
+  // with NO idle check — cutting that model's reply after a fraction of a bound
+  // that is supposed to be ten minutes. "The oldest change owns the deadline" is
+  // about repeated saves to ONE model, and the map's first-write-wins does that.
+  private pendingModelApplies = new Map<string, number>();
+  private modelApplyWaiter: Promise<void> | null = null;
+  /** The supervisor state we last acted on, so "the engine just came up" can be
+   *  told from "the engine is still up" (see notePresetInForce). */
+  private lastSupervisorState: string | null = null;
 
   constructor(
     private home: NativeHome,
@@ -359,6 +383,9 @@ export class EngineManager extends EventEmitter {
        *  minutes proving that the bound exists. */
       configApplyPollMs?: number;
       configApplyMaxWaitMs?: number;
+      /** Test seam: the save-time "is this a real llama-server option?" check.
+       *  The real one SPAWNS the engine binary, which a unit test has none of. */
+      checkFlags?: (opts: BinaryCheckOptions) => Promise<BinaryCheckResult>;
     } = {}
   ) {
     super();
@@ -570,13 +597,50 @@ export class EngineManager extends EventEmitter {
    *  a section for a deleted model resurrects it as a row that can never load. */
   private writeModelPresets(): void {
     const cfg = readEngineConfig(this.home);
+    const filePath = presetFilePath(this.home.root);
+    // A model whose saved change has NOT been applied yet keeps the section the
+    // running engine is actually reading. WHY: this file is shared by every
+    // model, and `?reload=1` unloads a model whose section CHANGED — so writing
+    // a still-waiting model's new settings here, on somebody else's reload,
+    // would unload it in the middle of the reply the wait exists to protect
+    // (design §C2). Its old lines come out of the file already on disk.
+    const held = new Map<string, readonly string[]>();
+    const waiting = Object.keys(cfg.models).filter((id) => cfg.models[id].pendingApply === true);
+    // `[*]` needs the SAME hold, and for the same reason. An engine-wide context
+    // change is deferred too (setConfig writes config.json and queues the apply),
+    // and `[*] ctx-size` is what every model with no section of its own
+    // inherits — so rendering it from config here would let that queued change
+    // ride out on somebody else's reload. A download finishing calls
+    // refreshModels(), and the reply the user is reading dies mid-sentence with
+    // nothing connecting it to the setting they changed. `needsReload` is
+    // exactly "an engine-wide value is saved but not yet applied".
+    const holdGlobal = this.needsReload;
+    let existing = '';
+    if (waiting.length > 0 || holdGlobal) {
+      try { existing = fs.readFileSync(filePath, 'utf8'); } catch { existing = ''; } // no file yet = no section
+    }
+    if (waiting.length > 0) {
+      const sections = parsePresetSections(existing);
+      // NOTE what is NOT held here: a section the SPAWN omitted because the
+      // engine refused it (T7's omitModelId). This render puts it back, so the
+      // next reload 500s and the OTHER models' settings in that same write are
+      // silently not applied until the next spawn. It degrades safely — the
+      // engine keeps running on the presets it already has — but it is a real
+      // hole, and the supervisor is the only thing that knows which id was
+      // dropped.
+      for (const id of waiting) held.set(id, sections.get(id) ?? []);
+    }
+    // Fall back to config when the file has no `[*] ctx-size` to hold — there is
+    // then no engine reading a different number, so nothing can be cut.
+    const onDiskContext = holdGlobal ? Number(presetGlobalValue(existing, 'ctx-size')) : NaN;
     const contents = renderPresetFile({
-      contextSize: cfg.contextSize,
+      contextSize: Number.isFinite(onDiskContext) && onDiskContext > 0 ? onDiskContext : cfg.contextSize,
       sleepIdleSeconds: SLEEP_IDLE_SECONDS,
       modelIds: scanGgufCache(cfg.cacheDir).map((m) => m.id),
       settings: cfg.models,
+      preserve: held.size > 0 ? held : undefined,
     });
-    writePresetFile(presetFilePath(this.home.root), contents);
+    writePresetFile(filePath, contents);
   }
 
   /** Ask the running router to re-read its preset file. No restart — the
@@ -681,6 +745,271 @@ export class EngineManager extends EventEmitter {
       // real message goes on the status instead, never a guessed cause.
       this.configApplyError = err?.message ? String(err.message) : String(err);
     }
+  }
+
+  // ---- per-model settings (design §C1 / §C2) ------------------------------
+
+  /** One model's settings as they are stored right now — including
+   *  `pendingApply` (the dialog's "Applies after the current reply" footer) and
+   *  `lastLoadError`. A model the user has never touched reads as every default,
+   *  which is the same thing as having no entry at all. */
+  modelSettings(modelId: string): StoredModelSettings {
+    return modelSettingsFor(readEngineConfig(this.home).models, modelId);
+  }
+
+  /** Save one model's settings.
+   *
+   *  The VALUE is written immediately and the engine is left alone: the preset
+   *  file is NOT rewritten here. WHY not — every `?reload=1` (a finished
+   *  download, a delete, a refresh) makes the router diff its presets and unload
+   *  every model whose section changed, so writing the file at save time would
+   *  drop the model mid-reply, which is the one thing contract R26 promises will
+   *  not happen. The change is marked `pendingApply` and lands when that model
+   *  has no request in flight (design §C2).
+   *
+   *  `dismissMemoryWarning` is a SIGNAL, not a value: main stamps the record
+   *  itself, because the number that has to be stored is the resolved effective
+   *  context length and only main knows how the per-model setting and the
+   *  engine-wide default combine. */
+  async setModelSettings(
+    modelId: string,
+    patch: Partial<ModelSettings> & { dismissMemoryWarning?: boolean },
+  ): Promise<StoredModelSettings> {
+    if (typeof modelId !== 'string' || !modelId) throw new Error('A model settings save needs a model id.');
+    const current = this.modelSettings(modelId);
+    const clean: ModelSettingsPatch = {};
+
+    if (patch.contextLength !== undefined) {
+      if (patch.contextLength === null) clean.contextLength = null;
+      else if (!Number.isFinite(patch.contextLength) || patch.contextLength < 1024) {
+        // The engine-wide knob's own words — one floor, one sentence.
+        throw new Error('Context length must be at least 1024 tokens.');
+      } else clean.contextLength = Math.floor(patch.contextLength);
+    }
+    if (patch.keepLoaded !== undefined) {
+      if (typeof patch.keepLoaded !== 'boolean') throw new Error('"Keep loaded" must be on or off.');
+      clean.keepLoaded = patch.keepLoaded;
+    }
+    if (patch.gpuLayers !== undefined) {
+      if (patch.gpuLayers === 'auto') clean.gpuLayers = 'auto';
+      else if (typeof patch.gpuLayers === 'number' && Number.isFinite(patch.gpuLayers) && patch.gpuLayers >= 0) {
+        clean.gpuLayers = Math.floor(patch.gpuLayers);
+      } else throw new Error('Graphics-chip layers must be a whole number, or Auto.');
+    }
+    if (patch.extraFlags !== undefined) {
+      if (typeof patch.extraFlags !== 'string') throw new Error('Extra engine options must be text.');
+      const parsed = parseExtraFlags(patch.extraFlags);
+      // The parser's message is the user's — it names the option they typed.
+      if (!parsed.ok) throw new Error(parsed.message);
+      // Shape is not enough: the router refuses to START on an option it does
+      // not recognise, in ANY section, so a plausible typo saved here would take
+      // every local model down at the next launch. Only the BINARY knows its own
+      // option list, and only a non-zero exit rejects — a check that could not
+      // reach a verdict accepts (design §C2, model-presets.checkFlagsAgainstBinary).
+      if (patch.extraFlags !== current.extraFlags && parsed.entries.length > 0) {
+        const binaryPath = this.currentInstall()?.binaryPath;
+        if (binaryPath) {
+          const check = this.opts.checkFlags ?? checkFlagsAgainstBinary;
+          const verdict = await check({ binaryPath, modelId, entries: parsed.entries });
+          if (!verdict.ok) throw new Error(verdict.message);
+        }
+      }
+      clean.extraFlags = patch.extraFlags;
+    }
+
+    // Which of the four the ENGINE reads. A save that changes none of them (a
+    // dismissal, or the same values saved twice) must not mark anything pending:
+    // the apply ends in an unload, and unloading a model to re-read settings it
+    // is already running is a load the user pays for and did not ask for.
+    const engineFields = ['contextLength', 'keepLoaded', 'gpuLayers', 'extraFlags'] as const;
+    const changesEngine = engineFields.some(
+      (k) => clean[k] !== undefined && clean[k] !== current[k],
+    );
+
+    if (patch.dismissMemoryWarning !== undefined) {
+      if (patch.dismissMemoryWarning) {
+        // The RESOLVED effective length, computed from the settings as they will
+        // stand after this save — never a number the renderer supplies, which
+        // cannot know how the per-model value and the engine-wide default
+        // combine. A wrong number here keeps the warning silenced for a model
+        // that now needs four times the memory (design §D4).
+        const cfg = readEngineConfig(this.home);
+        const after = { ...cfg.models, [modelId]: { ...current, ...clean } };
+        clean.memoryWarningDismissed = {
+          at: Date.now(),
+          contextLength: contextLengthFor(modelId, after, cfg.contextSize),
+        };
+      } else {
+        clean.memoryWarningDismissed = null;
+      }
+    }
+
+    if (changesEngine) clean.pendingApply = true;
+    const saved = await updateModelSettings(this.home, modelId, clean);
+    this.emit('status-changed');    // the saved value is visible at once
+    if (changesEngine) this.noteModelApply(modelId);
+    return saved;
+  }
+
+  /** How many requests naming this model are in flight right now.
+   *
+   *  THIS is the signal a per-model apply waits on, and neither of the two
+   *  counts that already existed can stand in for it: `supervisor.busy()` is
+   *  engine-wide (a reply to a DIFFERENT model would hold this one's settings
+   *  hostage), and the session ref-count never drops while a chat tab is open on
+   *  the model — so an apply keyed on that would wait for a moment that never
+   *  comes (design §C2). No engine running means nothing is in flight. */
+  private inFlightForModel(modelId: string): number {
+    return this.supervisor?.inFlightFor(modelId) ?? 0;
+  }
+
+  /** Note that one model's saved settings are not in force yet, and make sure a
+   *  waiter is watching for the moment that model goes quiet.
+   *
+   *  The deadline belongs to the OLDEST pending change (the same rule
+   *  `requestApply` follows): timed from each save instead, a second save behind
+   *  a reply that never ends would wait out the bound AFTER the first one
+   *  already had, and the design says ten minutes regardless. */
+  private noteModelApply(modelId: string): void {
+    // First write wins: a second save to the SAME model joins the deadline the
+    // first one bought. Resetting it here would mean a user who keeps adjusting
+    // one model during a wedged reply never reaches the bound at all.
+    if (!this.pendingModelApplies.has(modelId)) {
+      this.pendingModelApplies.set(
+        modelId, Date.now() + (this.opts.configApplyMaxWaitMs ?? CONFIG_APPLY_MAX_WAIT_MS),
+      );
+    }
+    this.startModelApplyWaiter();
+    this.emit('status-changed');
+  }
+
+  /** Exactly one waiter, ever. The restart at the end is for the seam between
+   *  the drain loop's last check and this callback: a save that landed in there
+   *  would otherwise sit pending with nobody watching for it. */
+  private startModelApplyWaiter(): void {
+    if (this.modelApplyWaiter || this.pendingModelApplies.size === 0) return;
+    this.modelApplyWaiter = this.drainModelApplies().finally(() => {
+      this.modelApplyWaiter = null;
+      this.emit('status-changed');
+      this.startModelApplyWaiter();
+    });
+  }
+
+  /** Wait for each pending model to go quiet, applying the ones that are ready
+   *  as they become ready. Bounded: once the oldest change's deadline passes,
+   *  everything still pending lands regardless — a wedged stream that never
+   *  releases its hold cannot park a saved setting for the rest of the session. */
+  private async drainModelApplies(): Promise<void> {
+    const pollMs = this.opts.configApplyPollMs ?? CONFIG_APPLY_POLL_MS;
+    while (this.pendingModelApplies.size > 0) {
+      const now = Date.now();
+      const ready = [...this.pendingModelApplies]
+        .filter(([id, deadline]) => now >= deadline || this.inFlightForModel(id) === 0)
+        .map(([id]) => id);
+      if (ready.length === 0) {
+        await new Promise((resolve) => { const t = setTimeout(resolve, pollMs); t.unref?.(); });
+        continue;
+      }
+      // Taken out of the set BEFORE the work, with no await in between: a save
+      // made while these are being applied is a NEW change and gets its own
+      // deadline, rather than riding this one's expiry with no wait at all.
+      for (const id of ready) this.pendingModelApplies.delete(id);
+      try {
+        await this.applyModelSettings(ready);
+      } catch (err: any) {
+        // The save answered long ago, so there is nothing left to fail — the
+        // real message goes on the status, never a guessed cause.
+        this.configApplyError = err?.message ? String(err.message) : String(err);
+      }
+    }
+  }
+
+  /** Put these models' saved settings into force: clear their pending flags so
+   *  the preset renders them from config, write the file, make the router
+   *  re-read it, then unload each one so its next message loads it with the new
+   *  settings (design §C2). */
+  private async applyModelSettings(ids: readonly string[]): Promise<void> {
+    // The flags come off FIRST, and that is what selects them: writeModelPresets
+    // holds back every model that is STILL pending, so clearing is how a model
+    // says "render me from config now".
+    // This run's engine may never have opened the preset at all: T7 falls back
+    // to the old command line when the file cannot be written or is refused. A
+    // reload then cannot read these settings, and the unload after it would cost
+    // the user a full model load for nothing. Leave the change PENDING and say
+    // nothing new — the card already reports that per-model settings are not in
+    // force this run (presetInForce()), and the next spawn is where they really
+    // take effect. Removing them from the map above is what stops the waiter
+    // spinning on a change it cannot land.
+    if (this.supervisor?.status() === 'running' && !this.supervisor.presetInForce()) return;
+    for (const id of ids) await updateModelSettings(this.home, id, { pendingApply: false });
+    this.writeModelPresets();
+    await this.applyReload();
+    // The reload alone unloads a model whose section changed, but only for the
+    // diff the router sees; the explicit unload is what makes the new settings
+    // certain to be read on this model's next message.
+    for (const id of ids) await this.unloadModel(id);
+    this.emit('status-changed');
+  }
+
+  /** Pending changes for models that are idle RIGHT NOW, cleared and returned so
+   *  the caller can fold them into a reload it was making anyway. A model that is
+   *  busy is left pending — its section is held back by writeModelPresets, so the
+   *  reload does not touch it (design §C2, "only for idle models"). */
+  private async mergeIdlePendingSettings(): Promise<string[]> {
+    const done: string[] = [];
+    for (const id of [...this.pendingModelApplies.keys()]) {
+      if (this.inFlightForModel(id) !== 0) continue;
+      try {
+        await updateModelSettings(this.home, id, { pendingApply: false });
+        this.pendingModelApplies.delete(id);
+        done.push(id);
+      } catch { /* left pending — the waiter above tries again */ }
+    }
+    return done;
+  }
+
+  /** A fresh engine writes models.ini from config on its way up and reads it
+   *  there, so once it is running with that file in force, every saved change IS
+   *  applied and nothing is pending any more.
+   *
+   *  WHY this has to be said out loud: the flag lives in config.json, which
+   *  outlives the process. Without this, a change saved during a reply and then
+   *  picked up by the next app launch would leave `pendingApply` set for ever —
+   *  the dialog would keep promising "Applies after the current reply", and the
+   *  next reload would unload the model to apply settings it is already running.
+   *
+   *  Only on the TRANSITION into running: the engine emits status-changed while
+   *  it is already up too, and acting on those would clear a flag the moment the
+   *  user set it. And only when the preset is really in force — a boot that fell
+   *  back to the command line is running WITHOUT these settings (T7). */
+  private async notePresetInForce(): Promise<void> {
+    const state = this.supervisor?.status() ?? null;
+    if (state === this.lastSupervisorState) return;
+    this.lastSupervisorState = state;
+    if (state !== 'running' || !this.supervisor?.presetInForce()) return;
+    let waiting: string[];
+    try {
+      const models = readEngineConfig(this.home).models;
+      waiting = Object.keys(models).filter((id) => models[id].pendingApply === true);
+    } catch { return; }   // unreadable config — the next spawn asks again
+    if (waiting.length === 0) return;
+    for (const id of waiting) this.pendingModelApplies.delete(id);
+    for (const id of waiting) {
+      try { await updateModelSettings(this.home, id, { pendingApply: false }); } catch { /* next spawn */ }
+    }
+    this.emit('status-changed');
+  }
+
+  /** Record why a model last failed to load, in the engine's own words, or clear
+   *  it when the same model loads. Both of `lastLoadError`'s sources land here
+   *  (design §C2). Writes NOTHING when the answer has not changed — this runs on
+   *  every load, and rewriting config each time would churn a locked file. */
+  private async noteLoadError(modelId: string, message: string | null): Promise<void> {
+    let had: string | null;
+    try { had = this.modelSettings(modelId).lastLoadError ?? null; } catch { return; }
+    if (had === message) return;
+    try { await updateModelSettings(this.home, modelId, { lastLoadError: message }); } catch { return; }
+    this.emit('status-changed');
   }
 
   /** Install the pinned engine for this machine. Vulkan-first on win/linux
@@ -859,8 +1188,29 @@ export class EngineManager extends EventEmitter {
       ...(this.opts.supervisorOpts ?? {}),
     });
     this.supervisorBinary = installed.binaryPath;
+    // A brand-new supervisor has never been running, whatever the old one was.
+    this.lastSupervisorState = null;
     // Fan out supervisor transitions so the EngineCard tracks crash/idle live.
-    this.supervisor.on('status-changed', () => this.emit('status-changed'));
+    this.supervisor.on('status-changed', () => {
+      void this.notePresetInForce();
+      this.emit('status-changed');
+    });
+    // T7 drops the section of a model the engine refuses at startup so the OTHER
+    // models can still run — which means that model never gets a router row to
+    // fail on, and this event is the ONLY place its failure is visible. The
+    // message is the engine's own sentence, quoted (design §C2).
+    this.supervisor.on('preset-model-rejected', (e: { modelId: string; message: string }) => {
+      void this.noteLoadError(e.modelId, e.message);
+    });
+    // The other source: a load that the router itself answered with an error.
+    this.supervisor.on('model-load-result', (e: { modelId: string; ok: boolean; status: number | null; body: string }) => {
+      const message = e.ok ? null
+        : e.status === null
+          // The request could not be made — say that, not a guess at why.
+          ? (e.body || 'the engine could not be reached')
+          : routerErrorText(e.status, e.body);
+      void this.noteLoadError(e.modelId, message);
+    });
     this.supervisor.on('crashed', (info) => this.emit('crashed', info));
     // Fan out per-model residency (load/sleep/unload) → the model-state
     // coordinator turns this into per-session banners (unloaded/loading UI).
@@ -872,6 +1222,21 @@ export class EngineManager extends EventEmitter {
   async unloadModel(modelId: string): Promise<void> {
     if (!this.supervisor) return;
     await this.supervisor.unloadModel(modelId);
+  }
+
+  /** The last session bound to `modelId` closed. Frees its memory now — UNLESS
+   *  the user asked to keep this model loaded, which is the whole point of that
+   *  setting: closing a chat must not make the next message pay the full load
+   *  again (design §C2). Kept apart from `unloadModel` deliberately, so an
+   *  explicit "unload this model" still means it. */
+  async releaseModel(modelId: string): Promise<void> {
+    let keepLoaded = false;
+    // Read inside a try: NativeHome rethrows a non-ENOENT read error, and this
+    // runs from a session-teardown callback with nobody to report it to.
+    // Unreadable config means "no setting I can see", i.e. today's behaviour.
+    try { keepLoaded = this.modelSettings(modelId).keepLoaded; } catch { keepLoaded = false; }
+    if (keepLoaded) return;
+    await this.unloadModel(modelId);
   }
 
   /** Force a model resident (the [Reload Model] button). Boots the engine if
@@ -915,7 +1280,15 @@ export class EngineManager extends EventEmitter {
    *  the engine is stopped — its next boot scans the dir anyway. */
   async refreshModels(): Promise<void> {
     if (!this.supervisor) return;
+    // A pending settings change for a model that is IDLE right now rides along:
+    // this call makes the router re-read its preset file anyway, so a change
+    // that can land for free should. A model that is BUSY keeps its old section
+    // (writeModelPresets holds it back) — this reload must not unload a model
+    // mid-reply, which is the entire reason the pending flag exists (design §C2).
+    const merged = await this.mergeIdlePendingSettings();
+    try { this.writeModelPresets(); } catch { /* keep the file the engine already read */ }
     await this.supervisor.refreshModels();
+    for (const id of merged) await this.unloadModel(id);
     this.emit('status-changed');
   }
 
@@ -1488,7 +1861,10 @@ export class EngineManager extends EventEmitter {
       removeManifest(cfg.cacheDir, `${id}.gguf`);
     }
     // The model's own settings go with it, or they would be inherited by a
-    // re-download and meanwhile name a model that no longer exists.
+    // re-download and meanwhile name a model that no longer exists. The queued
+    // apply goes too: without this, the refreshModels() below would clear the
+    // pending flag on the model we just removed and WRITE THE ENTRY BACK.
+    this.pendingModelApplies.delete(id);
     try { await removeModelSettings(this.home, id); } catch { /* best-effort — the files are already gone */ }
     // Tell the router the file is gone, or it keeps advertising a model that
     // 400s on use — the delete-side twin of the post-download refresh.

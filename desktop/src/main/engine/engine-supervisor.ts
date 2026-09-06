@@ -1183,11 +1183,28 @@ export class EngineSupervisor extends EventEmitter {
    *  as activity (never reaped mid-load). */
   async loadModel(modelId: string): Promise<void> {
     const base = await this.ensureRunning(); // http://127.0.0.1:port/v1
+    // The outcome is EMITTED rather than returned. This warm-up is deliberately
+    // not awaited (the caller returns at once so the UI can show 'loading'), and
+    // /models rows carry no failure text — so a push is the only way this
+    // model's load failure can reach its settings dialog, where EngineManager
+    // records it as `lastLoadError` (design §C2). The engine's own words are
+    // carried out raw; the caller decides how to phrase them, never this class.
     void this.trackedFetch(`${base}/chat/completions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: modelId, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, stream: false }),
-    }).catch(() => { /* best-effort — the poll reflects the outcome */ });
+    }).then(async (res: Response) => {
+      let body = '';
+      // Read the body only on a failure, and never let a body that cannot be
+      // read turn a real HTTP answer into a "could not be reached".
+      if (!res.ok) { try { body = await res.text(); } catch { body = ''; } }
+      this.emit('model-load-result', { modelId, ok: res.ok, status: res.status, body });
+    }).catch((e: any) => {
+      // The request could not be made at all — report what happened, not a guess.
+      this.emit('model-load-result', {
+        modelId, ok: false, status: null, body: (e?.message ?? String(e)).trim(),
+      });
+    });
     // Nudge the poll so 'loading' + the progress bar appear promptly (don't wait
     // for the next lazy tick). The adaptive poll then takes over at fast cadence.
     void this.emitModelsIfChanged();
@@ -1214,10 +1231,16 @@ export function sumLoadedModelBytes(models: EngineModel[]): number {
 /** The model an OpenAI-compatible request names, read out of its JSON body.
  *
  *  The body is the only place it appears — the router takes one URL for every
- *  model and dispatches on this field — so there is nothing else to read. A body
- *  that is not JSON, or carries no `model`, returns null and that request simply
- *  is not counted against any model; guessing one would be worse than not
- *  counting, because the count decides when it is safe to reconfigure a model. */
+ *  model and dispatches on this field — so there is nothing else to read.
+ *
+ *  A body that is not JSON, or carries no `model`, returns null and that request
+ *  is not counted against ANY model. Be clear about which way that errs: this
+ *  count gates a settings apply, so an uncounted request makes the apply MORE
+ *  eager, not less — an unreadable body would let a reload land on a reply it
+ *  could not see. It is safe today because every local chat body is a JSON
+ *  string built by the AI SDK, and null then only means a management call that
+ *  belongs to no model. Anything that starts sending a stream or a Buffer body
+ *  here has to count it some other way. */
 export function requestModelId(init: unknown): string | null {
   const body = (init as { body?: unknown } | null | undefined)?.body;
   if (typeof body !== 'string' || !body.startsWith('{')) return null;

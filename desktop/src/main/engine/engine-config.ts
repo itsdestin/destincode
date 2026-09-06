@@ -121,6 +121,9 @@ export function modelSettingsFor(
     memoryWarningDismissed: dLen !== null && dAt !== null ? { at: dAt, contextLength: dLen } : null,
   };
   if (e?.pendingApply === true) out.pendingApply = true;
+  // An empty string is treated as no error: it would render an empty "why it
+  // failed" line in the dialog, which reads as a bug rather than as silence.
+  if (typeof e?.lastLoadError === 'string' && e.lastLoadError.trim()) out.lastLoadError = e.lastLoadError;
   return out;
 }
 
@@ -177,6 +180,58 @@ export async function updateEngineConfig(home: NativeHome, patch: Partial<Engine
     file.engine = { ...(file.engine ?? {}), ...patch };
     return file;
   });
+}
+
+/** What `updateModelSettings` accepts. Spelled out rather than
+ *  `Partial<StoredModelSettings>` because two of the fields need a way to say
+ *  "remove this": `pendingApply` is `true | undefined` on the stored shape, so a
+ *  Partial of it has no value that means "the change has landed", and
+ *  `lastLoadError` needs one that means "it loaded fine this time". `false` and
+ *  `null` are those values; an ABSENT key still means "leave it alone". */
+export type ModelSettingsPatch =
+  Partial<Omit<StoredModelSettings, 'pendingApply' | 'lastLoadError'>>
+  & { pendingApply?: boolean; lastLoadError?: string | null };
+
+/** Merge a patch into ONE model's `engine.models[modelId]`, and hand back that
+ *  model's settings as they now stand.
+ *
+ *  WHY this exists rather than `updateEngineConfig({ models })`: that merge is
+ *  one level deep, so writing one model through it would REPLACE the whole
+ *  `models` section and silently delete every other model's settings — the
+ *  warning above updateEngineConfig is about exactly this call site. The merge
+ *  happens INSIDE mutateJson, under the same lock as the write (the way
+ *  updateEngineSpeed merges the speed object), so two windows saving different
+ *  models at the same moment cannot lose one another's answer.
+ *
+ *  Everything is re-validated on the way out through modelSettingsFor, so a
+ *  patch cannot put a shape in the file that the reader would later drop. */
+export async function updateModelSettings(
+  home: NativeHome, modelId: string, patch: ModelSettingsPatch,
+): Promise<StoredModelSettings> {
+  let result: StoredModelSettings = { ...DEFAULT_MODEL_SETTINGS };
+  await home.mutateJson(FILE, (cur) => {
+    const file = (cur && typeof cur === 'object' ? cur : { v: 1 }) as any;
+    if (typeof file.v !== 'number') file.v = 1;
+    const engine = (file.engine ?? {}) as any;
+    const models = engine.models && typeof engine.models === 'object' ? engine.models : {};
+    // Start from the VALIDATED current value, not the raw one: a half-written
+    // field left by a hand edit is dropped here rather than carried forward.
+    const merged: Record<string, unknown> = { ...modelSettingsFor(models, modelId) };
+    for (const [key, value] of Object.entries(patch)) {
+      if (value !== undefined) merged[key] = value;
+    }
+    // The two "remove me" values. Written as absent keys rather than as `false`
+    // / `null` so the file says only what is true of this model.
+    if (merged.pendingApply !== true) delete merged.pendingApply;
+    if (typeof merged.lastLoadError !== 'string' || !merged.lastLoadError.trim()) delete merged.lastLoadError;
+    // A COMPUTED key, never `models[modelId] = …` on a fresh literal: model ids
+    // are filenames, so `__proto__` is an id a user can create.
+    const nextModels = { ...models, [modelId]: merged };
+    file.engine = { ...engine, models: nextModels };
+    result = modelSettingsFor(nextModels, modelId);
+    return file;
+  });
+  return result;
 }
 
 /** Merge a PARTIAL speed patch into `engine.speed`.

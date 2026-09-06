@@ -371,6 +371,69 @@ export interface PresetFileInput {
   modelIds: readonly string[];
   /** `config.json` → `engine.models`. Ids with no entry get no section. */
   settings?: Readonly<Record<string, Partial<ModelSettings>>> | null;
+  /** Sections to copy VERBATIM instead of rendering from `settings`, keyed by
+   *  model id — the output of `parsePresetSections` on the file already on disk.
+   *
+   *  WHY a whole mechanism for this: the preset file is shared by every model,
+   *  and the router unloads a model whose section CHANGED on `?reload=1`. So
+   *  when one model's saved change is ready to land while another's is still
+   *  waiting for that model's reply to finish, writing the file from config
+   *  alone would apply BOTH — and unload the model the wait exists to protect,
+   *  mid-answer. Holding the waiting model's section at what the engine is
+   *  already running makes its line of the diff empty (design §C2).
+   *
+   *  An empty array means "this model had no section": it gets none, which is
+   *  the same file it had. A Map, not an object: model ids are filenames. */
+  preserve?: ReadonlyMap<string, readonly string[]>;
+}
+
+/** The `[*]` section's value for one key in a preset file we wrote earlier, or
+ *  null when the file has no such line.
+ *
+ *  WHY the GLOBAL section needs reading back: an engine-wide context change is
+ *  deferred exactly as a per-model one is — `setConfig` writes config.json at
+ *  once and queues the apply, because reloading mid-reply kills the answer. But
+ *  `[*]` is what every model with no section of its own inherits, so rendering
+ *  it from config on somebody ELSE'S reload (a finished download calls
+ *  `refreshModels`) would apply that queued change anyway and cut the reply.
+ *  This is how `[*]` gets held at what the engine actually read. */
+export function presetGlobalValue(contents: string, key: string): string | null {
+  let inGlobal = false;
+  for (const raw of (contents ?? '').split(/\r?\n/)) {
+    const line = raw.trim();
+    const header = /^\[(.+)\]$/.exec(line);
+    if (header) { inGlobal = header[1] === GLOBAL_SECTION; continue; }
+    if (!inGlobal || line === '') continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    if (line.slice(0, eq).trim() !== key) continue;
+    const value = line.slice(eq + 1).trim();
+    return value === '' ? null : value;
+  }
+  return null;
+}
+
+/** The per-model sections of a preset file we wrote earlier, as their raw lines.
+ *  `[*]` is deliberately NOT returned — it is rendered from config every time,
+ *  and it is never the thing being held. The last `[id]` header wins, which is
+ *  what llama.cpp's own parser does (a repeat RESETS the section). */
+export function parsePresetSections(contents: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  let current: string[] | null = null;
+  for (const raw of (contents ?? '').split(/\r?\n/)) {
+    const line = raw.trim();
+    const header = /^\[(.+)\]$/.exec(line);
+    if (header) {
+      const name = header[1];
+      if (name === GLOBAL_SECTION) { current = null; continue; }
+      current = [];
+      out.set(name, current);
+      continue;
+    }
+    if (line === '' || current === null) continue;
+    current.push(line);
+  }
+  return out;
 }
 
 /** Render the whole file. Pure — `writePresetFile` does the I/O. */
@@ -389,15 +452,20 @@ export function renderPresetFile(input: PresetFileInput): string {
     // the first one's keys.
     if (written.has(id) || !isWritableSectionName(id)) continue;
     written.add(id);
-    const entries = modelSectionEntries(lookupSettings(input.settings, id));
+    // A held model keeps the exact lines the running engine read; everything
+    // else is rendered from config. See PresetFileInput.preserve.
+    const held = input.preserve?.get(id);
+    const body = held !== undefined
+      ? [...held]
+      : modelSectionEntries(lookupSettings(input.settings, id)).map((e) => `${e.key} = ${e.value}`);
     // WHY a model on all defaults gets NO section rather than an empty one: the
     // mere presence of a section flips that model's `source` to `preset` in
     // GET /models and marks it a custom preset in the engine's own log (probed).
     // That is a visible change of state bought for nothing, on every model the
     // user never touched.
-    if (entries.length === 0) continue;
+    if (body.length === 0) continue;
     lines.push(`[${id}]`);
-    for (const { key, value } of entries) lines.push(`${key} = ${value}`);
+    for (const line of body) lines.push(line);
     lines.push('');
   }
 

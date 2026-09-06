@@ -175,6 +175,18 @@ export interface StoredModelSettings extends ModelSettings {
    *  save does NOT rewrite models.ini itself — every `?reload=1` would unload a
    *  changed model mid-reply — so the apply waits for that model to go idle. */
   pendingApply?: true;
+  /** Why this model last failed to load, in the ENGINE'S OWN WORDS (absent = it
+   *  did not). Two sources, and the second one is why this field has to exist at
+   *  all (design §C2):
+   *    1. the router's message when a load of this model fails, and
+   *    2. the startup rejection for a model whose preset section the engine
+   *       refused — that model's section is dropped so the OTHER models can run,
+   *       so it never gets a router row to fail on and #1 can never see it.
+   *
+   *  It lives HERE and not on `ModelSettings` deliberately: `ModelSettings` is
+   *  what the settings dialog is allowed to write, and this is something the app
+   *  observes and records for the user, never something the user sets. */
+  lastLoadError?: string;
 }
 
 /** A downloaded model's vision projector (the `mmproj-*.gguf` file that lets a
