@@ -106,10 +106,10 @@ describe('useVoiceInput — readiness composition (desktop only)', () => {
   });
 
   it('a working microphone lets the host answer stand', async () => {
-    installBridge({ desktop: true, status: { state: 'needs-download', engine: 'Parakeet', sizeMb: 464 }, access: 'granted' });
+    installBridge({ desktop: true, status: { state: 'needs-download', engine: 'Parakeet', sizeMb: 639 }, access: 'granted' });
     const { result } = mount();
     await settle();
-    expect(result.current.readiness).toEqual({ state: 'needs-download', engine: 'Parakeet', sizeMb: 464 });
+    expect(result.current.readiness).toEqual({ state: 'needs-download', engine: 'Parakeet', sizeMb: 639 });
   });
 
   it('ANDROID: nothing is composed — the host has the only say', async () => {

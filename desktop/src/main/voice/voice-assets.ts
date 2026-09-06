@@ -1,8 +1,18 @@
 // Voice prompting, first half: getting the speech engine onto this computer.
 //
-// Two downloads land in `<userData>/voice/` — the sherpa-onnx native runtime
-// (an npm tarball, ~8-14 MB, plus its 12 KB JavaScript wrappers) and the
-// Parakeet speech model (a 487 MB .tar.bz2). Both are pinned in voice-pin.ts.
+// Six downloads land in `<userData>/voice/` — the sherpa-onnx native runtime
+// (an npm tarball, ~8-14 MB, plus its 12 KB JavaScript wrappers) and the four
+// files of the Parakeet speech model, ~639 MB together. All six are pinned in
+// voice-pin.ts.
+//
+// NOTHING here runs another program. That is the point: the install has to work
+// on a computer that has no developer tools on it, and it has to behave the same
+// way on Windows, macOS and Linux — including the two this machine cannot test.
+// The model used to arrive as one .tar.bz2, which is 175 MB smaller but needs a
+// bzip2 program the app does not ship; the runtime used to be unpacked by
+// shelling out to `tar`. Both are gone: the model's files are downloaded as
+// they are, and the two npm tarballs are un-gzipped and un-tarred in this
+// process. Destin, 2026-09-05: "should be seamless."
 //
 // The SHAPE is engine/engine-acquisition.ts's, deliberately: download → verify
 // → unpack into a `.unpacking` SIBLING → write the `.complete` marker INSIDE it
@@ -24,29 +34,26 @@
 //     because npm publishes SHA-512 in base64 and the model release publishes
 //     SHA-256 in hex. See voice-pin.ts's header.
 //
-//  3. The bzip2 decompressor is NAMED, and its absence is CHECKED. This is the
-//     app's first .tar.bz2. Verified on this Linux machine 2026-09-05 with GNU
-//     tar 1.35: `tar -xf sample.tar.bz2` does NOT decompress bzip2 itself — it
-//     shells out, preferring `lbzip2` and falling back to `bzip2`, and with
-//     neither on PATH it fails with "tar (child): lbzip2: Cannot exec: No such
-//     file or directory". That message names a program the user never installed
-//     and never heard of, for a step they did not know existed. So on Linux the
-//     decompressor is chosen explicitly and piped into tar, and a machine with
-//     none gets a sentence that says what is missing and what to do.
+//  3. The two npm tarballs are unpacked HERE, in this process, rather than by
+//     `tar`. A shell-out was measured to work on this Linux machine and merely
+//     BELIEVED to work on Windows (where a bare `tar` can resolve to Git's GNU
+//     tar, which reads the colon in `C:\...` as a remote host) and on macOS.
+//     An install that only ever fails on the platforms you cannot test is not
+//     an install you can ship. gzip is in Node itself, and the tar format is
+//     512-byte headers — see `untarGz` at the bottom of this file.
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
-import { execFile, spawn } from 'child_process';
-import { promisify } from 'util';
+import * as zlib from 'zlib';
 import * as electron from 'electron';
 import type { DigestPin, VoiceArchive } from './voice-pin';
 import {
-  SHERPA_VERSION, VOICE_MODEL, VOICE_WRAPPERS, MODEL_DIR_NAME,
+  SHERPA_VERSION, VOICE_MODEL_FILES, VOICE_MODEL_BYTES, VOICE_MODEL_ID,
+  MODEL_REQUIRED_REL_PATHS, VOICE_WRAPPERS, MODEL_DIR_NAME,
   pickRuntime, unsupportedReason, totalDownloadBytes,
   voiceRoot, runtimeDir, addonPath, wrapperEntryPath, modelDir,
 } from './voice-pin';
 
-const execFileAsync = promisify(execFile);
 // Progress events throttled so a 487 MB download doesn't flood IPC.
 const PROGRESS_INTERVAL_MS = 250;
 
@@ -124,7 +131,7 @@ export class VoiceAssets {
   installed(): InstalledVoiceAssets | null {
     const p = this.paths();
     if (!this.isComplete(runtimeDir(this.userDataPath))) return null;
-    if (!this.isComplete(this.modelRoot(), VOICE_MODEL.digest.digest)) return null;
+    if (!this.isComplete(this.modelRoot(), VOICE_MODEL_ID)) return null;
     return p;
   }
 
@@ -198,15 +205,24 @@ export class VoiceAssets {
 
     const runtimeArchive = path.join(root, `${runtime.npmPackage}-${SHERPA_VERSION}.tgz.download`);
     const wrapperArchive = path.join(root, `${VOICE_WRAPPERS.npmPackage}-${SHERPA_VERSION}.tgz.download`);
-    const modelArchive = path.join(root, `${MODEL_DIR_NAME}.tar.bz2.download`);
+    // The model's four files, downloaded where a failed install will not sweep
+    // them away — a retry has to resume 639 MB, not start it again.
+    const modelDownloads = VOICE_MODEL_FILES.map((f) => ({
+      file: f, dest: path.join(root, `${f.name}.download`),
+    }));
 
     try {
       await this.getVerified(runtime, runtimeArchive, report);
       carried += runtime.bytes;
       await this.getVerified(VOICE_WRAPPERS, wrapperArchive, report);
       carried += VOICE_WRAPPERS.bytes;
-      await this.getVerified(VOICE_MODEL, modelArchive, report);
-      carried += VOICE_MODEL.bytes;
+      for (const { file, dest } of modelDownloads) {
+        await this.getVerified(
+          { label: `the speech model's ${file.name}`, url: file.url, digest: file.digest, bytes: file.bytes, requiredRelPaths: [] },
+          dest, report,
+        );
+        carried += file.bytes;
+      }
       report(0);
 
       onProgress({ phase: 'unpacking' });
@@ -229,16 +245,21 @@ export class VoiceAssets {
       ]);
 
       // --- the model ---
+      // There is no unpacking step any more: the four files ARE the model, so
+      // this only moves them into place. `renameSync` inside one folder is
+      // instant and atomic, which is why the download destinations were chosen
+      // to sit beside the target rather than anywhere else on the disk.
       const modelPartial = `${modelFinal}.unpacking`;
       fs.rmSync(modelPartial, { recursive: true, force: true });
-      fs.mkdirSync(modelPartial, { recursive: true });
-      await unpackTarBz2(modelArchive, modelPartial);
-      requireLayout(modelPartial, VOICE_MODEL.requiredRelPaths, 'speech model');
-      writeMarkerAndRename(modelPartial, modelFinal, VOICE_MODEL.requiredRelPaths, VOICE_MODEL.digest.digest);
+      fs.mkdirSync(path.join(modelPartial, MODEL_DIR_NAME), { recursive: true });
+      for (const { file, dest } of modelDownloads) {
+        fs.renameSync(dest, path.join(modelPartial, MODEL_DIR_NAME, file.name));
+      }
+      requireLayout(modelPartial, MODEL_REQUIRED_REL_PATHS, 'speech model');
+      writeMarkerAndRename(modelPartial, modelFinal, MODEL_REQUIRED_REL_PATHS, VOICE_MODEL_ID);
 
       fs.rmSync(runtimeArchive, { force: true });
       fs.rmSync(wrapperArchive, { force: true });
-      fs.rmSync(modelArchive, { force: true });
 
       onProgress({ phase: 'ready' });
       return this.paths();
@@ -250,7 +271,7 @@ export class VoiceAssets {
       throw e;
     } finally {
       // Scratch directories never survive a failure; the partial .download
-      // files DO, on purpose, so a retry resumes instead of restarting 487 MB.
+      // files DO, on purpose, so a retry resumes instead of restarting 639 MB.
       fs.rmSync(`${runtimeFinal}.unpacking`, { recursive: true, force: true });
       fs.rmSync(`${modelFinal}.unpacking`, { recursive: true, force: true });
     }
@@ -401,117 +422,102 @@ function networkReason(e: unknown): string {
 // Unpacking
 // ---------------------------------------------------------------------------
 
-// On Windows, `tar` MUST be the System32 bsdtar (libarchive): a bare `tar` on
-// PATH can resolve to Git's GNU tar, which mis-reads the colon in `C:\...` as an
-// rsh host:path. Same reasoning, and the same line, as engine-acquisition.ts's
-// systemTar() — kept local rather than exported across subsystems.
-function systemTar(): string {
-  return process.platform === 'win32'
-    ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe')
-    : 'tar';
-}
-
-/** npm tarballs. Every tar in play reads gzip without help. */
-async function unpackTarGz(archive: string, destDir: string): Promise<void> {
-  await execFileAsync(systemTar(), ['-xf', archive, '-C', destDir]);
-}
-
-/** The bzip2 programs tar itself looks for, in tar's own order of preference
- *  (measured, see the module header). Whichever exists is fine: all three read
- *  the same format, the parallel ones are simply faster. */
-const BZIP2_PROGRAMS = ['lbzip2', 'pbzip2', 'bzip2'];
-
-/** The model archive. See departure 3 in the module header for WHY this does
- *  not just call `tar -xf`. */
-async function unpackTarBz2(archive: string, destDir: string): Promise<void> {
-  if (process.platform !== 'linux') {
-    // Windows' System32 tar and macOS' /usr/bin/tar are both bsdtar, which links
-    // libarchive and decompresses bzip2 IN-PROCESS — there is no helper program
-    // that can be missing. NOT VERIFIED on this Linux development machine
-    // (2026-09-05); the Linux path below is the one that was measured. If a Mac
-    // or Windows unpack ever fails here, the fix is to extend the named-program
-    // path below to those platforms, not to add a guess to this comment.
-    await execFileAsync(systemTar(), ['-xf', archive, '-C', destDir]);
-    return;
-  }
-
-  const program = await findBzip2();
-  await pipeThroughTar(program, archive, destDir);
-}
-
-/** Which bzip2 program this machine has, or a sentence saying it has none.
- *  "Checked", not "assumed" — and the message names what is missing, instead of
- *  tar's "lbzip2: Cannot exec", which names a program nobody chose to install.
+/**
+ * Un-gzip and un-tar an npm tarball, here, without running another program.
  *
- *  WHY spawn with stdio 'ignore' rather than execFile: `bzip2 -V` prints its
- *  version and then goes on to compress STANDARD INPUT. execFile gives the child
- *  an open stdin pipe that nothing ever closes, so the probe never returns — it
- *  hung the whole test suite for 30 s a test before this was found (2026-09-05).
- *  'ignore' hands it /dev/null, which is an immediate end-of-input. */
-function probeProgram(program: string): Promise<boolean> {
-  return new Promise((resolve, reject) => {
-    const probe = spawn(program, ['-V'], { stdio: 'ignore' });
-    // ONLY "no such file" means the program is absent. EACCES, EMFILE or ENOMEM on a
-    // machine that HAS bzip2 would otherwise be reported as "this computer has no
-    // bzip2 program", which is a hardcoded guess replacing a real error — the exact
-    // shape docs/error-message-standards.md forbids.
-    probe.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'ENOENT') { resolve(false); return; }
-      reject(new Error(`Could not check for ${program}: ${err.message}`));
-    });
-    probe.on('close', () => resolve(true));  // it ran, whatever it thought of -V
-  });
-}
+ * WHY not `tar -xf`: see departure 3 in this file's header. The short version is
+ * that a shell-out was only ever tested on Linux, and the two platforms it was
+ * assumed to work on are the two that cannot be tested from here.
+ *
+ * These archives are npm tarballs — 8-14 MB gzipped, one directory deep, no
+ * symlinks, no hard links, no sparse files. Everything that format allows and
+ * these archives do not contain is deliberately REFUSED rather than half-handled,
+ * so an archive that changes shape fails loudly instead of installing something
+ * subtly wrong.
+ */
+async function unpackTarGz(archive: string, destDir: string): Promise<void> {
+  const tar = await gunzip(await fs.promises.readFile(archive));
+  const BLOCK = 512;
+  let offset = 0;
+  let longName: string | null = null;
+  let wrote = 0;
 
-async function findBzip2(): Promise<string> {
-  for (const program of BZIP2_PROGRAMS) {
-    if (await probeProgram(program)) return program;
-  }
-  throw new Error(
-    'The speech model could not be unpacked: this computer has no bzip2 program '
-    + `(looked for ${BZIP2_PROGRAMS.join(', ')}). Install bzip2 and try the download again.`,
-  );
-}
+  while (offset + BLOCK <= tar.length) {
+    const header = tar.subarray(offset, offset + BLOCK);
+    // Two zero blocks end the archive; one is enough to stop on.
+    if (header.every((b) => b === 0)) break;
 
-/** `<program> -dc archive | tar -x -C destDir`, with both programs' own error
- *  output preserved — a failure here reports what the tools said, not a guess. */
-function pipeThroughTar(program: string, archive: string, destDir: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const decompress = spawn(program, ['-dc', archive], { stdio: ['ignore', 'pipe', 'pipe'] });
-    const untar = spawn(systemTar(), ['-x', '-C', destDir], { stdio: ['pipe', 'ignore', 'pipe'] });
-    let stderr = '';
-    let settled = false;
-    const fail = (message: string) => {
-      if (settled) return;
-      settled = true;
-      decompress.kill();
-      untar.kill();
-      reject(new Error(message));
+    const str = (from: number, len: number) => {
+      const raw = header.subarray(from, from + len);
+      const nul = raw.indexOf(0);
+      return raw.subarray(0, nul === -1 ? raw.length : nul).toString('utf8');
+    };
+    // Sizes are octal, space- or NUL-padded. An empty field means zero.
+    const octal = (from: number, len: number) => {
+      const text = str(from, len).trim();
+      return text ? parseInt(text, 8) : 0;
     };
 
-    decompress.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-    untar.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-    decompress.on('error', (err: Error) => fail(`The speech model could not be unpacked: ${program} could not run (${err.message}).`));
-    untar.on('error', (err: Error) => fail(`The speech model could not be unpacked: tar could not run (${err.message}).`));
-    decompress.stdout.pipe(untar.stdin);
-    // EPIPE when tar dies first is not a separate failure — tar's own exit
-    // already reports it, and an unhandled 'error' here would crash main.
-    untar.stdin.on('error', () => {});
+    const size = octal(124, 12);
+    const type = String.fromCharCode(header[156]) || '0';
+    const prefix = str(345, 155);
+    const name = longName ?? (prefix ? `${prefix}/${str(0, 100)}` : str(0, 100));
+    longName = null;
 
-    decompress.on('close', (code) => {
-      if (code !== 0 && code !== null) fail(`The speech model could not be unpacked: ${program} exited with code ${code}. ${stderr.trim()}`.trim());
-    });
-    untar.on('close', (code) => {
-      if (settled) return;
-      if (code === 0) { settled = true; resolve(); return; }
-      fail(`The speech model could not be unpacked: tar exited with code ${code}. ${stderr.trim()}`.trim());
-    });
+    const dataStart = offset + BLOCK;
+    const dataEnd = dataStart + size;
+    if (dataEnd > tar.length) {
+      throw new Error(`${path.basename(archive)} is truncated — an entry says it is ${size} bytes but the archive ends first.`);
+    }
+    offset = dataStart + Math.ceil(size / BLOCK) * BLOCK;
+
+    // GNU long name: the NEXT entry's real name is this entry's contents.
+    if (type === 'L') { longName = tar.subarray(dataStart, dataEnd).toString('utf8').replace(/\0+$/, ''); continue; }
+    // PAX extended headers carry metadata we do not use (timestamps, ownership).
+    if (type === 'x' || type === 'g') continue;
+    if (type === '5') { fs.mkdirSync(safeJoin(destDir, name), { recursive: true }); continue; }
+    if (type !== '0' && type !== '\0' && type !== '') {
+      throw new Error(
+        `${path.basename(archive)} contains "${name}", which is a kind of entry this app does not unpack (tar type "${type}"). `
+        + `The download was not installed.`,
+      );
+    }
+
+    const target = safeJoin(destDir, name);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    await fs.promises.writeFile(target, tar.subarray(dataStart, dataEnd));
+    wrote += 1;
+  }
+
+  if (wrote === 0) throw new Error(`${path.basename(archive)} contained no files.`);
+}
+
+/** Node's gzip, promised. */
+function gunzip(buf: Buffer): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    zlib.gunzip(buf, (err, out) => (err ? reject(err) : resolve(out)));
   });
 }
 
-/** The stale-layout tripwire, in engine-acquisition's words: if the archive did
- *  not contain what voice-pin.ts promised, fail loudly HERE rather than install
- *  a directory that looks complete and cannot load. */
+/**
+ * Join a path from inside an archive onto a directory, refusing anything that
+ * would land outside it.
+ *
+ * WHY: this is the one place where a downloaded file gets to choose where it is
+ * written. A name like `../../.bashrc`, or an absolute one, must never be
+ * followed — even though the archives are pinned by digest, because a pin is
+ * checked against what was published and this is what stops a bad publish.
+ */
+function safeJoin(destDir: string, entryName: string): string {
+  const cleaned = entryName.replace(/\\/g, '/').replace(/^\/+/, '');
+  const target = path.resolve(destDir, cleaned);
+  const root = path.resolve(destDir);
+  if (target !== root && !target.startsWith(root + path.sep)) {
+    throw new Error(`Refusing to unpack "${entryName}": it points outside the folder being installed into.`);
+  }
+  return target;
+}
+
 function requireLayout(dir: string, requiredRelPaths: string[], what: string): void {
   for (const rel of requiredRelPaths) {
     if (!fs.existsSync(path.join(dir, rel))) {

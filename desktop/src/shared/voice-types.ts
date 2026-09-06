@@ -15,8 +15,8 @@ export type VoiceReadiness =
    *
    *  `sizeMb` is the real number the download side knows — the size of the
    *  archive it is about to fetch. **The first-run card does not print it.**
-   *  The reopen deck (V-10) settled that copy as a literal sentence ("about
-   *  500 MB"), because a number that shifts by a few MB every time the engine
+   *  The reopen deck (V-10) settled that copy as a literal sentence (now
+   *  "about 650 MB"), because a number that shifts by a few MB every time the engine
    *  pin moves reads as a precision nobody asked for, and because the card is
    *  read once, before anything has been measured. The field stays because the
    *  downloader genuinely has the number (progress is derived from it) — it is

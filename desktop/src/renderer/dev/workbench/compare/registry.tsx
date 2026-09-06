@@ -5473,7 +5473,7 @@ export const COMPARE_SURFACES: CompareSurface[] = [
           {
             id: 'first-run',
             label: 'First tap',
-            note: 'Nothing downloaded yet. The first tap opens the card: what the mic does, that your voice stays on this computer, the 464 MB one-time download. Download runs a fake progress and the mic wakes up with a toast.',
+            note: 'Nothing downloaded yet. The first tap opens the card: what the mic does, that your voice stays on this computer, the 650 MB one-time download. Download runs a fake progress and the mic wakes up with a toast.',
             render: () => <VoiceComposerDemo state="needs-download" />,
           },
           {

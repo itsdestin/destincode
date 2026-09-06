@@ -66,7 +66,7 @@ afterEach(() => {
 });
 
 describe('VoiceButton card — first run (R8, R22)', () => {
-  const NEEDS: VoiceReadiness = { state: 'needs-download', engine: 'Parakeet', sizeMb: 464 };
+  const NEEDS: VoiceReadiness = { state: 'needs-download', engine: 'Parakeet', sizeMb: 639 };
 
   it('offers the download with the approved size sentence and the language limit', () => {
     renderCard({ readiness: NEEDS });
@@ -77,13 +77,13 @@ describe('VoiceButton card — first run (R8, R22)', () => {
       screen.getByText(/Your voice is turned into text on this computer and never leaves it\./),
     ).toBeInTheDocument();
     expect(screen.getByText('Understands English and 24 other European languages.')).toBeInTheDocument();
-    expect(screen.getByText('One-time download: about 500 MB.')).toBeInTheDocument();
+    expect(screen.getByText('One-time download: about 650 MB.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Not now' })).toBeInTheDocument();
   });
 
   it('never prints the readiness sizeMb number — the sentence is the only size the card says', () => {
-    // The downloader genuinely knows 464; the card must not say it, or the card
+    // The downloader genuinely knows 639; the card must not say it, or the card
     // and the workbench fake end up promising two different numbers.
     renderCard({ readiness: NEEDS });
     tapMic();
@@ -161,7 +161,7 @@ describe('VoiceButton card — the microphone will not open (R11, R12, R20, R21)
 });
 
 describe('VoiceButton card — a download that failed (R3-6, R12)', () => {
-  const NEEDS: VoiceReadiness = { state: 'needs-download', engine: 'Parakeet', sizeMb: 464 };
+  const NEEDS: VoiceReadiness = { state: 'needs-download', engine: 'Parakeet', sizeMb: 639 };
   const REASON = 'net::ERR_PROXY_CONNECTION_FAILED';
 
   it('keeps the offer card, shows the computer’s own reason, and offers Retry', () => {

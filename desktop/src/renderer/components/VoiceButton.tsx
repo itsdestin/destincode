@@ -209,12 +209,14 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
             (reopen deck V-11): someone who speaks a language it cannot hear
             deserves to find out first. */}
         <p className="text-2xs text-fg-2 leading-snug mt-2">Understands English and 24 other European languages.</p>
-        {/* Written out, not computed from `sizeMb`. The number the downloader
-            knows is the archive alone and shifts by a few MB every time the
-            engine pin moves; "about 500 MB" is the true first-run total (model
-            plus the runtime that runs it) and is the sentence Destin approved
-            on the reopen deck (V-10). See voice-types.ts on `sizeMb`. */}
-        <p className="text-2xs text-fg-muted mt-2">One-time download: about 500 MB.</p>
+        {/* Written out, not computed from `sizeMb`, so the sentence a person
+            reads never shifts by a few MB when the engine pin moves. It was
+            "about 500 MB" (reopen deck V-10), which was the compressed archive
+            plus its runtime; the model now arrives as its four plain files
+            instead, because unpacking the archive needed a program the app does
+            not ship and could not be tested on Windows or macOS from here. That
+            costs 175 MB more and removes the wait to unpack it. */}
+        <p className="text-2xs text-fg-muted mt-2">One-time download: about 650 MB.</p>
         {downloadFailed && (
           // The computer's OWN words, never a guess about the network —
           // docs/error-message-standards.md.
@@ -256,7 +258,7 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
       <>
         <p className="text-xs font-semibold text-fg mb-1.5">Getting voice ready</p>
         <ProgressBar percent={readiness.percent} showLabel aria-label="Voice download" />
-        <p className="text-2xs text-fg-muted mt-2">About 500 MB, once. You can keep typing; the mic wakes up when it is done.</p>
+        <p className="text-2xs text-fg-muted mt-2">About 650 MB, once. You can keep typing; the mic wakes up when it is done.</p>
       </>
     );
   } else if (state === 'unpacking') {

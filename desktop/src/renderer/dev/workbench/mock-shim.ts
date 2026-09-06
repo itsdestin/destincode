@@ -1987,8 +1987,8 @@ const VOICE_SCRIPT = "Can you look at the budget spreadsheet I sent yesterday? R
 export function createVoiceMock(initial: string | null, opts: { loopReset?: boolean } = {}): NonNullable<Window['claude']['voice']> {
   const engine = 'Parakeet';
   let readiness: VoiceReadiness =
-    initial === 'needs-download' ? { state: 'needs-download', engine, sizeMb: 464 }
-    : initial === 'downloading' ? { state: 'downloading', engine, sizeMb: 464, percent: 42 }
+    initial === 'needs-download' ? { state: 'needs-download', engine, sizeMb: 639 }
+    : initial === 'downloading' ? { state: 'downloading', engine, sizeMb: 639, percent: 42 }
     : initial === 'unavailable' ? { state: 'unavailable', reason: 'No microphone was found on this computer.' }
     : { state: 'ready', engine };
   const subs = new Set<(e: VoiceEvent) => void>();
@@ -2028,7 +2028,7 @@ export function createVoiceMock(initial: string | null, opts: { loopReset?: bool
         // would ever look at the "Almost ready…" screen the real app shows for
         // the longest single minute of the first run.
         readiness = pct < 100
-          ? { state: 'downloading', engine, sizeMb: 464, percent: pct }
+          ? { state: 'downloading', engine, sizeMb: 639, percent: pct }
           : { state: 'unpacking', engine };
         emit({ type: 'readiness', readiness });
         if (pct < 100) later(tick, 90);

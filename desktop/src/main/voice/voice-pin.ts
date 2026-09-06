@@ -154,13 +154,16 @@ export const VOICE_WRAPPERS: VoiceArchive & { npmPackage: string; entryRelPath: 
   requiredRelPaths: ['package/sherpa-onnx.js', 'package/non-streaming-asr.js', 'package/addon.js'],
 };
 
-/** The directory the model archive unpacks to — its own name, inside the tar. */
+/** The directory the model's files live in on disk. */
 export const MODEL_DIR_NAME = 'sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8';
 
-// Size and digest: the release's own checksum.txt plus
-//   `curl -sL -r 0-0 -D - -o /dev/null <url>` → Content-Range total, read
-//   2026-09-05. The four required paths were read off the archive's own index
-//   the same day (`curl -sL -r 0-25000000 <url> | bzip2 -dc | tar -tv`).
+/** Where the model's files are published individually. Hugging Face is the
+ *  model's own upstream home — the .tar.bz2 on the GitHub release is built FROM
+ *  this directory, and each file here was checked byte for byte against a copy
+ *  unpacked from that sha256-pinned archive (2026-09-05). */
+const MODEL_BASE_URL =
+  'https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/resolve/main';
+
 /** The four files the recogniser opens, named ONCE. The archive's contents and
  *  the engine's config are the same four names, and spelling them in two places
  *  means a re-pinned model archive passes every test and then fails at load with
@@ -172,23 +175,71 @@ export const MODEL_FILES = {
   tokens: 'tokens.txt',
 } as const;
 
-export const VOICE_MODEL: VoiceArchive = {
-  label: 'the speech model',
-  url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2',
-  digest: { algo: 'sha256', encoding: 'hex', digest: '5793d0fd397c5778d2cf2126994d58e9d56b1be7c04d13c7a15bb1b4eafb16bf' },
-  bytes: 487170055,
-  requiredRelPaths: [
-    `${MODEL_DIR_NAME}/${MODEL_FILES.encoder}`,
-    `${MODEL_DIR_NAME}/${MODEL_FILES.decoder}`,
-    `${MODEL_DIR_NAME}/${MODEL_FILES.joiner}`,
-    `${MODEL_DIR_NAME}/${MODEL_FILES.tokens}`,
-  ],
-};
+/** One file of the speech model, fetched on its own.
+ *
+ *  WHY not the single .tar.bz2 the model is published as, which is 175 MB
+ *  smaller: unpacking it needs a bzip2 program that is NOT part of the app.
+ *  Linux `tar` shells out to one (it prefers `lbzip2`, which almost nobody has,
+ *  and falls back to `bzip2`), so a slim install simply fails; and the claim
+ *  that Windows' and macOS' tar decompress bzip2 themselves could never be
+ *  tested from this machine, which meant shipping a first-run experience on two
+ *  platforms on the strength of a belief. Four plain downloads behave the same
+ *  way on every operating system, need no program that might be missing, and
+ *  have no unpacking step at all. Destin, 2026-09-05: "should be seamless."
+ *
+ *  These are the SAME BYTES as the ones inside the release archive — verified
+ *  file by file against a copy unpacked from the sha256-pinned archive. */
+export interface VoiceModelFile {
+  /** Filename inside the model directory. */
+  name: string;
+  url: string;
+  digest: DigestPin;
+  bytes: number;
+}
+
+/** Sizes and digests: `curl -sSL <url> | sha256sum` and the Content-Range total,
+ *  both taken 2026-09-05 and both cross-checked against the archive's contents. */
+export const VOICE_MODEL_FILES: VoiceModelFile[] = [
+  {
+    name: MODEL_FILES.encoder,
+    url: `${MODEL_BASE_URL}/${MODEL_FILES.encoder}`,
+    digest: { algo: 'sha256', encoding: 'hex', digest: 'acfc2b4456377e15d04f0243af540b7fe7c992f8d898d751cf134c3a55fd2247' },
+    bytes: 652184281,
+  },
+  {
+    name: MODEL_FILES.decoder,
+    url: `${MODEL_BASE_URL}/${MODEL_FILES.decoder}`,
+    digest: { algo: 'sha256', encoding: 'hex', digest: '179e50c43d1a9de79c8a24149a2f9bac6eb5981823f2a2ed88d655b24248db4e' },
+    bytes: 11845275,
+  },
+  {
+    name: MODEL_FILES.joiner,
+    url: `${MODEL_BASE_URL}/${MODEL_FILES.joiner}`,
+    digest: { algo: 'sha256', encoding: 'hex', digest: '3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3' },
+    bytes: 6355277,
+  },
+  {
+    name: MODEL_FILES.tokens,
+    url: `${MODEL_BASE_URL}/${MODEL_FILES.tokens}`,
+    digest: { algo: 'sha256', encoding: 'hex', digest: 'd58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d' },
+    bytes: 93939,
+  },
+];
+
+/** What the model directory must contain when the install finishes. */
+export const MODEL_REQUIRED_REL_PATHS = VOICE_MODEL_FILES.map((f) => `${MODEL_DIR_NAME}/${f.name}`);
+
+/** Every byte of the model, added up. */
+export const VOICE_MODEL_BYTES = VOICE_MODEL_FILES.reduce((n, f) => n + f.bytes, 0);
+
+/** Identity of the model on disk, for the "is this the model I pinned?" marker.
+ *  The encoder is the model — the other three are tiny and change with it. */
+export const VOICE_MODEL_ID = VOICE_MODEL_FILES[0].digest.digest;
 
 /** Every byte the first-run download has to move. The progress percentage is
  *  over this, so the bar never restarts between the three archives. */
 export function totalDownloadBytes(runtime: VoiceRuntimePin): number {
-  return runtime.bytes + VOICE_WRAPPERS.bytes + VOICE_MODEL.bytes;
+  return runtime.bytes + VOICE_WRAPPERS.bytes + VOICE_MODEL_BYTES;
 }
 
 export function pickRuntime(platform: NodeJS.Platform | string, arch: string): VoiceRuntimePin | null {

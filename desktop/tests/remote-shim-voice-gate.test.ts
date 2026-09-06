@@ -50,8 +50,16 @@ function setProtocol(protocol: 'file:' | 'http:') {
 /** connectToHost() awaits a dynamic import before it opens its socket, so the
  *  fake instance does not exist on the next line. Wait for it. */
 async function waitForSocket(count: number): Promise<FakeWebSocket> {
-  for (let i = 0; i < 50 && FakeWebSocket.instances.length < count; i += 1) {
-    await new Promise((r) => setTimeout(r, 0));
+  // Bounded by TIME, not by a count of event-loop turns. Fifty turns is however
+  // long fifty turns happen to take, and with the whole suite running in
+  // parallel that was measured at less than one dynamic import (this file failed
+  // inside a full run on 2026-09-05 and passed on its own straight after).
+  // Rule: .claude/rules/test-suite-hygiene.md → "Never let a fixed sleep stand
+  // in for a signal" — there is no event to wait on here, so a generous deadline
+  // is the honest second best.
+  const deadline = Date.now() + 10_000;
+  while (FakeWebSocket.instances.length < count && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 1));
   }
   if (FakeWebSocket.instances.length < count) throw new Error('no socket was opened');
   return FakeWebSocket.instances[count - 1];
