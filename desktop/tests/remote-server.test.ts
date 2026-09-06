@@ -204,6 +204,94 @@ describe('RemoteServer and the shell provider', () => {
   });
 });
 
+// A remote client's save has to arrive at main as the SAME patch it sent.
+// Two ways it silently did not, both of which look like a working save on
+// screen: passing the whole envelope instead of `payload.patch`, and dropping
+// the argument. Main then changes nothing, returns the settings unchanged, and
+// the dialog renders that as success — the user toggles "Keep loaded" on,
+// reopens the dialog, and it is off again with no error anywhere.
+describe('RemoteServer carries a per-model settings save end to end', () => {
+  let sm: any; let hr: any; let cfg: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listenBehavior.mode = 'ok';
+    sm = Object.assign(new EventEmitter(), {
+      listSessions: vi.fn(() => []), createSession: vi.fn(), destroySession: vi.fn(),
+      sendInput: vi.fn(), resizeSession: vi.fn(),
+    });
+    hr = Object.assign(new EventEmitter(), { respond: vi.fn(() => true) });
+    cfg = { enabled: true, port: 9900, passwordHash: null, trustTailscale: false, toSafeObject: () => ({}) };
+  });
+
+  function drive(server: any, msg: any) {
+    const sent: any[] = [];
+    const ws: any = { readyState: 1, send: (raw: string) => sent.push(JSON.parse(raw)) };
+    return server.handleMessage({ ws }, JSON.stringify(msg)).then(() => sent);
+  }
+
+  /** Only the three members these cases touch. */
+  function fakeRuntime(engineManager: any, modelManager: any = {}) {
+    return { nativeHost: {}, providerRegistry: {}, modelCatalog: {}, engineManager, modelManager,
+      searchKeyStore: {}, searchService: {}, permissionStore: {}, specialistCatalog: {} } as any;
+  }
+
+  it('passes the patch itself, not the message envelope', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(sm, hr, cfg);
+    const setModelSettings = vi.fn(async () => ({ contextLength: null, keepLoaded: true, gpuLayers: 'auto', extraFlags: '', memoryWarningDismissed: null }));
+    server.setNativeRuntime(fakeRuntime({ setModelSettings }));
+
+    const sent = await drive(server, {
+      type: 'models:set-settings', id: 's1',
+      payload: { modelId: 'alpha', patch: { keepLoaded: true } },
+    });
+
+    expect(setModelSettings).toHaveBeenCalledWith('alpha', { keepLoaded: true });
+    expect(sent[0].payload).toMatchObject({ keepLoaded: true });
+  });
+
+  it('reads one model\u2019s settings by id and hands back the stored record', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(sm, hr, cfg);
+    const modelSettings = vi.fn(() => ({
+      contextLength: 8_192, keepLoaded: false, gpuLayers: 'auto', extraFlags: '',
+      memoryWarningDismissed: null, pendingApply: true, lastLoadError: 'out of device memory',
+    }));
+    server.setNativeRuntime(fakeRuntime({ modelSettings }));
+
+    const sent = await drive(server, { type: 'models:settings', id: 's2', payload: { modelId: 'alpha' } });
+
+    expect(modelSettings).toHaveBeenCalledWith('alpha');
+    // The two fields T23's dialog draws must survive the remote hop too.
+    expect(sent[0].payload).toMatchObject({ pendingApply: true, lastLoadError: 'out of device memory' });
+  });
+
+  it('answers a REFUSED save as a failure, which the shim re-throws', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(sm, hr, cfg);
+    server.setNativeRuntime(fakeRuntime({
+      setModelSettings: vi.fn(async () => { throw new Error('Context length must be at least 1024 tokens.'); }),
+    }));
+
+    const sent = await drive(server, {
+      type: 'models:set-settings', id: 's3', payload: { modelId: 'alpha', patch: { contextLength: 512 } },
+    });
+
+    expect(sent[0].payload).toEqual({ ok: false, error: 'Context length must be at least 1024 tokens.' });
+  });
+
+  it('does not report a download that never started when there is no engine', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(sm, hr, cfg);
+    // No native runtime at all — the state a remote client hits before the
+    // engine stack is wired. `{ downloadId: '' }` here would be a fake success:
+    // the row would show a download that never begins and never ends.
+    const sent = await drive(server, { type: 'models:add-vision', id: 's4', payload: { modelId: 'alpha' } });
+    expect(sent[0].payload).toBeNull();
+  });
+});
+
 describe('RemoteServer auth flow', () => {
   it('can be created with null password (rejects connections at auth time)', async () => {
     const mockSessionManager = Object.assign(new EventEmitter(), {

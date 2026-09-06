@@ -142,6 +142,67 @@ function invoke(type: string, payload?: any, opts?: { timeoutMs?: number }): Pro
 // toast per poll would be unusable.
 const announced = new Set<string>();
 
+/** Channels whose `{ ok:false, error }` answer is a FAILURE to re-throw, not a
+ *  value to hand back.
+ *
+ *  remote-server.ts answers `{ ok:false, error }` when a handler throws. On the
+ *  desktop the SAME failure arrives as a thrown Error the caller catches and
+ *  shows; over the remote link, resolving it hands the caller a success — so
+ *  the click does nothing, with no message, no retry and no clue. Worse for a
+ *  channel whose answer gets rendered: the failure object has none of the real
+ *  fields, so the component falls back to its defaults and redraws a screen the
+ *  user believes is true.
+ *
+ *  MEMBERSHIP RULE: a channel belongs here when its SUCCESS shape is a plain
+ *  object or record that can never itself be `{ ok:false }`. A channel that
+ *  legitimately RETURNS `{ ok:false }` as data must stay out, or a real answer
+ *  would be thrown away as an error.
+ *
+ *  Exported and hoisted to module scope on purpose: pinned by
+ *  tests/remote-shim-reject.test.ts, because deleting an entry restores a bug
+ *  no other test in the suite can see.
+ *
+ *  KNOWN GAP, filed rather than fixed here: `models:installed` answers the same
+ *  `{ ok:false }` object and is NOT in this list, and LocalModelsSection casts
+ *  its answer straight to an array and filters it. That predates this list. */
+export const REJECT_ON_NOT_OK: ReadonlySet<string> = new Set([
+  // Success is `{ sessionId }`.
+  'engine:run-in-terminal',
+  // Success is the engine STATUS object. Without this a failed speed-switch
+  // save redraws the card from a failure object: every field missing, so both
+  // speed switches read ON and the faster-engine list reads empty, and the user
+  // is told nothing went wrong.
+  'engine:set-config',
+  // Success is the PREREQUISITES object. Without this a failed check falls into
+  // the card's remaining branch, which prints a specific diagnosis of the user's
+  // machine ("AMD's software comes from AMD's own repository") for a check that
+  // never reached a verdict — an error message guessing a cause, which
+  // docs/error-message-standards.md forbids.
+  'engine:prereqs',
+  // Success is a settings record / a settings record / a { downloadId }. A
+  // refused save — a context length under the floor, an engine option the
+  // binary does not know — has to reach the dialog's error line.
+  'models:settings', 'models:set-settings', 'models:add-vision',
+]);
+
+/** What a `<channel>:response` payload MEANS, as one pure decision.
+ *
+ *  Extracted from handleMessage so it can be tested at all: the dispatcher
+ *  needs a live socket and a pending request before it will run a line, so the
+ *  rule that decides whether a user sees their error or a silent success had no
+ *  reachable test. Anything that stops consulting REJECT_ON_NOT_OK now fails
+ *  tests/remote-shim-reject.test.ts.
+ *
+ *   'unsupported' — the host does not implement this channel at all.
+ *   'failure'     — the host's handler threw; re-throw it to the caller.
+ *   'value'       — an ordinary answer. */
+export function responseOutcome(channel: string, payload: unknown): 'unsupported' | 'failure' | 'value' {
+  if (!payload || typeof payload !== 'object') return 'value';
+  if ((payload as { unsupported?: unknown }).unsupported === true) return 'unsupported';
+  if ((payload as { ok?: unknown }).ok === false && REJECT_ON_NOT_OK.has(channel)) return 'failure';
+  return 'value';
+}
+
 function noteUnsupported(channel: string): void {
   const feature = remoteFeatureName(channel);
   if (announced.has(feature)) return;
@@ -220,36 +281,23 @@ function handleMessage(data: string): void {
     // fast-fail we wanted, without changing the type callers receive.
     //
     // noteUnsupported still fires first, so the explanatory toast is unaffected.
-    if (payload && typeof payload === 'object' && payload.unsupported === true) {
-      const channel = String(type).replace(/:response$/, '');
-      noteUnsupported(channel);
-      entry.reject(new Error(`remote-unsupported: ${channel}`));
-      return;
+    const channel = String(type).replace(/:response$/, '');
+    // One decision, made in responseOutcome above — a resolve where a reject
+    // belongs is what hands the caller a failure dressed as a success.
+    switch (responseOutcome(channel, payload)) {
+      case 'unsupported':
+        noteUnsupported(channel);
+        entry.reject(new Error(`remote-unsupported: ${channel}`));
+        return;
+      // A handler that answered `{ ok:false, error }` is a FAILURE — see
+      // REJECT_ON_NOT_OK's own comment.
+      case 'failure':
+        entry.reject(new Error(String((payload as any).error ?? 'The request failed.')));
+        return;
+      default:
+        entry.resolve(payload);
+        return;
     }
-    // A handler that answered `{ ok:false, error }` is a FAILURE, and resolving
-    // it hands the caller a success. On desktop the same failure is a thrown
-    // Error the caller catches; a remote client would see the click do nothing
-    // — no message, no retry, no clue. Only channels whose SUCCESS shape can
-    // never be an `ok:false` object are listed here, so this cannot swallow a
-    // legitimate `{ok:false}` result some other channel means as data.
-    const REJECT_ON_NOT_OK = new Set([
-      'engine:run-in-terminal',
-      // Per-model settings + vision (2026-09-05). A rejected save — a context
-      // length below the floor, an engine option the binary does not know — has
-      // to reach the settings dialog's error line. Their success shapes are a
-      // settings record and a { downloadId }, so neither can ever BE an
-      // { ok:false } object that this would swallow.
-      'models:settings', 'models:set-settings', 'models:add-vision',
-    ]);
-    if (
-      payload && typeof payload === 'object' && (payload as any).ok === false &&
-      REJECT_ON_NOT_OK.has(String(type).replace(/:response$/, ''))
-    ) {
-      entry.reject(new Error(String((payload as any).error ?? 'The request failed.')));
-      return;
-    }
-    entry.resolve(payload);
-    return;
   }
 
   // Push events — dispatch to registered listeners

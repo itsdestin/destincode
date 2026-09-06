@@ -16,6 +16,7 @@ import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
   InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettingsWrite, StoredModelSettings,
 } from '../../shared/model-manager-types';
+import { plainMessage } from '../utils/ipc-error';
 import { stripSplitSuffix } from '../../shared/gguf-split';
 import { matchesQuery } from '../../shared/text-match';
 import { resolveModelBrand } from './provider-brand';
@@ -408,7 +409,7 @@ function RepoCard({
     if (!chosen) return;
     setDlError(null);
     try { await window.claude.models.download(repo, chosen); }
-    catch (e) { setDlError(e instanceof Error ? e.message : 'Could not start the download.'); }
+    catch (e) { setDlError(plainMessage(e, 'Could not start the download.')); }
   };
 
   // Recommended quants first; the rest hide behind "Show all N".
@@ -626,8 +627,12 @@ export function LocalModelRow({
   const addVision = async () => {
     setBusy(true);
     setActionError(null);
+    // plainMessage, not e.message: Electron wraps the reason in "Error invoking
+    // remote method 'models:add-vision': …", and the reason here is often the
+    // operating system's own words about a file it could not move — which the
+    // user needs, and cannot find behind the prefix.
     try { await window.claude.models.addVision(model.id); await onRefresh(); }
-    catch (e) { setActionError(e instanceof Error ? e.message : 'Could not add vision to this model.'); }
+    catch (e) { setActionError(plainMessage(e, 'Could not add vision to this model.')); }
     finally { setBusy(false); }
   };
 
@@ -652,6 +657,10 @@ export function LocalModelRow({
   const downloadError = progress?.state === 'error' ? (progress.message ?? 'Download failed') : null;
   const error = actionError ?? downloadError;
 
+  // Every catch in this file goes through plainMessage, not e.message: Electron
+  // wraps the real reason in "Error invoking remote method '<channel>': Error: …",
+  // and these lines are the ONLY place the real reason (the disk guard's number,
+  // Hugging Face's status, the OS's word about a file) reaches the user.
   const resume = async () => {
     setBusy(true);
     setActionError(null);
@@ -661,7 +670,7 @@ export function LocalModelRow({
     } catch (e) {
       // Surface the real refusal (disk guard, already downloading, no manifest).
       // A resume that silently did nothing was the original PartialRow bug.
-      setActionError(e instanceof Error ? e.message : 'Could not resume the download.');
+      setActionError(plainMessage(e, 'Could not resume the download.'));
     } finally {
       setBusy(false);
     }
@@ -690,7 +699,7 @@ export function LocalModelRow({
       setConfirming(false);
       await onRefresh();
     } catch (e) {
-      setActionError(e instanceof Error ? e.message : 'Could not delete the model.');
+      setActionError(plainMessage(e, 'Could not delete the model.'));
     } finally {
       setBusy(false);
     }
@@ -918,14 +927,18 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     if (typeof api.settings !== 'function') { setError('This version cannot read per-model settings.'); return; }
     api.settings(modelId)
       .then((st) => { if (alive) { setSettings(st); setCtxDraft(st.contextLength == null ? '' : String(st.contextLength)); setFlagsDraft(st.extraFlags); } })
-      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : 'Could not read this model\u2019s settings.'); });
+      .catch((e) => { if (alive) setError(plainMessage(e, 'Could not read this model\u2019s settings.')); });
     return () => { alive = false; };
   }, [modelId]);
 
   const save = async (patch: ModelSettingsWrite) => {
     setError(null);
+    // The engine binary's own line, VERBATIM (design §J): only it knows which
+    // option it refused, so we never paraphrase or guess. plainMessage strips
+    // Electron's "Error invoking remote method …" wrapper and nothing else, so
+    // what the user reads is exactly what the engine said.
     try { setSettings(await window.claude.models.setSettings(modelId, patch)); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not save.'); }
+    catch (e) { setError(plainMessage(e, 'Could not save.')); }
   };
 
   const commitContext = () => {
@@ -1075,7 +1088,7 @@ function QuantDownloadRow({ repo, q, downloads }: { repo: string; q: QuantWithFi
     try {
       await window.claude.models.download(repo, q);
     } catch (e) {
-      setDlError(e instanceof Error ? e.message : 'Could not start the download.');
+      setDlError(plainMessage(e, 'Could not start the download.'));
     }
   };
 
@@ -1137,7 +1150,7 @@ function OtherLocalApps() {
       });
       setAdded((prev) => ({ ...prev, [hit.baseUrl]: true }));
     } catch (e) {
-      setAddError((prev) => ({ ...prev, [hit.baseUrl]: e instanceof Error ? e.message : 'Could not add this endpoint.' }));
+      setAddError((prev) => ({ ...prev, [hit.baseUrl]: plainMessage(e, 'Could not add this endpoint.') }));
     }
   };
 

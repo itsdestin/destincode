@@ -1051,13 +1051,55 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     for (const [ch] of channels) expect(src).toContain(`invoke('${ch}'`);
     for (const ch of pushChannels) expect(src).toContain(`'${ch}'`);
   });
-  it('ipc-handlers registers every request-response channel via its IPC.* constant', () => {
+  // `ipcMain.handle(IPC.X`, not the bare constant: this is the surface where
+  // "registered" decides whether the feature works at all, and the bare name
+  // also matches a COMMENT. Proven, not assumed — replacing the whole
+  // add-vision handler with `// FIXME reinstate the IPC.MODELS_ADD_VISION
+  // handler` kept this test green until the call shape was required.
+  it('ipc-handlers registers every request-response channel via ipcMain.handle', () => {
     const src = read('src', 'main', 'ipc-handlers.ts');
-    for (const [, konst] of channels) expect(src).toContain(`IPC.${konst}`);
+    for (const [, konst] of channels) expect(src).toContain(`ipcMain.handle(IPC.${konst}`);
   });
+  // On a line that is NOT commented out, for the same reason: commenting the
+  // Kotlin string leaves it in the file, so a bare text scan stays green while
+  // the phone falls through to "Unknown message" and the shared UI waits.
   it('SessionService.kt stubs every request-response channel', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
-    for (const [ch] of channels) expect(src).toContain(`"${ch}"`);
+    const live = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+    for (const [ch] of channels) expect(live).toContain(`"${ch}"`);
+  });
+  // A dropped SECOND argument is invisible everywhere else: main receives an
+  // empty patch, changes nothing, returns the settings unchanged, and the dialog
+  // renders that as a save that worked — the user toggles "Keep loaded" on,
+  // reopens, and it is off again with no error. preload cannot be imported (it
+  // calls contextBridge at load), so the call shape is pinned as text.
+  it('preload forwards every argument of the two-argument channels', () => {
+    const src = read('src', 'main', 'preload.ts');
+    expect(src).toContain('ipcRenderer.invoke(IPC.MODELS_SET_SETTINGS, modelId, patch)');
+    expect(src).toContain('ipcRenderer.invoke(IPC.MODELS_DOWNLOAD, repo, quant)');
+  });
+  // Android answers these six with `unsupported`, not the plain
+  // not-implemented error the other desktop-only channels send, and the
+  // difference is something a user reads. The shim RE-THROWS an { ok:false }
+  // answer for exactly these (REJECT_ON_NOT_OK), so without the flag a phone
+  // puts the literal words "not-implemented-on-mobile" in the model settings
+  // dialog as if the engine had said them. Dropping the flag left every test
+  // green until this one existed.
+  it('SessionService.kt marks the six local-engine channels unsupported, not merely failed', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+    const six = [
+      'engine:set-config', 'engine:prereqs', 'engine:run-in-terminal',
+      'models:settings', 'models:set-settings', 'models:add-vision',
+    ];
+    // Read the branch that actually runs: this arm's labels are everything
+    // between the PREVIOUS arm's arrow and this arm's own, and its body is what
+    // follows. A channel that drifts into the plain not-implemented block below
+    // leaves this label list and fails.
+    const arrow = src.indexOf('"models:add-vision" -> {');
+    expect(arrow).toBeGreaterThan(-1);
+    const labels = src.slice(src.lastIndexOf('-> {', arrow), arrow);
+    for (const ch of six.filter((c) => c !== 'models:add-vision')) expect(labels).toContain(`"${ch}"`);
+    expect(src.slice(arrow, arrow + 400)).toContain('.put("unsupported", true)');
   });
   // The FIFTH surface. remote-server.ts is where a remote browser's request
   // actually lands, and it is the one surface the original four-surface check

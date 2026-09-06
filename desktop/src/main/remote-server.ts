@@ -1501,9 +1501,13 @@ export class RemoteServer {
       }
       case 'models:add-vision': {
         try {
+          // `null`, not `{ downloadId: '' }`, when there is no engine to talk
+          // to — matching its two siblings above. An empty download id is a FAKE
+          // SUCCESS: the row would start showing a download that never begins
+          // and never ends.
           const res = this.nativeRuntime
             ? await this.nativeRuntime.modelManager.addVision(payload.modelId ?? payload)
-            : { downloadId: '' };
+            : null;
           this.respond(client.ws, type, id, res);
         } catch (err: any) {
           this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });

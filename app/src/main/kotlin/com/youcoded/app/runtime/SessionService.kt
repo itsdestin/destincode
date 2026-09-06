@@ -4020,6 +4020,30 @@ class SessionService : Service() {
             "provider:test",
             "provider:set-key",
             "provider:catalog",
+            // The six local-engine upgrade channels (2026-09-05). Desktop-only for
+            // the same reason as everything below — a phone runs no local engine,
+            // holds no model folder and has no terminal to open — but they answer
+            // `unsupported` as well as `ok:false`, and the difference is something
+            // the user reads.
+            //
+            // WHY: the shared shim RE-THROWS an `ok:false` answer for exactly these
+            // six (remote-shim.ts REJECT_ON_NOT_OK), because over the remote link
+            // that shape means "the host's handler failed". Answered the plain way,
+            // a phone would put the literal words "not-implemented-on-mobile" in the
+            // model settings dialog as if the engine had said them. `unsupported`
+            // takes the shim's other path instead: one plain-language notice naming
+            // the feature, and a rejection the caller can recognise.
+            "engine:set-config",
+            "engine:prereqs",
+            "engine:run-in-terminal",
+            "models:settings",
+            "models:set-settings",
+            "models:add-vision" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("unsupported", true)
+                        .put("error", "not-implemented-on-mobile")) }
+            }
+
             // WebSearch providers (Phase 2 Plan B) — keyed Tavily/Exa upgrades.
             // Desktop-only; no Android runtime yet. Reply not-implemented so the
             // shared React UI degrades to a "desktop only" state instead of timing out.
@@ -4053,17 +4077,6 @@ class SessionService : Service() {
             "engine:install",
             "engine:restart",
             "engine:set-context",   // Plan C context-length knob — desktop-only
-            // Every engine-wide setting in one write (2026-09-05) — desktop-only,
-            // same as the knob above: a phone runs no local engine to configure.
-            "engine:set-config",
-            // Faster-engine prerequisites (2026-09-05) — reads the DESKTOP machine's
-            // graphics libraries; a phone has no engine to switch, so it stubs out.
-            "engine:prereqs",
-            // "Run in terminal" (2026-09-05) — opens a plain-shell session on the
-            // DESKTOP and types a set-up command onto its prompt. Android has no
-            // engine to set up and no shell-session provider, so it stubs out; the
-            // shared React button then fails fast instead of waiting ~30s.
-            "engine:run-in-terminal",
             // Model manager (Plan C) — curated catalog, HF search, downloads,
             // endpoint detectors, backend switch. Desktop-only; no Android runtime.
             "engine:set-backend",
@@ -4075,12 +4088,6 @@ class SessionService : Service() {
             "models:delete",
             "models:installed",
             "models:resume",  // resume an interrupted download (2026-08-26) — desktop-only
-            // Per-model settings + vision (2026-09-05 local-engine upgrades). All three
-            // read or write the DESKTOP engine's config and model folder; a phone has
-            // neither, so they stub out with the rest of the model manager above.
-            "models:settings",
-            "models:set-settings",
-            "models:add-vision",
             "endpoints:detect",
             // Model memory lifecycle (2026-07-14) — per-model residency, memory
             // guard, [Reload Model]. Desktop-only; no Android runtime. The push
