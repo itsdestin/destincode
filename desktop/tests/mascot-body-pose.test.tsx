@@ -14,7 +14,7 @@
 // the kind of test that passes while the feature does nothing.
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, cleanup, waitFor } from '@testing-library/react';
+import { render, cleanup, waitFor, act } from '@testing-library/react';
 import { MascotRig, type RigMotion } from '../src/renderer/components/mascot/MascotRig';
 import { POSES } from '../src/renderer/components/mascot/mascot-poses';
 
@@ -93,30 +93,50 @@ describe('a pose change animates instead of teleporting', () => {
   const transformOf = (c: HTMLElement) =>
     c.querySelector<SVGGElement>('#rig-arm-left')!.style.transform;
 
-  it('does not put the limb at its destination on the frame the pose changes', async () => {
-    const { container, rerender } = mountLive('idle');
-    await waitFor(() => expect(container.querySelector('#rig-arm-left')).toBeTruthy());
-    // WAIT FOR THE SPRINGS TO EXIST, on their own signal rather than a sleep:
-    // the motion loop writing a transform of its own IS the signal. Rerendering
-    // before its first tick is not the case under test — nothing has been on
-    // screen long enough to teleport away from.
-    const first = transformOf(container);
-    await waitFor(() => expect(transformOf(container)).not.toBe(first), { timeout: 4000 });
-    const before = tyOf(container);
-    const after = POSES['sleep'].parts['rig-arm-left']!.ty!;
-    expect(before).not.toBe(after);   // the two poses must actually differ, or this proves nothing
+  // The clock is DRIVEN, not waited on. The first version of this waited for the
+  // idle loop to write a transform different from the one it started with — but
+  // the arm starts parked at its idle target, so the only thing that can change
+  // that string is the idle sway, and a sway that rounds to the same two decimals
+  // never changes it. It passed here and hung for the full 4s timeout on CI's
+  // Linux and Windows runners. Advancing the timers ourselves removes the
+  // question: the loop has ticked because we ticked it.
+  const settle = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
 
-    rerender('sleep');
-    // Whatever it is, it is not the destination — it is still where the springs
-    // were holding it. Before the fix this read `after` exactly.
-    expect(tyOf(container)).not.toBe(after);
+  it('does not put the limb at its destination on the frame the pose changes', async () => {
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = mountLive('idle');
+      await settle(300);
+      expect(container.querySelector('#rig-arm-left')).toBeTruthy();
+
+      const before = tyOf(container);
+      const after = POSES['sleep'].parts['rig-arm-left']!.ty!;
+      expect(before).not.toBe(after);   // the two poses must actually differ, or this proves nothing
+
+      act(() => { rerender('sleep'); });
+      // Whatever it is, it is not the destination — it is still where the springs
+      // were holding it. Before the fix this read `after` exactly.
+      expect(tyOf(container)).not.toBe(after);
+
+      // …and it does arrive, so "not there yet" can never be satisfied by a limb
+      // that simply never moves.
+      await settle(2000);
+      expect(tyOf(container)).toBeCloseTo(after, 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('and gets there in the end', async () => {
-    const { container, rerender } = mountLive('idle');
-    await waitFor(() => expect(container.querySelector('#rig-arm-left')).toBeTruthy());
-    rerender('sleep');
-    const want = POSES['sleep'].parts['rig-arm-left']!.ty!;
-    await waitFor(() => expect(tyOf(container)).toBeCloseTo(want, 1), { timeout: 4000 });
+    vi.useFakeTimers();
+    try {
+      const { container, rerender } = mountLive('idle');
+      await settle(300);
+      act(() => { rerender('sleep'); });
+      await settle(2000);
+      expect(tyOf(container)).toBeCloseTo(POSES['sleep'].parts['rig-arm-left']!.ty!, 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
