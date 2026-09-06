@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import { CLOSE_PROMPT_SUPPRESS_KEY } from '../CloseSessionPrompt';
 import ModelPicker, { type ModelChoice } from '../model/ModelPicker';
 import PermissionsSection from '../PermissionsSection';
@@ -10,7 +10,8 @@ import {
   LOCAL_MODELS_INFO,
 } from '../ModelProvidersPopup';
 import SkipPermissionsSection, { type PermissionOverrides } from './SkipPermissionsSection';
-import { Select, SettingRow, Toggle } from '../ui';
+import FolderSwitcher from '../FolderSwitcher';
+import { SettingRow, Toggle } from '../ui';
 
 // The pages of Assistant settings. Five, in one flat list (review round 1,
 // 2026-09-05 — P-5 note: one "Cloud providers" page for the three sign-in /
@@ -113,53 +114,22 @@ function FieldRow({ title, hint, children }: { title: string; hint: string; chil
   );
 }
 
-/** The value that opens the system folder picker instead of setting a path. */
-const BROWSE = '__browse__';
-
 function ProjectFolderRow({ defaults, onDefaultsChange }: PageContext) {
-  // The app's own saved project folders (the same list the folder switcher in
-  // the header shows), so the dropdown offers real places instead of asking
-  // every user to go browsing.
-  const [folders, setFolders] = useState<Array<{ path: string; nickname: string }>>([]);
-  useEffect(() => {
-    let alive = true;
-    void (window as any).claude?.folders?.list?.()
-      .then((rows: any[]) => { if (alive && Array.isArray(rows)) setFolders(rows); })
-      .catch(() => {});
-    return () => { alive = false; };
-  }, []);
-
-  const current = defaults.projectFolder || '';
-  const options = useMemo(() => {
-    const rows = [{ value: '', label: 'Home directory (default)' }];
-    for (const f of folders) rows.push({ value: f.path, label: f.nickname || f.path });
-    // A folder chosen through the system picker need not be one of the saved
-    // ones — keep it in the list so the dropdown shows what is actually set.
-    if (current && !folders.some((f) => f.path === current)) rows.push({ value: current, label: current });
-    rows.push({ value: BROWSE, label: 'Choose another folder…' });
-    return rows;
-  }, [folders, current]);
-
-  const change = useCallback(async (v: string) => {
-    if (v !== BROWSE) { onDefaultsChange({ projectFolder: v }); return; }
-    try {
-      const folder = await (window as any).claude.dialog.openFolder();
-      if (folder) onDefaultsChange({ projectFolder: folder });
-    } catch {}
-  }, [onDefaultsChange]);
-
+  // Round 3 (R3-1): "project picker should look like it does in the new session
+  // dropdown. same options, folder icon, etc." — so this IS that picker, the
+  // same component the new-session form and the buddy window use. With no
+  // `onManageProjects` it ends in "Browse for folder…", which is the escape
+  // hatch this row needs. `autoSelect={false}`: a settings row must never write
+  // a default the user did not choose just by being looked at.
   return (
     <FieldRow
-      title="Show Project Folder"
+      title="Default project folder"
       hint="This folder will be pre-filled when you start a new conversation, but you may still choose another at any time."
     >
-      <Select
-        options={options}
-        value={current}
-        onChange={(v) => void change(v)}
-        size="sm"
-        aria-label="Show Project Folder"
-        className="w-full bg-well border-edge"
+      <FolderSwitcher
+        value={defaults.projectFolder}
+        onChange={(path) => onDefaultsChange({ projectFolder: path })}
+        autoSelect={false}
       />
     </FieldRow>
   );

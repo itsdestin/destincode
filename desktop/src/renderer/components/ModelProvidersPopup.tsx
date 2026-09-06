@@ -144,23 +144,7 @@ export function ClaudeCodeBlock({
     statusText = 'Not set up yet';
   }
   const claudeUsage = useClaudePlanUsage();
-  const [busy, setBusy] = useState(false);
-
-  // Round 2 (R2-3): "make the claude code card mirror the gpt card with usage
-  // limits and such and a sign out button". The bars were already here; this is
-  // the sign-out. NO REAL BACKEND YET — `claudeCode.signOut` is registered in
-  // mock-only.ts, because signing out of Claude Code means clearing the CLI's
-  // stored credentials and the app has never done that (its /logout builtin is
-  // listed as not-clickable). The build stage owns it.
-  const signOut = async () => {
-    setBusy(true);
-    try {
-      await (window as any).claude.claudeCode?.signOut?.();
-      const s2: FirstRunState = await (window as any).claude.firstRun.getState();
-      setState(s2);
-    } catch {}
-    finally { setBusy(false); }
-  };
+  const [signOutOpen, setSignOutOpen] = useState(false);
 
   return (
     <>
@@ -194,7 +178,7 @@ export function ClaudeCodeBlock({
               </Button>
             )}
             {signedIn && (
-              <Button variant="secondary" size="sm" disabled={busy} onClick={() => void signOut()}>
+              <Button variant="secondary" size="sm" onClick={() => setSignOutOpen(true)}>
                 Sign out
               </Button>
             )}
@@ -203,6 +187,26 @@ export function ClaudeCodeBlock({
       >
         {signedIn && state?.authMode !== 'apikey' && <PlanWindows usage={claudeUsage} />}
       </ProviderRow>
+
+      {/* Round 3 (R3-5, pick a): the button stays, but nothing here signs you
+          out. Claude Code owns its own login, and the app has never had a way
+          to clear it — the CLI's /logout is a terminal-only screen, which is
+          exactly what the command list already tells people. So this says
+          where to go, in the same words. */}
+      <Dialog open={signOutOpen} onClose={() => setSignOutOpen(false)} title="Sign out of Claude Code" size="prompt">
+        <div className="space-y-3 text-xs text-fg-2 leading-relaxed">
+          <p>
+            Claude Code keeps its own sign-in, and YouCoded cannot clear it for you.
+          </p>
+          <p>
+            Open any conversation, switch it to Terminal view, and type <code className="font-mono bg-inset px-1 rounded">/logout</code>.
+            That signs Claude Code out on this computer.
+          </p>
+          <div className="flex justify-end pt-1">
+            <Button variant="secondary" onClick={() => setSignOutOpen(false)}>Got it</Button>
+          </div>
+        </div>
+      </Dialog>
     </>
   );
 }

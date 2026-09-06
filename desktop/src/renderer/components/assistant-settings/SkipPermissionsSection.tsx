@@ -1,5 +1,5 @@
-import React from 'react';
-import { Callout, SettingRow, Toggle } from '../ui';
+import React, { useState } from 'react';
+import { Button, Checkbox, Dialog, SettingRow, Toggle } from '../ui';
 
 // Claude Code's one permission setting: the Skip Permissions switch. It lived
 // in SettingsPanel.tsx's Session Defaults popup; it is now the first block of
@@ -11,13 +11,17 @@ import { Callout, SettingRow, Toggle } from '../ui';
 // switches) and its "This is extremely dangerous" confirmation. Destin dropped
 // the whole idea on the round-1 deck (P-4 note, P-14): "we should probably
 // completely drop the 'approve protected requests' idea, as it may get us in
-// trouble with anthropic." The stored `permissionOverrides` still exist on
-// users' machines; the build stage decides what to do with a value that was
-// switched on and now has no switch (the deck's R2 step names the risk).
+// trouble with anthropic." Round 2 (R2-5, pick a) decided the stored values:
+// the build stage resets every one of them to off on first launch.
 //
-// Wording (P-13, pick b, then round 2's R2-4): Destin rewrote the row himself
-// — "Enable Skip Permissions Mode?" over a hint that names the Claude Code
-// flag it sets. His copy, used verbatim.
+// Wording (P-13, then R2-4): Destin rewrote the row himself — "Enable Skip
+// Permissions Mode?" over a hint that names the Claude Code flag it sets. His
+// copy, used verbatim.
+//
+// Round 3 (R3-3): the red banner that used to appear under the switch is gone.
+// Turning the switch ON now opens a dialog you have to read and tick before it
+// moves — the shape of Claude Code's own bypass-permissions screen. Turning it
+// OFF is immediate; only the dangerous direction is gated.
 
 export interface PermissionOverrides {
   approveAll: boolean;
@@ -31,11 +35,13 @@ export default function SkipPermissionsSection({ defaults, onDefaultsChange }: {
   defaults: { skipPermissions: boolean };
   onDefaultsChange: (updates: { skipPermissions?: boolean }) => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
+  const [accepted, setAccepted] = useState(false);
+
+  const close = () => { setConfirming(false); setAccepted(false); };
+
   return (
     <section>
-      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Claude Code</h3>
-      {/* Title and hint are Destin's words verbatim (round 2, R2-4). They name
-          the Claude Code flag on purpose: this switch does nothing but set it. */}
       <SettingRow
         variant="item"
         title="Enable Skip Permissions Mode?"
@@ -43,20 +49,57 @@ export default function SkipPermissionsSection({ defaults, onDefaultsChange }: {
         control={
           <Toggle
             checked={defaults.skipPermissions}
-            onChange={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
+            onChange={() => {
+              if (defaults.skipPermissions) { onDefaultsChange({ skipPermissions: false }); return; }
+              setConfirming(true);
+            }}
             tone="danger"
             aria-label="Enable Skip Permissions Mode?"
           />
         }
       />
-      {/* The consequence sits AFTER the switch (approved 2026-07-28): for a
-          toggle the sentence describes the state you just turned on and only
-          exists while it is on. */}
-      {defaults.skipPermissions && (
-        <Callout tone="danger" className="mt-2">
-          Claude will change files and run commands without asking you.
-        </Callout>
-      )}
+
+      {/* layer 3 + destructive: this is the app's shape for a confirmation
+          that must not be lost behind the thing it is confirming. */}
+      <Dialog open={confirming} onClose={close} title="Skip Permissions Mode" size="prompt" layer={3} destructive>
+        <div className="space-y-3 text-xs text-fg-2 leading-relaxed">
+          <p className="text-destructive-fg font-medium">
+            Claude Code will not ask for your approval before it edits files, runs commands, or goes online.
+          </p>
+          {/* Every claim here is the measured behaviour from
+              docs/active/investigations/2026-08-09-native-skip-permissions.md,
+              the same source the hover explainer uses. A safety net that is not
+              there must not be advertised. */}
+          <p>
+            The only refusal we have measured is a command that would delete your whole project folder or a
+            system folder. Everything else went through without asking — reading private files, changing
+            files outside your project, and editing your project's saved history.
+          </p>
+          <p>
+            Use it only in a folder you would not mind redoing.
+          </p>
+          <div className="flex items-start gap-2 pt-1">
+            <span className="mt-0.5">
+              <Checkbox
+                checked={accepted}
+                onChange={setAccepted}
+                aria-label="I understand, and I use Skip Permissions at my own risk."
+              />
+            </span>
+            <span className="text-fg">I understand, and I use Skip Permissions at my own risk.</span>
+          </div>
+          <div className="flex gap-2 justify-end pt-1">
+            <Button variant="secondary" onClick={close}>Cancel</Button>
+            <Button
+              variant="danger"
+              disabled={!accepted}
+              onClick={() => { onDefaultsChange({ skipPermissions: true }); close(); }}
+            >
+              Turn it on
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </section>
   );
 }
