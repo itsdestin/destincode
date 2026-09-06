@@ -42,6 +42,7 @@ import { EngineManager } from './engine/engine-manager';
 import { enginePrereqs } from './engine/rocm-prereqs';
 import type { EngineModel as EngineModelType } from '../shared/engine-types';
 import { ModelManager } from './models/model-manager';
+import type { ModelSettingsWrite } from '../shared/model-manager-types';
 import { detectEndpoints } from './models/endpoint-detectors';
 import { ENGINE_PORT } from '../shared/ports';
 import { SessionStore } from './harness/session-store';
@@ -3071,6 +3072,22 @@ export function registerIpcHandlers(
   // beside the .partial — no Hugging Face round trip, so it works when the
   // network is the reason the download stopped.
   ipcMain.handle(IPC.MODELS_RESUME, async (_e, modelId: string) => modelManager.resume(modelId));
+  // --- Per-model settings + vision (2026-09-05 local-engine upgrades §C/§E4) ---
+  // Read: the STORED settings, so the dialog can also show "Applies after the
+  // current reply" and the model's last load error, neither of which the user
+  // sets. A model nobody has touched reads as every default.
+  ipcMain.handle(IPC.MODELS_SETTINGS, async (_e, modelId: string) => engineManager.modelSettings(modelId));
+  // Write: the value saves at once and the ENGINE is left alone — rewriting the
+  // preset file here would make the router unload the model mid-reply, which is
+  // the one thing this feature promises will not happen. Every rejection
+  // (context too small, an engine option the binary does not know, a bad
+  // toggle) throws with the reason the user needs, and the dialog shows it.
+  ipcMain.handle(IPC.MODELS_SET_SETTINGS, async (_e, modelId: string, patch: ModelSettingsWrite) =>
+    engineManager.setModelSettings(modelId, patch ?? {}));
+  // Add vision to a model already on disk. Returns the download id straight
+  // away; the bytes report on the ordinary models:download-progress stream, so
+  // the row's existing progress bar covers it with no second channel.
+  ipcMain.handle(IPC.MODELS_ADD_VISION, async (_e, modelId: string) => modelManager.addVision(modelId));
   ipcMain.handle(IPC.ENDPOINTS_DETECT, async () =>
     detectEndpoints(fetch, ((await providerRegistry.list()) as any[])));
   // /clear and /compact both truncate or rewrite the JSONL. App.tsx listens

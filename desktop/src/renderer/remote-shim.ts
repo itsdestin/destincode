@@ -232,7 +232,15 @@ function handleMessage(data: string): void {
     // — no message, no retry, no clue. Only channels whose SUCCESS shape can
     // never be an `ok:false` object are listed here, so this cannot swallow a
     // legitimate `{ok:false}` result some other channel means as data.
-    const REJECT_ON_NOT_OK = new Set(['engine:run-in-terminal']);
+    const REJECT_ON_NOT_OK = new Set([
+      'engine:run-in-terminal',
+      // Per-model settings + vision (2026-09-05). A rejected save — a context
+      // length below the floor, an engine option the binary does not know — has
+      // to reach the settings dialog's error line. Their success shapes are a
+      // settings record and a { downloadId }, so neither can ever BE an
+      // { ok:false } object that this would swallow.
+      'models:settings', 'models:set-settings', 'models:add-vision',
+    ]);
     if (
       payload && typeof payload === 'object' && (payload as any).ok === false &&
       REJECT_ON_NOT_OK.has(String(type).replace(/:response$/, ''))
@@ -1765,6 +1773,14 @@ export function installShim(): void {
       delete: (id: string) => invoke('models:delete', { id }),
       installed: () => invoke('models:installed'),
       resume: (modelId: string) => invoke('models:resume', { modelId }),
+      // Per-model settings + vision (2026-09-05). Object payloads, matching how
+      // remote-server's WS cases read them (payload.modelId / payload.patch).
+      // These read and write the HOST machine's engine — the remote browser is
+      // only a window onto it — so the answers are the same ones the desktop
+      // window gets.
+      settings: (modelId: string) => invoke('models:settings', { modelId }),
+      setSettings: (modelId: string, patch: unknown) => invoke('models:set-settings', { modelId, patch }),
+      addVision: (modelId: string) => invoke('models:add-vision', { modelId }) as Promise<{ downloadId: string }>,
       detectEndpoints: () => invoke('endpoints:detect'),
       setBackend: (backend: string) => invoke('engine:set-backend', { backend }),
       memoryCheck: (modelId: string) => invoke('models:memory-check', { modelId }),

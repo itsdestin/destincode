@@ -14,7 +14,7 @@ import EngineCard from './EngineCard';
 import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip, Toggle, TextInput, Select, SettingRow, Dialog } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
-  InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettings,
+  InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettingsWrite, StoredModelSettings,
 } from '../../shared/model-manager-types';
 import { stripSplitSuffix } from '../../shared/gguf-split';
 import { matchesQuery } from '../../shared/text-match';
@@ -901,7 +901,10 @@ const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'
  *  concept needs more than a line. Saves on blur/toggle; the model reloads with
  *  the new values on its next message. */
 function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; modelId: string; name: string; onClose: () => void }) {
-  const [settings, setSettings] = useState<ModelSettings | null>(null);
+  // The STORED shape: the same four fields the dialog writes, plus the two the
+  // app maintains and the user never sets — whether the last save is still
+  // waiting on a streaming reply, and why the model last failed to load.
+  const [settings, setSettings] = useState<StoredModelSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ctxDraft, setCtxDraft] = useState('');
   const [flagsDraft, setFlagsDraft] = useState('');
@@ -911,7 +914,7 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     let alive = true;
     // Mounted only while open (the row gates it), so this fetch happens on demand —
     // an older bridge without the channel shows the error line instead of throwing.
-    const api = window.claude.models as { settings?: (id: string) => Promise<ModelSettings> };
+    const api = window.claude.models as { settings?: (id: string) => Promise<StoredModelSettings> };
     if (typeof api.settings !== 'function') { setError('This version cannot read per-model settings.'); return; }
     api.settings(modelId)
       .then((st) => { if (alive) { setSettings(st); setCtxDraft(st.contextLength == null ? '' : String(st.contextLength)); setFlagsDraft(st.extraFlags); } })
@@ -919,7 +922,7 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     return () => { alive = false; };
   }, [modelId]);
 
-  const save = async (patch: Partial<ModelSettings>) => {
+  const save = async (patch: ModelSettingsWrite) => {
     setError(null);
     try { setSettings(await window.claude.models.setSettings(modelId, patch)); }
     catch (e) { setError(e instanceof Error ? e.message : 'Could not save.'); }

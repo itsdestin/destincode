@@ -1472,6 +1472,44 @@ export class RemoteServer {
         }
         break;
       }
+      // Per-model settings + vision (2026-09-05 local-engine upgrades §C/§E4).
+      // All three act on the HOST's engine, which is the only engine there is —
+      // the remote client is a browser. The shim rejects an { ok:false } answer
+      // for these three, so a refused save reaches the dialog's error line
+      // instead of looking like a save that worked.
+      case 'models:settings': {
+        try {
+          const res = this.nativeRuntime
+            ? this.nativeRuntime.engineManager.modelSettings(payload.modelId ?? payload)
+            : null;
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:set-settings': {
+        try {
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.engineManager.setModelSettings(payload.modelId, payload.patch ?? {})
+            : null;
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
+      case 'models:add-vision': {
+        try {
+          const res = this.nativeRuntime
+            ? await this.nativeRuntime.modelManager.addVision(payload.modelId ?? payload)
+            : { downloadId: '' };
+          this.respond(client.ws, type, id, res);
+        } catch (err: any) {
+          this.respond(client.ws, type, id, { ok: false, error: err?.message ?? String(err) });
+        }
+        break;
+      }
       case 'engine:models': {
         try {
           const res = this.nativeRuntime ? await this.nativeRuntime.engineManager.liveModels() : [];

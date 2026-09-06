@@ -4059,6 +4059,11 @@ class SessionService : Service() {
             // Faster-engine prerequisites (2026-09-05) — reads the DESKTOP machine's
             // graphics libraries; a phone has no engine to switch, so it stubs out.
             "engine:prereqs",
+            // "Run in terminal" (2026-09-05) — opens a plain-shell session on the
+            // DESKTOP and types a set-up command onto its prompt. Android has no
+            // engine to set up and no shell-session provider, so it stubs out; the
+            // shared React button then fails fast instead of waiting ~30s.
+            "engine:run-in-terminal",
             // Model manager (Plan C) — curated catalog, HF search, downloads,
             // endpoint detectors, backend switch. Desktop-only; no Android runtime.
             "engine:set-backend",
@@ -4070,6 +4075,12 @@ class SessionService : Service() {
             "models:delete",
             "models:installed",
             "models:resume",  // resume an interrupted download (2026-08-26) — desktop-only
+            // Per-model settings + vision (2026-09-05 local-engine upgrades). All three
+            // read or write the DESKTOP engine's config and model folder; a phone has
+            // neither, so they stub out with the rest of the model manager above.
+            "models:settings",
+            "models:set-settings",
+            "models:add-vision",
             "endpoints:detect",
             // Model memory lifecycle (2026-07-14) — per-model residency, memory
             // guard, [Reload Model]. Desktop-only; no Android runtime. The push

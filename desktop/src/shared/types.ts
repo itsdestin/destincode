@@ -1811,6 +1811,22 @@ export const IPC = {
   // Resume an interrupted download from its manifest (2026-08-26) — invoke(modelId)
   // → { downloadId }. Replaces MODELS_ORPHANED_PARTIALS, removed the same day.
   MODELS_RESUME: 'models:resume',
+  // ---- Per-model settings + vision (2026-09-05 local-engine upgrades) ----
+  // Read one model's stored settings — invoke(modelId) -> StoredModelSettings.
+  // The READ is the stored shape, not the four fields the dialog writes: the
+  // dialog also has to show `pendingApply` ("Applies after the current reply")
+  // and `lastLoadError`, and neither of those is anything the user can set.
+  MODELS_SETTINGS: 'models:settings',
+  // Save one model's settings — invoke(modelId, patch) -> StoredModelSettings.
+  // The patch is `ModelSettingsWrite`: the four user-settable fields, plus the
+  // `dismissMemoryWarning` SIGNAL. It is a signal and not a value because the
+  // number that gets stored is the resolved effective context length, and only
+  // main knows how the per-model setting and the engine-wide default combine.
+  MODELS_SET_SETTINGS: 'models:set-settings',
+  // Fetch the vision projector for a model already on disk and move both into a
+  // folder of its own — invoke(modelId) -> { downloadId }. Progress arrives on
+  // the ordinary models:download-progress stream.
+  MODELS_ADD_VISION: 'models:add-vision',
   ENDPOINTS_DETECT: 'endpoints:detect',
   // ---- Model memory lifecycle (2026-07-14): per-model residency + guards ----
   ENGINE_MODELS: 'engine:models',                 // invoke → EngineModel[] with live state

@@ -39,18 +39,16 @@
 // without a machine that is actually missing the libraries.
 //
 // 2026-09-05 — local-engine upgrades (docs/active/design/2026-09-04-local-engine-upgrades):
-// six channels designed in the workbench ahead of main. Each comes off this list when its
-// real handler lands on all surfaces (ipc-handlers + preload + remote-shim + SessionService.kt).
-// `engine.runInTerminal` came off on 2026-09-05: `engine:run-in-terminal` is real on
-// ipc-handlers + preload + remote-shim + remote-server (it opens a plain-shell session and
-// types the command onto its prompt). Its fake above stays so the workbench can still show
-// the ROCm set-up box without a PTY.
-// `engine.setSpeed` came off on 2026-09-05 too, RENAMED: the two speed switches are now
-// part of `engine:set-config`, one write for every engine-wide setting, real on all five
-// surfaces. Its fake in mock-shim.ts kept the same behaviour under the new name.
-export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [
-  { channel: 'models.settings', feature: 'local-engine-upgrades: per-model settings read (Q-2)' },
-  { channel: 'models.setSettings', feature: 'local-engine-upgrades: per-model settings write (Q-2)' },
-  { channel: 'models.addVision', feature: 'local-engine-upgrades: add the vision file to a downloaded model (S-3)' },
-  { channel: 'models.dismissMemoryWarning', feature: 'local-engine-upgrades: remember the load warning answer per model (S-2)' },
-];
+// six channels were designed in the workbench ahead of main, and all six have now landed on
+// every surface (ipc-handlers + preload + remote-shim + remote-server + SessionService.kt):
+//   engine.prereqs, engine.runInTerminal, engine.setConfig (which replaced engine.setSpeed),
+//   models.settings, models.setSettings, models.addVision.
+// `models.dismissMemoryWarning` never got a channel of its own: it folded into
+// models.setSettings, so one write covers everything a model's settings own. Every fake in
+// mock-shim.ts stays — the workbench still has no machine, no PTY and no engine — only the
+// "no real backend" claim goes.
+//
+// The list is EMPTY, and that is the healthy state: it means nothing on screen in the
+// workbench is pretending to be a feature that does not exist yet. Add a row the moment you
+// design a channel ahead of its backend; delete the row, never the guard, when it ships.
+export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];

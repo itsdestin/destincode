@@ -205,11 +205,20 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
   // re-opens, which is when the remembered answer takes effect.
   const [memDismissed, setMemDismissed] = useState(false);
   useEffect(() => { setMemDismissed(false); }, [resolvedModelId]);
-  // Optional-chained: the SessionStrip unit tests' bridge stub has no `models` at all.
-  const dismissMemoryWarning = typeof (window.claude.models as any)?.dismissMemoryWarning === 'function' && resolvedModelId
+  // One write for everything this model's settings own: the separate
+  // `models.dismissMemoryWarning` channel is gone, and the tick is now
+  // `setSettings(id, { dismissMemoryWarning })`. Main stamps the context length
+  // it was dismissed at — a number the renderer cannot work out, because only
+  // main knows how this model's setting and the engine-wide default combine.
+  //
+  // WHY still optional-chained after dropping the `as any` cast: the bridge is
+  // real on every shipping surface, but SessionStrip's unit tests stub
+  // `window.claude` with no `models` namespace at all, so an unguarded call
+  // would throw during their render.
+  const dismissMemoryWarning = resolvedModelId
     ? (next: boolean) => {
       setMemDismissed(next);
-      if (next) void (window.claude.models as any).dismissMemoryWarning(resolvedModelId);
+      void window.claude.models?.setSettings(resolvedModelId, { dismissMemoryWarning: next });
     }
     : undefined;
 
