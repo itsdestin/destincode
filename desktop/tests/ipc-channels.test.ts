@@ -1436,6 +1436,139 @@ describe('arcade:* channel parity', () => {
   });
 });
 
+// ── Voice prompting ──────────────────────────────────────────────────────────
+// Talking instead of typing (design 2026-09-05). This is the one feature whose
+// `window.claude` shape is deliberately NOT the same everywhere, so the parity
+// check here has to say WHICH surface gets which channel rather than demanding
+// all of them everywhere:
+//
+//   preload.ts          the desktop app       — every channel
+//   voice/voice-handlers.ts  the desktop's main process — every channel
+//   SessionService.kt   the Android app       — the five the phone can do,
+//                                               plus a not-implemented stub for
+//                                               the two that are desktop-only
+//   remote-shim.ts      Android's window.claude — the five, minus the two
+//                                               desktop-only ones
+//
+// A remote BROWSER tab gets no voice at all; that is a runtime decision (the
+// namespace is deleted at install time) and is pinned by
+// remote-shim-voice-gate.test.ts, not by a string search.
+describe('voice:* channel parity', () => {
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+  const preload = read('src', 'main', 'preload.ts');
+  const shim = read('src', 'renderer', 'remote-shim.ts');
+  const handlers = read('src', 'main', 'voice', 'voice-handlers.ts');
+  const kotlinPath = path.join(
+    __dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+    'com', 'youcoded', 'app', 'runtime', 'SessionService.kt',
+  );
+
+  /** The five calls every surface that has a microphone can answer. */
+  const SHARED = ['voice:status', 'voice:download', 'voice:start', 'voice:stop', 'voice:cancel'];
+  /** Desktop-only: the phone's own recogniser owns the microphone (voice:audio)
+   *  and the Activity's permission launcher owns the permission question
+   *  (voice:mic-access). */
+  const DESKTOP_ONLY = ['voice:audio', 'voice:mic-access'];
+  const PUSH = 'voice:event';
+
+  it('preload.ts declares every voice channel', () => {
+    for (const t of [...SHARED, ...DESKTOP_ONLY, PUSH]) {
+      expect(preload, `${t} missing from preload.ts`).toContain(`'${t}'`);
+    }
+  });
+
+  it('voice-handlers.ts really registers an arm for every voice channel', () => {
+    // Fix (whole-branch review F5): this used to be `toContain("'voice:start'")`
+    // over the raw source, which the file's own CHANNELS list already satisfied
+    // — deleting every ipcMain.handle call left it green. Match the registration
+    // itself, so the test fails when the arm goes away rather than when a string
+    // does.
+    for (const t of SHARED) {
+      expect(handlers, `${t} has no ipcMain.handle in voice-handlers.ts`)
+        .toMatch(new RegExp(`ipcMain\\.handle\\('${t}'`));
+    }
+    // The permission question is a handle; the audio stream is a fire-and-forget
+    // `on` ten times a second, so it is registered the other way on purpose.
+    expect(handlers).toMatch(/ipcMain\.handle\('voice:mic-access'/);
+    expect(handlers).toMatch(/ipcMain\.on\(AUDIO_CHANNEL/);
+    // The push has no handler at all — it is sent TO the window.
+    expect(handlers).toMatch(/const EVENT_CHANNEL = 'voice:event'/);
+    expect(handlers).toMatch(/send\(EVENT_CHANNEL/);
+    // And every channel is on the list the double-registration guard clears.
+    for (const t of [...SHARED, 'voice:mic-access']) {
+      expect(handlers, `${t} missing from the CHANNELS clear-list`).toContain(`  '${t}',`);
+    }
+  });
+
+  it('remote-shim.ts carries the five shared channels and the push event', () => {
+    for (const t of [...SHARED, PUSH]) {
+      expect(shim, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+    }
+  });
+
+  if (fs.existsSync(kotlinPath)) {
+    const kotlin = fs.readFileSync(kotlinPath, 'utf8');
+    it('SessionService.kt has a real arm for the four calls the phone answers', () => {
+      // voice:download is NOT here — a phone downloads no speech model — so it
+      // rides the not-implemented stub asserted below.
+      for (const t of ['voice:status', 'voice:start', 'voice:stop', 'voice:cancel']) {
+        expect(kotlin, `${t} has no real arm in SessionService.kt`).toContain(`"${t}" ->`);
+      }
+    });
+    it('SessionService.kt stubs the two desktop-only calls so the phone fails fast', () => {
+      // Listed WITHOUT the `->` arrow: they share the not-implemented-on-mobile
+      // fall-through. A missing entry means a 30-second timeout on the phone
+      // instead of an immediate, explained refusal.
+      for (const t of ['voice:download', 'voice:mic-access']) {
+        expect(kotlin, `${t} missing from SessionService.kt`).toContain(`"${t}"`);
+      }
+    });
+    it('SessionService.kt pushes voice:event', () => {
+      expect(kotlin).toContain('"voice:event"');
+    });
+  } else {
+    it.skip('SessionService.kt not found — skipping Android voice parity', () => {});
+  }
+
+  // ── The two named exceptions to the parity rule ────────────────────────────
+  // .claude/rules/ipc-bridge.md keeps a CLOSED list of members that exist on one
+  // surface and not the other. These are two of them, asserted by name so that
+  // "adding them to the shim for symmetry" fails here with the reason attached
+  // rather than shipping a phone that fights its own recogniser for the mic.
+  //
+  // Scoped to the shim's `voice` block (indent 4, members at indent 6) rather
+  // than searched file-wide: a bare absence check would also pass if the whole
+  // namespace disappeared. Same brace scan the workbench contract test uses —
+  // which is also why the namespace must stay a plain `voice: {`, never a
+  // conditional spread.
+  const shimVoiceBlock = (() => {
+    const start = shim.search(/^ {4}voice: \{/m);
+    if (start < 0) return null;
+    const end = shim.indexOf('\n    },', start);
+    return end < 0 ? shim.slice(start) : shim.slice(start, end);
+  })();
+
+  it("remote-shim's voice namespace is findable at the indentation the scans assume", () => {
+    expect(shimVoiceBlock).not.toBeNull();
+    for (const m of ['status', 'download', 'start', 'stop', 'cancel', 'onEvent']) {
+      expect(shimVoiceBlock!, `voice.${m} missing from remote-shim.ts`)
+        .toMatch(new RegExp(`^ {6}${m}\\s*[:(]`, 'm'));
+    }
+  });
+
+  it('EXCEPTION: sendAudio is desktop-only — the phone\'s recogniser owns the microphone', () => {
+    expect(preload, 'sendAudio must exist on the desktop').toContain('sendAudio');
+    expect(shimVoiceBlock!, 'sendAudio must NOT be on the Android shim').not.toContain('sendAudio');
+    expect(shim, 'voice:audio must never be sent over the bridge').not.toContain("'voice:audio'");
+  });
+
+  it("EXCEPTION: micAccess is desktop-only — the Activity's launcher owns that question", () => {
+    expect(preload, 'micAccess must exist on the desktop').toContain('micAccess');
+    expect(shimVoiceBlock!, 'micAccess must NOT be on the Android shim').not.toContain('micAccess');
+    expect(shim, 'voice:mic-access must never be sent over the bridge').not.toContain("'voice:mic-access'");
+  });
+});
+
 // Five-surface parity for Sign in with ChatGPT (backend design 2026-09-05 §5,
 // §8). Shaped like the arcade block above, with one deliberate difference: the
 // Android assertion is "listed in the not-implemented fall-through", the

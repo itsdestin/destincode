@@ -389,6 +389,18 @@ const IPC = {
   NATIVE_SHELL_EVENT: 'native:shell-event',
   MODELS_MEMORY_CHECK: 'models:memory-check',
   MODELS_LOAD: 'models:load',
+  // ---- Voice prompting (design 2026-09-05) ----
+  // Six things the composer can ask, one fire-and-forget audio stream, and one
+  // push. VOICE_AUDIO is `send`, not `invoke`: ten slices a second, and a reply
+  // per slice would cost more than the audio does.
+  VOICE_STATUS: 'voice:status',
+  VOICE_DOWNLOAD: 'voice:download',
+  VOICE_START: 'voice:start',
+  VOICE_STOP: 'voice:stop',
+  VOICE_CANCEL: 'voice:cancel',
+  VOICE_MIC_ACCESS: 'voice:mic-access',
+  VOICE_AUDIO: 'voice:audio',
+  VOICE_EVENT: 'voice:event',   // push
 } as const;
 
 // Strip the transport prefix Electron puts on a rejected invoke (see the
@@ -1456,6 +1468,28 @@ contextBridge.exposeInMainWorld('claude', {
   // Android, where MainActivity uses them to enable/disable
   // OnBackPressedCallback and broadcast back-press events. Exposed here for
   // shape parity with remote-shim.ts (PITFALLS.md → Cross-Platform parity).
+  // Voice typing. `sendAudio` and `micAccess` are DESKTOP ONLY on purpose: on a
+  // phone the operating system's own recogniser owns the microphone, and the
+  // Activity's permission launcher owns the permission question — so the shared
+  // renderer tests `typeof bridge.sendAudio === 'function'` instead of assuming.
+  voice: {
+    status: (): Promise<unknown> => ipcRenderer.invoke(IPC.VOICE_STATUS),
+    download: (): Promise<void> => ipcRenderer.invoke(IPC.VOICE_DOWNLOAD),
+    start: (): Promise<void> => ipcRenderer.invoke(IPC.VOICE_START),
+    stop: (): Promise<void> => ipcRenderer.invoke(IPC.VOICE_STOP),
+    cancel: (): Promise<void> => ipcRenderer.invoke(IPC.VOICE_CANCEL),
+    micAccess: (): Promise<unknown> => ipcRenderer.invoke(IPC.VOICE_MIC_ACCESS),
+    // One 100 ms slice of microphone audio plus the loudness the audio worklet
+    // already measured for it. The loudness travels with the audio because the
+    // main process owns the two-second silence stop and must not re-measure
+    // what the worklet already knows.
+    sendAudio: (chunk: ArrayBuffer, rms: number) => ipcRenderer.send(IPC.VOICE_AUDIO, chunk, rms),
+    onEvent: (cb: (e: unknown) => void) => {
+      const listener = (_e: unknown, payload: unknown) => cb(payload);
+      ipcRenderer.on(IPC.VOICE_EVENT, listener);
+      return () => ipcRenderer.removeListener(IPC.VOICE_EVENT, listener);
+    },
+  },
   system: {
     notifyStackState: (_empty: boolean) => {
       // No-op on desktop. Electron has no hardware back button.

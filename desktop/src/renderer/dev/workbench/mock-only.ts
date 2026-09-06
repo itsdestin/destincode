@@ -32,6 +32,13 @@
 // the workbench can still show the you-alone, empty and stale-board states
 // without a live leaderboard. `no MOCK_ONLY entry has since gained a real
 // channel` in workbench-mock-contract.test.ts is what forces this cleanup.
+// The eight voice-prompting rows (`voice.status`, `.download`, `.start`,
+// `.stop`, `.cancel`, `.onEvent`, `.sendAudio`, `.micAccess`) came off the same
+// way on 2026-09-05, the moment preload.ts gained the real `voice` namespace and
+// main/voice/voice-handlers.ts registered the six channels behind it. The fake
+// in mock-shim.ts STAYS — the workbench still needs a mic that "hears" a
+// scripted sentence with no speech engine downloaded — only the "no real
+// backend" claim goes.
 // The four Sign-in-with-ChatGPT rows (`chatgpt.status`, `chatgpt.signIn`,
 // `chatgpt.cancelSignIn`, `chatgpt.signOut`) were listed here while the Settings
 // card and the first-run screen were designed against a fake account (design

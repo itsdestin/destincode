@@ -27,6 +27,11 @@ import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns, 
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
 import { arcadeStatusFor, arcadeBoardFor, arcadeRecordsFor, arcadeVersusIsDown, type ArcadeScenario } from './arcade-fixtures';
+import type { VoiceEvent, VoiceReadiness } from '../../../shared/voice-types';
+// The fake splits its scripted sentence with the SAME helper the real engine's
+// worker uses, so what Destin reviews in the workbench is the shipped grey/solid
+// rule rather than a lookalike (it used to grey the last two words, full stop).
+import { splitAtLastSentenceEnd } from '../../../shared/voice-types';
 import { buildCatalog } from './fixtures/marketplace/catalog';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
@@ -99,6 +104,10 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // fixture data to serve instead of a real filesystem/ledger.
   'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
   'specialists.steer', 'specialists.interrupt', 'on.specialistEvent',
+  // Voice prompting (2026-09-05) — no real backend yet, registered in
+  // mock-only.ts. Listed so the contract test covers the fake.
+  'voice.status', 'voice.download', 'voice.start', 'voice.stop', 'voice.cancel', 'voice.onEvent',
+  'voice.sendAudio', 'voice.micAccess',
   'shell.openPath',
   // Chatsearch session references — real backend too, same reason for the fake:
   // the tool gallery needs an index that shows every row state on demand.
@@ -317,7 +326,7 @@ const NAMESPACES = [
   'session', 'skills', 'on', 'dialog', 'shell', 'terminal', 'update', 'remote',
   'account', 'social', 'marketplaceApi', 'detach', 'defaults', 'analytics', 'dev',
   'performance', 'app', 'native', 'providers', 'engine', 'models', 'theme',
-  'commands', 'tags', 'artifacts', 'firstRun', 'clipboard', 'window',
+  'commands', 'tags', 'artifacts', 'firstRun', 'clipboard', 'window', 'voice',
   // Sign in with ChatGPT (design 2026-09-04) — real on all five surfaces since
   // the backend design of 2026-09-05; typed by shared/chatgpt-types.ts.
   'chatgpt',
@@ -985,6 +994,16 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     onStatusChanged: () => () => {},
     onModelsChanged: () => () => {},
   };
+
+  // Voice prompting (deck 2026-09-05) — NO real backend yet (mock-only.ts).
+  // `?voice=<state>` picks the readiness the mic starts in: ready (default),
+  // needs-download, downloading, unavailable. The fake "hears" one scripted
+  // sentence a word at a time — the same sentence the speech bench used — so
+  // the live-words treatment (deck Q-2: a grey tail that settles) and the
+  // first-run card (Q-5) can be judged in the workbench without a microphone.
+  const voice = createVoiceMock(
+    typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('voice'),
+  );
 
   const defaults: Ns<'defaults'> = {
     get: async () => store.getState().defaults,
@@ -2064,6 +2083,112 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, chatgpt, ...(remote ? { remote } : {}),
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, voice, chatgpt, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
+}
+
+const VOICE_SCRIPT = "Can you look at the budget spreadsheet I sent yesterday? Row 14 is wrong: it says $2,300 but Sarah's invoice was $2,030. Fix it and draft a short reply to her.".split(' ');
+
+/** A self-contained fake of `window.claude.voice`. Exported so the compare view
+ *  can mount one composer per readiness state on ONE page (each pane swaps its
+ *  own instance in before its InputBar mounts — see registry.tsx `voice-mic`). */
+export function createVoiceMock(initial: string | null, opts: { loopReset?: boolean } = {}): NonNullable<Window['claude']['voice']> {
+  const engine = 'Parakeet';
+  let readiness: VoiceReadiness =
+    initial === 'needs-download' ? { state: 'needs-download', engine, sizeMb: 639 }
+    : initial === 'downloading' ? { state: 'downloading', engine, sizeMb: 639, percent: 42 }
+    : initial === 'unavailable' ? { state: 'unavailable', reason: 'No microphone was found on this computer.' }
+    : { state: 'ready', engine };
+  const subs = new Set<(e: VoiceEvent) => void>();
+  const emit = (e: VoiceEvent) => subs.forEach((cb) => cb(e));
+  let timers: number[] = [];
+  let words = 0;
+  // WHY a flag and not just "are there timers": the contract in voice-types.ts is
+  // that `stop` emits EXACTLY ONE `final` — never two. The script auto-stops after
+  // two quiet seconds, so a reviewer who holds Space longer than the script used to
+  // get a second `final`, which a composer that trusts the contract would paste as
+  // a second copy of the whole utterance. Found reviewing T1, 2026-09-05.
+  let listening = false;
+  const later = (fn: () => void, ms: number) => { timers.push(window.setTimeout(fn, ms)); };
+  const clear = () => { timers.forEach((t) => window.clearTimeout(t)); timers = []; };
+  const finish = () => {
+    if (!listening) return;
+    listening = false;
+    clear();
+    // loopReset: the compare panes that judge the listening feedback restart the
+    // mic on a loop; ending with an empty final keeps the box from filling up.
+    const text = opts.loopReset ? '' : VOICE_SCRIPT.slice(0, words).join(' ');
+    words = 0;
+    emit({ type: 'level', value: 0 });
+    emit({ type: 'final', text });
+  };
+  return {
+    status: async () => readiness,
+    download: async () => {
+      let pct = readiness.state === 'downloading' ? readiness.percent : 0;
+      const tick = () => {
+        pct = Math.min(100, pct + 3);
+        // The real download ends in an UNPACK, not in `ready`: the archive is
+        // expanded into place, which takes about a minute and reports no
+        // believable progress. The fake goes through the same state (briefly)
+        // because that card is only ever reviewed here — without it the
+        // workbench would show a bar that jumps straight to done and nobody
+        // would ever look at the "Almost ready…" screen the real app shows for
+        // the longest single minute of the first run.
+        readiness = pct < 100
+          ? { state: 'downloading', engine, sizeMb: 639, percent: pct }
+          : { state: 'unpacking', engine };
+        emit({ type: 'readiness', readiness });
+        if (pct < 100) later(tick, 90);
+        else later(() => { readiness = { state: 'ready', engine }; emit({ type: 'readiness', readiness }); }, 1400);
+      };
+      tick();
+    },
+    start: async () => {
+      clear();
+      words = 0;
+      listening = true;
+      // Loudness ticks independent of the words, so the meter moves between them.
+      const level = () => { emit({ type: 'level', value: 0.2 + Math.random() * 0.7 }); later(level, 90); };
+      later(level, 60);
+      const step = () => {
+        words += 1;
+        // The shared rule, not a lookalike: solid up to the last full stop /
+        // question mark / exclamation mark, grey after it. The old fake greyed
+        // the last two words no matter what, which made the reviewed behaviour
+        // and the shipped behaviour two different things.
+        const { committed, tail } = splitAtLastSentenceEnd(VOICE_SCRIPT.slice(0, words).join(' '));
+        emit({ type: 'partial', committed, tail });
+        // "Still working on it". The real host pushes one of these per speech
+        // pass and the composer's watchdog arms when they STOP; the fake pushes
+        // them for the same reason a fake answers `status()` — so the surface
+        // being reviewed behaves like the one that ships.
+        emit({ type: 'heartbeat' });
+        // The silence stop (Q-3): the script ends, two quiet seconds pass, the mic closes itself.
+        if (words < VOICE_SCRIPT.length) later(step, 300 + Math.random() * 160); else later(finish, 2000);
+      };
+      later(step, 450);
+    },
+    stop: async () => { finish(); },
+    // Cancel emits NOTHING — not even an empty `final`. Emitting one used to be
+    // this fake's behaviour and it is wrong in a way that matters: an empty
+    // `final` is a real event that means "the mic closed and heard nothing", so
+    // a composer that trusts the contract would treat a cancel as a finished
+    // utterance and clear the grey words the user had just decided to throw
+    // away. The hook returns itself to idle on cancel without being told.
+    cancel: async () => { clear(); words = 0; listening = false; },
+    // Desktop-only members. The workbench IS the desktop surface, so the fake
+    // offers both — the composer decides "am I on a computer that captures its
+    // own audio?" by testing whether these exist, and a fake without them would
+    // send every review pane down the Android path instead.
+    //
+    // sendAudio discards what it is given: there is no recogniser behind this
+    // fake, the transcript is scripted, and a browser tab has nothing to do with
+    // the samples. Accepting them is the point.
+    sendAudio: (_chunk: ArrayBuffer, _rms: number) => {},
+    // 'granted' because the workbench is reviewed on a machine whose microphone
+    // works; the denied wording is reviewed through the `unavailable` fake above.
+    micAccess: async () => 'granted' as const,
+    onEvent: (cb) => { subs.add(cb); return () => { subs.delete(cb); }; },
+  };
 }
