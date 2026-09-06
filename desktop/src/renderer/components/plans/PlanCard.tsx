@@ -110,6 +110,10 @@ function limit(plan: PlanView): string {
 
 export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: string }) {
   const dispatch = useChatDispatch();
+  // Destin, round 2 (R-1): while the plan is being written the card must be
+  // exactly a header row — not a header plus an empty padded body, which read
+  // as thicker than every other collapsed tool card.
+  const writing = plan.status === 'writing';
   const [commenting, setCommenting] = useState(false);
   const [comment, setComment] = useState('');
   const [adding, setAdding] = useState(false);
@@ -142,19 +146,20 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
 
   const specialists = plan.steps.reduce((n, s) => n + s.fanOut, 0);
   const done = plan.steps.filter((s) => s.status === 'done').length;
+  if (writing) return null;
 
   return (
     <div className={`px-3 pb-2.5 pt-1.5 space-y-2 ${revised ? 'opacity-60' : ''}`} data-testid="plan-block" data-plan-status={plan.status}>
-      {plan.status === 'writing' ? null : (
-        <>
-          <ol className="space-y-1" data-testid="plan-steps">
+      <ol className="space-y-1" data-testid="plan-steps">
             {plan.steps.map((step, i) => (
               <StepRow key={step.id} step={step} index={i} plan={plan} sessionId={sessionId} />
             ))}
           </ol>
 
-          {/* ONE ceiling line (Q-2). While the plan moves it becomes "used of up to". */}
-          <div className="text-xs text-fg-dim" data-testid="plan-ceiling">
+          {/* ONE ceiling line (Q-2). While the plan moves it becomes "spent of".
+              A running plan's Stop shares this row (Destin, round 2). */}
+          <div className="flex items-center justify-between gap-3 flex-wrap" data-testid="plan-ceiling">
+          <span className="text-xs text-fg-dim min-w-0">
             {plan.status === 'proposed' || revised
               // A revised plan never ran, so it keeps its proposal line rather
               // than a meaningless "Spent 0" (UX run 1 follow-up).
@@ -163,23 +168,50 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
               : plan.status === 'completed'
                 ? <>Spent {spent(plan)} of {limit(plan)}</>
                 : <>Spent {spent(plan)} of {limit(plan)}</>}
+          </span>
+            {plan.status === 'running' && (
+              <Button size="sm" variant="danger-outline" className="shrink-0" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop the plan'}</Button>
+            )}
           </div>
 
           {plan.autoApproved && (
             <div className="text-2xs text-fg-muted">Ran without asking — under the limit you set in Settings.</div>
           )}
 
+          {/* Destin, round 2 (R-3/R-4/R-5): the line that explains the state and
+              the buttons that answer it share one row — words left, buttons
+              right — so a card never spends a whole line on two buttons. */}
           {plan.status === 'paused' && plan.paused && (
             // Amber: the same tone the held-ask and stale-run lines use — a
             // stop that needs a person, not an error.
-            <div className="text-xs text-amber-500" data-testid="plan-paused-reason">
-              Paused — {plan.paused.reason}
+            <div className="flex items-center justify-between gap-3 flex-wrap" data-testid="plan-paused-reason">
+              <span className="text-xs text-amber-500 min-w-0">Paused — {plan.paused.reason}</span>
+              {!adding ? (
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
+                  <Button size="sm" variant="primary" onClick={() => setAdding(true)} disabled={busy !== null}>Add budget</Button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 shrink-0" data-testid="plan-add-budget">
+                  <span className="text-xs text-fg-dim">Allow</span>
+                  <TextInput size="sm" inputMode="numeric" value={Number(extra) ? Number(extra).toLocaleString() : extra} onChange={(e) => setExtra(e.target.value.replace(/[^0-9]/g, ''))} className="w-20" aria-label="Tokens to allow" />
+                  <span className="text-xs text-fg-dim">tokens{plan.ceilingUsd != null && plan.ceilingTokens > 0 ? ` (${usd((Number(extra) || 0) * (plan.ceilingUsd / plan.ceilingTokens))})` : ''}</span>
+                  <Button size="sm" variant="ghost" onClick={() => setAdding(false)} disabled={busy !== null}>Cancel</Button>
+                  <Button size="sm" variant="primary" onClick={addBudget} disabled={busy !== null || !(Number(extra) > 0)}>{busy === 'budget' ? 'Continuing…' : 'Continue'}</Button>
+                </div>
+              )}
             </div>
           )}
 
           {plan.status === 'interrupted' && (
-            <div className="text-xs text-fg-dim" data-testid="plan-interrupted-note">
-              The app closed mid-plan. {done === 0 ? 'Nothing had finished yet' : done === 1 ? 'Step 1 is saved' : `Steps 1–${done} are saved`}; Continue runs the rest.
+            <div className="flex items-center justify-between gap-3 flex-wrap" data-testid="plan-interrupted-note">
+              <span className="text-xs text-fg-dim min-w-0">
+                The app closed mid-plan. {done === 0 ? 'Nothing had finished yet' : done === 1 ? 'Step 1 is saved' : `Steps 1–${done} are saved`}; Continue runs the rest.
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
+                <Button size="sm" variant="primary" onClick={cont} disabled={busy !== null}>{busy === 'continue' ? 'Continuing…' : 'Continue'}</Button>
+              </div>
             </div>
           )}
 
@@ -187,8 +219,8 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
             <div className="text-2xs text-fg-muted">Revised after your comment — the new plan is below.</div>
           )}
 
-          {/* Buttons per state. Primary = the thing that moves the plan; Stop
-              is always ghost so it never reads as the default. */}
+      {/* The proposal keeps its buttons on their own row: it has two forward
+          actions and no status sentence to share a line with. */}
           {plan.status === 'proposed' && !commenting && (
             <div className="flex items-center gap-2 flex-wrap">
               <Button size="sm" variant="primary" onClick={approve} disabled={busy !== null}>{busy === 'approve' ? 'Approving…' : 'Approve'}</Button>
@@ -213,38 +245,8 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
               </div>
             </div>
           )}
-          {/* Destin, round 1 (P-5/P-7/P-9): every action row sits bottom-RIGHT,
-              Stop wears the app's red outline, and Stop is LEFT of the button
-              that moves the plan forward. */}
-          {plan.status === 'running' && (
-            <div className="flex items-center justify-end gap-2">
-              <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop the plan'}</Button>
-            </div>
-          )}
-          {plan.status === 'paused' && !adding && (
-            <div className="flex items-center justify-end gap-2 flex-wrap">
-              <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
-              <Button size="sm" variant="primary" onClick={() => setAdding(true)} disabled={busy !== null}>Add budget</Button>
-            </div>
-          )}
-          {plan.status === 'paused' && adding && (
-            <div className="flex items-center justify-end gap-2 flex-wrap" data-testid="plan-add-budget">
-              <span className="text-xs text-fg-dim mr-auto">Allow</span>
-              <TextInput size="sm" inputMode="numeric" value={Number(extra) ? Number(extra).toLocaleString() : extra} onChange={(e) => setExtra(e.target.value.replace(/[^0-9]/g, ''))} className="w-24" aria-label="More tokens to allow" />
-              <span className="text-xs text-fg-dim">more tokens{plan.ceilingUsd != null && plan.ceilingTokens > 0 ? ` (about ${usd((Number(extra) || 0) * (plan.ceilingUsd / plan.ceilingTokens))})` : ''}</span>
-              <Button size="sm" variant="ghost" onClick={() => setAdding(false)} disabled={busy !== null}>Cancel</Button>
-              <Button size="sm" variant="primary" onClick={addBudget} disabled={busy !== null || !(Number(extra) > 0)}>{busy === 'budget' ? 'Continuing…' : 'Continue'}</Button>
-            </div>
-          )}
-          {plan.status === 'interrupted' && (
-            <div className="flex items-center justify-end gap-2 flex-wrap">
-              <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
-              <Button size="sm" variant="primary" onClick={cont} disabled={busy !== null}>{busy === 'continue' ? 'Continuing…' : 'Continue'}</Button>
-            </div>
-          )}
-          {error && <div className="text-xs text-destructive-fg">{error}</div>}
-        </>
-      )}
+
+      {error && <div className="text-xs text-destructive-fg">{error}</div>}
     </div>
   );
 }
@@ -291,9 +293,12 @@ function StepRow({ step, index, plan, sessionId }: { step: PlanStepView; index: 
     : step.status === 'done' ? tokens(step.usedTokens ?? 0)
     : '';
   return (
-    <li data-testid={`plan-step-${step.id}`} data-step-status={step.status}>
+    // Destin, round 2 (R-2): a step is a container like the cards above and
+    // below it, so the nesting reads plan → step → specialist by shape rather
+    // than by indentation; the specialists sit on the container's own padding.
+    <li className="border border-edge-dim rounded-md overflow-hidden bg-inset/25" data-testid={`plan-step-${step.id}`} data-step-status={step.status}>
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
-        className="w-full flex items-center gap-2 text-left rounded-md px-1 py-0.5 hover:bg-inset/50 transition-colors">
+        className="w-full flex items-center gap-2 text-left px-2 py-1 hover:bg-inset/50 transition-colors">
         <span className="shrink-0 inline-flex w-3.5 justify-center">{STEP_GLYPH[step.status]}</span>
         <span className="text-xs text-fg-muted tabular-nums shrink-0">{index + 1}.</span>
         <span className={`text-xs ${step.status === 'done' ? 'text-fg-dim' : 'text-fg-2'} truncate`}>{step.title}</span>
@@ -302,7 +307,7 @@ function StepRow({ step, index, plan, sessionId }: { step: PlanStepView; index: 
         <ChevronIcon className="w-3 h-3 text-fg-muted shrink-0" expanded={open} />
       </button>
       {open && (
-        <div className="ml-7 mt-1 space-y-1">
+        <div className="px-1.5 pb-1.5 pt-1 space-y-1 border-t border-edge-dim">
           {step.children && step.children.length > 0 ? (
             step.children.map((c) => <PlanSpecialistCard key={c.childId} child={c} sessionId={sessionId} />)
           ) : (
