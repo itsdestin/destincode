@@ -131,6 +131,15 @@ export interface UsageSnapshot {
   fiveHourResetsAt: string | null;
   sevenDayUtilization: number | null;
   sevenDayResetsAt: string | null;
+  /** Plan windows that are neither 5 hours nor 7 days long, each with its
+   *  length in minutes (a free ChatGPT plan reports one 30-day window and no
+   *  others — words deck W-2 = a, 2026-09-05). Absent, not empty, when the
+   *  plan has none; the card draws them after the two bars above. */
+  otherWindows?: Array<{ utilization: number; resets_at: string; minutes: number }>;
+  /** Whose windows the four fields above are: the Claude subscription (the
+   *  default, and the only plan before 2026-09-04) or the ChatGPT plan a
+   *  native session is bound to. The card names the plan in its scope line. */
+  subscriptionPlan?: 'claude' | 'chatgpt';
 
   // --- Native (YouCoded-runtime) sessions (spec §10) ---
   // A native session runs no Claude Code statusline, so the fields above are

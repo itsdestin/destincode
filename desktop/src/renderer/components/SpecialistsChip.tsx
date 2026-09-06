@@ -30,17 +30,22 @@ export default function SpecialistsChip({ sessionId }: { sessionId: string | nul
   useEscClose(open, () => setOpen(false));
   if (summary.helpers.length === 0) return null;
 
-  const { needsYou, working, finished } = summary;
+  const { needsYou, working, finished, noun } = summary;
+  // Destin (2026-09-05): a Claude Code session says "subagents", because that
+  // is the word Claude Code uses for them in its own output — one chip meaning
+  // one thing beats one word used two ways. Native hires stay "specialists".
+  const plural = `${noun}s`;
+  const Noun = noun === 'subagent' ? 'Subagents' : 'Specialists';
   const label = needsYou > 0
     ? `${needsYou} need${needsYou === 1 ? 's' : ''} you`
     : working > 0
-      ? `${working} specialist${working === 1 ? '' : 's'}`
+      ? `${working} ${working === 1 ? noun : plural}`
       : `${finished} finished`;
   const tooltip = needsYou > 0
-    ? `${needsYou} specialist ask${needsYou === 1 ? '' : 's'} waiting on you — click to answer`
+    ? `${needsYou} ${noun} ask${needsYou === 1 ? '' : 's'} waiting on you — click to answer`
     : working > 0
-      ? `${working} specialist${working === 1 ? '' : 's'} working — click to manage`
-      : 'Specialists finished in the background — click to see';
+      ? `${working} ${working === 1 ? noun : plural} working — click to manage`
+      : `${Noun} finished in the background — click to see`;
 
   return (
     <>
@@ -62,7 +67,7 @@ export default function SpecialistsChip({ sessionId }: { sessionId: string | nul
         <Dialog
           open
           onClose={() => setOpen(false)}
-          title="Specialists"
+          title={Noun}
           subtitle={[
             needsYou > 0 ? `${needsYou} waiting on you` : null,
             working > 0 ? `${working} working` : null,
@@ -109,7 +114,18 @@ function SpecialistManager({ summary, sessionId, onJump }: { summary: Specialist
 function StatusPill({ h }: { h: HelperView }) {
   const base = 'inline-flex items-center gap-1 text-3xs font-medium px-1.5 py-0.5 rounded-full border';
   if (h.group === 'needs-you') return <span className={`${base} border-amber-500/40 text-amber-500 bg-amber-500/10`}><QuestionIcon className="w-3 h-3" />Needs you</span>;
-  if (h.run.status === 'running') return <span className={`${base} border-blue-400/40 text-blue-400 bg-blue-400/10`}><BrailleSpinner size="xs" />{h.run.stale ? 'May be stuck' : 'Working'}</span>;
+  // Green, not blue (Destin, 2026-09-05 deck note). The session pills in the
+  // header are this app's status vocabulary — StatusDot.tsx STATUS_LABEL reads
+  // green: 'Working', blue: 'Response Ready' — so a blue "Working" pill here
+  // said the OPPOSITE of the colour he reads on every session all day.
+  //
+  // The WORD stays on a theme text colour and the green lives in the ring and
+  // tint, which is SessionStrip's STATUS_PILL pattern and for the same measured
+  // reason: #4CAF50 as text over this pill's own fill measures 1.97:1 on light,
+  // 1.81:1 on creme and 1.50:1 on meadow-mist (floor is 4.5:1). Green text
+  // passes only on the three dark themes. Do not "fix" this back to
+  // text-green-400 — re-measure first.
+  if (h.run.status === 'running') return <span className={`${base} border-green-400/40 text-fg bg-green-400/15`}><BrailleSpinner size="xs" />{h.run.stale ? 'May be stuck' : 'Working'}</span>;
   if (h.run.status === 'interrupted') return <span className={`${base} border-edge text-fg-muted`}><StoppedIcon className="w-3 h-3" />Stopped</span>;
   // Fix: `danger` was never a real token (no --color-danger anywhere in globals.css,
   // confirmed by building the stylesheet and finding zero `danger` output) — this
@@ -146,16 +162,24 @@ function HelperCard({ h, sessionId, onJump }: { h: HelperView; sessionId?: strin
               {run.title}
             </button>
             {/* No role tag: "Wren the Whistling Worker" already says worker (Destin, round 8). */}
+            {/* A CC subagent has no model line (Claude Code does not report which
+                model ran it), so its TYPE — Explore / Plan / general-purpose —
+                takes that slot: with `description` used as the name above, the
+                type is what tells two same-shaped helpers apart. */}
+            {h.agentTypeLabel && h.agentTypeLabel !== run.title ? ` · ${h.agentTypeLabel}` : ''}
             {run.model ? ` · on ${run.model.label}` : ''}
             {run.background && run.status === 'running' ? ' · in the background' : ''}
           </div>
           {/* Top-right: Note / Stop while running, else the status pill. */}
-          {run.status === 'running' && sessionId
+          {/* Send-a-note / Stop go through the `specialists:*` channels, which
+              only the native engine implements — a CC subagent gets the status
+              pill instead. Offering dead buttons is worse than offering none. */}
+          {run.status === 'running' && sessionId && h.kind === 'native'
             ? <div className="shrink-0"><SpecialistActions sessionId={sessionId} run={run} compact /></div>
             : !attention && <StatusPill h={h} />}
         </div>
         {run.description && <div className="text-xs text-fg-2">{run.description}</div>}
-        <RunStatusLine run={run} report={tool.specialistReport} />
+        <RunStatusLine run={run} report={tool.specialistReport} elapsedUnknown={h.elapsedUnknown} />
         {/* The chat card's own Briefing / Activity / Report sections, verbatim
             (Destin, round 9: one representation of a helper's work). Ask
             buttons inside Activity are suppressed — the band below has them. */}

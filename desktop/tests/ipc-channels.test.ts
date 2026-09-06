@@ -1568,3 +1568,141 @@ describe('voice:* channel parity', () => {
     expect(shim, 'voice:mic-access must never be sent over the bridge').not.toContain("'voice:mic-access'");
   });
 });
+
+// Five-surface parity for Sign in with ChatGPT (backend design 2026-09-05 §5,
+// §8). Shaped like the arcade block above, with one deliberate difference: the
+// Android assertion is "listed in the not-implemented fall-through", the
+// permissions:* / specialists:* precedent — the account, its encrypted tokens
+// and the 127.0.0.1:1455 sign-in listener all live in the DESKTOP main process,
+// and Android has no native runtime to hold any of that until M8. A REAL arm
+// there would be wrong, and a missing entry would make a phone's invoke hang
+// ~30 s instead of rejecting fast.
+describe('chatgpt:* channel parity', () => {
+  const TYPES = ['chatgpt:status', 'chatgpt:sign-in', 'chatgpt:cancel-sign-in', 'chatgpt:sign-out'];
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  // Review T4 F2: a bare `toContain("'chatgpt:status'")` was satisfied by the
+  // IPC constants table alone, because this namespace invokes through IPC.*
+  // rather than a literal. Deleting all four methods from the exposed
+  // `chatgpt: { ... }` object shipped GREEN -- and every desktop user would then
+  // get "window.claude.chatgpt.status is not a function" the moment they opened
+  // the Settings card. Assert the actual invoke through the constant instead.
+  it('exposed in preload.ts', () => {
+    const src = read('src', 'main', 'preload.ts');
+    const CONSTS: Record<string, string> = {
+      'chatgpt:status': 'CHATGPT_STATUS',
+      'chatgpt:sign-in': 'CHATGPT_SIGN_IN',
+      'chatgpt:cancel-sign-in': 'CHATGPT_CANCEL_SIGN_IN',
+      'chatgpt:sign-out': 'CHATGPT_SIGN_OUT',
+    };
+    for (const t of TYPES) {
+      expect(src, t + ' missing from preload.ts').toContain("'" + t + "'");
+      expect(src, t + ' is only in the constants table -- preload never invokes it')
+        .toContain('ipcRenderer.invoke(IPC.' + CONSTS[t] + ')');
+    }
+  });
+
+  it('exposed in remote-shim.ts', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of TYPES) expect(src, `${t} missing from remote-shim.ts`).toContain(`'${t}'`);
+  });
+
+  it('registered in ipc-handlers.ts (through the IPC constants)', () => {
+    // The handlers use IPC.CHATGPT_* rather than string literals, so assert
+    // the constant exists in shared/types.ts AND the handler references it.
+    const types = read('src', 'shared', 'types.ts');
+    const handlers = read('src', 'main', 'ipc-handlers.ts');
+    const constants: Record<string, string> = {
+      'chatgpt:status': 'CHATGPT_STATUS',
+      'chatgpt:sign-in': 'CHATGPT_SIGN_IN',
+      'chatgpt:cancel-sign-in': 'CHATGPT_CANCEL_SIGN_IN',
+      'chatgpt:sign-out': 'CHATGPT_SIGN_OUT',
+    };
+    for (const t of TYPES) {
+      expect(types, `${t} missing from shared/types.ts IPC`).toContain(`${constants[t]}: '${t}'`);
+      expect(handlers, `IPC.${constants[t]} has no ipcMain.handle in ipc-handlers.ts`).toContain(`ipcMain.handle(IPC.${constants[t]}`);
+    }
+  });
+
+  it('handled by remote-server.ts (WS case)', () => {
+    const src = read('src', 'main', 'remote-server.ts');
+    for (const t of TYPES) expect(src, `${t} missing from remote-server.ts`).toContain(`case '${t}'`);
+  });
+
+  it('is listed in the Android not-implemented fall-through, NOT a real arm', () => {
+    const kt = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin',
+        'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'),
+      'utf8',
+    );
+    for (const t of TYPES) {
+      expect(kt, `${t} not listed in SessionService.kt`).toContain(`"${t}"`);
+      // `"channel" ->` is the real-arm marker (see the arcade block). Android
+      // cannot run the sign-in, so an arm here would be a fake, not a feature.
+      expect(kt, `${t} has a real arm in SessionService.kt — it must be a not-implemented stub`).not.toContain(`"${t}" ->`);
+    }
+  });
+
+  it('the preload flag and the mock/remote flags exist, so the renderer gate (=== true) is honest everywhere', () => {
+    // Review R1-9: a `supported` the renderer reads as `=== true` must be SET
+    // on every surface — undefined hides the card in the workbench and on the
+    // acceptance deck for a tooling reason.
+    expect(read('src', 'main', 'preload.ts')).toMatch(/chatgpt:\s*\{\s*supported: process\.env\.YOUCODED_CHATGPT !== '0'/);
+    expect(read('src', 'renderer', 'dev', 'workbench', 'mock-shim.ts')).toMatch(/const chatgpt = \{[\s\S]*?supported: true,/);
+    expect(read('src', 'renderer', 'remote-shim.ts')).toMatch(/chatgpt:\s*\{\s*supported: false,/);
+  });
+
+  it('the shim sends an OBJECT payload or nothing, never bare positional args', () => {
+    const src = read('src', 'renderer', 'remote-shim.ts');
+    for (const t of TYPES) {
+      const call = src.match(new RegExp(`invoke\\('${t}'(,\\s*([^)]*))?\\)`));
+      expect(call, `no invoke('${t}', ...) found in remote-shim.ts`).toBeTruthy();
+      const arg = (call![2] ?? '').trim();
+      expect(arg === '' || arg.startsWith('{'),
+        `invoke('${t}') must pass an object literal or nothing, got: ${arg}`).toBe(true);
+    }
+  });
+});
+
+// The kill switch and the lock-out guard are wiring, not channels: nothing else
+// in the suite reads main.ts, and both are one line whose deletion is silent.
+// Reviews T4 F1/F3 and T5 F1/F2 measured that each could be dropped with the
+// whole suite still green.
+describe('Sign in with ChatGPT - the wiring that has no other guard', () => {
+  const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, '..', ...p), 'utf8');
+
+  it('the kill switch reaches the handlers, the background poll and the first-run arm', () => {
+    const handlers = read('src', 'main', 'ipc-handlers.ts');
+    const main = read('src', 'main', 'main.ts');
+    // 1. The handlers, the provider row and the catalog.
+    expect(handlers, 'the kill switch no longer gates the user-facing handle')
+      .toMatch(/chatgptForUi[^\n]*process\.env\.YOUCODED_CHATGPT !== '0'/);
+    // 2. The background usage poll. WHY this one matters most: the poll
+    //    refreshes the token, and a rejected refresh deletes the saved sign-in -
+    //    so an ungated poll turns "turn the feature off" into "sign the user
+    //    out", the opposite of what the switch promises.
+    expect(main, 'ChatGptAuth is constructed without the pollUsage gate')
+      .toMatch(/pollUsage:\s*chatgptEnabled/);
+    expect(main, 'the kill switch is not read into chatgptEnabled')
+      .toMatch(/const chatgptEnabled = process\.env\.YOUCODED_CHATGPT !== '0'/);
+    // 3. The first-run arm, which would otherwise still open a browser tab and
+    //    bind port 1455 with the feature turned off.
+    expect(main, "the wizard's ChatGPT arm ignores the kill switch")
+      .toMatch(/mode === 'chatgpt' && chatgptEnabled/);
+  });
+
+  it('re-showing the setup wizard marks setup complete first, so it cannot strand an established install', () => {
+    const main = read('src', 'main', 'main.ts');
+    const i = main.indexOf("forceStep('AUTHENTICATE')");
+    expect(i, 'main.ts no longer re-shows the wizard - update this guard').toBeGreaterThan(0);
+    // The 400 characters before it must contain the completion mark. WHY:
+    // forceStep() writes 'AUTHENTICATE' to the state file and isFirstRun() reads
+    // exactly that - so without the mark, closing the window without signing in
+    // makes the NEXT launch take the early first-run branch, skip the
+    // provider-aware check entirely, and re-run the Node/Git/Claude installers
+    // against a working install. This branch removed the Skip link, so a failing
+    // installer there leaves the user with no way forward at all.
+    expect(main.slice(Math.max(0, i - 400), i), 'markSetupCompleted() must run before forceStep(AUTHENTICATE)')
+      .toContain('markSetupCompleted()');
+  });
+});
