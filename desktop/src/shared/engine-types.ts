@@ -101,6 +101,12 @@ export interface EngineStatus {
    *  still streaming. The panel shows "Applies after the current reply" while
    *  this is true (design §B/§C2). */
   configApplyPending?: boolean;
+  /** …and the reply really is what it is waiting for. `configApplyPending` alone
+   *  is also true for a change queued on a completely idle machine, which
+   *  applies a moment later with no reply involved — so the card words those two
+   *  differently instead of telling most users to wait for a reply nobody is
+   *  reading. */
+  configApplyWaitingForReply?: boolean;
   /** The REAL failure text if applying a saved change went wrong — never a
    *  guessed cause. Null/absent = nothing went wrong. WHY it needs its own
    *  field: the setting is written and the channel has already answered by the
@@ -119,6 +125,11 @@ export interface EngineStatus {
    *  `undefined` means the question does not apply (the engine is not running,
    *  or an older main never answered it) — never "not in force". */
   modelSettingsInForce?: boolean;
+  /** Why they are not in force, in the OS's or the engine's OWN words — the
+   *  error from writing the file, or the engine's startup sentence about it
+   *  (design §J). Null = they are in force, or nothing legible was available and
+   *  the card says so without inventing a cause. */
+  modelSettingsError?: string | null;
 }
 
 export type EngineInstallProgress =

@@ -52,6 +52,28 @@ describe('the size breakdown bubble', () => {
     expect(screen.getByText(ADVICE)).toBeTruthy();
   });
 
+  it('R8: the advice is the LAST thing in the bubble', () => {
+    // The contract says the bubble "ends with" it. Moved above the memory
+    // figure, every other assertion in this file still passed.
+    render(<SizeLine q={quantWith({ advice: ADVICE })} />);
+    openBubble();
+    const rows = screen.getByText(ADVICE).parentElement as HTMLElement;
+    expect((rows.lastElementChild as HTMLElement).textContent).toBe(ADVICE);
+  });
+
+  it('R1-25: hedges the RUNNING-MEMORY total too, not just the small print', () => {
+    // 2.4 GB of weights + 1.6 GB of context = 4.0 GB. The total contains the
+    // estimated term, so stating it exactly is the same fake precision one line
+    // lower down — and the total is the number a user actually decides on.
+    render(<SizeLine q={quantWith({ contextBytesIsUpperBound: true })} />);
+    openBubble();
+    expect(screen.getByText('up to 4.0 GB')).toBeTruthy();
+    cleanup();
+    render(<SizeLine q={quantWith({})} />);
+    openBubble();
+    expect(screen.getByText('4.0 GB')).toBeTruthy();
+  });
+
   it('R8: has NO advice line when the estimator sent none', () => {
     render(<SizeLine q={quantWith({}, 'fits')} />);
     openBubble();
@@ -87,12 +109,15 @@ const SETTINGS: StoredModelSettings = {
   contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '', memoryWarningDismissed: null,
 };
 
-/** Mount the row with a stubbed models API and open its Settings dialog. */
-async function openSettings(settings: StoredModelSettings) {
+/** Mount the row with a stubbed models API and open its Settings dialog.
+ *  `later`, when given, is what every fetch AFTER the first one answers — which
+ *  is how a pending save landing in the background is driven. */
+async function openSettings(settings: StoredModelSettings, later?: StoredModelSettings) {
   (globalThis as any).window = (globalThis as any).window ?? {};
+  let calls = 0;
   (globalThis as any).window.claude = {
     models: {
-      settings: vi.fn().mockResolvedValue(settings),
+      settings: vi.fn(async () => (later && calls++ > 0 ? later : settings)),
       setSettings: vi.fn().mockResolvedValue(settings),
       delete: vi.fn().mockResolvedValue(true),
       downloadCancel: vi.fn().mockResolvedValue(true),
@@ -106,17 +131,46 @@ async function openSettings(settings: StoredModelSettings) {
   await waitFor(() => expect(screen.getByText('Context length')).toBeTruthy());
 }
 
+const LOAD_ERROR_TITLE = 'This model failed to load last time';
+
 describe('a model’s settings dialog', () => {
   it('R26: shows why the model last failed to load, in the ENGINE’S own words', async () => {
     await openSettings({ ...SETTINGS, lastLoadError: 'error: invalid argument: --tempp' });
-    expect(screen.getByText('This model did not load')).toBeTruthy();
+    // "last time": main clears this only on a SUCCESSFUL load, so the card
+    // outlives the problem and must not claim the model is broken right now.
+    expect(screen.getByText(LOAD_ERROR_TITLE)).toBeTruthy();
     // Verbatim. A paraphrase would send the user to fix something else.
-    expect(screen.getByText('error: invalid argument: --tempp')).toBeTruthy();
+    const line = screen.getByText('error: invalid argument: --tempp');
+    expect(line).toBeTruthy();
+    // Engine errors carry long unbroken paths; without this they overflow the
+    // dialog and hide everything after them.
+    expect(line.className).toContain('break-words');
+  });
+
+  it('R26: the load-error card is the FIRST thing in the dialog', async () => {
+    // Its own WHY comment argues this at length — the extra-flags box that most
+    // often causes it is behind a collapsed Advanced row, and a message under
+    // that is a message nobody reads. Nothing enforced the position.
+    await openSettings({ ...SETTINGS, lastLoadError: 'error: invalid argument: --tempp' });
+    const body = screen.getByTestId('model-settings');
+    const first = body.firstElementChild as HTMLElement;
+    expect(first.textContent).toContain(LOAD_ERROR_TITLE);
+  });
+
+  it('R26: opens Advanced when the model failed to load, and leaves it shut otherwise', async () => {
+    // The flags box lives inside Advanced. The card above still does NOT name
+    // the flags as the cause — an unreadable file and a machine out of memory
+    // arrive in exactly the same field.
+    await openSettings({ ...SETTINGS, lastLoadError: "error: option '--tempp' not recognized in preset 'x'" });
+    expect(screen.getByLabelText('Extra engine flags')).toBeTruthy();
+    cleanup();
+    await openSettings(SETTINGS);
+    expect(screen.queryByLabelText('Extra engine flags')).toBeNull();
   });
 
   it('R26: shows no load-error card when the model has not failed', async () => {
     await openSettings(SETTINGS);
-    expect(screen.queryByText('This model did not load')).toBeNull();
+    expect(screen.queryByText(LOAD_ERROR_TITLE)).toBeNull();
   });
 
   it('§C2: says a saved change waits for the reply on screen', async () => {
@@ -127,6 +181,44 @@ describe('a model’s settings dialog', () => {
   it('§C2: says nothing about waiting once the change is in force', async () => {
     await openSettings({ ...SETTINGS, keepLoaded: true });
     expect(screen.queryByText('Applies after the current reply.')).toBeNull();
+  });
+
+  it('§C2: the waiting line CLEARS once the change lands, without closing the dialog', async () => {
+    // There is no push channel for per-model settings, so the dialog re-asks.
+    // Fetched once, it would sit there saying "Applies after the current reply"
+    // for as long as it is open — the user closes it, reopens it, and concludes
+    // the setting never stuck.
+    await openSettings(
+      { ...SETTINGS, keepLoaded: true, pendingApply: true },
+      { ...SETTINGS, keepLoaded: true },
+    );
+    expect(screen.getByText('Applies after the current reply.')).toBeTruthy();
+    await waitFor(
+      () => expect(screen.queryByText('Applies after the current reply.')).toBeNull(),
+      { timeout: 10_000, interval: 100 },
+    );
+  });
+
+  it('§C2: re-asking main never wipes what the user is halfway through typing', async () => {
+    // The poll re-reads every field. Seeded into the two text drafts on every
+    // pass instead of once, a user typing a context length while a save is
+    // pending watches it vanish under them two seconds later.
+    await openSettings({ ...SETTINGS, contextLength: 8192, pendingApply: true });
+    const box = screen.getByLabelText('Context length for this model') as HTMLInputElement;
+    fireEvent.change(box, { target: { value: '4096' } });
+    await new Promise((r) => setTimeout(r, 2600));
+    expect((screen.getByLabelText('Context length for this model') as HTMLInputElement).value).toBe('4096');
+  });
+
+  it('§C2: a load error that arrives while the dialog is open reaches the user', async () => {
+    // Same staleness, other field: a model fails on its next request, and a
+    // dialog that read main once would never say so.
+    await openSettings(SETTINGS, { ...SETTINGS, lastLoadError: 'error: out of memory' });
+    expect(screen.queryByText(LOAD_ERROR_TITLE)).toBeNull();
+    await waitFor(
+      () => expect(screen.getByText('error: out of memory')).toBeTruthy(),
+      { timeout: 10_000, interval: 100 },
+    );
   });
 });
 
@@ -164,13 +256,36 @@ async function renderAdvanced(status: Record<string, unknown>) {
 }
 
 const NOT_IN_FORCE = 'Each model’s own settings are off right now';
+const OS_ERROR = "EACCES: permission denied, open '/home/d/.youcoded/engine/models.ini'";
 
 describe('the engine card', () => {
-  it('T7: says per-model settings are off when the engine started without them', async () => {
-    mountEngine({ ...RUNNING, modelSettingsInForce: false });
+  it('T7: says per-model settings are off, and QUOTES the reason it was given', async () => {
+    mountEngine({ ...RUNNING, modelSettingsInForce: false, modelSettingsError: OS_ERROR });
     render(<EngineCard showDetails />);
     await waitFor(() => expect(screen.getByText(NOT_IN_FORCE)).toBeTruthy());
-    expect(screen.getByText(/running on the engine’s own settings/)).toBeTruthy();
+    // Both sentences, not just a fragment: what is happening, and that it is not
+    // permanent. Deleting either one left every other assertion true.
+    expect(screen.getByText(/Every model is running on the engine’s own settings\./)).toBeTruthy();
+    expect(screen.getByText(/It tries again the next time the engine starts\./)).toBeTruthy();
+    // The OS's own words. `engine-supervisor.ts` used to throw this away in a
+    // bare catch, which left the card able to say only "something went wrong".
+    const cause = screen.getByText(OS_ERROR);
+    expect(cause).toBeTruthy();
+    expect(cause.className).toContain('break-words');
+    // A cause we HAVE is the specific+accurate shape — no Report bug / Diagnose.
+    expect(screen.queryByText('Diagnose with Claude')).toBeNull();
+  });
+
+  it('T7: with NO reason available, stays non-committal and offers the two standard actions', async () => {
+    // docs/error-message-standards.md: general is allowed, general with an
+    // invented cause is not — and a general message with no next step is not
+    // either.
+    mountEngine({ ...RUNNING, modelSettingsInForce: false, modelSettingsError: null });
+    render(<EngineCard showDetails />);
+    await waitFor(() => expect(screen.getByText(NOT_IN_FORCE)).toBeTruthy());
+    expect(screen.getByText('Report bug')).toBeTruthy();
+    expect(screen.getByText('Diagnose with Claude')).toBeTruthy();
+    expect(screen.getByText(/gave no reason we can show you/)).toBeTruthy();
   });
 
   it('T7: says nothing when those settings ARE in force', async () => {
@@ -180,18 +295,41 @@ describe('the engine card', () => {
     expect(screen.queryByText(NOT_IN_FORCE)).toBeNull();
   });
 
-  it('T7: says nothing when nobody has answered the question', async () => {
-    // `undefined` is not `false`. A stopped engine, or a main too old to answer,
-    // must not be reported to the user as "your settings are being ignored".
+  it('T7: says nothing when the engine is not running', async () => {
+    // `undefined` is not `false`.
     mountEngine({ ...RUNNING, state: 'stopped' as const });
     render(<EngineCard showDetails />);
     await waitFor(() => expect(screen.getByText('Advanced')).toBeTruthy());
     expect(screen.queryByText(NOT_IN_FORCE)).toBeNull();
   });
 
+  it('T7: says nothing when the engine IS running but the field is absent', async () => {
+    // The hazard the three-state field was designed around, and the one case
+    // the first version of these tests missed: written as `state === 'running'
+    // && !modelSettingsInForce`, everything else here still passed. A remote or
+    // Android client on an older desktop is exactly this — running, no answer —
+    // and every one of those users would be told their settings are ignored.
+    const { modelSettingsInForce, ...noAnswer } = { ...RUNNING, modelSettingsInForce: true };
+    mountEngine(noAnswer);
+    render(<EngineCard showDetails />);
+    await waitFor(() => expect(screen.getByText('Advanced')).toBeTruthy());
+    expect(screen.queryByText(NOT_IN_FORCE)).toBeNull();
+    expect(screen.queryByText('Diagnose with Claude')).toBeNull();
+  });
+
   it('§B: says a saved setting waits for the reply on screen', async () => {
-    await renderAdvanced({ ...RUNNING, configApplyPending: true });
+    await renderAdvanced({ ...RUNNING, configApplyPending: true, configApplyWaitingForReply: true });
     expect(screen.getByTestId('engine-apply-pending').textContent).toContain('Applies after the current reply.');
+  });
+
+  it('§B: does NOT blame a reply when the machine is idle', async () => {
+    // `configApplyPending` is true from the moment a change is queued, including
+    // a restart on a machine with nothing running — where the change lands a
+    // poll interval later and there is no reply anywhere in sight.
+    await renderAdvanced({ ...RUNNING, configApplyPending: true, configApplyWaitingForReply: false });
+    const line = screen.getByTestId('engine-apply-pending').textContent ?? '';
+    expect(line).toContain('Applying now');
+    expect(line).not.toContain('current reply');
   });
 
   it('§B: says nothing about waiting when nothing is pending', async () => {

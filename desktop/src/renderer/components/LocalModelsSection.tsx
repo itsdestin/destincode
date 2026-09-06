@@ -59,6 +59,12 @@ export function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fi
   // R1-25: when the estimator could not fully read this model's header it
   // returns a CEILING for the context memory, not a reading. Printing a ceiling
   // as an exact figure is fake precision, so the line reads "up to 1.6 GB".
+  //
+  // It hedges the TOTAL too, and that is the more important half: "Memory while
+  // running" is model + context, so a ceiling in one term makes the whole sum a
+  // ceiling — and that is the bigger, bolder number, and the one a user decides
+  // on. Hedging only the small print underneath would state the estimate as a
+  // reading in exactly the place it gets read.
   const upTo = b.contextBytesIsUpperBound ? 'up to ' : '';
   return (
     <span className="text-fg-dim">
@@ -67,7 +73,7 @@ export function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fi
           <dt className="text-fg-muted">Model file</dt><dd className="text-fg text-right">{gb(b.modelBytes)}</dd>
           {vision > 0 && <><dt className="text-fg-muted">Vision file (sees images)</dt><dd className="text-fg text-right">{gb(vision)}</dd></>}
           <dt className="text-fg-muted">Download</dt><dd className="text-fg text-right font-medium">{gb(download)}</dd>
-          <dt className="text-fg-muted pt-1">Memory while running</dt><dd className="text-fg text-right pt-1">{gb(download + b.contextBytes)}</dd>
+          <dt className="text-fg-muted pt-1">Memory while running</dt><dd className="text-fg text-right pt-1">{upTo}{gb(download + b.contextBytes)}</dd>
           <dt className="text-fg-faint col-span-2">includes {upTo}{gb(b.contextBytes)} for a {ctxK}k context</dt>
           {/* R8: the ONE thing the user can do about a tight or too-large
               verdict, in the estimator's words — the renderer never composes
@@ -922,23 +928,59 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
   const [ctxDraft, setCtxDraft] = useState('');
   const [flagsDraft, setFlagsDraft] = useState('');
   const [advanced, setAdvanced] = useState(false);
+  // True only while a save is in flight, so the poll below cannot overwrite a
+  // value the user has just changed with the one main had a moment ago.
+  const savingRef = useRef(false);
 
   useEffect(() => {
     let alive = true;
     // Mounted only while open (the row gates it), so this fetch happens on demand —
     // an older bridge without the channel shows the error line instead of throwing.
     const api = window.claude.models as { settings?: (id: string) => Promise<StoredModelSettings> };
-    if (typeof api.settings !== 'function') { setError('This version cannot read per-model settings.'); return; }
-    api.settings(modelId)
-      .then((st) => { if (alive) { setSettings(st); setCtxDraft(st.contextLength == null ? '' : String(st.contextLength)); setFlagsDraft(st.extraFlags); } })
-      .catch((e) => { if (alive) setError(e instanceof Error ? e.message : 'Could not read this model\u2019s settings.'); });
-    return () => { alive = false; };
+    const fetchSettings = api.settings;
+    if (typeof fetchSettings !== 'function') { setError('This version cannot read per-model settings.'); return; }
+    let first = true;
+    const read = () => {
+      if (savingRef.current) return;
+      fetchSettings(modelId)
+        .then((st) => {
+          if (!alive) return;
+          setSettings(st);
+          // The two text drafts are seeded ONCE. Re-seeding them on every poll
+          // would wipe whatever the user is halfway through typing.
+          if (first) {
+            first = false;
+            setCtxDraft(st.contextLength == null ? '' : String(st.contextLength));
+            setFlagsDraft(st.extraFlags);
+            // Open Advanced when this model failed to load: the box that most
+            // often causes it (extra engine flags) is inside Advanced, and a
+            // user told "it did not load" should not have to go hunting. The
+            // card above deliberately does NOT name the flags as the cause —
+            // an unreadable file and a machine out of memory arrive in exactly
+            // the same field.
+            if (st.lastLoadError) setAdvanced(true);
+          }
+        })
+        .catch((e) => { if (alive && first) setError(e instanceof Error ? e.message : 'Could not read this model\u2019s settings.'); });
+    };
+    read();
+    // WHY this polls at all: there is no push channel for per-model settings.
+    // Both of the things main maintains here change WITHOUT the user doing
+    // anything — a pending save lands the moment the model goes quiet, and a
+    // load failure arrives whenever the model is next asked for. Fetched once,
+    // the dialog would sit there saying "Applies after the current reply" for
+    // as long as it is open, and the user would close it, reopen it and
+    // conclude the setting never stuck.
+    const timer = setInterval(read, 2000);
+    return () => { alive = false; clearInterval(timer); };
   }, [modelId]);
 
   const save = async (patch: Partial<ModelSettings>) => {
     setError(null);
+    savingRef.current = true;
     try { setSettings(await window.claude.models.setSettings(modelId, patch)); }
     catch (e) { setError(e instanceof Error ? e.message : 'Could not save.'); }
+    finally { savingRef.current = false; }
   };
 
   const commitContext = () => {
@@ -969,8 +1011,13 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
           that box is behind Advanced, and a message nobody opens is a message
           nobody reads. Absent entirely when the model loaded fine. */}
       {settings.lastLoadError && (
-        <Callout tone="danger" title="This model did not load">
-          <p className="text-2xs">{settings.lastLoadError}</p>
+        // "last time", not "did not load": main clears this only when the model
+        // loads successfully, so it legitimately outlives the problem — a user
+        // who fixed the flag an hour ago should not read a card that says the
+        // model is broken right now. `break-words` because engine errors carry
+        // long unbroken file paths that CSS will not break on its own.
+        <Callout tone="danger" title="This model failed to load last time">
+          <p className="text-2xs break-words">{settings.lastLoadError}</p>
         </Callout>
       )}
       <SettingRow

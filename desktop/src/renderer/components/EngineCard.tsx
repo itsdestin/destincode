@@ -14,7 +14,8 @@
 // down; never a leading "›" text toggle, which Destin rejected in round 1).
 // Advanced holds the two speed switches, the context length and the folder.
 import { useEffect, useState } from 'react';
-import { AnchorTip, Button, Callout, FieldError, SettingRow, TextInput, Toggle } from './ui';
+import { AnchorTip, Button, Callout, ErrorState, FieldError, SettingRow, TextInput, Toggle } from './ui';
+import { BugReportPopup } from './development/BugReportPopup';
 import type { BackendOption, EnginePrereqs, EngineSpeedSettings } from '../../shared/engine-types';
 
 interface EngineStatusView {
@@ -33,14 +34,18 @@ interface EngineStatusView {
   lastReply?: { promptPerSecond?: number; generatePerSecond?: number } | null;
   backendOptions?: BackendOption[];
   speed?: EngineSpeedSettings;
-  /** A saved engine setting has not reached the engine yet, because a reply is
-   *  still streaming (design §B). */
+  /** A saved engine setting has not reached the engine yet (design §B). */
   configApplyPending?: boolean;
+  /** …and a reply really is what it is waiting for, rather than an idle moment
+   *  a poll interval away. */
+  configApplyWaitingForReply?: boolean;
   /** The real failure text if applying a saved setting went wrong. */
   configApplyError?: string | null;
   /** False when the running engine started WITHOUT its per-model settings file.
    *  `undefined` = the question does not apply (not running / older main). */
   modelSettingsInForce?: boolean;
+  /** Why, in the OS's or the engine's own words. Null = no legible reason. */
+  modelSettingsError?: string | null;
 }
 
 type Progress =
@@ -109,6 +114,9 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
   // inside an expanded Callout. A message the user has to scroll to find is a
   // message they do not read.
   const [terminalError, setTerminalError] = useState<string | null>(null);
+  // Opened by both actions of the no-cause error shape below — the same wiring
+  // every other <ErrorState mode="general"> in the app uses.
+  const [showBugReport, setShowBugReport] = useState(false);
 
   // Shared runner for install/restart/setContext/setBackend: sets busy,
   // surfaces any thrown error, and clears the transient progress line when the
@@ -326,14 +334,43 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
           flags were being ignored saw a perfectly normal running engine.
           Strictly `=== false`: `undefined` means nobody has an answer (the
           engine is not running, or an older main never sent one), and that must
-          not read as "off". No button, because there is nothing to press —
-          the engine writes the file again by itself at its next start. */}
+          not read as "off". A remote or Android client talking to an older
+          desktop is exactly that case, and telling all of those users their
+          settings are ignored would be a claim about a run we never saw.
+
+          TWO SHAPES, per docs/error-message-standards.md. When whatever refused
+          the file said why — the OS's write error, or the engine's own startup
+          sentence — that reason is quoted verbatim and there is nothing to press,
+          because the engine writes the file again by itself at its next start.
+          When nothing legible came back we do NOT invent a cause: the message
+          stays non-committal and carries the standard's two actions instead. */}
       {status.modelSettingsInForce === false && (
-        <Callout tone="warning" className="mt-2" title="Each model&rsquo;s own settings are off right now">
-          The engine could not use the file that holds them, so every model is running on the
-          engine&rsquo;s own settings. It tries again the next time the engine starts.
-        </Callout>
+        status.modelSettingsError
+          ? (
+            <Callout tone="warning" className="mt-2" title="Each model&rsquo;s own settings are off right now">
+              <p>
+                Every model is running on the engine&rsquo;s own settings. It tries again the
+                next time the engine starts.
+              </p>
+              {/* The real words, kept apart from our sentence so it is obvious
+                  which half is the machine talking. `break-words` because engine
+                  errors carry long unbroken file paths that CSS will not break
+                  on its own, and an overflowing path hides the rest. */}
+              <p className="mt-1.5 font-mono text-3xs text-fg-dim break-words">{status.modelSettingsError}</p>
+            </Callout>
+          )
+          : (
+            <ErrorState
+              mode="general"
+              className="mt-2"
+              title="Each model&rsquo;s own settings are off right now"
+              explainer="Every model is running on the engine&rsquo;s own settings, and the engine gave no reason we can show you. It tries again the next time the engine starts. Diagnosing will collect the app&rsquo;s logs so Claude can look at what happened."
+              onReportBug={() => setShowBugReport(true)}
+              onDiagnose={() => setShowBugReport(true)}
+            />
+          )
       )}
+      <BugReportPopup open={showBugReport} onClose={() => setShowBugReport(false)} />
 
       {/* Extra controls for the Local Models panel (Plan C). Only shown once the
           engine is installed — nothing to configure before that. */}
@@ -544,10 +581,15 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                   streaming — restarting it mid-answer would kill the reply on
                   screen, so the change is held until the engine is quiet (up to
                   ten minutes). Without this line the user flips a switch and
-                  watches nothing happen, with no way to tell whether it saved. */}
+                  watches nothing happen, with no way to tell whether it saved.
+
+                  TWO SENTENCES, because the flag alone covers two different
+                  waits: on an idle machine the change lands a poll interval
+                  later with no reply anywhere, and telling that user to wait for
+                  a reply would be wrong the majority of the time. */}
               {status.configApplyPending && (
                 <p className="text-3xs text-fg-muted" data-testid="engine-apply-pending">
-                  Applies after the current reply.
+                  {status.configApplyWaitingForReply ? 'Applies after the current reply.' : 'Applying now…'}
                 </p>
               )}
               {/* The REAL failure, in main's words. This one has nowhere else to

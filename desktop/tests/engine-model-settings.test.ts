@@ -576,6 +576,33 @@ describe('each model\'s bound is its OWN, and a fallback boot applies nothing (Â
     expect(mgr!.status().modelSettingsInForce).toBe(false);
   });
 
+  it('T23: the status carries the ENGINE\'S OWN reason, not just the bad news', async () => {
+    // `engine-supervisor.ts` used to drop this in a bare `catch {}` / an
+    // unexamined startup output, which left the card able to say only that
+    // something had gone wrong â€” the exact shape
+    // docs/error-message-standards.md exists to stop.
+    await bootWithoutPreset();
+    expect(mgr!.status().modelSettingsError).toBe('failed to parse server config file: models.ini');
+  });
+
+  it('T23: a preset the app could not WRITE carries the OS\'s own error to the card', async () => {
+    // The other route to a settings-less run, and the one design Â§J names: this
+    // failure used to land in a bare `catch {}`, so the reason a user's
+    // per-model settings were being ignored was destroyed at the moment it was
+    // known.
+    plantInstall();
+    await plantConfig();
+    mgr = makeManager(makeFetch(), {
+      supervisorOpts: {
+        pidOnPort: () => 4242, readyDeadlineMs: 2_000, readyPollMs: 5,
+        writePresetImpl: () => { throw new Error("EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'"); },
+      },
+    });
+    await mgr.registryHook().ensureRunning();
+    expect(mgr.status().modelSettingsInForce).toBe(false);
+    expect(mgr.status().modelSettingsError).toBe("EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'");
+  });
+
   it('T23: a normal boot reports them in force, and a stopped engine reports NOTHING', async () => {
     plantInstall();
     await plantConfig();
@@ -586,6 +613,7 @@ describe('each model\'s bound is its OWN, and a fallback boot applies nothing (Â
     expect(mgr.status().modelSettingsInForce).toBeUndefined();
     await mgr.registryHook().ensureRunning();
     expect(mgr.status().modelSettingsInForce).toBe(true);
+    expect(mgr.status().modelSettingsError).toBeNull();
   });
 
   it('a fallback boot does NOT clear a pending change â€” nothing was read to put it in force', async () => {

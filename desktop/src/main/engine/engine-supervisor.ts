@@ -164,6 +164,34 @@ export function presetErrorLine(engineOutput: string): string {
   return line.replace(/^[\d.]+\s+[A-Z]\s+\S+\s+[^:]*:\s*/, '');
 }
 
+/** The engine's own sentence for ANY of the four preset failures below, prefix
+ *  stripped the same way.
+ *
+ *  WHY this exists beside `presetErrorLine`: that one only matches the "option
+ *  'x' not recognized in preset 'y'" shape, because it answers "WHICH MODEL do
+ *  we drop?". This one answers a different question — "what do we TELL the user
+ *  about a run that started without their settings?" — and a file the grammar
+ *  rejected outright names no model at all, so the narrow matcher returns an
+ *  empty string for exactly the case the card most needs words for. Empty when
+ *  the output says nothing we recognise; the card then falls back to the
+ *  no-cause shape rather than inventing one. */
+export function presetStartupLine(engineOutput: string): string {
+  const line = engineOutput.split(/\r?\n/).reverse()
+    .map((l) => l.trim())
+    .find((l) => PRESET_FAILURE_PATTERNS.some((re) => re.test(l))) ?? '';
+  return line.replace(/^[\d.]+\s+[A-Z]\s+\S+\s+[^:]*:\s*/, '');
+}
+
+/** The four shapes, in one place so `isPresetStartupFailure` and
+ *  `presetStartupLine` can never drift apart — a sentence one recognised and the
+ *  other did not would produce a fallback boot with nothing to say about it. */
+const PRESET_FAILURE_PATTERNS = [
+  /not recognized in preset '/,
+  /failed to parse server config file/i,
+  /preset file does not exist/i,
+  /failed to initialize router models/i,
+];
+
 /** Did the engine die because of the PRESET FILE (as opposed to a bad driver, a
  *  busy port, a broken build)? Four sentences, all the engine's own words:
  *    - `option 'x' not recognized in preset 'y'`  — a key it does not know
@@ -185,10 +213,7 @@ export function presetErrorLine(engineOutput: string): string {
  *  reason that is NOT the preset. That is the right trade: the wasted spawn
  *  costs a second, and the case it buys is an engine that never starts again. */
 export function isPresetStartupFailure(engineOutput: string): boolean {
-  return /not recognized in preset '/.test(engineOutput)
-    || /failed to parse server config file/i.test(engineOutput)
-    || /preset file does not exist/i.test(engineOutput)
-    || /failed to initialize router models/i.test(engineOutput);
+  return PRESET_FAILURE_PATTERNS.some((re) => re.test(engineOutput));
 }
 
 /** Linux `ss -ltnp` → PID of the process listening on `port`. Port match is exact
@@ -322,6 +347,14 @@ export class EngineSupervisor extends EventEmitter {
    *  are not doing anything. */
   private presetActive = false;
 
+  /** WHY a run has no per-model settings, in the words of whatever refused them
+   *  — the OS error from writing the file, or the engine's own startup sentence.
+   *  Null when they ARE in force, and null when nothing legible was available
+   *  (the card then says so without a cause rather than inventing one). Before
+   *  this existed the reason was dropped in a bare `catch {}` and the user was
+   *  told only that something had gone wrong. */
+  private presetProblemText: string | null = null;
+
   constructor(private readonly opts: EngineSupervisorOpts) { super(); }
 
   /** Config as it is on disk RIGHT NOW. Never cached: the whole point of
@@ -333,6 +366,10 @@ export class EngineSupervisor extends EventEmitter {
 
   /** True when the running engine is honouring `models.ini`. */
   presetInForce(): boolean { return this.presetActive; }
+
+  /** Why it is not, in the OS's or the engine's own words; null when it is, or
+   *  when nothing legible was available. */
+  presetProblem(): string | null { return this.presetProblemText; }
 
   /** How many requests naming `modelId` are in flight right now. This — not the
    *  engine-wide inFlight, and not the session ref-count — is what says a model
@@ -434,10 +471,17 @@ export class EngineSupervisor extends EventEmitter {
         } catch {
           // A second bad section (or anything else the preset does to this boot).
           // Drop the file entirely rather than leave the user with no engine.
+          // The engine's own words survive into the card: the retry above ran
+          // preparePreset successfully, which cleared them, so they are set here
+          // AFTER that and immediately before the run that has no settings.
+          this.presetProblemText = presetStartupLine(this.lastStartupOutput) || null;
           return this.attemptStart({ withoutPreset: true });
         }
       }
-      if (isPresetStartupFailure(output)) return this.attemptStart({ withoutPreset: true });
+      if (isPresetStartupFailure(output)) {
+        this.presetProblemText = presetStartupLine(output) || null;
+        return this.attemptStart({ withoutPreset: true });
+      }
       throw err;
     }
   }
@@ -642,19 +686,29 @@ export class EngineSupervisor extends EventEmitter {
       // have rewritten the file between our rename and this read, and its copy
       // is just as valid as ours. What must be true is that a readable, non-empty
       // file is there for the engine to open.
-      if (!read(filePath).trim()) return null;
+      if (!read(filePath).trim()) {
+        // A fact, not a guess: we wrote the file and read back nothing. (The
+        // other instance sharing ~/.youcoded may have truncated it.)
+        this.presetProblemText = `The settings file at ${filePath} was empty when the app read it back.`;
+        return null;
+      }
       // Which models really got a section — read off the file we just rendered
       // rather than recomputed, so the retry can only ever drop a section that
       // actually exists.
       this.presetSections = new Set(
         [...contents.matchAll(/^\[(.+)\]$/gm)].map((m) => m[1]).filter((id) => id !== '*')
       );
+      this.presetProblemText = null;
       return filePath;
-    } catch {
+    } catch (err: any) {
       // Any I/O failure (permissions, a full disk, the path taken by a
       // directory) lands here. Not surfaced as an error: the engine still
-      // starts, just without per-model settings.
+      // starts, just without per-model settings. The OS's own message is KEPT
+      // — this used to be a bare `catch {}`, which left the card able to say
+      // only that something had gone wrong, and the standard in
+      // docs/error-message-standards.md exists because of exactly that.
       this.presetSections = new Set();
+      this.presetProblemText = err?.message ? String(err.message) : null;
       return null;
     }
   }

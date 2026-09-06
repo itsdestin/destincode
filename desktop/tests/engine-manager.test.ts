@@ -600,11 +600,40 @@ describe('EngineManager — the last reply\'s speed', () => {
     // is not wired into status() at all (measured: that mutation stayed green).
     plantInstall();
     const mgr = new EngineManager(home, userData, 9999);
-    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, loadedModelsBytes: () => 9_527_502_048 };
+    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, presetProblem: () => null, loadedModelsBytes: () => 9_527_502_048 };
     expect(mgr.status().loadedModelsBytes).toBe(9_527_502_048);
     // And a supervisor that has not been asked yet passes its absence through.
-    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, loadedModelsBytes: () => undefined };
+    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, presetProblem: () => null, loadedModelsBytes: () => undefined };
     expect(mgr.status().loadedModelsBytes).toBeUndefined();
+  });
+
+  it('T23: reports per-model settings for a RUNNING engine only, never a starting one', () => {
+    // A supervisor that is still coming up has not written its preset yet, so
+    // `presetInForce()` is false — the value left over from the PREVIOUS run.
+    // Reported during 'starting', the card would show a stale answer, and the
+    // one moment the user is most likely to be looking at it is a restart.
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999);
+    (mgr as any).supervisor = { status: () => 'starting', presetInForce: () => false, presetProblem: () => null, loadedModelsBytes: () => undefined };
+    expect(mgr.status().modelSettingsInForce).toBeUndefined();
+    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => false, presetProblem: () => null, loadedModelsBytes: () => undefined };
+    expect(mgr.status().modelSettingsInForce).toBe(false);
+  });
+
+  it('T23: "waiting for a reply" means the ENGINE IS BUSY, not merely that a change is queued', () => {
+    // `configApplyPending` goes true the moment a change is queued, including a
+    // restart on a machine with nothing running at all — where it lands a poll
+    // interval later. Read as "a reply is holding this up", the card would tell
+    // most users to wait for a reply nobody is reading.
+    plantInstall();
+    const mgr = new EngineManager(home, userData, 9999);
+    const sup: any = { status: () => 'running', presetInForce: () => true, presetProblem: () => null, loadedModelsBytes: () => undefined, busy: () => false };
+    (mgr as any).supervisor = sup;
+    (mgr as any).applyWaiter = Promise.resolve();
+    expect(mgr.status().configApplyPending).toBe(true);
+    expect(mgr.status().configApplyWaitingForReply).toBe(false);
+    sup.busy = () => true;
+    expect(mgr.status().configApplyWaitingForReply).toBe(true);
   });
 
   it('recordReply stores the exact rates and pushes status-changed', () => {
@@ -903,7 +932,7 @@ describe('EngineManager.setBackend — the device check, the real load, and what
     plantInstall('vulkan');
     const mgr = new EngineManager(home, userData, 9999);
     const stop = vi.fn(async () => {});
-    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, stop };
+    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, presetProblem: () => null, stop };
     (mgr as any).supervisorBinary = path.join(userData, 'engine', `${ENGINE_VERSION}-vulkan`, 'llama-server.exe');
     stubDownload(mgr, { devices: SOFTWARE_ONLY });
     stubBoots(mgr);
@@ -922,7 +951,7 @@ describe('EngineManager.setBackend — the device check, the real load, and what
     // boot then fails, that binary is about to be deleted underneath it.
     vi.spyOn(mgr as unknown as { verifyBoot: () => Promise<void> }, 'verifyBoot')
       .mockImplementation(async () => {
-        (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, stop };
+        (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, presetProblem: () => null, stop };
         (mgr as any).supervisorBinary = path.join(ROCM_DIR(), 'llama-server');
         throw new Error('port busy');
       });
