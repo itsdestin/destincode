@@ -19,6 +19,8 @@ import { readEngineConfig, updateEngineConfig, updateEngineSpeed, removeModelSet
 import { presetFilePath, renderPresetFile, writePresetFile } from './model-presets';
 import { contextLengthFor } from '../models/fit-estimator';
 import { readManifest, removeManifest, markManifestComplete, isManifestComplete } from '../models/download-manifest';
+import { ManifestBackfill, defaultBackfillLookups } from '../models/manifest-backfill';
+import type { BackfillCandidate, BackfillLookups } from '../models/manifest-backfill';
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
 import { stripSplitSuffix } from '../../shared/gguf-split';
@@ -339,10 +341,11 @@ export class EngineManager extends EventEmitter {
 
   constructor(
     private home: NativeHome,
-    // WHY: `userDataDir` is a plain constructor param, not a private property —
-    // it's used once to seed EngineAcquisition and never read again. The
-    // `private` modifier was storing a dead reference on every instance.
-    userDataDir: string,
+    // Kept on the instance since §E3: the manifest backfill's curated-list
+    // cache lives beside the app's other caches in here, and it is built
+    // lazily — the first time a model on disk turns out to have no manifest.
+    // (It used to be a plain param on purpose, to avoid a dead reference.)
+    private userDataDir: string,
     private port: number,
     /** Test seams (spec §5: mocked subprocess + fetch). `probeChip` stands in
      *  for the graphics-chip probe so a test can drive its FAILURE path — the
@@ -358,6 +361,10 @@ export class EngineManager extends EventEmitter {
        *  minutes proving that the bound exists. */
       configApplyPollMs?: number;
       configApplyMaxWaitMs?: number;
+      /** Test seam: where §E3's backfill gets its curated list and its Hugging
+       *  Face answers. The default reaches the real network, which is why every
+       *  suite that plants a complete model on disk has to replace it. */
+      backfillLookups?: BackfillLookups;
     } = {}
   ) {
     super();
@@ -370,6 +377,27 @@ export class EngineManager extends EventEmitter {
     this.acquisition = new EngineAcquisition(
       path.join(userDataDir, 'engine'), opts.fetchImpl, () => this.emit('status-changed'),
     );
+  }
+
+  /** §E3's backfill, built the first time a model on disk is found to have no
+   *  manifest. Lazy on purpose: an app whose every download already carries one
+   *  — which is every app from here on — never constructs it, never reads the
+   *  curated cache, and never opens a socket. */
+  private backfill: ManifestBackfill | null = null;
+
+  private manifestBackfill(): ManifestBackfill {
+    if (!this.backfill) {
+      this.backfill = new ManifestBackfill(
+        this.opts.backfillLookups ?? defaultBackfillLookups(this.userDataDir, this.opts.fetchImpl),
+      );
+    }
+    return this.backfill;
+  }
+
+  /** Settles when the backfill pass in flight is over. For the tests, which
+   *  must not tear their fixture down under a lookup that is still running. */
+  backfillIdle(): Promise<void> {
+    return this.backfill?.whenIdle() ?? Promise.resolve();
   }
 
   /** The usable install, resolved with the CONFIGURED backend preference so a
@@ -1312,6 +1340,10 @@ export class EngineManager extends EventEmitter {
   async installedModels(): Promise<InstalledLocalModel[]> {
     const cacheDir = readEngineConfig(this.home).cacheDir;
     const rows: InstalledLocalModel[] = [];
+    // §E3: complete downloads with no manifest at all — everything installed
+    // before this feature existed. Collected here and handed to the backfill
+    // once, at the end; nothing in this function waits on it.
+    const backfillable: BackfillCandidate[] = [];
     for (const d of scanLocalDownloads(cacheDir)) {
       const complete = isComplete(d);
       // A vision model's files AND its manifest live in the model's own folder
@@ -1341,6 +1373,14 @@ export class EngineManager extends EventEmitter {
           // the `vision: 'available'` state, not an interrupted download.
           try { markManifestComplete(dir, d.firstFileName, Date.now()); } catch { /* best-effort */ }
         }
+      } else if (complete) {
+        // A finished model with NO record of where it came from — a download
+        // made before manifests existed. Without one the app can never tell
+        // whether this model's publisher ships a vision file, so it could never
+        // show the eye or offer "Add vision". §E3 looks that up once.
+        backfillable.push({
+          dir, firstFileName: d.firstFileName, parts: d.partsDeclared, bytesPublished: d.bytesPublished,
+        });
       }
       // The row's "unfinished" facts come only from a manifest that is still
       // in flight; a stamped one describes a download that already landed.
@@ -1400,6 +1440,10 @@ export class EngineManager extends EventEmitter {
         visionBytes: d.hasProjector ? d.visionBytes : manifest?.visionFile?.size ?? null,
       });
     }
+    // Fire-and-forget, and only when there is something to look up: kick()
+    // defers everything to a later tick and returns, so this list is never held
+    // up by Hugging Face. The answers appear the next time the screen opens.
+    if (backfillable.length > 0) this.manifestBackfill().kick(backfillable);
     return rows;
   }
 

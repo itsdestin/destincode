@@ -90,6 +90,32 @@ export function writeManifest(dir: string, repo: string, quant: QuantOption, sta
   writeAtomic(manifestPathFor(dir, firstFileBasename), manifest);
 }
 
+/** §E3's backfill writer: the record for a download that finished LONG AGO,
+ *  before manifests existed. Everything about it is already decided by the
+ *  caller (manifest-backfill.ts), which is the only thing that may write a
+ *  `repo: null` manifest, so this is deliberately a plain write.
+ *
+ *  It REFUSES to overwrite. The lookup behind a backfill runs for as long as
+ *  Hugging Face takes to answer, and the user can start a fresh download of the
+ *  same filename in that time — which writes its own, unstamped, manifest. That
+ *  one was written by a real download and this one is an inference from a
+ *  filename, so the real one wins; overwriting it would stamp a `completedAt`
+ *  onto a download still in flight and take away its Resume. Returns whether
+ *  anything was written.
+ *
+ *  The existence check and the write are two operations, so this narrows the
+ *  window from minutes to microseconds rather than closing it. Widening that to
+ *  a real exclusive create (`wx`) would also have to handle the pre-existing
+ *  atomic-rename path; nothing has been seen to hit it. */
+export function writeBackfillManifest(
+  dir: string, firstFileBasename: string, manifest: DownloadManifest
+): boolean {
+  const target = manifestPathFor(dir, firstFileBasename);
+  if (fs.existsSync(target)) return false;
+  writeAtomic(target, manifest);
+  return true;
+}
+
 /** Stamp a manifest as finished — the download's LAST step, in place of the
  *  delete it used to do (see the header). A missing or unreadable manifest is a
  *  no-op: there is nothing to stamp, and completion must not fail over it.
