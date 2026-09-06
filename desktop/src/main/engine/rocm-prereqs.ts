@@ -200,8 +200,8 @@ export function computeRocmPrereqs(env: RocmPrereqEnv, backend: EngineBackend = 
     // it either way. No cause is guessed: we say what the software is and
     // whether we found it, never why it might be missing.
     explainer: satisfied
-      ? 'The faster ROCm engine loads AMD’s ROCm libraries from this computer, and they are already installed.'
-      : 'The faster ROCm engine loads AMD’s ROCm libraries from this computer, and they are not installed yet.',
+      ? 'The ROCm engine loads AMD’s ROCm libraries from this computer, and they are already installed.'
+      : 'The ROCm engine loads AMD’s ROCm libraries from this computer, and they are not installed yet.',
   };
 }
 

@@ -219,8 +219,25 @@ describe('backendOptions — every gate', () => {
   it('AMD gfx1151 on Linux x64 with the libraries → ROCm, ready', () => {
     // This machine.
     const opts = backendOptions({ ...base, platform: 'linux', arch: 'x64', vendor: 'amd', gfxTarget: 'gfx1151' });
-    expect(opts).toEqual([{ backend: 'rocm', label: 'Switch to ROCm (faster on AMD)', state: 'ready' }]);
+    expect(opts).toEqual([{ backend: 'rocm', label: 'Try ROCm (AMD) — reads faster, writes slower', state: 'ready' }]);
   });
+  // 2026-09-05, measured on this machine (engine b10665, AMD Strix Halo /
+  // Radeon 8060S, Qwen3.5-9B Q8 and Qwen3.8-27B Q8, 200 forced tokens,
+  // non-repeating prompt, speculation off): ROCm read the prompt ~20% FASTER
+  // and wrote the reply 24–46% SLOWER than Vulkan. The old label said "faster
+  // on AMD" — an unmeasured claim, and false for the half a user sits and
+  // watches. This pins the retraction: restoring the promise fails here, so a
+  // future edit has to confront the numbers first. Table and method:
+  // docs/engine-dependencies.md → "ROCm vs Vulkan, measured".
+  it('never sells ROCm as simply faster — its label names the trade', () => {
+    const opts = backendOptions({ ...base, platform: 'linux', arch: 'x64', vendor: 'amd', gfxTarget: 'gfx1151' });
+    expect(opts[0].label).not.toMatch(/faster on amd/i);
+    expect(opts[0].label).toMatch(/slower/i);
+    // …and CUDA is untouched: nothing here says NVIDIA's build is a trade too.
+    const cuda = backendOptions({ ...base, platform: 'win32', arch: 'x64', vendor: 'nvidia', gfxTarget: null });
+    expect(cuda[0].label).toMatch(/faster on NVIDIA/i);
+  });
+
   it('the same chip WITHOUT the libraries → ROCm, needs-prereqs', () => {
     const opts = backendOptions({
       ...base, rocmPrereqsSatisfied: false, platform: 'linux', arch: 'x64', vendor: 'amd', gfxTarget: 'gfx1151',
@@ -242,7 +259,7 @@ describe('backendOptions — every gate', () => {
     expect(pickAsset('win32', 'x64', 'rocm')?.gfxTargets).not.toContain('gfx942');
     // Windows publishes no gfx target to read, so it offers on vendor alone.
     const opts = backendOptions({ ...base, platform: 'win32', arch: 'x64', vendor: 'amd', gfxTarget: null });
-    expect(opts).toEqual([{ backend: 'rocm', label: 'Switch to ROCm (faster on AMD)', state: 'ready' }]);
+    expect(opts).toEqual([{ backend: 'rocm', label: 'Try ROCm (AMD) — reads faster, writes slower', state: 'ready' }]);
   });
   it('an AMD chip the pin does not list at all → nothing offered', () => {
     // gfx803 (Polaris) is not in either row.

@@ -373,10 +373,18 @@ export async function detectGpu(): Promise<GpuInfo> {
 // ---------- which faster engine build may this machine be offered? (§A3) ----------
 
 /** Plain-language labels. `EngineCard` writes its own row text today, but the
- *  option carries one so a remote or Android surface has something to render. */
+ *  option carries one so a remote or Android surface has something to render.
+ *
+ *  WHY ROCm no longer says "faster on AMD": that was never measured, and when it
+ *  finally was (2026-09-05, engine b10665, AMD Strix Halo / Radeon 8060S, two
+ *  models, 200 forced tokens, speculation off) ROCm read the prompt ~20% faster
+ *  and WROTE the reply 24–46% SLOWER than the Vulkan build it replaces. Writing
+ *  is the half a user sits and watches, so "faster" was false for the part that
+ *  matters. The label now names the trade instead of promising a win. Numbers
+ *  and method: docs/engine-dependencies.md → "ROCm vs Vulkan, measured". */
 const BACKEND_LABELS: Partial<Record<EngineBackend, string>> = {
   cuda: 'Switch to CUDA (faster on NVIDIA)',
-  rocm: 'Switch to ROCm (faster on AMD)',
+  rocm: 'Try ROCm (AMD) — reads faster, writes slower',
 };
 
 export interface BackendOptionInput {

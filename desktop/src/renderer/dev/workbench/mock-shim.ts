@@ -1046,7 +1046,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     deviceName: 'AMD Radeon 8060S Graphics',
     loadedModelsBytes: activeScenario === 'stress' ? 9_527_502_048 : 0,
     lastReply: activeScenario === 'stress' ? { promptPerSecond: 383, generatePerSecond: 16.4 } : null,
-    backendOptions: currentBackend === 'rocm' ? [] : [{ backend: 'rocm' as const, label: 'Switch to ROCm (faster on AMD)', state: 'needs-prereqs' as const }],
+    backendOptions: currentBackend === 'rocm' ? [] : [{ backend: 'rocm' as const, label: 'Try ROCm (AMD) \u2014 reads faster, writes slower', state: 'needs-prereqs' as const }],
     speed: { ...speed },
     configApplyPending,
     // `stress` is the scenario with a model loaded and a reply just measured, so
@@ -1087,7 +1087,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         backend: backend as 'rocm', satisfied: prereqChecks > 1, distro: 'Arch Linux',
         command: 'sudo pacman -S --needed rocm-hip-runtime hipblas rocblas',
         docsUrl: 'https://rocm.docs.amd.com/projects/install-on-linux/en/latest/',
-        explainer: 'The faster ROCm engine loads AMD\u2019s ROCm libraries from this computer, and they are not installed yet.',
+        explainer: 'The ROCm engine loads AMD\u2019s ROCm libraries from this computer, and they are not installed yet.',
       };
     },
     // The workbench has no main process and so no PTY — hand back a fixture id

@@ -155,7 +155,7 @@ describe('EngineCard — what a rejected switch actually reads like', () => {
   it('strips the IPC wrapper off a refused switch, leaving the sentence alone', async () => {
     const status = {
       ...installed('b10665', 'b10665'),
-      backendOptions: [{ backend: 'rocm', label: 'Switch to ROCm (faster on AMD)', state: 'ready' }],
+      backendOptions: [{ backend: 'rocm', label: 'Try ROCm (AMD) — reads faster, writes slower', state: 'ready' }],
     };
     (globalThis as any).window.claude = {
       engine: {
@@ -173,6 +173,10 @@ describe('EngineCard — what a rejected switch actually reads like', () => {
     };
     const { getByText, queryByText } = render(<EngineCard showDetails />);
     await flush();
+    // ROCm is an OPTIONAL build as of 2026-09-06 and sits inside Advanced, which
+    // is shut by default — so the row has to be opened before it can be clicked.
+    await waitFor(() => expect(getByText('Advanced')).toBeTruthy());
+    await act(async () => { fireEvent.click(getByText('Advanced')); });
     await waitFor(() => expect(getByText('Switch')).toBeTruthy());
     await act(async () => { fireEvent.click(getByText('Switch')); });
     await waitFor(() => expect(getByText(REFUSAL)).toBeTruthy());

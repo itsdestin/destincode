@@ -633,3 +633,53 @@ describe('the engine card', () => {
     expect(screen.queryByLabelText('Compress context memory')).toBeNull();
   });
 });
+
+// T25 (2026-09-06). ROCm shipped as "Switch to ROCm (faster on AMD)", pushed at
+// every AMD machine from the card body. Measuring it (engine b10665, AMD Strix
+// Halo / Radeon 8060S, Qwen3.5-9B Q8 + Qwen3.8-27B Q8, 200 forced tokens,
+// non-repeating prompt, speculation off) found it read prompts ~20% faster and
+// WROTE replies 24–46% slower than the Vulkan build it replaces — so most of
+// the people it was sold to would have got a slower assistant. Destin's call:
+// keep it, hide it as a power-user option, do not recommend it as CUDA is.
+//
+// These are a PAIR on purpose. Demoting the row without rewriting its words
+// would still promise a speed-up in a quieter place; rewording it without
+// moving it would still push it at everyone.
+describe('T25: which engine builds the card pushes, and which it merely offers', () => {
+  afterEach(() => { cleanup(); });
+
+  const ROCM = { backend: 'rocm', label: 'Try ROCm (AMD) — reads faster, writes slower', state: 'ready' as const };
+  const CUDA = { backend: 'cuda', label: 'Switch to CUDA (faster on NVIDIA)', state: 'ready' as const };
+
+  it('ROCm is not in the card body at all — it is inside Advanced, which is shut', async () => {
+    mountEngine({ ...RUNNING, backendOptions: [ROCM] });
+    render(<EngineCard showDetails />);
+    await waitFor(() => expect(screen.getByText('Advanced')).toBeTruthy());
+    expect(screen.queryByText(/Optional engine for your AMD chip/)).toBeNull();
+    // Not merely invisible: the whole Advanced section is unrendered.
+    expect(screen.queryByTestId('engine-advanced')).toBeNull();
+
+    await act(async () => { fireEvent.click(screen.getByText('Advanced')); });
+    const row = await screen.findByText(/Optional engine for your AMD chip/);
+    expect(screen.getByTestId('engine-advanced').contains(row)).toBe(true);
+  });
+
+  it('and its words describe the trade, never a speed-up', async () => {
+    await renderAdvanced({ ...RUNNING, backendOptions: [ROCM] });
+    const words = screen.getByTestId('engine-advanced').textContent ?? '';
+    expect(words).toMatch(/Not recommended/);
+    expect(words).toMatch(/writes its reply more slowly than Vulkan/);
+    // The claim that was measured false, in either of its spellings.
+    expect(words).not.toMatch(/much faster than Vulkan/);
+    expect(words).not.toMatch(/faster on AMD/);
+  });
+
+  it('CUDA keeps the card body and keeps its recommendation', async () => {
+    mountEngine({ ...RUNNING, backendOptions: [CUDA] });
+    render(<EngineCard showDetails />);
+    // Present WITHOUT opening Advanced — this is the prominence ROCm lost.
+    await waitFor(() => expect(screen.getByText(/Faster engine for your NVIDIA chip/)).toBeTruthy());
+    expect(screen.getByText(/CUDA \(NVIDIA\) is usually much faster than Vulkan/)).toBeTruthy();
+    expect(screen.queryByTestId('engine-advanced')).toBeNull();
+  });
+});
