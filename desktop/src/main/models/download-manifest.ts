@@ -95,23 +95,32 @@ export function writeManifest(dir: string, repo: string, quant: QuantOption, sta
  *  caller (manifest-backfill.ts), which is the only thing that may write a
  *  `repo: null` manifest, so this is deliberately a plain write.
  *
- *  It REFUSES to overwrite. The lookup behind a backfill runs for as long as
- *  Hugging Face takes to answer, and the user can start a fresh download of the
- *  same filename in that time — which writes its own, unstamped, manifest. That
- *  one was written by a real download and this one is an inference from a
- *  filename, so the real one wins; overwriting it would stamp a `completedAt`
- *  onto a download still in flight and take away its Resume. Returns whether
- *  anything was written.
+ *  It overwrites EXACTLY ONE thing: an earlier backfill's "could not find it"
+ *  record (`repo: null`, stamped complete), which §E3 re-asks after a while
+ *  because a successful search can still have been wrong. Everything else on
+ *  disk wins, and nothing else may be replaced.
  *
- *  The existence check and the write are two operations, so this narrows the
- *  window from minutes to microseconds rather than closing it. Widening that to
- *  a real exclusive create (`wx`) would also have to handle the pre-existing
+ *  WHY that matters: the lookup behind a backfill runs for as long as Hugging
+ *  Face takes to answer, and the user can start a fresh download of the same
+ *  filename in that time — which writes its own, unstamped manifest. That one
+ *  was written by a real download and this one is an inference from a filename,
+ *  so overwriting it would stamp a `completedAt` onto a download still in
+ *  flight and take away its Resume. Returns whether anything was written.
+ *
+ *  The read and the write are two operations, so this narrows the window from
+ *  minutes to microseconds rather than closing it. Widening that to a real
+ *  exclusive create (`wx`) would also have to handle the pre-existing
  *  atomic-rename path; nothing has been seen to hit it. */
 export function writeBackfillManifest(
   dir: string, firstFileBasename: string, manifest: DownloadManifest
 ): boolean {
   const target = manifestPathFor(dir, firstFileBasename);
-  if (fs.existsSync(target)) return false;
+  if (fs.existsSync(target)) {
+    const prior = readManifest(dir, firstFileBasename);
+    // An UNREADABLE file is not a known miss, so it is left alone: installedModels
+    // sweeps those, and guessing here could destroy a download's only record.
+    if (!prior || prior.repo !== null || prior.completedAt == null) return false;
+  }
   writeAtomic(target, manifest);
   return true;
 }
@@ -184,6 +193,7 @@ export function readManifest(cacheDir: string, firstFileBasename: string): Downl
   // A value of the WRONG SHAPE is corruption rather than an old file, so the
   // rule above (a record nothing can be trusted from answers null) applies.
   if (raw.completedAt !== undefined && typeof raw.completedAt !== 'number') return null;
+  if (raw.repoCheckedAt !== undefined && typeof raw.repoCheckedAt !== 'number') return null;
   if (raw.visionFile !== undefined) {
     const v = raw.visionFile;
     if (typeof v !== 'object' || v === null) return null;

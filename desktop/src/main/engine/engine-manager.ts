@@ -19,7 +19,7 @@ import { readEngineConfig, updateEngineConfig, updateEngineSpeed, removeModelSet
 import { presetFilePath, renderPresetFile, writePresetFile } from './model-presets';
 import { contextLengthFor } from '../models/fit-estimator';
 import { readManifest, removeManifest, markManifestComplete, isManifestComplete } from '../models/download-manifest';
-import { ManifestBackfill, defaultBackfillLookups } from '../models/manifest-backfill';
+import { ManifestBackfill, defaultBackfillLookups, isStaleBackfillMiss } from '../models/manifest-backfill';
 import type { BackfillCandidate, BackfillLookups } from '../models/manifest-backfill';
 import { scanGgufCache, scanLocalDownloads, isComplete } from './cache-scan';
 import { parseGgufName, quantDescription } from '../models/quant-parser';
@@ -1372,6 +1372,19 @@ export class EngineManager extends EventEmitter {
           // deliberately: the weights ARE complete, and a missing projector is
           // the `vision: 'available'` state, not an interrupted download.
           try { markManifestComplete(dir, d.firstFileName, Date.now()); } catch { /* best-effort */ }
+        }
+        // A manifest saying "we looked this model's repo up and found nothing",
+        // old enough to be worth asking again — a search can answer 200 and
+        // still be wrong. Everything else here is settled and never re-asked.
+        // The clock comes from the backfill's own lookups when they are
+        // injected, so a test can drive "a month later" without waiting one.
+        // Everything about this decision has to read the SAME clock the record
+        // was stamped from, or a fake one makes every miss look ancient.
+        const nowForRecheck = this.opts.backfillLookups?.now() ?? Date.now();
+        if (manifest && isStaleBackfillMiss(manifest, nowForRecheck)) {
+          backfillable.push({
+            dir, firstFileName: d.firstFileName, parts: d.partsDeclared, bytesPublished: d.bytesPublished,
+          });
         }
       } else if (complete) {
         // A finished model with NO record of where it came from — a download

@@ -15,19 +15,30 @@
 //     what earns an IP a rate limit.
 //
 // Two rules keep it honest:
-//   - A WRONG REPO IS IMPOSSIBLE. See SIZE_TOLERANCE and `confirm` below for
-//     the whole rule and the measurements behind it. In one line: the repo must
-//     publish this exact quant, under this exact filename, in this exact number
-//     of parts, at all but the same size — and if two repos survive that with
-//     nothing to separate them, no repo is recorded at all (`pickOne`). Several
-//     Hugging Face accounts publish the identical GGUF filename (see
-//     writeManifest's same-publisher note), and a manifest naming the wrong one
-//     would later fetch a projector built for someone else's weights.
-//   - A FAILURE IS NOT A MISS. `repo: null` — the permanent "we looked and
-//     could not find it" record — is written only when every lookup SUCCEEDED
-//     and the answer was genuinely "none of these". A search that is offline,
-//     times out, is rate-limited or 5xxs writes NOTHING, and is tried again the
-//     next time the app starts.
+//   - A WRONG REPO IS IMPOSSIBLE, because identity is decided by the FILE'S
+//     SHA-256 and by nothing else. A repo is written only when it publishes a
+//     file whose hash is the hash of the bytes on this disk, and only when
+//     exactly one repo does. Everything else — filename, part count, size — is
+//     a cheap pre-filter that decides whether the hash is worth computing; none
+//     of it can admit a repo on its own. See `confirm` and `sameFile`.
+//
+//     MEASURED, and the reason this is not size-based: on 2026-09-05,
+//     ggml-org/gemma-4-E2B-it-GGUF and lmstudio-community/gemma-4-E2B-it-GGUF
+//     both publish 'gemma-4-E2B-it-Q8_0.gguf' at the IDENTICAL 4,967,497,152
+//     bytes, with different content (sha 996d0877… vs 1265ad3b…) and different
+//     projectors (986,833,664 vs 986,833,248 bytes). A size-based rule writes
+//     whichever of the two the search happens to list, "Add vision" then fetches
+//     the wrong account's projector, and it VERIFIES against that account's own
+//     hash — so nothing downstream ever notices.
+//   - A FAILURE IS NOT A MISS. `repo: null` — the "we looked and could not find
+//     it" record — is written only when every lookup SUCCEEDED and the answer
+//     was genuinely "none of these". A search that is offline, times out, is
+//     rate-limited or 5xxs writes NOTHING and is tried again on the next app
+//     start. Even a SUCCESSFUL miss is not forever: it is stamped
+//     `repoCheckedAt` and re-asked after RECHECK_AFTER_MS, because a 200 can
+//     still be wrong (an empty list during an incident, or an index that has
+//     not seen a new repo yet).
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import type {
@@ -62,51 +73,63 @@ export interface BackfillLookups {
   now(): number;
 }
 
-// How many of a search's hits are checked. Hugging Face returns them sorted by
-// downloads, and the account that actually published a given GGUF filename is
-// at the top of a search for that model's own name — so the cap costs almost
-// nothing in hit rate and bounds the background traffic at five listings per
-// model, once ever.
-const MAX_SEARCH_CANDIDATES = 5;
-
-// How far a repo's copy of a file may be from the copy on disk and still be
-// believed to be the same build. MEASURED on 2026-09-05 against the real
-// gemma-4-E2B-it-Q8_0.gguf in this machine's cache (5,048,350,848 bytes), which
-// TWO accounts publish under that identical name:
-//   unsloth/gemma-4-E2B-it-GGUF          5,048,352,864   +2,016 bytes  0.00004%
-//   lmstudio-community/gemma-4-E2B-it-GGUF   4,967,497,152  -80.9 MB       1.6%
-// The first is the same build re-uploaded — publishers routinely re-emit a GGUF
-// to fix a chat template or a tokenizer field, which moves the file by
-// kilobytes. The second is a DIFFERENT account's own quantization of the same
-// model at the same quant, and it is off by 80 megabytes.
+// How many of a search's hits are listed. Hugging Face returns up to 30, sorted
+// by downloads.
 //
-// So demanding an exact byte count would refuse the right publisher over a
-// metadata edit — it did, for this exact model, which is the case §E3 exists
-// for — while 1% still separates the two by two orders of magnitude on either
-// side. A different QUANT of the same model is further still (that model's Q6_K
-// is 11% away), and the quant string is matched exactly anyway.
+// WHY this can be generous now, and could not be before: while identity was
+// decided by SIZE, the cap was a correctness knob — the true publisher could sit
+// outside it while a same-sized impostor sat inside, and raising it turned
+// resolved models into permanent misses. Now that only a SHA-256 match is ever
+// written, a wrong repo cannot be admitted however many are listed, so the cap
+// is purely a traffic budget: a bigger one finds more publishers and costs more
+// listings. Each listing is one small JSON request, on a background pass that
+// runs once per model for the life of that model.
+const MAX_SEARCH_CANDIDATES = 30;
+
+// How close a repo's copy has to be before its hash is worth checking. This is a
+// PRE-FILTER, not evidence: it decides whether to bother, never who wins.
+//
+// It is deliberately loose, because size separates almost nothing. MEASURED on
+// 2026-09-05, live, over repos publishing the same filename at the same quant as
+// a single file: genuinely DIFFERENT builds sat 640, 704, 800, 832, 1,120, 2,656
+// and 2,688 bytes apart — while the same build re-uploaded after a metadata edit
+// sat 2,016 bytes away. There is no threshold that tells those apart, which is
+// exactly why the hash decides. What 1% does buy: it skips a wrong QUANT (this
+// machine's gemma Q6_K is 11% from its Q8_0) and any obviously unrelated file,
+// so a 5 GB read is not started for a candidate that cannot possibly match.
 const SIZE_TOLERANCE = 0.01;
 
-/** The one repo the evidence points at, or null. An EXACT byte match outranks
- *  every near one outright: it is proof that these are the same bytes, not a
- *  judgement about which account is more likely — and a repo that is merely
- *  close cannot out-argue it.
+// How long a "we looked and could not find it" record stands before the question
+// is asked again. A search can succeed and still be wrong — Hugging Face answers
+// 200 with an empty list during an incident, and its index takes time to see a
+// newly published repo — so a miss is dated rather than final. A month is long
+// enough that this is not a retry loop (the cost is one search per model per
+// month, only for models that never resolved) and short enough that a model does
+// not stay blind for a year over one bad minute.
+const RECHECK_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Is this manifest a §E3 miss old enough to be worth re-asking? Exported for
+ *  engine-manager, which decides what goes on the candidate list.
  *
- *  MEASURED on 2026-09-05, the case this exists for: this machine's
- *  Qwen3.5-2B-Q8_0.gguf is 2,012,012,800 bytes; unsloth publishes it at exactly
- *  that, and lmstudio-community publishes the same filename 800 bytes smaller.
- *  Both are inside SIZE_TOLERANCE, so without this the model would resolve to
- *  no repo at all even though one of the two is provably the source.
- *
- *  Ties never resolve. Two exact matches are byte-identical mirrors and two
- *  near ones are two guesses; either way no repo is written, because choosing
- *  between them would be exactly the guess this whole file refuses to make. */
-function pickOne(
-  confirmed: { repo: string; option: QuantOption }[], bytesOnDisk: number
-): { repo: string; option: QuantOption } | null {
-  const exact = confirmed.filter((m) => m.option.totalSizeBytes === bytesOnDisk);
-  const pool = exact.length > 0 ? exact : confirmed;
-  return pool.length === 1 ? pool[0] : null;
+ *  `repo: null` WITH a `completedAt` is unambiguously a backfill miss: nothing
+ *  else in the app can write one — `writeManifest` requires a repo name. */
+export function isStaleBackfillMiss(manifest: DownloadManifest, now: number): boolean {
+  if (manifest.repo !== null || manifest.completedAt == null) return false;
+  return now - (manifest.repoCheckedAt ?? 0) > RECHECK_AFTER_MS;
+}
+
+/** The SHA-256 of a file on disk, streamed. This is the one expensive thing the
+ *  backfill does — it reads the whole first part, which for a big model is tens
+ *  of gigabytes — so it is computed at most ONCE per model, only after at least
+ *  one repo has passed the cheap filters, and only on a background pass. */
+function sha256OfFile(file: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(file);
+    stream.on('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 export function defaultBackfillLookups(userDataDir: string, fetchImpl?: typeof fetch): BackfillLookups {
@@ -175,12 +198,25 @@ export class ManifestBackfill {
     // byte of this work off installedModels()' tick.
     this.pass = new Promise<void>((resolve) => {
       setImmediate(() => {
-        void this.run(todo).then(() => {
-          // Cleared BEFORE resolving, so anything awaiting whenIdle() can kick
-          // a fresh pass the instant it wakes up.
-          this.pass = null;
-          resolve();
-        });
+        void (async () => {
+          try {
+            await this.run(todo);
+          } catch {
+            // UNREACHABLE with the candidates installedModels() builds, and
+            // deliberately kept anyway: run() catches per model, so the only way
+            // here is a throw between models. If one ever happened, a latch left
+            // set would wedge the backfill for the life of the app and leave
+            // whenIdle() hanging forever — a far worse failure than the lookup
+            // that caused it. NOT pinned by a test, because a test would have to
+            // fake a malformed candidate that nothing can produce, and a guard
+            // whose fixture invents its own precondition proves nothing.
+          } finally {
+            // Cleared BEFORE resolving, so anything awaiting whenIdle() can kick
+            // a fresh pass the instant it wakes up.
+            this.pass = null;
+            resolve();
+          }
+        })();
       });
     });
   }
@@ -210,33 +246,47 @@ export class ManifestBackfill {
     // where a real fact belongs — so this model is left alone, not recorded.
     if (!parsed) return;
 
+    // The hash of the bytes on this disk, computed AT MOST ONCE and only when
+    // some repo has already passed the cheap filters. For a 30 GB model this is
+    // a 30 GB read, so it must never happen per candidate and never happen at
+    // all for a model nothing plausible was found for.
+    let diskHash: string | null = null;
+    const sameFile = async (option: QuantOption): Promise<boolean> => {
+      // Hugging Face reports an LFS blob's sha256 as `lfs.oid`. It is absent for
+      // small non-LFS files; a repo that does not state a hash cannot be proved
+      // to hold these bytes, so it is refused rather than assumed.
+      const oid = option.sha256ByFile[option.files[0]];
+      if (!oid) return false;
+      if (diskHash === null) diskHash = await sha256OfFile(path.join(c.dir, c.firstFileName));
+      return oid === diskHash;
+    };
+
     // 1. The curated list, offline. CuratedCatalog.get() never throws and falls
-    //    back to the copy shipped inside the app, so a curated model resolves
-    //    its repo with no search at all.
+    //    back to the copy shipped inside the app, so a curated model that can be
+    //    PROVED to come from its listed repo resolves with no search at all.
+    //    Anything short of proof falls through — the curated list names a likely
+    //    publisher, and a likely publisher is exactly what must not be written.
     const named = await this.curatedRepoFor(parsed.base, parsed.quant);
     if (named) {
       const option = await this.confirm(named, c, parsed.quant);
-      if (option) { this.record(c, named, parsed.quant, option); return; }
-      // The curated list NAMES this repo, but the repo does not hold this file
-      // at this size — so these bytes did not come from there. Fall through to
-      // the search rather than write a repo the evidence contradicts.
+      if (option && await sameFile(option)) { this.record(c, named, parsed.quant, option); return; }
     }
 
-    // 2. One search on the filename stem, then confirm what it returns. Every
-    //    candidate is checked, with no early exit: a repo further down the list
-    //    can be the EXACT byte match that settles the question, and stopping
-    //    at the first two survivors would throw that answer away unread.
+    // 2. One search on the filename stem, then every hit is listed — no early
+    //    exit. Only a hash match is ever collected, so a wrong repo cannot enter
+    //    this list however many are checked.
     const hits = await this.look.search(parsed.base);
     const repos = hits.map((h) => h.repo).filter((r) => r !== named).slice(0, MAX_SEARCH_CANDIDATES);
     const confirmed: { repo: string; option: QuantOption }[] = [];
     for (const repo of repos) {
       const option = await this.confirm(repo, c, parsed.quant);
-      if (option) confirmed.push({ repo, option });
+      if (option && await sameFile(option)) confirmed.push({ repo, option });
     }
-    // Every lookup answered. Either one repo is picked out by the evidence, or
-    // the honest record is "we looked and could not find it" — which is what
-    // `repo: null` means, and what stops this search ever being repeated.
-    const match = pickOne(confirmed, c.bytesPublished);
+    // Every lookup answered. Exactly one repo proved it holds these bytes, or
+    // the honest record is "we looked and could not find it". TWO is also a
+    // refusal: byte-identical mirrors are the same weights but need not ship the
+    // same projector, and choosing between them would be a guess.
+    const match = confirmed.length === 1 ? confirmed[0] : null;
     this.record(c, match?.repo ?? null, parsed.quant, match?.option ?? null);
   }
 
@@ -249,19 +299,18 @@ export class ManifestBackfill {
     return hit?.hfRepo ?? null;
   }
 
-  /** Does this repo really hold the copy on disk? Four tests, in order, and a
-   *  repo has to pass every one of them — this is the whole of "a wrong repo is
-   *  impossible", together with the caller's rule that two survivors mean no
-   *  repo is written:
-   *    1. it offers this EXACT quant string ('Q8_0', 'UD-Q4_K_XL', …), so no
-   *       other build of the same model can qualify;
+  /** Is this repo worth HASHING against? Four cheap tests, in order, every one
+   *  of which a repo must pass — but passing them all still proves nothing on
+   *  its own. This is a filter over what to read from disk, and the caller's
+   *  `sameFile` is what decides identity:
+   *    1. it offers this EXACT quant string ('Q8_0', 'UD-Q4_K_XL', …) — no
+   *       substring, no normalising, so 'Q8_0' never matches 'UD-Q8_K_XL';
    *    2. as EXACTLY this many parts, so half of a split set cannot pass;
    *    3. whose first file is called EXACTLY what the file on disk is called,
    *       which is the model's own name — so a repo that renames its files
    *       (bartowski prefixes them with the original account) is refused;
-   *    4. at all but the same total size — within SIZE_TOLERANCE, which the
-   *       measurement above shows separates a re-upload from another account's
-   *       own quantization by two orders of magnitude.
+   *    4. at all but the same total size — see SIZE_TOLERANCE, which is here to
+   *       avoid a pointless multi-gigabyte read, NOT to establish identity.
    *  There is no fuzzy name matching anywhere, and nothing is inferred from
    *  which repo is more popular. */
   private async confirm(
@@ -289,7 +338,10 @@ export class ManifestBackfill {
       repo,
       quant,
       files,
-      totalSizeBytes: option?.totalSizeBytes ?? c.bytesPublished,
+      // The bytes that are HERE, always — a manifest must not describe a file
+      // the user does not have. On a hit this is the repo's number too: the
+      // first part's hash matched, so the set is the same set.
+      totalSizeBytes: c.bytesPublished,
       // No hashes for a miss: Hugging Face is the only source of them and we
       // never reached it. null per file is what "not known" already means here.
       sha256ByFile: option?.sha256ByFile ?? Object.fromEntries(files.map((f) => [f, null])),
@@ -300,6 +352,9 @@ export class ManifestBackfill {
       startedAt: at,
       completedAt: at,
       ...(option?.visionFile ? { visionFile: option.visionFile } : {}),
+      // Dated ONLY on a miss, and read only by isStaleBackfillMiss. A hit is
+      // settled — the hash matched — and needs no expiry.
+      ...(repo === null ? { repoCheckedAt: this.look.now() } : {}),
     };
     writeBackfillManifest(c.dir, c.firstFileName, manifest);
   }
