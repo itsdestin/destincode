@@ -703,10 +703,13 @@ export class HarnessSession extends EventEmitter {
    *  already collapsed it, tripping the countImageOutputs clear above. They
    *  disagree only when the prune-protected window is bigger than
    *  fitToContext's budget, which needs a context window under roughly 8,500
-   *  tokens AND supportsVision: true — which for a local engine only happens
-   *  via an explicit registry entry. So the live exposure is narrow: a
-   *  registry-declared small local vision model with a very small context
-   *  window.
+   *  tokens AND supportsVision: true — which for a local engine now happens
+   *  whenever the router reports a paired vision projector (design §E5). It
+   *  used to require an explicit registry entry, and NO registry entry has
+   *  ever declared one, so this was unreachable on a local model until the
+   *  catalog started answering. The live exposure is now any downloaded local
+   *  vision model with a very small context window — do not read the old
+   *  "narrow" framing off this comment when triaging it.
    *
    *  Intended eventual fix (deferred, not this pass): re-key this map to
    *  Map<path, { mtime, toolCallId }> and reconcile against the FITTED window

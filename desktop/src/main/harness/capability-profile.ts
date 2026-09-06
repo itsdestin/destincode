@@ -353,6 +353,15 @@ export function effectiveContextForModel(loadedContext: number | null, modelId: 
 // only then this provider-type default.
 const VISION_PROVIDERS = new Set<ProfileProviderType>(['anthropic', 'openai', 'google']);
 
+/** NOTE for anyone tracing the catalog's careful "don't know" (undefined)
+ *  posture: it ends HERE. This returns a boolean, because the harness has no
+ *  third thing to do with an unknown — so an undiscovered answer becomes
+ *  `false` via the provider-type default below. That is deliberate and it is
+ *  the safe direction: a wrong `false` only means the model is told the picture
+ *  cannot be delivered, while a wrong `true` fails the entire turn with a
+ *  provider error. Preserving `undefined` all the way up the catalog is still
+ *  what makes THAT choice available here rather than being made by accident
+ *  three layers down. */
 function visionFor(d: DiscoveredModel, registry: KnownModelEntry[]): boolean {
   const known = matchKnownModel(d.modelId, registry);
   // Registry wins wherever it has an opinion — it is the one place a modelId is

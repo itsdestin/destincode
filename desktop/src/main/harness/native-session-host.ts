@@ -2105,12 +2105,15 @@ export class NativeSessionHost extends EventEmitter {
     // existing registry/provider-default behavior
     // (DiscoveredModel.supportsVision left undefined) — it is never allowed to
     // throw. It is also never allowed to block a session start it does not
-    // apply to; for a live OpenRouter or local binding it does await the same
-    // bounded catalog read contextAndSlotsFor already pays for that binding, so
-    // it is not fully non-blocking there — see the ipc-handlers.ts construction
-    // site for the short-circuit that makes this true. Positioned right after
-    // providerTypeFor for the same reason that one sits after
-    // contextAndSlotsFor: all three are resolved together for every
+    // apply to. For a binding it DOES apply to it awaits a catalog read, and
+    // that read is this closure's alone — contextAndSlotsFor asks the engine
+    // for a local binding and the catalog only for a hosted one, so on a local
+    // start this is the first and only catalog call. It is bounded: the
+    // catalog skips its upstream fetches entirely when no provider in the list
+    // can consume them, so an offline local user waits on nothing (see the WHY
+    // at ipc-handlers.ts's construction site and at ModelCatalog.get()).
+    // Positioned right after providerTypeFor for the same reason that one sits
+    // after contextAndSlotsFor: all three are resolved together for every
     // create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
     // Fourth per-binding catalog fact (Task 11), resolved at the same three

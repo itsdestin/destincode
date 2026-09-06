@@ -279,11 +279,11 @@ describe('visionSupportFor: which bindings consult the catalog (Fix 2, T18)', ()
 
   /** Registers the handlers with a single provider written straight to
    *  providers.json, and hands back the wired visionSupportFor closure. */
-  async function wiredVisionResolver(provider: Record<string, unknown>) {
+  async function wiredVisionResolver(...providers: Record<string, unknown>[]) {
     fs.mkdirSync(path.join(testHome, '.youcoded'), { recursive: true });
     fs.writeFileSync(
       path.join(testHome, '.youcoded', 'providers.json'),
-      JSON.stringify({ v: 1, providers: [provider] }),
+      JSON.stringify({ v: 1, providers }),
     );
     const { registerIpcHandlers } = await import('../src/main/ipc-handlers');
     registerIpcHandlers(
@@ -336,6 +336,26 @@ describe('visionSupportFor: which bindings consult the catalog (Fix 2, T18)', ()
     const visionSupportFor = await wiredVisionResolver(LOCAL_PROVIDER);
     expect(await visionSupportFor({ providerId: 'local', modelId: 'SmolVLM-256M-Instruct-Q8_0' })).toBe(true);
     expect(modelCatalogGetSpy).toHaveBeenCalled();
+  });
+
+  // The cost half of the same closure. 'openrouter' ships ENABLED (see
+  // provider-registry's BUILT_INS), so a local-only user's provider list still
+  // contains it — and ModelCatalog.get() fetches for any consumer in the list
+  // it is handed. Passing the whole list here would therefore put two internet
+  // fetches (15 s apiece on a hanging network, never memoized on failure) in
+  // front of every local session create, resume and model swap. The closure
+  // must hand over the BINDING'S provider and nothing else.
+  it('asks the catalog about the BINDING\'S provider only — an enabled OpenRouter is not dragged in (T18)', async () => {
+    catalogRowsOverride = [{ id: 'some-gguf', providerId: 'local', label: 'g', supportsVision: true }];
+    const visionSupportFor = await wiredVisionResolver(LOCAL_PROVIDER, {
+      id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true,
+    });
+    await visionSupportFor({ providerId: 'local', modelId: 'some-gguf' });
+    // EXACT shape, not a "contains local" match: the whole point is what is
+    // ABSENT. One argument, an array of exactly one provider, and it is 'local'.
+    expect(modelCatalogGetSpy).toHaveBeenCalledTimes(1);
+    const passed = modelCatalogGetSpy.mock.calls[0][0] as Array<{ id: string }>;
+    expect(passed.map((x) => x.id)).toEqual(['local']);
   });
 
   it('a LOCAL text-only row resolves to false, not to "don\'t know" (T18)', async () => {

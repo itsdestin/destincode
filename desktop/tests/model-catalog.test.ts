@@ -45,6 +45,54 @@ describe('ModelCatalog', () => {
     expect(models).toHaveLength(0);
   });
 
+  // The COST property, pinned in both directions. Nothing guarded it before,
+  // which is how a local-only session start silently acquired two internet
+  // fetches when the vision resolver started reading the catalog for local
+  // models (T18): ensureFresh() runs before get() looks at WHICH providers it
+  // was handed, so a call that cannot consume either source still paid for
+  // both. MEASURED 2026-09-05 on a network that accepts and never answers:
+  // 4 fetches, 15.1 s per get(), and no memoization, so it repeated on every
+  // create / resume / model swap.
+  describe('does not touch the network for a provider list no catalog source can serve', () => {
+    const LOCAL = { id: 'local', type: 'local-engine', label: 'Local models', enabled: true, builtIn: true, hasKey: false, ready: true };
+    const CUSTOM = { id: 'ollama', type: 'openai-compatible', label: 'Ollama', enabled: true, builtIn: false, hasKey: false, ready: true };
+
+    it('local-engine alone: zero fetches, and the local rows still come back', async () => {
+      const local = new ModelCatalog(dir, fetchMock, {
+        localModels: async () => [{ id: 'tiny-Q4_K_M', providerId: 'local', label: 'tiny-Q4_K_M' }],
+      });
+      const models = await local.get([LOCAL] as any);
+      // Both halves matter: zero fetches is the fix, and the rows still
+      // arriving is proof the fix did not just short-circuit get() itself.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(models.map((m) => m.id)).toEqual(['tiny-Q4_K_M']);
+    });
+
+    it('openai-compatible alone: zero fetches (it has no catalog at all)', async () => {
+      expect(await cat.get([CUSTOM] as any)).toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a DISABLED OpenRouter beside a local provider still costs nothing', async () => {
+      // A disabled provider contributes no models, so it must not drag the
+      // network in either — the gate reads `enabled` exactly as the loop does.
+      await cat.get([LOCAL, { id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: false, builtIn: true, hasKey: true, ready: false }] as any);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('but an ENABLED OpenRouter beside the local provider DOES fetch — the gate is not over-broad', async () => {
+      const models = await cat.get([LOCAL, { id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any);
+      expect(fetchMock).toHaveBeenCalled();
+      expect(models.some((m) => m.providerId === 'openrouter')).toBe(true);
+    });
+
+    it('and a models.dev provider (anthropic) beside the local one DOES fetch', async () => {
+      const models = await cat.get([LOCAL, { id: 'anth1', type: 'anthropic', label: 'Anthropic', enabled: true, builtIn: false, hasKey: true, ready: true }] as any);
+      expect(fetchMock).toHaveBeenCalled();
+      expect(models.some((m) => m.providerId === 'anth1')).toBe(true);
+    });
+  });
+
   it('serves from disk cache within TTL (single fetch pair across two calls)', async () => {
     const providers = [{ id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any;
     await cat.get(providers);
