@@ -109,6 +109,37 @@ const SETTINGS: StoredModelSettings = {
   contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '', memoryWarningDismissed: null,
 };
 
+/** A models API whose reads and saves resolve only when the test says so, so the
+ *  order two answers come back in can be driven deliberately. */
+function deferredModels(firstRead: StoredModelSettings) {
+  const reads: Array<{ resolve: (v: StoredModelSettings) => void; reject: (e: unknown) => void }> = [];
+  const saves: Array<(v: StoredModelSettings) => void> = [];
+  let readCount = 0;
+  const models = {
+    settings: vi.fn(() => {
+      readCount += 1;
+      // The first read resolves at once so the dialog can open; every later one
+      // is held for the test.
+      if (readCount === 1) return Promise.resolve(firstRead);
+      return new Promise<StoredModelSettings>((resolve, reject) => { reads.push({ resolve, reject }); });
+    }),
+    setSettings: vi.fn(() => new Promise<StoredModelSettings>((resolve) => { saves.push(resolve); })),
+    delete: vi.fn().mockResolvedValue(true),
+    downloadCancel: vi.fn().mockResolvedValue(true),
+    onDownloadProgress: vi.fn().mockReturnValue(() => {}),
+  };
+  (globalThis as any).window = (globalThis as any).window ?? {};
+  (globalThis as any).window.claude = { models };
+  return { models, reads, saves };
+}
+
+/** Open the dialog on a row whose models API is already installed. */
+async function openDialog() {
+  render(<LocalModelRow model={COMPLETE} onRefresh={async () => {}} />);
+  await act(async () => { fireEvent.click(screen.getByLabelText(/^Settings for /)); });
+  await waitFor(() => expect(screen.getByText('Context length')).toBeTruthy());
+}
+
 /** Mount the row with a stubbed models API and open its Settings dialog.
  *  `later`, when given, is what every fetch AFTER the first one answers — which
  *  is how a pending save landing in the background is driven. */
@@ -210,6 +241,138 @@ describe('a model’s settings dialog', () => {
     expect((screen.getByLabelText('Context length for this model') as HTMLInputElement).value).toBe('4096');
   });
 
+  it('§C2: a read already IN FLIGHT cannot undo the switch the user just flipped', async () => {
+    // The bug the first version of the poll shipped. Refusing to START a read
+    // during a save does nothing about one already in the air: it carries the
+    // values main held BEFORE the save and lands after it. What the user saw —
+    // "Keep loaded" turns on, flips itself off a moment later, then back on two
+    // seconds after that. The setting saved perfectly; only the screen lied.
+    const { reads, saves } = deferredModels({ ...SETTINGS, keepLoaded: false });
+    await openDialog();
+    // A poll goes out, and is still in the air…
+    await waitFor(() => expect(reads.length).toBeGreaterThan(0), { timeout: 10_000, interval: 50 });
+    // …when the user turns the switch on, and the save comes back first.
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+    await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
+    expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
+    // Now the stale answer lands. It must be thrown away, not drawn.
+    await act(async () => { reads[0].resolve({ ...SETTINGS, keepLoaded: false }); await Promise.resolve(); });
+    expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('§C2: two reads in the air, and the SLOWER one cannot win by finishing last', async () => {
+    // Whenever a read takes longer than the poll interval there are two of them
+    // outstanding, and order of arrival is not order of issue.
+    const { reads } = deferredModels({ ...SETTINGS, keepLoaded: false });
+    await openDialog();
+    await waitFor(() => expect(reads.length).toBeGreaterThanOrEqual(2), { timeout: 10_000, interval: 50 });
+    // The NEWER read answers first…
+    await act(async () => { reads[1].resolve({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
+    expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
+    // …and the older one, arriving late, is ignored.
+    await act(async () => { reads[0].resolve({ ...SETTINGS, keepLoaded: false }); await Promise.resolve(); });
+    expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('§C2: one failed read does not leave a red line under a working dialog', async () => {
+    // Before the poll this could not happen: the read failed and the dialog
+    // stayed on the failure. Now the next read succeeds two seconds later and
+    // draws the whole working dialog — with a stale "could not read" line under
+    // it for as long as it is open.
+    let calls = 0;
+    (globalThis as any).window = (globalThis as any).window ?? {};
+    (globalThis as any).window.claude = {
+      models: {
+        settings: vi.fn(async () => {
+          calls += 1;
+          if (calls === 1) throw new Error('Could not read this model’s settings.');
+          return SETTINGS;
+        }),
+        setSettings: vi.fn().mockResolvedValue(SETTINGS),
+        delete: vi.fn().mockResolvedValue(true),
+        downloadCancel: vi.fn().mockResolvedValue(true),
+        onDownloadProgress: vi.fn().mockReturnValue(() => {}),
+      },
+    };
+    render(<LocalModelRow model={COMPLETE} onRefresh={async () => {}} />);
+    await act(async () => { fireEvent.click(screen.getByLabelText(/^Settings for /)); });
+    await waitFor(() => expect(screen.getByText('Could not read this model’s settings.')).toBeTruthy());
+    await waitFor(
+      () => expect(screen.queryByText('Could not read this model’s settings.')).toBeNull(),
+      { timeout: 10_000, interval: 100 },
+    );
+    expect(screen.getByText('Context length')).toBeTruthy();
+  });
+
+  it('§C2: a save that FAILS does not freeze the dialog’s live values', async () => {
+    // The suppression is released in a `finally`. Left set, one failed save
+    // would stop every poll for as long as the dialog stayed open — and the
+    // pending line and the load-error card are exactly what the poll is for.
+    let calls = 0;
+    (globalThis as any).window = (globalThis as any).window ?? {};
+    (globalThis as any).window.claude = {
+      models: {
+        settings: vi.fn(async () => { calls += 1; return calls > 1 ? { ...SETTINGS, lastLoadError: 'error: out of memory' } : SETTINGS; }),
+        setSettings: vi.fn().mockRejectedValue(new Error('Disk is full.')),
+        delete: vi.fn().mockResolvedValue(true),
+        downloadCancel: vi.fn().mockResolvedValue(true),
+        onDownloadProgress: vi.fn().mockReturnValue(() => {}),
+      },
+    };
+    await openDialog();
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+    await waitFor(() => expect(screen.getByText('Disk is full.')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('error: out of memory')).toBeTruthy(), { timeout: 10_000, interval: 100 });
+    // …and the save failure is still on screen: it is the user's, not the
+    // poll's, and a successful read must not wipe it.
+    expect(screen.getByText('Disk is full.')).toBeTruthy();
+  });
+
+  it('§C2: no read is even ASKED FOR while a save is in flight', async () => {
+    // The check inside the answer catches a read that was already in the air.
+    // This is the other half: not starting one at all, so an answer that
+    // predates the save's write cannot exist in the first place.
+    const { models, saves, reads } = deferredModels({ ...SETTINGS, keepLoaded: false });
+    await openDialog();
+    const before = models.settings.mock.calls.length;
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+    await new Promise((r) => setTimeout(r, 2600));     // a poll tick passes
+    expect(models.settings.mock.calls.length).toBe(before);
+    // …and once the save lands, polling resumes.
+    await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
+    await waitFor(() => expect(models.settings.mock.calls.length).toBeGreaterThan(before), { timeout: 10_000, interval: 100 });
+    expect(reads.length).toBeGreaterThan(0);
+  });
+
+  it('§C2: two overlapping saves — the first one finishing does not unblock the poll', async () => {
+    // A flag, rather than a count, would have the first save's cleanup announce
+    // that nothing is saving while the second is still in the air.
+    const { models, saves } = deferredModels({ ...SETTINGS, keepLoaded: false });
+    await openDialog();
+    const before = models.settings.mock.calls.length;
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+    // A second, different save while the first is still in the air.
+    const box = screen.getByLabelText('Context length for this model');
+    await act(async () => { fireEvent.change(box, { target: { value: '8192' } }); fireEvent.blur(box); });
+    expect(saves).toHaveLength(2);
+    await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 2600));
+    expect(models.settings.mock.calls.length).toBe(before);
+  });
+
+  it('§C2: closing the dialog stops the polling, and a late answer changes nothing', async () => {
+    const { reads, models } = deferredModels(SETTINGS);
+    await openDialog();
+    await waitFor(() => expect(reads.length).toBeGreaterThan(0), { timeout: 10_000, interval: 50 });
+    cleanup();
+    const after = models.settings.mock.calls.length;
+    // A late answer to a closed dialog must not try to draw into it.
+    await act(async () => { reads[0].resolve({ ...SETTINGS, lastLoadError: 'too late' }); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 2600));
+    expect(models.settings.mock.calls.length).toBe(after);
+    expect(screen.queryByText('too late')).toBeNull();
+  });
+
   it('§C2: a load error that arrives while the dialog is open reaches the user', async () => {
     // Same staleness, other field: a model fails on its next request, and a
     // dialog that read main once would never say so.
@@ -286,6 +449,31 @@ describe('the engine card', () => {
     expect(screen.getByText('Report bug')).toBeTruthy();
     expect(screen.getByText('Diagnose with Claude')).toBeTruthy();
     expect(screen.getByText(/gave no reason we can show you/)).toBeTruthy();
+  });
+
+  it('T7: the two actions on the no-reason message actually DO something', async () => {
+    // Wired to nothing, this is a general error with no next step — which the
+    // standard disallows just as firmly as an invented cause. Making
+    // "Diagnose with Claude" a no-op left every other assertion green.
+    mountEngine({ ...RUNNING, modelSettingsInForce: false, modelSettingsError: null });
+    render(<EngineCard showDetails />);
+    await waitFor(() => expect(screen.getByText('Diagnose with Claude')).toBeTruthy());
+    await act(async () => { fireEvent.click(screen.getByText('Diagnose with Claude')); });
+    // The app's one bug-report surface opens — its own dialog title, which
+    // nothing else on this card renders.
+    await waitFor(() => expect(screen.getByText('Report a bug')).toBeTruthy());
+  });
+
+  it('T7: the message is NOT hidden behind the expanded details panel', async () => {
+    // `showDetails` is false wherever the card sits outside Local models. Gated
+    // on it, this message would never reach anyone who does not open that panel
+    // — and it is about their models being silently ignored.
+    mountEngine({ ...RUNNING, modelSettingsInForce: false, modelSettingsError: OS_ERROR });
+    render(<EngineCard />);
+    await waitFor(() => expect(screen.getByText(NOT_IN_FORCE)).toBeTruthy());
+    expect(screen.getByText(OS_ERROR)).toBeTruthy();
+    // …and the details really are collapsed, so this is not a false pass.
+    expect(screen.queryByText('Advanced')).toBeNull();
   });
 
   it('T7: says nothing when those settings ARE in force', async () => {

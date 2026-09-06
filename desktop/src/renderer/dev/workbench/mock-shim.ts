@@ -990,7 +990,20 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // card's two wordings can both be seen; cleared on a timer the way main's
   // bounded wait clears them.
   let configApplyPending = false;
+  // The REAL failure text when applying a saved engine setting goes wrong. The
+  // card is the only place that failure can be reported — the channel answered
+  // "saved" long before the apply ran — so it needs to be reviewable. Under
+  // `refused` a switch fails to apply instead of landing.
+  let configApplyError: string | null = null;
   const statusListeners = new Set<(s: unknown) => void>();
+  // The settings-are-off message has TWO shapes and they look nothing alike: an
+  // amber box quoting the machine, and a grey block with two buttons and no
+  // quote. `?scenario=refused&reason=none` picks the second, the same way this
+  // shim already reads `?arcade=`, `?remote=` and `?firstRun=` — a sub-state
+  // switch, not a whole extra scenario.
+  const settingsOffReason = typeof location === 'undefined'
+    ? null
+    : new URLSearchParams(location.search).get('reason');
   const engineStatus = () => ({
     installed: true, installedVersion: 'b10665', pinnedVersion: 'b10665', backend: currentBackend,
     // `refused` runs too — it is the degraded scenario, and the state T23 made
@@ -1008,7 +1021,7 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // it is the one where a queued change really is waiting on a reply; anywhere
     // else the machine is idle and the card says "Applying now…" instead.
     configApplyWaitingForReply: configApplyPending && activeScenario === 'stress',
-    configApplyError: null as string | null,
+    configApplyError,
     // `refused` is the workbench's degraded scenario, so it is where the engine
     // runs WITHOUT the file holding each model's own settings — the one state
     // that was invisible before T23. Everywhere else the settings are in force;
@@ -1017,7 +1030,12 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     ...(activeScenario === 'refused'
       ? {
         modelSettingsInForce: false,
-        modelSettingsError: "EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'",
+        // `reason=none` is the case where nothing legible came back: the card
+        // must then stay non-committal and offer Report bug / Diagnose with
+        // Claude rather than invent a cause.
+        modelSettingsError: settingsOffReason === 'none'
+          ? null
+          : "EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'",
       }
       : activeScenario === 'stress'
         ? { modelSettingsInForce: true, modelSettingsError: null as string | null }
@@ -1051,8 +1069,14 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       // Mirrors main: the value saves at once and the ENGINE picks it up later,
       // so the card's saved-but-not-applied line appears and then goes away.
       configApplyPending = true;
+      configApplyError = null;
       setTimeout(() => {
         configApplyPending = false;
+        // Under the degraded scenario the apply FAILS, which is the only way to
+        // see the line that carries its real message.
+        configApplyError = activeScenario === 'refused'
+          ? "EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'"
+          : null;
         for (const cb of statusListeners) cb(engineStatus());
       }, 4000);
       return engineStatus();

@@ -924,13 +924,30 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
   // — why it last failed to load, and whether a save it has already made is
   // still waiting for the reply on screen to finish.
   const [settings, setSettings] = useState<StoredModelSettings | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // TWO error slots, not one. A save failure is the user's — they pressed
+  // something and it did not work — and it stays until they try again. A READ
+  // failure is the poll's, and it must not outlive itself: the next read two
+  // seconds later succeeds and draws a working dialog, and a shared slot would
+  // leave a red "could not read this model's settings" line sitting under it
+  // for as long as the dialog is open. Sharing one slot also let a successful
+  // poll wipe a save failure the user still needed to see.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
   const [ctxDraft, setCtxDraft] = useState('');
   const [flagsDraft, setFlagsDraft] = useState('');
   const [advanced, setAdvanced] = useState(false);
-  // True only while a save is in flight, so the poll below cannot overwrite a
-  // value the user has just changed with the one main had a moment ago.
-  const savingRef = useRef(false);
+  // How many saves are running right now — a COUNT, not a flag: two overlapping
+  // saves would otherwise have the first one's cleanup announce that nothing is
+  // saving while the second is still in the air.
+  const savesInFlight = useRef(0);
+  // Bumped when a save STARTS. A read that was asked before that carries
+  // pre-save values, so its answer is dropped however late it arrives.
+  const saveTick = useRef(0);
+  // Every read is numbered, and an answer older than one already accepted is
+  // dropped. Two reads are in the air whenever one takes longer than the poll
+  // interval, and without this the slower of the two wins by finishing last.
+  const readSeq = useRef(0);
+  const acceptedRead = useRef(0);
 
   useEffect(() => {
     let alive = true;
@@ -938,13 +955,26 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     // an older bridge without the channel shows the error line instead of throwing.
     const api = window.claude.models as { settings?: (id: string) => Promise<StoredModelSettings> };
     const fetchSettings = api.settings;
-    if (typeof fetchSettings !== 'function') { setError('This version cannot read per-model settings.'); return; }
+    if (typeof fetchSettings !== 'function') { setReadError('This version cannot read per-model settings.'); return; }
     let first = true;
     const read = () => {
-      if (savingRef.current) return;
+      if (savesInFlight.current > 0) return;
+      const seq = ++readSeq.current;
+      const askedAt = saveTick.current;
       fetchSettings(modelId)
         .then((st) => {
           if (!alive) return;
+          // THE CHECKS THAT MATTER ARE HERE, INSIDE THE ANSWER — not only before
+          // asking. Refusing to START a read during a save does nothing about a
+          // read already in the air, which carries the values main held BEFORE
+          // the save and lands after it. What the user saw: "Keep loaded" turned
+          // on, flipped itself off a moment later, then back on at the next
+          // poll — a setting that saved perfectly, with the screen saying
+          // otherwise, which is the exact confusion the poll was added to end.
+          if (seq <= acceptedRead.current) return;                              // a newer answer already landed
+          if (savesInFlight.current > 0 || saveTick.current !== askedAt) return; // a save overtook this read
+          acceptedRead.current = seq;
+          setReadError(null);
           setSettings(st);
           // The two text drafts are seeded ONCE. Re-seeding them on every poll
           // would wipe whatever the user is halfway through typing.
@@ -961,7 +991,7 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
             if (st.lastLoadError) setAdvanced(true);
           }
         })
-        .catch((e) => { if (alive && first) setError(e instanceof Error ? e.message : 'Could not read this model\u2019s settings.'); });
+        .catch((e) => { if (alive && first) setReadError(e instanceof Error ? e.message : 'Could not read this model\u2019s settings.'); });
     };
     read();
     // WHY this polls at all: there is no push channel for per-model settings.
@@ -976,11 +1006,15 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
   }, [modelId]);
 
   const save = async (patch: Partial<ModelSettings>) => {
-    setError(null);
-    savingRef.current = true;
+    setSaveError(null);
+    savesInFlight.current += 1;
+    saveTick.current += 1;
     try { setSettings(await window.claude.models.setSettings(modelId, patch)); }
-    catch (e) { setError(e instanceof Error ? e.message : 'Could not save.'); }
-    finally { savingRef.current = false; }
+    catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not save.'); }
+    // `finally`, so a save that THROWS still lets the poll run again. Left
+    // suppressed, one failed save would freeze every live value in the dialog
+    // for as long as it stayed open.
+    finally { savesInFlight.current -= 1; }
   };
 
   const commitContext = () => {
@@ -999,8 +1033,8 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
   // side by side (at `prompt` width the GPU-layers title wrapped one word per line).
   return (
     <Dialog open={open} onClose={onClose} title="Model settings" subtitle={name} size="panel" layer={3}>
-      {error && !settings && <FieldError as="p">{error}</FieldError>}
-      {!settings && !error && <p className="text-3xs text-fg-muted">Loading settings…</p>}
+      {readError && !settings && <FieldError as="p">{readError}</FieldError>}
+      {!settings && !readError && <p className="text-3xs text-fg-muted">Loading settings…</p>}
       {settings && (
     <div className="space-y-1.5" data-testid="model-settings">
       {/* R26 / design §C2: why this model last failed to load, in the ENGINE'S
@@ -1115,7 +1149,7 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
           Applies after the current reply.
         </p>
       )}
-      {error && <FieldError as="p">{error}</FieldError>}
+      {saveError && <FieldError as="p">{saveError}</FieldError>}
     </div>
       )}
     </Dialog>
