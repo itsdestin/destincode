@@ -1856,7 +1856,7 @@ function FullAutoAskShell({ children }: { children: React.ReactNode }) {
         <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         <span className="text-fg-faint text-xs select-none">|</span>
         <span className="text-xs font-medium text-fg-2">Push local commits</span>
-        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">↳ git push origin master</span>
+        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">· git push origin master</span>
       </div>
       {children}
     </div>
@@ -2158,7 +2158,7 @@ function GrantAskShell({ row, children }: {
         <QuestionIcon className="w-3.5 h-3.5 shrink-0 text-fg-dim" />
         <span className="text-fg-faint text-xs select-none">|</span>
         <span className="text-xs font-medium text-fg-2">{row.title}</span>
-        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">↳ {row.command}</span>
+        <span className="text-xs text-fg-muted truncate flex-1 min-w-0">· {row.command}</span>
       </div>
       <div
         className={amber ? 'px-3 py-2 space-y-2 border-t' : 'px-3 py-2 space-y-2 border-t border-edge bg-inset/30'}

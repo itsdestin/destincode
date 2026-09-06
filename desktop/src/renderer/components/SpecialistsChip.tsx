@@ -219,7 +219,7 @@ function HelperCard({ h, sessionId, onJump }: { h: HelperView; sessionId?: strin
 }
 
 /** The exact thing being approved, in full — a command, a path, a URL — not
- *  the card's abbreviated "↳ cache/" detail. */
+ *  the card's abbreviated "· cache/" detail. */
 function askSubject(input: Record<string, unknown>): string {
   for (const k of ['command', 'file_path', 'path', 'url', 'pattern']) {
     const v = input[k];

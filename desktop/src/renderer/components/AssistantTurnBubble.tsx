@@ -3,6 +3,7 @@ import { AssistantTurn, abnormalStopReason } from '../state/chat-types';
 import { ToolCallState, ToolGroupState, SessionProvider } from '../../shared/types';
 import { assistantName } from '../utils/assistant-name';
 import { hasNestedAsk } from '../utils/specialist-cards';
+import { buildToolGroupHeadline } from '../utils/tool-group-summary';
 import MarkdownContent from './MarkdownContent';
 import { SessionRefsEnabled } from './session-refs-context';
 import ToolCard, { StackedSkillsCard } from './ToolCard';
@@ -150,7 +151,7 @@ function TurnMetadataStrip({ turn }: { turn: AssistantTurn }) {
  * workbench tool gallery (?mode=workbench&view=tools) can render fixtures with
  * the same grouping treatment real chat uses (single visual unit + shared
  * bg-inset on cards). */
-function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sessionId: string }) {
+export function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sessionId: string }) {
   const [expanded, setExpanded] = useState(() => getInitialExpanded());
   useExpandAllToggle(() => setExpanded(true), () => setExpanded(false));
 
@@ -160,18 +161,11 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
   // them was mid-job. A helper waiting on the user is called out too.
   const stillWorking = (t: ToolCallState) => t.specialistRun?.status === 'running';
   const runningCount = tools.filter((t) => t.status === 'running' || stillWorking(t)).length;
-  const completedCount = tools.filter((t) => t.status === 'complete' && !stillWorking(t)).length;
   const failedCount = tools.filter((t) => t.status === 'failed').length;
   const askingCount = tools.filter(hasNestedAsk).length;
-
-  // Build name summary: "Read, Grep, Grep" → "Read, Grep ×2"
-  const nameCounts = new Map<string, number>();
-  for (const t of tools) {
-    nameCounts.set(t.toolName, (nameCounts.get(t.toolName) || 0) + 1);
-  }
-  const nameList = [...nameCounts.entries()]
-    .map(([name, count]) => count > 1 ? `${name} \u00d7${count}` : name)
-    .join(', ');
+  // Plain-language "Created a file and ran a command" in place of the raw
+  // "N tools (Bash, Write)" — Q1-Q5, 2026-09-06 tool-group-readability deck.
+  const headline = buildToolGroupHeadline(tools);
 
   return (
     <div className="border border-edge rounded-lg overflow-hidden">
@@ -190,10 +184,11 @@ function CollapsedToolGroup({ tools, sessionId }: { tools: ToolCallState[]; sess
         )}
         <span className="text-fg-faint text-xs select-none">|</span>
         <span className="text-xs text-fg-dim flex-1">
-          {tools.length} tools ({nameList})
-          {completedCount === tools.length && ' — all complete'}
-          {runningCount > 0 && ` — ${runningCount} running`}
-          {failedCount > 0 && ` — ${failedCount} failed`}
+          {headline}
+          {/* Q5a folds an already-failed item into the headline itself while
+              something else is still running ("+2 completed, 1 failed") — this
+              suffix only fires once the group has fully settled (Q3a). */}
+          {runningCount === 0 && failedCount > 0 && ` — ${failedCount} failed`}
           {askingCount > 0 && <span className="text-amber-500">{` — ${askingCount} waiting on you`}</span>}
         </span>
         <ChevronIcon className="w-3.5 h-3.5 shrink-0 text-fg-muted" expanded={expanded} />
