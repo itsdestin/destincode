@@ -2,6 +2,7 @@ import React from 'react';
 import type { AttentionState } from '../state/chat-types';
 import BrailleSpinner from './BrailleSpinner';
 import { Button } from './ui';
+import { isChatGptLimitMessage } from '../../shared/chatgpt-types';
 
 // Banner shown in place of ThinkingIndicator when the classifier (or a
 // process-exit event) concludes chat view is out of sync with what the user
@@ -28,6 +29,9 @@ interface Props {
   /** Stalled card only: end the turn, keeping everything written so far.
    *  Identical to ESC — see ChatView, which wires it to the same handler. */
   onStop?: () => void;
+  /** Plan-limit card (Sign in with ChatGPT; review round 2, P-9): the Switch
+   *  Providers button opens the model picker for THIS conversation. */
+  onSwitchProviders?: () => void;
 }
 
 // Provider-CONFIGURATION errors (missing API key, disabled provider, no endpoint)
@@ -70,7 +74,7 @@ function elapsedLabel(ms: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry, onOpenProviderSettings, stalledSince, onStop }: Props) {
+export default function AttentionBanner({ state, anthropicRequestId, errorMessage, onRetry, onOpenProviderSettings, stalledSince, onStop, onSwitchProviders }: Props) {
   // Ticks once a second while parked. `stalledSince` IS serialized to the host
   // (chat-types.ts) so a reconnecting phone can still see the card — see that
   // field's own comment for why the elapsed number is only approximate there.
@@ -117,6 +121,11 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
   // Provider-CONFIG errors get a direct "Open Settings" jump to Model Providers.
   const showOpenSettings =
     state === 'error' && !!onOpenProviderSettings && isProviderConfigError(errorMessage);
+  // A used-up ChatGPT plan window is not a failure to retry — the message
+  // already names when it resets — so Try again is withheld and the one useful
+  // action is offered instead: carry on with another connected provider.
+  const planLimit = state === 'error' && isChatGptLimitMessage(errorMessage);
+  const showSwitch = planLimit && !!onSwitchProviders;
 
   return (
     // in-view: opts the bubble into wallpaper-driven bubble glassmorphism
@@ -127,7 +136,7 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
       <div className={bubbleClasses}>
         {showSpinner && <BrailleSpinner size="base" />}
         <span className={textClasses}>{line}</span>
-        {showRetry && (
+        {showRetry && !planLimit && (
           <button
             type="button"
             onClick={onRetry}
@@ -152,6 +161,14 @@ export default function AttentionBanner({ state, anthropicRequestId, errorMessag
           // the only option costs a full conversation re-send per press.
           <Button size="sm" variant="secondary" onClick={onStop} className="shrink-0">
             Stop
+          </Button>
+        )}
+        {showSwitch && (
+          // P-9 (round 3): the message in Destin's words and one button that
+          // opens the model picker — the picker is where every provider and
+          // its models already are, so the choice is the user's, not a guess.
+          <Button size="sm" onClick={onSwitchProviders} className="ml-auto shrink-0">
+            Switch Providers
           </Button>
         )}
         {showOpenSettings && (

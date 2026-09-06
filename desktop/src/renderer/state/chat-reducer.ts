@@ -435,9 +435,13 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
     // TRANSCRIPT_ASSISTANT_TEXT case): same partId as the LAST segment →
     // append into it; otherwise push a new segment. CC never sets partId,
     // so its events keep today's one-segment-per-event behavior.
-    const lastIdx = segments.length - 1;
-    const last = lastIdx >= 0 ? segments[lastIdx] : null;
-    if (action.partId && last && last.type === 'text' && last.partId === action.partId) {
+    // Review fix (2026-09-04, F2): the merge target is the LAST text segment
+    // with this partId, not the last segment — a note stamped later than this
+    // text can sit behind it (insertByTime below), and "last segment" would
+    // then start a second bubble for the same stream.
+    const lastIdx = lastIndexWhere(segments, s => s.type === 'text' && s.partId === action.partId);
+    const last = action.partId && lastIdx >= 0 ? segments[lastIdx] : null;
+    if (last && last.type === 'text') {
       segments[lastIdx] = { ...last, content: last.content + action.text };
     } else if (isBlankDelta(action.text)) {
       // Whitespace-only chunk with no open paragraph to join — same rule as
@@ -445,29 +449,34 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
       // an empty block on the specialist's card.
       return state;
     } else {
-      segments.push({
+      insertByTime(segments, {
         type: 'text',
         id: `sa-text-${action.uuid}`,
         content: action.text,
         partId: action.partId,
+        // Stamped with the FIRST delta's time (later deltas merge into this
+        // segment above without touching it) so a mid-run note can be placed
+        // relative to it — see reconcileNoteSegments.
+        timestamp: action.timestamp,
       });
     }
   } else if (action.type === 'TRANSCRIPT_ASSISTANT_REASONING') {
     // Specialists 1c: a child's reasoning lands in ITS card as a 'thinking'
     // segment (coalesced by partId like text), never in the parent's own
     // reasoning bubble — which is where an unstamped dispatch used to send it.
-    const lastIdx = segments.length - 1;
-    const last = lastIdx >= 0 ? segments[lastIdx] : null;
-    if (action.partId && last && last.type === 'thinking' && last.partId === action.partId) {
+    const lastIdx = lastIndexWhere(segments, s => s.type === 'thinking' && s.partId === action.partId); // as for text above
+    const last = action.partId && lastIdx >= 0 ? segments[lastIdx] : null;
+    if (last && last.type === 'thinking') {
       segments[lastIdx] = { ...last, content: last.content + action.text };
     } else if (isBlankDelta(action.text)) {
       return state; // as for text above
     } else {
-      segments.push({
+      insertByTime(segments, {
         type: 'thinking',
         id: `sa-think-${action.uuid}`,
         content: action.text,
         partId: action.partId,
+        timestamp: action.timestamp, // as for text above
       });
     }
   } else if (action.type === 'TRANSCRIPT_TOOL_USE') {
@@ -481,6 +490,11 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
       toolName: action.toolName,
       input: action.toolInput,
       status: 'running',
+      // Fix (2026-09-01 investigation, notes not interleaved): the row's own
+      // time, so a note sent mid-run can be slotted before or after it by
+      // reconcileNoteSegments. Undefined for an event without a stamp, which
+      // simply means "cannot be ordered against" — never a wrong position.
+      timestamp: action.timestamp,
     };
     if (existingIdx >= 0) {
       const existing = segments[existingIdx] as Extract<SubagentSegment, { type: 'tool' }>;
@@ -513,9 +527,13 @@ function applySubagentEvent(state: ChatState, action: ChatAction): ChatState {
           id: next.id,
           toolUseId: action.toolUseId,
           input: action.toolInput,
+          // The placeholder was minted by the ask, which has no transcript
+          // stamp — the real tool-use event is the first thing that knows
+          // when this row happened.
+          timestamp: next.timestamp,
         };
       } else {
-        segments.push(next);
+        insertByTime(segments, next);
       }
     }
   } else if (action.type === 'TRANSCRIPT_TOOL_RESULT') {
@@ -645,7 +663,48 @@ function findSpecialistCard(
  * array instead, matching the spec's stated id scheme; safe because the
  * ledger always resends the full, append-only notes array, so index i keeps
  * naming the same note across calls.
+ *
+ * Fix (2026-09-01 investigation, notes not interleaved): an unseen note used
+ * to be APPENDED to the tail. Live that is usually where it belongs — nothing
+ * later has arrived yet — but on a replay (reattach, restart, a late run push)
+ * every tool row is already on the card, so a note sent mid-run showed up
+ * AFTER tool calls that happened after it, and the trail lied as an audit log.
+ * Now the note is inserted before the first segment stamped LATER than it
+ * (every child segment carries the transcript event's own time since this
+ * fix; a note carries the ledger's). A note later than everything still
+ * appends, so the live path is unchanged. A segment with no stamp (an older
+ * event shape) is never ordered against — it just keeps its place. Ids stay
+ * index-based, so the resend idempotence above is untouched: placement only
+ * ever happens the FIRST time a note is seen.
+ *
+ * Review fix (2026-09-04, F2/F6): the invariant is now TWO-sided. Child rows
+ * (tool/text/thinking) go through the same insertByTime as notes, so a row
+ * that reaches the reducer AFTER a note stamped later than it (transcript
+ * events are rAF-batched, the ledger push is synchronous — a one-frame
+ * window) slots before that note instead of landing below it. With every
+ * stamped segment inserted by time the list stays time-ordered, which is what
+ * the "first later segment" lookup silently assumed.
  */
+
+/** Index of the LAST segment matching `pred`, or -1. */
+function lastIndexWhere(segments: SubagentSegment[], pred: (s: SubagentSegment) => boolean): number {
+  for (let i = segments.length - 1; i >= 0; i--) if (pred(segments[i])) return i;
+  return -1;
+}
+
+/**
+ * Insert a child segment at its time position, IN PLACE. The one ordering rule
+ * for a specialist's Activity trail (see reconcileNoteSegments): a stamped
+ * segment goes before the first segment stamped strictly LATER than it, else
+ * at the tail — so equal stamps keep arrival order, and an unstamped segment
+ * (an older event shape) is appended and never reordered, only skipped over.
+ */
+function insertByTime(segments: SubagentSegment[], seg: SubagentSegment): void {
+  const t = seg.timestamp;
+  const at = t === undefined ? -1 : segments.findIndex(s => s.timestamp !== undefined && s.timestamp > t);
+  if (at < 0) segments.push(seg);
+  else segments.splice(at, 0, seg);
+}
 function reconcileNoteSegments(
   existing: SubagentSegment[] | undefined,
   notes: SpecialistNote[] | undefined,
@@ -658,7 +717,10 @@ function reconcileNoteSegments(
     const note = notes[i];
     const id = `sa-note-${childId}-${i}`;
     if (known.has(id)) continue;
-    segs = [...(segs ?? []), { type: 'note', id, content: note.text, from: note.from, timestamp: note.at }];
+    const seg: SubagentSegment = { type: 'note', id, content: note.text, from: note.from, timestamp: note.at };
+    const list = [...(segs ?? [])];
+    insertByTime(list, seg);
+    segs = list;
     known.add(id);
   }
   return segs;

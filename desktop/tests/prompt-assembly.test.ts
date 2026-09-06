@@ -184,3 +184,31 @@ describe('assembleSystemPrompt — tool-less models (hasTools:false)', () => {
     expect(withTools).toContain('one tool at a time');
   });
 });
+
+describe('assembleSystemPrompt — shared doctrine (2026-09-04)', () => {
+  const base = { presetBody: PRESET, cwd: '/tmp', appVersion: '1.0.0' };
+  it('doctrine sits AFTER the project instructions and before the variant overlay', () => {
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), 'PROJECT_INSTR_MARKER');
+    const out = assembleSystemPrompt({ presetBody: PRESET, cwd: dir, appVersion: '1.0.0', promptVariant: 'local-small' });
+    expect(out.indexOf('Working rules, every conversation:')).toBeGreaterThan(out.indexOf('PROJECT_INSTR_MARKER'));
+    expect(out.indexOf('one tool at a time')).toBeGreaterThan(out.indexOf('Working rules, every conversation:'));
+  });
+  it('the batching rule needs BOTH the profile flag and a non-small variant', () => {
+    expect(assembleSystemPrompt({ ...base, supportsParallelToolCalls: true })).toContain('request them in one turn');
+    expect(assembleSystemPrompt({ ...base })).not.toContain('request them in one turn');
+    expect(assembleSystemPrompt({ ...base, supportsParallelToolCalls: true, promptVariant: 'local-small' })).not.toContain('request them in one turn');
+  });
+  it('local-small gets the compact doctrine and its overlay no longer says "stop"', () => {
+    const out = assembleSystemPrompt({ ...base, promptVariant: 'local-small' });
+    expect(out).not.toContain('Before you finish:\n- Does the result cover');
+    expect(out).not.toContain('stop and answer');
+    expect(out).toContain('Keep going until the task is done');
+  });
+  it('a specialist (audience parent) is not told how to write for the user', () => {
+    expect(assembleSystemPrompt({ ...base, audience: 'parent' })).not.toContain('How you write:');
+    expect(assembleSystemPrompt({ ...base })).toContain('How you write:');
+  });
+  it('the identity line says the model may be any vendor', () => {
+    expect(assembleSystemPrompt(base)).toMatch(/any model the user chose/);
+  });
+});

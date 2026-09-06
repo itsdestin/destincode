@@ -79,6 +79,9 @@ export function pageEventToAction(event: TranscriptEvent): ChatAction | null {
         toolUseId: d.toolUseId,
         toolName: d.toolName,
         toolInput: d.toolInput || {},
+        // Same stamp App.tsx's live path forwards — a replayed page must
+        // order a helper's notes among its tool rows exactly like live did.
+        timestamp: event.timestamp,
         parentAgentToolUseId: d.parentAgentToolUseId,
         agentId: d.agentId,
       } as ChatAction;

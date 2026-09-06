@@ -82,6 +82,19 @@ export interface SessionInfo {
   harnessId?: string;
   /** Model alias the session was started with (e.g. 'claude-sonnet-4-6') */
   model?: string;
+  /** Native runtime only: which KIND of provider the bound model runs on
+   *  ('chatgpt' | 'openrouter' | 'local-engine' | …), as main already resolves
+   *  it in conversations/portable-model.ts.
+   *
+   *  WHY the renderer needs it rather than looking the model up itself: two
+   *  providers can offer the same model id — a personal OpenAI API key and the
+   *  ChatGPT plan both list `gpt-5.5`. Looked up by id alone, a conversation
+   *  spending API credit can be shown the ChatGPT plan's usage numbers and told
+   *  they are "measured across your whole ChatGPT plan". Only the session knows
+   *  which one it is actually billed to. Absent for Claude sessions, and for
+   *  any native session main has not stamped yet — the renderer then falls back
+   *  to the catalog lookup and reports nothing when the id is ambiguous. */
+  providerType?: string;
   /** Optional text to prefill into the input bar after this session is selected.
    *  Consumed once by InputBar on first render after session switch; cleared via
    *  a consumed-set ref so it never re-fires on re-renders. */
@@ -472,6 +485,14 @@ export type SubagentSegment =
       // per delta — see chat-reducer.ts applySubagentEvent. CC events never
       // set this, so its absence preserves today's one-segment-per-event.
       partId?: string;
+      /** When this happened (epoch ms, the transcript event's own stamp).
+       *  Optional on every non-note segment because it exists for ONE reason:
+       *  placing a mid-run 'note' (below, which always has a time) among the
+       *  rows that happened before and after it, instead of at the bottom of
+       *  the trail on replay (chat-reducer.ts reconcileNoteSegments). A
+       *  segment without one is never ordered against — it just keeps its
+       *  place. Nothing else reads it. */
+      timestamp?: number;
     }
   | {
       type: 'tool';
@@ -480,6 +501,8 @@ export type SubagentSegment =
       toolName: string;
       input: Record<string, unknown>;
       status: 'running' | 'complete' | 'failed' | 'awaiting-approval';
+      /** See the 'text' variant's `timestamp` — same field, same one reason. */
+      timestamp?: number;
       response?: string;
       error?: string;
       structuredPatch?: StructuredPatchHunk[];
@@ -512,6 +535,8 @@ export type SubagentSegment =
       id: string;
       content: string;
       partId?: string;
+      /** See the 'text' variant's `timestamp` — same field, same one reason. */
+      timestamp?: number;
     };
 
 /** Specialists 1c — one mid-run steering message, kept on the ledger record so
@@ -813,7 +838,7 @@ export interface SkillEntry {
   description: string;
   category: 'personal' | 'work' | 'development' | 'admin' | 'other';
   prompt: string;
-  source: 'youcoded-core' | 'self' | 'plugin' | 'marketplace';
+  source: 'youcoded-core' | 'self' | 'project' | 'plugin' | 'marketplace';
   pluginName?: string;
 
   // New — marketplace fields
@@ -1732,6 +1757,15 @@ export const IPC = {
   PROVIDER_TEST: 'provider:test',
   PROVIDER_SET_KEY: 'provider:set-key',
   PROVIDER_CATALOG: 'provider:catalog',
+  // ---- Sign in with ChatGPT (design 2026-09-04, backend design 2026-09-05 §5) ----
+  // status → ChatGptAccountStatus (shared/chatgpt-types.ts); the three verbs →
+  // boolean, or a THROWN sentence the card renders verbatim. Kill switch
+  // YOUCODED_CHATGPT=0: the handlers stay registered (parity) and answer
+  // signed-out / false.
+  CHATGPT_STATUS: 'chatgpt:status',
+  CHATGPT_SIGN_IN: 'chatgpt:sign-in',
+  CHATGPT_CANCEL_SIGN_IN: 'chatgpt:cancel-sign-in',
+  CHATGPT_SIGN_OUT: 'chatgpt:sign-out',
   // ---- WebSearch providers (Phase 2 Plan B): keyed Tavily/Exa upgrades ----
   // list = the fixed upgradeable-backend rows (hasKey flags); set/remove-key
   // manage the encrypted key; test = never-throws connectivity check.

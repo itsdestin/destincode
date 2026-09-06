@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { scanSkills } from '../src/main/skill-scanner';
+import { scanProjectSkills, scanSkills } from '../src/main/skill-scanner';
 
 describe('scanSkills', () => {
   let tmpHome: string;
@@ -50,6 +50,23 @@ describe('scanSkills', () => {
     // Non-youcoded plugins get namespaced ids: <plugin>:<skill>
     expect(ids).toEqual(['test-plugin:remote-setup', 'test-plugin:setup-wizard']);
     expect(skills.every((s: any) => s.source === 'plugin')).toBe(true);
+  });
+
+  it('discovers a project skill from its .claude/skills directory', () => {
+    mkdir(path.join(tmpHome, '.claude', 'plugins'));
+    const project = fs.mkdtempSync(path.join(os.tmpdir(), 'youcoded-project-skill-'));
+    try {
+      write(path.join(project, '.claude', 'skills', 'wrap-up', 'SKILL.md'),
+        '---\nname: Wrap up\ndescription: Improve this workspace\n---\n\nInstructions\n');
+
+      expect(scanProjectSkills(project)).toContainEqual(expect.objectContaining({
+        id: 'wrap-up', source: 'project', visibility: 'private',
+        displayName: 'Wrap up', description: 'Improve this workspace',
+        skillDir: path.join(project, '.claude', 'skills', 'wrap-up'),
+      }));
+    } finally {
+      fs.rmSync(project, { recursive: true, force: true });
+    }
   });
 
   it('tags user-authored skills under ~/.claude/skills/ with source:"self"', () => {

@@ -74,6 +74,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * Microphone permission launcher for voice prompting.
+     *
+     * WHY it lives here and not in the background service: on Android only a
+     * visible app window may ask the user for a permission. SessionService parks a
+     * "waiting for an answer" slot when the user taps the mic; this launcher shows
+     * the system prompt and drops the user's answer into that slot — the same
+     * hand-off the file picker above uses.
+     */
+    private val micPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        boundService?.pendingMicPermission?.complete(granted)
+    }
+
     private var boundService: com.youcoded.app.runtime.SessionService? = null
 
     /**
@@ -229,6 +244,13 @@ class MainActivity : ComponentActivity() {
                                         }
                                         svc.onQrScanRequested = {
                                             _showQrScanner.value = true
+                                        }
+                                        // Voice prompting: the service asks, the window
+                                        // shows the microphone prompt (a service cannot).
+                                        svc.onMicPermissionRequested = {
+                                            micPermissionLauncher.launch(
+                                                android.Manifest.permission.RECORD_AUDIO
+                                            )
                                         }
                                         // Marketplace auth: open the GitHub device-code URL in the
                                         // device's default browser. Non-fatal — if no browser is
