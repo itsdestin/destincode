@@ -2708,6 +2708,40 @@ export class NativeSessionHost extends EventEmitter {
     });
   }
 
+  /**
+   * Messages typed BEFORE the session finished starting, keyed by session id.
+   *
+   * WHY THIS EXISTS (Destin, 2026-09-06). He made a session on a local model and
+   * typed straight away. The app answered "This session is no longer running.
+   * Start or resume it to send messages." Both halves were false: the session had
+   * never run yet — the engine was still loading a 29 GB model — and there was
+   * nothing to start or resume. A minute later the same session answered him
+   * normally. `send()` looked the id up in `this.live`, found nothing, and had
+   * exactly ONE reason code for "not in that map", which covers two opposite
+   * situations: a session that has ENDED, and a session that has not STARTED yet.
+   *
+   * An id is in this map from the moment create()/resume() begins until wire()
+   * makes it live. A send that lands in that window is held here and delivered
+   * the instant the session exists, so the message the user typed is never
+   * thrown away — which is the real harm; better wording alone still loses it.
+   */
+  private startingSends = new Map<string, { id: string; text: string; attachments: string[] }[]>();
+
+  /** Mark an id as being built. Called at the TOP of create() and resume(), so
+   *  the window a pre-live send can fall into is covered from its first tick. */
+  private beginStarting(sessionId: string): void {
+    if (!this.startingSends.has(sessionId)) this.startingSends.set(sessionId, []);
+  }
+
+  /** Stop holding sends for an id, returning whatever was held. Called by wire()
+   *  on success, and by create()/resume() when they give up — a message held for
+   *  a session that never came up must not sit in memory forever. */
+  private endStarting(sessionId: string): { id: string; text: string; attachments: string[] }[] {
+    const held = this.startingSends.get(sessionId) ?? [];
+    this.startingSends.delete(sessionId);
+    return held;
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession, mcpLease?: McpLease): void {
@@ -2739,10 +2773,35 @@ export class NativeSessionHost extends EventEmitter {
           });
         });
     });
+    // Anything the user typed while this session was still being built goes now,
+    // in the order they typed it. The FIRST one is dispatched through the normal
+    // send() path (which sets inFlight and, when that turn ends, drains the rest);
+    // the others are pushed onto the queue KEEPING the ids the renderer was already
+    // given, so Cancel/Edit can still target them.
+    const held = this.endStarting(sessionId);
+    if (held.length > 0) {
+      const [first, ...rest] = held;
+      entry.queue.push(...rest);
+      this.send(sessionId, first.text, first.attachments);
+    }
   }
 
   /** Fresh session: write the header, build + wire a live HarnessSession. */
   async create(opts: CreateNativeSessionOpts): Promise<void> {
+    // From here until wire(), a send for this id is HELD rather than refused —
+    // see startingSends. Marked before the first await so there is no tick in
+    // which a typed message would be told the session is "no longer running",
+    // and released in the `finally` if the session never comes up, so a held
+    // message cannot sit in memory for the life of the app.
+    this.beginStarting(opts.sessionId);
+    try {
+      await this.createInner(opts);
+    } finally {
+      if (!this.live.has(opts.sessionId)) this.endStarting(opts.sessionId);
+    }
+  }
+
+  private async createInner(opts: CreateNativeSessionOpts): Promise<void> {
     // Same single-writer guard as resume() — create() also ends in wire(), so an
     // id that is somehow still live would gain a second appending listener here
     // too. Cheap and idempotent; closes the class at BOTH wire() entry points
@@ -3172,6 +3231,18 @@ export class NativeSessionHost extends EventEmitter {
    *  would race that read and load the header's (possibly wrong/absent) model
    *  first. */
   async resume(sessionId: string, cwd: string, bindingOverride?: ModelBinding): Promise<boolean> {
+    // Same pre-live send holding as create() — resuming a big local model is
+    // exactly as slow as creating one, and typing during it must not be told the
+    // session is "no longer running".
+    this.beginStarting(sessionId);
+    try {
+      return await this.resumeInner(sessionId, cwd, bindingOverride);
+    } finally {
+      if (!this.live.has(sessionId)) this.endStarting(sessionId);
+    }
+  }
+
+  private async resumeInner(sessionId: string, cwd: string, bindingOverride?: ModelBinding): Promise<boolean> {
     // SINGLE-WRITER GUARD (2026-07-18): tear down any session already live under
     // this id BEFORE wiring a new one. Without this, resuming an id that is still
     // live leaves the old HarnessSession's transcript-event listener attached —
@@ -3290,7 +3361,21 @@ export class NativeSessionHost extends EventEmitter {
    *  surface is a provider-factory rejection, which runTurns catches. */
   send(sessionId: string, text: string, attachments: string[] = []): NativeSendResult {
     const entry = this.live.get(sessionId);
-    if (!entry) return { status: 'failed', reason: 'not-live' };
+    if (!entry) {
+      // Not live YET is not the same as not live any more. A session still being
+      // built holds the message and delivers it the moment it is ready (see
+      // startingSends). Only when that holding area is full does this refuse, and
+      // it refuses with its own reason so the renderer can say "still starting"
+      // instead of the flatly untrue "no longer running".
+      const held = this.startingSends.get(sessionId);
+      if (held) {
+        if (held.length >= SEND_QUEUE_LIMIT) return { status: 'failed', reason: 'starting' };
+        const queueId = randomUUID();
+        held.push({ id: queueId, text, attachments });
+        return { status: 'queued', queueId };
+      }
+      return { status: 'failed', reason: 'not-live' };
+    }
     if (entry.inFlight) {
       if (entry.queue.length >= SEND_QUEUE_LIMIT) return { status: 'failed', reason: 'queue-full' };
       // Task 11: mint a stable id per queued entry so the renderer can target
@@ -3329,6 +3414,16 @@ export class NativeSessionHost extends EventEmitter {
    *  renderer's Cancel/Edit affordance can render a single "too late" toast
    *  without needing to distinguish the reason. */
   removeQueued(sessionId: string, queueId: string): boolean {
+    // A message typed while the session was still starting is held OUTSIDE the
+    // live entry (startingSends), and it is exactly the message a user is most
+    // likely to want back — they have been staring at a spinner. Cancel/Edit has
+    // to reach it there too, or it would report "too late" for a message that has
+    // not been sent at all.
+    const held = this.startingSends.get(sessionId);
+    if (held) {
+      const i = held.findIndex((q) => q.id === queueId);
+      if (i !== -1) { held.splice(i, 1); return true; }
+    }
     const entry = this.live.get(sessionId);
     if (!entry) return false;
     const idx = entry.queue.findIndex((q) => q.id === queueId);
@@ -4104,6 +4199,9 @@ export class NativeSessionHost extends EventEmitter {
     // generation this call captured (see the comment there), and that property
     // must survive the new await, not just the ones that were already here.
     const entry = this.live.get(sessionId);
+    // A session torn down while it was still starting has nowhere to deliver a
+    // held message, so drop it here rather than leave it stranded in memory.
+    this.endStarting(sessionId);
     // Specialist children go next, and unconditionally — before the not-live
     // early return, because a child must never outlive its parent even if the
     // parent's own entry is already gone (a double destroy, or a teardown

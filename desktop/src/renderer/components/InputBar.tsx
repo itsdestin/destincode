@@ -95,11 +95,23 @@ function fileNameFromPath(p: string): string {
 
 // M1: copy for a refused/unknown native send ack, shown via onToast instead
 // of dispatching a phantom bubble. Each branch names the REAL cause reported
-// by the host (queue-full / not-live) rather than a guessed one — see
+// by the host (queue-full / not-live / starting) rather than a guessed one — see
 // docs/error-message-standards.md ("never guess an unverified cause").
+//
+// CORRECTED 2026-09-06. That claim used to be false for one branch. The host had
+// a single 'not-live' code for two opposite situations — a session that has ENDED
+// and one that has not STARTED yet — so a brand-new session on a local model told
+// Destin it was "no longer running" and to "start or resume it", while the engine
+// was quietly loading a 29 GB model that answered him a minute later. Neither half
+// was true and neither remedy existed. The host now separates them, and a message
+// typed during startup is HELD and delivered rather than refused at all, so this
+// branch is only reached when ten are already waiting.
 function sendFailureCopy(result: NativeSendResult | undefined): string {
   if (result?.status === 'failed' && result.reason === 'queue-full') {
     return 'Send queue is full (10 messages waiting). Wait for the current turn to finish.';
+  }
+  if (result?.status === 'failed' && result.reason === 'starting') {
+    return 'Starting up — the model is still loading, and ten messages are already waiting.';
   }
   if (result?.status === 'failed' && result.reason === 'not-live') {
     return 'This session is no longer running. Start or resume it to send messages.';

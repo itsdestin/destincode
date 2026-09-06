@@ -256,7 +256,45 @@ export default function ModelPicker({
     }
   }, []);
 
+  /**
+   * Why this list is fetched more than once (Destin, 2026-09-06).
+   *
+   * He opened this menu, went off and set up a local model, came back to the
+   * STILL-OPEN menu, searched for it — and it wasn't there. Closing the menu and
+   * opening it again fixed it. The fetch below used to run once, when the picker
+   * mounted, and never again, so the list was a snapshot of whatever existed the
+   * moment the screen was built.
+   *
+   * Two things make it catch up now:
+   *   · it re-runs when the panel OPENS, for "went away and came back";
+   *   · `reload` is bumped when a local model finishes DOWNLOADING, for the case
+   *     Destin actually hit, where the panel never closed.
+   *
+   * The download signal is the app's existing progress push — the one the Local
+   * Models screen already listens to. It is deliberately NOT `engine.onModelsChanged`:
+   * that channel is declared in the preload and in shared/types.ts but NOTHING in
+   * the main process ever sends it (`rg -n "ENGINE_MODELS_CHANGED" src/` finds the
+   * declaration and the listener, no sender), and even wired up it only fires while
+   * the engine PROCESS is running — which it is not while you are downloading a
+   * model, since the engine starts on your first message.
+   */
+  const [reload, setReload] = useState(0);
+  const everLoadedRef = useRef(false);
+
   useEffect(() => {
+    const off = window.claude?.models?.onDownloadProgress?.((p: { state?: string }) => {
+      if (p?.state === 'done') setReload((n) => n + 1);
+    });
+    return () => { off?.(); };
+  }, []);
+
+  useEffect(() => {
+    // The very first fetch happens while the panel is still closed (the pill has
+    // to show the model's name, and a prefill has to resolve). After that, only
+    // an open or a finished download is worth re-asking for — closing the panel
+    // is not.
+    if (everLoadedRef.current && !open) return;
+    everLoadedRef.current = true;
     let cancelled = false;
     Promise.all([
       window.claude.providers.list().catch(() => []),
@@ -281,7 +319,8 @@ export default function ModelPicker({
       }
     }).catch(() => setLoaded(true));
     return () => { cancelled = true; };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, reload]);
 
   // Reset the transient view state on each open so the panel always starts on
   // the favourites view rather than resuming a stale search.
