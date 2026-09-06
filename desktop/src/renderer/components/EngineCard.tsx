@@ -33,6 +33,14 @@ interface EngineStatusView {
   lastReply?: { promptPerSecond?: number; generatePerSecond?: number } | null;
   backendOptions?: BackendOption[];
   speed?: EngineSpeedSettings;
+  /** A saved engine setting has not reached the engine yet, because a reply is
+   *  still streaming (design §B). */
+  configApplyPending?: boolean;
+  /** The real failure text if applying a saved setting went wrong. */
+  configApplyError?: string | null;
+  /** False when the running engine started WITHOUT its per-model settings file.
+   *  `undefined` = the question does not apply (not running / older main). */
+  modelSettingsInForce?: boolean;
 }
 
 type Progress =
@@ -233,7 +241,16 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
     : facts.filter(Boolean).join(' · ');
 
   const options = (status.backendOptions ?? []).filter((o) => o.backend !== status.backend);
-  const speed = status.speed ?? { speculative: true, compressCache: true };
+  // WHY there is no `?? { speculative: true, compressCache: true }` here any
+  // more: that was a THIRD copy of a default already written down twice (main's
+  // DEFAULT_ENGINE_SPEED and the spawn config), and every producer of this
+  // status — Electron's handler, the remote server, and the workbench fake —
+  // always sends `speed`. A copy that cannot be reached can only drift, and a
+  // drifted copy would draw both switches ON while the engine ran with one OFF.
+  // If a status ever arrives without it, the switches are hidden rather than
+  // guessed: showing a switch we cannot read is a claim about the user's
+  // machine we have no basis for.
+  const speed = status.speed;
 
   return (
     // Change 25: the in-panel row surface — bg-inset/50, borderless. Was
@@ -300,6 +317,22 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
           A newer engine ({status.pinnedVersion}) is available. Newer engines can run
           newer models — update if a model you downloaded won't load.
         </p>
+      )}
+
+      {/* The engine started without the file that holds each model's own
+          settings (T7's fallback: a settings file it cannot use produces a
+          WORKING engine rather than a dead one). Until this line existed the
+          fallback was silent — a user whose per-model context length and extra
+          flags were being ignored saw a perfectly normal running engine.
+          Strictly `=== false`: `undefined` means nobody has an answer (the
+          engine is not running, or an older main never sent one), and that must
+          not read as "off". No button, because there is nothing to press —
+          the engine writes the file again by itself at its next start. */}
+      {status.modelSettingsInForce === false && (
+        <Callout tone="warning" className="mt-2" title="Each model&rsquo;s own settings are off right now">
+          The engine could not use the file that holds them, so every model is running on the
+          engine&rsquo;s own settings. It tries again the next time the engine starts.
+        </Callout>
       )}
 
       {/* Extra controls for the Local Models panel (Plan C). Only shown once the
@@ -425,6 +458,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
               {/* Both default ON — the best defaults ship; the switch is for ruling a
                   feature out when a model misbehaves (Destin, Q-4 note). Short hints;
                   the (i) carries the explanation. */}
+              {speed && (<>
               <SettingRow
                 variant="item"
                 title={(
@@ -471,6 +505,7 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                   />
                 )}
               />
+              </>)}
 
               {/* Context-length knob. Commits on Enter or blur. Moved under Advanced
                   2026-09-05; a model's own Settings can override it. */}
@@ -504,6 +539,22 @@ export default function EngineCard({ showDetails = false }: { showDetails?: bool
                   />
                 )}
               />
+
+              {/* A setting saved here does NOT reach the engine while a reply is
+                  streaming — restarting it mid-answer would kill the reply on
+                  screen, so the change is held until the engine is quiet (up to
+                  ten minutes). Without this line the user flips a switch and
+                  watches nothing happen, with no way to tell whether it saved. */}
+              {status.configApplyPending && (
+                <p className="text-3xs text-fg-muted" data-testid="engine-apply-pending">
+                  Applies after the current reply.
+                </p>
+              )}
+              {/* The REAL failure, in main's words. This one has nowhere else to
+                  go: the setting was saved and the call already answered "yes"
+                  long before applying it went wrong, so without this line the
+                  change silently never lands. */}
+              {status.configApplyError && <FieldError as="p">{status.configApplyError}</FieldError>}
 
               {/* Engine build + folder — read-only facts, one quiet row. */}
               <SettingRow

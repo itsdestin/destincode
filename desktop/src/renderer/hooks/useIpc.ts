@@ -408,9 +408,12 @@ declare global {
         memoryCheck: (modelId: string) => Promise<{ verdict: 'ok' | 'tight' | 'too-large'; headline: string; detail: string }>;
         load: (modelId: string) => Promise<boolean>;
         // 2026-09-05 local-engine upgrades (workbench-first; see mock-only.ts).
-        /** Per-model engine settings (deck Q-2). */
-        settings: (modelId: string) => Promise<import('../../shared/model-manager-types').ModelSettings>;
-        setSettings: (modelId: string, patch: Partial<import('../../shared/model-manager-types').ModelSettings>) => Promise<import('../../shared/model-manager-types').ModelSettings>;
+        /** Per-model engine settings (deck Q-2). The ANSWER is the stored record,
+         *  which is wider than what the dialog may write: it also carries why the
+         *  model last failed to load and whether a save is still waiting for the
+         *  reply on screen. Declaring the narrow shape here hid both from the UI. */
+        settings: (modelId: string) => Promise<import('../../shared/model-manager-types').StoredModelSettings>;
+        setSettings: (modelId: string, patch: Partial<import('../../shared/model-manager-types').ModelSettings>) => Promise<import('../../shared/model-manager-types').StoredModelSettings>;
         /** Fetch the vision projector for a model already on disk and move both into a folder (S-3). */
         addVision: (modelId: string) => Promise<{ downloadId: string }>;
         /** Remember "don't warn me again" for this model at this context length (S-2). */

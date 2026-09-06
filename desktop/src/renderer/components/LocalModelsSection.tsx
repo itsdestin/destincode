@@ -14,7 +14,7 @@ import EngineCard from './EngineCard';
 import { Button, FieldError, InputGroup, ProgressBar, Callout, AnchorTip, Toggle, TextInput, Select, SettingRow, Dialog } from './ui';
 import type {
   CuratedModel, QuantOption, FitEstimate, DownloadProgress,
-  InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettings,
+  InstalledLocalModel, DetectedEndpoint, HFSearchHit, ModelSettings, StoredModelSettings,
 } from '../../shared/model-manager-types';
 import { stripSplitSuffix } from '../../shared/gguf-split';
 import { matchesQuery } from '../../shared/text-match';
@@ -45,14 +45,21 @@ function fitColor(fit: FitEstimate['fit']): string {
  *  number — what the download takes on disk, model plus vision file — drawn with a
  *  dotted underline. Hover (or tap) breaks it down: model, vision file, and the memory
  *  the context adds while it runs, so "tight" is never a mystery but the row stays a
- *  single line. An older main sends no breakdown: the number stands alone. */
-function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fit: FitEstimate; visionBytes?: number | null } }) {
+ *  single line. An older main sends no breakdown: the number stands alone.
+ *
+ *  Exported (named) for the same reason LocalModelRow is: a test can pin every
+ *  state of the bubble without booting the whole section and its models API. */
+export function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fit: FitEstimate; visionBytes?: number | null } }) {
   const b = q.fit.breakdown;
   const vision = b?.visionBytes ?? q.visionBytes ?? 0;
   const download = q.totalSizeBytes + vision;
   const number = <span className="underline decoration-dotted decoration-fg-faint underline-offset-2 cursor-help">{gb(download)}</span>;
   if (!b) return <span className="text-fg-dim">{number} · {q.quant}</span>;
   const ctxK = Math.round(b.contextLength / 1024);
+  // R1-25: when the estimator could not fully read this model's header it
+  // returns a CEILING for the context memory, not a reading. Printing a ceiling
+  // as an exact figure is fake precision, so the line reads "up to 1.6 GB".
+  const upTo = b.contextBytesIsUpperBound ? 'up to ' : '';
   return (
     <span className="text-fg-dim">
       <AnchorTip label={`What ${gb(download)} is made of`} title="What this needs" trigger="hover" placement="bottom" align="start" widthClass="w-64" anchor={number}>
@@ -61,7 +68,12 @@ function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fit: FitE
           {vision > 0 && <><dt className="text-fg-muted">Vision file (sees images)</dt><dd className="text-fg text-right">{gb(vision)}</dd></>}
           <dt className="text-fg-muted">Download</dt><dd className="text-fg text-right font-medium">{gb(download)}</dd>
           <dt className="text-fg-muted pt-1">Memory while running</dt><dd className="text-fg text-right pt-1">{gb(download + b.contextBytes)}</dd>
-          <dt className="text-fg-faint col-span-2">includes {gb(b.contextBytes)} for a {ctxK}k context</dt>
+          <dt className="text-fg-faint col-span-2">includes {upTo}{gb(b.contextBytes)} for a {ctxK}k context</dt>
+          {/* R8: the ONE thing the user can do about a tight or too-large
+              verdict, in the estimator's words — the renderer never composes
+              this sentence, so the advice a user reads and the verdict main
+              reached can never drift apart. Absent on a model that fits. */}
+          {b.advice && <dt className="text-fg-2 col-span-2 pt-1">{b.advice}</dt>}
         </dl>
       </AnchorTip>
       {' · '}{q.quant}
@@ -901,7 +913,11 @@ const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'
  *  concept needs more than a line. Saves on blur/toggle; the model reloads with
  *  the new values on its next message. */
 function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; modelId: string; name: string; onClose: () => void }) {
-  const [settings, setSettings] = useState<ModelSettings | null>(null);
+  // The STORED record, not just the four settings this dialog writes: main also
+  // keeps two things about a model that the user never sets and has to be told
+  // — why it last failed to load, and whether a save it has already made is
+  // still waiting for the reply on screen to finish.
+  const [settings, setSettings] = useState<StoredModelSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ctxDraft, setCtxDraft] = useState('');
   const [flagsDraft, setFlagsDraft] = useState('');
@@ -911,7 +927,7 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     let alive = true;
     // Mounted only while open (the row gates it), so this fetch happens on demand —
     // an older bridge without the channel shows the error line instead of throwing.
-    const api = window.claude.models as { settings?: (id: string) => Promise<ModelSettings> };
+    const api = window.claude.models as { settings?: (id: string) => Promise<StoredModelSettings> };
     if (typeof api.settings !== 'function') { setError('This version cannot read per-model settings.'); return; }
     api.settings(modelId)
       .then((st) => { if (alive) { setSettings(st); setCtxDraft(st.contextLength == null ? '' : String(st.contextLength)); setFlagsDraft(st.extraFlags); } })
@@ -945,6 +961,18 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
       {!settings && !error && <p className="text-3xs text-fg-muted">Loading settings…</p>}
       {settings && (
     <div className="space-y-1.5" data-testid="model-settings">
+      {/* R26 / design §C2: why this model last failed to load, in the ENGINE'S
+          OWN WORDS. Never a cause we worked out here — a mistyped extra flag,
+          a file the engine cannot read and a machine out of memory all land in
+          this one field, and a guess would send the user to fix the wrong
+          thing. It sits at the top rather than beside the flags box because
+          that box is behind Advanced, and a message nobody opens is a message
+          nobody reads. Absent entirely when the model loaded fine. */}
+      {settings.lastLoadError && (
+        <Callout tone="danger" title="This model did not load">
+          <p className="text-2xs">{settings.lastLoadError}</p>
+        </Callout>
+      )}
       <SettingRow
         variant="item"
         title="Context length"
@@ -1013,7 +1041,8 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
               <AnchorTip label="About extra engine flags" title="Extra engine flags" widthClass="w-72">
                 Anything else the llama.cpp engine accepts on its command line, passed
                 through as written when this model loads. A mistyped flag stops the model
-                from loading — the engine&rsquo;s own message appears here when that happens.
+                from loading — the engine&rsquo;s own message then appears at the top of
+                this dialog.
               </AnchorTip>
             </p>
             <TextInput
@@ -1028,6 +1057,16 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
             />
           </div>
         </div>
+      )}
+      {/* design §C2: a saved setting does NOT reach a model that is answering
+          right now — rewriting the engine's settings file mid-reply would drop
+          the model halfway through a sentence. So the save is held until this
+          model goes quiet, and this line is the only thing that tells the user
+          why the change they just made has not taken effect yet. */}
+      {settings.pendingApply && (
+        <p className="text-3xs text-fg-muted pt-1" data-testid="model-settings-pending">
+          Applies after the current reply.
+        </p>
       )}
       {error && <FieldError as="p">{error}</FieldError>}
     </div>

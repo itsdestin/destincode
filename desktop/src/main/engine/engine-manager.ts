@@ -574,6 +574,11 @@ export class EngineManager extends EventEmitter {
       // is saved, the engine has not picked it up yet.
       configApplyPending: this.applyWaiter !== null,
       configApplyError: this.configApplyError,
+      // Only a RUNNING engine can answer this. `presetActive` is false while the
+      // supervisor is stopped or starting, so reporting it unconditionally would
+      // tell every user with a stopped engine that their per-model settings are
+      // being ignored — which is a fact about a run that has not happened yet.
+      modelSettingsInForce: supState === 'running' ? (this.supervisor?.presetInForce() ?? false) : undefined,
     };
   }
 

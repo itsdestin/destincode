@@ -600,10 +600,10 @@ describe('EngineManager — the last reply\'s speed', () => {
     // is not wired into status() at all (measured: that mutation stayed green).
     plantInstall();
     const mgr = new EngineManager(home, userData, 9999);
-    (mgr as any).supervisor = { status: () => 'running', loadedModelsBytes: () => 9_527_502_048 };
+    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, loadedModelsBytes: () => 9_527_502_048 };
     expect(mgr.status().loadedModelsBytes).toBe(9_527_502_048);
     // And a supervisor that has not been asked yet passes its absence through.
-    (mgr as any).supervisor = { status: () => 'running', loadedModelsBytes: () => undefined };
+    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, loadedModelsBytes: () => undefined };
     expect(mgr.status().loadedModelsBytes).toBeUndefined();
   });
 
@@ -903,7 +903,7 @@ describe('EngineManager.setBackend — the device check, the real load, and what
     plantInstall('vulkan');
     const mgr = new EngineManager(home, userData, 9999);
     const stop = vi.fn(async () => {});
-    (mgr as any).supervisor = { status: () => 'running', stop };
+    (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, stop };
     (mgr as any).supervisorBinary = path.join(userData, 'engine', `${ENGINE_VERSION}-vulkan`, 'llama-server.exe');
     stubDownload(mgr, { devices: SOFTWARE_ONLY });
     stubBoots(mgr);
@@ -922,7 +922,7 @@ describe('EngineManager.setBackend — the device check, the real load, and what
     // boot then fails, that binary is about to be deleted underneath it.
     vi.spyOn(mgr as unknown as { verifyBoot: () => Promise<void> }, 'verifyBoot')
       .mockImplementation(async () => {
-        (mgr as any).supervisor = { status: () => 'running', stop };
+        (mgr as any).supervisor = { status: () => 'running', presetInForce: () => true, stop };
         (mgr as any).supervisorBinary = path.join(ROCM_DIR(), 'llama-server');
         throw new Error('port busy');
       });

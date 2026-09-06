@@ -2,7 +2,7 @@ import { MARKETPLACE_API_HOST } from '../../state/marketplace-api-client';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
-import type { InstalledLocalModel, DownloadProgress, ModelSettings } from '../../../shared/model-manager-types';
+import type { InstalledLocalModel, DownloadProgress, ModelSettings, StoredModelSettings } from '../../../shared/model-manager-types';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
@@ -788,8 +788,15 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // round ones that hide formatting bugs. NOTE the app's gb() divides by 1024^3:
   // 79_674_559_677 renders as 74.2 GB, 121_334_654_784 as 113.0 GB.
   // Q-2: per-model settings the panel reads and writes during a workbench session.
-  const DEFAULT_MODEL_SETTINGS: ModelSettings = { contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '' };
-  const modelSettings: Record<string, ModelSettings> = {};
+  // The STORED record, not just the four editable settings: `models:settings`
+  // answers with what main holds for a model, which also carries the dismissed
+  // memory warning, whether a save is still waiting for the current reply, and
+  // why the model last failed to load. Typed as the narrower shape, the fake
+  // could not produce the states the dialog now draws.
+  const DEFAULT_MODEL_SETTINGS: StoredModelSettings = {
+    contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '', memoryWarningDismissed: null,
+  };
+  const modelSettings: Record<string, StoredModelSettings> = {};
   const LOCAL_MODELS: InstalledLocalModel[] = [
     {
       id: 'Qwen3.5-9B-Q8_0',
@@ -867,7 +874,13 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       const ctx = 32_768;
       const row = (quant: string, description: string, modelBytes: number, fit: 'fits' | 'tight' | 'too-large', label: string) => ({
         quant, description, files: [`${quant}.gguf`], totalSizeBytes: modelBytes, sha256ByFile: {}, visionBytes: vision,
-        fit: { fit, label, breakdown: { modelBytes, contextBytes: 1_744_830_464, contextLength: ctx, ...(vision ? { visionBytes: vision } : {}) } },
+        fit: { fit, label, breakdown: {
+          modelBytes, contextBytes: 1_744_830_464, contextLength: ctx,
+          ...(vision ? { visionBytes: vision } : {}),
+          // Main attaches this to EVERY non-fits verdict (R8). Without it the
+          // fake's "tight" row draws a bubble the real app never draws.
+          ...(fit === 'fits' ? {} : { advice: "Lower this model's context length in its Settings to shrink this." }),
+        } },
       });
       return [
         row('UD-Q4_K_XL', 'Balanced quality and size — recommended', 2_580_000_000, 'fits', 'Runs fast — fits on your GPU'),

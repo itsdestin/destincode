@@ -106,6 +106,19 @@ export interface EngineStatus {
    *  field: the setting is written and the channel has already answered by the
    *  time the change is applied, so a failure here has no call to fail. */
   configApplyError?: string | null;
+  /** False when the RUNNING engine started without its per-model settings file,
+   *  so every model is on the engine-wide settings for this run (T7's fallback,
+   *  `EngineSupervisor.presetInForce()`).
+   *
+   *  WHY it has to reach the card: the fallback exists so a settings file the
+   *  engine cannot use produces a working engine instead of a dead one — but
+   *  silently. Without this field a user whose per-model context length and
+   *  extra flags are being ignored sees a normal, running engine and no
+   *  explanation at all.
+   *
+   *  `undefined` means the question does not apply (the engine is not running,
+   *  or an older main never answered it) — never "not in force". */
+  modelSettingsInForce?: boolean;
 }
 
 export type EngineInstallProgress =

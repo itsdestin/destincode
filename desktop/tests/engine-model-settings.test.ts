@@ -566,6 +566,28 @@ describe('each model\'s bound is its OWN, and a fallback boot applies nothing (�
     expect(storedFor('alpha').pendingApply).toBe(true);
   });
 
+  it('T23: the CARD is told — status reports per-model settings NOT in force', async () => {
+    // WHY this has to be on the status and not only inside the supervisor: the
+    // fallback exists so a settings file the engine cannot use produces a
+    // working engine rather than a dead one, and until this field reached the
+    // renderer that rescue was completely silent. The user's per-model context
+    // length and extra flags are being ignored for this whole run.
+    await bootWithoutPreset();
+    expect(mgr!.status().modelSettingsInForce).toBe(false);
+  });
+
+  it('T23: a normal boot reports them in force, and a stopped engine reports NOTHING', async () => {
+    plantInstall();
+    await plantConfig();
+    mgr = makeManager(makeFetch());
+    // Not `false`. Nobody has asked the engine anything yet, and `false` here
+    // would tell every user with a stopped engine that their settings are being
+    // ignored — a claim about a run that has not happened.
+    expect(mgr.status().modelSettingsInForce).toBeUndefined();
+    await mgr.registryHook().ensureRunning();
+    expect(mgr.status().modelSettingsInForce).toBe(true);
+  });
+
   it('a fallback boot does NOT clear a pending change — nothing was read to put it in force', async () => {
     // The gate that makes this true is `presetInForce()` in notePresetInForce.
     // Its sibling — only acting on the TRANSITION into running — has no test:
