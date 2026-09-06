@@ -1078,29 +1078,55 @@ describe('models:* + engine:set-* channel parity (Plan C)', () => {
     expect(src).toContain('ipcRenderer.invoke(IPC.MODELS_SET_SETTINGS, modelId, patch)');
     expect(src).toContain('ipcRenderer.invoke(IPC.MODELS_DOWNLOAD, repo, quant)');
   });
-  // Android answers these six with `unsupported`, not the plain
-  // not-implemented error the other desktop-only channels send, and the
-  // difference is something a user reads. The shim RE-THROWS an { ok:false }
-  // answer for exactly these (REJECT_ON_NOT_OK), so without the flag a phone
-  // puts the literal words "not-implemented-on-mobile" in the model settings
-  // dialog as if the engine had said them. Dropping the flag left every test
-  // green until this one existed.
-  it('SessionService.kt marks the six local-engine channels unsupported, not merely failed', () => {
+  // Android answers these six — and ONLY these six — with `unsupported`, not the
+  // plain not-implemented error every other desktop-only channel sends.
+  //
+  // WHY the set has to be checked for EQUALITY and not just for presence: a
+  // Kotlin `when` branch runs from its FIRST comma-separated value down to the
+  // one carrying the `-> {`. Written into the middle of the long
+  // not-implemented list, this branch's `-> {` silently swallowed the eighteen
+  // native:* / provider:* channels above it — `provider:list` runs every time
+  // the model picker opens, so a phone doing no remote access started popping
+  // "provider:list isn't available via remote access yet." A presence-only
+  // check called that green, because the six were all still present.
+  it('SessionService.kt marks exactly the six local-engine channels unsupported', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'app', 'src', 'main', 'kotlin', 'com', 'youcoded', 'app', 'runtime', 'SessionService.kt'), 'utf8');
+
+    // Walk the `when` the way Kotlin does: labels accumulate until a line
+    // carries `->`, and everything accumulated belongs to THAT branch.
+    const armOf = new Map<string, string>();
+    let pending: string[] = [];
+    for (const line of src.split('\n')) {
+      const t = line.trim();
+      if (t.startsWith('//')) continue;
+      const labels = [...t.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+      if (labels.length === 0) continue;
+      if (t.includes('->')) {
+        const terminator = labels[labels.length - 1];
+        for (const l of [...pending, ...labels]) if (!armOf.has(l)) armOf.set(l, terminator);
+        pending = [];
+      } else if (/^("[^"]+",\s*)+$/.test(t)) {
+        pending.push(...labels);
+      }
+    }
+
+    // Sanity: if the walk found nothing the equality below would pass vacuously.
+    expect(armOf.get('provider:list')).toBe('github:disconnect');
+
     const six = [
-      'engine:set-config', 'engine:prereqs', 'engine:run-in-terminal',
-      'models:settings', 'models:set-settings', 'models:add-vision',
+      'engine:prereqs', 'engine:run-in-terminal', 'engine:set-config',
+      'models:add-vision', 'models:set-settings', 'models:settings',
     ];
-    // Read the branch that actually runs: this arm's labels are everything
-    // between the PREVIOUS arm's arrow and this arm's own, and its body is what
-    // follows. A channel that drifts into the plain not-implemented block below
-    // leaves this label list and fails.
+    const inTheArm = [...armOf.entries()]
+      .filter(([, terminator]) => terminator === 'models:add-vision')
+      .map(([ch]) => ch).sort();
+    expect(inTheArm).toEqual(six);
+
+    // …and the branch actually answers `unsupported`.
     const arrow = src.indexOf('"models:add-vision" -> {');
-    expect(arrow).toBeGreaterThan(-1);
-    const labels = src.slice(src.lastIndexOf('-> {', arrow), arrow);
-    for (const ch of six.filter((c) => c !== 'models:add-vision')) expect(labels).toContain(`"${ch}"`);
     expect(src.slice(arrow, arrow + 400)).toContain('.put("unsupported", true)');
   });
+
   // The FIFTH surface. remote-server.ts is where a remote browser's request
   // actually lands, and it is the one surface the original four-surface check
   // never looked at — a channel missing here answers nothing at all over the

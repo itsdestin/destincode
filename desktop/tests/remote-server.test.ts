@@ -281,6 +281,21 @@ describe('RemoteServer carries a per-model settings save end to end', () => {
     expect(sent[0].payload).toEqual({ ok: false, error: 'Context length must be at least 1024 tokens.' });
   });
 
+  it('answers nothing, not a made-up settings record, when there is no engine', async () => {
+    const { RemoteServer } = await import('../src/main/remote-server');
+    const server: any = new RemoteServer(sm, hr, cfg);
+    // No native runtime. A fabricated record here would put invented defaults in
+    // the settings dialog and let the user "save" them onto a machine with no
+    // engine config to save to.
+    const sent = await drive(server, { type: 'models:settings', id: 's5', payload: { modelId: 'alpha' } });
+    expect(sent[0].payload).toBeNull();
+
+    const saved = await drive(server, {
+      type: 'models:set-settings', id: 's6', payload: { modelId: 'alpha', patch: { keepLoaded: true } },
+    });
+    expect(saved[0].payload).toBeNull();
+  });
+
   it('does not report a download that never started when there is no engine', async () => {
     const { RemoteServer } = await import('../src/main/remote-server');
     const server: any = new RemoteServer(sm, hr, cfg);

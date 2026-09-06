@@ -33,6 +33,11 @@ const FEATURE_NAMES: Array<[string, string]> = [
   // sentence below appends "isn't available…".
   ['models:', 'The local model manager'],
   ['engine:', 'The local engine'],
+  // Desktop-only on a phone too, and both are called on ordinary screens
+  // (provider:list runs every time the model picker opens), so a missing name
+  // here is a toast reading a raw channel id at somebody.
+  ['provider:', 'Model providers'],
+  ['native:', 'The built-in assistant'],
 ];
 
 /** Plain-language name for the feature a channel belongs to. Falls back to the

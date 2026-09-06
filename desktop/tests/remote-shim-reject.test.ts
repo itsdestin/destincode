@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
+// @vitest-environment jsdom
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { REJECT_ON_NOT_OK, responseOutcome } from '../src/renderer/remote-shim';
+import { REJECT_ON_NOT_OK, responseOutcome, applyResponse } from '../src/renderer/remote-shim';
+import { REMOTE_UNSUPPORTED_EVENT } from '../src/renderer/remote-unsupported';
 
 // WHY this file exists: remote-server.ts answers `{ ok:false, error }` when a
 // handler throws, and the shim RESOLVES that for any channel not on this list —
@@ -74,10 +76,69 @@ describe('the shim rejects a failure instead of resolving it', () => {
     expect(responseOutcome('models:settings', { ok: false, unsupported: true })).toBe('unsupported');
   });
 
-  // The decision has to be the one the dispatcher actually runs. Extracting it
-  // and then not calling it would pass every assertion above.
-  it('the dispatcher uses that decision', () => {
-    expect(shim).toContain('switch (responseOutcome(channel, payload))');
+  // The BEHAVIOUR of settling a caller, not a source string. A text pin caught
+  // "stopped calling it" and missed "calls it and ignores the answer" — and
+  // ignoring the answer IS the original bug.
+  it('a listed channel\u2019s failure REJECTS the caller, with the host\u2019s reason', () => {
+    const resolve = vi.fn(); const reject = vi.fn();
+    applyResponse({ resolve, reject }, 'models:set-settings', { ok: false, error: 'Context length must be at least 1024 tokens.' });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(reject).toHaveBeenCalledTimes(1);
+    expect(reject.mock.calls[0][0].message).toBe('Context length must be at least 1024 tokens.');
+  });
+
+  it('an ordinary answer still reaches the caller as a value', () => {
+    const resolve = vi.fn(); const reject = vi.fn();
+    const settings = { contextLength: 8_192, keepLoaded: true };
+    applyResponse({ resolve, reject }, 'models:settings', settings);
+    expect(reject).not.toHaveBeenCalled();
+    expect(resolve).toHaveBeenCalledWith(settings);
+  });
+
+  it('an unlisted channel\u2019s { ok:false } is still DATA, not an error', () => {
+    const resolve = vi.fn(); const reject = vi.fn();
+    applyResponse({ resolve, reject }, 'sync:force', { ok: false, error: 'nope' });
+    expect(reject).not.toHaveBeenCalled();
+    expect(resolve).toHaveBeenCalledWith({ ok: false, error: 'nope' });
+  });
+
+  it('“the host does not implement this” rejects AND announces it in plain words', () => {
+    // Both halves in one test on purpose: the announcement is deduped per
+    // feature for the life of the module, so only the FIRST call for a feature
+    // can observe it.
+    const seen: any[] = [];
+    const onNotice = (e: any) => seen.push(e.detail);
+    window.addEventListener(REMOTE_UNSUPPORTED_EVENT, onNotice);
+    try {
+      const resolve = vi.fn(); const reject = vi.fn();
+      applyResponse({ resolve, reject }, 'models:settings', { ok: false, unsupported: true });
+      expect(resolve).not.toHaveBeenCalled();
+      expect(reject.mock.calls[0][0].message).toBe('remote-unsupported: models:settings');
+      // The notice is the whole reason this is a separate case from 'failure':
+      // on a phone the caller's rejection is invisible, and this sentence is
+      // what the user actually reads. It must name the FEATURE, never the
+      // channel id.
+      expect(seen).toHaveLength(1);
+      expect(seen[0].message).toBe("The local model manager isn't available via remote access yet.");
+    } finally {
+      window.removeEventListener(REMOTE_UNSUPPORTED_EVENT, onNotice);
+    }
+  });
+
+  // …and the dispatcher must not settle a caller behind applyResponse's back.
+  // A `entry.resolve(payload); return;` placed before the call would leave every
+  // assertion above green while the bug ran in production.
+  it('applyResponse is the ONLY place a response settles a caller', () => {
+    const body = shim.slice(shim.indexOf('export function applyResponse'));
+    const inApplyResponse = body.slice(0, body.indexOf('\n}\n'));
+    const settlesEverywhere = [...shim.matchAll(/entry\.(resolve|reject)\(/g)].length;
+    const settlesInApplyResponse = [...inApplyResponse.matchAll(/entry\.(resolve|reject)\(/g)].length;
+    // The two outside it are the connection-drop path ('Server switched'), which
+    // settles nothing about a response.
+    const outside = shim.split('\n').filter((l) => /entry\.(resolve|reject)\(/.test(l) && !inApplyResponse.includes(l));
+    expect(settlesInApplyResponse).toBe(3);
+    expect(settlesEverywhere - settlesInApplyResponse).toBe(2);
+    expect(outside.every((l) => l.includes('Server switched'))).toBe(true);
   });
 
   // And each is a REQUEST the shim makes — a push channel has no caller to

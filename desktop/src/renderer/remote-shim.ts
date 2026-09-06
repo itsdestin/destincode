@@ -213,6 +213,36 @@ function noteUnsupported(channel: string): void {
   }));
 }
 
+/** Settle one pending request from the host's answer. THE only place a
+ *  response resolves or rejects a caller's promise.
+ *
+ *  WHY this is exported and takes the entry, rather than the rule alone being
+ *  extracted: a test over the RULE proves what the rule says, not what the
+ *  dispatcher does with it. Both of these left the whole suite green while the
+ *  original bug was fully restored — resolving in the `failure` arm, and
+ *  resolving before the switch and leaving it dead. Settling here, and nowhere
+ *  else in the response path, is what a test can actually hold. */
+export function applyResponse(
+  entry: { resolve: (value: unknown) => void; reject: (err: Error) => void },
+  channel: string,
+  payload: unknown,
+): void {
+  switch (responseOutcome(channel, payload)) {
+    case 'unsupported':
+      noteUnsupported(channel);
+      entry.reject(new Error(`remote-unsupported: ${channel}`));
+      return;
+    // A handler that answered `{ ok:false, error }` is a FAILURE — resolving it
+    // hands the caller a failure dressed as a success. See REJECT_ON_NOT_OK.
+    case 'failure':
+      entry.reject(new Error(String((payload as { error?: unknown })?.error ?? 'The request failed.')));
+      return;
+    default:
+      entry.resolve(payload);
+      return;
+  }
+}
+
 function fire(type: string, payload: any): void {
   send({ type, payload });
 }
@@ -281,23 +311,9 @@ function handleMessage(data: string): void {
     // fast-fail we wanted, without changing the type callers receive.
     //
     // noteUnsupported still fires first, so the explanatory toast is unaffected.
-    const channel = String(type).replace(/:response$/, '');
-    // One decision, made in responseOutcome above — a resolve where a reject
-    // belongs is what hands the caller a failure dressed as a success.
-    switch (responseOutcome(channel, payload)) {
-      case 'unsupported':
-        noteUnsupported(channel);
-        entry.reject(new Error(`remote-unsupported: ${channel}`));
-        return;
-      // A handler that answered `{ ok:false, error }` is a FAILURE — see
-      // REJECT_ON_NOT_OK's own comment.
-      case 'failure':
-        entry.reject(new Error(String((payload as any).error ?? 'The request failed.')));
-        return;
-      default:
-        entry.resolve(payload);
-        return;
-    }
+    // The ONLY place a response settles a caller's promise — see applyResponse.
+    applyResponse(entry, String(type).replace(/:response$/, ''), payload);
+    return;
   }
 
   // Push events — dispatch to registered listeners

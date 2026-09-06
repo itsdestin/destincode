@@ -38,19 +38,58 @@ describe('plainMessage', () => {
 
 // The reason this helper is a module and not a function inside one component:
 // three call sites shipped without it while it lived in EngineCard.tsx.
-describe('every bridge catch in the local-engine surfaces uses it', () => {
+//
+// WHY the check is PROPERTY-shaped and not idiom-shaped: the first version
+// matched the single string `e instanceof Error ? e.message`, so
+// `e?.message ?? 'Could not save.'` — the same bug, one spelling away — was
+// green, and so was renaming the variable to `err`. What actually has to be
+// true is that NO caught error's message reaches the screen unstripped, in any
+// spelling, so the rule is about `.message` inside a catch block.
+describe('no bridge failure reaches the screen wearing its wrapper', () => {
   const files = [
     'src/renderer/components/EngineCard.tsx',
     'src/renderer/components/LocalModelsSection.tsx',
     'src/renderer/components/RuntimeBinding.tsx',
+    'src/renderer/components/ProvidersSection.tsx',
   ];
-  it('none of them fall back to a raw e.message', () => {
+
+  /** Every `catch (…) { … }` body in a file, by brace matching. */
+  function catchBodies(src: string): Array<{ line: number; body: string }> {
+    const out: Array<{ line: number; body: string }> = [];
+    const re = /\bcatch\s*(\([^)]*\))?\s*\{/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(src)) !== null) {
+      let depth = 1;
+      let i = m.index + m[0].length;
+      for (; i < src.length && depth > 0; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') depth--;
+      }
+      out.push({
+        line: src.slice(0, m.index).split('\n').length,
+        body: src.slice(m.index + m[0].length, i - 1),
+      });
+    }
+    return out;
+  }
+
+  // Sanity: a scan that matched nothing would pass vacuously forever.
+  it('the catch scan actually finds catch blocks', () => {
+    const src = fs.readFileSync(path.join(__dirname, '..', files[1]), 'utf8');
+    expect(catchBodies(src).length).toBeGreaterThan(3);
+    expect(catchBodies("try { a(); } catch (e) { show(e.message); }")[0].body).toContain('e.message');
+  });
+
+  it('no catch block in these files reads a .message directly', () => {
     const offenders: string[] = [];
     for (const f of files) {
       const src = fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
-      src.split('\n').forEach((line, i) => {
-        if (/e instanceof Error \? e\.message/.test(line)) offenders.push(`${f}:${i + 1}`);
-      });
+      for (const { line, body } of catchBodies(src)) {
+        // Comments explain WHY plainMessage is used and legitimately say
+        // "e.message"; only code counts.
+        const code = body.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+        if (/\.message\b/.test(code)) offenders.push(`${f}:${line}`);
+      }
     }
     expect(offenders).toEqual([]);
   });
