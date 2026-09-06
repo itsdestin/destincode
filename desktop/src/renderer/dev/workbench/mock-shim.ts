@@ -799,12 +799,25 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // round ones that hide formatting bugs. NOTE the app's gb() divides by 1024^3:
   // 79_674_559_677 renders as 74.2 GB, 121_334_654_784 as 113.0 GB.
   // Q-2: per-model settings the panel reads and writes during a workbench session.
-  // The STORED shape, matching the real channel: the dialog reads `pendingApply`
-  // and `lastLoadError` off it as well as the four fields it writes.
+  // The STORED record, not just the four editable settings: `models:settings`
+  // answers with what main holds for a model, which also carries the dismissed
+  // memory warning, whether a save is still waiting for the current reply, and
+  // why the model last failed to load. Typed as the narrower shape, the fake
+  // could not produce the states the dialog now draws.
   const DEFAULT_MODEL_SETTINGS: StoredModelSettings = {
     contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '', memoryWarningDismissed: null,
   };
-  const modelSettings: Record<string, StoredModelSettings> = {};
+  const modelSettings: Record<string, StoredModelSettings> = {
+    // One model that failed to load, so the red card in its Settings dialog is
+    // reachable in the workbench. The text is a real llama-server line, not a
+    // paraphrase — the dialog quotes whatever main hands it, and reviewing that
+    // card against invented prose would review the wrong thing.
+    'Qwen3.5-9B-Q8_0': {
+      contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '--tempp 0.6',
+      memoryWarningDismissed: null,
+      lastLoadError: "error: option '--tempp' not recognized in preset 'Qwen3.5-9B-Q8_0'",
+    },
+  };
   const LOCAL_MODELS: InstalledLocalModel[] = [
     {
       id: 'Qwen3.5-9B-Q8_0',
@@ -882,12 +895,23 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       const ctx = 32_768;
       const row = (quant: string, description: string, modelBytes: number, fit: 'fits' | 'tight' | 'too-large', label: string) => ({
         quant, description, files: [`${quant}.gguf`], totalSizeBytes: modelBytes, sha256ByFile: {}, visionBytes: vision,
-        fit: { fit, label, breakdown: { modelBytes, contextBytes: 1_744_830_464, contextLength: ctx, ...(vision ? { visionBytes: vision } : {}) } },
+        fit: { fit, label, breakdown: {
+          modelBytes, contextBytes: 1_744_830_464, contextLength: ctx,
+          ...(vision ? { visionBytes: vision } : {}),
+          // Main attaches this to EVERY non-fits verdict (R8). Without it the
+          // fake's "tight" row draws a bubble the real app never draws.
+          ...(fit === 'fits' ? {} : { advice: "Lower this model's context length in its Settings to shrink this." }),
+        } },
       });
+      const f16 = row('F16', 'Full precision — largest, slowest', 8_050_000_000, 'tight', 'Will be tight — close other apps first');
+      // Main sets this whenever it could not fully read a model's header, and
+      // the bubble then says "up to" instead of stating a ceiling as a reading
+      // (R1-25). One row carries it so the wording can be reviewed on screen.
+      (f16.fit.breakdown as Record<string, unknown>).contextBytesIsUpperBound = true;
       return [
         row('UD-Q4_K_XL', 'Balanced quality and size — recommended', 2_580_000_000, 'fits', 'Runs fast — fits on your GPU'),
         row('Q8_0', 'Highest quality quantization — near-original output', 4_280_000_000, 'fits', 'Runs fast — fits on your GPU'),
-        row('F16', 'Full precision — largest, slowest', 8_050_000_000, 'tight', 'Will be tight — close other apps first'),
+        f16,
       ];
     },
     search: async () => [],
@@ -913,7 +937,27 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
         : dismissMemoryWarning
           ? { at: Date.now(), contextLength: fields.contextLength ?? before.contextLength ?? 32_768 }
           : null;
+      // WHY both halves (merge of T20 and T23, 2026-09-06): T20 taught the fake to
+      // stamp the dismissal, T23 taught it to hold `pendingApply` for four seconds.
+      // Neither task saw the other's edit, so keeping only one would silently drop a
+      // state the workbench is the only place to review. The VALUE saves at once, the
+      // engine picks it up later, and `pendingApply` says so until it does — without
+      // the timer the workbench would show "Applies after the current reply" arriving
+      // and never clearing, which is the exact staleness the dialog's poll fixes.
+      // Only a setting the ENGINE reads can be pending: main stamps `pendingApply`
+      // for the four fields it has to restart a model for, never for the dismissed
+      // memory warning, which is the app's own bookkeeping. A fake that stamped it
+      // for both would show "Applies after the current reply" on a tick that applies
+      // instantly — reviewing a state the real app never produces.
+      const enginePending = Object.keys(fields).length > 0;
       modelSettings[modelId] = { ...before, ...fields, memoryWarningDismissed };
+      if (enginePending) {
+        modelSettings[modelId].pendingApply = true;
+        setTimeout(() => {
+          const cur = modelSettings[modelId];
+          if (cur) delete cur.pendingApply;
+        }, 4000);
+      }
       return { ...modelSettings[modelId] };
     },
     // S-3: after a moment the model "has" its vision file.
@@ -973,15 +1017,61 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   let speed = { speculative: true, compressCache: true };
   let prereqChecks = 0;
   let currentBackend: 'vulkan' | 'rocm' | 'cuda' | 'cpu' | 'metal' = 'vulkan';
+  // An engine-wide change that is saved but has not reached the engine yet, and
+  // whether a reply is what it is waiting for. Set by setConfig below so the
+  // card's two wordings can both be seen; cleared on a timer the way main's
+  // bounded wait clears them.
+  let configApplyPending = false;
+  // The REAL failure text when applying a saved engine setting goes wrong. The
+  // card is the only place that failure can be reported — the channel answered
+  // "saved" long before the apply ran — so it needs to be reviewable. Under
+  // `refused` a switch fails to apply instead of landing.
+  let configApplyError: string | null = null;
+  const statusListeners = new Set<(s: unknown) => void>();
+  // The settings-are-off message has TWO shapes and they look nothing alike: an
+  // amber box quoting the machine, and a grey block with two buttons and no
+  // quote. `?scenario=refused&reason=none` picks the second, the same way this
+  // shim already reads `?arcade=`, `?remote=` and `?firstRun=` — a sub-state
+  // switch, not a whole extra scenario.
+  const settingsOffReason = typeof location === 'undefined'
+    ? null
+    : new URLSearchParams(location.search).get('reason');
   const engineStatus = () => ({
     installed: true, installedVersion: 'b10665', pinnedVersion: 'b10665', backend: currentBackend,
-    state: (activeScenario === 'stress' ? 'running' : 'stopped') as 'running' | 'stopped',
+    // `refused` runs too — it is the degraded scenario, and the state T23 made
+    // visible (an engine running WITHOUT each model's own settings) only exists
+    // on a RUNNING engine.
+    state: (activeScenario === 'stress' || activeScenario === 'refused' ? 'running' : 'stopped') as 'running' | 'stopped',
     cacheDir: '/home/you/.cache/llama.cpp', contextSize: 32768, port: 8080,
     deviceName: 'AMD Radeon 8060S Graphics',
     loadedModelsBytes: activeScenario === 'stress' ? 9_527_502_048 : 0,
     lastReply: activeScenario === 'stress' ? { promptPerSecond: 383, generatePerSecond: 16.4 } : null,
     backendOptions: currentBackend === 'rocm' ? [] : [{ backend: 'rocm' as const, label: 'Switch to ROCm (faster on AMD)', state: 'needs-prereqs' as const }],
     speed: { ...speed },
+    configApplyPending,
+    // `stress` is the scenario with a model loaded and a reply just measured, so
+    // it is the one where a queued change really is waiting on a reply; anywhere
+    // else the machine is idle and the card says "Applying now…" instead.
+    configApplyWaitingForReply: configApplyPending && activeScenario === 'stress',
+    configApplyError,
+    // `refused` is the workbench's degraded scenario, so it is where the engine
+    // runs WITHOUT the file holding each model's own settings — the one state
+    // that was invisible before T23. Everywhere else the settings are in force;
+    // a stopped engine reports nothing at all, which is what stops the card
+    // claiming anything about a run that has not happened.
+    ...(activeScenario === 'refused'
+      ? {
+        modelSettingsInForce: false,
+        // `reason=none` is the case where nothing legible came back: the card
+        // must then stay non-committal and offer Report bug / Diagnose with
+        // Claude rather than invent a cause.
+        modelSettingsError: settingsOffReason === 'none'
+          ? null
+          : "EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'",
+      }
+      : activeScenario === 'stress'
+        ? { modelSettingsInForce: true, modelSettingsError: null as string | null }
+        : {}),
   });
   const engine: Ns<'engine'> = {
     status: async () => engineStatus(),
@@ -1008,10 +1098,29 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // and applies the change once no reply is streaming.
     setConfig: async (patch: { contextSize?: number; speed?: Partial<typeof speed> }) => {
       if (patch?.speed) speed = { ...speed, ...patch.speed };
+      // Mirrors main: the value saves at once and the ENGINE picks it up later,
+      // so the card's saved-but-not-applied line appears and then goes away.
+      configApplyPending = true;
+      configApplyError = null;
+      setTimeout(() => {
+        configApplyPending = false;
+        // Under the degraded scenario the apply FAILS, which is the only way to
+        // see the line that carries its real message.
+        configApplyError = activeScenario === 'refused'
+          ? "EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'"
+          : null;
+        for (const cb of statusListeners) cb(engineStatus());
+      }, 4000);
       return engineStatus();
     },
     onInstallProgress: () => () => {},
-    onStatusChanged: () => () => {},
+    // A REAL registrar now, not a no-op: the card learns that a queued change
+    // landed only from a status push, so a stubbed-out subscription would leave
+    // the workbench showing the pending line for ever.
+    onStatusChanged: (cb: (s: unknown) => void) => {
+      statusListeners.add(cb);
+      return () => { statusListeners.delete(cb); };
+    },
     onModelsChanged: () => () => {},
   };
 

@@ -46,14 +46,27 @@ function fitColor(fit: FitEstimate['fit']): string {
  *  number — what the download takes on disk, model plus vision file — drawn with a
  *  dotted underline. Hover (or tap) breaks it down: model, vision file, and the memory
  *  the context adds while it runs, so "tight" is never a mystery but the row stays a
- *  single line. An older main sends no breakdown: the number stands alone. */
-function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fit: FitEstimate; visionBytes?: number | null } }) {
+ *  single line. An older main sends no breakdown: the number stands alone.
+ *
+ *  Exported (named) for the same reason LocalModelRow is: a test can pin every
+ *  state of the bubble without booting the whole section and its models API. */
+export function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fit: FitEstimate; visionBytes?: number | null } }) {
   const b = q.fit.breakdown;
   const vision = b?.visionBytes ?? q.visionBytes ?? 0;
   const download = q.totalSizeBytes + vision;
   const number = <span className="underline decoration-dotted decoration-fg-faint underline-offset-2 cursor-help">{gb(download)}</span>;
   if (!b) return <span className="text-fg-dim">{number} · {q.quant}</span>;
   const ctxK = Math.round(b.contextLength / 1024);
+  // R1-25: when the estimator could not fully read this model's header it
+  // returns a CEILING for the context memory, not a reading. Printing a ceiling
+  // as an exact figure is fake precision, so the line reads "up to 1.6 GB".
+  //
+  // It hedges the TOTAL too, and that is the more important half: "Memory while
+  // running" is model + context, so a ceiling in one term makes the whole sum a
+  // ceiling — and that is the bigger, bolder number, and the one a user decides
+  // on. Hedging only the small print underneath would state the estimate as a
+  // reading in exactly the place it gets read.
+  const upTo = b.contextBytesIsUpperBound ? 'up to ' : '';
   return (
     <span className="text-fg-dim">
       <AnchorTip label={`What ${gb(download)} is made of`} title="What this needs" trigger="hover" placement="bottom" align="start" widthClass="w-64" anchor={number}>
@@ -61,8 +74,13 @@ function SizeLine({ q }: { q: { totalSizeBytes: number; quant: string; fit: FitE
           <dt className="text-fg-muted">Model file</dt><dd className="text-fg text-right">{gb(b.modelBytes)}</dd>
           {vision > 0 && <><dt className="text-fg-muted">Vision file (sees images)</dt><dd className="text-fg text-right">{gb(vision)}</dd></>}
           <dt className="text-fg-muted">Download</dt><dd className="text-fg text-right font-medium">{gb(download)}</dd>
-          <dt className="text-fg-muted pt-1">Memory while running</dt><dd className="text-fg text-right pt-1">{gb(download + b.contextBytes)}</dd>
-          <dt className="text-fg-faint col-span-2">includes {gb(b.contextBytes)} for a {ctxK}k context</dt>
+          <dt className="text-fg-muted pt-1">Memory while running</dt><dd className="text-fg text-right pt-1">{upTo}{gb(download + b.contextBytes)}</dd>
+          <dt className="text-fg-faint col-span-2">includes {upTo}{gb(b.contextBytes)} for a {ctxK}k context</dt>
+          {/* R8: the ONE thing the user can do about a tight or too-large
+              verdict, in the estimator's words — the renderer never composes
+              this sentence, so the advice a user reads and the verdict main
+              reached can never drift apart. Absent on a model that fits. */}
+          {b.advice && <dt className="text-fg-2 col-span-2 pt-1">{b.advice}</dt>}
         </dl>
       </AnchorTip>
       {' · '}{q.quant}
@@ -901,6 +919,26 @@ export function LocalModelRow({
 
 // ── Per-model settings (deck Q-2, pick a; round 2 P-7) ───────────────────────
 
+/** How often a model's open Settings dialog re-asks main, in milliseconds.
+ *
+ *  ONE value, which the dialog itself reads — never a number the tests keep a
+ *  second copy of. This feature has already deleted one default that lived in
+ *  three places, and a test asserting against its own copy of an interval would
+ *  be the same mistake with a stopwatch.
+ *
+ *  It is overridable because eight guards have to watch a poll actually happen:
+ *  at the shipped two seconds they spent about 28 seconds of every suite run
+ *  waiting, and roughly double that on a FAILING run, since each broken guard
+ *  burns its whole timeout before giving up — heaviest exactly when somebody is
+ *  debugging. Same idiom as the engine manager's own `configApplyPollMs` seam.
+ *  Nothing in the app calls the setter. */
+const POLL = { ms: 2000 };
+export function setModelSettingsPollMs(ms: number): number {
+  const previous = POLL.ms;
+  POLL.ms = ms;
+  return previous;
+}
+
 const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'] as const;
 
 /** One shape for every setting — the SettingRow every Settings screen uses — so
@@ -910,55 +948,138 @@ const GPU_LAYER_CHOICES = ['auto', '0', '8', '16', '24', '32', '48', '64', 'all'
  *  concept needs more than a line. Saves on blur/toggle; the model reloads with
  *  the new values on its next message. */
 function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; modelId: string; name: string; onClose: () => void }) {
-  // The STORED shape: the same four fields the dialog writes, plus the two the
-  // app maintains and the user never sets — whether the last save is still
-  // waiting on a streaming reply, and why the model last failed to load.
+  // The STORED record, not just the four settings this dialog writes: main also
+  // keeps two things about a model that the user never sets and has to be told
+  // — why it last failed to load, and whether a save it has already made is
+  // still waiting for the reply on screen to finish.
   const [settings, setSettings] = useState<StoredModelSettings | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // TWO error slots, not one. A save failure is the user's — they pressed
+  // something and it did not work — and it stays until they try again. A READ
+  // failure is the poll's, and it must not outlive itself: the next read two
+  // seconds later succeeds and draws a working dialog, and a shared slot would
+  // leave a red "could not read this model's settings" line sitting under it
+  // for as long as the dialog is open. Sharing one slot also let a successful
+  // poll wipe a save failure the user still needed to see.
+  // A LIST, not a slot. Two saves can be in flight and both can be refused: a
+  // bad extra flag is checked by RUNNING the engine binary and fails seconds
+  // later, while a bad context length is refused at once. With one slot the
+  // late refusal overwrites the early one, so the user is told about the flag
+  // and never learns their context length was rejected — and which of the two
+  // survives depends purely on which finished last. Ordering is the wrong tool
+  // here: dropping the older failure would lose a refusal that really happened.
+  // Both are shown; identical sentences fold together, because the same message
+  // twice is noise rather than two facts.
+  const [saveErrors, setSaveErrors] = useState<string[]>([]);
+  const [readError, setReadError] = useState<string | null>(null);
   const [ctxDraft, setCtxDraft] = useState('');
   const [flagsDraft, setFlagsDraft] = useState('');
   const [advanced, setAdvanced] = useState(false);
+  // How many saves are running right now — a COUNT, not a flag: two overlapping
+  // saves would otherwise have the first one's cleanup announce that nothing is
+  // saving while the second is still in the air.
+  const savesInFlight = useRef(0);
+  // Bumped when a save STARTS. A read that was asked before that carries
+  // pre-save values, so its answer is dropped however late it arrives.
+  const saveTick = useRef(0);
+  // Every read is numbered, and an answer older than one already accepted is
+  // dropped. Two reads are in the air whenever one takes longer than the poll
+  // interval, and without this the slower of the two wins by finishing last.
+  const readSeq = useRef(0);
+  const acceptedRead = useRef(0);
 
   useEffect(() => {
     let alive = true;
     // Mounted only while open (the row gates it), so this fetch happens on demand —
     // an older bridge without the channel shows the error line instead of throwing.
     const api = window.claude.models as { settings?: (id: string) => Promise<StoredModelSettings> };
-    if (typeof api.settings !== 'function') { setError('This version cannot read per-model settings.'); return; }
-    api.settings(modelId)
-      .then((st) => {
-        if (!alive) return;
-        // WHY the null check: over the remote link there is a window at start-up
-        // where the host has no engine wired yet, and the honest answer to
-        // "what are this model's settings" is then nothing at all. Reading
-        // `st.contextLength` off it throws, and what the user would read is the
-        // raw JavaScript — "Cannot read properties of null" — because
-        // plainMessage passes a message it did not wrap straight through. Say
-        // the true thing instead, and say nothing about why.
-        if (!st) { setError('This model\u2019s settings are not available yet. Try again in a moment.'); return; }
-        setSettings(st);
-        setCtxDraft(st.contextLength == null ? '' : String(st.contextLength));
-        setFlagsDraft(st.extraFlags);
-      })
-      .catch((e) => { if (alive) setError(plainMessage(e, 'Could not read this model\u2019s settings.')); });
-    return () => { alive = false; };
+    const fetchSettings = api.settings;
+    if (typeof fetchSettings !== 'function') { setReadError('This version cannot read per-model settings.'); return; }
+    let first = true;
+    const read = () => {
+      if (savesInFlight.current > 0) return;
+      const seq = ++readSeq.current;
+      const askedAt = saveTick.current;
+      fetchSettings(modelId)
+        .then((st) => {
+          if (!alive) return;
+          // WHY the null check (from T20): over the remote link there is a window
+          // at start-up where the host has no engine wired yet, and the honest
+          // answer to "what are this model's settings" is nothing at all. Reading
+          // `st.contextLength` off it throws, and what the user would read is raw
+          // JavaScript — "Cannot read properties of null" — because plainMessage
+          // passes through a message it did not wrap. Say the true thing instead.
+          if (!st) { setReadError('This model\u2019s settings are not available yet. Try again in a moment.'); return; }
+          // THE CHECKS THAT MATTER ARE HERE, INSIDE THE ANSWER — not only before
+          // asking. Refusing to START a read during a save does nothing about a
+          // read already in the air, which carries the values main held BEFORE
+          // the save and lands after it. What the user saw: "Keep loaded" turned
+          // on, flipped itself off a moment later, then back on at the next
+          // poll — a setting that saved perfectly, with the screen saying
+          // otherwise, which is the exact confusion the poll was added to end.
+          if (seq <= acceptedRead.current) return;                              // a newer answer already landed
+          if (savesInFlight.current > 0 || saveTick.current !== askedAt) return; // a save overtook this read
+          acceptedRead.current = seq;
+          setReadError(null);
+          setSettings(st);
+          // The two text drafts are seeded ONCE. Re-seeding them on every poll
+          // would wipe whatever the user is halfway through typing.
+          if (first) {
+            first = false;
+            setCtxDraft(st.contextLength == null ? '' : String(st.contextLength));
+            setFlagsDraft(st.extraFlags);
+            // Open Advanced when this model failed to load: the box that most
+            // often causes it (extra engine flags) is inside Advanced, and a
+            // user told "it did not load" should not have to go hunting. The
+            // card above deliberately does NOT name the flags as the cause —
+            // an unreadable file and a machine out of memory arrive in exactly
+            // the same field.
+            if (st.lastLoadError) setAdvanced(true);
+          }
+        })
+        .catch((e) => { if (alive && first) setReadError(plainMessage(e, 'Could not read this model\u2019s settings.')); });
+    };
+    read();
+    // WHY this polls at all: there is no push channel for per-model settings.
+    // Both of the things main maintains here change WITHOUT the user doing
+    // anything — a pending save lands the moment the model goes quiet, and a
+    // load failure arrives whenever the model is next asked for. Fetched once,
+    // the dialog would sit there saying "Applies after the current reply" for
+    // as long as it is open, and the user would close it, reopen it and
+    // conclude the setting never stuck.
+    const timer = setInterval(read, POLL.ms);
+    return () => { alive = false; clearInterval(timer); };
   }, [modelId]);
 
   const save = async (patch: ModelSettingsWrite) => {
-    setError(null);
-    // The engine binary's own line, VERBATIM (design §J): only it knows which
-    // option it refused, so we never paraphrase or guess. plainMessage strips
-    // Electron's "Error invoking remote method …" wrapper and nothing else, so
-    // what the user reads is exactly what the engine said.
+    // A fresh attempt clears what the last one said; failures accumulate only
+    // within one round of attempts.
+    setSaveErrors([]);
+    savesInFlight.current += 1;
+    const myTick = ++saveTick.current;
     try {
-      const saved = await window.claude.models.setSettings(modelId, patch);
-      // Same start-up window as the read above. Storing a null answer would blank
-      // the whole dialog back to "Loading settings…" and leave it there for ever:
-      // the user flips a switch and the panel becomes a spinner that never
-      // resolves and never explains itself. Keep what is on screen and say so.
-      if (saved) setSettings(saved);
-      else setError('That did not save \u2014 the engine is not ready yet. Try again in a moment.');
-    } catch (e) { setError(plainMessage(e, 'Could not save.')); }
+      const next = await window.claude.models.setSettings(modelId, patch);
+      // SAVES ARE ORDERED THE SAME WAY READS ARE, and for a reachable reason:
+      // saving Extra engine flags makes main RUN the engine binary to check
+      // them, which takes seconds, while saving a toggle comes back at once.
+      // Type a flag, blur, then hit Keep loaded, and the slow flags answer lands
+      // last carrying the value from before the toggle — and the switch turns
+      // itself back off under the user's hand. Only the NEWEST save may repaint.
+      // Same start-up window as the read above (from T20): storing a null answer
+      // would blank the dialog back to "Loading settings…" for ever — the user
+      // flips a switch and the panel becomes a spinner that never resolves.
+      if (!next) throw new Error('That did not save \u2014 the engine is not ready yet. Try again in a moment.');
+      if (saveTick.current === myTick) setSettings(next);
+    }
+    // A failure is shown whichever save it came from: the user pressed that,
+    // and it did not work.
+    catch (e) {
+      const message = plainMessage(e, 'Could not save.');
+      setSaveErrors((prev) => (prev.includes(message) ? prev : [...prev, message]));
+    }
+    // `finally`, so a save that THROWS still lets the poll run again. Left
+    // suppressed, one failed save would freeze every live value in the dialog
+    // for as long as it stayed open.
+    finally { savesInFlight.current -= 1; }
   };
 
   const commitContext = () => {
@@ -977,10 +1098,27 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
   // side by side (at `prompt` width the GPU-layers title wrapped one word per line).
   return (
     <Dialog open={open} onClose={onClose} title="Model settings" subtitle={name} size="panel" layer={3}>
-      {error && !settings && <FieldError as="p">{error}</FieldError>}
-      {!settings && !error && <p className="text-3xs text-fg-muted">Loading settings…</p>}
+      {readError && !settings && <FieldError as="p">{readError}</FieldError>}
+      {!settings && !readError && <p className="text-3xs text-fg-muted">Loading settings…</p>}
       {settings && (
     <div className="space-y-1.5" data-testid="model-settings">
+      {/* R26 / design §C2: why this model last failed to load, in the ENGINE'S
+          OWN WORDS. Never a cause we worked out here — a mistyped extra flag,
+          a file the engine cannot read and a machine out of memory all land in
+          this one field, and a guess would send the user to fix the wrong
+          thing. It sits at the top rather than beside the flags box because
+          that box is behind Advanced, and a message nobody opens is a message
+          nobody reads. Absent entirely when the model loaded fine. */}
+      {settings.lastLoadError && (
+        // "last time", not "did not load": main clears this only when the model
+        // loads successfully, so it legitimately outlives the problem — a user
+        // who fixed the flag an hour ago should not read a card that says the
+        // model is broken right now. `break-words` because engine errors carry
+        // long unbroken file paths that CSS will not break on its own.
+        <Callout tone="danger" title="This model failed to load last time">
+          <p className="text-2xs break-words">{settings.lastLoadError}</p>
+        </Callout>
+      )}
       <SettingRow
         variant="item"
         title="Context length"
@@ -1049,7 +1187,8 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
               <AnchorTip label="About extra engine flags" title="Extra engine flags" widthClass="w-72">
                 Anything else the llama.cpp engine accepts on its command line, passed
                 through as written when this model loads. A mistyped flag stops the model
-                from loading — the engine&rsquo;s own message appears here when that happens.
+                from loading — the engine&rsquo;s own message then appears at the top of
+                this dialog.
               </AnchorTip>
             </p>
             <TextInput
@@ -1065,7 +1204,17 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
           </div>
         </div>
       )}
-      {error && <FieldError as="p">{error}</FieldError>}
+      {/* design §C2: a saved setting does NOT reach a model that is answering
+          right now — rewriting the engine's settings file mid-reply would drop
+          the model halfway through a sentence. So the save is held until this
+          model goes quiet, and this line is the only thing that tells the user
+          why the change they just made has not taken effect yet. */}
+      {settings.pendingApply && (
+        <p className="text-3xs text-fg-muted pt-1" data-testid="model-settings-pending">
+          Applies after the current reply.
+        </p>
+      )}
+      {saveErrors.map((message) => <FieldError as="p" key={message}>{message}</FieldError>)}
     </div>
       )}
     </Dialog>

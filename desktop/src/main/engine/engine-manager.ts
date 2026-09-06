@@ -573,7 +573,24 @@ export class EngineManager extends EventEmitter {
       // While true the card shows "Applies after the current reply" — the value
       // is saved, the engine has not picked it up yet.
       configApplyPending: this.applyWaiter !== null,
+      // WHY the card cannot say "applies after the current reply" off
+      // `configApplyPending` alone: that flag is true from the moment a change
+      // is QUEUED, and on an idle machine the queue drains in a poll interval
+      // with no reply anywhere in sight. Saying a reply is holding it up would
+      // then be wrong more often than right, so the wait is reported for what
+      // it is — the engine is genuinely busy — and the card words the two
+      // cases differently.
+      configApplyWaitingForReply: this.applyWaiter !== null && (this.supervisor?.busy() ?? false),
       configApplyError: this.configApplyError,
+      // Only a RUNNING engine can answer this. `presetActive` is false while the
+      // supervisor is stopped or starting, so reporting it unconditionally would
+      // tell every user with a stopped engine that their per-model settings are
+      // being ignored — which is a fact about a run that has not happened yet.
+      modelSettingsInForce: supState === 'running' ? (this.supervisor?.presetInForce() ?? false) : undefined,
+      // …and WHY, in the words of whatever refused them (design §J). Reported
+      // beside the flag so the two can never disagree about which run they
+      // describe.
+      modelSettingsError: supState === 'running' ? (this.supervisor?.presetProblem() ?? null) : undefined,
     };
   }
 
