@@ -3,6 +3,10 @@ import type { AuthStartResponse, AuthPollResponse, PostRatingInput } from '../re
 import type { MarketplaceUser } from './marketplace-auth-store';
 import type { ApiResult } from './marketplace-api-handlers';
 import type { AttentionSummary, AttentionReport, PerformanceConfigSnapshot, SessionMetaResult } from '../shared/types';
+// Type-only (erased at build), so the sandboxed preload still resolves nothing at
+// runtime — same footing as the '../shared/types' line above.
+import type { FirstRunState } from '../shared/first-run-types';
+import type { ChatGptAccountStatus } from '../shared/chatgpt-types';
 
 // Mirrored type — must match ChangelogResult in src/main/changelog-service.ts.
 interface ChangelogIpcResult {
@@ -217,12 +221,15 @@ const IPC = {
   WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
   SESSION_OWNERSHIP_ACQUIRED: 'session:ownership-acquired',
   SESSION_OWNERSHIP_LOST: 'session:ownership-lost',
+  DETACH_CLAIM_PENDING: 'detach:claim-pending',
+  SESSION_REPLAY_LIVE_STATE: 'session:replay-live-state',
   SESSION_DETACH_START: 'session:detach-start',
   SESSION_DETACH_LIVE: 'session:detach-live',
   SESSION_DRAG_WINDOW_MOVE: 'session:drag-window-move',
   SESSION_DRAG_STARTED: 'session:drag-started',
   SESSION_DRAG_ENDED: 'session:drag-ended',
   SESSION_DRAG_DROPPED: 'session:drag-dropped',
+  SESSION_DRAG_ADOPT: 'session:drag-adopt',
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
   TRANSCRIPT_REPLAY: 'transcript:replay-from-start',
@@ -356,6 +363,11 @@ const IPC = {
   PROVIDER_TEST: 'provider:test',
   PROVIDER_SET_KEY: 'provider:set-key',
   PROVIDER_CATALOG: 'provider:catalog',
+  // Sign in with ChatGPT (backend design 2026-09-05 §5) — mirrors shared/types.ts.
+  CHATGPT_STATUS: 'chatgpt:status',
+  CHATGPT_SIGN_IN: 'chatgpt:sign-in',
+  CHATGPT_CANCEL_SIGN_IN: 'chatgpt:cancel-sign-in',
+  CHATGPT_SIGN_OUT: 'chatgpt:sign-out',
   // ---- Native runtime Plan B (Phase 1): local llama.cpp engine ----
   ENGINE_STATUS: 'engine:status',
   ENGINE_INSTALL: 'engine:install',
@@ -383,7 +395,32 @@ const IPC = {
   NATIVE_SHELL_EVENT: 'native:shell-event',
   MODELS_MEMORY_CHECK: 'models:memory-check',
   MODELS_LOAD: 'models:load',
+  // ---- Voice prompting (design 2026-09-05) ----
+  // Six things the composer can ask, one fire-and-forget audio stream, and one
+  // push. VOICE_AUDIO is `send`, not `invoke`: ten slices a second, and a reply
+  // per slice would cost more than the audio does.
+  VOICE_STATUS: 'voice:status',
+  VOICE_DOWNLOAD: 'voice:download',
+  VOICE_START: 'voice:start',
+  VOICE_STOP: 'voice:stop',
+  VOICE_CANCEL: 'voice:cancel',
+  VOICE_MIC_ACCESS: 'voice:mic-access',
+  VOICE_AUDIO: 'voice:audio',
+  VOICE_EVENT: 'voice:event',   // push
 } as const;
+
+// Strip the transport prefix Electron puts on a rejected invoke (see the
+// `chatgpt` namespace for why), keeping the handler's own sentence. Anything
+// that is not that exact shape is rethrown untouched.
+const INVOKE_ERROR_PREFIX = /^Error invoking remote method '[^']*': (?:Error: )?/;
+function unwrapInvokeError<T>(p: Promise<T>): Promise<T> {
+  return p.catch((e: unknown) => {
+    if (e instanceof Error && INVOKE_ERROR_PREFIX.test(e.message)) {
+      throw new Error(e.message.replace(INVOKE_ERROR_PREFIX, ''));
+    }
+    throw e;
+  });
+}
 
 contextBridge.exposeInMainWorld('claude', {
   // Dev-instance descriptor from `run-dev.sh --label` (YOUCODED_DEV_LABEL). The
@@ -626,6 +663,20 @@ contextBridge.exposeInMainWorld('claude', {
   // hide Install buttons on macOS-only integrations when running on Windows).
   getPlatform: (): Promise<'darwin' | 'win32' | 'linux' | 'android'> =>
     ipcRenderer.invoke(IPC.PLATFORM_GET),
+  // FACTS about the host windowing system, read once at preload time. Pure
+  // data — the decision that consumes it lives in renderer/session-drag-model.ts,
+  // so the rule ("which drag model") stays testable without a live Electron.
+  //
+  // Synchronous on purpose: the session strip has to choose a tear-off model in
+  // the middle of a pointermove, where awaiting a round-trip would mean the
+  // first drag after launch silently used the wrong one. Preload must not name
+  // a model itself — session-drag-model.test.ts pins that.
+  platformFacts: {
+    platform: process.platform as string,
+    // Wayland vs X11 decides whether window positions and the cursor's screen
+    // position are readable at all — on Wayland every such API returns zero.
+    wayland: !!process.env.WAYLAND_DISPLAY || process.env.XDG_SESSION_TYPE === 'wayland',
+  },
   // YouCoded account (device-code OAuth) — token stays in main process.
   // start/poll/updateProfile/setHandle/deleteAccount wrap API calls and return
   // ApiResult so the renderer can inspect HTTP status codes across the contextBridge
@@ -1024,6 +1075,12 @@ contextBridge.exposeInMainWorld('claude', {
     dragEnded: () => ipcRenderer.send(IPC.SESSION_DRAG_ENDED),
     dragDropped: (payload: { sessionId: string; targetWindowId: number; insertIndex: number }) =>
       ipcRenderer.send(IPC.SESSION_DRAG_DROPPED, payload),
+    // Sent by the window that RECEIVED a browser-drag drop (Linux/Wayland —
+    // session-drag-model.ts). It names only the session:
+    // main resolves the source from the WindowRegistry, so a forged drop can
+    // never move a session the sender was not entitled to move.
+    dragAdopt: (payload: { sessionId: string }) =>
+      ipcRenderer.send(IPC.SESSION_DRAG_ADOPT, payload),
     focusAndSwitch: (payload: { windowId: number; sessionId: string }) =>
       ipcRenderer.send(IPC.WINDOW_FOCUS_AND_SWITCH, payload),
     // Request/response — ask main which window's strip currently contains the cursor
@@ -1039,6 +1096,19 @@ contextBridge.exposeInMainWorld('claude', {
     // uuid-based dedup handles any overlap with live events.
     requestTranscriptReplay: (sessionId: string) =>
       ipcRenderer.send(IPC.TRANSCRIPT_REPLAY, { sessionId }),
+    // Pull the ownership handoffs main queued while this window was booting.
+    // Called once from App's mount effect, right after onOwnershipAcquired is
+    // subscribed — a push that lands before that subscription is DROPPED by
+    // Electron, not queued, which is why the pull exists.
+    claimPending: (): Promise<any[]> =>
+      ipcRenderer.invoke(IPC.DETACH_CLAIM_PENDING),
+    // Re-send the session state that exists only in main's memory (open
+    // permission asks, specialist + background-shell run records, and the
+    // replay-complete marker). Awaited AFTER the history page lands, because
+    // the marker reaps tool cards the page left 'running' and must not run
+    // before those cards exist.
+    replayLiveState: (sessionId: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.SESSION_REPLAY_LIVE_STATE, { sessionId }),
     // Perf cycle 2: request/response, unlike the fire-and-forget replay above.
     // Returns ONE page of history (newest when beforeCursor is null, else the
     // page immediately older than the cursor) so opening a huge conversation
@@ -1075,7 +1145,12 @@ contextBridge.exposeInMainWorld('claude', {
   firstRun: {
     getState: (): Promise<any> => ipcRenderer.invoke(IPC.FIRST_RUN_STATE),
     retry: (): Promise<void> => ipcRenderer.invoke(IPC.FIRST_RUN_RETRY),
-    startAuth: (mode: 'oauth' | 'apikey'): Promise<void> =>
+    // Widened from 'oauth' | 'apikey' (backend design 2026-09-05 §5): the
+    // approved first-run card has a "Sign in with ChatGPT" button and an
+    // OpenRouter one, and main.ts's two FIRST_RUN_START_AUTH handlers branch on
+    // the mode. 'none' is in the union only because it IS FirstRunState's; main
+    // ignores it.
+    startAuth: (mode: FirstRunState['authMode']): Promise<void> =>
       ipcRenderer.invoke(IPC.FIRST_RUN_START_AUTH, mode),
     submitApiKey: (key: string): Promise<void> =>
       ipcRenderer.invoke(IPC.FIRST_RUN_SUBMIT_API_KEY, key),
@@ -1295,6 +1370,27 @@ contextBridge.exposeInMainWorld('claude', {
     setKey: (id: string, key: string) => ipcRenderer.invoke(IPC.PROVIDER_SET_KEY, id, key),
     catalog: () => ipcRenderer.invoke(IPC.PROVIDER_CATALOG),
   },
+  // Sign in with ChatGPT (backend design 2026-09-05 §5, §6). The account state
+  // machine the Settings card and the first-run wizard read, and its three verbs.
+  // `supported` mirrors native.supported above: YOUCODED_CHATGPT=0 is the kill
+  // switch, and the renderer gates the card on `=== true` (workbench and
+  // remote-shim set it explicitly for that reason — review R1-9).
+  //
+  // WHY the invokes go through unwrapInvokeError: signIn() THROWS the two
+  // sentences the card must show verbatim ("Port 1455 is already in use…", the
+  // keychain one). Electron's ipcRenderer.invoke rewraps a handler's throw as
+  // "Error invoking remote method 'chatgpt:sign-in': Error: <sentence>", and
+  // the card prints e.message as-is — so without this the user would read the
+  // transport's prefix in front of the sentence. No other namespace in this
+  // file needed it: the provider handlers' throws reach a section that shows
+  // them the same prefixed way (ProvidersSection.tsx, a pre-existing wart).
+  chatgpt: {
+    supported: process.env.YOUCODED_CHATGPT !== '0',
+    status: (): Promise<ChatGptAccountStatus> => unwrapInvokeError(ipcRenderer.invoke(IPC.CHATGPT_STATUS)),
+    signIn: (): Promise<boolean> => unwrapInvokeError(ipcRenderer.invoke(IPC.CHATGPT_SIGN_IN)),
+    cancelSignIn: (): Promise<boolean> => unwrapInvokeError(ipcRenderer.invoke(IPC.CHATGPT_CANCEL_SIGN_IN)),
+    signOut: (): Promise<boolean> => unwrapInvokeError(ipcRenderer.invoke(IPC.CHATGPT_SIGN_OUT)),
+  },
   // WebSearch providers (Phase 2 Plan B): keyed Tavily/Exa upgrades. list = the
   // fixed backend rows (hasKey flags); set/remove-key manage the encrypted key;
   // test = never-throws connectivity check. Positional args match ipc-handlers.
@@ -1400,6 +1496,28 @@ contextBridge.exposeInMainWorld('claude', {
   // Android, where MainActivity uses them to enable/disable
   // OnBackPressedCallback and broadcast back-press events. Exposed here for
   // shape parity with remote-shim.ts (PITFALLS.md → Cross-Platform parity).
+  // Voice typing. `sendAudio` and `micAccess` are DESKTOP ONLY on purpose: on a
+  // phone the operating system's own recogniser owns the microphone, and the
+  // Activity's permission launcher owns the permission question — so the shared
+  // renderer tests `typeof bridge.sendAudio === 'function'` instead of assuming.
+  voice: {
+    status: (): Promise<unknown> => ipcRenderer.invoke(IPC.VOICE_STATUS),
+    download: (): Promise<void> => ipcRenderer.invoke(IPC.VOICE_DOWNLOAD),
+    start: (): Promise<void> => ipcRenderer.invoke(IPC.VOICE_START),
+    stop: (): Promise<void> => ipcRenderer.invoke(IPC.VOICE_STOP),
+    cancel: (): Promise<void> => ipcRenderer.invoke(IPC.VOICE_CANCEL),
+    micAccess: (): Promise<unknown> => ipcRenderer.invoke(IPC.VOICE_MIC_ACCESS),
+    // One 100 ms slice of microphone audio plus the loudness the audio worklet
+    // already measured for it. The loudness travels with the audio because the
+    // main process owns the two-second silence stop and must not re-measure
+    // what the worklet already knows.
+    sendAudio: (chunk: ArrayBuffer, rms: number) => ipcRenderer.send(IPC.VOICE_AUDIO, chunk, rms),
+    onEvent: (cb: (e: unknown) => void) => {
+      const listener = (_e: unknown, payload: unknown) => cb(payload);
+      ipcRenderer.on(IPC.VOICE_EVENT, listener);
+      return () => ipcRenderer.removeListener(IPC.VOICE_EVENT, listener);
+    },
+  },
   system: {
     notifyStackState: (_empty: boolean) => {
       // No-op on desktop. Electron has no hardware back button.

@@ -175,6 +175,18 @@ const NOT_DIALOGS: Record<string, string> = {
   // viewer's own relative box. Corner-anchored, no scrim, never centered, never
   // modal — the same shape as ZoomOverlay above, which it shares its look with.
   'ZoomPill.tsx': 'in-pane zoom control anchored to a corner by its caller, no scrim',
+  // Evidence, not a class string: the wrapper's top/left come from
+  // getBoundingClientRect() of the [data-view-toggle] element, there is no
+  // translate(-50%, -50%) anywhere in the file, and it renders no <Scrim>. Same
+  // shape as AnchorTip above — a bubble pinned to a control it points at.
+  'ViewToggleHint.tsx': 'coach mark anchored to the chat/terminal toggle via computed coordinates',
+  // Evidence, not a class string: `pos` comes from getBoundingClientRect() of the
+  // mic button (its own triggerRef), the transform is translate(-100%, -100%) — up
+  // from the trigger's top edge, never -50%/-50% — and the file renders no <Scrim>.
+  // The same shape as AnchorTip and ViewToggleHint: a bubble pinned above the
+  // control it belongs to (the first-run download card, the download progress,
+  // the "no microphone" reason).
+  'VoiceButton.tsx': 'first-run / download / no-mic card anchored above the mic via computed coordinates',
 };
 
 describe('dialog shell adoption', () => {

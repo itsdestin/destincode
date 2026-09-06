@@ -82,6 +82,19 @@ export interface SessionInfo {
   harnessId?: string;
   /** Model alias the session was started with (e.g. 'claude-sonnet-4-6') */
   model?: string;
+  /** Native runtime only: which KIND of provider the bound model runs on
+   *  ('chatgpt' | 'openrouter' | 'local-engine' | …), as main already resolves
+   *  it in conversations/portable-model.ts.
+   *
+   *  WHY the renderer needs it rather than looking the model up itself: two
+   *  providers can offer the same model id — a personal OpenAI API key and the
+   *  ChatGPT plan both list `gpt-5.5`. Looked up by id alone, a conversation
+   *  spending API credit can be shown the ChatGPT plan's usage numbers and told
+   *  they are "measured across your whole ChatGPT plan". Only the session knows
+   *  which one it is actually billed to. Absent for Claude sessions, and for
+   *  any native session main has not stamped yet — the renderer then falls back
+   *  to the catalog lookup and reports nothing when the id is ambiguous. */
+  providerType?: string;
   /** Optional text to prefill into the input bar after this session is selected.
    *  Consumed once by InputBar on first render after session switch; cleared via
    *  a consumed-set ref so it never re-fires on re-renders. */
@@ -472,6 +485,14 @@ export type SubagentSegment =
       // per delta — see chat-reducer.ts applySubagentEvent. CC events never
       // set this, so its absence preserves today's one-segment-per-event.
       partId?: string;
+      /** When this happened (epoch ms, the transcript event's own stamp).
+       *  Optional on every non-note segment because it exists for ONE reason:
+       *  placing a mid-run 'note' (below, which always has a time) among the
+       *  rows that happened before and after it, instead of at the bottom of
+       *  the trail on replay (chat-reducer.ts reconcileNoteSegments). A
+       *  segment without one is never ordered against — it just keeps its
+       *  place. Nothing else reads it. */
+      timestamp?: number;
     }
   | {
       type: 'tool';
@@ -480,6 +501,8 @@ export type SubagentSegment =
       toolName: string;
       input: Record<string, unknown>;
       status: 'running' | 'complete' | 'failed' | 'awaiting-approval';
+      /** See the 'text' variant's `timestamp` — same field, same one reason. */
+      timestamp?: number;
       response?: string;
       error?: string;
       structuredPatch?: StructuredPatchHunk[];
@@ -512,6 +535,8 @@ export type SubagentSegment =
       id: string;
       content: string;
       partId?: string;
+      /** See the 'text' variant's `timestamp` — same field, same one reason. */
+      timestamp?: number;
     };
 
 /** Specialists 1c — one mid-run steering message, kept on the ledger record so
@@ -813,7 +838,7 @@ export interface SkillEntry {
   description: string;
   category: 'personal' | 'work' | 'development' | 'admin' | 'other';
   prompt: string;
-  source: 'youcoded-core' | 'self' | 'plugin' | 'marketplace';
+  source: 'youcoded-core' | 'self' | 'project' | 'plugin' | 'marketplace';
   pluginName?: string;
 
   // New — marketplace fields
@@ -1642,6 +1667,18 @@ export const IPC = {
   WINDOW_FOCUS_AND_SWITCH: 'window:focus-and-switch',
   SESSION_OWNERSHIP_ACQUIRED: 'session:ownership-acquired',
   SESSION_OWNERSHIP_LOST: 'session:ownership-lost',
+  // Pull half of SESSION_OWNERSHIP_ACQUIRED. A window created BY a tear-off is
+  // handed its session before its renderer can subscribe, and Electron drops
+  // (never queues) a send with no listener — so the renderer asks for what it
+  // inherited once mounted. Returns SessionOwnershipAcquired[] and clears it.
+  DETACH_CLAIM_PENDING: 'detach:claim-pending',
+  // Re-send the parts of a session's state that live ONLY in main's memory and
+  // have no record in the transcript on disk: open permission asks, specialist
+  // run records, background shell run records, and the replay-complete marker
+  // that reaps tool cards the history left 'running'. Split out of
+  // TRANSCRIPT_REPLAY so an ownership handoff can hydrate from one PAGE of
+  // history instead of a whole-transcript replay.
+  SESSION_REPLAY_LIVE_STATE: 'session:replay-live-state',
   SESSION_DETACH_START: 'session:detach-start',
   // Chrome-style live tear-off: spawn the peer window mid-drag (before pointerup)
   // once the pill has moved far enough from the header. Source window then
@@ -1652,6 +1689,7 @@ export const IPC = {
   SESSION_DRAG_STARTED: 'session:drag-started',
   SESSION_DRAG_ENDED: 'session:drag-ended',
   SESSION_DRAG_DROPPED: 'session:drag-dropped',
+  SESSION_DRAG_ADOPT: 'session:drag-adopt',
   SESSION_DROP_RESOLVE: 'session:drop-resolve',
   CROSS_WINDOW_CURSOR: 'session:cross-window-cursor',
   // Request the full transcript history for a session — used when a window
@@ -1795,6 +1833,15 @@ export const IPC = {
   PROVIDER_TEST: 'provider:test',
   PROVIDER_SET_KEY: 'provider:set-key',
   PROVIDER_CATALOG: 'provider:catalog',
+  // ---- Sign in with ChatGPT (design 2026-09-04, backend design 2026-09-05 §5) ----
+  // status → ChatGptAccountStatus (shared/chatgpt-types.ts); the three verbs →
+  // boolean, or a THROWN sentence the card renders verbatim. Kill switch
+  // YOUCODED_CHATGPT=0: the handlers stay registered (parity) and answer
+  // signed-out / false.
+  CHATGPT_STATUS: 'chatgpt:status',
+  CHATGPT_SIGN_IN: 'chatgpt:sign-in',
+  CHATGPT_CANCEL_SIGN_IN: 'chatgpt:cancel-sign-in',
+  CHATGPT_SIGN_OUT: 'chatgpt:sign-out',
   // ---- WebSearch providers (Phase 2 Plan B): keyed Tavily/Exa upgrades ----
   // list = the fixed upgradeable-backend rows (hasKey flags); set/remove-key
   // manage the encrypted key; test = never-throws connectivity check.
@@ -1856,6 +1903,18 @@ export const IPC = {
   NATIVE_SHELL_EVENT: 'native:shell-event',       // push → one background command's run record changed (G-1)
   MODELS_MEMORY_CHECK: 'models:memory-check',     // invoke(modelId) → MemoryVerdict
   MODELS_LOAD: 'models:load',                     // invoke(modelId) → true ([Reload Model])
+  // ---- Voice prompting (design 2026-09-05) ----
+  // Mirrors preload.ts. Added here when the buddy-helper branch's channel-map
+  // guard caught them as preload-only: the voice work declared them on one side
+  // of the pair only, which is exactly the drift that guard exists to name.
+  VOICE_STATUS: 'voice:status',
+  VOICE_DOWNLOAD: 'voice:download',
+  VOICE_START: 'voice:start',
+  VOICE_STOP: 'voice:stop',
+  VOICE_CANCEL: 'voice:cancel',
+  VOICE_MIC_ACCESS: 'voice:mic-access',
+  VOICE_AUDIO: 'voice:audio',
+  VOICE_EVENT: 'voice:event',   // push
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.

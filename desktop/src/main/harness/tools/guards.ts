@@ -1,6 +1,21 @@
 // Tool-layer guards. These are NOT permission rules and no mode/preset/
 // remembered decision reaches them: secret paths hard-deny; paths outside the
-// session cwd force an 'ask' (the external_directory synthetic permission).
+// session cwd report 'external'.
+//
+// WHAT 'external' COSTS depends on the tool, and that is decided by the CALLER
+// (harness-session.ts, READ_ONLY_PATH_TOOLS), not here:
+//   • Write/Edit  → a forced approval card, as always.
+//   • Read/Grep/Glob → nothing. Since 2026-09-05 a read outside the workspace
+//     just runs, in every permission mode. Looking at a file changes nothing,
+//     and limitation 1 below means Bash could already read those same bytes
+//     with no card, so the toll was only ever paid by the polite tools.
+//     The secret hard-denies above are unaffected and still absolute.
+//
+// The spillRoot / internalReadRoots exemptions further down are consequently
+// REDUNDANT for reads (an 'external' verdict now costs a read tool nothing).
+// They are kept because they are cheap, they state intent, and they are the
+// only thing standing between a future write-shaped tool and a card it should
+// not raise — do not read their survival as evidence reads are still gated.
 // KNOWN LIMITATIONS (spec §2.3, accepted — honest friction on the file tools,
 // not a sandbox):
 //   1. Bash can still `cat .env` — these guards only gate the native file tools.

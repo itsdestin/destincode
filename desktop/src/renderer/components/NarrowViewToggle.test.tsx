@@ -36,6 +36,13 @@ describe('NarrowViewToggle', () => {
     expect(onToggleView).toHaveBeenCalledWith('chat');
   });
 
+  // ViewToggleHint anchors to this attribute. Drop it and the coach mark that
+  // sends a stuck user back to chat silently never renders — nothing else fails.
+  it('carries the coach-mark anchor', () => {
+    const { container } = render(<NarrowViewToggle viewMode="terminal" onToggleView={vi.fn()} />);
+    expect(container.querySelector('[data-view-toggle]')).toBeTruthy();
+  });
+
   // Destin asked for this to match the artifact button's footprint, so the two
   // read as a matched pair in the right cluster.
   it('matches the artifact button footprint', () => {

@@ -1,3 +1,4 @@
+import type { VoiceBridge } from '../../shared/voice-types';
 import { useEffect, useRef } from 'react';
 // M1 Task 3: native.send's declared return type below was stale (`void`) from
 // before Task 2 switched the IPC channel to invoke/ack. shared/types.ts (not
@@ -227,6 +228,10 @@ declare global {
         getDirectory: () => Promise<import('../../shared/types').WindowDirectory>;
         onDirectoryUpdated: (cb: (dir: import('../../shared/types').WindowDirectory) => void) => () => void;
         requestTranscriptReplay: (sessionId: string) => void;
+        /** Ownership handoffs main queued while this window was booting. */
+        claimPending: () => Promise<import('../../shared/types').SessionOwnershipAcquired[]>;
+        /** Re-send the session state that exists only in main's memory. */
+        replayLiveState: (sessionId: string) => Promise<void>;
         /** Perf cycle 2: one page of history. `beforeCursor` null = the newest
          *  page; pass a previous page's `cursor` for the page before it. */
         requestTranscriptPage: (req: { sessionId: string; beforeCursor: import('../../shared/types').PageCursor | null; claudeSessionId?: string; projectSlug?: string })
@@ -366,6 +371,10 @@ declare global {
         models: () => Promise<import('../../shared/engine-types').EngineModel[]>;
         onModelsChanged: (cb: (models: import('../../shared/engine-types').EngineModel[]) => void) => () => void;
       };
+      // Voice prompting (2026-09-05 deck). Optional: absent on hosts with no
+      // speech engine yet (remote browser, older builds) — the composer hides
+      // the mic when it is undefined. Shape: shared/voice-types.ts.
+      voice?: VoiceBridge;
       // Model manager (Plan C) — curated catalog, HF search, downloads, endpoint
       // detectors, engine backend switch. Task 9's Local Models panel consumes
       // these. onDownloadProgress returns an unsubscribe.

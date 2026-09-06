@@ -24,17 +24,26 @@ import fs from 'fs';
 import { SessionManager } from './session-manager';
 import { HookRelay } from './hook-relay';
 import { WindowRegistry } from './window-registry';
+import { PendingAcquireQueue } from './pending-acquire';
 import { registerIpcHandlers, buddyShowRefusal, cachedBuddyHelperStatus, refreshBuddyHelperStatus, setBuddyHelperLostHandler } from './ipc-handlers';
 import { RemoteServer } from './remote-server';
 import { RemoteConfig } from './remote-config';
 import { LocalSkillProvider } from './skill-provider';
 import { CommandProvider } from './command-provider';
-import { IPC, PermissionOverrides, PERMISSION_OVERRIDES_DEFAULT, type AttentionState, type AttentionSummary, type AttentionReport } from '../shared/types';
+import { IPC, PermissionOverrides, PERMISSION_OVERRIDES_DEFAULT, type AttentionState, type AttentionSummary, type AttentionReport, type SessionOwnershipAcquired } from '../shared/types';
 import { VITE_DEV_PORT } from '../shared/ports';
 import { MOUNT_PROBE_JS } from './dev-mount-probe';
 import { log, rotateLog } from './logger';
 import { registerThemeProtocol } from './theme-protocol';
-import { FirstRunManager } from './first-run';
+import { FirstRunManager, markSetupCompleted, setupIsUsable } from './first-run';
+import type { FirstRunState } from '../shared/first-run-types';
+// Sign in with ChatGPT (backend design 2026-09-05 §1): the account object is
+// built HERE, inside createWindow, and handed to the IPC layer and both
+// first-run managers. It needs its own SecretsStore over the same encrypted
+// file ipc-handlers' store uses (precedent: mcp-reconciler.ts) — one file, one
+// lock, two readers.
+import { ChatGptAuth } from './providers/chatgpt-auth';
+import { SecretsStore } from './providers/secrets-store';
 import { SyncService } from './sync-service';
 import { setSyncService, getSyncConfig } from './sync-state';
 // Cross-device sync spaces (spec 2026-07-03) — folder-based sync engine.
@@ -65,6 +74,7 @@ import { registerMarketplaceApiHandlers } from './marketplace-api-handlers';
 import { reconcileInstalls } from './install-reconcile';
 import { registerSocialHandlers, destroySocialHandlers } from './social-handlers';
 import { registerArcadeHandlers } from './arcade-handlers';
+import { registerVoiceHandlers, shutdownVoiceHandlers } from './voice/voice-handlers';
 import { requestChatSnapshot } from './chat-snapshot';
 import { BuddyWindowManager } from './buddy-window-manager';
 import { BuddyOverlayManager, OVERLAY_TITLE } from './buddy-overlay-manager';
@@ -162,6 +172,9 @@ let mainWindow: BrowserWindow | null = null;
 // buddy when the last main window closes (spec §7.6).
 let buddyManagerRef: BuddyManager | null = null;
 let cleanupIpcHandlers: (() => Promise<void>) | null = null;
+// Sign in with ChatGPT: module scope only so runShutdown can dispose it (stops
+// the usage poll, closes a lingering sign-in listener). Assigned in createWindow.
+let chatgptAuth: ChatGptAuth | null = null;
 // Plan 2b Task 8: the conversation-lease client + this install's device identity.
 // Constructed inside createWindow (before registerIpcHandlers) but referenced
 // again in the app-ready sync block, so they live at module scope. The holder
@@ -179,6 +192,12 @@ const sessionManager = new SessionManager();
 // singletons (PartyKit lobby). Populated when sessions are created and
 // when windows spawn/close. See window-registry.ts.
 const windowRegistry = new WindowRegistry();
+
+// Ownership handoffs that arrived before their target window could listen.
+// See pending-acquire.ts for the full WHY — short version: `webContents.send`
+// into a not-yet-mounted renderer is dropped, never queued, so a tear-off's
+// handoff has to be pulled by the renderer rather than pushed at it.
+const pendingAcquire = new PendingAcquireQueue<SessionOwnershipAcquired>();
 
 // IDs in the registry are webContents.id values, NOT BrowserWindow.id values.
 // BrowserWindow.fromId(webContentsId) silently returns null, so previously
@@ -385,6 +404,10 @@ export function setPermissionOverrides(overrides: Partial<PermissionOverrides>) 
 function registerFirstRunIpc(
   mainWindow: BrowserWindow,
   firstRunManager: FirstRunManager,
+  // Sign in with ChatGPT (backend design 2026-09-05 §5): the wizard's "Sign in
+  // with ChatGPT" button routes through here to the SAME account object the
+  // Settings card uses, so a sign-in finished in the wizard is signed in everywhere.
+  chatgptAuth: ChatGptAuth,
 ) {
   // Push state updates to renderer
   firstRunManager.on('state-changed', (state) => {
@@ -412,11 +435,22 @@ function registerFirstRunIpc(
     catch (e) { log('ERROR', 'FirstRun', 'Retry failed', { error: String(e) }); }
   });
 
-  ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: 'oauth' | 'apikey') => {
+  ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: FirstRunState['authMode']) => {
     try {
       if (mode === 'oauth') {
         // claude auth login opens the browser itself — don't double-open
         await firstRunManager.handleOAuthLogin();
+      } else if (mode === 'chatgpt') {
+        // Opens the browser through ChatGptAuth and waits for the callback.
+        // handleChatGptLogin catches signIn()'s own throws (port 1455 held,
+        // no keychain) into lastError itself — the catch below is only the
+        // last resort, since a swallowed throw here would leave the wizard's
+        // button silently doing nothing.
+        await firstRunManager.handleChatGptLogin(chatgptAuth);
+      } else if (mode === 'openrouter') {
+        // The approved card has the button; the sign-in is not built yet, and
+        // a button that does nothing was review R1-6.
+        firstRunManager.handleOpenRouterNotBuilt();
       }
     } catch (e) { log('ERROR', 'FirstRun', 'Auth failed', { error: String(e) }); }
   });
@@ -432,15 +466,10 @@ function registerFirstRunIpc(
   });
 
   ipcMain.handle(IPC.FIRST_RUN_SKIP, async () => {
-    try {
-      const stateDir = path.join(os.homedir(), '.claude', 'toolkit-state');
-      fs.mkdirSync(stateDir, { recursive: true });
-      const configPath = path.join(stateDir, 'config.json');
-      let config: any = {};
-      try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
-      config.setup_completed = true;
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-    } catch (e) { log('ERROR', 'FirstRun', 'Skip failed', { error: String(e) }); }
+    // One writer for the setup-completed flag (first-run.ts). WHY: it is the
+    // only place that knows WHERE the wizard's files live, so a dev instance
+    // pointed at a scratch folder cannot write the installed app's config.
+    markSetupCompleted();
     // Transition the state machine so the renderer's onStateChanged fires
     firstRunManager.skip();
   });
@@ -793,6 +822,7 @@ function createAppWindow(opts?: { x?: number; y?: number; width?: number; height
     // states from a closed window don't persist in the aggregated summary.
     attentionReports.delete(wid);
     debouncedBroadcastAttention();
+    pendingAcquire.forget(wid);
     windowRegistry.unregisterWindow(wid);
     // Spec §7.6: "Buddy closes with main." If this was the last main window
     // (i.e., all remaining open windows are buddy windows), tear down the
@@ -921,12 +951,38 @@ function createWindow(firstRunManager?: FirstRunManager) {
     delay: (ms) => new Promise((r) => setTimeout(r, ms)),
   });
 
-  cleanupIpcHandlers = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
+  // Sign in with ChatGPT (backend design 2026-09-05 §1, §6). Built HERE, right
+  // before registerIpcHandlers — i.e. AFTER the dev-profile userData override
+  // near the top of this file — and never beside `remoteServer`, which is
+  // The kill switch, read once: YOUCODED_CHATGPT=0 turns the whole feature off.
+  const chatgptEnabled = process.env.YOUCODED_CHATGPT !== '0';
+  // constructed before that override: an instance built there would read and
+  // write the BUILT app's native-secrets.json and chatgpt-account.json from a
+  // dev instance (the live-app rule broken through a file). Constructed even
+  // under the kill switch (YOUCODED_CHATGPT=0): it is the file reader the
+  // launch-time auth check below needs, so a ChatGPT-only install is not locked
+  // out by the switch; ipc-handlers applies the switch to everything user-facing.
+  chatgptAuth = new ChatGptAuth({
+    userDataDir: app.getPath('userData'),
+    secrets: new SecretsStore(app.getPath('userData')),
+    appVersion: app.getVersion(),
+    openExternal: (url) => shell.openExternal(url),
+    // The object still exists under the kill switch (the launch check reads the
+    // account file through it), but it must not talk to OpenAI: the poll
+    // refreshes the token, and a rejected refresh deletes the saved sign-in.
+    // Turning the feature off must never sign anyone out (review T4 F1).
+    pollUsage: chatgptEnabled,
+  });
+
+  const ipcWiring = registerIpcHandlers(ipcMain, sessionManager, mainWindow, skillProvider, commandProvider, hookRelay, remoteConfig, remoteServer, windowRegistry,
     { client: leaseClient, setHolderTakeover: (fn) => { holderTakeoverRef.fn = fn; }, requester,
-      deviceId: deviceIdentity.id, machineId: machineIdentity?.id ?? '' });
+      deviceId: deviceIdentity.id, machineId: machineIdentity?.id ?? '' },
+    chatgptAuth);
+  cleanupIpcHandlers = ipcWiring.cleanup;
+  const hasUsableProvider = ipcWiring.hasUsableProvider;
 
   if (firstRunManager) {
-    registerFirstRunIpc(mainWindow, firstRunManager);
+    registerFirstRunIpc(mainWindow, firstRunManager, chatgptAuth);
   } else {
     // Not a first-run — but verify Claude Code can actually run.
     // If auth is missing, re-trigger first-run at the auth step so the user
@@ -948,12 +1004,35 @@ function createWindow(firstRunManager?: FirstRunManager) {
       if (!lateAuthCheck) {
         lateAuthCheck = (async () => {
           try {
+            // Provider-aware since Sign in with ChatGPT (backend design
+            // 2026-09-05 §5, review R3-2). This branch removed the wizard's
+            // Skip link, so forcing AUTHENTICATE here is a lock-out, not a
+            // nudge — and the old Claude-only check would have locked out a
+            // ChatGPT-only install (every launch), an install running on an
+            // OpenRouter key, and anyone whose `claude` CLI broke. Order is
+            // load-bearing: the two LOCAL reads first, the `claude auth status`
+            // spawn last, so a signed-in ChatGPT account never pays for it.
+            // chatgptAuth is read directly (not via the registry row) so the
+            // kill switch, which removes the row, cannot lock anyone out either.
             const { detectAuth } = require('./prerequisite-installer');
-            const result = await detectAuth();
-            if (result.installed) return { currentStep: 'COMPLETE' };
+            const usable = await setupIsUsable({
+              isSignedIn: () => chatgptAuth!.isSignedIn(),
+              hasUsableProvider,
+              detectAuth,
+            });
+            if (usable) return { currentStep: 'COMPLETE' };
 
             // Auth missing — spin up first-run at the auth step
             log('WARN', 'Main', 'Setup complete but auth missing — showing auth screen');
+            // Record that setup itself is DONE before demoting the wizard's
+            // saved step. WHY: forceStep() overwrites the saved step (COMPLETE)
+            // with AUTHENTICATE and writes it to disk. If the user closes the
+            // window without signing in, the next launch sees a state file that
+            // no longer says COMPLETE and treats this months-old install as a
+            // brand-new machine — re-running the Node/Git/Claude installers and,
+            // with the Skip link gone, stranding them on a "Try Again" screen.
+            // With the flag set, the next launch comes back through THIS check.
+            markSetupCompleted();
             lateFirstRunManager = new FirstRunManager();
             lateFirstRunManager.forceStep('AUTHENTICATE');
 
@@ -967,18 +1046,22 @@ function createWindow(firstRunManager?: FirstRunManager) {
 
             // Register the other handlers
             ipcMain.handle(IPC.FIRST_RUN_RETRY, async () => { try { await lateFirstRunManager!.retry(); } catch {} });
-            ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: 'oauth' | 'apikey') => {
-              try { if (mode === 'oauth') { await lateFirstRunManager!.handleOAuthLogin(); } } catch {} });
+            // Same three arms as registerFirstRunIpc above (ChatGPT / OpenRouter
+            // per backend design 2026-09-05 §5); swallowed throws are the last
+            // resort only — handleChatGptLogin writes its own lastError.
+            ipcMain.handle(IPC.FIRST_RUN_START_AUTH, async (_event, mode: FirstRunState['authMode']) => {
+              try {
+                if (mode === 'oauth') await lateFirstRunManager!.handleOAuthLogin();
+                // Gated on the switch as well as on the renderer's hidden button:
+                // an ungated arm would still open a browser tab and bind port
+                // 1455 with the feature turned off (review T4 F3).
+                else if (mode === 'chatgpt' && chatgptEnabled) await lateFirstRunManager!.handleChatGptLogin(chatgptAuth!);
+                else if (mode === 'openrouter') lateFirstRunManager!.handleOpenRouterNotBuilt();
+              } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_SUBMIT_API_KEY, async (_event, key: string) => { try { await lateFirstRunManager!.handleApiKeySubmit(key); } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_DEV_MODE_DONE, async () => { try { await lateFirstRunManager!.handleDevModeDone(); } catch {} });
             ipcMain.handle(IPC.FIRST_RUN_SKIP, async () => {
-              try {
-                const stateDir = path.join(os.homedir(), '.claude', 'toolkit-state');
-                fs.mkdirSync(stateDir, { recursive: true });
-                const cp = path.join(stateDir, 'config.json');
-                let c: any = {}; try { c = JSON.parse(fs.readFileSync(cp, 'utf8')); } catch {}
-                c.setup_completed = true; fs.writeFileSync(cp, JSON.stringify(c, null, 2));
-              } catch {}
+              markSetupCompleted(); // same one writer as above
               lateFirstRunManager?.skip();
             });
 
@@ -1080,6 +1163,24 @@ function registerDetachIpc() {
   // treating its own directory entry as a remote session.
   ipcMain.handle(IPC.WINDOW_GET_ID, (evt) => evt.sender.id);
 
+  // Renderer asks "did I inherit anything while I was still booting?"
+  //
+  // WHY (2026-09-03): a tear-off hands the session to a window created one
+  // statement earlier, so `tgt.webContents.send(SESSION_OWNERSHIP_ACQUIRED)`
+  // fired at a renderer whose React tree did not exist yet. Electron does NOT
+  // queue for a late subscriber — measured on 41.10.7: a message sent right
+  // after `new BrowserWindow()` never reaches a listener registered 1.5s later,
+  // it is dropped outright. So the handoff, and everything it triggers (history
+  // hydration, opening on the dragged session, re-sending open permission asks)
+  // silently did nothing on EVERY tear-off into a fresh window.
+  //
+  // Fix shape follows the one already used for the buddy overlay's boot
+  // geometry (see BUDDY_OVERLAY_READY): the renderer PULLS once mounted rather
+  // than being pushed at before it can listen. `readyWindows` is what makes the
+  // two paths exclusive — before a window has pulled, transfers queue; after,
+  // they push as before — so a payload is delivered exactly once either way.
+  ipcMain.handle(IPC.DETACH_CLAIM_PENDING, (evt) => pendingAcquire.claim(evt.sender.id));
+
   // Appearance sync across peer windows. When one window writes a theme /
   // font / reduced-effects change, it broadcasts and every OTHER window
   // receives the same prefs via appearance:sync. ThemeProvider applies
@@ -1100,10 +1201,21 @@ function registerDetachIpc() {
     const currentOwner = windowRegistry.getOwner(sessionId);
     if (currentOwner !== srcWindowId) return; // stale — another event already moved it
     windowRegistry.assignSession(sessionId, targetWindowId);
+    // The target has not been receiving this session's live transcript stream,
+    // so its first page of history must read to EOF rather than stopping at the
+    // watcher's startOffset. See WindowRegistry.markInheritedByTransfer.
+    windowRegistry.markInheritedByTransfer(sessionId, targetWindowId);
     const src = windowFromWcId(srcWindowId);
     const tgt = windowFromWcId(targetWindowId);
     src?.webContents.send(IPC.SESSION_OWNERSHIP_LOST, { sessionId });
-    tgt?.webContents.send(IPC.SESSION_OWNERSHIP_ACQUIRED, { sessionId, sessionInfo: info, freshWindow });
+    const payload = { sessionId, sessionInfo: info, freshWindow };
+    // A window that has not yet pulled (DETACH_CLAIM_PENDING) has no listener —
+    // a send would be dropped on the floor. Queue for its pull instead.
+    if (pendingAcquire.isReady(targetWindowId)) {
+      tgt?.webContents.send(IPC.SESSION_OWNERSHIP_ACQUIRED, payload);
+    } else {
+      pendingAcquire.enqueue(targetWindowId, payload);
+    }
   }
 
   // If a window was emptied by a detach/re-dock and another peer window
@@ -1236,6 +1348,35 @@ function registerDetachIpc() {
     transferOwnership(payload.sessionId, evt.sender.id, payload.targetWindowId, /*freshWindow*/ false);
     maybeAutoCloseEmpty(evt.sender.id);
     stopCursorTicker();
+  });
+
+  // ── 'html-drag' tear-off (Linux/Wayland) ──────────────────────────────────
+  //
+  // Everything above this point resolves a cross-window drag from SCREEN
+  // coordinates, and on Wayland every one of those is zero — the cursor's
+  // position, each window's position, and setPosition, which is a no-op that
+  // still reports success. So peer windows never highlighted, the torn-off
+  // window never followed the cursor, and the drop always resolved to "you
+  // dropped it on nothing". A pill in a torn-off window could never be dragged
+  // back (Destin, 2026-09-03: "permanently stuck with two windows").
+  //
+  // There, the pill is a browser-native draggable and the compositor carries
+  // the whole gesture; the window it lands on is TOLD, in its own window-local
+  // coordinates, and claims the session with the message below. Main's only
+  // job is ownership. (A previous attempt started the drag from here with
+  // webContents.startDrag — abandoned because on Linux that API crops the
+  // picture to ~138px and can carry nothing but a file: session-drag-model.ts.)
+  //
+  // The window that RECEIVED an 'html-drag' drop claims the session. Unlike
+  // SESSION_DRAG_DROPPED (sent by the source), this arrives from the TARGET, so
+  // the source is resolved from the registry and never taken from the payload —
+  // a forged message can only move a session to the window that sent it, and
+  // only if some window really owns it.
+  ipcMain.on(IPC.SESSION_DRAG_ADOPT, (evt, payload: { sessionId: string }) => {
+    const from = windowRegistry.getOwner(payload.sessionId);
+    if (from == null || from === evt.sender.id) return;
+    transferOwnership(payload.sessionId, from, evt.sender.id, /*freshWindow*/ false);
+    maybeAutoCloseEmpty(from);
   });
 
   // Switcher selected a remote session — focus that window and tell it to
@@ -1634,6 +1775,12 @@ void app.whenReady().then(async () => {
   // Games arcade scores (spec §6.1). Same token-bound store; its own module for
   // the same reason social has one — the account file stays about auth.
   registerArcadeHandlers(marketplaceAuthStore);
+  // Voice typing (design 2026-09-05). WITHOUT THIS LINE the six `voice:*`
+  // channels exist in preload.ts and nothing answers them, so tapping the
+  // microphone would hang forever — the feature would ship dead. It takes only
+  // the userData path: everything else it needs (the downloaded speech engine,
+  // the window that opened the mic) it resolves for itself.
+  registerVoiceHandlers(app.getPath('userData'));
   // Named "accounts", not "auth-store": this window covers five registrations —
   // createAuthStore, registerMarketplaceApiHandlers, remoteServer.setAccountStore,
   // registerSocialHandlers and registerArcadeHandlers — not just the store.
@@ -2261,7 +2408,17 @@ async function runShutdown(): Promise<void> {
   // must let it finish before app.quit(), else the engine outlives the app and keeps
   // the fixed port bound for the next instance to wrongly adopt (2026-07-20 fix).
   const engineStopped = cleanupIpcHandlers ? cleanupIpcHandlers() : Promise.resolve();
+  // Sign in with ChatGPT: stop the usage poll and close any lingering sign-in
+  // listener on 1455. Best-effort like the other teardowns here.
+  const chatgptDisposed = chatgptAuth?.dispose().catch(() => {}) ?? Promise.resolve();
   destroySocialHandlers(); // tear down the presence WebSocket + its timers
+  // Kill the speech engine's own program. WHY IT IS HERE and not in its own
+  // `app.on('before-quit')`: this function IS the before-quit path (see the
+  // header above — the app deliberately has exactly one teardown route, so that
+  // an OS shutdown or a Cmd+Q cleans up the same things a window close does).
+  // A second before-quit listener would run on only two of the three routes and
+  // leave a 1.14 GB speech process behind on the third.
+  try { shutdownVoiceHandlers(); } catch {}
   sessionManager.destroyAll();
   hookRelay.stop();
   remoteServer.stop();
@@ -2283,8 +2440,11 @@ async function runShutdown(): Promise<void> {
   // race the teardown against a 4s cap (supervisor's own SIGTERM→SIGKILL bound is ~3s).
   // Returned (not `void`-ed) so the callers below can sequence app.quit()/exit()
   // after it — this function no longer decides on its own when to quit.
+  // chatgptDisposed joins the race: dispose() promises that every write in
+  // flight lands, and a poll's read-modify-write cut off half-way is exactly the
+  // torn account file the lock exists to prevent (review T4 F5). Same 4s cap.
   await Promise.race([
-    engineStopped,
+    Promise.all([engineStopped, chatgptDisposed]),
     new Promise<void>((r) => setTimeout(r, 4_000)),
   ]).catch(() => {});
 }

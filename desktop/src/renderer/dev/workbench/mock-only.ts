@@ -43,4 +43,20 @@
 // added and not-supported states without a KDE desktop; only the "no real
 // backend" claim goes. `no MOCK_ONLY entry has since gained a real channel` in
 // workbench-mock-contract.test.ts is what forces this deletion.
+// The eight voice-prompting rows (`voice.status`, `.download`, `.start`,
+// `.stop`, `.cancel`, `.onEvent`, `.sendAudio`, `.micAccess`) came off the same
+// way on 2026-09-05, the moment preload.ts gained the real `voice` namespace and
+// main/voice/voice-handlers.ts registered the six channels behind it. The fake
+// in mock-shim.ts STAYS — the workbench still needs a mic that "hears" a
+// scripted sentence with no speech engine downloaded — only the "no real
+// backend" claim goes.
+// The four Sign-in-with-ChatGPT rows (`chatgpt.status`, `chatgpt.signIn`,
+// `chatgpt.cancelSignIn`, `chatgpt.signOut`) were listed here while the Settings
+// card and the first-run screen were designed against a fake account (design
+// 2026-09-04), and came off when the real backend landed on all five surfaces
+// (backend design 2026-09-05: main/providers/chatgpt-auth.ts, the four
+// `chatgpt:*` handlers, preload / remote-shim / remote-server / Android). Same
+// rule, same reason as the rows above: the fake in mock-shim.ts stays so the
+// workbench can still pin signed-out / waiting / signed-in / blocked without a
+// browser round-trip — only the "no real backend" claim goes.
 export const MOCK_ONLY: ReadonlyArray<{ channel: string; feature: string }> = [];

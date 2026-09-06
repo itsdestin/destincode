@@ -28,6 +28,9 @@ import { nativeStoreSlug, ccProjectSlug } from './slug-encoding';
 import { NativeHome } from './native-home';
 import { SecretsStore } from './providers/secrets-store';
 import { ProviderRegistry } from './providers/provider-registry';
+// Sign in with ChatGPT (backend design 2026-09-05 §1): constructed by main.ts
+// (it needs the post-dev-profile userData) and passed IN; this file only wires it.
+import type { ChatGptAuth } from './providers/chatgpt-auth';
 // Task 7: native auto-title generation over the AI SDK — the SAME `ai`
 // package harness-session.ts already depends on (never through
 // HarnessSession.send(), which hard-throws on re-entrancy).
@@ -106,7 +109,7 @@ import { SavedFolder, readFolders, writeFolders } from './saved-folders';
 // registry's limit (project-registry.ts uses the same constant).
 import { PROJECT_DESCRIPTION_MAX } from '../shared/artifacts/types';
 import { loadConfigSync, writeConfig, getAppliedAtLaunch, getCachedGpu } from './performance-config';
-import type { PerformanceConfigSnapshot } from '../shared/types';
+import type { PerformanceConfigSnapshot, SessionInfo } from '../shared/types';
 import { ARTIFACT_IPC } from './artifacts/ipc-channels';
 // 2026-08-27 OOM fix: read-only handlers (list, get, save, check-existence,
 // the binary-roots pass) go through readSidecarShared — one parsed copy per
@@ -341,6 +344,14 @@ export function registerIpcHandlers(
     deviceId: string;
     machineId: string;
   },
+  // Sign in with ChatGPT (backend design 2026-09-05 §1, §6): the account object
+  // main.ts built inside createWindow. Optional so the tests that call this with
+  // four args keep working. It is ALWAYS handed over when it exists — the kill
+  // switch (YOUCODED_CHATGPT=0) is applied HERE, not by omitting the argument:
+  // under the switch the registry, the catalog and the four handlers get null
+  // (no virtual row, no models, answers signed-out/false) while the object
+  // itself stays alive as the file reader main.ts's launch check needs.
+  chatgptAuth?: ChatGptAuth | null,
 ) {
   // Broadcast a non-session-scoped event to every renderer. Status data, UI
   // actions, and similar globals must reach every window — not just window 1.
@@ -884,6 +895,9 @@ export function registerIpcHandlers(
         // preset badge + resume rows can read it. getHarnessId is authoritative
         // after create/resume awaited above.
         info.harnessId = nativeHost.getHarnessId(info.id) ?? undefined;
+        // Same stamp as SESSION_LIST, so the very first render of a brand-new
+        // session already knows whose plan it is spending (review T6 F1).
+        info.providerType = bindingToPortableModel(nativeHost.getBinding(info.id), await providerRegistry.list())?.providerType;
 
         // Native sessions emit NO CC SessionStart hook, so the CC lease path
         // (sessionIdMap + acquire at the SessionStart listener) never fires for
@@ -1001,7 +1015,16 @@ export function registerIpcHandlers(
   // so remote clients still see everything. RemoteServer uses its own path
   // and doesn't go through this handler.
   ipcMain.handle(IPC.SESSION_LIST, async (event) => {
-    const all = sessionManager.listSessions();
+    // Stamp each native session with the TYPE of the provider it is bound to.
+    // WHY: the renderer decides whose usage numbers to show from the session's
+    // model id alone otherwise, and two providers can list the same id — a user
+    // with both an OpenAI API key and the ChatGPT plan has `gpt-5.5` twice. The
+    // session itself knows which one it is bound to; the model id does not.
+    // (Review T6 F1 / design §4.9.) resolvePortableModel returns null for a
+    // non-native session or a provider that has left the registry — never a
+    // guess, so the renderer falls back to "unknown" rather than to the wrong
+    // plan.
+    const all = await stampProviderTypes(sessionManager.listSessions());
     if (!windowRegistry) return all;
     const callerId = event.sender.id;
     const primaryId = windowRegistry.getLeaderId();
@@ -2268,7 +2291,14 @@ export function registerIpcHandlers(
     // (The background bulk-conversations pull + its restore-progress chip were
     // removed in sync-legacy-demolition — the pull path no longer exists.)
 
-    return { usage, announcement, updateStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap };
+    // Sign in with ChatGPT (§4.4): the plan's usage windows ride the same 10 s
+    // push the Claude usage does, so the status-bar chips and /usage draw either
+    // plan with one recipe — on desktop AND on remote browsers (this payload is
+    // forwarded verbatim by broadcastStatusData). Pruned by usageForStatus();
+    // null when signed out, never polled, or under the kill switch.
+    const chatgptUsage = chatgptForUi?.usageForStatus() ?? null;
+
+    return { usage, announcement, updateStatus, syncWarnings, lastSyncEpoch, syncInProgress, lastSyncByDevice, backupMeta, contextMap, gitBranchMap, sessionStatsMap, attentionMap, chatgptUsage };
   }
 
   // Push status data every 10s — store handle so it can be cleared on shutdown
@@ -2456,10 +2486,20 @@ export function registerIpcHandlers(
   // keeps serving whatever version is on disk, so a model needing a newer llama.cpp
   // just looks like a broken app.
   void engineManager.autoUpdateOnLaunch();
-  const providerRegistry = new ProviderRegistry(nativeHome, secretsStore, engineManager.registryHook());
+  // Sign in with ChatGPT — the kill switch (§6). `chatgptForUi` is what the
+  // registry, the catalog, the four handlers and the remote WS cases see: null
+  // under YOUCODED_CHATGPT=0 so the plan's row and models vanish and every
+  // surface answers signed-out, while `chatgptAuth` itself (main.ts's file
+  // reader) is untouched. Stored tokens are left alone — the flag is a fast
+  // revert, not a sign-out.
+  const chatgptForUi: ChatGptAuth | null = process.env.YOUCODED_CHATGPT !== '0' ? (chatgptAuth ?? null) : null;
+  const providerRegistry = new ProviderRegistry(nativeHome, secretsStore, engineManager.registryHook(), chatgptForUi);
   void providerRegistry.init();
   const modelCatalog = new ModelCatalog(app.getPath('userData'), undefined, {
     localModels: () => engineManager.catalogModels(),
+    // The plan's models come from ChatGptAuth's manifest cache (§4.2); absent
+    // under the kill switch so the catalog contributes nothing for 'chatgpt'.
+    ...(chatgptForUi ? { chatgptModels: () => chatgptForUi.models() } : {}),
   });
   // WebSearch stack (Phase 2 Plan B): keys live in SecretsStore, the ref map in
   // ~/.youcoded/search-providers.json (via NativeHome). SearchChain caches the
@@ -2623,6 +2663,18 @@ export function registerIpcHandlers(
   const resolvePortableModel = async (sessionId: string): Promise<PortableModelRef | null> =>
     bindingToPortableModel(nativeHost.getBinding(sessionId), await providerRegistry.list());
 
+  // One registry read for a whole listing (§4.9, review T6 F1). Returns copies:
+  // SessionInfo objects are owned by SessionManager and must not be mutated here.
+  const stampProviderTypes = async (rows: SessionInfo[]): Promise<SessionInfo[]> => {
+    if (!rows.some((s) => s.provider === 'native')) return rows;
+    const providers = await providerRegistry.list();
+    return rows.map((s) => {
+      if (s.provider !== 'native') return s;
+      const ref = bindingToPortableModel(nativeHost.getBinding(s.id), providers);
+      return ref ? { ...s, providerType: ref.providerType } : s;
+    });
+  };
+
   // Task 7: native auto-title feeder. CC sessions get titled by the topic
   // watcher below (~/.claude/topics, fed by the Auto-Title hook); native
   // sessions have no such feed, so this generates one from the bound model
@@ -2761,7 +2813,9 @@ export function registerIpcHandlers(
   // SAME catalog instance the desktop handler below reads — a second instance
   // would fingerprint-cache independently and could answer a re-read with
   // stale data relative to whichever surface wrote last.
-  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore, specialistCatalog });
+  // chatgptAuth (Sign in with ChatGPT §5): the remote chatgpt:* WS cases read
+  // the SAME account object, already kill-switched (null → signed-out/false).
+  remoteServer?.setNativeRuntime({ nativeHost, providerRegistry, modelCatalog, engineManager, modelManager, searchKeyStore, searchService, permissionStore, specialistCatalog, chatgptAuth: chatgptForUi });
 
   // Plan 2b Task 11: give the remote server the SAME lease client/requester +
   // deviceId so its WS clients reach the identical lease/device state the
@@ -2775,10 +2829,17 @@ export function registerIpcHandlers(
   // older page. Request/response — unlike TRANSCRIPT_REPLAY, which streams
   // every historical event back over TRANSCRIPT_EVENT and cost ~22s of main +
   // renderer work on a huge conversation.
-  ipcMain.handle(IPC.TRANSCRIPT_PAGE, async (_evt, req: TranscriptPageRequest): Promise<TranscriptPageResult> => {
+  ipcMain.handle(IPC.TRANSCRIPT_PAGE, async (evt, req: TranscriptPageRequest): Promise<TranscriptPageResult> => {
     const empty: TranscriptPageResult = { events: [], cursor: null, hasMore: false };
     if (!req || typeof req.sessionId !== 'string') return empty;
     const { sessionId, beforeCursor } = req;
+
+    // Did this window INHERIT the session (tear-off / re-dock) rather than watch
+    // it live? Consumed unconditionally — including on the native path below,
+    // which needs no special handling but must not leave the mark set for a
+    // later, unrelated page read. See WindowRegistry.markInheritedByTransfer.
+    const inherited = !beforeCursor
+      && !!windowRegistry?.consumeInheritedByTransfer(sessionId, evt.sender.id);
 
     // Native sessions page over the merged event array; getHistoryPage returns
     // null for non-native ids, so CC's watcher stays the source for claude
@@ -2814,7 +2875,18 @@ export function registerIpcHandlers(
     // The FIRST page ends where the live tailer started, so the page and the
     // live stream cannot overlap (transcript-watcher startOffset, Task 4). A
     // startOffset of 0 means the file didn't exist at watch time — read to EOF.
-    const endOffset = beforeCursor ? beforeCursor.offset : (source.startOffset || null);
+    //
+    // EXCEPT for a window that INHERITED this session: "the live stream already
+    // delivered the rest" is only true of a window that was listening. A
+    // torn-off window received none of it, so stopping at startOffset showed a
+    // conversation frozen at the moment the session was resumed, with every
+    // message since missing (Destin, 2026-09-03). It reads to EOF instead; the
+    // reducer's HISTORY_PAGE_LOADED seeds its scratch replay from the live
+    // session's seenUuids, so any overlap with live events is deduped, not
+    // duplicated.
+    const endOffset = beforeCursor
+      ? beforeCursor.offset
+      : (inherited ? null : (source.startOffset || null));
     return readTranscriptPage({
       jsonlPath: source.jsonlPath,
       sessionId,
@@ -2836,59 +2908,81 @@ export function registerIpcHandlers(
     for (const ev of events) {
       evt.sender.send(IPC.TRANSCRIPT_EVENT, ev);
     }
-    // Task 0 (ROADMAP #permissions): a replayed transcript rebuilds every card
-    // from disk, but an OPEN ask lives only in PermissionBroker's memory — the
-    // JSONL has no record that one is still awaiting an answer. Without this,
-    // the rebuilt card comes back with no buttons and (a root ask has no
-    // timeout) the turn hangs forever. Re-send it the same way the loop above
-    // sends transcript events — direct to the requesting window, for the same
-    // ownership reason stated above. Native-only: nativeEvents is null for CC
-    // sessions, which have no broker-held asks to re-send.
-    if (nativeEvents !== null) {
+    // (The blocks this used to inline now live in sendLiveOnlyState, which
+    // SESSION_REPLAY_LIVE_STATE also serves — see its WHY.)
+    sendLiveOnlyState(evt.sender, sessionId, nativeEvents !== null);
+  });
+
+  /**
+   * Re-send the parts of a session's state that exist ONLY in main's memory and
+   * have no record in the transcript on disk. A window hydrating from history —
+   * whether by whole-transcript replay or by a single page — cannot reconstruct
+   * any of it, so it must be pushed:
+   *
+   *  - open permission asks: the JSONL has no record that an ask is still
+   *    AWAITING an answer, so the rebuilt card comes back with no buttons and
+   *    (a root ask has no timeout) the turn hangs forever;
+   *  - specialist run records: a specialist card's status IS its run record,
+   *    which the transcript says nothing about;
+   *  - background Bash run records: same, for a shell card's background state;
+   *  - the replay-complete marker, which reaps tool cards the history left
+   *    'running' (a transcript ends wherever the process died, so its last
+   *    tool_use may have no matching result — Destin, 2026-08-09 dogfood).
+   *
+   * Sent DIRECT to the requesting window rather than via sendForSession: on the
+   * ownership-handoff path the caller already owns the session, and on the
+   * replay path ownership has likewise already transferred.
+   *
+   * `isNative` gates the first three: CC sessions have no broker-held asks, no
+   * ledger and no shell registry, so they report nothing and keep today's
+   * behaviour. The marker is sent for both, with sessionIdle false for CC —
+   * only the native host can tell "genuinely mid-turn" from "died mid-tool".
+   */
+  function sendLiveOnlyState(sender: Electron.WebContents, sessionId: string, isNative: boolean): void {
+    if (isNative) {
       for (const ev of nativeHost.pendingAskEventsFor(sessionId)) {
-        evt.sender.send(IPC.HOOK_EVENT, ev);
+        sender.send(IPC.HOOK_EVENT, ev);
       }
     }
-    // Task 9 (plan 1c): a replayed transcript rebuilds every tool card from
-    // the JSONL, but a specialist card's status IS its run record — the
-    // ledger the transcript itself says nothing about (delegation-ledger.ts's
-    // module comment). Without this, a reloaded window's helper card comes
-    // back with no status. Same "direct to the requesting window" ownership
-    // reason as the ask replay just above, and native-only for the same
-    // reason: nativeEvents is null for CC sessions, which have no ledger.
-    if (nativeEvents !== null) {
+    if (isNative) {
       for (const run of nativeHost.specialistRunsFor(sessionId)) {
-        evt.sender.send(IPC.SPECIALISTS_EVENT, { kind: 'run', sessionId, run } satisfies SpecialistsEvent);
+        sender.send(IPC.SPECIALISTS_EVENT, { kind: 'run', sessionId, run } satisfies SpecialistsEvent);
       }
-      // G-1: a Bash card's background state IS its run record, which the
-      // transcript never carries — replay it the way specialist runs are.
       for (const run of nativeHost.shellRunsFor(sessionId)) {
-        evt.sender.send(IPC.NATIVE_SHELL_EVENT, { sessionId, run } satisfies ShellEvent);
+        sender.send(IPC.NATIVE_SHELL_EVENT, { sessionId, run } satisfies ShellEvent);
       }
     }
-    // Terminal marker so the reducer can reap tool cards this history left
-    // 'running'. A transcript ends wherever the process died, so its last
-    // tool_use may have no matching result — replaying it verbatim leaves a
-    // card spinning forever after a resume (Destin, 2026-08-09 dogfood).
-    // sessionIdle gates the reap because this SAME replay fires when a window
-    // re-docks a session that is genuinely mid-turn. Only the native host can
-    // answer that (`entry.inFlight`); CC sessions have no equivalent signal, so
-    // they report false and keep today's behaviour rather than risk failing a
-    // tool that really is running. Synthesized here and never persisted, so it
-    // cannot be re-read from a transcript.
-    // Annotated, NOT passed inline: evt.sender.send takes ...args: any[], which
+    // sessionIdle gates the reap because this SAME state re-send fires when a
+    // window re-docks a session that is genuinely mid-turn. Only the native
+    // host can answer that (`entry.inFlight`); CC sessions have no equivalent
+    // signal, so they report false and keep today's behaviour rather than risk
+    // failing a tool that really is running. Synthesized here and never
+    // persisted, so it cannot be re-read from a transcript.
+    // Annotated, NOT passed inline: sender.send takes ...args: any[], which
     // erases the contextual type — an inline literal is checked against nothing,
     // so a typo'd `sessionIdle` compiles clean and silently disables the reap
     // (measured 2026-08-10). The annotation is what makes the field name a
-    // compile error instead of a silent undefined. Same pattern as errEvent above.
+    // compile error instead of a silent undefined.
     const replayComplete: TranscriptEvent = {
       type: 'replay-complete',
       sessionId,
       uuid: `replay-complete-${sessionId}`,
       timestamp: Date.now(),
-      data: { sessionIdle: nativeEvents !== null && nativeHost.isIdle(sessionId) },
+      data: { sessionIdle: isNative && nativeHost.isIdle(sessionId) },
     };
-    evt.sender.send(IPC.TRANSCRIPT_EVENT, replayComplete);
+    sender.send(IPC.TRANSCRIPT_EVENT, replayComplete);
+  }
+
+  // Ownership-handoff counterpart to TRANSCRIPT_REPLAY. A window that inherits
+  // a session now hydrates its transcript from ONE page (TRANSCRIPT_PAGE, read
+  // to EOF for an inherited session) instead of a whole-transcript replay that
+  // cost ~22s on a long conversation and visibly rebuilt the view. That page
+  // carries everything on disk but nothing that lives only in memory, which is
+  // what this channel supplies. `handle`, not `on`: the renderer awaits the
+  // page FIRST and then this, so the replay-complete marker cannot reap tool
+  // cards before the page that creates them has been applied.
+  ipcMain.handle(IPC.SESSION_REPLAY_LIVE_STATE, (evt, { sessionId }: { sessionId: string }) => {
+    sendLiveOnlyState(evt.sender, sessionId, nativeHost.getHistory(sessionId) !== null);
   });
 
   // --- Native runtime IPC (Phase 1 Plan A) ---
@@ -2972,6 +3066,17 @@ export function registerIpcHandlers(
   ipcMain.handle(IPC.PROVIDER_TEST, async (_e, id: string) => providerRegistry.testConnection(id));
   ipcMain.handle(IPC.PROVIDER_SET_KEY, async (_e, id: string, key: string) => { await providerRegistry.setKey(id, key); return true; });
   ipcMain.handle(IPC.PROVIDER_CATALOG, async () => modelCatalog.get(await providerRegistry.list()));
+  // Sign in with ChatGPT (backend design 2026-09-05 §3, §5, §6). status is a
+  // cheap sync read (the card polls it every second while waiting). The verbs
+  // resolve boolean; signIn() is allowed to THROW its two verbatim sentences
+  // (port 1455 held by another program, keychain unavailable) — nothing here
+  // catches them, so Electron rejects the renderer's promise and preload's
+  // unwrapInvokeError strips the transport prefix before the card shows
+  // e.message. Under the kill switch chatgptForUi is null: signed-out / false.
+  ipcMain.handle(IPC.CHATGPT_STATUS, async () => chatgptForUi ? chatgptForUi.status() : { state: 'signed-out' as const });
+  ipcMain.handle(IPC.CHATGPT_SIGN_IN, async () => chatgptForUi ? chatgptForUi.signIn() : false);
+  ipcMain.handle(IPC.CHATGPT_CANCEL_SIGN_IN, async () => chatgptForUi ? chatgptForUi.cancelSignIn() : false);
+  ipcMain.handle(IPC.CHATGPT_SIGN_OUT, async () => chatgptForUi ? chatgptForUi.signOut() : false);
   // WebSearch key management (Settings → Providers → Search). list returns the
   // fixed Tavily/Exa rows with hasKey flags; set/remove manage the encrypted key;
   // test is never-throws ({ ok, message } is the result, not an exception).
@@ -4655,11 +4760,24 @@ export function registerIpcHandlers(
     return { ok: true, missingIds: results.filter((x): x is string => x !== null) };
   });
 
-  // Return cleanup function for use during app shutdown. It returns the engine-stop
-  // promise so main's quit handler can AWAIT the llama-server teardown before
-  // app.quit() — the old fire-and-forget `void` let quit win the race and orphaned
-  // the engine, which kept the port bound for the next instance to wrongly adopt.
-  return function cleanup(): Promise<void> {
+  // Return shape (Sign in with ChatGPT, backend design 2026-09-05 §5 / review
+  // R3-2): `cleanup` for app shutdown — it returns the engine-stop promise so
+  // main's quit handler can AWAIT the llama-server teardown before app.quit()
+  // (the old fire-and-forget `void` let quit win the race and orphaned the
+  // engine, which kept the port bound for the next instance to wrongly adopt) —
+  // plus `hasUsableProvider`, which main.ts's launch-time auth check reads
+  // BEFORE spawning `claude auth status`. WHY: this branch removes the wizard's
+  // Skip link, so an install running on an OpenRouter key (or any ready native
+  // provider) with no Claude login would otherwise be locked at a sign-in
+  // screen on its first launch after upgrading. "Usable" = any `ready` row in
+  // the registry, which for the ChatGPT row means signed in — but main.ts also
+  // asks chatgptAuth.isSignedIn() directly, so the kill switch (no row) cannot
+  // lock a ChatGPT-only install out either.
+  const hasUsableProvider = async (): Promise<boolean> => {
+    try { return (await providerRegistry.list()).some((p) => p.ready); }
+    catch { return false; }
+  };
+  const cleanup = function cleanup(): Promise<void> {
     stopThemeWatcher();
     clearInterval(statusInterval);
     transcriptWatcher.stopAll();
@@ -4682,4 +4800,5 @@ export function registerIpcHandlers(
     sessionIdMap.clear();
     return engineStopped;
   };
+  return { cleanup, hasUsableProvider };
 }

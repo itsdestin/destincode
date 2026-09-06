@@ -452,38 +452,166 @@ describe('HarnessSession — multi-step turn driver', () => {
       expect(askUser.mock.calls[0][0]).toMatchObject({ external: true });
     });
 
-    it('a REAL file outside the workspace still asks — the divert is not a jail hole', async () => {
+    // 2026-09-05: a REAL file outside the workspace is READ with no card at all
+    // (READ_ONLY_PATH_TOOLS). The property this case has always existed to pin —
+    // that the invented-path divert is not a jail hole — is now carried by Edit,
+    // which is the half of the pair that can still change something.
+    it('a REAL file outside the workspace is read with no ask, and the same file still asks for Edit', async () => {
       const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'genuinely-outside-'));
-      fs.writeFileSync(path.join(outside, 'ROADMAP.md'), '# a real external file');
+      const target = path.join(outside, 'ROADMAP.md');
+      fs.writeFileSync(target, '# a real external file');
       try {
         const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
-        const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
-        const model = scriptedModel([
-          stream(toolCallChunk('c1', 'Read', { file_path: path.join(outside, 'ROADMAP.md') }), finishChunk('tool-calls')),
+        const askRead = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+        const readModel = scriptedModel([
+          stream(toolCallChunk('c1', 'Read', { file_path: target }), finishChunk('tool-calls')),
           stream(...textChunks('b', 'ok'), finishChunk('stop')),
         ]);
-        const session = new HarnessSession(makeOpts({ cwd: root, tools: [read], decide: async () => ALLOW, askUser }), async () => model as any);
-        collect(session);
-        await session.send('go');
-        expect(askUser).toHaveBeenCalledTimes(1);
-        expect((read as any).calls).toHaveLength(1);
+        const readSession = new HarnessSession(makeOpts({ cwd: root, tools: [read], decide: async () => ALLOW, askUser: askRead }), async () => readModel as any);
+        collect(readSession);
+        await readSession.send('go');
+        expect(askRead).not.toHaveBeenCalled();          // looking at it changes nothing
+        expect((read as any).calls).toHaveLength(1);     // and it really ran
+
+        const edit = fakeTool('Edit', { permissionSubject: (a: any) => a.file_path });
+        const askEdit = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+        const editModel = scriptedModel([
+          stream(toolCallChunk('c1', 'Edit', { file_path: target }), finishChunk('tool-calls')),
+          stream(...textChunks('b', 'ok'), finishChunk('stop')),
+        ]);
+        const editSession = new HarnessSession(makeOpts({ cwd: root, tools: [edit], decide: async () => ALLOW, askUser: askEdit }), async () => editModel as any);
+        collect(editSession);
+        await editSession.send('go');
+        expect(askEdit).toHaveBeenCalledTimes(1);        // the jail still holds for writes
+        expect(askEdit.mock.calls[0][0]).toMatchObject({ external: true });
       } finally {
         fs.rmSync(outside, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
       }
     });
 
-    it('an outside path with NO workspace match still asks — no guessing', async () => {
+    // The "no guessing" property: when nothing in the workspace matches, the
+    // harness must NOT invent a replacement path. Read now proves that by
+    // EXECUTING the call the model actually made (no ask, no divert message);
+    // Edit proves the ask still fires for the same unmatched outside path.
+    it('an outside path with NO workspace match is not diverted — no guessing', async () => {
       const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
-      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
-      const model = scriptedModel([
+      const askRead = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const readModel = scriptedModel([
         stream(toolCallChunk('c1', 'Read', { file_path: '/nowhere-at-all/NOPE.md' }), finishChunk('tool-calls')),
         stream(...textChunks('b', 'ok'), finishChunk('stop')),
       ]);
-      const session = new HarnessSession(makeOpts({ cwd: root, tools: [read], decide: async () => ALLOW, askUser }), async () => model as any);
-      collect(session);
-      await session.send('go');
-      expect(askUser).toHaveBeenCalledTimes(1);
+      const readSession = new HarnessSession(makeOpts({ cwd: root, tools: [read], decide: async () => ALLOW, askUser: askRead }), async () => readModel as any);
+      const events = collect(readSession);
+      await readSession.send('go');
+      expect(askRead).not.toHaveBeenCalled();
+      expect((read as any).calls).toHaveLength(1);
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.toolResult).not.toMatch(/inside the workspace — retry/); // no invented replacement
+
+      const edit = fakeTool('Edit', { permissionSubject: (a: any) => a.file_path });
+      const askEdit = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const editModel = scriptedModel([
+        stream(toolCallChunk('c1', 'Edit', { file_path: '/nowhere-at-all/NOPE.md' }), finishChunk('tool-calls')),
+        stream(...textChunks('b', 'ok'), finishChunk('stop')),
+      ]);
+      const editSession = new HarnessSession(makeOpts({ cwd: root, tools: [edit], decide: async () => ALLOW, askUser: askEdit }), async () => editModel as any);
+      collect(editSession);
+      await editSession.send('go');
+      expect(askEdit).toHaveBeenCalledTimes(1);
     });
+  });
+
+  // 2026-09-05, Destin: "permissions boundaries should only really be for
+  // actions that change things (write, edit, bash, etc)." Reads outside the
+  // workspace no longer raise a card in ANY mode — Ask First included. Every
+  // other harness draws the line here too (Codex/Hermes fence writes only).
+  describe('reads outside the workspace never ask (READ_ONLY_PATH_TOOLS)', () => {
+    const OUTSIDE = 'C:/other/nothing-like-it-here.md';   // outside makeOpts' cwd, no workspace twin
+    const readCases = [
+      { name: 'Read', input: { file_path: OUTSIDE }, schema: undefined },
+      { name: 'Grep', input: { path: OUTSIDE }, schema: z.object({ path: z.string() }) },
+      { name: 'Glob', input: { path: OUTSIDE }, schema: z.object({ path: z.string() }) },
+    ] as const;
+
+    for (const c of readCases) {
+      it(`${c.name}: an outside path runs with no ask, in every mode`, async () => {
+        const tool = fakeTool(c.name, {
+          ...(c.schema ? { schema: c.schema } : {}),
+          permissionSubject: (a: any) => a.file_path ?? a.path,
+        });
+        const decide = vi.fn(async () => ALLOW);
+        const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
+        const model = scriptedModel([
+          stream(toolCallChunk('c1', c.name, c.input), finishChunk('tool-calls')),
+          stream(...textChunks('b', 'ok'), finishChunk('stop')),
+        ]);
+        const session = new HarnessSession(makeOpts({ tools: [tool], decide, askUser }), async () => model as any);
+        collect(session);
+        await session.send('go');
+        expect(askUser).not.toHaveBeenCalled();          // the whole point
+        expect(decide).toHaveBeenCalledTimes(1);         // configured rules STILL consulted
+        expect((tool as any).calls).toHaveLength(1);
+      });
+
+      it(`${c.name}: an explicit deny rule still wins over the outside path`, async () => {
+        // The guard stopped forcing an ask; it did not start forcing an allow.
+        const tool = fakeTool(c.name, {
+          ...(c.schema ? { schema: c.schema } : {}),
+          permissionSubject: (a: any) => a.file_path ?? a.path,
+        });
+        const decide = vi.fn(async () => ({ action: 'deny', denyListed: false } as PermissionDecision));
+        const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+        const model = scriptedModel([
+          stream(toolCallChunk('c1', c.name, c.input), finishChunk('tool-calls')),
+          stream(...textChunks('b', 'ok'), finishChunk('stop')),
+        ]);
+        const session = new HarnessSession(makeOpts({ tools: [tool], decide, askUser }), async () => model as any);
+        collect(session);
+        await session.send('go');
+        expect((tool as any).calls).toHaveLength(0);     // refused
+        expect(askUser).not.toHaveBeenCalled();
+      });
+    }
+
+    it('a credential path is STILL hard-denied for Read — the secret block is untouched', async () => {
+      const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+      const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+      const secret = path.join(os.homedir(), '.ssh', 'id_rsa');
+      const model = scriptedModel([
+        stream(toolCallChunk('c1', 'Read', { file_path: secret }), finishChunk('tool-calls')),
+        stream(...textChunks('b', 'ok'), finishChunk('stop')),
+      ]);
+      const session = new HarnessSession(makeOpts({ tools: [read], decide: async () => ALLOW, askUser }), async () => model as any);
+      const events = collect(session);
+      await session.send('go');
+      expect((read as any).calls).toHaveLength(0);       // never ran
+      expect(askUser).not.toHaveBeenCalled();            // and never offered as a choice
+      const res = events.find((e) => e.type === 'tool-result')!;
+      expect(res.data.isError).toBe(true);
+      expect(res.data.toolResult).toMatch(/credential|secret/i);
+    });
+  });
+
+  // A URL is not a path. Before 2026-09-05 WebFetch's subject was canonicalized
+  // against the cwd, so a page whose last segment looked like a secret file was
+  // refused as "a credential or secret file" — a wrong, alarming error for an
+  // ordinary web request (docs/error-message-standards.md).
+  it('WebFetch: a URL that ends in a credential-looking name is not path-guarded', async () => {
+    const fetchTool = fakeTool('WebFetch', {
+      schema: z.object({ url: z.string() }),
+      permissionSubject: (a: any) => a.url,
+    });
+    const decide = vi.fn(async () => ALLOW);
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'allow' }));
+    const model = scriptedModel([
+      stream(toolCallChunk('c1', 'WebFetch', { url: 'https://example.com/docs/.env.example' }), finishChunk('tool-calls')),
+      stream(...textChunks('b', 'ok'), finishChunk('stop')),
+    ]);
+    const session = new HarnessSession(makeOpts({ tools: [fetchTool], decide, askUser }), async () => model as any);
+    collect(session);
+    await session.send('go');
+    expect((fetchTool as any).calls).toHaveLength(1);    // fetched, not refused as a secret
+    expect(askUser).not.toHaveBeenCalled();
   });
 
   // Task 10 (plan 1b): the parent has to be able to Read the spill file its
@@ -511,17 +639,22 @@ describe('HarnessSession — multi-step turn driver', () => {
     expect(decide).toHaveBeenCalledWith('Read', `${spillDir}/child-1.report.md`); // reaches decide() normally
   });
 
-  it('tool-layer guard: internalReadRoots does not widen to a sibling directory — that still asks', async () => {
+  // Driven by EDIT, deliberately. Since 2026-09-05 no read outside the workspace
+  // forces an ask (READ_ONLY_PATH_TOOLS), so a Read here would pass whether the
+  // exemption were correctly scoped or wide open — it would pin nothing. Edit is
+  // the tool for which "is this path inside the exempted root?" still has a
+  // visible consequence, so it is the one that can still catch a widening.
+  it('tool-layer guard: internalReadRoots does not widen to a sibling directory — a write there still asks', async () => {
     const spillDir = 'C:/spill/session-1';
-    const read = fakeTool('Read', { permissionSubject: (a: any) => a.file_path });
+    const edit = fakeTool('Edit', { permissionSubject: (a: any) => a.file_path });
     const decide = vi.fn(async () => ALLOW);
     const askUser = vi.fn(async (_r: AskRequest): Promise<AskDecision> => ({ behavior: 'allow' }));
     const model = scriptedModel([
-      stream(toolCallChunk('c1', 'Read', { file_path: 'C:/spill/not-our-session/x.txt' }), finishChunk('tool-calls')),
+      stream(toolCallChunk('c1', 'Edit', { file_path: 'C:/spill/not-our-session/x.txt' }), finishChunk('tool-calls')),
       stream(...textChunks('b', 'ok'), finishChunk('stop')),
     ]);
     const session = new HarnessSession(
-      makeOpts({ tools: [read], decide, askUser, internalReadRoots: [spillDir] }), async () => model as any,
+      makeOpts({ tools: [edit], decide, askUser, internalReadRoots: [spillDir] }), async () => model as any,
     );
     collect(session);
     await session.send('go');
@@ -2066,5 +2199,50 @@ describe('HarnessSession — empty final step recovery', () => {
 
     expect(seen).toHaveLength(2);   // one retry, then the honest end
     expect(events.find((e) => e.type === 'turn-complete')!.data.stopReason).toBe('empty_response');
+  });
+});
+
+// The session id must reach the model factory as `cacheKey` on EVERY path that
+// builds a model. It becomes the ChatGPT endpoint's prompt_cache_key: the
+// endpoint remembers the shared opening of a conversation under that key and
+// bills the remembered part at a discount. Drop the key and nothing breaks
+// loudly — every step of every ChatGPT session re-pays for the whole
+// conversation so far against the user's plan allowance, and each turn is
+// slower. Nothing else in the suite passes through these two lines, so before
+// this test they could both be deleted with the suite still green.
+describe('HarnessSession — the model factory always gets the session id as cacheKey', () => {
+  function recordingFactory(sink: Array<{ cacheKey?: string }>, model: any) {
+    return async (_binding: any, o?: { cacheKey?: string }) => { sink.push({ ...o }); return model as any; };
+  }
+
+  it('the turn path passes cacheKey === sessionId', async () => {
+    const seen: Array<{ cacheKey?: string }> = [];
+    const model = scriptModel([{ text: 'done' }]);
+    const session = new HarnessSession(
+      makeOpts({ sessionId: 'sess-abc', tools: [], decide: async () => ALLOW }),
+      recordingFactory(seen, model),
+    );
+    await session.send('go');
+    expect(seen).toHaveLength(1);
+    expect(seen[0].cacheKey).toBe('sess-abc');
+  });
+
+  it('the compaction path passes cacheKey === sessionId too', async () => {
+    const seen: Array<{ cacheKey?: string }> = [];
+    const model = scriptModel([{ text: 'SUMMARY: ok' }]);
+    const session = new HarnessSession(
+      makeOpts({ sessionId: 'sess-xyz', contextLength: 4096, tools: [], decide: async () => ALLOW }),
+      recordingFactory(seen, model),
+    );
+    // Two user-delimited turns so compactNow finds a span it can condense.
+    session.seedHistory([
+      { role: 'assistant', content: 'a1' } as any,
+      { role: 'user', content: 'u1' } as any,
+      { role: 'assistant', content: 'a2' } as any,
+      { role: 'user', content: 'u2' } as any,
+    ]);
+    expect(await session.compactNow()).toEqual({ ok: true });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].cacheKey).toBe('sess-xyz');
   });
 });
