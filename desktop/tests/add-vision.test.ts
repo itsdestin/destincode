@@ -11,9 +11,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
-  addVisionToModel, moveIntoOwnFolder, REAL_MOVE_OPS, STILL_BUSY_MESSAGE,
+  addVisionToModel, moveIntoOwnFolder, healInterruptedMove, interruptedMoveIds,
+  REAL_MOVE_OPS, STILL_BUSY_MESSAGE, routerSilentMessage,
   type AddVisionEngine, type AddVisionTiming, type MoveOps,
 } from '../src/main/models/add-vision';
+import { scanGgufCache } from '../src/main/engine/cache-scan';
 import type { EngineModelState } from '../src/shared/engine-types';
 import type { QuantOption } from '../src/shared/model-manager-types';
 
@@ -180,6 +182,39 @@ describe('moveIntoOwnFolder — the shadowing pair can never exist', () => {
     expect(snapshot()).toEqual(before);
   });
 
+  it('refuses to merge into a folder that is already there — mkdir is deliberately not recursive', () => {
+    const id = installFlat();
+    // A DIRECTORY in the way, not a file: `mkdir(dir, {recursive: true})` does
+    // not throw on one, so this is the case that pins the non-recursive form —
+    // which is both the "don't silently merge into someone else's folder" rule
+    // and the mutex that makes two concurrent Add-vision calls safe.
+    const folder = path.join(cacheDir, id);
+    fs.mkdirSync(folder);
+    fs.writeFileSync(path.join(folder, 'someone-elses-notes.txt'), 'keep me');
+    const before = snapshot();
+    expect(() => moveIntoOwnFolder(cacheDir, id, `${id}.gguf`, 1)).toThrow(
+      `Could not move ${id} into its own folder: `
+      + `EEXIST: file already exists, mkdir '${folder}'. Nothing was changed.`
+    );
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('the rollback removes the folder only if it is EMPTY — never a recursive force', () => {
+    const id = installFlat();
+    const stray = path.join(cacheDir, id, 'another-instance-wrote-this.txt');
+    const ops = watchMoves(id, [], 1);          // fail the model file's move
+    // Another app instance drops a file into the folder just before the undo
+    // finishes — the dev instance and the built app really do share this cache
+    // dir. A recursive force would delete it; rmdir refuses, which is the
+    // difference between "a check" and "a force".
+    const guarded: MoveOps = { ...ops, rmdir: (dir) => { fs.writeFileSync(stray, 'not mine'); ops.rmdir(dir); } };
+    let message = '';
+    try { moveIntoOwnFolder(cacheDir, id, `${id}.gguf`, 1, guarded); } catch (e: any) { message = e.message; }
+    expect(fs.readFileSync(stray, 'utf8')).toBe('not mine');   // untouched
+    expect(message).toContain('Putting its files back failed too: ENOTEMPTY');
+    expect(message).not.toContain('Nothing was changed');
+  });
+
   it('says where the files are when the rollback itself fails — never "nothing was changed"', () => {
     const id = installFlat({ parts: 2 });
     // Fail the follower's move, then fail every undo.
@@ -278,11 +313,16 @@ describe('addVisionToModel — order of operations', () => {
     expect(r.log).not.toContain('download');
   });
 
-  it('an unanswerable router is "do not know", never "unloaded" — it times out rather than renaming', async () => {
+  it('an unanswerable router is "do not know", never "unloaded" — and says THAT, not "busy"', async () => {
     const id = installFlat();
     const r = recorder({ states: [null] });
-    await expect(addVisionToModel(cacheDir, id, r.engine, start(r), r.timing))
-      .rejects.toThrow(STILL_BUSY_MESSAGE);
+    // Two different facts, two different sentences. Reporting "still busy" here
+    // would state a cause nobody established — the substitution
+    // docs/error-message-standards.md exists to stop.
+    await expect(addVisionToModel(cacheDir, id, r.engine, start(r), r.timing)).rejects.toThrow(
+      `The engine did not answer when asked whether ${id} is still loaded, so its file was left alone.`
+    );
+    expect(routerSilentMessage(id)).not.toBe(STILL_BUSY_MESSAGE);
     expect(fs.existsSync(path.join(cacheDir, id))).toBe(false);
   });
 
@@ -400,4 +440,143 @@ describe('addVisionToModel — what it refuses, and why', () => {
     );
     expect(fs.existsSync(path.join(cacheDir, 'Odd-Q4_K_M'))).toBe(false);
   });
+});
+
+// The move is two or more syscalls. No ordering makes a crash between them
+// impossible — only harmless for what the ENGINE serves, which the ordering
+// above does guarantee. What it cannot do is tidy up, and both states below were
+// dead ends until this healing existed (reproduced 2026-09-05).
+describe('healInterruptedMove — a crash mid-move is not a dead end', () => {
+  /** The record moved, the weights did not: steps 1–2 done, step 3 not. */
+  function crashAfterTheRecord(): string {
+    const id = installFlat();
+    fs.mkdirSync(path.join(cacheDir, id));
+    fs.renameSync(
+      path.join(cacheDir, `${id}.gguf.download.json`),
+      path.join(cacheDir, id, `${id}.gguf.download.json`));
+    return id;
+  }
+
+  /** A 3-part set with part 1 moved and its followers not: step 3 done, 4 not. */
+  function crashAfterPartOne(): string {
+    const id = installFlat({ parts: 3 });
+    fs.mkdirSync(path.join(cacheDir, id));
+    for (const name of [`${id}.gguf.download.json`, `${id}.gguf`]) {
+      fs.renameSync(path.join(cacheDir, name), path.join(cacheDir, id, name));
+    }
+    return id;
+  }
+
+  it('puts the record back beside the weights — instead of advising a delete that would destroy them', async () => {
+    const id = crashAfterTheRecord();
+    // Before healing this told the user "There is no record of where … came
+    // from. Delete it in Local Models and download it again" — while the record
+    // sat one directory away and the model itself was fine.
+    expect(interruptedMoveIds(cacheDir)).toEqual([id]);
+    expect(healInterruptedMove(cacheDir, id)).toBe(true);
+    expect(Object.keys(snapshot()).sort()).toEqual([`${id}.gguf`, `${id}.gguf.download.json`]);
+    expect(fs.existsSync(path.join(cacheDir, id))).toBe(false);
+    // And the retry now works end to end.
+    const r = recorder();
+    await addVisionToModel(cacheDir, id, r.engine, start(r), r.timing);
+    expect(r.log).toContain('download');
+  });
+
+  it('puts a half-moved split set back together — instead of leaving it out of the picker for ever', async () => {
+    const id = crashAfterPartOne();
+    // Every byte was on disk, split across two directories: scanGgufCache needs
+    // a COMPLETE set in one place, so the model vanished from the model picker
+    // and Local Models offered only Delete.
+    expect(scanGgufCache(cacheDir)).toEqual([]);
+    expect(healInterruptedMove(cacheDir, id)).toBe(true);
+    expect(scanGgufCache(cacheDir).map((m) => m.id)).toEqual([id]);
+    expect(fs.existsSync(path.join(cacheDir, id))).toBe(false);
+    const r = recorder();
+    await addVisionToModel(cacheDir, id, r.engine, start(r), r.timing);
+    expect(fs.existsSync(path.join(cacheDir, id, `${id}.gguf`))).toBe(true);
+  });
+
+  /** A 3-part set with the record, part 1 AND part 2 moved: step 4 got half way.
+   *  This is the fixture the healing ORDER matters for — undo it forwards and
+   *  part 1 lands back flat while part 2 is still in the folder, which is the
+   *  shadowing pair. */
+  function crashMidFollowers(): string {
+    const id = installFlat({ parts: 3 });
+    fs.mkdirSync(path.join(cacheDir, id));
+    for (const name of [`${id}.gguf.download.json`, `${id}.gguf`, 'M-Q4_K_M-00002-of-00003.gguf']) {
+      fs.renameSync(path.join(cacheDir, name), path.join(cacheDir, id, name));
+    }
+    return id;
+  }
+
+  it('keeps the invariant while healing — the two sides are never both loadable', () => {
+    for (const setUp of [crashAfterPartOne, crashMidFollowers]) {
+      fs.rmSync(cacheDir, { recursive: true, force: true });
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const id = setUp();
+      healInterruptedMove(cacheDir, id, watchMoves(id, []));   // throws if the pair ever exists
+      expect(fs.existsSync(path.join(cacheDir, `${id}.gguf`))).toBe(true);
+      expect(fs.existsSync(path.join(cacheDir, id))).toBe(false);
+      expect(scanGgufCache(cacheDir).map((m) => m.id)).toEqual([id]);
+    }
+  });
+
+  it('addVision heals before it reads anything, so a retry after a crash just works', async () => {
+    const id = crashAfterTheRecord();
+    const r = recorder();
+    const out = await addVisionToModel(cacheDir, id, r.engine, start(r), r.timing);
+    expect(out).toEqual({ downloadId: 'dl-1' });
+    expect(fs.existsSync(path.join(cacheDir, id, `${id}.gguf`))).toBe(true);
+  });
+
+  const leaveAlone: Array<[string, () => string]> = [
+    ['a real vision model with a flat namesake beside it (the pre-existing collision)', () => {
+      const id = installFlat();
+      fs.mkdirSync(path.join(cacheDir, id));
+      fs.writeFileSync(path.join(cacheDir, id, `${id}.gguf`), 'other build');
+      fs.writeFileSync(path.join(cacheDir, id, 'mmproj-F16.gguf'), 'eye');
+      return id;
+    }],
+    // Isolates the projector refusal: the folder holds a projector and NO
+    // weights (a vision model whose weights were deleted — cache-scan reports
+    // that folder on purpose), so every OTHER condition is satisfied and only
+    // "there is a projector in there" stops the heal from eating it.
+    ['a leftover projector folder beside a complete flat model', () => {
+      const id = installFlat();
+      fs.mkdirSync(path.join(cacheDir, id));
+      fs.writeFileSync(path.join(cacheDir, id, 'mmproj-F16.gguf'), 'eye');
+      return id;
+    }],
+    // Isolates the parts-add-up refusal: two DIFFERENT downloads of one split
+    // filename, one flat and one in a folder. Nothing here is an interrupted
+    // move, and merging them would build one set out of two builds' bytes.
+    ['two unrelated part-sets of the same name that do not add up', () => {
+      const id = 'M-Q4_K_M-00001-of-00003';
+      fs.writeFileSync(path.join(cacheDir, `${id}.gguf`), 'build A part 1');
+      fs.mkdirSync(path.join(cacheDir, id));
+      fs.writeFileSync(path.join(cacheDir, id, 'M-Q4_K_M-00002-of-00003.gguf'), 'build B part 2');
+      return id;
+    }],
+    ['two complete copies of the same id — not one interrupted move', () => {
+      const id = installFlat();
+      fs.mkdirSync(path.join(cacheDir, id));
+      fs.writeFileSync(path.join(cacheDir, id, `${id}.gguf`), 'other build');
+      return id;
+    }],
+    ['a folder holding a whole model and a stray flat .partial', () => {
+      const id = 'P-Q4_K_M';
+      fs.writeFileSync(path.join(cacheDir, `${id}.gguf.partial`), 'stray');
+      fs.mkdirSync(path.join(cacheDir, id));
+      fs.writeFileSync(path.join(cacheDir, id, `${id}.gguf`), 'whole');
+      return id;
+    }],
+  ];
+  for (const [what, setUp] of leaveAlone) {
+    it(`leaves ${what} exactly alone`, () => {
+      const id = setUp();
+      const before = snapshot();
+      expect(healInterruptedMove(cacheDir, id)).toBe(false);
+      expect(snapshot()).toEqual(before);
+    });
+  }
 });

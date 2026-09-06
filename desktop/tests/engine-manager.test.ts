@@ -530,6 +530,30 @@ describe('EngineManager — local downloads', () => {
     await manager.deleteModel('M-Q4_K_M');
     expect(fs.readdirSync(cacheDir)).toEqual([]);
   });
+
+  // T17: the move into a folder is more than one syscall, so a crash can land
+  // between them. The ordering makes that harmless for what the engine SERVES;
+  // this is what makes it harmless for the user.
+  it('undoes an Add-vision move a crash stopped half way, instead of sweeping the record away', async () => {
+    // Steps 1-2 of the move done (folder made, record moved), step 3 not.
+    fs.writeFileSync(path.join(cacheDir, 'Half-UD-Q4_K_XL.gguf'), Buffer.alloc(10));
+    fs.mkdirSync(path.join(cacheDir, 'Half-UD-Q4_K_XL'));
+    fs.writeFileSync(
+      path.join(cacheDir, 'Half-UD-Q4_K_XL', 'Half-UD-Q4_K_XL.gguf.download.json'),
+      doneManifest('unsloth/Half-GGUF', ['Half-UD-Q4_K_XL.gguf'], 10));
+
+    const rows = await manager.installedModels();
+
+    // ONE model, whole, with its repo and its Add-vision link — not two broken
+    // halves. Before this healing existed the folder row was read as "a record
+    // of nothing" and REMOVED, which left an empty folder that made every later
+    // Add-vision attempt fail at mkdir for ever.
+    expect(rows.map((r) => [r.id, r.status, r.repo, r.vision]))
+      .toEqual([['Half-UD-Q4_K_XL', 'complete', 'unsloth/Half-GGUF', 'available']]);
+    expect(fs.existsSync(path.join(cacheDir, 'Half-UD-Q4_K_XL.gguf.download.json'))).toBe(true);
+    expect(fs.existsSync(path.join(cacheDir, 'Half-UD-Q4_K_XL'))).toBe(false);
+  });
+
 });
 
 // ---------------------------------------------------------------------------

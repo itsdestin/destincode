@@ -25,6 +25,7 @@ import { stripSplitSuffix } from '../../shared/gguf-split';
 import { detectGpu, backendOptions, gpuDeviceName } from '../models/gpu-detector';
 import type { GpuVendor } from '../../shared/model-manager-types';
 import { checkRocmPrereqs } from './rocm-prereqs';
+import { healInterruptedMove, interruptedMoveIds } from '../models/add-vision';
 import type {
   EngineBackend, EngineInstallProgress, EngineStatus, EngineModel, EngineModelState, BackendOption,
   ReplyTimings, EngineSpeedSettings,
@@ -1333,6 +1334,14 @@ export class EngineManager extends EventEmitter {
    *  filter incomplete sets — Settings is where you act on them. */
   async installedModels(): Promise<InstalledLocalModel[]> {
     const cacheDir = readEngineConfig(this.home).cacheDir;
+    // Undo any "Add vision" move a crash stopped half way, BEFORE reading the
+    // rows — best-effort, exactly like the manifest healing further down. Left
+    // alone, a model whose files are split between the cache dir and its own
+    // folder shows up as two broken rows offering only Delete, and the sweep
+    // below would throw away the record that says where it came from.
+    for (const id of interruptedMoveIds(cacheDir)) {
+      try { healInterruptedMove(cacheDir, id); } catch { /* best-effort — the rows still render */ }
+    }
     const rows: InstalledLocalModel[] = [];
     for (const d of scanLocalDownloads(cacheDir)) {
       const complete = isComplete(d);

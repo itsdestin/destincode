@@ -73,8 +73,24 @@ const UNLOAD_POLL_MS = 250;
 // makes the move safe.
 const UNLOAD_TIMEOUT_MS = 15_000;
 
-/** The exact text the design specifies for the unload that never finished. */
+/** The exact text the design specifies for the unload that never finished —
+ *  used ONLY when the router actually answered and kept saying the model was
+ *  resident. */
 export const STILL_BUSY_MESSAGE = 'The model is still busy — try again in a moment.';
+
+/** The other way the poll can run out: the router never answered at all (it was
+ *  unreachable, it returned an error, or it used a word this app does not know).
+ *  "Still busy" would be a guessed cause — the honest statement is that nothing
+ *  could be established and so nothing was touched. */
+export function routerSilentMessage(modelId: string): string {
+  return `The engine did not answer when asked whether ${modelId} is still loaded, so its file was left alone.`;
+}
+
+/** A half-finished move could not be undone. */
+export function healFailedMessage(modelId: string, osError: string, cacheDir: string, folder: string): string {
+  return `Could not put ${modelId} back together after an interrupted move: ${osError}. `
+    + `Its files are split between ${cacheDir} and ${folder}.`;
+}
 
 /** The move failed and everything that moved was put back. */
 export function moveFailedMessage(modelId: string, osError: string): string {
@@ -109,6 +125,12 @@ export async function addVisionToModel(
 ): Promise<{ downloadId: string }> {
   const sleep = timing.sleep ?? ((ms: number) => new Promise<void>((r) => { const t = setTimeout(r, ms); t.unref?.(); }));
   const now = timing.now ?? Date.now;
+
+  // ---- 0. Put back together anything a crashed earlier attempt left half-moved ----
+  // Without this a retry reads a model that is in two places at once: it would
+  // report "there is no record of where this came from" while the record sits
+  // one directory away, and advise deleting a model that is perfectly fine.
+  healInterruptedMove(cacheDir, modelId);
 
   // ---- What is actually on disk, and is this operation even the right one? ----
   const row = scanLocalDownloads(cacheDir).find((d) => d.modelId === modelId);
@@ -175,7 +197,13 @@ export async function addVisionToModel(
       // not answer" — reading either as done is how a rename lands on an open
       // file.
       if (state === 'unloaded') break;
-      if (now() >= unloadDeadline) throw new Error(STILL_BUSY_MESSAGE);
+      if (now() >= unloadDeadline) {
+        // The two ways this runs out are DIFFERENT facts and get different
+        // sentences. Saying "still busy" when the router never answered would be
+        // a cause nobody verified — the exact substitution
+        // docs/error-message-standards.md forbids.
+        throw new Error(state === null ? routerSilentMessage(modelId) : STILL_BUSY_MESSAGE);
+      }
       await sleep(timing.unloadPollMs ?? UNLOAD_POLL_MS);
     }
   }
@@ -215,10 +243,10 @@ export async function addVisionToModel(
 /** The two filesystem mutations the move makes, as an injectable seam.
  *
  *  WHY a seam rather than a spy: `import * as fs` gives an ESM namespace whose
- *  properties cannot be redefined, so `vi.spyOn(fs, 'renameSync')` does not
- *  reach this module (measured 2026-09-05 — the spy records nothing and the real
- *  rename still runs). The same problem is why ModelManager has a
- *  `freeDiskBytes` seam. Without this, the rollback — the part that decides
+ *  properties cannot be redefined, so `vi.spyOn(fs, 'renameSync')` cannot be set
+ *  up at all: it THROWS `TypeError: Cannot spy on export "renameSync". Module
+ *  namespace is not configurable in ESM` (measured 2026-09-05 under vitest
+ *  4.1.11). The same problem is why ModelManager has a `freeDiskBytes` seam. Without this, the rollback — the part that decides
  *  whether a user keeps their model when a rename fails — could not be driven at
  *  all, and an unprovable rollback is worse than none. */
 export interface MoveOps {
@@ -242,6 +270,88 @@ function setFileNames(firstFileName: string, partsDeclared: number): string[] {
   const stem = firstFileName.replace(/-\d{5}-of-\d{5}\.gguf$/i, '');
   return Array.from({ length: partsDeclared }, (_, i) =>
     `${stem}-${String(i + 1).padStart(5, '0')}-of-${total}.gguf`);
+}
+
+/** THE ORDER, in one place, so the move, the rollback and the heal below cannot
+ *  drift apart: the non-loadable companions first, then the model file itself,
+ *  then the follower parts — filtered to what is really in `dir`. Reverse it and
+ *  it is just as safe in the other direction, which is what makes both the
+ *  rollback and the heal one-liners. See moveIntoOwnFolder for the argument. */
+function plannedMoveOrder(dir: string, firstFileName: string, partsDeclared: number): string[] {
+  const parts = setFileNames(firstFileName, partsDeclared);
+  const exists = (name: string) => fs.existsSync(path.join(dir, name));
+  const companions = [
+    path.basename(manifestPathFor(dir, firstFileName)),
+    ...parts.map((name) => `${name}.partial`),
+  ].filter(exists);
+  return [...companions, ...parts.filter(exists)];
+}
+
+/** Undo a move that a crash (or a kill) stopped half way, so the model is whole
+ *  and flat again — which is exactly the state it was in before "Add vision" was
+ *  pressed, and the state everything else in the app already understands.
+ *
+ *  WHY THIS HAS TO EXIST. The move is two or more syscalls; no ordering can make
+ *  a crash between them impossible, only harmless. It IS harmless for what the
+ *  engine serves — the ordering above guarantees the two layouts are never both
+ *  loadable — but nothing was healing what it left behind, and two states were
+ *  dead ends (both reproduced 2026-09-05):
+ *    · the record moved, the weights did not — the model still loads, but a
+ *      retry could not find the record (it is one directory away) and told the
+ *      user to delete the model; worse, the next Local Models render swept that
+ *      record as a leftover, leaving an empty folder that made every future
+ *      attempt fail at `mkdir` for ever.
+ *    · a split set with part 1 moved and its followers not — every byte on
+ *      disk, and the model GONE from the picker (a complete set is what
+ *      scanGgufCache requires), with only Delete offered.
+ *
+ *  Returns true when it moved something. Refuses anything that is not
+ *  unmistakably one interrupted move: the flat side must hold at least one part,
+ *  the folder must hold no projector (a folder with one is a real vision model,
+ *  and a flat namesake beside it is the pre-existing collision, not our doing),
+ *  and the two sides must add up to EXACTLY one complete set. */
+export function healInterruptedMove(cacheDir: string, modelId: string, ops: MoveOps = REAL_MOVE_OPS): boolean {
+  const rows = scanLocalDownloads(cacheDir).filter((d) => d.modelId === modelId);
+  const flat = rows.find((d) => d.subdir === null);
+  const inFolder = rows.find((d) => d.subdir === modelId);
+  if (!flat || !inFolder) return false;
+  if (inFolder.hasProjector) return false;
+  if (flat.partsPresent < 1) return false;
+  // The two sides must add up to EXACTLY one complete set. This is also what
+  // rules out a folder that is a whole model in its own right (with at least one
+  // part flat, the folder can never hold all of them), and — more importantly —
+  // two DIFFERENT downloads of one filename, one flat and one in a folder, whose
+  // parts would otherwise be merged into a single set mixing two builds' bytes.
+  if (flat.partsPresent + inFolder.partsPresent !== flat.partsDeclared) return false;
+
+  const folder = path.join(cacheDir, modelId);
+  // Reversed, for the same reason the rollback is: the model file leaves the
+  // folder AFTER its followers and BEFORE the record, so the one atomic rename
+  // that hands the model back is again the only moment either side changes from
+  // loadable to not.
+  const order = plannedMoveOrder(folder, flat.firstFileName, flat.partsDeclared).reverse();
+  for (const name of order) {
+    try {
+      ops.rename(path.join(folder, name), path.join(cacheDir, name));
+    } catch (e: any) {
+      // Stopping here is safe: every step so far kept the invariant, so the
+      // model is either whole and flat or exactly as it was found.
+      throw new Error(healFailedMessage(modelId, osErrorText(e), cacheDir, folder));
+    }
+  }
+  try { ops.rmdir(folder); } catch { /* something else is in there — leave it alone */ }
+  return true;
+}
+
+/** Every model id that has an interrupted move to undo. Cheap: one scan. */
+export function interruptedMoveIds(cacheDir: string): string[] {
+  const byId = new Map<string, { flat: boolean; folder: boolean }>();
+  for (const d of scanLocalDownloads(cacheDir)) {
+    const seen = byId.get(d.modelId) ?? { flat: false, folder: false };
+    if (d.subdir === null) seen.flat = true; else seen.folder = true;
+    byId.set(d.modelId, seen);
+  }
+  return [...byId.entries()].filter(([, v]) => v.flat && v.folder).map(([id]) => id);
 }
 
 /** Move a flat model into `<cacheDir>/<modelId>/`, or put back what moved.
@@ -281,16 +391,7 @@ export function moveIntoOwnFolder(
   ops: MoveOps = REAL_MOVE_OPS
 ): void {
   const folder = path.join(cacheDir, modelId);
-  const parts = setFileNames(firstFileName, partsDeclared);
-  const exists = (name: string) => fs.existsSync(path.join(cacheDir, name));
-  // Step 2's files: the manifest and any leftover .partial — nothing here is a
-  // *.gguf, so none of it can make the folder loadable.
-  const companions = [
-    path.basename(manifestPathFor(cacheDir, firstFileName)),
-    ...parts.map((name) => `${name}.partial`),
-  ].filter(exists);
-  const followers = parts.slice(1).filter(exists);
-  const order = [...companions, firstFileName, ...followers];
+  const order = plannedMoveOrder(cacheDir, firstFileName, partsDeclared);
 
   try {
     ops.mkdir(folder);
