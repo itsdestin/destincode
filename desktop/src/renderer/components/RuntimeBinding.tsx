@@ -305,7 +305,14 @@ export function NativeExtras({ nb, preset, onPreset }: {
             variant="item"
             className="bg-transparent"
             title={(
-              <span className={nb.memVerdict.verdict === 'too-large' ? 'text-destructive-fg' : 'text-amber-400'}>
+              // WHY `text-warning-fg` and not a fixed amber (contract R30, 2026-09-06):
+              // one hard-coded amber is crisp on a dark theme and invisible on a pale
+              // one — measured 9.5:1 on Halftone Dimension and 1.05:1 on Meadow Mist,
+              // where it sat on that theme's pale-green card at practically the same
+              // brightness. `--warning-fg` is the same amber nudged, per theme, until
+              // it is readable on that theme's own surfaces, so a theme nobody has
+              // written yet comes out right too. Dark themes are unchanged.
+              <span className={nb.memVerdict.verdict === 'too-large' ? 'text-destructive-fg' : 'text-warning-fg'}>
                 {nb.memVerdict.verdict === 'too-large' ? 'This model is too large for this computer' : 'This model may not fit in available memory'}
               </span>
             )}

@@ -25,6 +25,13 @@ import { useEscClose } from '../../hooks/use-esc-close';
  * plain hover hints. Two tools, one documented policy.
  */
 
+/** Breathing room the bubble keeps from the edge of the panel it lives in. */
+const EDGE = 8;
+/** The gaps the bubble has always sat at, kept exactly: 6 px under the trigger,
+ *  10 px above it. */
+const GAP_BELOW = 6;
+const GAP_ABOVE = 10;
+
 export type AnchorTipTrigger = 'click' | 'hover';
 export type AnchorTipPlacement = 'top' | 'bottom';
 
@@ -43,8 +50,9 @@ export type AnchorTipProps = {
   /**
    * Render THIS as the trigger instead of the (i) glyph — a dotted-underlined
    * number that breaks down on hover, an eye icon that says "Sees images".
-   * Same bubble, same layer, same touch behaviour (focus opens it). Added
-   * 2026-09-05 for the Local Models screen (design deck P-5 / P-6).
+   * Same bubble, same layer, and the same touch behaviour — a finger tap opens
+   * it (see the hover handlers below). Added 2026-09-05 for the Local Models
+   * screen (design deck P-5 / P-6).
    */
   anchor?: React.ReactNode;
   /**
@@ -67,18 +75,75 @@ export function AnchorTip({
   align = 'center',
 }: AnchorTipProps) {
   const [open, setOpen] = useState(false);
-  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [pos, setPos] = useState({ left: 0, top: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
+  /**
+   * The box the bubble is not allowed to leave.
+   *
+   * WHY it is not simply the window (contract R21, 2026-09-06): these bubbles
+   * are opened from rows inside a settings dialog, and the window is much taller
+   * than the dialog. A size number near the bottom of the Model Providers panel
+   * therefore opened a bubble that hung 51 px BELOW the panel, floating over the
+   * page behind it — measured in the real app. The bubble belongs to the panel,
+   * so the panel is the boundary; anywhere there is no dialog around the trigger
+   * (a bubble on the main screen), the window is. Whichever it is, it is also
+   * intersected with the window, because a dialog can itself be taller than a
+   * short window.
+   */
+  const boundsFor = (el: HTMLElement) => {
+    const host = el.closest('[role="dialog"]');
+    const h = host ? host.getBoundingClientRect() : null;
+    return {
+      left: Math.max(EDGE, h ? h.left + EDGE : EDGE),
+      right: Math.min(window.innerWidth - EDGE, h ? h.right - EDGE : window.innerWidth - EDGE),
+      top: Math.max(EDGE, h ? h.top + EDGE : EDGE),
+      bottom: Math.min(window.innerHeight - EDGE, h ? h.bottom - EDGE : window.innerHeight - EDGE),
+    };
+  };
+
+  /**
+   * Where the bubble actually goes. Two passes by construction: the first render
+   * after `open` commits the panel to the DOM at 0,0, this runs as a LAYOUT
+   * effect (so it is measured and moved before the browser paints — no flash),
+   * and it can read the panel's real width and height, which is what makes
+   * "does it fit below?" answerable at all.
+   *
+   * Position is written as plain left/top rather than a CSS transform so that
+   * clamping is possible: a `translateX(-50%)` bubble cannot be nudged back
+   * inside its panel without fighting the transform.
+   */
   const measure = () => {
     const el = triggerRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    setPos({
-      x: align === 'start' ? rect.left : rect.left + rect.width / 2,
-      y: placement === 'bottom' ? rect.bottom + 6 : rect.top - 10,
-    });
+    const panel = panelRef.current?.getBoundingClientRect();
+    const w = panel?.width ?? 0;
+    const h = panel?.height ?? 0;
+    const b = boundsFor(el);
+
+    // Preferred side, then flip if the preferred side does not fit and the other
+    // one does. Flipping only happens when staying put would push the bubble out
+    // of the panel — the contract asks for "below the number", and this keeps it
+    // there in every case where below is actually available.
+    const belowTop = rect.bottom + GAP_BELOW;
+    const aboveTop = rect.top - GAP_ABOVE - h;
+    let side = placement;
+    if (h > 0) {
+      if (side === 'bottom' && belowTop + h > b.bottom && aboveTop >= b.top) side = 'top';
+      else if (side === 'top' && aboveTop < b.top && belowTop + h <= b.bottom) side = 'bottom';
+    }
+
+    const wantLeft = align === 'start' ? rect.left : rect.left + rect.width / 2 - w / 2;
+    const left = w > 0 ? Math.min(Math.max(wantLeft, b.left), Math.max(b.left, b.right - w)) : wantLeft;
+    const wantTop = side === 'bottom' ? belowTop : aboveTop;
+    // The final clamp is the backstop for a bubble taller than the panel itself:
+    // it is pinned to the top of the panel and allowed to overflow downwards
+    // rather than being pushed off the top, because the heading is the part you
+    // need to see first.
+    const top = h > 0 ? Math.min(Math.max(wantTop, b.top), Math.max(b.top, b.bottom - h)) : wantTop;
+    setPos((prev) => (prev.left === left && prev.top === top ? prev : { left, top }));
   };
 
   useLayoutEffect(() => {
@@ -99,16 +164,26 @@ export function AnchorTip({
    */
   useEscClose(open && trigger === 'click', () => setOpen(false));
 
-  // Outside-click dismissal (click mode only — a hover tip has no pointer events).
+  // Outside-press dismissal. This used to be click-mode only, on the reasoning
+  // that a hover tip closes itself when the mouse moves away. A finger has no
+  // "moves away": once a tap can open a hover tip (see below), a tap somewhere
+  // else has to be what closes it, so hover mode is in here too now. Both
+  // `pointerdown` and `mousedown` are listened for because they are not
+  // redundant — jsdom-based tests fire mousedown, and a stylus/finger fires
+  // pointerdown; closing twice is harmless.
   useEffect(() => {
-    if (!open || trigger !== 'click') return;
-    const onDown = (e: MouseEvent) => {
+    if (!open) return;
+    const onDown = (e: Event) => {
       const t = e.target as Node;
       if (triggerRef.current?.contains(t) || panelRef.current?.contains(t)) return;
       setOpen(false);
     };
+    window.addEventListener('pointerdown', onDown, true);
     window.addEventListener('mousedown', onDown, true);
-    return () => window.removeEventListener('mousedown', onDown, true);
+    return () => {
+      window.removeEventListener('pointerdown', onDown, true);
+      window.removeEventListener('mousedown', onDown, true);
+    };
   }, [open, trigger]);
 
   // These live inside scrollable settings panels, so a bubble measured once on
@@ -126,11 +201,37 @@ export function AnchorTip({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, placement, align]);
 
+  /**
+   * Hover-mode triggers, and why they listen to POINTER events instead of mouse
+   * events (contract R20, fixed 2026-09-06).
+   *
+   * Tapping one of these with a finger used to do nothing at all. The reason is
+   * that after a touch, the browser REPLAYS the whole mouse sequence for
+   * compatibility — mouseover, mouseenter, focus, click, mouseout, mouseleave —
+   * so `onMouseEnter` opened the bubble and the trailing `mouseleave` closed it
+   * again in the same frame. Polled every 60 ms for 1.5 s after a real tap, the
+   * bubble was never once on screen. Destin drives this machine by touchscreen
+   * and has no mouse, so on his hardware the size breakdown was unreachable.
+   *
+   * Pointer events carry `pointerType`, so hovering can be restricted to an
+   * actual mouse and the replayed mouse events are ignored. A tap is then
+   * handled on its own terms:
+   *
+   *   · `onPointerDown` for a finger/stylus FLIPS the bubble, so a second tap on
+   *     the same number closes it.
+   *   · `onFocus` still opens it, which is both the keyboard path (Tab to the
+   *     number) and the reason the flip is correct in every case: the browser
+   *     focuses the button on the first tap, and focus and the flip agree (both
+   *     open). On a later tap the button is already focused, so no focus event
+   *     follows and the flip is the only thing that acts.
+   *   · `onBlur` closes it, which is what "tap somewhere else" does.
+   */
   const hoverProps =
     trigger === 'hover'
       ? {
-          onMouseEnter: () => setOpen(true),
-          onMouseLeave: () => setOpen(false),
+          onPointerEnter: (e: React.PointerEvent) => { if (e.pointerType === 'mouse') setOpen(true); },
+          onPointerLeave: (e: React.PointerEvent) => { if (e.pointerType === 'mouse') setOpen(false); },
+          onPointerDown: (e: React.PointerEvent) => { if (e.pointerType !== 'mouse') setOpen((v) => !v); },
           onFocus: () => setOpen(true),
           onBlur: () => setOpen(false),
         }
@@ -175,13 +276,10 @@ export function AnchorTip({
             className={`fixed p-3 text-left max-w-[calc(100vw-1.5rem)] ${widthClass} ${
               trigger === 'hover' ? 'pointer-events-none' : ''
             }`}
-            style={{
-              left: pos.x,
-              top: pos.y,
-              transform: align === 'start'
-                ? (placement === 'bottom' ? 'none' : 'translateY(-100%)')
-                : (placement === 'bottom' ? 'translateX(-50%)' : 'translate(-50%, -100%)'),
-            }}
+            // Plain left/top, no transform: `measure()` above has already done
+            // the centring arithmetic, because a bubble positioned by transform
+            // cannot also be clamped back inside its panel.
+            style={{ left: pos.left, top: pos.top }}
             onClick={(e) => e.stopPropagation()}
           >
             {title && <p className="text-xs font-semibold text-fg mb-1.5">{title}</p>}

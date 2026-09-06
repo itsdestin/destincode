@@ -293,6 +293,95 @@ describe('NativeSessionHost', () => {
     expect(host.send('ghost', 'x')).toEqual({ status: 'failed', reason: 'not-live' });
   });
 
+  // ── A message typed while the session is still STARTING (2026-09-06) ───────
+  //
+  // Destin made a session on a local model and typed straight away. The app told
+  // him "This session is no longer running. Start or resume it to send messages."
+  // Both halves were false — the session had never run, the engine was loading a
+  // 29 GB model, and a minute later the same session answered him normally.
+  // send() had ONE reason code for "not in the live map", covering both a session
+  // that has ENDED and one that has not STARTED. These four pin the split and the
+  // holding queue that makes the refusal unnecessary in the first place.
+
+  it('a message typed while the session is still starting is HELD, not refused', async () => {
+    // create() is async; this is the real window, entered before its first await
+    // settles — exactly where Destin's message landed.
+    const creating = host.create({ sessionId: 's-warmup', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const ack = host.send('s-warmup', 'hello from the starting gate');
+    expect(ack.status, 'held, not refused').toBe('queued');
+    const turns: string[] = [];
+    host.on('transcript-event', (e) => { if (e.type === 'turn-complete') turns.push('t'); });
+    await creating;
+    await waitForTurnComplete(host, 1);
+    await host.drain('s-warmup');
+    // Delivered — and delivered ONCE. The settle window matters: a duplicate
+    // sits in the send queue and only runs AFTER the first turn completes, so
+    // reading the transcript the instant turn 1 lands cannot see it. Held open
+    // until the queue has had every chance to produce a second turn.
+    await new Promise((r) => setTimeout(r, 300));
+    await host.drain('s-warmup');
+    expect(turns.length, 'exactly one turn ran').toBe(1);
+    const history = host.getHistory('s-warmup')!;
+    const typed = history.filter((e) => e.type === 'user-message');
+    expect(typed).toHaveLength(1);
+    expect(typed[0].data.text).toBe('hello from the starting gate');
+    expect(history.map((e) => e.type)).toEqual(['user-message', 'assistant-text', 'turn-complete']);
+  });
+
+  it('several messages typed during startup arrive in the order they were typed', async () => {
+    const creating = host.create({ sessionId: 's-warmup2', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    expect(host.send('s-warmup2', 'first').status).toBe('queued');
+    expect(host.send('s-warmup2', 'second').status).toBe('queued');
+    await creating;
+    await waitForTurnComplete(host, 2);
+    await host.drain('s-warmup2');
+    const typed = host.getHistory('s-warmup2')!.filter((e) => e.type === 'user-message').map((e) => e.data.text);
+    expect(typed).toEqual(['first', 'second']);
+  });
+
+  it('a session that has ENDED still gets the ended message, not the starting one', async () => {
+    // The whole point of the split: this must NOT become "starting".
+    await host.create({ sessionId: 's-gone', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    await host.destroy('s-gone');
+    expect(host.send('s-gone', 'x')).toEqual({ status: 'failed', reason: 'not-live' });
+    // And an id nothing ever created is the same case.
+    expect(host.send('never-existed', 'x')).toEqual({ status: 'failed', reason: 'not-live' });
+  });
+
+  it('startup refuses with its OWN reason once ten messages are already waiting', async () => {
+    const creating = host.create({ sessionId: 's-warmup3', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    for (let i = 0; i < 10; i++) expect(host.send('s-warmup3', `m${i}`).status).toBe('queued');
+    // The eleventh cannot be held — and it must say "starting", never
+    // "no longer running", because the session is starting.
+    expect(host.send('s-warmup3', 'm10')).toEqual({ status: 'failed', reason: 'starting' });
+    await creating;
+    await host.destroy('s-warmup3');
+  });
+
+  it('a message still waiting for the session to start can be taken back', async () => {
+    const creating = host.create({ sessionId: 's-warmup4', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    const ack = host.send('s-warmup4', 'oops, wrong thing') as { status: 'queued'; queueId: string };
+    expect(host.removeQueued('s-warmup4', ack.queueId), 'Cancel reaches a held message').toBe(true);
+    await creating;
+    await host.drain('s-warmup4');
+    expect(host.getHistory('s-warmup4')!.filter((e) => e.type === 'user-message')).toHaveLength(0);
+    await host.destroy('s-warmup4');
+  });
+
+  it('a session that never comes up does not hold the message for ever', async () => {
+    // A failed create must release what it was holding — otherwise a typed
+    // message sits in memory for the life of the app, attached to nothing.
+    const store = new SessionStore(new NativeHome(root));
+    vi.spyOn(store, 'create').mockRejectedValue(new Error('disk is full'));
+    const doomed = new NativeSessionHost(store, factory, NO_CONTEXT, async () => null, async () => null);
+    const creating = doomed.create({ sessionId: 's-doomed', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    expect(doomed.send('s-doomed', 'held').status).toBe('queued');
+    await expect(creating).rejects.toThrow();
+    // Back to the honest answer for a session that is not coming.
+    expect(doomed.send('s-doomed', 'again')).toEqual({ status: 'failed', reason: 'not-live' });
+    await doomed.destroyAll();
+  });
+
   // The old 'overlapping send() does not reject: second resolves false' pin is
   // superseded by the M1 send queue below ('overlapping send queues FIFO and
   // both turns complete in order') — an overlapping send is now FIFO'd, not

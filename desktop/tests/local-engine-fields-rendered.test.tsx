@@ -38,9 +38,12 @@ function quantWith(breakdown: Partial<NonNullable<FitEstimate['breakdown']>>, fi
   };
 }
 
-/** Hover the dotted number to open the breakdown bubble. */
+/** Hover the dotted number with a MOUSE to open the breakdown bubble.
+ *  pointerType matters since 2026-09-06: the bubble ignores the phantom mouse
+ *  events a touchscreen replays after a tap (contract R20), so a hover has to
+ *  say it came from a mouse. */
 function openBubble() {
-  fireEvent.mouseEnter(screen.getByLabelText(/is made of$/));
+  fireEvent.pointerEnter(screen.getByLabelText(/is made of$/), { pointerType: 'mouse' });
 }
 
 // The dialog's own poll interval, wound down. Every guard below still watches a

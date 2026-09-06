@@ -173,11 +173,33 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
   const [nativeError, setNativeError] = useState<string | null>(null);
   const [nativeSwapping, setNativeSwapping] = useState(false);
 
+  // Same problem, same fix as ModelPicker.tsx (Destin, 2026-09-06): this list
+  // refetched when the popup OPENED but could never catch up while it was
+  // already on screen, so a model you downloaded with this popup open stayed
+  // missing until you closed and reopened it. Bumping `reload` re-runs the fetch
+  // below. See ModelPicker.tsx for why this is the download push and not
+  // `engine.onModelsChanged` — nothing sends that channel.
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    const off = window.claude?.models?.onDownloadProgress?.((p: { state?: string }) => {
+      if (p?.state === 'done') setReload((n) => n + 1);
+    });
+    return () => { off?.(); };
+  }, []);
+
+  // The transient view state resets on OPEN only. It deliberately does not sit in
+  // the fetch effect below any more: that one now also re-runs when a download
+  // lands, and re-running it here would erase whatever the user had typed in the
+  // search box at that moment.
   useEffect(() => {
     if (!open || provider !== 'native') return;
     setNativeSearch('');
     setNativeError(null);
     setNativeSwapping(false);
+  }, [open, provider]);
+
+  useEffect(() => {
+    if (!open || provider !== 'native') return;
     Promise.all([
       window.claude.providers.catalog().catch(() => []),
       window.claude.providers.list().catch(() => []),
@@ -193,7 +215,7 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
       const b = row?.binding;
       setNativeBinding(b && b.providerId && b.modelId ? { providerId: b.providerId, modelId: b.modelId } : null);
     }).catch(() => {});
-  }, [open, provider, sessionId]);
+  }, [open, provider, sessionId, reload]);
 
   // Load persisted state when opening. We don't live-sync with external changes
   // (Claude Code doesn't broadcast these); the popup is the source of truth

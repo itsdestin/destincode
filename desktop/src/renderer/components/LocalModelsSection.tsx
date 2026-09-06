@@ -375,7 +375,11 @@ function ModelBrowser({
 // One model repo — used for both recommended (autoResolve) and Hugging Face
 // (resolve-on-expand) rows. Collapsed: name + a quick Download of the default
 // quant. Expanded: the full quant list (recommended-first, "Show all N").
-function RepoCard({
+//
+// Exported (named) for the same reason SizeLine and LocalModelRow are: a test
+// can pin this card's page structure without booting the whole section and its
+// models API.
+export function RepoCard({
   repo, label, sub, preferredQuant, autoResolve, downloads, quantOptsByKeyRef, expanded, onToggle,
 }: {
   repo: string;
@@ -441,7 +445,27 @@ function RepoCard({
       <div className="flex items-start gap-2">
         {/* Round 2 (P-1 note): the expand affordance is the same right-hand chevron every
             navigating row has, turned down while open — never a leading "›" text toggle. */}
-        <button onClick={onToggle} aria-expanded={expanded} className="flex items-start gap-2 min-w-0 flex-1 text-left">
+        {/* WHY this expand trigger is a <div role="button"> and not a <button>:
+            the size figure inside it is itself a button (it opens the "What this
+            needs" bubble), and a button inside a button is invalid HTML. The
+            browser silently rearranges the page when it sees one — React printed
+            two errors every time Model Providers opened — and the inner button
+            can stop receiving its own presses, which would take the size
+            breakdown with it. Same shape SkillCard.tsx already uses for its
+            favourite star. The keyboard handler checks the event came from this
+            row itself, so pressing Enter on the size figure opens the bubble
+            instead of collapsing the card underneath it. */}
+        <div
+          role="button"
+          tabIndex={0}
+          onClick={onToggle}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); }
+          }}
+          aria-expanded={expanded}
+          className="flex items-start gap-2 min-w-0 flex-1 text-left"
+        >
           <LocalBrandMark id={repo} />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-fg font-medium truncate">{label}</p>
@@ -463,7 +487,7 @@ function RepoCard({
           <svg className={`w-4 h-4 mt-0.5 text-fg-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
           </svg>
-        </button>
+        </div>
         {/* Inline row action -> sm, matching EngineCard's Install/Restart. */}
         {chosen && !dl && (
           <Button size="sm" onClick={() => void startDefault()} className="shrink-0">

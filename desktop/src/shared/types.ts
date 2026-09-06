@@ -72,7 +72,12 @@ export interface PortableModelRef {
 export type NativeSendResult =
   | { status: 'sent' }
   | { status: 'queued'; queueId: string }
-  | { status: 'failed'; reason: 'not-live' | 'queue-full' };
+  // 'starting' vs 'not-live' are DIFFERENT SITUATIONS and must never be merged
+  // back into one code: 'not-live' is a session that has ended or was never
+  // created, 'starting' is one that has not finished starting yet (a big local
+  // model can take a minute to load). One code for both is what told Destin a
+  // brand-new session was "no longer running" — see NativeSessionHost.startingSends.
+  | { status: 'failed'; reason: 'not-live' | 'queue-full' | 'starting' };
 
 export interface SessionInfo {
   id: string;

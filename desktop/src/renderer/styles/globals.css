@@ -328,6 +328,12 @@
      for both does not exist across our themes. Use `text-destructive-fg` for
      destructive TEXT and `bg-destructive` for destructive SURFACES. */
   --color-destructive-fg: var(--destructive-fg);
+  /* The amber a warning is painted in, derived per theme by theme-engine.ts.
+     A single fixed amber is crisp on dark themes and effectively invisible on
+     pale ones (measured 1.05:1 on Meadow Mist), so this one is nudged until it
+     clears AA against the theme's own panel, inset and canvas. Use
+     `text-warning-fg` for warning TEXT. */
+  --color-warning-fg: var(--warning-fg);
 
   /* Status colors — constant across all themes */
   --color-green-400: #4CAF50;
