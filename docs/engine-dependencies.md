@@ -119,11 +119,15 @@ no usable preset file:
   stderr so a startup exit surfaces the engine's REAL message instead of a guess.
 - **`--models-max 2`** — the router's LRU default is 4; 2 bounds RAM on consumer
   machines while keeping chat↔utility switching cheap.
-- **`--sleep-idle-seconds 300` (2026-07-14)** — the router frees an idle model's
-  memory after 5 min (status → `'sleeping'`) and wakes it on the next request.
-  Verified b9992. FINER-grained than the engine-wide idle stop (`idleMs`, 10 min)
-  which tears down the whole process — the two are complementary. `SLEEP_IDLE_SECONDS`
-  in `engine-supervisor.ts`; the flag presence is pinned in `engine-supervisor.test.ts`.
+- **Auto-sleep after 5 minutes — now `[*] sleep-idle-seconds = 300` in the preset
+  file, NOT a command-line flag.** The router frees an idle model's memory (status →
+  `'sleeping'`) and wakes it on the next request. Verified b9992. FINER-grained than the
+  engine-wide idle stop (`idleMs`, 10 min) which tears down the whole process — the two
+  are complementary, and "Keep loaded" on a model turns BOTH off for it
+  (`sleep-idle-seconds = -1` in its section, and `hasKeepLoadedResident()` holds the
+  engine timer). `SLEEP_IDLE_SECONDS` still lives in `engine-supervisor.ts` because the
+  preset writer reads it. **`engine-supervisor.test.ts` now pins the flag's ABSENCE from
+  the command line** — it only reappears on the recovery boot that has no usable preset.
 - **Speed flags (2026-09-04), both measured on b10665, Qwen3.5-9B Q8_0, Z13 Vulkan;
   guard: `test-engine/probe-speed.mjs` (flags reach the model child AND the drafter fires).
   Both are now user switches (`engine.speed` in config.json, `engine:set-config`) and
@@ -292,12 +296,19 @@ context window.
   back with NO `tool_calls` — the model answers in `message.content`. A build that
   force-calls a tool on ordinary text would break normal chat; the probe asserts
   against this.
-- **Real context window via `GET /props`.** The loaded model's actual `n_ctx` is the
-  ground truth the known-model registry (advertised context) is checked against.
+- **Real context window via `GET /props?model=<id>` — the `?model=` is REQUIRED.**
+  The loaded model's actual `n_ctx` is the ground truth the known-model registry
+  (advertised context) is checked against. **Bare `/props` is the ROUTER's own dummy
+  and answers `n_ctx: 0` even while a model is loaded and serving** (probed 2026-09-05,
+  design §C3); named, the router forwards the question to that model's child and the
+  answer is that model's real window — which is the only correct read now that each
+  model can carry its own context length. The id is a filename, so URL-encode it.
   **The field name drifts across builds** — read `default_generation_settings.n_ctx`
-  first, then fall back to top-level `n_ctx`; if neither is present the build moved
-  it again (re-check against the pinned tag). This is `-c` propagated to the loaded
-  instance (see the `--models-dir` / `-c` notes above).
+  first, then fall back to top-level `n_ctx`; if neither is present the build moved it
+  again (re-check against the pinned tag). **Do NOT "fix" a zero here by putting `-c`
+  back on the command line** — that flag outranks every per-model preset and is exactly
+  what the settings file exists to keep off the command line. The fallback when
+  `/props` is uninformative is the CONFIGURED context size, not a constant.
 - **Verified by `test-engine/probe-tools.mjs`** — fires a tool-y prompt (asserts
   schema-valid JSON args), a plain prompt (asserts no forced call), and prints the
   `/props` `n_ctx`. Usage: `node test-engine/probe-tools.mjs http://127.0.0.1:<port>
@@ -328,10 +339,13 @@ context window.
   `engine-acquisition.install()` downloads it, verifies it, and unpacks it into the
   SAME directory as the engine (not a sibling — those DLLs have to sit beside
   `llama-server.exe`). Pressing "Switch to CUDA" is therefore a 238 MB engine plus a
-  373 MB runtime, 611 MB in one operation, and `downloadSize()` reports both parts.
+  373 MB runtime, 611 MB in one operation, and `probeDownloadSize()` reports both parts.
   The cudart archive carries no version tag in its NAME, so the generator does not
-  template one in. If the runtime is missing or its hash is wrong, the whole install
-  is discarded rather than left half-done.
+  template one in. If the runtime is missing or its hash is wrong the INSTALL is
+  abandoned — nothing half-unpacked is ever renamed into place — but only the corrupt
+  runtime archive's bytes are deleted; the engine archive beside it is deliberately
+  KEPT, so a retry reuses those (already checksum-verified) bytes. (The engine archive's own hash failure deletes
+  ITS bytes, because there is nothing left to retry with.)
 - **The two ROCm rows carry NO `runtime`, for two DIFFERENT reasons.** The Windows
   ROCm zip genuinely is self-contained (it bundles `amdhip64_7.dll`). The Linux
   tarball is NOT: listing b10665's 62 entries on 2026-09-05 found `libggml-hip.so` but
@@ -344,9 +358,12 @@ context window.
   `.github/workflows/release.yml` at the tag (`gpu_targets:` in the `ubuntu-24-rocm`
   and `windows-rocm` matrices). At b10665: Windows has 20 targets including
   `gfx1103`/`gfx1153`; Linux has 22 including the four CDNA parts
-  (`gfx908`/`gfx90a`/`gfx942`/`gfx950`) that Windows lacks. `backendOptions()` checks
-  the running platform's OWN row — reading "the pin's gfx list" would refuse ROCm to a
-  supported Windows chip, or offer it to a Linux chip with no machine code in the
+  (`gfx908`/`gfx90a`/`gfx942`/`gfx950`) that Windows lacks. **`backendOptions()` checks
+  that list on LINUX ONLY.** Windows is offered ROCm with no gfx check at all, because
+  the kfd topology the target is read from is a Linux kernel interface and Windows
+  publishes no equivalent — so `gfxTarget` is always null there and a check would refuse
+  every Windows chip. On Linux the check reads THAT ROW's list, never "the pin's gfx
+  list": a shared list would offer ROCm to a Linux chip with no machine code in the
   archive, which dies at the first token. The generator refuses to emit a ROCm row it
   cannot read targets for.
 - **Every install records the build's own device list.** After unpacking (and after
@@ -444,7 +461,12 @@ first part and cache-scan sums the parts' sizes into one entry.
     and the user's model then stops loading with nothing on screen to explain it.
   A split set inside a folder is one model, named by the folder, loaded from its
   part 1. `probe-download.mjs` pins both folder ids; `probe-vision.mjs` pins the
-  pairing and the image round-trip.
+  pairing and the image round-trip. **The FLAT half of that comparison — the same two
+  files side by side reporting `["text"]` with no `--mmproj` — was measured by hand on
+  2026-09-05 and is NOT in any probe**, so an engine bump re-verifies that a folder
+  works, not that flat still fails. Extending `probe-vision.mjs` to lay the pair out
+  both ways would close that; until it does, treat the flat result as a dated
+  measurement, not a guard.
 - **Router hot-reload of `--models-dir` after boot — RESOLVED 2026-08-16.** The
   router discovers GGUFs at BOOT and re-scans ONLY when asked: `GET /models?reload=1`
   (any non-empty value) re-runs `load_models()`. Its `need_reload` dirty flag is set
@@ -478,17 +500,23 @@ first part and cache-scan sums the parts' sizes into one entry.
 
 ## Verification
 
-`desktop/test-engine/` holds dev-run smoke probes against the real binary. **There
-are NINE, and every one is re-run on an engine bump** — analogous to `test-conpty/`
-on a CC bump: `probe-health` (the spawn shape boots), `probe-models` (id parity +
-`?reload=1` picking up a post-boot file), `probe-chat` (streamed round-trip),
-`probe-download` (flat-basename ↔ router id, single AND split), `probe-tools`
-(`--jinja` constrained tool call + real `/props` `n_ctx`), `probe-speed` (both speed
-flags reach the model child and the drafter fires), `probe-presets` (the `models.ini`
-grammar, the fatal-key behaviour, and that every reserved key is a real option on this
-build), `probe-vision` (the folder layout, `input_modalities`, and a real image
-answered) and `probe-headers` (no binary needed — real Hugging Face headers in one
-1 MB range request). Each is described in `desktop/test-engine/README.md`.
+`desktop/test-engine/` holds twelve `probe-*.mjs` files against the real binary, of
+which **NINE are engine-bump gates** — analogous to `test-conpty/` on a CC bump:
+`probe-health` (the spawn shape boots), `probe-models` (id parity + `?reload=1`
+picking up a post-boot file), `probe-chat` (streamed round-trip), `probe-download`
+(flat-basename ↔ router id, single AND split), `probe-tools` (`--jinja` constrained
+tool call + real `/props` `n_ctx`), `probe-speed` (both speed flags reach the model
+child and the drafter fires), `probe-presets` (the `models.ini` grammar, the fatal-key
+behaviour, and that every reserved key is a real option on this build), `probe-vision`
+(the folder layout, `input_modalities`, and a real image answered) and `probe-headers`
+(no binary needed — real Hugging Face headers in one 1 MB range request).
+
+**`desktop/test-engine/README.md` is the one place that decides which probes a bump
+re-runs, and why the other three are excluded** — `probe-parallel` and
+`probe-prefix-cache` are one-off MEASUREMENTS with no pass/fail (their findings are
+the "Parallel slots" and "KV prefix reuse" sections below), and `probe-shell-command`
+is about the "Run in terminal" path, not the engine. Do not re-derive that list from
+a directory listing, or from a count in this file.
 
 The original three PASS on b9992 (Windows x64 CPU,
 Qwen3-0.6B-Q4_K_M.gguf), 2026-07-13; the `?reload=1` assertion was added 2026-08-16

@@ -24,8 +24,8 @@
 // engine-supervisor.ts's real router-mode spawn (engine-supervisor.ts:285-306):
 //
 //   llama-server --host 127.0.0.1 --port 8199 --no-webui --jinja \
-//     --models-dir <cacheDir> --models-max 2 --sleep-idle-seconds 300 \
-//     -c <contextSize>
+//     --models-dir <cacheDir> --models-max 2 --spec-default --cache-type-k q8_0 \
+//     --models-preset <models.ini>
 //
 // Usage: node test-engine/probe-prefix-cache.mjs <baseURL> <modelId>
 const [base, model] = process.argv.slice(2);
