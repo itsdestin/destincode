@@ -24,6 +24,23 @@ vi.mock('../src/main/engine/rocm-prereqs', () => ({
   }),
 }));
 
+// §E3's manifest backfill starts a Hugging Face lookup for every COMPLETE model
+// on disk that has no manifest — and this file plants a dozen of them. Its real
+// lookups fetch raw.githubusercontent.com and huggingface.co, which would make
+// this suite depend on the network and take 45s per model when offline. Only
+// the DEFAULT lookups are replaced: the real ManifestBackfill still runs, so
+// the wiring under test here is the shipping one. Its own behaviour is pinned
+// in tests/manifest-backfill.test.ts, which injects lookups instead.
+vi.mock('../src/main/models/manifest-backfill', async (importActual) => ({
+  ...(await importActual<typeof import('../src/main/models/manifest-backfill')>()),
+  defaultBackfillLookups: () => ({
+    curated: async () => [],
+    search: async () => { throw new Error('the engine-manager suite must not reach the network'); },
+    quantOptions: async () => { throw new Error('the engine-manager suite must not reach the network'); },
+    now: () => 0,
+  }),
+}));
+
 let root: string;
 let userData: string;
 let home: NativeHome;

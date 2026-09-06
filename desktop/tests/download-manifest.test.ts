@@ -4,9 +4,9 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   MANIFEST_SUFFIX, manifestPathFor, writeManifest, readManifest, removeManifest,
-  markManifestComplete, isManifestComplete,
+  markManifestComplete, isManifestComplete, writeBackfillManifest,
 } from '../src/main/models/download-manifest';
-import type { QuantOption } from '../src/shared/model-manager-types';
+import type { DownloadManifest, QuantOption } from '../src/shared/model-manager-types';
 
 let dir: string;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-')); });
@@ -183,5 +183,45 @@ describe('a manifest that outlives its download', () => {
     expect(readManifest(dir, FIRST)).toBeNull();
     fs.writeFileSync(manifestPathFor(dir, FIRST), JSON.stringify({ ...base, visionFile: { size: 1 } }));
     expect(readManifest(dir, FIRST)).toBeNull();
+  });
+
+  // §E3's writer. The lookup behind a backfill takes as long as Hugging Face
+  // does, and the user can start a real download of the same filename in that
+  // time — so the backfill must never land on top of one.
+  it('the backfill writer records a repo we could not find, and refuses to overwrite', () => {
+    const record: DownloadManifest = {
+      v: 1, repo: null, quant: 'UD-Q4_K_XL', files: [FIRST],
+      totalSizeBytes: 10, sha256ByFile: { [FIRST]: null }, startedAt: 5, completedAt: 5,
+    };
+    expect(writeBackfillManifest(dir, FIRST, record)).toBe(true);
+    expect(readManifest(dir, FIRST)).toEqual(record);
+
+    // A real download started while the lookup was out: its manifest wins, and
+    // stays UNSTAMPED so its Resume still works.
+    fs.rmSync(manifestPathFor(dir, FIRST));
+    writeManifest(dir, 'unsloth/M-GGUF', quant, 1700000000000);
+    expect(writeBackfillManifest(dir, FIRST, record)).toBe(false);
+    expect(readManifest(dir, FIRST)?.repo).toBe('unsloth/M-GGUF');
+    expect(readManifest(dir, FIRST)?.completedAt).toBeUndefined();
+  });
+
+  // The ONE thing it may replace: an earlier miss of its own. A search can
+  // answer 200 and still be wrong, so §E3 dates a miss and asks again later.
+  it('replaces its own earlier miss, and nothing else', () => {
+    const miss: DownloadManifest = {
+      v: 1, repo: null, quant: 'UD-Q4_K_XL', files: [FIRST],
+      totalSizeBytes: 10, sha256ByFile: { [FIRST]: null }, startedAt: 5, completedAt: 5,
+      repoCheckedAt: 5,
+    };
+    expect(writeBackfillManifest(dir, FIRST, miss)).toBe(true);
+    const found: DownloadManifest = { ...miss, repo: 'unsloth/M-GGUF', repoCheckedAt: undefined };
+    expect(writeBackfillManifest(dir, FIRST, found)).toBe(true);
+    expect(readManifest(dir, FIRST)?.repo).toBe('unsloth/M-GGUF');
+
+    // …but never a manifest it cannot read. installedModels sweeps those; a
+    // blind overwrite here could destroy a download's only record.
+    fs.writeFileSync(manifestPathFor(dir, FIRST), '{not json');
+    expect(writeBackfillManifest(dir, FIRST, miss)).toBe(false);
+    expect(fs.readFileSync(manifestPathFor(dir, FIRST), 'utf8')).toBe('{not json');
   });
 });

@@ -221,6 +221,13 @@ export interface DownloadManifest {
   startedAt: number;                            // epoch ms
   completedAt?: number;                         // epoch ms; absent = still unfinished
   visionFile?: ManifestVisionFile;              // absent = this repo has no projector
+  // When §E3's backfill last looked this model's repo up and could not find it.
+  // Only ever written beside `repo: null`, and only by the backfill. WHY it is
+  // needed: a search can succeed and still be WRONG — Hugging Face returns 200
+  // with an empty list during an incident, and its index takes time to see a
+  // brand-new repo. Without this, one unlucky search on first launch would cost
+  // a model its vision permanently, with no way for the user to ask again.
+  repoCheckedAt?: number;                       // epoch ms
 }
 
 export interface DetectedEndpoint {
