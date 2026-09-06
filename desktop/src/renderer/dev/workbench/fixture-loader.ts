@@ -408,7 +408,23 @@ export function loadFixture(
         : b,
     );
 
-    return { blocks: refreshed, actions };
+    // A `tool_use` with no matching `tool_result`/`permission_request` line
+    // never got a block above (the "wait for the matching tool_result" skip),
+    // so a genuinely still-running tool — no approval needed, just mid-flight —
+    // was silently invisible in the gallery; there was no fixture shape for
+    // "spinner, no result yet" at all. Anything left over in toolCalls at the
+    // end IS that state, so append it here. Appended in call order (a Map
+    // preserves insertion order), not interleaved with its original text
+    // line — good enough for "still running" fixtures, which put it last.
+    const seenIds = new Set(refreshed.filter((b): b is Extract<FixtureBlock, { kind: 'tool' }> => b.kind === 'tool').map((b) => b.tool.toolUseId));
+    const stillRunning: FixtureBlock[] = [];
+    for (const tool of finalSession?.toolCalls.values() ?? []) {
+      if (!seenIds.has(tool.toolUseId) && tool.status === 'running') {
+        stillRunning.push({ kind: 'tool', tool });
+      }
+    }
+
+    return { blocks: [...refreshed, ...stillRunning], actions };
   } catch (err) {
     return {
       blocks: [],
