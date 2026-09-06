@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { PlanView, PlanStepView, PlanChildView, ToolCallState } from '../../../shared/types';
 import { useChatDispatch } from '../../state/chat-context';
-import { Button, Textarea, TextInput } from '../ui';
+import { Button, StatusStrip, Textarea, TextInput } from '../ui';
 import { CheckIcon, FailIcon, StoppedIcon, ChevronIcon } from '../Icons';
 import BrailleSpinner from '../BrailleSpinner';
 import { SpecialistActions } from '../specialists/SpecialistActions';
@@ -178,15 +178,16 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
             <div className="text-2xs text-fg-muted">Ran without asking — under the limit you set in Settings.</div>
           )}
 
-          {/* Destin, round 2 (R-3/R-4/R-5): the line that explains the state and
-              the buttons that answer it share one row — words left, buttons
-              right — so a card never spends a whole line on two buttons. */}
+          {/* Destin, round 3 (S-3/S-4/S-5): a sentence that states where the plan
+              stands AND carries the buttons that answer it is the app's status
+              strip — one tinted container, a status dot, the words, the action
+              on the right. (`Callout` is the same shape WITHOUT an action, and
+              its own doc says a block with a button is this component instead.) */}
           {plan.status === 'paused' && plan.paused && (
-            // Amber: the same tone the held-ask and stale-run lines use — a
-            // stop that needs a person, not an error.
-            <div className="flex items-center justify-between gap-3 flex-wrap" data-testid="plan-paused-reason">
-              <span className="text-xs text-amber-500 min-w-0">Paused — {plan.paused.reason}</span>
-              {!adding ? (
+            <StatusStrip
+              tone="warn"
+              className="!py-2"
+              action={!adding ? (
                 <div className="flex items-center gap-2 shrink-0">
                   <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
                   <Button size="sm" variant="primary" onClick={() => setAdding(true)} disabled={busy !== null}>Add budget</Button>
@@ -200,19 +201,28 @@ export function PlanBlock({ plan, sessionId }: { plan: PlanView; sessionId?: str
                   <Button size="sm" variant="primary" onClick={addBudget} disabled={busy !== null || !(Number(extra) > 0)}>{busy === 'budget' ? 'Continuing…' : 'Continue'}</Button>
                 </div>
               )}
-            </div>
+            >
+              <span data-testid="plan-paused-reason">Paused — {plan.paused.reason}</span>
+            </StatusStrip>
           )}
 
           {plan.status === 'interrupted' && (
-            <div className="flex items-center justify-between gap-3 flex-wrap" data-testid="plan-interrupted-note">
-              <span className="text-xs text-fg-dim min-w-0">
+            // Grey dot, not amber: an interrupted plan is waiting, not warning —
+            // nothing went wrong and nothing is at risk.
+            <StatusStrip
+              tone="idle"
+              className="!py-2"
+              action={(
+                <div className="flex items-center gap-2 shrink-0">
+                  <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
+                  <Button size="sm" variant="primary" onClick={cont} disabled={busy !== null}>{busy === 'continue' ? 'Continuing…' : 'Continue'}</Button>
+                </div>
+              )}
+            >
+              <span data-testid="plan-interrupted-note">
                 The app closed mid-plan. {done === 0 ? 'Nothing had finished yet' : done === 1 ? 'Step 1 is saved' : `Steps 1–${done} are saved`}; Continue runs the rest.
               </span>
-              <div className="flex items-center gap-2 shrink-0">
-                <Button size="sm" variant="danger-outline" onClick={stop} disabled={busy !== null}>{busy === 'stop' ? 'Stopping…' : 'Stop'}</Button>
-                <Button size="sm" variant="primary" onClick={cont} disabled={busy !== null}>{busy === 'continue' ? 'Continuing…' : 'Continue'}</Button>
-              </div>
-            </div>
+            </StatusStrip>
           )}
 
           {revised && (
