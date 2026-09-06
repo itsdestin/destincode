@@ -951,7 +951,16 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
   // leave a red "could not read this model's settings" line sitting under it
   // for as long as the dialog is open. Sharing one slot also let a successful
   // poll wipe a save failure the user still needed to see.
-  const [saveError, setSaveError] = useState<string | null>(null);
+  // A LIST, not a slot. Two saves can be in flight and both can be refused: a
+  // bad extra flag is checked by RUNNING the engine binary and fails seconds
+  // later, while a bad context length is refused at once. With one slot the
+  // late refusal overwrites the early one, so the user is told about the flag
+  // and never learns their context length was rejected — and which of the two
+  // survives depends purely on which finished last. Ordering is the wrong tool
+  // here: dropping the older failure would lose a refusal that really happened.
+  // Both are shown; identical sentences fold together, because the same message
+  // twice is noise rather than two facts.
+  const [saveErrors, setSaveErrors] = useState<string[]>([]);
   const [readError, setReadError] = useState<string | null>(null);
   const [ctxDraft, setCtxDraft] = useState('');
   const [flagsDraft, setFlagsDraft] = useState('');
@@ -1026,7 +1035,9 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
   }, [modelId]);
 
   const save = async (patch: Partial<ModelSettings>) => {
-    setSaveError(null);
+    // A fresh attempt clears what the last one said; failures accumulate only
+    // within one round of attempts.
+    setSaveErrors([]);
     savesInFlight.current += 1;
     const myTick = ++saveTick.current;
     try {
@@ -1041,7 +1052,10 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
     }
     // A failure is shown whichever save it came from: the user pressed that,
     // and it did not work.
-    catch (e) { setSaveError(e instanceof Error ? e.message : 'Could not save.'); }
+    catch (e) {
+      const message = e instanceof Error ? e.message : 'Could not save.';
+      setSaveErrors((prev) => (prev.includes(message) ? prev : [...prev, message]));
+    }
     // `finally`, so a save that THROWS still lets the poll run again. Left
     // suppressed, one failed save would freeze every live value in the dialog
     // for as long as it stayed open.
@@ -1180,7 +1194,7 @@ function ModelSettingsDialog({ open, modelId, name, onClose }: { open: boolean; 
           Applies after the current reply.
         </p>
       )}
-      {saveError && <FieldError as="p">{saveError}</FieldError>}
+      {saveErrors.map((message) => <FieldError as="p" key={message}>{message}</FieldError>)}
     </div>
       )}
     </Dialog>

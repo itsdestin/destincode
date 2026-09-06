@@ -127,7 +127,7 @@ const SETTINGS: StoredModelSettings = {
  *  order two answers come back in can be driven deliberately. */
 function deferredModels(firstRead: StoredModelSettings) {
   const reads: Array<{ resolve: (v: StoredModelSettings) => void; reject: (e: unknown) => void }> = [];
-  const saves: Array<(v: StoredModelSettings) => void> = [];
+  const saves: Array<{ resolve: (v: StoredModelSettings) => void; reject: (e: unknown) => void }> = [];
   let readCount = 0;
   const models = {
     settings: vi.fn(() => {
@@ -137,7 +137,7 @@ function deferredModels(firstRead: StoredModelSettings) {
       if (readCount === 1) return Promise.resolve(firstRead);
       return new Promise<StoredModelSettings>((resolve, reject) => { reads.push({ resolve, reject }); });
     }),
-    setSettings: vi.fn(() => new Promise<StoredModelSettings>((resolve) => { saves.push(resolve); })),
+    setSettings: vi.fn(() => new Promise<StoredModelSettings>((resolve, reject) => { saves.push({ resolve, reject }); })),
     delete: vi.fn().mockResolvedValue(true),
     downloadCancel: vi.fn().mockResolvedValue(true),
     onDownloadProgress: vi.fn().mockReturnValue(() => {}),
@@ -267,7 +267,7 @@ describe('a model’s settings dialog', () => {
     await waitFor(() => expect(reads.length).toBeGreaterThan(0), POLLED);
     // …when the user turns the switch on, and the save comes back first.
     await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
-    await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
+    await act(async () => { saves[0].resolve({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
     expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
     // Now the stale answer lands. It must be thrown away, not drawn.
     await act(async () => { reads[0].resolve({ ...SETTINGS, keepLoaded: false }); await Promise.resolve(); });
@@ -353,7 +353,7 @@ describe('a model’s settings dialog', () => {
     await new Promise((r) => setTimeout(r, APOLL));     // a poll tick passes
     expect(models.settings.mock.calls.length).toBe(before);
     // …and once the save lands, polling resumes.
-    await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
+    await act(async () => { saves[0].resolve({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
     await waitFor(() => expect(models.settings.mock.calls.length).toBeGreaterThan(before), POLLED);
     expect(reads.length).toBeGreaterThan(0);
   });
@@ -374,11 +374,56 @@ describe('a model’s settings dialog', () => {
     // Then the fast one, which answers straight away.
     await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
     expect(saves).toHaveLength(2);
-    await act(async () => { saves[1]({ ...SETTINGS, extraFlags: '', keepLoaded: true }); await Promise.resolve(); });
+    await act(async () => { saves[1].resolve({ ...SETTINGS, extraFlags: '', keepLoaded: true }); await Promise.resolve(); });
     expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
     // …and now the slow one lands, carrying the world as it was before the click.
-    await act(async () => { saves[0]({ ...SETTINGS, extraFlags: '--temp 0.6', keepLoaded: false }); await Promise.resolve(); });
+    await act(async () => { saves[0].resolve({ ...SETTINGS, extraFlags: '--temp 0.6', keepLoaded: false }); await Promise.resolve(); });
     expect(screen.getByLabelText('Keep loaded').getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('§C2: two saves REFUSED at once — neither message is swallowed by the other', async () => {
+    // Same reachable shape as the ordering bug, on the failure path: a bad
+    // extra flag is checked by RUNNING the engine binary and is refused seconds
+    // later, while a bad context length is refused at once. One slot means the
+    // late refusal overwrites the early one and the user never learns their
+    // context length was rejected — and which survives is pure timing.
+    const { saves } = deferredModels({ ...SETTINGS, extraFlags: '' });
+    await openDialog();
+    await act(async () => { fireEvent.click(screen.getByText('Advanced')); });
+    const flags = screen.getByLabelText('Extra engine flags');
+    await act(async () => { fireEvent.change(flags, { target: { value: '--tempp 0.6' } }); fireEvent.blur(flags); });
+    const box = screen.getByLabelText('Context length for this model');
+    await act(async () => { fireEvent.change(box, { target: { value: '999999' } }); fireEvent.blur(box); });
+    expect(saves).toHaveLength(2);
+    // The quick refusal first, then the slow one — the order that loses a
+    // message when there is only one slot.
+    await act(async () => { saves[1].reject(new Error('Context length must be at most 131072 tokens.')); await Promise.resolve(); });
+    await act(async () => { saves[0].reject(new Error("error: option '--tempp' not recognized")); await Promise.resolve(); });
+    expect(screen.getByText('Context length must be at most 131072 tokens.')).toBeTruthy();
+    expect(screen.getByText("error: option '--tempp' not recognized")).toBeTruthy();
+  });
+
+  it('§C2: the same refusal twice is one message, not two', async () => {
+    // Additive must not mean repetitive: the same sentence twice is noise.
+    const { saves } = deferredModels({ ...SETTINGS, extraFlags: '' });
+    await openDialog();
+    await act(async () => { fireEvent.click(screen.getByText('Advanced')); });
+    const flags = screen.getByLabelText('Extra engine flags');
+    await act(async () => { fireEvent.change(flags, { target: { value: '--a' } }); fireEvent.blur(flags); });
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+    await act(async () => { saves[0].reject(new Error('Disk is full.')); await Promise.resolve(); });
+    await act(async () => { saves[1].reject(new Error('Disk is full.')); await Promise.resolve(); });
+    expect(screen.getAllByText('Disk is full.')).toHaveLength(1);
+  });
+
+  it('§C2: a fresh attempt clears what the last one said', async () => {
+    const { saves } = deferredModels(SETTINGS);
+    await openDialog();
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+    await act(async () => { saves[0].reject(new Error('Disk is full.')); await Promise.resolve(); });
+    expect(screen.getByText('Disk is full.')).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByLabelText('Keep loaded')); });
+    expect(screen.queryByText('Disk is full.')).toBeNull();
   });
 
   it('§C2: two overlapping saves — the first one finishing does not unblock the poll', async () => {
@@ -392,7 +437,7 @@ describe('a model’s settings dialog', () => {
     const box = screen.getByLabelText('Context length for this model');
     await act(async () => { fireEvent.change(box, { target: { value: '8192' } }); fireEvent.blur(box); });
     expect(saves).toHaveLength(2);
-    await act(async () => { saves[0]({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
+    await act(async () => { saves[0].resolve({ ...SETTINGS, keepLoaded: true }); await Promise.resolve(); });
     await new Promise((r) => setTimeout(r, APOLL));
     expect(models.settings.mock.calls.length).toBe(before);
   });
