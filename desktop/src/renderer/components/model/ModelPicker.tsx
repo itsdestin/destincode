@@ -221,25 +221,33 @@ export default function ModelPicker({
   const panelRef = useRef<HTMLDivElement>(null);
   const pillRef = useRef<HTMLDivElement>(null);
   const filterPopRef = useRef<HTMLDivElement>(null);
-  const [panelPos, setPanelPos] = useState<{ top: number; left: number; width: number; maxHeight: number } | null>(null);
+  const [panelPos, setPanelPos] = useState<{ top?: number; bottom?: number; left: number; width: number; maxHeight: number } | null>(null);
   const [filterPos, setFilterPos] = useState<{ top: number; left: number } | null>(null);
 
   const FILTER_W = 264;
 
-  // Anchor the panel DIRECTLY BELOW the trigger, horizontally centred on it,
-  // and clamp into the viewport. Not viewport-centred — a picker that opens in
-  // the middle of the screen reads as a modal and loses its tie to the field.
+  // Anchor the panel beside its trigger (below where there is room, otherwise
+  // above), horizontally centred on it, and clamp into the viewport. It must
+  // stay tied to its field rather than appearing as a viewport-centred modal.
   const measure = useCallback(() => {
     const el = triggerRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
     const width = Math.max(r.width, 320);
     const centred = r.left + r.width / 2 - width / 2;
+    const gap = 4;
+    const edge = 8;
+    const spaceBelow = window.innerHeight - r.bottom - edge;
+    const spaceAbove = r.top - edge;
+    const opensUpward = spaceBelow < 180 && spaceAbove > spaceBelow;
     setPanelPos({
-      top: r.bottom + 4,
-      left: Math.max(8, Math.min(centred, window.innerWidth - width - 8)),
+      // WHY: A New Session menu can put this field near the bottom of a short
+      // window. Choose the side with usable room instead of forcing a panel
+      // below the field where the viewport clips its search and model rows.
+      ...(opensUpward ? { bottom: window.innerHeight - r.top + gap } : { top: r.bottom + gap }),
+      left: Math.max(edge, Math.min(centred, window.innerWidth - width - edge)),
       width,
-      maxHeight: Math.max(180, window.innerHeight - r.bottom - 16),
+      maxHeight: Math.max(180, (opensUpward ? spaceAbove : spaceBelow) - gap),
     });
     // The filter popover is PORTALED too. `.layer-surface` sets
     // `overflow: hidden` (unlayered, globals.css:886) to clip scroll-fades to
@@ -564,7 +572,7 @@ export default function ModelPicker({
             data-model-picker-portal=""
             className="layer-surface fixed flex flex-col overflow-hidden"
             style={{
-              top: panelPos.top, left: panelPos.left, width: panelPos.width,
+              top: panelPos.top, bottom: panelPos.bottom, left: panelPos.left, width: panelPos.width,
               maxHeight: panelPos.maxHeight, zIndex: POPOVER_Z,
               animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both',
             }}
@@ -661,6 +669,10 @@ export default function ModelPicker({
           {filterOpen && filterPos && (
             <div
               ref={filterPopRef}
+              // WHY: This second portal is outside the panel marker. Hosts such
+              // as SessionStrip use the shared marker to recognise every part of
+              // this picker as an inside click before their own menu can close.
+              data-model-picker-portal=""
               // Portaled OUT of the panel: `.layer-surface` sets
               // `overflow: hidden` unlayered (globals.css:886) so it can clip
               // scroll-fades to its rounded corners, which also chopped this
