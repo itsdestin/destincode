@@ -3,6 +3,8 @@ package com.youcoded.app.runtime
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -122,6 +124,34 @@ interface SpeechEngine {
 }
 
 /**
+ * "Call me back in N milliseconds, unless I say otherwise."
+ *
+ * WHY this is a seam rather than a plain `Handler`: the thing it guards is a
+ * recogniser that never answers, and a test that had to wait twenty real seconds
+ * to prove that would never be written. [MainThreadDeadline] is the real one.
+ */
+interface Deadline {
+    fun arm(delayMs: Long, action: () -> Unit)
+    fun clear()
+}
+
+/** The real deadline: a message posted to the main thread, cancellable. */
+class MainThreadDeadline : Deadline {
+    private val handler = Handler(Looper.getMainLooper())
+    private var pending: Runnable? = null
+    override fun arm(delayMs: Long, action: () -> Unit) {
+        clear()
+        val r = Runnable { pending = null; action() }
+        pending = r
+        handler.postDelayed(r, delayMs)
+    }
+    override fun clear() {
+        pending?.let { handler.removeCallbacks(it) }
+        pending = null
+    }
+}
+
+/**
  * Turns Android's speech callbacks into the four events the chat box understands.
  *
  * **Main thread only.** `SpeechRecognizer` throws if it is touched from any other
@@ -135,6 +165,7 @@ interface SpeechEngine {
 class VoiceRecognizer(
     private val emit: (JSONObject) -> Unit,
     private val engineFactory: (VoiceRecognizer) -> SpeechEngine,
+    private val deadline: Deadline,
 ) {
     private var engine: SpeechEngine? = null
 
@@ -168,6 +199,18 @@ class VoiceRecognizer(
     fun stop() {
         if (!listening) return
         engine?.stopListening()
+        // Fix (whole-branch review F2): a recogniser that never calls back used to
+        // park the chat box on "Finishing…" with no way out but typing, because
+        // the one `final` that ends the turn is only ever sent from a callback and
+        // the composer's own give-up clock is deliberately off on a phone (the
+        // phone, not the app, owns the microphone). The desktop defends this same
+        // case with a stop deadline of its own; this is the phone's copy of it.
+        deadline.arm(STOP_DEADLINE_MS) {
+            if (!finalSent) {
+                deliverFinal()
+                emit(JSONObject().put("type", "error").put("message", STOP_TIMEOUT_SENTENCE))
+            }
+        }
     }
 
     /**
@@ -180,6 +223,7 @@ class VoiceRecognizer(
      */
     fun cancel() {
         if (!listening) return
+        deadline.clear()
         listening = false
         finalSent = true
         heard = ""
@@ -188,6 +232,7 @@ class VoiceRecognizer(
 
     /** Let go of the phone's recogniser (app shutting down). Main thread. */
     fun release() {
+        deadline.clear()
         listening = false
         engine?.destroy()
         engine = null
@@ -252,15 +297,27 @@ class VoiceRecognizer(
 
     private fun deliverFinal() {
         if (finalSent) return
+        deadline.clear()
         finalSent = true
         listening = false
         emit(JSONObject().put("type", "final").put("text", heard.trim()))
     }
 
     companion object {
+        /** How long the phone gets to deliver the last words after we ask it to stop.
+         *  Matches the desktop's own STOP_DEADLINE_MS so the two platforms give up
+         *  at the same moment. Generous on purpose: a slow phone finishing normally
+         *  must never be cut off. */
+        const val STOP_DEADLINE_MS = 20_000L
+
+        /** Said only when the phone's recogniser genuinely stopped answering — never
+         *  guessed at a cause we did not observe. */
+        const val STOP_TIMEOUT_SENTENCE =
+            "Your phone's speech recognition stopped responding. Anything it had already heard is in the box."
+
         /** The real thing: a [VoiceRecognizer] driving Android's own speech service. */
         fun create(context: Context, emit: (JSONObject) -> Unit): VoiceRecognizer =
-            VoiceRecognizer(emit) { recognizer -> AndroidSpeechEngine(context, recognizer) }
+            VoiceRecognizer(emit, { recognizer -> AndroidSpeechEngine(context, recognizer) }, MainThreadDeadline())
     }
 }
 

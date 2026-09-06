@@ -872,8 +872,17 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
             }}
             onChange={(e) => {
               const val = e.target.value;
-              // Typing while the mic is open ends dictation: what you type
-              // wins, the unsettled grey words are dropped.
+              // Typing while the mic is open ends dictation, and EVERYTHING in the
+              // box stays — including the grey, still-being-reconsidered words.
+              //
+              // Fix (whole-branch review F4): this comment used to say the grey
+              // words were dropped, which is the opposite of what happens. The
+              // textarea's value is the solid text plus the grey tail, so a
+              // keystroke arrives as all of it plus the new character, and the
+              // line below promotes the lot to solid. That is the RIGHT behaviour
+              // — words the user watched appear must not vanish when they reach
+              // for the keyboard — but the comment claiming otherwise would have
+              // sent the next session "fixing" it in the wrong direction.
               if (voice.phase !== 'idle') { void voice.cancel(); setVoiceTail(''); }
               setText(val);
               // Detect "/" typed as first character — open drawer in search mode

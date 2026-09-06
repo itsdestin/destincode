@@ -27,11 +27,23 @@ private class FakeSpeechEngine : SpeechEngine {
     override fun destroy() { destroys++ }
 }
 
+/** A deadline whose clock only moves when a test moves it. */
+private class FakeDeadline : Deadline {
+    private var action: (() -> Unit)? = null
+    var armedFor = 0L
+    override fun arm(delayMs: Long, action: () -> Unit) { armedFor = delayMs; this.action = action }
+    override fun clear() { action = null }
+    val armed: Boolean get() = action != null
+    /** Pretend the wait elapsed. */
+    fun fire() { val a = action; action = null; a?.invoke() }
+}
+
 /** A recognizer wired to a fake engine, with every event it emits captured. */
 private class Harness {
     val events = mutableListOf<JSONObject>()
     val engine = FakeSpeechEngine()
-    val recognizer = VoiceRecognizer({ events.add(it) }, { engine })
+    val deadline = FakeDeadline()
+    val recognizer = VoiceRecognizer({ events.add(it) }, { engine }, deadline)
 
     fun types(): List<String> = events.map { it.getString("type") }
     fun last(): JSONObject = events.last()
@@ -293,5 +305,53 @@ class VoiceRecognizerTest {
         assertEquals(2, h.engine.starts)
         // Empty, not "first turn." — the previous turn's words must not leak in.
         assertEquals("", h.only().getString("text"))
+    }
+
+    // ── The phone stops answering (review finding F2) ──────────────────────
+
+    @Test
+    fun `a recogniser that never answers still ends the turn`() {
+        // WHY this matters to a person: the chat box shows "Finishing…" and
+        // disables the mic button until one final event arrives, and on a phone
+        // that event can only ever come from Android calling us back. If Android
+        // goes quiet the box used to sit there forever, with typing the only way
+        // out. Now the wait has an end, and whatever was already heard is kept.
+        val h = Harness()
+        h.recognizer.start()
+        h.recognizer.onPartialText("book the table")
+        h.events.clear()
+        h.recognizer.stop()
+        assertTrue("stop must start the clock", h.deadline.armed)
+        assertEquals(VoiceRecognizer.STOP_DEADLINE_MS, h.deadline.armedFor)
+
+        h.deadline.fire()
+
+        assertEquals(listOf("final", "error"), h.types())
+        assertEquals("book the table", h.events[0].getString("text"))
+        assertEquals(VoiceRecognizer.STOP_TIMEOUT_SENTENCE, h.events[1].getString("message"))
+    }
+
+    @Test
+    fun `a phone that answers in time is never cut off`() {
+        val h = Harness()
+        h.recognizer.start()
+        h.recognizer.stop()
+        h.recognizer.onFinalText("on my way")
+        assertTrue("the answer must stop the clock", !h.deadline.armed)
+
+        // Even if the clock somehow fired late, there is exactly one final.
+        h.deadline.fire()
+        assertEquals(listOf("final"), h.types())
+    }
+
+    @Test
+    fun `cancelling stops the clock so a cancelled turn stays silent`() {
+        val h = Harness()
+        h.recognizer.start()
+        h.recognizer.stop()
+        h.recognizer.cancel()
+        assertTrue(!h.deadline.armed)
+        h.deadline.fire()
+        assertEquals(emptyList<String>(), h.types())
     }
 }

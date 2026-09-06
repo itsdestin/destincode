@@ -230,6 +230,71 @@ describe('sound that arrives before the engine has finished loading', () => {
   });
 });
 
+describe('changing your mind while the engine is still loading', () => {
+  // Guards whole-branch review F7. Loading the speech model takes about a minute
+  // the first time. Tapping the mic and immediately tapping it off used to throw
+  // that whole minute away — and, worse, left the NEXT tap waiting on a load that
+  // nothing would ever finish, so it sat there until the sixty-second give-up
+  // clock. From the user's side: dictation simply did not start the second time.
+  it('keeps the loaded engine and lets the next tap use it', async () => {
+    const sent: VoiceWorkerOutbound[] = [];
+    const decodeLengths: number[] = [];
+    let release: (r: RecognizerLike) => void = () => {};
+    let creates = 0;
+    const core = new VoiceWorkerCore({
+      create: () => { creates += 1; return new Promise<RecognizerLike>((r) => { release = r; }); },
+      send: (m) => { sent.push(m); },
+      schedule: () => {},
+    });
+
+    // Tap on, tap straight back off — before the engine is anywhere near ready.
+    core.start();
+    core.stop();
+    await flush();
+
+    // The engine finishes loading with nobody waiting for it.
+    release({
+      async decode(samples) { decodeLengths.push(samples.length / VOICE_SAMPLE_RATE); return 'heard'; },
+    });
+    await flush();
+
+    // The host is told the engine is up even though nobody is waiting — that
+    // message is what stops its sixty-second load clock.
+    expect(sent.filter((m) => m.type === 'ready').length).toBe(1);
+
+    // Tap on again. This must work, and must not pay for another load.
+    core.start();
+    core.audio(sound(1, LOUD));
+    await flush();
+    await flush();
+
+    expect(creates).toBe(1);              // the minute was not spent twice
+    expect(decodeLengths).toEqual([1]);   // and the second turn actually hears something
+  });
+
+  it('reports a load that failed to whoever is waiting now', async () => {
+    const sent: VoiceWorkerOutbound[] = [];
+    let reject: (e: Error) => void = () => {};
+    const core = new VoiceWorkerCore({
+      create: () => new Promise<RecognizerLike>((_r, j) => { reject = j; }),
+      send: (m) => { sent.push(m); },
+      schedule: () => {},
+    });
+
+    core.start();
+    core.stop();
+    await flush();
+    core.start();                       // second tap, still waiting on the same load
+    reject(new Error('sherpa-onnx.node: file too short'));
+    await flush();
+
+    const err = sent.find((m) => m.type === 'error');
+    expect(err).toBeDefined();
+    // The real reason, not a guess — and it reaches the person who is waiting.
+    expect(JSON.stringify(err)).toContain('file too short');
+  });
+});
+
 describe('the loop itself', () => {
   it('never runs two passes at once, however fast sound arrives', async () => {
     const h = makeHarness(() => 'words');

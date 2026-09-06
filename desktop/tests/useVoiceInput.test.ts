@@ -210,6 +210,62 @@ describe('useVoiceInput — who opens the microphone', () => {
   });
 });
 
+describe('letting go before the microphone is even open', () => {
+  // Guard for review finding F1. The hold-to-talk key-up used to land on a
+  // `stop()` that handed straight back — the phase still said "idle", because
+  // `start()` only says "listening" once the host call and the microphone have
+  // both come back. On macOS the host call sits on the system permission
+  // dialog, so that window is as long as the user takes to answer it. The mic
+  // then opened with nobody holding the key, and in a quiet room nothing shut
+  // it: the two-second silence stop only arms after speech is heard.
+  //
+  // Every earlier hold test used a `start` that resolved instantly, so the
+  // window they were meant to cover never existed. This one holds the door open.
+  it('never opens the microphone when the key comes up mid-start', async () => {
+    const { bridge } = installBridge({ desktop: true });
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    bridge.start = vi.fn(async () => { await held; });
+
+    const h = mount();
+    await settle();
+
+    // Key down: the start goes in flight and parks on the host call.
+    let started!: Promise<void>;
+    await act(async () => { started = h.result.current.start(); await Promise.resolve(); });
+    expect(h.result.current.phase).toBe('idle');
+
+    // Key up, while the host has still not answered.
+    await act(async () => { await h.result.current.stop(); });
+
+    // Now the host answers. Nothing may open.
+    await act(async () => { release(); await started; });
+
+    expect(cap.open).not.toHaveBeenCalled();
+    expect(bridge.cancel).toHaveBeenCalled();
+    expect(h.result.current.phase).toBe('idle');
+  });
+
+  it('closes the microphone when the key comes up while it is opening', async () => {
+    const { bridge } = installBridge({ desktop: true });
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    // This time the host answers at once and the MICROPHONE is what is slow.
+    cap.open.mockImplementation(async () => { await held; return { close: () => { cap.closes += 1; } }; });
+
+    const h = mount();
+    await settle();
+    let started!: Promise<void>;
+    await act(async () => { started = h.result.current.start(); await Promise.resolve(); });
+    await act(async () => { await h.result.current.stop(); });
+    await act(async () => { release(); await started; });
+
+    expect(cap.closes).toBe(1);
+    expect(bridge.cancel).toHaveBeenCalled();
+    expect(h.result.current.phase).toBe('idle');
+  });
+});
+
 describe('useVoiceInput — the give-up clock', () => {
   it('is restarted by every "still working" ping, and only fires when they stop', async () => {
     vi.useFakeTimers();

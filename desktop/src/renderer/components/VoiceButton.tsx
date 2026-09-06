@@ -114,7 +114,13 @@ export function VoiceButton({ phase, readiness, level, seconds, error, disabled,
   // no keyframes at all, so it only repaints when a level event arrives. 2 to 9 px:
   // round 2 showed 2 to 12 and Destin asked for the biggest a tad smaller.
   const levelRing = listening && style.motion === 'level'
-    ? { boxShadow: `0 0 0 ${2 + Math.round(level * 7)}px color-mix(in srgb, var(--accent) 35%, transparent)`, transition: 'box-shadow 90ms linear' }
+    // steps(3), not linear (whole-branch review F3): this transition retriggers on
+    // every level event — ten a second, for as long as the mic is open — so a
+    // linear one presents a frame at the display's full refresh rate throughout.
+    // That is the exact shape the 2026-07-30 idle-CPU investigation measured at
+    // ~30% of a core at 180 Hz, and its conclusion was that the only lever that
+    // works is presenting fewer frames. Pinned by tests/animation-frame-budget.test.ts.
+    ? { boxShadow: `0 0 0 ${2 + Math.round(level * 7)}px color-mix(in srgb, var(--accent) 35%, transparent)`, transition: 'box-shadow 90ms steps(3)' }
     : undefined;
 
   const measure = useCallback(() => {

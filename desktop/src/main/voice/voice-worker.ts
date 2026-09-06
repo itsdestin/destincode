@@ -411,20 +411,37 @@ export class VoiceWorkerCore {
       return;
     }
     this.loading = true;
-    const generation = this.generation;
     this.deps.create().then(
       (recognizer) => {
         this.loading = false;
-        if (generation !== this.generation) return;
+        // Fix (whole-branch review F7, and worse than it was filed as): this used
+        // to check the generation and hand back without ever assigning, which
+        // threw away a minute of loading whenever the user tapped the mic and
+        // changed their mind. The real damage was the tap AFTER that one: it saw
+        // `loading` still true, returned early to wait for this callback — and
+        // this callback, holding the older generation, returned without building
+        // anything. Nothing was left to finish the load, so the second dictation
+        // sat there until the sixty-second load deadline gave up on it.
+        //
+        // The engine belongs to no particular turn, so it is kept unconditionally.
+        // What the generation decided is only whether anyone is still waiting.
         this.recognizer = recognizer;
+        // `ready` goes out whatever happened while we waited: it is what stops
+        // the host's sixty-second load clock, which is armed once per worker and
+        // not once per turn. Staying quiet here would get a perfectly healthy
+        // engine killed a minute later for "not finishing loading".
         this.deps.send({ type: 'ready' });
+        if (!this.listening) return; // stopped or cancelled meanwhile — engine kept, nothing to decode
         // Whatever the user said during that first second is already in the
         // buffer and goes into the very first pass. Nothing is dropped.
         this.maybeRunPass();
       },
       (err: unknown) => {
         this.loading = false;
-        if (generation !== this.generation) return;
+        // Reported unconditionally, for the same reason: the host throws a
+        // failed engine away when it hears this, and swallows the message itself
+        // if the turn it belonged to is already over. Staying silent left the
+        // next tap hanging on a load that had already failed.
         this.deps.send({
           type: 'error',
           stage: 'load',

@@ -1477,9 +1477,26 @@ describe('voice:* channel parity', () => {
     }
   });
 
-  it('voice-handlers.ts handles every voice channel', () => {
-    for (const t of [...SHARED, ...DESKTOP_ONLY, PUSH]) {
-      expect(handlers, `${t} missing from voice-handlers.ts`).toContain(`'${t}'`);
+  it('voice-handlers.ts really registers an arm for every voice channel', () => {
+    // Fix (whole-branch review F5): this used to be `toContain("'voice:start'")`
+    // over the raw source, which the file's own CHANNELS list already satisfied
+    // — deleting every ipcMain.handle call left it green. Match the registration
+    // itself, so the test fails when the arm goes away rather than when a string
+    // does.
+    for (const t of SHARED) {
+      expect(handlers, `${t} has no ipcMain.handle in voice-handlers.ts`)
+        .toMatch(new RegExp(`ipcMain\\.handle\\('${t}'`));
+    }
+    // The permission question is a handle; the audio stream is a fire-and-forget
+    // `on` ten times a second, so it is registered the other way on purpose.
+    expect(handlers).toMatch(/ipcMain\.handle\('voice:mic-access'/);
+    expect(handlers).toMatch(/ipcMain\.on\(AUDIO_CHANNEL/);
+    // The push has no handler at all — it is sent TO the window.
+    expect(handlers).toMatch(/const EVENT_CHANNEL = 'voice:event'/);
+    expect(handlers).toMatch(/send\(EVENT_CHANNEL/);
+    // And every channel is on the list the double-registration guard clears.
+    for (const t of [...SHARED, 'voice:mic-access']) {
+      expect(handlers, `${t} missing from the CHANNELS clear-list`).toContain(`  '${t}',`);
     }
   });
 

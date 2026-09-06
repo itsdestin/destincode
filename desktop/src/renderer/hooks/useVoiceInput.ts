@@ -117,6 +117,15 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
   // A start is in flight: the microphone is opening but the strip is not up yet.
   // Blocks a second tap from opening a second microphone during that gap.
   const startingRef = useRef(false);
+  // Fix (whole-branch review F1): let go of the walkie-talkie DURING that gap
+  // and the mic used to open with nobody holding the key. `stop`/`cancel` both
+  // hand back immediately unless the phase says the mic is up, and the phase
+  // only says so at the very END of `start` — after the host call that on macOS
+  // waits on the system's permission dialog. So a key-up landed on nothing, and
+  // `start` then opened the microphone anyway. In a quiet room nothing closed
+  // it: the two-second silence stop only arms once speech has been heard. This
+  // flag is the message a release leaves behind for a start still in flight.
+  const abortStartRef = useRef(false);
   const captureRef = useRef<CaptureHandle | null>(null);
   const watchdogRef = useRef<number | null>(null);
   // Set when the watchdog gave up. It is what lets a `final` that arrives LATE
@@ -240,6 +249,7 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
   const start = useCallback(async () => {
     if (!bridge || phaseRef.current !== 'idle' || startingRef.current) return;
     startingRef.current = true;
+    abortStartRef.current = false;
     setError(null);
     watchdogFiredRef.current = false;
     try {
@@ -265,6 +275,10 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
         return;
       }
 
+      // Released already? Then never open the microphone at all. On a phone the
+      // host call above IS the microphone, so this undoes that too.
+      if (abortStartRef.current) { try { await bridge.cancel(); } catch { /* the host is already idle */ } return; }
+
       // On a PHONE this is where it ends: the bridge call IS the microphone.
       // Nothing here opens one, and nothing here judges whether the phone has one.
       if (canCapture) {
@@ -289,6 +303,14 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
         }
       }
 
+      // Released while the microphone itself was opening: close the one we just
+      // opened rather than announcing it.
+      if (abortStartRef.current) {
+        closeCapture();
+        try { await bridge.cancel(); } catch { /* the host is already idle */ }
+        return;
+      }
+
       // Only now: the strip says "Listening" when something is actually listening.
       setPhaseBoth('listening');
       // NOT armed here. This clock measures "the engine went quiet AFTER answering",
@@ -304,6 +326,10 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
   }, [armWatchdog, bridge, canCapture, handleEvent, setPhaseBoth]);
 
   const stop = useCallback(async () => {
+    // A release that lands mid-start leaves its mark instead of falling through
+    // the guard below (review F1). There is nothing to transcribe — the mic was
+    // never open — so the start unwinds as a cancel.
+    if (startingRef.current) { abortStartRef.current = true; return; }
     if (!bridge || phaseRef.current !== 'listening') return;
     // The mic goes dead the instant he asks, not when the engine finishes.
     closeCapture();
@@ -316,6 +342,7 @@ export function useVoiceInput({ onPartial, onFinal }: Options) {
   }, [armWatchdog, bridge, clearWatchdog, closeCapture, setPhaseBoth]);
 
   const cancel = useCallback(async () => {
+    if (startingRef.current) { abortStartRef.current = true; return; }
     if (!bridge || phaseRef.current === 'idle') return;
     clearWatchdog();
     closeCapture();

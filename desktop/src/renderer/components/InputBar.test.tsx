@@ -544,17 +544,27 @@ describe('InputBar — voice prompting (T9)', () => {
     expect(textarea.value).toBe('Reply to Sam: tell him yes.');
   });
 
-  it('typing while the mic is open cancels dictation and keeps what was typed', async () => {
+  it('typing while the mic is open ends dictation and keeps every word already in the box', async () => {
+    // Fix (whole-branch review F4): this fired a whole-value REPLACEMENT — a
+    // change event no keystroke can produce — so it passed whether the grey
+    // words were kept or dropped, and it certified a comment that said the
+    // opposite of the code. A real keystroke appends to what is already
+    // rendered, which is the solid text AND the grey tail.
     const textarea = await renderComposer();
     await startListening();
-    emit({ type: 'partial', committed: '', tail: 'some words the engine heard' });
-    expect(textarea.value).toBe('some words the engine heard');
+    emit({ type: 'partial', committed: 'book the room.', tail: 'for Tuesday' });
+    expect(textarea.value).toBe('book the room. for Tuesday');
 
-    fireEvent.change(textarea, { target: { value: 'typed instead' } });
+    // One character typed at the end of everything on screen.
+    fireEvent.change(textarea, { target: { value: 'book the room. for Tuesday!' } });
 
     expect(voiceBridge.cancel).toHaveBeenCalledTimes(1);
-    // The grey tail is gone with it — nothing the user did not type survives.
-    expect(textarea.value).toBe('typed instead');
+    // Nothing the user watched appear is taken away when they reach for the keyboard.
+    expect(textarea.value).toBe('book the room. for Tuesday!');
+
+    // And the words are solid now — a late partial cannot rewrite them.
+    emit({ type: 'partial', committed: 'book the rum.', tail: '' });
+    expect(textarea.value).toBe('book the room. for Tuesday!');
   });
 
   it('Enter stops the mic and sends NOTHING; a second Enter sends', async () => {
