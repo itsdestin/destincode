@@ -373,8 +373,11 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                 and no binding; a native one has a binding and no PTY), so the
                 other runtime's models are filtered out rather than offered and
                 then refused. */}
+            {/* No section label here — the dialog's own title ("Model" or
+                "Model & Effort") already says it, and repeating it as a
+                sub-header directly under a modal titled "Model" read as
+                duplicated text once the picker opens straight into view. */}
             <section>
-              <h3 className="block text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Model</h3>
               <ModelPicker
                 value={isNative ? nativeValue : (currentModel ? { runtime: 'claude', alias: currentModel } : null)}
                 onSelect={(c) => { void applyChoice(c); }}
