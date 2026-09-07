@@ -16,6 +16,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, cleanup, waitFor } from '@testing-library/react';
 import '@testing-library/jest-dom/vitest';
 import AssistantSettingsRow from '../src/renderer/components/assistant-settings/AssistantSettings';
+import { startSummary } from '../src/renderer/components/assistant-settings/pages';
 
 const DEFAULTS = { skipPermissions: false, model: 'sonnet', projectFolder: '' };
 
@@ -80,5 +81,35 @@ describe('Assistant settings — the attention dot', () => {
     });
     row();
     expect(await screen.findByRole('img', { name: 'A provider needs attention' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * The Settings row's one-line summary.
+ *
+ * Design review 2, R2-3: `startSummary` accepted a label map that its only
+ * caller never passed, so EVERY non-Claude default rendered as a raw model id
+ * — "gpt-5.6-2026-04-01" sitting under "Assistant settings" like a filename.
+ * The picker knows the words it displayed; they are stored at pick time.
+ */
+describe('Assistant settings — the row summary', () => {
+  it('names a Claude default from its local labels', () => {
+    expect(startSummary({ skipPermissions: false, model: 'opus[1m]', projectFolder: '' }))
+      .toBe('Claude Code · Opus');
+  });
+
+  it('names a native default with the words the picker showed', () => {
+    expect(startSummary({
+      skipPermissions: false, model: 'sonnet', projectFolder: '',
+      startModel: { runtime: 'native', providerId: 'p1', modelId: 'gpt-5.6-2026-04-01' },
+      startModelLabel: { provider: 'ChatGPT', model: 'GPT-5.6' },
+    })).toBe('ChatGPT · GPT-5.6');
+  });
+
+  it('falls back to the raw id only for a default saved by an older build', () => {
+    expect(startSummary({
+      skipPermissions: false, model: 'sonnet', projectFolder: '',
+      startModel: { runtime: 'native', providerId: 'p1', modelId: 'gpt-5.6-2026-04-01' },
+    })).toBe('gpt-5.6-2026-04-01');
   });
 });

@@ -180,7 +180,13 @@ export default function ModelPicker({
   prefill,
 }: {
   value: ModelChoice | null;
-  onSelect: (choice: ModelChoice) => void;
+  /** The second argument is the label this picker DISPLAYED for the choice —
+   *  provider and model as the user just read them. Optional, and every caller
+   *  that does not need it simply ignores it. Design review 2 (R2-3): the
+   *  Settings row had no way to name a native model and rendered its raw id,
+   *  which reads as a filename. The picker is the one place that already knows
+   *  the right words. */
+  onSelect: (choice: ModelChoice, label?: { provider: string; model: string }) => void;
   /** Scope the list to one runtime. A resume cannot move a conversation across
    *  runtimes — a Claude Code transcript has no native binding to resume into,
    *  and a native conversation has no CC transcript — so that host narrows the
@@ -447,7 +453,7 @@ export default function ModelPicker({
     return value.runtime === 'claude' ? value.alias : value.modelId;
   }, [value, entries]);
 
-  const pick = (c: ModelChoice) => { onSelect(c); setOpen(false); setFilterOpen(false); };
+  const pick = (c: ModelChoice, label?: { provider: string; model: string }) => { onSelect(c, label); setOpen(false); setFilterOpen(false); };
 
   /** Brand for the CLOSED button. Derived from `value` directly rather than by
    *  looking the row up in `entries`, because the button must stay correct in
@@ -478,7 +484,7 @@ export default function ModelPicker({
       <div key={e.key} className="group/model flex items-center gap-1 px-2">
         <button
           type="button"
-          onClick={() => pick(e.choice)}
+          onClick={() => pick(e.choice, { provider: e.sourceLabel, model: e.label })}
           aria-pressed={selected}
           className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors flex items-center gap-2 ${
             selected ? 'bg-accent text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'

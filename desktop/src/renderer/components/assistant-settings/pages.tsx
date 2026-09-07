@@ -37,6 +37,11 @@ export interface AssistantDefaults {
   /** Q-3a: one default across every provider. Absent on installs that only
    *  ever set the Claude alias (`model`), which stays the fallback. */
   startModel?: ModelChoice;
+  /** What the picker DISPLAYED for `startModel`, stored at pick time so the
+   *  Settings row can name it without a catalog lookup on every drawer open
+   *  (design review 2, R2-3 — it was rendering the raw model id). Claude picks
+   *  do not need it: their four labels are local. */
+  startModelLabel?: { provider: string; model: string };
 }
 export type DefaultsUpdate = Partial<AssistantDefaults>;
 
@@ -89,11 +94,15 @@ export function startChoice(defaults: AssistantDefaults): ModelChoice {
 }
 
 /** One short line for the Settings row: "Claude Code · Sonnet", "ChatGPT · GPT-5.6".
- *  A native choice shows its model id until the catalog label is known — the
- *  row cannot afford a lookup on every drawer open. */
+ *  The row cannot afford a catalog lookup on every drawer open, so a native
+ *  choice carries the words the picker showed when it was chosen. */
 export function startSummary(defaults: AssistantDefaults, labels?: Map<string, { provider: string; model: string }>): string {
   const c = startChoice(defaults);
   if (c.runtime === 'claude') return `Claude Code · ${CLAUDE_LABELS[c.alias] ?? 'Sonnet'}`;
+  // Stored at pick time first, then a caller-supplied map, then the raw id as a
+  // last resort — which now only happens for a default saved by an older build.
+  const stored = defaults.startModelLabel;
+  if (stored) return `${stored.provider} · ${stored.model}`;
   const known = labels?.get(`${c.providerId}/${c.modelId}`);
   return known ? `${known.provider} · ${known.model}` : c.modelId;
 }
@@ -156,8 +165,9 @@ function GeneralPage(ctx: PageContext) {
         >
           <ModelPicker
             value={startChoice(defaults)}
-            onSelect={(choice) => onDefaultsChange({
+            onSelect={(choice, label) => onDefaultsChange({
               startModel: choice,
+              startModelLabel: choice.runtime === 'native' ? label : undefined,
               // Keep the legacy alias in step for a Claude pick, so everything
               // that still reads `model` (session create, the status bar) agrees.
               ...(choice.runtime === 'claude' ? { model: choice.alias } : {}),
