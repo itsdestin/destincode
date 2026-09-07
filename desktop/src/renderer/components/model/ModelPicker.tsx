@@ -521,13 +521,17 @@ export default function ModelPicker({
     // names reads as decoration rather than meaning.
     const markColor = selected ? undefined : brand?.color;
     return (
-      <div key={e.key} className="group/model flex items-center gap-1 px-2">
+      // The accent fill lives on the ROW, not the model-name button, so a
+      // selected row's highlight reaches the favourite star's column too —
+      // it used to stop short of the star, leaving a visibly unpainted gap
+      // at the row's end (reported 2026-09-07 with a screenshot).
+      <div key={e.key} className={`group/model flex items-center gap-1 px-2 rounded ${selected ? 'bg-accent' : ''}`}>
         <button
           type="button"
           onClick={() => pick(e.choice)}
           aria-pressed={selected}
           className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors flex items-center gap-2 ${
-            selected ? 'bg-accent text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
+            selected ? 'text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
           }`}
         >
           {/* The company mark. A fixed-width box whether or not a mark resolves,
@@ -547,7 +551,11 @@ export default function ModelPicker({
           </span>
         </button>
         {/* touch-reveal + coarse-hit: hover-only affordances never resolve on
-            the Android WebView (narrow-viewport rule). */}
+            the Android WebView (narrow-viewport rule). Selected uses the same
+            on-accent colour as the mark/name above, for the same reason:
+            painting the ordinary favourite-gold onto the accent fill is the
+            one place it can fail contrast, since the accent is theme-authored
+            and unknown to us. */}
         <button
           type="button"
           onClick={() => toggleFavorite(e.key)}
@@ -555,7 +563,11 @@ export default function ModelPicker({
           aria-label={fav ? `Unfavourite ${e.label}` : `Favourite ${e.label}`}
           title={fav ? 'Remove from favourites' : 'Add to favourites'}
           className={`shrink-0 w-6 h-6 rounded inline-flex items-center justify-center transition-opacity coarse-hit touch-reveal ${
-            fav ? 'text-accent opacity-100' : 'text-fg-faint opacity-0 group-hover/model:opacity-100 hover:text-fg-2'
+            selected
+              ? 'text-on-accent opacity-100'
+              : fav
+                ? 'text-accent opacity-100'
+                : 'text-fg-faint opacity-0 group-hover/model:opacity-100 hover:text-fg-2'
           }`}
         >
           <StarGlyph filled={fav} />
