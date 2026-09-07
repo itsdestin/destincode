@@ -1,8 +1,11 @@
-// Same import style as ipc-handlers.ts, deliberately: a namespace import
-// (`import * as os`) reads through a live binding that a test's
-// vi.spyOn(os, 'homedir') does not reach, so the home-directory sandbox every
-// suite runs in would be bypassed and this module would read the developer's
-// real ~/.claude.
+// DEFAULT imports, deliberately. A namespace import (`import * as os`) reads
+// through a live binding that a test's own `vi.spyOn(os, 'homedir')` does not
+// reach — measured both ways, either specifier, 2026-09-07. The suite-wide HOME
+// sandbox still applies, so this is not a "reads production" hazard; what it
+// costs is that a test pointing homedir at its OWN fixture directory is
+// silently ignored, and the module reads the shared sandbox instead — a test
+// that passes or fails for a reason unrelated to what it meant to check.
+// Pinned by tests/home-sandbox-import-style.test.ts.
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
