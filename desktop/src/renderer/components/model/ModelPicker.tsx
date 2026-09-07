@@ -328,7 +328,11 @@ export default function ModelPicker({
         });
         if (match) {
           prefillAppliedRef.current = true;
-          onSelect({ runtime: 'native', providerId: match.providerId, modelId: match.id });
+          const prov = providerRows.find((row) => row.id === match.providerId);
+          onSelect(
+            { runtime: 'native', providerId: match.providerId, modelId: match.id },
+            { provider: prov?.label ?? match.providerId, model: match.label ?? match.id },
+          );
         }
       }
     }).catch(() => setLoaded(true));
@@ -624,7 +628,7 @@ export default function ModelPicker({
                             onKeyDown={(e) => {
                               if (e.key === 'Enter') {
                                 const id2 = freeformText.trim();
-                                if (id2) pick({ runtime: 'native', providerId: p.id, modelId: id2 });
+                                if (id2) pick({ runtime: 'native', providerId: p.id, modelId: id2 }, { provider: p.label, model: id2 });
                                 setFreeformFor(null);
                               }
                               if (e.key === 'Escape') { setFreeformFor(null); setFreeformText(''); }
