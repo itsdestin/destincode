@@ -410,8 +410,10 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
     if (!history.hasMore || history.loading || !history.cursor) return;
     // No IntersectionObserver (an exotic WebView): fall back to nothing rather
     // than eagerly loading the whole conversation, which is the cost this
-    // feature exists to avoid. The keyboard/scrollbar still reach the top; the
-    // scroll handler below covers that case.
+    // feature exists to avoid. There is NO scroll-handler backstop — this
+    // observer is the only trigger for an older page, so on such a WebView the
+    // conversation simply does not page. (A comment here used to promise "the
+    // scroll handler below covers that case"; there has never been one.)
     if (typeof IntersectionObserver === 'undefined') return;
     const el = historySentinelRef.current;
     const root = scrollContainerRef.current;

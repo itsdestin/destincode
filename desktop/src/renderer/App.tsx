@@ -1759,8 +1759,11 @@ function AppInner() {
   // claudeSessionId/projectSlug are the fallback locator for a session the
   // transcript watcher does not know yet (a just-resumed CC session) — see
   // TranscriptPageRequest.
-  // Sessions whose first page has already been asked for. Ids are never removed:
-  // asking twice would prepend the newest page a second time.
+  // Sessions whose first page has already been asked for — asking twice would
+  // prepend the newest page a second time. An id is removed only when its
+  // session leaves the list (the effect below), never on the strength of the
+  // ANSWER: for the life of a session, the first request to arrive is the only
+  // one that ever runs.
   const firstPageAsked = useRef<Set<string>>(new Set());
 
   const loadFirstPage = useCallback(async (sid: string, locator?: { claudeSessionId: string; projectSlug: string }) => {
