@@ -45,11 +45,20 @@ function useAttention(active: boolean): Set<PageId> {
     if (!active) return;
     let alive = true;
     const next = new Set<PageId>();
+    // Only ask where the answer can mean anything. Design review 1 (R1-5):
+    // Android answers `engine:status` honestly with
+    // `{ ok: false, error: 'not-implemented-on-mobile' }`, and reading any
+    // `error` as trouble turned the red dot ON for every Android install
+    // forever — pointing at a Local models page Android never shows.
+    if ((window as any).claude?.native?.supported !== true) { setPages(next); return; }
     const chatgpt = (window as any).claude?.chatgpt;
     const engine = (window as any).claude?.engine;
     Promise.all([
       chatgpt?.status?.().then((s: { state?: string }) => { if (s?.state === 'blocked') next.add('cloud'); }).catch(() => {}),
-      engine?.status?.().then((s: { state?: string; error?: string }) => { if (s?.state === 'error' || s?.error) next.add('local'); }).catch(() => {}),
+      // `state === 'error'` ONLY. A transport-level `{ ok: false }` means the
+      // question could not be asked, which is not the same as an engine that
+      // failed to start, and a dot for it is a dot nobody can clear.
+      engine?.status?.().then((s: { state?: string }) => { if (s?.state === 'error') next.add('local'); }).catch(() => {}),
     ]).then(() => { if (alive) setPages(next); });
     return () => { alive = false; };
   }, [active]);
