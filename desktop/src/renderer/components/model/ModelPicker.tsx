@@ -178,6 +178,8 @@ export default function ModelPicker({
   includeNative = true,
   onManageModels,
   prefill,
+  defaultOpen = false,
+  layout = 'floating',
 }: {
   value: ModelChoice | null;
   onSelect: (choice: ModelChoice) => void;
@@ -201,11 +203,25 @@ export default function ModelPicker({
    *  (Destin's Task 6 ruling — native resume ALWAYS offers the picker,
    *  pre-filled when the model is available here). */
   prefill?: PortableModelRef;
+  /** Starts the panel already expanded — for a host where the picker IS the
+   *  surface (ModelPickerPopup's status-bar dialog) rather than one field
+   *  among several (SessionStrip, the welcome form, Resume Browser). Defaults
+   *  false everywhere else so this doesn't change the six other call sites. */
+  defaultOpen?: boolean;
+  /** 'floating' (default) portals the open panel to document.body and pins it
+   *  to the trigger with fixed positioning — built for a picker sitting among
+   *  other fields, where the panel must escape an ancestor's clipping and
+   *  overlay whatever is below it. 'inline' instead renders the panel as a
+   *  normal child, in flow, so surrounding content is pushed down rather than
+   *  covered. Only ModelPickerPopup uses 'inline' — paired with `defaultOpen`,
+   *  because there the panel is meant to stay open, and a permanently-open
+   *  floating panel there covered the Effort/Fast sections beneath it. */
+  layout?: 'floating' | 'inline';
 }) {
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [catalog, setCatalog] = useState<CatalogRow[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [search, setSearch] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [sources, setSources] = useState<Set<string>>(new Set());
@@ -561,22 +577,11 @@ export default function ModelPicker({
         </svg>
       </button>
 
-      {open && panelPos && createPortal(
-        <>
-          <div
-            ref={panelRef}
-            // Marker for HOST menus' outside-click handlers — the portal lives on
-            // document.body, so SessionStrip's contains() check can't see it and
-            // would otherwise unmount us on mousedown before our click fires.
-            // Same contract as FolderSwitcher's data-folder-switcher-portal.
-            data-model-picker-portal=""
-            className="layer-surface fixed flex flex-col overflow-hidden"
-            style={{
-              top: panelPos.top, bottom: panelPos.bottom, left: panelPos.left, width: panelPos.width,
-              maxHeight: panelPos.maxHeight, zIndex: POPOVER_Z,
-              animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both',
-            }}
-          >
+      {open && (() => {
+        // Shared between both layouts — see the `layout` prop doc above for
+        // why there are two hosts for the identical content.
+        const panelBody = (
+          <>
             <div className="p-2 border-b border-edge-dim">
               <SearchFilterPill
                 ref={pillRef}
@@ -665,60 +670,100 @@ export default function ModelPicker({
                 </button>
               </div>
             )}
+          </>
+        );
+
+        return layout === 'inline' ? (
+          // In flow, right under the trigger — pushes whatever the host draws
+          // below it (ModelPickerPopup's Effort/Fast sections) down instead of
+          // covering it. No portal, no fixed positioning: this panel is meant
+          // to stay open, so there is nothing transient to escape an ancestor
+          // clip for.
+          // No data-model-picker-portal marker here: that marker exists solely
+          // so a HOST's outside-click check (which can't see document.body via
+          // its own contains()) still recognises the portaled panel as part of
+          // the picker. Rendered in flow, this div already IS a normal
+          // descendant, so no host needs the marker to find it.
+          <div
+            ref={panelRef}
+            className="layer-surface mt-1.5 flex flex-col overflow-hidden rounded-md"
+            style={{ maxHeight: 320 }}
+          >
+            {panelBody}
           </div>
-          {filterOpen && filterPos && (
-            <div
-              ref={filterPopRef}
-              // WHY: This second portal is outside the panel marker. Hosts such
-              // as SessionStrip use the shared marker to recognise every part of
-              // this picker as an inside click before their own menu can close.
-              data-model-picker-portal=""
-              // Portaled OUT of the panel: `.layer-surface` sets
-              // `overflow: hidden` unlayered (globals.css:886) so it can clip
-              // scroll-fades to its rounded corners, which also chopped this
-              // popover off at the panel edge. Anchored to the pill's own rect
-              // instead, at POPOVER_Z + 1 so it sits above the panel.
-              className="layer-surface fixed p-3 flex flex-col gap-3"
-              style={{ top: filterPos.top, left: filterPos.left, width: FILTER_W, zIndex: POPOVER_Z + 1 }}
-            >
-              <Group label="Source">
-                {includeClaude && (
-                  <Chip
-                    active={sources.has(CLAUDE_SOURCE)}
-                    onClick={() => setSources((prev) => {
-                      const n = new Set(prev);
-                      if (n.has(CLAUDE_SOURCE)) n.delete(CLAUDE_SOURCE); else n.add(CLAUDE_SOURCE);
-                      return n;
-                    })}
-                  >Claude Code</Chip>
-                )}
-                {readyProviders.map((p) => (
-                  <Chip
-                    key={p.id}
-                    active={sources.has(p.id)}
-                    onClick={() => setSources((prev) => {
-                      const n = new Set(prev);
-                      if (n.has(p.id)) n.delete(p.id); else n.add(p.id);
-                      return n;
-                    })}
-                  >{p.label}</Chip>
-                ))}
-              </Group>
-              <Group label="Show">
-                <Chip active={localOnly} onClick={() => setLocalOnly((v) => !v)}>
-                  Runs on this device
-                </Chip>
-              </Group>
-              {activeFilters > 0 && (
-                <button
-                  type="button"
-                  onClick={() => { setSources(new Set()); setLocalOnly(false); }}
-                  className="self-start text-3xs text-fg-muted hover:text-fg"
-                >Clear filters</button>
-              )}
-            </div>
+        ) : panelPos && createPortal(
+          <div
+            ref={panelRef}
+            // Marker for HOST menus' outside-click handlers — the portal lives on
+            // document.body, so SessionStrip's contains() check can't see it and
+            // would otherwise unmount us on mousedown before our click fires.
+            // Same contract as FolderSwitcher's data-folder-switcher-portal.
+            data-model-picker-portal=""
+            className="layer-surface fixed flex flex-col overflow-hidden"
+            style={{
+              top: panelPos.top, bottom: panelPos.bottom, left: panelPos.left, width: panelPos.width,
+              maxHeight: panelPos.maxHeight, zIndex: POPOVER_Z,
+              animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both',
+            }}
+          >
+            {panelBody}
+          </div>,
+          document.body,
+        );
+      })()}
+      {open && filterOpen && filterPos && createPortal(
+        <div
+          ref={filterPopRef}
+          // WHY: This second portal is outside the panel marker. Hosts such
+          // as SessionStrip use the shared marker to recognise every part of
+          // this picker as an inside click before their own menu can close.
+          data-model-picker-portal=""
+          // Portaled OUT of the panel: `.layer-surface` sets
+          // `overflow: hidden` unlayered (globals.css:886) so it can clip
+          // scroll-fades to its rounded corners, which also chopped this
+          // popover off at the panel edge. Anchored to the pill's own rect
+          // instead, at POPOVER_Z + 1 so it sits above the panel — and, in
+          // 'inline' layout, above the dialog content the panel now pushes
+          // down too, since it is fixed-positioned regardless of `layout`.
+          className="layer-surface fixed p-3 flex flex-col gap-3"
+          style={{ top: filterPos.top, left: filterPos.left, width: FILTER_W, zIndex: POPOVER_Z + 1 }}
+        >
+          <Group label="Source">
+            {includeClaude && (
+              <Chip
+                active={sources.has(CLAUDE_SOURCE)}
+                onClick={() => setSources((prev) => {
+                  const n = new Set(prev);
+                  if (n.has(CLAUDE_SOURCE)) n.delete(CLAUDE_SOURCE); else n.add(CLAUDE_SOURCE);
+                  return n;
+                })}
+              >Claude Code</Chip>
+            )}
+            {readyProviders.map((p) => (
+              <Chip
+                key={p.id}
+                active={sources.has(p.id)}
+                onClick={() => setSources((prev) => {
+                  const n = new Set(prev);
+                  if (n.has(p.id)) n.delete(p.id); else n.add(p.id);
+                  return n;
+                })}
+              >{p.label}</Chip>
+            ))}
+          </Group>
+          <Group label="Show">
+            <Chip active={localOnly} onClick={() => setLocalOnly((v) => !v)}>
+              Runs on this device
+            </Chip>
+          </Group>
+          {activeFilters > 0 && (
+            <button
+              type="button"
+              onClick={() => { setSources(new Set()); setLocalOnly(false); }}
+              className="self-start text-3xs text-fg-muted hover:text-fg"
+            >Clear filters</button>
           )}
-        </>,
+        </div>,
         document.body,
       )}
     </div>

@@ -137,7 +137,9 @@ describe('ModelPickerPopup keeps its list current', () => {
     nativeBridge();
     const { default: ModelPickerPopup } = await import('../src/renderer/components/ModelPickerPopup');
     render(<ModelPickerPopup {...props} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Model' }));
+    // No click needed: the popup's picker now opens straight to the
+    // search+list view (status-bar chip default-expand change), so a click on
+    // the "Model" trigger here would TOGGLE it closed instead of opening it.
     fireEvent.change(await screen.findByPlaceholderText(/Search/i), { target: { value: 'Qwen' } });
     await waitFor(() => expect(screen.queryByText(/Qwen3.5 9B/)).toBeNull());
 
@@ -153,10 +155,10 @@ describe('ModelPickerPopup keeps its list current', () => {
     render(<ModelPickerPopup {...props} />);
     await waitFor(() => expect((window.claude.providers.catalog as any).mock.calls.length).toBe(2));
     subscribers.forEach((cb) => cb({ downloadId: 'd1', state: 'done' }));
-    // 3, not 4: the popup re-reads, and the picker inside it does NOT, because
-    // its panel is shut. A closed list has nothing on screen to correct, and it
-    // fetches again the moment it is opened.
-    await waitFor(() => expect((window.claude.providers.catalog as any).mock.calls.length).toBe(3));
+    // 4, not 3: the popup re-reads, and so does the picker inside it — its
+    // panel now opens by default (status-bar chip default-expand change), so
+    // it has a visible list to correct rather than a shut one to leave alone.
+    await waitFor(() => expect((window.claude.providers.catalog as any).mock.calls.length).toBe(4));
   });
 
   it('stops listening when the popup goes away', async () => {

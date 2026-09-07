@@ -380,6 +380,15 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                 onSelect={(c) => { void applyChoice(c); }}
                 includeClaude={!isNative}
                 includeNative={isNative}
+                // This dialog's whole job is "change the model" — the picker IS
+                // the surface, so open straight to the favourites+search list
+                // instead of making the status-bar chip cost two clicks.
+                // 'inline' because the list must push Effort/Fast down rather
+                // than the shared component's default float-over-everything
+                // behaviour (built for a picker that's normally closed).
+                defaultOpen
+                layout="inline"
+                onManageModels={() => window.dispatchEvent(new CustomEvent('youcoded:open-model-providers'))}
               />
               {nativeError && <p className="text-xs text-destructive-fg mt-2">{nativeError}</p>}
               {nativeSwapping && <p className="text-xs text-fg-muted mt-2">Switching…</p>}
