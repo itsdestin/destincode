@@ -45,6 +45,54 @@ describe('ModelCatalog', () => {
     expect(models).toHaveLength(0);
   });
 
+  // The COST property, pinned in both directions. Nothing guarded it before,
+  // which is how a local-only session start silently acquired two internet
+  // fetches when the vision resolver started reading the catalog for local
+  // models (T18): ensureFresh() runs before get() looks at WHICH providers it
+  // was handed, so a call that cannot consume either source still paid for
+  // both. MEASURED 2026-09-05 on a network that accepts and never answers:
+  // 4 fetches, 15.1 s per get(), and no memoization, so it repeated on every
+  // create / resume / model swap.
+  describe('does not touch the network for a provider list no catalog source can serve', () => {
+    const LOCAL = { id: 'local', type: 'local-engine', label: 'Local models', enabled: true, builtIn: true, hasKey: false, ready: true };
+    const CUSTOM = { id: 'ollama', type: 'openai-compatible', label: 'Ollama', enabled: true, builtIn: false, hasKey: false, ready: true };
+
+    it('local-engine alone: zero fetches, and the local rows still come back', async () => {
+      const local = new ModelCatalog(dir, fetchMock, {
+        localModels: async () => [{ id: 'tiny-Q4_K_M', providerId: 'local', label: 'tiny-Q4_K_M' }],
+      });
+      const models = await local.get([LOCAL] as any);
+      // Both halves matter: zero fetches is the fix, and the rows still
+      // arriving is proof the fix did not just short-circuit get() itself.
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(models.map((m) => m.id)).toEqual(['tiny-Q4_K_M']);
+    });
+
+    it('openai-compatible alone: zero fetches (it has no catalog at all)', async () => {
+      expect(await cat.get([CUSTOM] as any)).toEqual([]);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a DISABLED OpenRouter beside a local provider still costs nothing', async () => {
+      // A disabled provider contributes no models, so it must not drag the
+      // network in either — the gate reads `enabled` exactly as the loop does.
+      await cat.get([LOCAL, { id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: false, builtIn: true, hasKey: true, ready: false }] as any);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('but an ENABLED OpenRouter beside the local provider DOES fetch — the gate is not over-broad', async () => {
+      const models = await cat.get([LOCAL, { id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any);
+      expect(fetchMock).toHaveBeenCalled();
+      expect(models.some((m) => m.providerId === 'openrouter')).toBe(true);
+    });
+
+    it('and a models.dev provider (anthropic) beside the local one DOES fetch', async () => {
+      const models = await cat.get([LOCAL, { id: 'anth1', type: 'anthropic', label: 'Anthropic', enabled: true, builtIn: false, hasKey: true, ready: true }] as any);
+      expect(fetchMock).toHaveBeenCalled();
+      expect(models.some((m) => m.providerId === 'anth1')).toBe(true);
+    });
+  });
+
   it('serves from disk cache within TTL (single fetch pair across two calls)', async () => {
     const providers = [{ id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true, builtIn: true, hasKey: true, ready: true }] as any;
     await cat.get(providers);
@@ -276,6 +324,56 @@ describe('ModelCatalog', () => {
         { id: 'local', type: 'local-engine', label: 'Local', enabled: true, builtIn: true, hasKey: false, ready: true } as any,
       ]);
       expect(models).toEqual([]);
+    });
+  });
+
+  // Sign in with ChatGPT (backend design §4.3): rows come from an injected
+  // source (ChatGptAuth.models(), cache-first); the catalog never prices them.
+  describe('ChatGPT plan source', () => {
+    const CHATGPT_ROW = { id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT Plan', enabled: true, builtIn: true, hasKey: false, ready: true } as any;
+
+    it('get(): merges the injected ChatGPT rows for an enabled chatgpt provider, with no pricing', async () => {
+      const rows = [
+        { id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5', contextLength: 272000, supportsTools: true, supportsReasoning: true },
+        { id: 'gpt-5.4-mini', providerId: 'chatgpt', label: 'GPT-5.4 Mini', contextLength: 272000, supportsTools: true },
+      ];
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => rows });
+      const models = await cat.get([CHATGPT_ROW]);
+      expect(models).toEqual(rows);
+      // The plan is not per-token: absent means absent, never $0.
+      expect(models.every((m) => m.pricing === undefined)).toBe(true);
+      expect(await cat.contextLengthFor({ providerId: 'chatgpt', modelId: 'gpt-5.5' }, [CHATGPT_ROW])).toBe(272000);
+    });
+
+    it('get(): a throwing ChatGPT source degrades to no ChatGPT rows (never rejects)', async () => {
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => { throw new Error('boom'); } });
+      const models = await cat.get([CHATGPT_ROW]);
+      expect(models).toEqual([]);
+    });
+
+    // §4.6: when OpenAI blocks the account the registry keeps the row listed
+    // (ready: false) so the card can still show who is signed in and offer Sign
+    // out — but the models must leave the catalog. ChatGptAuth deliberately
+    // keeps its cached list through a block, so `enabled` alone would still
+    // hand them out. The two pickers filter on ready themselves; the app's own
+    // ModelSearch tool reads the catalog raw, so without this gate the
+    // assistant would be offered plan models it cannot use and the user would
+    // get "Codex is disabled for this workspace." instead of an answer.
+    it('get(): a BLOCKED plan (ready:false) contributes no models even though the cache still holds them', async () => {
+      const cat = new ModelCatalog(dir, fetchMock, {
+        chatgptModels: async () => [{ id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5' }],
+      });
+      expect(await cat.get([{ ...CHATGPT_ROW, ready: false }])).toEqual([]);
+      // Sanity: the same source with ready:true DOES contribute — so the empty
+      // result above is the gate, not a broken fixture.
+      expect(await cat.get([CHATGPT_ROW])).toHaveLength(1);
+    });
+
+    it('get(): no source injected (kill switch) or provider disabled → nothing for the plan', async () => {
+      const none = new ModelCatalog(dir, fetchMock);
+      expect(await none.get([CHATGPT_ROW])).toEqual([]);
+      const cat = new ModelCatalog(dir, fetchMock, { chatgptModels: async () => [{ id: 'gpt-5.5', providerId: 'chatgpt', label: 'GPT-5.5' }] });
+      expect(await cat.get([{ ...CHATGPT_ROW, enabled: false }])).toEqual([]);
     });
   });
 });

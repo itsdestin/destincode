@@ -21,6 +21,8 @@ import { ProviderIcon } from './ProviderIcon';
 import type { SessionTotals } from '../state/session-totals';
 import { selectCacheReuse, selectReuseDisplay } from '../state/cache-reuse';
 import { CLAUDE_ALIASES, type ClaudeAlias } from '../../shared/model-ids';
+import { formatTime12, formatDayLong, formatMonthDay } from '../../shared/time-format';
+import { usableOtherWindows, windowLengthLabel } from './plan-windows';
 
 // --- Session stats shape (written by statusline.sh to .session-stats-{id}.json) ---
 
@@ -41,6 +43,9 @@ interface StatusData {
   usage: {
     five_hour?: { utilization: number; resets_at: string };
     seven_day?: { utilization: number; resets_at: string };
+    /** Plan windows of any other length, with their length in minutes (a free
+     *  ChatGPT plan has one 30-day window and nothing else — W-2 = a). */
+    other?: Array<{ utilization: number; resets_at: string; minutes: number }>;
   } | null;
   updateStatus: {
     current: string;
@@ -243,15 +248,10 @@ function contextColor(pct: number): string {
   return 'text-[#4CAF50]';
 }
 
-const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-function formatTime12(d: Date): string {
-  let h = d.getHours();
-  const m = d.getMinutes();
-  const ampm = h >= 12 ? 'pm' : 'am';
-  h = h % 12 || 12;
-  return `${h}:${m.toString().padStart(2, '0')}${ampm}`;
-}
+// formatTime12 / formatDayLong moved to shared/time-format.ts (2026-09-05) so
+// the ChatGPT limit card formats its reset with the SAME hand-rolled clock as
+// these chips — it used to call toLocaleTimeString, which prints "18:43" on a
+// UK/EU machine while the chip beside it said "6:43pm". Chip output unchanged.
 
 function format5hReset(iso: string): string {
   try {
@@ -265,10 +265,47 @@ function format5hReset(iso: string): string {
 function format7dReset(iso: string): string {
   try {
     const d = new Date(iso);
-    return `Resets ${DAYS[d.getDay()]} @ ${formatTime12(d)}`;
+    return `Resets ${formatDayLong(d)} @ ${formatTime12(d)}`;
   } catch {
     return '';
   }
+}
+
+/** The reset line for a window of any length (words deck W-2 = a): shorter
+ *  than a day reads like the 5h chip (time only); up to a week reads like the
+ *  7d chip (weekday and time); longer than a week — the free ChatGPT plan's
+ *  30-day window — names the month and day, since a weekday alone is
+ *  ambiguous over a month ("Resets Oct 3 @ 6:43pm", the limit card's form). */
+function formatWindowReset(minutes: number, iso: string): string {
+  if (minutes < 1440) return format5hReset(iso);
+  if (minutes <= 7 * 1440) return format7dReset(iso);
+  try {
+    const d = new Date(iso);
+    return `Resets ${formatMonthDay(d)} @ ${formatTime12(d)}`;
+  } catch {
+    return '';
+  }
+}
+
+/** One plan-window chip — "5h: 42% Resets @ 6:43pm". Exactly the markup the
+ *  5h and 7d chips have always had, lifted into one function so the odd-length
+ *  windows (W-2 = a) draw the same way without a third copy. */
+function UsageChip({ label, utilization, reset, onClick, title }: {
+  label: string; utilization: number; reset: string; onClick: () => void; title: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex items-center gap-1 sm:gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:bg-inset transition-colors"
+      title={title}
+    >
+      <span>{label}:</span>
+      <span className={utilizationColor(utilization)}>
+        {utilization}%
+      </span>
+      <span className="text-fg-muted hidden sm:inline">{reset}</span>
+    </button>
+  );
 }
 
 /** Format token count as human-readable (e.g. 1234 -> "1.2k", 1234567 -> "1.2M") */
@@ -1102,33 +1139,28 @@ export default function StatusBar({
       {/* Specialists (1c) — hidden when the conversation has no helpers. */}
       <SpecialistsChip sessionId={sessionId} />
 
-      {/* Rate limits */}
+      {/* Rate limits — one chip per window the plan reports, in the order
+          5h, 7d, then any other length (W-2 = a: a free ChatGPT plan shows a
+          single "30d:" chip). A plan with no windows shows no chips. The chip
+          markup is one recipe (UsageChip) so the approved 5h/7d output is
+          byte-identical to before — pinned in plan-windows-other.test.tsx. */}
       {show('usage-5h') && usage?.five_hour != null && (
-        <button
-          onClick={openUsage}
-          className="flex items-center gap-1 sm:gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:bg-inset transition-colors"
-          title={usageTitle}
-        >
-          <span>5h:</span>
-          <span className={utilizationColor(usage.five_hour.utilization)}>
-            {usage.five_hour.utilization}%
-          </span>
-          <span className="text-fg-muted hidden sm:inline">{format5hReset(usage.five_hour.resets_at)}</span>
-        </button>
+        <UsageChip label="5h" utilization={usage.five_hour.utilization}
+          reset={format5hReset(usage.five_hour.resets_at)} onClick={openUsage} title={usageTitle} />
       )}
       {show('usage-7d') && usage?.seven_day != null && (
-        <button
-          onClick={openUsage}
-          className="flex items-center gap-1 sm:gap-1.5 px-1.5 py-0.5 rounded-sm bg-panel border border-edge-dim cursor-pointer hover:bg-inset transition-colors"
-          title={usageTitle}
-        >
-          <span>7d:</span>
-          <span className={utilizationColor(usage.seven_day.utilization)}>
-            {usage.seven_day.utilization}%
-          </span>
-          <span className="text-fg-muted hidden sm:inline">{format7dReset(usage.seven_day.resets_at)}</span>
-        </button>
+        <UsageChip label="7d" utilization={usage.seven_day.utilization}
+          reset={format7dReset(usage.seven_day.resets_at)} onClick={openUsage} title={usageTitle} />
       )}
+      {/* Odd-length windows ride on the Customize toggle of the approved chip
+          they most resemble: a multi-day window follows "7d Usage", a
+          sub-day one follows "5h Usage" — there is no per-length toggle. */}
+      {usableOtherWindows(usage?.other).map((w, i) => (
+        show(w.minutes >= 1440 ? 'usage-7d' : 'usage-5h') ? (
+          <UsageChip key={`${w.minutes}-${i}`} label={windowLengthLabel(w.minutes)} utilization={w.utilization}
+            reset={formatWindowReset(w.minutes, w.resets_at)} onClick={openUsage} title={usageTitle} />
+        ) : null
+      ))}
 
       {/* Context remaining — clickable opens ContextPopup (compact/clear actions + explainer).
           Renders as a percentage or as "used / window" per the contextDisplay pref;

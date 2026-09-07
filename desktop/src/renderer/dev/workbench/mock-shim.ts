@@ -3,7 +3,9 @@ import type { ChatGptAccountStatus } from '../../../shared/chatgpt-types';
 import type { TranscriptEvent } from '../../../shared/types';
 import type { MockStore } from './mock-store';
 import type { MarketplaceUser } from '../../../main/marketplace-auth-store';
-import type { InstalledLocalModel, DownloadProgress } from '../../../shared/model-manager-types';
+import type {
+  InstalledLocalModel, DownloadProgress, ModelSettingsWrite, StoredModelSettings,
+} from '../../../shared/model-manager-types';
 import type { DelegatedModelsView } from '../../../shared/types';
 import { RUNS } from './specialist-runs';
 import { FULL_READ_MAX_BYTES } from '../../../shared/artifacts/editable-path-policy';
@@ -27,6 +29,11 @@ import { playReply, resolvePermission, parseReplyScript, isControl, splitTurns, 
 // fake-party.ts for why this exists and what it stands in for.
 import { JAKE_ID, JAKE_USERNAME } from './fake-party';
 import { arcadeStatusFor, arcadeBoardFor, arcadeRecordsFor, arcadeVersusIsDown, type ArcadeScenario } from './arcade-fixtures';
+import type { VoiceEvent, VoiceReadiness } from '../../../shared/voice-types';
+// The fake splits its scripted sentence with the SAME helper the real engine's
+// worker uses, so what Destin reviews in the workbench is the shipped grey/solid
+// rule rather than a lookalike (it used to grey the last two words, full stop).
+import { splitAtLastSentenceEnd } from '../../../shared/voice-types';
 import { buildCatalog } from './fixtures/marketplace/catalog';
 
 // artifactId -> pretend on-disk size, for exercising the over-cap artifact
@@ -86,9 +93,24 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'models.detectEndpoints',
   'engine.status', 'engine.models', 'engine.install', 'engine.restart', 'engine.setContext',
   'engine.onInstallProgress', 'engine.onStatusChanged', 'engine.onModelsChanged',
-  // No backend yet (M5 2a) — registered in mock-only.ts. Listed here so the
-  // contract test actually covers them; a channel absent from HAND_WRITTEN
-  // escapes the real-or-registered check entirely.
+  // Local-engine upgrades (2026-09-05, docs/active/design/2026-09-04-local-engine-upgrades).
+  // Real channels given fixture data so the redesigned panel has something to show:
+  'models.quants', 'models.search', 'models.download', 'models.setBackend',
+  // Also real now, and kept fake here so the workbench can walk the flows without a
+  // machine, a PTY or a running engine: the prereq check (2026-09-05), the shell
+  // session, and the engine-wide settings write.
+  'engine.prereqs', 'engine.runInTerminal', 'engine.setConfig',
+  // Real on every surface as of 2026-09-05 too (per-model settings + vision).
+  // Kept fake so the workbench can open the settings dialog and walk "Add
+  // vision" without a config file, a model on disk or a running engine.
+  // `models.dismissMemoryWarning` used to sit here and is GONE: the tick is now
+  // part of `models.setSettings`, so there is one write, not two.
+  'models.settings', 'models.setSettings', 'models.addVision',
+  // Real backend since M5 2a (permissions:* on preload + remote-shim). Listed
+  // here so the contract test actually covers them; a channel absent from
+  // HAND_WRITTEN escapes the real-or-registered check entirely. (They used to
+  // say "registered in mock-only.ts", which stopped being true when that list
+  // was emptied.)
   'permissions.list', 'permissions.remove', 'permissions.removeProject',
   // Web search keys — real channels (search:* in main); listed so the
   // contract test checks them like every other hand-written fake.
@@ -102,6 +124,10 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   // fixture data to serve instead of a real filesystem/ledger.
   'specialists.list', 'specialists.getDelegatedModels', 'specialists.setDelegatedModel',
   'specialists.steer', 'specialists.interrupt', 'on.specialistEvent',
+  // Voice prompting (2026-09-05) — no real backend yet, registered in
+  // mock-only.ts. Listed so the contract test covers the fake.
+  'voice.status', 'voice.download', 'voice.start', 'voice.stop', 'voice.cancel', 'voice.onEvent',
+  'voice.sendAudio', 'voice.micAccess',
   'shell.openPath',
   // Chatsearch session references — real backend too, same reason for the fake:
   // the tool gallery needs an index that shows every row state on demand.
@@ -127,9 +153,11 @@ export const HAND_WRITTEN: ReadonlyArray<string> = [
   'project.listConversations', 'project.listContext', 'project.readContextFile',
   'project.writeContextFile', 'project.repoInfo',
   'account.signedIn', 'account.user', 'account.refresh',
-  // Games arcade Step 1 — NO real backend yet; both are declared in
-  // mock-only.ts so the contract test knows they are deliberately unbuilt
-  // rather than a fake quietly standing in for something real.
+  // Games arcade — real backend since Step 2 (the Worker's /games/scores routes
+  // + main/arcade-handlers.ts on all five surfaces); hand-written here so the
+  // workbench can still show the you-alone, empty and stale-board states without
+  // a live leaderboard. (They used to be declared in mock-only.ts; that list is
+  // empty now, so this comment no longer claims they are unbuilt.)
   'arcade.status', 'arcade.leaderboard', 'arcade.submitScore',
   // Multiplayer games (Task 7c) — friends graph + presence socket. Real
   // backend (social-handlers.ts / preload.ts), hand-written here so Connect
@@ -320,9 +348,9 @@ const NAMESPACES = [
   'session', 'skills', 'on', 'dialog', 'shell', 'terminal', 'update', 'remote',
   'account', 'social', 'marketplaceApi', 'detach', 'defaults', 'analytics', 'dev',
   'performance', 'app', 'native', 'providers', 'engine', 'models', 'theme',
-  'commands', 'tags', 'artifacts', 'firstRun', 'clipboard', 'window',
-  // Sign in with ChatGPT (design 2026-09-04) — MOCK_ONLY until main grows the
-  // OAuth round-trip; typed by shared/chatgpt-types.ts, not useIpc.ts yet.
+  'commands', 'tags', 'artifacts', 'firstRun', 'clipboard', 'window', 'voice',
+  // Sign in with ChatGPT (design 2026-09-04) — real on all five surfaces since
+  // the backend design of 2026-09-05; typed by shared/chatgpt-types.ts.
   'chatgpt',
   // Web search keys (Tavily / Exa). Real channels (search:* in main); the fake
   // was missing, which left Assistant settings → Web search an empty page in
@@ -515,10 +543,29 @@ function mergeMeta(
 // EVERY scenario — App only reads them for a session bound to a 'chatgpt'
 // provider (wb-3), so Claude Code and OpenRouter sessions are untouched.
 function chatgptUsageFixture() {
+  // `?chatgpt=free` draws the FREE plan instead of Plus. WHY it has to exist:
+  // OpenAI's free plan reports ONE 30-day window and no 5-hour or 7-day one, so
+  // the screens for it are a single chip and a single bar — a shape Destin
+  // approved from a written description with no picture of it. Without this pin
+  // the workbench, the review rig and the acceptance deck all show Plus, and the
+  // first sight of the free screens would be the live walk on his own account.
+  // Numbers match tests/fixtures/chatgpt/usage.free.json (a 30-day window, barely
+  // used), with the reset four days into the window.
+  if (chatgptPlanPin() === 'free') {
+    return {
+      other: [{ minutes: 43_200, utilization: 3, resets_at: new Date(Date.now() + 26 * 86_400_000).toISOString() }],
+    };
+  }
   return {
     five_hour: { utilization: 34, resets_at: new Date(Date.now() + 2 * 3_600_000 + 10 * 60_000).toISOString() },
     seven_day: { utilization: 12, resets_at: new Date(Date.now() + 5 * 86_400_000).toISOString() },
   };
+}
+
+/** The `?chatgpt=` pin, read fresh so both the account state and the status:data
+ *  usage fixture answer from the same URL. */
+function chatgptPlanPin(): string | null {
+  return (typeof location !== 'undefined' && new URLSearchParams(location.search).get('chatgpt')) || null;
 }
 
 function statusBarFixtureFor(scenario: string): { usage: unknown; sessionStatsMap: Record<string, unknown> } | null {
@@ -775,25 +822,35 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
 
   // ── Sign in with ChatGPT ───────────────────────────────────────────────────
   // The account state machine (shared/chatgpt-types.ts), pinned by `?chatgpt=`
-  // (signed-out | waiting | signed-in | blocked; default signed-in so the
-  // model picker shows the plan's models). Without a pin, Sign in walks
+  // (signed-out | waiting | signed-in | free | blocked; default signed-in on a
+  // Plus plan so the model picker shows the plan's models, and `free` for the
+  // one-30-day-window plan). Without a pin, Sign in walks
   // signed-out → waiting → signed-in on its own after ~2.5s, which is what a
   // reviewer clicking through the Settings row should see.
-  const chatgptPin = (typeof location !== 'undefined' && new URLSearchParams(location.search).get('chatgpt')) || null;
+  const chatgptPin = chatgptPlanPin();
   const CHATGPT_SIGNED_IN: ChatGptAccountStatus = {
     state: 'signed-in', email: 'destin@example.com', plan: 'plus',
-    usage: {
-      five_hour: { utilization: 34, resets_at: new Date(Date.now() + 2 * 3_600_000 + 10 * 60_000).toISOString() },
-      seven_day: { utilization: 12, resets_at: new Date(Date.now() + 5 * 86_400_000).toISOString() },
-    },
+    usage: chatgptUsageFixture(),
+  };
+  // `?chatgpt=free` — the same signed-in card, but on the plan that reports one
+  // 30-day window (see chatgptUsageFixture). This is the only way to see the
+  // free plan's single-chip / single-bar screens without a real free account.
+  const CHATGPT_SIGNED_IN_FREE: ChatGptAccountStatus = {
+    state: 'signed-in', email: 'destin@example.com', plan: 'free',
+    usage: chatgptUsageFixture(),
   };
   let chatgptStatus: ChatGptAccountStatus =
     chatgptPin === 'signed-out' ? { state: 'signed-out' }
     : chatgptPin === 'waiting' ? { state: 'waiting' }
     : chatgptPin === 'blocked' ? { state: 'blocked', email: 'destin@example.com', reason: 'Your workspace admin has turned off Codex for this account.' }
+    : chatgptPin === 'free' ? CHATGPT_SIGNED_IN_FREE
     : CHATGPT_SIGNED_IN;
   let chatgptTimer: ReturnType<typeof setTimeout> | null = null;
   const chatgpt = {
+    // The renderer gates the card on `supported === true` (the native.supported
+    // pattern; review R1-9) — without this every workbench shot and the
+    // acceptance deck would come back cardless for a tooling reason.
+    supported: true,
     status: async () => chatgptStatus,
     signIn: async () => {
       if (store.refuseWrites) return false;
@@ -840,7 +897,8 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     catalog: async () => store.getState().catalog,
   };
 
-  // M5 2a. NO real backend yet — registered in MOCK_ONLY. Removal matches on
+  // M5 2a. Real backend since (permissions:* on preload + remote-shim); the fake
+  // stays so the workbench has rules to show. Removal matches on
   // (tool, pattern, action) because remember() dedupes exact repeats, so that
   // triple is unique within a project; no rule id is needed.
   const permissions: Ns<'permissions'> = {
@@ -875,6 +933,26 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // GGUF stranded at part 3 — so the sheets show realistic numbers rather than
   // round ones that hide formatting bugs. NOTE the app's gb() divides by 1024^3:
   // 79_674_559_677 renders as 74.2 GB, 121_334_654_784 as 113.0 GB.
+  // Q-2: per-model settings the panel reads and writes during a workbench session.
+  // The STORED record, not just the four editable settings: `models:settings`
+  // answers with what main holds for a model, which also carries the dismissed
+  // memory warning, whether a save is still waiting for the current reply, and
+  // why the model last failed to load. Typed as the narrower shape, the fake
+  // could not produce the states the dialog now draws.
+  const DEFAULT_MODEL_SETTINGS: StoredModelSettings = {
+    contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '', memoryWarningDismissed: null,
+  };
+  const modelSettings: Record<string, StoredModelSettings> = {
+    // One model that failed to load, so the red card in its Settings dialog is
+    // reachable in the workbench. The text is a real llama-server line, not a
+    // paraphrase — the dialog quotes whatever main hands it, and reviewing that
+    // card against invented prose would review the wrong thing.
+    'Qwen3.5-9B-Q8_0': {
+      contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '--tempp 0.6',
+      memoryWarningDismissed: null,
+      lastLoadError: "error: option '--tempp' not recognized in preset 'Qwen3.5-9B-Q8_0'",
+    },
+  };
   const LOCAL_MODELS: InstalledLocalModel[] = [
     {
       id: 'Qwen3.5-9B-Q8_0',
@@ -889,6 +967,25 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
       parts: 4, status: 'unfinished', partsPresent: 2,
       totalSizeBytes: 121_334_654_784, repo: 'unsloth/Qwen3.8-Flash-Next-GGUF',
+    },
+    {
+      // S-3: a vision-capable family downloaded before the app fetched projectors —
+      // the row offers "Add vision (0.9 GB)".
+      id: 'gemma-4-E2B-it-Q8_0',
+      sizeBytes: 5_048_350_848,
+      quant: 'Q8_0', quantDescription: 'Highest quality quantization — near-original output',
+      parts: 1, status: 'complete', partsPresent: 1,
+      totalSizeBytes: null, repo: 'unsloth/gemma-4-E2B-it-GGUF',
+      vision: 'available', visionBytes: 985_654_080,
+    },
+    {
+      // S-3: model + projector already in their own folder — the row wears "Sees images".
+      id: 'gemma-4-12b-it-UD-Q4_K_XL',
+      sizeBytes: 7_900_000_000,
+      quant: 'UD-Q4_K_XL', quantDescription: 'Balanced quality and size — recommended',
+      parts: 1, status: 'complete', partsPresent: 1,
+      totalSizeBytes: null, repo: 'unsloth/gemma-4-12b-it-GGUF',
+      vision: 'ready', visionBytes: 1_050_000_000,
     },
     {
       id: 'Older-Model-UD-Q4_K_XL-00001-of-00002',
@@ -911,14 +1008,99 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     // verdict union is checked by the compiler — useIpc.ts:329.
     memoryCheck: async (modelId: string) => (modelId.includes('14b')
       ? {
+        // S-2 phrasing: the two numbers the verdict is made of, not a bare adjective.
         verdict: 'tight' as const,
-        headline: 'This model is a tight fit.',
-        detail: 'Loading it may evict another resident model.',
+        // Two short lines is the whole budget (round-3 P-18): the numbers, then the consequence.
+        headline: '9.5 GB model + 15.6 GB for 128k context, with 8.9 GB already loaded.',
+        detail: 'It should still run, just slower.',
       }
       : { verdict: 'ok' as const, headline: '', detail: '' }),
 
     installed: async () => LOCAL_MODELS,
-    curated: async () => [],
+    // Two recommended cards so the redesigned size line (S-2) and the vision line
+    // (Q-3) can be photographed: one text-only model, one that sees images.
+    curated: async () => [
+      { id: 'qwen35-4b', label: 'Qwen3.5 4B', tier: 'small', hfRepo: 'unsloth/Qwen3.5-4B-GGUF', quantDefault: 'UD-Q4_K_XL', notes: 'Fast all-rounder for chat and quick questions.' },
+      { id: 'gemma4-e4b', label: 'Gemma 4 E4B', tier: 'small', hfRepo: 'unsloth/gemma-4-E4B-it-GGUF', quantDefault: 'UD-Q4_K_XL', notes: 'Strong small model from Google — sees images.' },
+    ],
+    quants: async (repo: string) => {
+      const vision = /gemma/i.test(repo) ? 985_654_080 : null;
+      // Breakdown numbers follow the real formula (layers × kv-heads × head size × 2 bytes ×
+      // context) for a 4B-class model at the engine's 32k default, so the label reads true.
+      const ctx = 32_768;
+      const row = (quant: string, description: string, modelBytes: number, fit: 'fits' | 'tight' | 'too-large', label: string) => ({
+        quant, description, files: [`${quant}.gguf`], totalSizeBytes: modelBytes, sha256ByFile: {}, visionBytes: vision,
+        fit: { fit, label, breakdown: {
+          modelBytes, contextBytes: 1_744_830_464, contextLength: ctx,
+          ...(vision ? { visionBytes: vision } : {}),
+          // Main attaches this to EVERY non-fits verdict (R8). Without it the
+          // fake's "tight" row draws a bubble the real app never draws.
+          ...(fit === 'fits' ? {} : { advice: "Lower this model's context length in its Settings to shrink this." }),
+        } },
+      });
+      const f16 = row('F16', 'Full precision — largest, slowest', 8_050_000_000, 'tight', 'Will be tight — close other apps first');
+      // Main sets this whenever it could not fully read a model's header, and
+      // the bubble then says "up to" instead of stating a ceiling as a reading
+      // (R1-25). One row carries it so the wording can be reviewed on screen.
+      (f16.fit.breakdown as Record<string, unknown>).contextBytesIsUpperBound = true;
+      return [
+        row('UD-Q4_K_XL', 'Balanced quality and size — recommended', 2_580_000_000, 'fits', 'Runs fast — fits on your GPU'),
+        row('Q8_0', 'Highest quality quantization — near-original output', 4_280_000_000, 'fits', 'Runs fast — fits on your GPU'),
+        f16,
+      ];
+    },
+    search: async () => [],
+    download: async () => ({ downloadId: 'wb-download-1' }),
+    // S-1 (round 2): main only offers a switch it has pre-checked, so the fake succeeds —
+    // the engine now reports the new build; the device-check refusal stays a real error
+    // path in main but is no longer a featured workbench state (round-1 P-3).
+    setBackend: async (backend: string) => {
+      currentBackend = backend as typeof currentBackend;
+      return engineStatus();
+    },
+    // Q-2: per-model settings, held in memory for the session.
+    settings: async (modelId: string) => ({ ...(modelSettings[modelId] ?? DEFAULT_MODEL_SETTINGS) }),
+    setSettings: async (modelId: string, patch: ModelSettingsWrite) => {
+      const { dismissMemoryWarning, ...fields } = patch;
+      const before = modelSettings[modelId] ?? DEFAULT_MODEL_SETTINGS;
+      // The fake stamps the record the way main does, so the workbench shows a
+      // dismissal that survives re-opening the picker. The context length it
+      // records is this model's own setting, falling back to the engine-wide
+      // 32k the fake status reports.
+      const memoryWarningDismissed = dismissMemoryWarning === undefined
+        ? before.memoryWarningDismissed
+        : dismissMemoryWarning
+          ? { at: Date.now(), contextLength: fields.contextLength ?? before.contextLength ?? 32_768 }
+          : null;
+      // WHY both halves (merge of T20 and T23, 2026-09-06): T20 taught the fake to
+      // stamp the dismissal, T23 taught it to hold `pendingApply` for four seconds.
+      // Neither task saw the other's edit, so keeping only one would silently drop a
+      // state the workbench is the only place to review. The VALUE saves at once, the
+      // engine picks it up later, and `pendingApply` says so until it does — without
+      // the timer the workbench would show "Applies after the current reply" arriving
+      // and never clearing, which is the exact staleness the dialog's poll fixes.
+      // Only a setting the ENGINE reads can be pending: main stamps `pendingApply`
+      // for the four fields it has to restart a model for, never for the dismissed
+      // memory warning, which is the app's own bookkeeping. A fake that stamped it
+      // for both would show "Applies after the current reply" on a tick that applies
+      // instantly — reviewing a state the real app never produces.
+      const enginePending = Object.keys(fields).length > 0;
+      modelSettings[modelId] = { ...before, ...fields, memoryWarningDismissed };
+      if (enginePending) {
+        modelSettings[modelId].pendingApply = true;
+        setTimeout(() => {
+          const cur = modelSettings[modelId];
+          if (cur) delete cur.pendingApply;
+        }, 4000);
+      }
+      return { ...modelSettings[modelId] };
+    },
+    // S-3: after a moment the model "has" its vision file.
+    addVision: async (modelId: string) => {
+      const m = LOCAL_MODELS.find((x) => x.id === modelId);
+      if (m) setTimeout(() => { m.vision = 'ready'; }, 800);
+      return { downloadId: 'wb-vision-1' };
+    },
     delete: async () => true,
     onDownloadProgress: (cb: (p: DownloadProgress) => void) => {
       progressListeners.add(cb);
@@ -964,19 +1146,128 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   // rendered "Installed undefined · undefined" — which the landing-page loop
   // for the builders row (row8) filmed verbatim on 2026-08-27. Shape:
   // shared/engine-types.ts EngineStatus.
+  // Local-engine upgrades (2026-09-05): the `stress` scenario shows the engine RUNNING on an
+  // AMD laptop with a ROCm switch on offer — the states the design deck photographs. Every
+  // other scenario keeps the quiet stopped card the landing-page loop (row8) films.
+  let speed = { speculative: true, compressCache: true };
+  let prereqChecks = 0;
+  let currentBackend: 'vulkan' | 'rocm' | 'cuda' | 'cpu' | 'metal' = 'vulkan';
+  // An engine-wide change that is saved but has not reached the engine yet, and
+  // whether a reply is what it is waiting for. Set by setConfig below so the
+  // card's two wordings can both be seen; cleared on a timer the way main's
+  // bounded wait clears them.
+  let configApplyPending = false;
+  // The REAL failure text when applying a saved engine setting goes wrong. The
+  // card is the only place that failure can be reported — the channel answered
+  // "saved" long before the apply ran — so it needs to be reviewable. Under
+  // `refused` a switch fails to apply instead of landing.
+  let configApplyError: string | null = null;
+  const statusListeners = new Set<(s: unknown) => void>();
+  // The settings-are-off message has TWO shapes and they look nothing alike: an
+  // amber box quoting the machine, and a grey block with two buttons and no
+  // quote. `?scenario=refused&reason=none` picks the second, the same way this
+  // shim already reads `?arcade=`, `?remote=` and `?firstRun=` — a sub-state
+  // switch, not a whole extra scenario.
+  const settingsOffReason = typeof location === 'undefined'
+    ? null
+    : new URLSearchParams(location.search).get('reason');
+  const engineStatus = () => ({
+    installed: true, installedVersion: 'b10665', pinnedVersion: 'b10665', backend: currentBackend,
+    // `refused` runs too — it is the degraded scenario, and the state T23 made
+    // visible (an engine running WITHOUT each model's own settings) only exists
+    // on a RUNNING engine.
+    state: (activeScenario === 'stress' || activeScenario === 'refused' ? 'running' : 'stopped') as 'running' | 'stopped',
+    cacheDir: '/home/you/.cache/llama.cpp', contextSize: 32768, port: 8080,
+    deviceName: 'AMD Radeon 8060S Graphics',
+    loadedModelsBytes: activeScenario === 'stress' ? 9_527_502_048 : 0,
+    lastReply: activeScenario === 'stress' ? { promptPerSecond: 383, generatePerSecond: 16.4 } : null,
+    backendOptions: currentBackend === 'rocm' ? [] : [{ backend: 'rocm' as const, label: 'Try ROCm (AMD) \u2014 reads faster, writes slower', state: 'needs-prereqs' as const }],
+    speed: { ...speed },
+    configApplyPending,
+    // `stress` is the scenario with a model loaded and a reply just measured, so
+    // it is the one where a queued change really is waiting on a reply; anywhere
+    // else the machine is idle and the card says "Applying now…" instead.
+    configApplyWaitingForReply: configApplyPending && activeScenario === 'stress',
+    configApplyError,
+    // `refused` is the workbench's degraded scenario, so it is where the engine
+    // runs WITHOUT the file holding each model's own settings — the one state
+    // that was invisible before T23. Everywhere else the settings are in force;
+    // a stopped engine reports nothing at all, which is what stops the card
+    // claiming anything about a run that has not happened.
+    ...(activeScenario === 'refused'
+      ? {
+        modelSettingsInForce: false,
+        // `reason=none` is the case where nothing legible came back: the card
+        // must then stay non-committal and offer Report bug / Diagnose with
+        // Claude rather than invent a cause.
+        modelSettingsError: settingsOffReason === 'none'
+          ? null
+          : "EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'",
+      }
+      : activeScenario === 'stress'
+        ? { modelSettingsInForce: true, modelSettingsError: null as string | null }
+        : {}),
+  });
   const engine: Ns<'engine'> = {
-    status: async () => ({
-      installed: true, installedVersion: 'b9986', pinnedVersion: 'b9986', backend: 'vulkan' as const,
-      state: 'stopped' as const, cacheDir: '/home/you/.youcoded/models', contextSize: 32768, port: 8080,
-    }),
+    status: async () => engineStatus(),
     models: async () => [],
     install: async () => undefined,
     restart: async () => undefined,
     setContext: async () => undefined,
+    // Q-1: first check says what is missing (with this machine's command); "Check again"
+    // reports it present, so the flow can be walked end to end in the workbench.
+    prereqs: async (backend: string) => {
+      prereqChecks += 1;
+      return {
+        backend: backend as 'rocm', satisfied: prereqChecks > 1, distro: 'Arch Linux',
+        command: 'sudo pacman -S --needed rocm-hip-runtime hipblas rocblas',
+        docsUrl: 'https://rocm.docs.amd.com/projects/install-on-linux/en/latest/',
+        explainer: 'The ROCm engine loads AMD\u2019s ROCm libraries from this computer, and they are not installed yet.',
+      };
+    },
+    // The workbench has no main process and so no PTY — hand back a fixture id
+    // so the caller's shape matches the real channel's { sessionId }.
+    runInTerminal: async () => ({ sessionId: 'shell-mock' }),
+    // Real since 2026-09-05 (engine:set-config). The fake keeps the workbench
+    // switches live without a main process; the real channel writes config.json
+    // and applies the change once no reply is streaming.
+    setConfig: async (patch: { contextSize?: number; speed?: Partial<typeof speed> }) => {
+      if (patch?.speed) speed = { ...speed, ...patch.speed };
+      // Mirrors main: the value saves at once and the ENGINE picks it up later,
+      // so the card's saved-but-not-applied line appears and then goes away.
+      configApplyPending = true;
+      configApplyError = null;
+      setTimeout(() => {
+        configApplyPending = false;
+        // Under the degraded scenario the apply FAILS, which is the only way to
+        // see the line that carries its real message.
+        configApplyError = activeScenario === 'refused'
+          ? "EACCES: permission denied, open '/home/you/.youcoded/engine/models.ini'"
+          : null;
+        for (const cb of statusListeners) cb(engineStatus());
+      }, 4000);
+      return engineStatus();
+    },
     onInstallProgress: () => () => {},
-    onStatusChanged: () => () => {},
+    // A REAL registrar now, not a no-op: the card learns that a queued change
+    // landed only from a status push, so a stubbed-out subscription would leave
+    // the workbench showing the pending line for ever.
+    onStatusChanged: (cb: (s: unknown) => void) => {
+      statusListeners.add(cb);
+      return () => { statusListeners.delete(cb); };
+    },
     onModelsChanged: () => () => {},
   };
+
+  // Voice prompting (deck 2026-09-05) — NO real backend yet (mock-only.ts).
+  // `?voice=<state>` picks the readiness the mic starts in: ready (default),
+  // needs-download, downloading, unavailable. The fake "hears" one scripted
+  // sentence a word at a time — the same sentence the speech bench used — so
+  // the live-words treatment (deck Q-2: a grey tail that settles) and the
+  // first-run card (Q-5) can be judged in the workbench without a microphone.
+  const voice = createVoiceMock(
+    typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('voice'),
+  );
 
   const defaults: Ns<'defaults'> = {
     get: async () => store.getState().defaults,
@@ -1173,8 +1464,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
           ],
       syncHub: 'connected',
     }),
-    // MOCK_ONLY — no backend yet. The real one becomes setProjectDescription in
-    // sync-spaces/service.ts, writing the synced project registry.
+    // Real channel (syncspaces:set-project-description); the fake stays so the
+    // description editor works in the workbench without a synced registry.
+    // Its real half is setProjectDescription in sync-spaces/service.ts.
     setProjectDescription: async (folderName: string, description: string) => {
       const root = folderName === 'recipes' ? '/home/destin/recipes' : `/home/destin/youcoded-dev/${folderName}`;
       descriptions[root] = description.trim() || null;
@@ -1251,7 +1543,8 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     addBackend: async () => ({ ok: true }),
   };
 
-  // MOCK_ONLY — the LOCAL-folder half of the same field, mirroring how
+  // Real channel (folders:set-description) — the LOCAL-folder half of the same
+  // field, faked here for the same reason, mirroring how
   // folders.rename already writes the nickname that becomes the display name.
   const folders = {
     // Assistant settings → General's default-folder dropdown reads this list
@@ -1310,8 +1603,9 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
   };
 
   // Session references (spec 2026-08-10): the fake IPC pair backing the
-  // Preview/Resume cards, both MOCK_ONLY (mock-only.ts) since no real backend
-  // exists yet. resolve() reuses the SAME fixture table the tool-gallery and
+  // Preview/Resume cards. The real chatsearch:* backend landed since, so these
+  // are fakes over a REAL channel — kept so the tool gallery can show every row
+  // state on demand without a live index. resolve() reuses the SAME fixture table the tool-gallery and
   // scenario fixtures reference by uuid, so a card built here shows exactly
   // the state its short id was chosen to demonstrate. read() fabricates a
   // fake transcript tail rather than reading anything real; CS_ERR_READ is
@@ -2034,6 +2328,98 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
       ({ ok: true as const, value: { ok: true as const, best: score, best_at: Math.floor(Date.now() / 1000), runs: 1, is_best: true } }),
   };
 
+  // The buddy floater. Every one of these mirrors preload.ts, including the
+  // three Linux/KDE helper calls — those had no real backend while the popup was
+  // being designed and came off MOCK_ONLY on 2026-09-04 when it landed
+  // (docs/active/design/2026-09-04-linux-buddy-helper/). The fakes below stay so
+  // the workbench can still show every state without a KDE desktop.
+  //
+  // ?buddyHelper= picks which desktop the workbench is pretending to be. All
+  // FOUR rows of design §4's table are reachable, because the two that were
+  // missing are the two a Linux session cannot easily be put into by hand:
+  //
+  //   installed       KDE Wayland, helper in place — the buddy can be dragged (default)
+  //   available       KDE Wayland, helper not added yet — the consent path
+  //   none            Wayland, but a desktop the helper cannot work on — the
+  //                   "Not yet supported on this desktop" row
+  //   not-needed      Windows/macOS/Linux X11 — the app moves its own windows,
+  //                   so NO helper UI appears at all and the switch is the plain
+  //                   one it has always been
+  //   not-needed-installed
+  //                   the same, except a helper is still sitting in KDE's
+  //                   settings from a previous Wayland login — Remove helper is
+  //                   the only helper control shown
+  const buddyHelperMode = (typeof location !== 'undefined'
+    && new URLSearchParams(location.search).get('buddyHelper')) || 'installed';
+  // `needed` is the fact that decides whether ANY helper UI exists (design §4).
+  const buddyHelperNeeded = !buddyHelperMode.startsWith('not-needed');
+  let buddyHelperInstalled = buddyHelperMode === 'installed' || buddyHelperMode === 'not-needed-installed';
+  const buddyHelperSupported = buddyHelperNeeded && buddyHelperMode !== 'none';
+  let buddyDismissed = false;
+  let buddyKeepAbove = true;
+  const buddyStatusSubs = new Set<(s: unknown) => void>();
+  const pushBuddyStatus = () => {
+    const snap = { dismissed: buddyDismissed, keepAbove: buddyKeepAbove };
+    buddyStatusSubs.forEach((cb) => cb(snap));
+  };
+  const buddy = {
+    getStatus: async () => ({ dismissed: buddyDismissed, keepAbove: buddyKeepAbove }),
+    // Mirrors main's refusal (design §5): a desktop that NEEDS a helper and does
+    // not have one says no rather than putting a buddy on screen that cannot be
+    // dragged. The sentence is main's own (ipc-handlers.ts buddyShowRefusal), so
+    // the workbench shows the words a real user would read, not invented ones.
+    show: async () => {
+      if (buddyHelperNeeded && !buddyHelperInstalled) {
+        return {
+          ok: false as const,
+          reason: 'The buddy needs its KDE helper on this desktop, and the helper is not running.',
+        };
+      }
+      buddyDismissed = false;
+      pushBuddyStatus();
+      return { ok: true as const };
+    },
+    hide: async () => {},
+    dismiss: async () => { buddyDismissed = true; pushBuddyStatus(); },
+    // Mirrors the real one's contract exactly: resolves FALSE when KWin could
+    // not be reached, never throws. On the `none` desktop that is every call.
+    setKeepAbove: async (v: boolean) => { buddyKeepAbove = v; return buddyHelperSupported; },
+    onStatusChanged: (cb: (s: unknown) => void) => {
+      buddyStatusSubs.add(cb);
+      return () => buddyStatusSubs.delete(cb);
+    },
+    // needed = the app cannot move its own windows here, so a helper is required
+    // at all; supported = a helper could work on this desktop (KDE 6 Wayland);
+    // installed = the helper package is loaded in the compositor. `installed` is
+    // reported truthfully even when nothing is needed — that is what keeps the
+    // Remove helper button reachable after a Wayland user logs into X11.
+    helperStatus: async () => ({
+      needed: buddyHelperNeeded,
+      supported: buddyHelperSupported,
+      installed: buddyHelperInstalled,
+    }),
+    // Real one writes the package into ~/.local/share/kwin/scripts,
+    // enables it and asks KWin to reconfigure. Fails on a non-KDE desktop.
+    installHelper: async () => {
+      if (!buddyHelperSupported) return { ok: false as const };
+      buddyHelperInstalled = true;
+      return { ok: true as const };
+    },
+    // The user-owned undo (decide-uninstall#D-1). The real one runs
+    // design §6's order — unload the script, disable it, ask KWin to reconfigure,
+    // then delete the package — and the buddy is switched off after it, because
+    // without the helper there is no buddy to move.
+    removeHelper: async () => {
+      // Gated on INSTALLED, not on supported — the real remove() just unloads
+      // whatever is there. Gating on `supported` would make Remove helper fail
+      // in exactly the state it exists for: a helper left behind on a desktop
+      // that no longer supports (or needs) one.
+      if (!buddyHelperInstalled) return { ok: false as const };
+      buddyHelperInstalled = false;
+      return { ok: true as const };
+    },
+  };
+
   return {
     // Marketplace feedback (overhaul §1.7). PARTIAL on purpose: only these three
     // are hand-written; `install`, `rate`, `deleteRating`, `likeTheme` and
@@ -2065,6 +2451,112 @@ function handWritten(store: MockStore): Record<string, Record<string, unknown>> 
     },
     session, providers, permissions, models, engine, defaults, native, detach, tags, on, theme, firstRun,
     terminal, artifacts, syncSpaces, sync, project, account, social, appearance, specialists, shell,
-    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, chatgpt, search, ...(remote ? { remote } : {}),
+    skills, marketplace, folders, fs, modes, chatsearch, window: windowNs, arcade, buddy, voice, chatgpt, search, ...(remote ? { remote } : {}),
   } as unknown as Record<string, Record<string, unknown>>;
+}
+
+const VOICE_SCRIPT = "Can you look at the budget spreadsheet I sent yesterday? Row 14 is wrong: it says $2,300 but Sarah's invoice was $2,030. Fix it and draft a short reply to her.".split(' ');
+
+/** A self-contained fake of `window.claude.voice`. Exported so the compare view
+ *  can mount one composer per readiness state on ONE page (each pane swaps its
+ *  own instance in before its InputBar mounts — see registry.tsx `voice-mic`). */
+export function createVoiceMock(initial: string | null, opts: { loopReset?: boolean } = {}): NonNullable<Window['claude']['voice']> {
+  const engine = 'Parakeet';
+  let readiness: VoiceReadiness =
+    initial === 'needs-download' ? { state: 'needs-download', engine, sizeMb: 639 }
+    : initial === 'downloading' ? { state: 'downloading', engine, sizeMb: 639, percent: 42 }
+    : initial === 'unavailable' ? { state: 'unavailable', reason: 'No microphone was found on this computer.' }
+    : { state: 'ready', engine };
+  const subs = new Set<(e: VoiceEvent) => void>();
+  const emit = (e: VoiceEvent) => subs.forEach((cb) => cb(e));
+  let timers: number[] = [];
+  let words = 0;
+  // WHY a flag and not just "are there timers": the contract in voice-types.ts is
+  // that `stop` emits EXACTLY ONE `final` — never two. The script auto-stops after
+  // two quiet seconds, so a reviewer who holds Space longer than the script used to
+  // get a second `final`, which a composer that trusts the contract would paste as
+  // a second copy of the whole utterance. Found reviewing T1, 2026-09-05.
+  let listening = false;
+  const later = (fn: () => void, ms: number) => { timers.push(window.setTimeout(fn, ms)); };
+  const clear = () => { timers.forEach((t) => window.clearTimeout(t)); timers = []; };
+  const finish = () => {
+    if (!listening) return;
+    listening = false;
+    clear();
+    // loopReset: the compare panes that judge the listening feedback restart the
+    // mic on a loop; ending with an empty final keeps the box from filling up.
+    const text = opts.loopReset ? '' : VOICE_SCRIPT.slice(0, words).join(' ');
+    words = 0;
+    emit({ type: 'level', value: 0 });
+    emit({ type: 'final', text });
+  };
+  return {
+    status: async () => readiness,
+    download: async () => {
+      let pct = readiness.state === 'downloading' ? readiness.percent : 0;
+      const tick = () => {
+        pct = Math.min(100, pct + 3);
+        // The real download ends in an UNPACK, not in `ready`: the archive is
+        // expanded into place, which takes about a minute and reports no
+        // believable progress. The fake goes through the same state (briefly)
+        // because that card is only ever reviewed here — without it the
+        // workbench would show a bar that jumps straight to done and nobody
+        // would ever look at the "Almost ready…" screen the real app shows for
+        // the longest single minute of the first run.
+        readiness = pct < 100
+          ? { state: 'downloading', engine, sizeMb: 639, percent: pct }
+          : { state: 'unpacking', engine };
+        emit({ type: 'readiness', readiness });
+        if (pct < 100) later(tick, 90);
+        else later(() => { readiness = { state: 'ready', engine }; emit({ type: 'readiness', readiness }); }, 1400);
+      };
+      tick();
+    },
+    start: async () => {
+      clear();
+      words = 0;
+      listening = true;
+      // Loudness ticks independent of the words, so the meter moves between them.
+      const level = () => { emit({ type: 'level', value: 0.2 + Math.random() * 0.7 }); later(level, 90); };
+      later(level, 60);
+      const step = () => {
+        words += 1;
+        // The shared rule, not a lookalike: solid up to the last full stop /
+        // question mark / exclamation mark, grey after it. The old fake greyed
+        // the last two words no matter what, which made the reviewed behaviour
+        // and the shipped behaviour two different things.
+        const { committed, tail } = splitAtLastSentenceEnd(VOICE_SCRIPT.slice(0, words).join(' '));
+        emit({ type: 'partial', committed, tail });
+        // "Still working on it". The real host pushes one of these per speech
+        // pass and the composer's watchdog arms when they STOP; the fake pushes
+        // them for the same reason a fake answers `status()` — so the surface
+        // being reviewed behaves like the one that ships.
+        emit({ type: 'heartbeat' });
+        // The silence stop (Q-3): the script ends, two quiet seconds pass, the mic closes itself.
+        if (words < VOICE_SCRIPT.length) later(step, 300 + Math.random() * 160); else later(finish, 2000);
+      };
+      later(step, 450);
+    },
+    stop: async () => { finish(); },
+    // Cancel emits NOTHING — not even an empty `final`. Emitting one used to be
+    // this fake's behaviour and it is wrong in a way that matters: an empty
+    // `final` is a real event that means "the mic closed and heard nothing", so
+    // a composer that trusts the contract would treat a cancel as a finished
+    // utterance and clear the grey words the user had just decided to throw
+    // away. The hook returns itself to idle on cancel without being told.
+    cancel: async () => { clear(); words = 0; listening = false; },
+    // Desktop-only members. The workbench IS the desktop surface, so the fake
+    // offers both — the composer decides "am I on a computer that captures its
+    // own audio?" by testing whether these exist, and a fake without them would
+    // send every review pane down the Android path instead.
+    //
+    // sendAudio discards what it is given: there is no recogniser behind this
+    // fake, the transcript is scripted, and a browser tab has nothing to do with
+    // the samples. Accepting them is the point.
+    sendAudio: (_chunk: ArrayBuffer, _rms: number) => {},
+    // 'granted' because the workbench is reviewed on a machine whose microphone
+    // works; the denied wording is reviewed through the `unavailable` fake above.
+    micAccess: async () => 'granted' as const,
+    onEvent: (cb) => { subs.add(cb); return () => { subs.delete(cb); }; },
+  };
 }

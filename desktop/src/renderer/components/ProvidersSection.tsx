@@ -1,6 +1,17 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button, FieldError, InputGroup, Select, TextInput, Toggle } from './ui';
 import { isLocalEndpoint, type ProviderStatus, type ProviderConfig, type ProviderType } from '../../shared/provider-types';
+import { invalidateProviderTypeCache } from '../hooks/use-provider-type';
+
+/** Pass-through that forgets the provider-type cache once a write succeeded. */
+function afterWrite<T>(value: T): T {
+  invalidateProviderTypeCache();
+  return value;
+}
+
+// WHY: this panel's error lines are where a phone's "desktop only" refusal and
+// Electron's "Error invoking remote method …" wrapper both land verbatim.
+import { plainMessage } from '../utils/ipc-error';
 
 // Settings → Providers section (Phase 1 Plan A, Task 13). Lets the user add,
 // test, enable/disable, and remove the model providers the NATIVE runtime binds
@@ -58,12 +69,18 @@ async function normalize<T>(p: Promise<T>): Promise<T> {
 const safeProviders = {
   list: (): Promise<ProviderStatus[]> =>
     normalize(window.claude.providers.list() as Promise<ProviderStatus[]>),
+  // Each write below changes which provider rows (and models) exist, and the
+  // status bar / usage card resolve a session's provider through a cached
+  // copy of those rows (hooks/use-provider-type.ts). Dropping the cache here,
+  // on success, is what makes a just-added provider's sessions resolve
+  // without an app reload (design §4.9 / review R3-4). A throw leaves the
+  // cache alone: nothing changed.
   upsert: (config: Partial<ProviderConfig>): Promise<string> =>
-    normalize(window.claude.providers.upsert(config)),
+    normalize(window.claude.providers.upsert(config)).then(afterWrite),
   remove: (id: string): Promise<unknown> =>
-    normalize(window.claude.providers.remove(id)),
+    normalize(window.claude.providers.remove(id)).then(afterWrite),
   setKey: (id: string, key: string): Promise<unknown> =>
-    normalize(window.claude.providers.setKey(id, key)),
+    normalize(window.claude.providers.setKey(id, key)).then(afterWrite),
   // Never throws on ok:false — a failed test is a real result, not an error.
   // A genuinely rejected promise (or a transport { ok:false, error } with no
   // message) still degrades to a displayable { ok:false, message }.
@@ -77,7 +94,7 @@ const safeProviders = {
       const err = errorMessageOf(res);
       return { ok: false, message: err ?? 'Could not test this provider.' };
     } catch (e) {
-      return { ok: false, message: e instanceof Error ? e.message : 'Could not test this provider.' };
+      return { ok: false, message: plainMessage(e, 'Could not test this provider.') };
     }
   },
 };
@@ -137,7 +154,7 @@ export default function ProvidersSection({ embedded = false }: { embedded?: fals
       setRows(list);
       setListError(null);
     } catch (e) {
-      setListError(e instanceof Error ? e.message : 'Something went wrong');
+      setListError(plainMessage(e, 'Could not load your providers.'));
       setRows((prev) => prev ?? []); // stop the skeleton; show the error line
     }
   }, []);
@@ -235,7 +252,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       setKeyOpen(false);
       await onChanged(); // refresh hasKey/ready
     } catch (e) {
-      setNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not save the key.' });
+      setNote({ tone: 'bad', text: plainMessage(e, 'Could not save the key.') });
     } finally {
       setBusy(false);
     }
@@ -260,7 +277,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       await safeProviders.upsert({ ...config, enabled: !provider.enabled });
       await onChanged();
     } catch (e) {
-      setNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not update the provider.' });
+      setNote({ tone: 'bad', text: plainMessage(e, 'Could not update the provider.') });
     } finally {
       setBusy(false);
     }
@@ -274,7 +291,7 @@ function ProviderRow({ provider, onChanged }: { provider: ProviderStatus; onChan
       setConfirmingRemove(false);
       await onChanged();
     } catch (e) {
-      setNote({ tone: 'bad', text: e instanceof Error ? e.message : 'Could not remove the provider.' });
+      setNote({ tone: 'bad', text: plainMessage(e, 'Could not remove the provider.') });
     } finally {
       // Reset in finally (mirrors saveKey/toggleEnabled): a success that somehow
       // leaves this row mounted must not strand it permanently disabled.
@@ -430,7 +447,7 @@ function AddProviderForm({ onDone, onCancel }: { onDone: () => Promise<void>; on
       }
       await onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not add the provider.');
+      setError(plainMessage(e, 'Could not add the provider.'));
       setBusy(false);
     }
   };

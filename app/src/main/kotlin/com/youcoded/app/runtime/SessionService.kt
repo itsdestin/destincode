@@ -131,6 +131,32 @@ class SessionService : Service() {
     /** Callback for Activity to know when to launch the QR scanner. */
     var onQrScanRequested: (() -> Unit)? = null
 
+    // ── Voice prompting ─────────────────────────────────────────────────────
+    // Talking to the chat box uses the phone's own speech recognition. Two
+    // things about Android force the shape of this code: only the app WINDOW can
+    // ask the user for microphone permission (this Service cannot), and the
+    // recogniser itself refuses to be touched from any thread but the main one.
+
+    /** Microphone permission bridge: Service parks the deferred, the Activity's
+     *  permission launcher completes it with the user's answer — the same
+     *  hand-off the file, folder and QR pickers above already use. */
+    var pendingMicPermission: CompletableDeferred<Boolean>? = null
+    /** Callback for the Activity to know when to show the microphone prompt. */
+    var onMicPermissionRequested: (() -> Unit)? = null
+
+    /** True only once the user has actually SEEN the permission prompt and said no.
+     *  WHY it matters: "permission not granted" must never be reported before the
+     *  question has been asked — that would grey the mic button out for someone who
+     *  was never offered the choice, with a reason that is not yet true. */
+    private var micPermissionDenied = false
+
+    /** Lives for the life of the app; only ever touched on the main thread. */
+    private var voiceRecognizer: VoiceRecognizer? = null
+
+    /** Runs work on the main thread, which is the only thread Android's speech
+     *  recogniser tolerates (bridge messages arrive on the web-socket thread). */
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
     // ── Marketplace auth + API ───────────────────────────────────────────────
     // WHY lazy: applicationContext is not available during construction; initialized
     // on first use inside handleBridgeMessage which always runs after onCreate().
@@ -711,6 +737,93 @@ class SessionService : Service() {
         wakeLock = null
     }
 
+    // ── Voice prompting helpers ─────────────────────────────────────────────
+
+    /** Has the user given this app permission to use the microphone? */
+    private fun micPermissionGranted(): Boolean =
+        checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    /** What came back when we needed the microphone. */
+    private enum class MicPermission {
+        /** The user has said yes (now, or at some point before). */
+        GRANTED,
+        /** The user saw the prompt and said no. */
+        DENIED,
+        /** Nobody could ask — the app window is not on screen, or it never replied. */
+        UNANSWERED,
+    }
+
+    /**
+     * Make sure we may use the microphone, asking the user if we have not already.
+     *
+     * A background Service cannot show a permission prompt on Android; only an
+     * Activity can. So this parks a "waiting for an answer" slot the way the file,
+     * folder and QR pickers already do, asks MainActivity to launch its permission
+     * prompt, and waits for the Activity to fill the slot in.
+     */
+    private suspend fun ensureMicPermission(): MicPermission {
+        if (micPermissionGranted()) {
+            micPermissionDenied = false
+            return MicPermission.GRANTED
+        }
+        // No Activity bound means no window on screen and therefore no way to ask.
+        val ask = onMicPermissionRequested ?: return MicPermission.UNANSWERED
+
+        val deferred = CompletableDeferred<Boolean>()
+        pendingMicPermission = deferred
+        withContext(Dispatchers.Main) { ask() }
+        // A timeout rather than an endless wait: if the window is swiped away while
+        // the prompt is up, the answer never arrives and this coroutine would leak.
+        val granted = try {
+            withTimeoutOrNull(120_000) { deferred.await() }
+        } catch (_: Exception) { null }
+        pendingMicPermission = null
+
+        return when (granted) {
+            true -> { micPermissionDenied = false; MicPermission.GRANTED }
+            false -> { micPermissionDenied = true; MicPermission.DENIED }
+            // Never answered — deliberately NOT recorded as a refusal.
+            null -> MicPermission.UNANSWERED
+        }
+    }
+
+    /**
+     * Whether the mic can listen right now, in the shape
+     * `desktop/src/shared/voice-types.ts` defines (`VoiceReadiness`).
+     *
+     * Note the middle branch: we only say the permission was refused once the user
+     * has actually turned the prompt down. Before that — permission not yet given,
+     * never asked — this reports `ready`, because the first tap on the mic is what
+     * asks the question.
+     */
+    private fun voiceReadiness(): JSONObject = when {
+        !android.speech.SpeechRecognizer.isRecognitionAvailable(this) ->
+            JSONObject().put("state", "unavailable")
+                .put("reason", "This phone has no speech recognition service installed.")
+        micPermissionDenied && !micPermissionGranted() ->
+            JSONObject().put("state", "unavailable")
+                .put("reason", "Microphone permission was not granted.")
+        else ->
+            JSONObject().put("state", "ready").put("engine", "your phone's speech recognition")
+    }
+
+    /** Push one voice event to the chat UI (no id — it is a broadcast, not a reply). */
+    private fun broadcastVoiceEvent(event: JSONObject) {
+        bridgeServer.broadcast(JSONObject().apply {
+            put("type", "voice:event")
+            put("payload", event)
+        })
+    }
+
+    /** Open the microphone. MAIN THREAD ONLY — Android's recogniser demands it. */
+    private fun startVoiceRecognizer() {
+        val recognizer = voiceRecognizer
+            ?: VoiceRecognizer.create(this) { event -> broadcastVoiceEvent(event) }
+                .also { voiceRecognizer = it }
+        recognizer.start()
+    }
+
     /** Push permission overrides to all active sessions' in-memory cache. */
     private fun syncPermissionOverridesToSessions(overrides: JSONObject) {
         sessionRegistry.sessions.value.values.forEach { session ->
@@ -788,6 +901,11 @@ class SessionService : Service() {
     }
 
     override fun onDestroy() {
+        // Hand the microphone back to Android. onDestroy already runs on the main
+        // thread, which is the only thread the recogniser may be touched from.
+        try { voiceRecognizer?.release() } catch (_: Exception) {}
+        voiceRecognizer = null
+
         // Stop sync service — cancels timer, releases locks, removes .app-sync-active marker
         try { syncService?.stop() } catch (_: Exception) {}
         syncService = null
@@ -3959,6 +4077,75 @@ class SessionService : Service() {
             }
             // artifacts:changed is a server-push event only — no inbound handler needed.
 
+            // ── Voice prompting ─────────────────────────────────────────────
+            // Talking instead of typing. On a phone this is Android's own speech
+            // recognition, so there is nothing to download and no audio for the
+            // app to handle — Android listens and hands back words.
+
+            /** Can the mic be used right now, and if not, what is in the way? */
+            "voice:status" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it, voiceReadiness()) }
+            }
+
+            /** Open the microphone. Asks for permission first if it has not been given. */
+            "voice:start" -> {
+                when (ensureMicPermission()) {
+                    MicPermission.GRANTED -> {
+                        // The recogniser is main-thread-only and this runs on the
+                        // web-socket thread, so hop before touching it.
+                        mainHandler.post { startVoiceRecognizer() }
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                            org.json.JSONObject().put("ok", true)) }
+                    }
+                    MicPermission.DENIED -> {
+                        // Push the new readiness as well as answering the call, so the
+                        // card in the chat box explains itself instead of the button
+                        // just going quiet.
+                        broadcastVoiceEvent(org.json.JSONObject()
+                            .put("type", "readiness")
+                            .put("readiness", voiceReadiness()))
+                        // And PUSH it as an error too. WHY both: this bridge has no
+                        // error channel — the shim resolves every reply, so an
+                        // `ok:false` payload reads to the composer as a SUCCESSFUL
+                        // start, and the phone would sit saying "Listening…" over a
+                        // microphone that was never opened, with no clock to end it.
+                        // The pushed `error` is what returns the box to idle.
+                        broadcastVoiceEvent(org.json.JSONObject()
+                            .put("type", "error")
+                            .put("message", "Microphone permission was not granted."))
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                            org.json.JSONObject().put("ok", false)
+                                .put("error", "Microphone permission was not granted.")) }
+                    }
+                    MicPermission.UNANSWERED -> {
+                        // Nobody could show the prompt (the app window is not on
+                        // screen). Say exactly that — do NOT record this as a refusal,
+                        // because the user was never asked.
+                        // Pushed as an error for the same reason as the DENIED branch.
+                        broadcastVoiceEvent(org.json.JSONObject()
+                            .put("type", "error")
+                            .put("message", "The YouCoded window is not open, so the microphone permission could not be requested."))
+                        msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                            org.json.JSONObject().put("ok", false)
+                                .put("error", "The YouCoded window is not open, so the microphone permission could not be requested.")) }
+                    }
+                }
+            }
+
+            /** Close the microphone and keep the words. */
+            "voice:stop" -> {
+                mainHandler.post { voiceRecognizer?.stop() }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", true)) }
+            }
+
+            /** Close the microphone and throw the words away. */
+            "voice:cancel" -> {
+                mainHandler.post { voiceRecognizer?.cancel() }
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", true)) }
+            }
+
             "git:file-status", "git:file-review", "git:commit-file-diff", "git:stage",
             "git:unstage", "git:commit", "git:discard", "git:watch", "git:unwatch" -> {
                 // Git surface is desktop-only for now (spec 2026-07-22); the shared
@@ -3979,6 +4166,39 @@ class SessionService : Service() {
             "project:write-context-file" -> {
                 msg.id?.let { bridgeServer.respond(ws, msg.type, it,
                     org.json.JSONObject().put("ok", false).put("error", "not-implemented-on-mobile")) }
+            }
+
+            // The six local-engine upgrade channels (2026-09-05). Desktop-only for
+            // the same reason as every other branch here — a phone runs no local
+            // engine, holds no model folder and has no terminal to open — but they
+            // answer `unsupported` as well as `ok:false`, and the difference is
+            // something the user reads.
+            //
+            // WHY: the shared shim RE-THROWS an `ok:false` answer for exactly these
+            // six (remote-shim.ts REJECT_ON_NOT_OK), because over the remote link
+            // that shape means "the host's handler failed". Answered the plain way,
+            // a phone would put the literal words "not-implemented-on-mobile" in the
+            // model settings dialog as if the engine had said them. `unsupported`
+            // takes the shim's other path instead: one plain-language notice naming
+            // the feature, and a rejection the caller can recognise.
+            //
+            // WHY IT IS ITS OWN BRANCH, WHOLE, HERE: a Kotlin `when` branch runs
+            // from its FIRST comma-separated value to the one carrying the `-> {`.
+            // Written into the middle of the long not-implemented list below, this
+            // `-> {` silently captured the eighteen native:* / provider:* channels
+            // above it — so `provider:list`, which the model picker calls every time
+            // it opens, started answering `unsupported` and popping a toast on a
+            // phone doing no remote access. Six labels, one branch, its own
+            // boundaries. The label set is pinned by ipc-channels.test.ts.
+            "engine:set-config",
+            "engine:prereqs",
+            "engine:run-in-terminal",
+            "models:settings",
+            "models:set-settings",
+            "models:add-vision" -> {
+                msg.id?.let { bridgeServer.respond(ws, msg.type, it,
+                    org.json.JSONObject().put("ok", false).put("unsupported", true)
+                        .put("error", "not-implemented-on-mobile")) }
             }
 
             // Native runtime (YouCoded's first-party harness) + provider registry
@@ -4020,6 +4240,17 @@ class SessionService : Service() {
             "provider:test",
             "provider:set-key",
             "provider:catalog",
+            // Sign in with ChatGPT (backend design 2026-09-05 §5). The account,
+            // its encrypted tokens and the 127.0.0.1:1455 sign-in listener all
+            // live in the DESKTOP main process; Android has no native runtime to
+            // hold any of that until M8. Reply not-implemented so the shared
+            // React UI degrades to a "desktop only" state instead of timing out
+            // (the card is hidden here anyway — chatgpt.supported is false off
+            // the desktop preload).
+            "chatgpt:status",
+            "chatgpt:sign-in",
+            "chatgpt:cancel-sign-in",
+            "chatgpt:sign-out",
             // WebSearch providers (Phase 2 Plan B) — keyed Tavily/Exa upgrades.
             // Desktop-only; no Android runtime yet. Reply not-implemented so the
             // shared React UI degrades to a "desktop only" state instead of timing out.
@@ -4094,6 +4325,13 @@ class SessionService : Service() {
             // signs into GitHub via its own gh-auth flow; the shared React modal
             // degrades — these invokes reject fast with this stub instead of
             // 30s-timing-out. (github:connect-done is a PUSH event — no handler.)
+            // Voice prompting's two desktop-only calls. The desktop downloads a
+            // speech model and asks the operating system about microphone access;
+            // a phone needs neither — Android's own speech recognition is already
+            // installed, and the permission question belongs to the app window's
+            // prompt (voice:start above), not to a call the UI can make.
+            "voice:download",
+            "voice:mic-access",
             "github:status",
             "github:connect-start",
             "github:connect-cancel",

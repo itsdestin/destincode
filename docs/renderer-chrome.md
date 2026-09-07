@@ -24,6 +24,26 @@ Thresholds enforced by `wecoded-themes/scripts/audit-contrast.mjs` (CI `validate
 - **User bubble text:** `on-accent` vs `accent` ≥ 4.5 (Strawberry Kitty's `#D94E6B` on white was 4.0 → darkened to `#CC4060` = 4.7).
 - **chat-pane bg == drawer-pane bg** (both `--canvas`) so the two windows read as one content surface. drawer-pane briefly used `--inset` during the chrome-glass refactor — looked like a different window. Change both in the same edit; the audit doesn't catch this mismatch.
 
+### Status colours (added 2026-09-05)
+
+`StatusDot.tsx` `STATUS_LABEL` is the app's whole status vocabulary, and it is what the session
+pills in the header show all day: **green = Working, blue = Response Ready, amber = Needs a Look,
+red = Needs Input**. A new surface that picks its own colour for a state does not merely look
+different — it tells the user the opposite of what they already read. The specialists popup
+shipped with a BLUE "Working" pill until Destin caught it on the review deck (2026-09-05).
+
+The status colours are declared "constant across all themes" in `globals.css`
+(`--color-green-400: #4CAF50`, `red-400`, `amber-700`), which is exactly why **they must never
+carry the word**. Measured on the helpers popup's own pill fill: `#4CAF50` as text is 1.97:1 on
+light, 1.81:1 on creme, 1.50:1 on meadow-mist, against a 4.5:1 floor — it passes only on the
+three dark themes. `amber-500` is worse (1.52 / 1.41 / 1.19:1). Put the colour in the ring and
+the tint and leave the word on `text-fg`/`text-fg-2`; `SessionStrip.tsx` `STATUS_PILL` is the
+pattern, and its own comment records the same finding from 2026-08-28.
+
+The UI review sweep measures this for free — a `scripts/ui-review/plans/` shot with
+`probe: false` opts OUT of the painted-pixel contrast probe, and `contrast.md` then says so
+rather than coming back empty.
+
 ## Header bar
 
 - **No `min-w-0` on the left cluster** — it collapses below the settings gear's `shrink-0` width, letting SessionStrip paint over the gear. Left + right `flex-1` columns stay symmetric (both omit `min-w-0`); truncate an individual child instead.

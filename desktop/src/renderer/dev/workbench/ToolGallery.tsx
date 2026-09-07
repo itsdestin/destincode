@@ -10,6 +10,7 @@
 import React from 'react';
 import { ChatProvider } from '../../state/chat-context';
 import ToolCard from '../../components/ToolCard';
+import { CollapsedToolGroup } from '../../components/AssistantTurnBubble';
 import { loadFixture, type FixtureBlock } from './fixture-loader';
 import type { ToolCallState } from '../../../shared/types';
 
@@ -42,12 +43,13 @@ function orderedBlocks(blocks: FixtureBlock[]): FixtureBlock[] {
 }
 
 // Walks the (already Skill-reordered) blocks. Consecutive non-Skill tools
-// get wrapped in a shared bordered container with inGroup={true} on each
-// card so they read visually as one tool group (mirrors the production
-// CollapsedToolGroup styling without importing it — the import path
-// caused a runtime crash, so we reproduce the visual outcome locally).
-// Skill tools always render standalone — they extract from groups in
-// production (Task 3) and we mirror that here.
+// share one real CollapsedToolGroup, exactly as production groups them, so
+// the gallery's "Grouped turns" section shows the actual headline/expand
+// behaviour rather than an approximation of it. Skill tools always render
+// standalone — they extract from groups in production (Task 3) and we
+// mirror that here.
+const GALLERY_SESSION_ID = 'sandbox';
+
 function renderBlocks(blocks: FixtureBlock[]): React.ReactNode[] {
   const out: React.ReactNode[] = [];
   let toolBuffer: ToolCallState[] = [];
@@ -59,12 +61,8 @@ function renderBlocks(blocks: FixtureBlock[]): React.ReactNode[] {
       out.push(<ToolCard key={t.toolUseId} tool={t} />);
     } else {
       out.push(
-        <div key={key} className="border border-edge rounded-lg overflow-hidden my-1">
-          <div className="px-2 py-1.5 space-y-0.5">
-            {toolBuffer.map((t) => (
-              <ToolCard key={t.toolUseId} tool={t} inGroup />
-            ))}
-          </div>
+        <div key={key} className="my-1">
+          <CollapsedToolGroup tools={toolBuffer} sessionId={GALLERY_SESSION_ID} />
         </div>
       );
     }

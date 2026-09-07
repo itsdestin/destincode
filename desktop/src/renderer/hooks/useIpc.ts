@@ -1,3 +1,4 @@
+import type { VoiceBridge } from '../../shared/voice-types';
 import { useEffect, useRef } from 'react';
 // M1 Task 3: native.send's declared return type below was stale (`void`) from
 // before Task 2 switched the IPC channel to invoke/ack. shared/types.ts (not
@@ -367,14 +368,36 @@ declare global {
         status: () => Promise<any>;
         install: () => Promise<any>;
         restart: () => Promise<any>;
-        // Plan C context-length knob — persists -c and reboots the engine.
+        // Plan C context-length knob — a thin alias for setConfig({contextSize}).
         setContext: (contextSize: number) => Promise<any>;
+        /** Every engine-wide setting in one write: the context length and the two
+         *  speed switches. The value saves immediately; it reaches the engine
+         *  once the reply that is streaming right now has finished, which is what
+         *  the returned status's `configApplyPending` reports. */
+        setConfig: (patch: {
+          contextSize?: number;
+          speed?: Partial<import('../../shared/engine-types').EngineSpeedSettings>;
+        }) => Promise<any>;
         onInstallProgress: (cb: (p: any) => void) => () => void;
         onStatusChanged: (cb: (s: any) => void) => () => void;
         // Live per-model residency (2026-07-14).
         models: () => Promise<import('../../shared/engine-types').EngineModel[]>;
         onModelsChanged: (cb: (models: import('../../shared/engine-types').EngineModel[]) => void) => () => void;
+        // 2026-09-05 local-engine upgrades. Real on every surface now; the
+        // workbench keeps a fake for each so the flows can be walked without a
+        // machine, a PTY or a running engine.
+        /** What a faster backend needs before it can be installed (Linux ROCm). */
+        prereqs: (backend: string) => Promise<import('../../shared/engine-types').EnginePrereqs>;
+        /** Open a plain-shell session in the app and TYPE an install command onto
+         *  its prompt — nothing is run; the user presses Enter. Resolves with the
+         *  session it made, which the renderer then selects (App.tsx's
+         *  session-created handler already focuses a new session). */
+        runInTerminal: (command: string) => Promise<{ sessionId: string }>;
       };
+      // Voice prompting (2026-09-05 deck). Optional: absent on hosts with no
+      // speech engine yet (remote browser, older builds) — the composer hides
+      // the mic when it is undefined. Shape: shared/voice-types.ts.
+      voice?: VoiceBridge;
       // Model manager (Plan C) — curated catalog, HF search, downloads, endpoint
       // detectors, engine backend switch. Task 9's Local Models panel consumes
       // these. onDownloadProgress returns an unsubscribe.
@@ -395,6 +418,22 @@ declare global {
         // Create-time / swap memory guard + [Reload Model] (2026-07-14).
         memoryCheck: (modelId: string) => Promise<{ verdict: 'ok' | 'tight' | 'too-large'; headline: string; detail: string }>;
         load: (modelId: string) => Promise<boolean>;
+        // 2026-09-05 local-engine upgrades. Real on every surface now.
+        /** One model's engine settings as STORED (deck Q-2). The stored shape,
+         *  not the four fields the dialog writes: the dialog also shows whether
+         *  the last save is still waiting on a streaming reply, and why the
+         *  model last failed to load. */
+        settings: (modelId: string) => Promise<import('../../shared/model-manager-types').StoredModelSettings>;
+        /** Save one model's settings, and remember (or forget) the memory
+         *  warning for it — `dismissMemoryWarning` replaced the separate
+         *  `models.dismissMemoryWarning` channel, so there is ONE write for
+         *  everything this dialog owns. */
+        setSettings: (
+          modelId: string,
+          patch: import('../../shared/model-manager-types').ModelSettingsWrite,
+        ) => Promise<import('../../shared/model-manager-types').StoredModelSettings>;
+        /** Fetch the vision projector for a model already on disk and move both into a folder (S-3). */
+        addVision: (modelId: string) => Promise<{ downloadId: string }>;
       };
       // Platform integration for hardware back button (Android). On desktop,
       // both methods are no-op stubs (preload.ts). On Android, notifyStackState

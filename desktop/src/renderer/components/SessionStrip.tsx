@@ -5,7 +5,7 @@ import { Button, Toggle } from './ui';
 import { isAndroid, isRemoteMode } from '../platform';
 import FolderSwitcher from './FolderSwitcher';
 import { SkipPermissionsInfoTooltip } from './SkipPermissionsInfoTooltip';
-import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, type Runtime, type Binding } from './RuntimeBinding';
+import { useNativeBinding, usePreset, NativeExtras, loadLastBinding, persistLastBinding, defaultRuntime, type Runtime, type Binding } from './RuntimeBinding';
 import ModelPicker, { type ModelChoice } from './model/ModelPicker';
 import { packSessions, PILL_GAP, type SessionMeasurement, type PackResult } from './header/pack-sessions';
 import { pillLabelStyle } from './header/pill-label-style';
@@ -110,16 +110,19 @@ interface SessionEntry {
   name: string;
   cwd: string;
   permissionMode: string;
-  // Which runtime backend this session runs — 'claude' (default) or 'native'.
-  // With harnessId and model, drives the "Claude Code · Sonnet" /
-  // "YouCoded Coder · DeepSeek R1" line under the name in the All Sessions
-  // menu (session-runtime-label.ts). Nothing on the pill itself.
+  // Which runtime backend this session runs — 'claude' (default), 'native' or
+  // 'shell'. With harnessId and model, drives the "Claude Code · Sonnet" /
+  // "YouCoded Coder · DeepSeek R1" / "Terminal · fish" line under the name in
+  // the All Sessions menu (session-runtime-label.ts). Nothing on the pill itself.
   provider?: string;
   // Resolved native preset id ('assistant' | 'coder', post legacy-mapping).
   // Absent for Claude sessions.
   harnessId?: string;
   // Model id the session runs on — a Claude alias or a native model id.
   model?: string;
+  // provider='shell' only — the shell that was spawned ('fish'), which the
+  // All Sessions menu shows where a model would otherwise go.
+  shellName?: string;
 }
 
 interface Props {
@@ -370,7 +373,9 @@ export default function SessionStrip({
   // whole control — Runtime toggle, provider/model picker, and all derivation —
   // now lives in the shared RuntimeBinding module so this form and the welcome/
   // app-open form can't drift on native-session creation.
-  const [runtime, setRuntime] = useState<Runtime>('claude');
+  // Opens on the install's remembered default (see RuntimeBinding.defaultRuntime):
+  // 'claude' normally, 'native' on an install that signed in with ChatGPT.
+  const [runtime, setRuntime] = useState<Runtime>(() => defaultRuntime());
   const [binding, setBinding] = useState<Binding | null>(() => loadLastBinding());
   const nb = useNativeBinding({ active: showNewForm, runtime, binding, setBinding });
   // Native harness preset (Assistant | Coder) — shared lifecycle hook (see
@@ -758,7 +763,9 @@ export default function SessionStrip({
     setDangerous(defaultSkipPermissions || false);
     setNewModel(defaultModel || 'sonnet');
     setLaunchInNewWindow(false);
-    setRuntime('claude');
+    // Reset to the remembered default, NOT the literal 'claude' -- otherwise a
+    // ChatGPT-only install's default would last one session (review R2-3).
+    setRuntime(defaultRuntime());
   }, [newCwd, dangerous, newModel, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel, runtime, nb.effectiveBinding, preset]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
@@ -2075,22 +2082,34 @@ export default function SessionStrip({
         <div
           ref={dropdownRef}
           // P-8 (2026-08-28): w-72 (288px) was too narrow for a session name and
-          // its project side by side. 28rem with an 88vw ceiling keeps it inside
-          // a phone-width window.
-          className="glass-overlay overlay-no-drag fixed w-[min(28rem,88vw)] bg-panel border border-edge rounded-lg shadow-lg z-[9000] overflow-hidden"
+          // its project side by side. 24rem retains that two-line row at a more
+          // compact desktop width, while the 88vw ceiling keeps it inside a phone.
+          className="glass-overlay overlay-no-drag fixed flex flex-col w-[min(24rem,88vw)] bg-panel border border-edge rounded-lg shadow-lg z-[9000] overflow-hidden"
           style={(() => {
             const triggerRect = triggerBtnRef.current?.getBoundingClientRect();
             const pillRect = pillBarRef.current?.getBoundingClientRect();
             const pillCenter = pillRect
               ? pillRect.left + pillRect.width / 2
               : undefined;
-            // Half the rendered width, which is min(448px, 88vw) — the clamp below
+            // Half the rendered width, which is min(384px, 88vw) — the clamp below
             // keeps the menu on screen, so it has to track the real width.
-            const halfDropdown = Math.min(448, window.innerWidth * 0.88) / 2;
+            const halfDropdown = Math.min(384, window.innerWidth * 0.88) / 2;
+            // WHY: a fixed 432px session list let its rows plus the New Session
+            // form run below short windows. Cap the complete menu at the space
+            // below its trigger; the list is the flexing, scrollable portion.
+            const belowTrigger = triggerRect
+              ? `calc(100vh - ${triggerRect.bottom + 8}px - var(--vvp-offset, 0px))`
+              : 'calc(100vh - 8px - var(--vvp-offset, 0px))';
             // Compute left-edge directly (no transform: translateX(-50%))
             // so backdrop-filter isn't broken by a persistent transform
             return {
               top: triggerRect ? triggerRect.bottom + 4 : 0,
+              // Keep the menu content-sized so the form footer follows the
+              // Create button. The form reads this cap and becomes its own
+              // scroll region only when the available viewport is too short.
+              height: undefined,
+              maxHeight: `min(680px, ${belowTrigger})`,
+              '--session-menu-available-height': `min(680px, ${belowTrigger})`,
               left: pillCenter != null
                 ? Math.min(Math.max(0, pillCenter - halfDropdown), window.innerWidth - halfDropdown * 2)
                 : `calc(50% - ${halfDropdown}px)`,
@@ -2106,11 +2125,12 @@ export default function SessionStrip({
               </div>
             </>
           )}
-          {/* P-8 (2026-08-28): 336px held six and a half of the old wrapped rows;
-              432px holds eight of the new one-line rows plus a sliced ninth, which
-              is the list's only "there is more below" cue. */}
+          {/* WHY: This is the menu's flexible middle. With the menu capped to
+              the available screen height above, it shrinks first (roughly five
+              rows on short windows) and scrolls before its New Session controls
+              can be pushed past the bottom edge. */}
           {sessions.length > 0 && (
-            <div ref={sessionListRef} className="scroll-fade" style={{ maxHeight: 'min(432px, 55vh)' }}>
+            <div ref={sessionListRef} className="scroll-fade flex-1" style={{ maxHeight: 'min(432px, 55vh)' }}>
               <div className="py-1">
               {sessions.map((s, idx) => {
                 const color = sessionStatuses?.get(s.id) || 'gray';
@@ -2243,7 +2263,10 @@ export default function SessionStrip({
                 <div className="px-3 pt-1.5 text-3xs font-medium text-fg-muted tracking-wider uppercase">
                   Sessions in other windows
                 </div>
-                <div className="py-1">
+                {/* WHY: Peer windows can hold an unbounded number of sessions.
+                    Keep this group inside the same scrolling middle as local
+                    sessions, so it cannot hide the New Session actions below. */}
+                <div className="scroll-fade flex-1 py-1">
                   {remoteGroups.flatMap((g) =>
                     g.sessions.map((s) => {
                       const color = sessionStatuses?.get(s.id) || 'gray';
@@ -2274,7 +2297,13 @@ export default function SessionStrip({
           <div className="border-t border-edge" />
 
           {showNewForm ? (
-            <div className="p-3 flex flex-col gap-2 rounded-b-lg overflow-hidden">
+            <div
+              className="p-3 flex-1 min-h-0 flex flex-col gap-2 rounded-b-lg overflow-y-auto scroll-fade"
+              style={{ maxHeight: 'var(--session-menu-available-height)' }}
+            >
+              {/* WHY: The creation form is another long list inside the capped
+                  dropdown, so this container must shrink and scroll before its
+                  Model, permissions, and Create controls reach the bottom edge. */}
               <div>
                 <label className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-1 block">Project Folder</label>
                 <FolderSwitcher

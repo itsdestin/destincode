@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useEscClose } from '../hooks/use-esc-close';
 import ProvidersSection from './ProvidersSection';
@@ -9,6 +9,7 @@ import { chatGptPlanLabel, type ChatGptAccountStatus } from '../../shared/chatgp
 import { AnchorTip, Button, Dialog, InputGroup, TextInput } from './ui';
 import BrailleSpinner from './BrailleSpinner';
 import { PlanWindows, type PlanUsage } from './plan-windows';
+import { invalidateProviderTypeCache } from '../hooks/use-provider-type';
 
 // The provider blocks of Settings → Assistant settings (2026-09-05). This file
 // was the Model Providers popup — one row opening one dialog with four
@@ -128,7 +129,10 @@ export function ClaudeCodeBlock({
   // would still call .find on undefined.
   const claudePrereq = state?.prerequisites?.find((p) => p.name === 'claude');
   const installed = claudePrereq?.status === 'installed';
-  const signedIn = state?.authComplete === true;
+  // authComplete is set by ANY finished sign-in, ChatGPT included, so on its
+  // own it would make this Claude row claim a Claude account that does not
+  // exist — and draw Claude plan-usage bars under it. (fix 3, 2026-09-05)
+  const signedIn = state?.authComplete === true && state?.authMode !== 'chatgpt';
 
   // Plain-word status line (no ●◐○ glyphs), in the same grey as every other row.
   let statusText: string;
@@ -216,7 +220,7 @@ export function ClaudeCodeBlock({
 // honest sentence about the footing (Q-6a): OpenAI welcomes this out loud but
 // has not written it into its terms.
 
-/** Reads the account state through the (still MOCK_ONLY) `chatgpt` namespace —
+/** Reads the account state through the real `chatgpt` namespace —
  *  reached with a cast like `firstRun`, until it joins the typed bridge. */
 function chatGptApi(): {
   status: () => Promise<ChatGptAccountStatus>;
@@ -228,6 +232,19 @@ function chatGptApi(): {
 }
 
 export function ChatGptBlock() {
+  // Kill switch (ChatGPT sign-in design §6): `YOUCODED_CHATGPT=0` makes preload
+  // report `chatgpt.supported: false`, and the card must disappear with it —
+  // the main side refuses the plan's models in that build, so a card offering
+  // the sign-in would be a dead button. Read as `=== true` (the
+  // native.supported pattern), so a shim with no `chatgpt` namespace at all
+  // hides it too; the workbench mock declares `supported: true` so the review
+  // rig sees it.
+  //
+  // WHY it lives HERE and not in the caller: master put this test in the Model
+  // Providers popup, which Assistant settings deletes — the card is now mounted
+  // straight onto the Cloud providers page, so the gate travels with the card
+  // or it does not exist at all. Merged 2026-09-07.
+  const supported = (window as any).claude?.chatgpt?.supported === true;
   const [status, setStatus] = useState<ChatGptAccountStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -236,7 +253,23 @@ export function ChatGptBlock() {
     try { setStatus(await chatGptApi().status()); }
     catch (e) { setNote(e instanceof Error ? e.message : 'Could not read the ChatGPT sign-in state.'); }
   }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  // Gated: a build with ChatGPT switched off must not call its IPC at all —
+  // the card is gone, not merely blank (guarded by plan-windows-other.test).
+  useEffect(() => { if (!supported) return; void refresh(); }, [refresh, supported]);
+
+  // Every state change this card observes (signed-out → waiting → signed-in,
+  // a sign-out, a block) changes which provider rows exist, and the status
+  // bar's chips and /usage resolve a session's plan through a cached copy of
+  // those rows (hooks/use-provider-type.ts). Drop that cache on the
+  // transition so a session started right after signing in gets its chips
+  // without an app reload (design §4.9 / review R3-4). The first read
+  // (null → something) is skipped: nothing changed, the card just mounted.
+  const lastState = useRef<ChatGptAccountStatus['state'] | null>(null);
+  useEffect(() => {
+    const next = status?.state ?? null;
+    if (lastState.current !== null && next !== null && next !== lastState.current) invalidateProviderTypeCache();
+    if (next !== null) lastState.current = next;
+  }, [status?.state]);
 
   // While the browser round-trip is open, poll — the sign-in completes in a
   // tab this app does not own, so nothing else tells the row it is done.
@@ -253,6 +286,10 @@ export function ChatGptBlock() {
       const ok = await verb();
       if (!ok) setNote(failText);
       await refresh();
+      // Belt and braces with the transition effect above: a sign-out that
+      // lands on the same state it left (a refused sign-in) still changed the
+      // rows main will report.
+      invalidateProviderTypeCache();
     } catch (e) {
       setNote(e instanceof Error ? e.message : failText);
     } finally {
@@ -303,6 +340,8 @@ export function ChatGptBlock() {
       Sign in with ChatGPT
     </Button>
   );
+
+  if (!supported) return null;
 
   return (
     <>

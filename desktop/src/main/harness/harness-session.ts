@@ -45,7 +45,33 @@ import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliv
 // canonicalize "read-only:/home/x/proj" AS a path, which is a category error
 // exactly like Bash's command string or Skill's id above — workDir containment
 // itself is already enforced inside NativeSessionHost.createChild.
-const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task']);
+const NON_PATH_SUBJECT_TOOLS = new Set(['Bash', 'Skill', 'Task',
+  // WebSearch's subject is a search QUERY and WebFetch's is a URL. Neither is a
+  // path, so canonicalizing them against the cwd is the same category error as
+  // Bash's command string above — and it had a real bite: a URL is resolved to
+  // `<cwd>/https:/host/path`, so fetching a page whose last segment looks like a
+  // credential file (`/.env.example`, `/id_rsa.pub`) tripped the SECRET hard-deny
+  // and the fetch was refused as "it looks like a credential or secret file".
+  // Nothing about a web request is gated by the filesystem jail. (2026-08-18 spec.)
+  'WebSearch', 'WebFetch']);
+
+/** Tools that only LOOK at the filesystem. An outside-the-workspace path no
+ *  longer forces an approval card for these — in ANY permission mode, Ask First
+ *  included (Destin, 2026-09-05: "permissions boundaries should only really be
+ *  for actions that change things").
+ *
+ *  WHY this is not a hole. Three reasons, in order of weight:
+ *   1. Bash is exempt from this guard entirely (NON_PATH_SUBJECT_TOOLS above),
+ *      so the model could already `cat` any of these bytes with no card. The
+ *      prompt was charging the polite tools a toll the terminal walks past.
+ *   2. Credential and secret paths are hard-DENIED inside checkPathGuard, above
+ *      this point, and that deny is unchanged and still cannot be overridden.
+ *   3. Reading changes nothing. Write and Edit are deliberately absent from this
+ *      set and still raise the outside-the-workspace card exactly as before.
+ *
+ *  Every other harness draws the line in the same place: Codex and Hermes fence
+ *  writes and leave reads open, Pi gates neither. */
+const READ_ONLY_PATH_TOOLS = new Set(['Read', 'Grep', 'Glob']);
 /** G-1: a poll is SUPPOSED to repeat, so BashOutput is exempt from the
  *  doom-loop signature window (spec §4.2); BASH_OUTPUT_READS_PER_TURN is the
  *  guard instead. */
@@ -263,10 +289,13 @@ export interface HarnessSessionOpts {
 }
 // The opts second arg carries per-turn model construction hints. `serialToolCalls`
 // (Task 10 / spec §4.2) tells the local-engine factory to inject
-// parallel_tool_calls:false; cloud factories ignore it.
+// parallel_tool_calls:false; cloud factories ignore it. `cacheKey` is this
+// session's id: the ChatGPT-plan factory sends it as the endpoint's
+// prompt_cache_key so every step of one session shares a cached prefix
+// (chatgpt backend design §4.2); every other factory ignores it.
 export type ModelFactory = (
   binding: ModelBinding,
-  opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void },
+  opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void; cacheKey?: string },
 ) => Promise<LanguageModel>;
 
 // One collected tool-call from a step's stream (input already PARSED to an
@@ -703,10 +732,13 @@ export class HarnessSession extends EventEmitter {
    *  already collapsed it, tripping the countImageOutputs clear above. They
    *  disagree only when the prune-protected window is bigger than
    *  fitToContext's budget, which needs a context window under roughly 8,500
-   *  tokens AND supportsVision: true — which for a local engine only happens
-   *  via an explicit registry entry. So the live exposure is narrow: a
-   *  registry-declared small local vision model with a very small context
-   *  window.
+   *  tokens AND supportsVision: true — which for a local engine now happens
+   *  whenever the router reports a paired vision projector (design §E5). It
+   *  used to require an explicit registry entry, and NO registry entry has
+   *  ever declared one, so this was unreachable on a local model until the
+   *  catalog started answering. The live exposure is now any downloaded local
+   *  vision model with a very small context window — do not read the old
+   *  "narrow" framing off this comment when triaging it.
    *
    *  Intended eventual fix (deferred, not this pass): re-key this map to
    *  Map<path, { mtime, toolCallId }> and reconcile against the FITTED window
@@ -1467,6 +1499,7 @@ export class HarnessSession extends EventEmitter {
       try {
         const model = await this.modelFactory(this.binding, {
           serialToolCalls: this.profile.constrainToolArgs && !this.profile.supportsParallelToolCalls,
+          cacheKey: this.opts.sessionId,
         });
         summary = await this.generateSummary(model, span);
       } catch {
@@ -1868,6 +1901,7 @@ export class HarnessSession extends EventEmitter {
         // already drives, so the UI upgrades from "reading N tokens" to a real
         // percentage and countdown without a second event type.
         onPrefillProgress: (p) => this.emitPrefillProgress(p),
+        cacheKey: this.opts.sessionId,
       });
       const aiTools = this.buildAiTools();       // {} when no tools → v0 chat path
 
@@ -2870,7 +2904,15 @@ export class HarnessSession extends EventEmitter {
             isError: true,
           };
         }
-        externalAsk = true;   // external_directory → force an ask
+        // A read tool looking outside the workspace no longer forces a card —
+        // see READ_ONLY_PATH_TOOLS for why this is not a hole. Falling THROUGH
+        // (rather than returning 'ok' early) is deliberate: decide() still runs
+        // below, so an explicit deny/ask rule the user set for Read still wins,
+        // and — because the ask is no longer synthetic — an "Always allow" on
+        // one of those rule-driven asks is now a promise the engine can keep.
+        if (!READ_ONLY_PATH_TOOLS.has(call.toolName)) {
+          externalAsk = true;   // external_directory → force an ask (writes only)
+        }
       }
     }
 

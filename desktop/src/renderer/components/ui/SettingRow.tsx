@@ -109,16 +109,16 @@ export type SettingRowProps = {
    * the title is user data of unbounded length (a chosen sound file's name).
    */
   truncateTitle?: boolean;
-  /**
-   * G-22 (design guide, 2026-09-05): a section that opens below its row is a
-   * navigating row whose chevron turns to point down while open. Set on an
-   * `onClick` row; `undefined` keeps the plain right-pointing chevron. Never a
-   * leading "›" glyph beside a word, never a bare text toggle.
-   */
-  expanded?: boolean;
   /** Accessible name for the radio when the title is not a plain string. */
   radioLabel?: string;
   disabled?: boolean;
+  /**
+   * Expand-in-place row (2026-09-05, Destin: "I HATE the bare dropdowns with a
+   * chevron"). The ONE shape for a section that opens below its row: the same
+   * right-hand chevron every navigating row has, turned to point down while
+   * open, plus aria-expanded. Never a leading "›" text toggle.
+   */
+  expanded?: boolean;
   /** Overrides the muted description color — e.g. Android's green "Connected". */
   descriptionClassName?: string;
   className?: string;

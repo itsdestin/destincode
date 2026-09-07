@@ -2094,21 +2094,27 @@ export class NativeSessionHost extends EventEmitter {
     // the two are resolved together for every create/resume/swap.
     private providerTypeFor: (binding: ModelBinding) => Promise<ProfileProviderType | null>,
     // Per-model vision fact read from the provider catalog's declared input
-    // modalities (Task 6c). Today only OpenRouter's catalog can actually
-    // answer this — everyone else (direct-key providers, openai-compatible,
-    // local-engine) has no such signal, so the real (ipc-handlers) wiring
-    // returns null for them WITHOUT ever touching the catalog, same as an
-    // OpenRouter cache miss or fetch failure returning null after touching
-    // it. null degrades to resolveProfile's existing registry/provider-default
-    // behavior (DiscoveredModel.supportsVision left undefined) — it is never
-    // allowed to throw. It is also never allowed to block a NON-OpenRouter
-    // session start; for a live OpenRouter binding it does await the same
-    // bounded (AbortSignal.timeout-guarded) catalog fetch contextAndSlotsFor
-    // already pays for that binding, so it is not fully non-blocking there —
-    // see the ipc-handlers.ts construction site for the short-circuit that
-    // makes this true. Positioned right after providerTypeFor for the same
-    // reason that one sits after contextAndSlotsFor: all three are resolved
-    // together for every create/resume/swap.
+    // modalities (Task 6c; local models added by design §E5). TWO catalogs can
+    // answer it, both from a field called `architecture.input_modalities`:
+    // OpenRouter's, and the local engine's own GET /models (a local model reads
+    // `["text","image"]` exactly when llama-server paired a vision projector
+    // beside it). Everyone else (direct-key providers, openai-compatible) has
+    // no such signal, so the real (ipc-handlers) wiring returns null for them
+    // WITHOUT ever touching the catalog, same as a cache miss or fetch failure
+    // returning null after touching it. null degrades to resolveProfile's
+    // existing registry/provider-default behavior
+    // (DiscoveredModel.supportsVision left undefined) — it is never allowed to
+    // throw. It is also never allowed to block a session start it does not
+    // apply to. For a binding it DOES apply to it awaits a catalog read, and
+    // that read is this closure's alone — contextAndSlotsFor asks the engine
+    // for a local binding and the catalog only for a hosted one, so on a local
+    // start this is the first and only catalog call. It is bounded: the
+    // catalog skips its upstream fetches entirely when no provider in the list
+    // can consume them, so an offline local user waits on nothing (see the WHY
+    // at ipc-handlers.ts's construction site and at ModelCatalog.get()).
+    // Positioned right after providerTypeFor for the same reason that one sits
+    // after contextAndSlotsFor: all three are resolved together for every
+    // create/resume/swap.
     private visionSupportFor: (binding: ModelBinding) => Promise<boolean | null>,
     // Fourth per-binding catalog fact (Task 11), resolved at the same three
     // moments as its siblings above (create / resume / swap): what the bound
@@ -2488,7 +2494,9 @@ export class NativeSessionHost extends EventEmitter {
       // buildAiTools when the profile can afford its catalog. Threading the
       // catalog (rather than letting the session scan on its own) means the host
       // and the session agree on one source, and a test can inject a fake.
-      ...(this.skillCatalog ? { skillCatalog: this.skillCatalog } : {}),
+      // Fix: project .claude/skills are session-scoped. Build their catalog from
+      // this session's cwd so one workspace's workflows never appear in another.
+      skillCatalog: this.skillCatalog ?? createSkillCatalog(undefined, cwd),
       decide: this.buildDecide(sessionId, cwd, preset.presetRules),
       // Stamp the CURRENT mode on every ask (read at call time, not wiring
       // time — a mid-session mode flip must show on the next ask). The
@@ -2552,7 +2560,7 @@ export class NativeSessionHost extends EventEmitter {
       // reassembled, not even by setBinding's mid-session model swap (that is what
       // keeps the KV-cache prefix stable). Sizing therefore follows the model the
       // session STARTED on. Deliberate; revisit only if prompt reassembly ever is.
-      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools, instructionBudgetTokens: profile.injectionBudgetTokens }),
+      systemPrompt: assembleSystemPrompt({ presetBody: preset.body, cwd, appVersion: this.appVersion, promptVariant: profile.promptVariant, hasTools: profile.supportsTools, instructionBudgetTokens: profile.injectionBudgetTokens, supportsParallelToolCalls: profile.supportsParallelToolCalls, audience: 'user' }),
     };
   }
 
@@ -2702,6 +2710,40 @@ export class NativeSessionHost extends EventEmitter {
     });
   }
 
+  /**
+   * Messages typed BEFORE the session finished starting, keyed by session id.
+   *
+   * WHY THIS EXISTS (Destin, 2026-09-06). He made a session on a local model and
+   * typed straight away. The app answered "This session is no longer running.
+   * Start or resume it to send messages." Both halves were false: the session had
+   * never run yet — the engine was still loading a 29 GB model — and there was
+   * nothing to start or resume. A minute later the same session answered him
+   * normally. `send()` looked the id up in `this.live`, found nothing, and had
+   * exactly ONE reason code for "not in that map", which covers two opposite
+   * situations: a session that has ENDED, and a session that has not STARTED yet.
+   *
+   * An id is in this map from the moment create()/resume() begins until wire()
+   * makes it live. A send that lands in that window is held here and delivered
+   * the instant the session exists, so the message the user typed is never
+   * thrown away — which is the real harm; better wording alone still loses it.
+   */
+  private startingSends = new Map<string, { id: string; text: string; attachments: string[] }[]>();
+
+  /** Mark an id as being built. Called at the TOP of create() and resume(), so
+   *  the window a pre-live send can fall into is covered from its first tick. */
+  private beginStarting(sessionId: string): void {
+    if (!this.startingSends.has(sessionId)) this.startingSends.set(sessionId, []);
+  }
+
+  /** Stop holding sends for an id, returning whatever was held. Called by wire()
+   *  on success, and by create()/resume() when they give up — a message held for
+   *  a session that never came up must not sit in memory forever. */
+  private endStarting(sessionId: string): { id: string; text: string; attachments: string[] }[] {
+    const held = this.startingSends.get(sessionId) ?? [];
+    this.startingSends.delete(sessionId);
+    return held;
+  }
+
   /** Subscribe a freshly-built HarnessSession: forward its events to the
    *  renderer immediately, and enqueue each on the session's append chain. */
   private wire(sessionId: string, cwd: string, session: HarnessSession, mcpLease?: McpLease): void {
@@ -2733,10 +2775,35 @@ export class NativeSessionHost extends EventEmitter {
           });
         });
     });
+    // Anything the user typed while this session was still being built goes now,
+    // in the order they typed it. The FIRST one is dispatched through the normal
+    // send() path (which sets inFlight and, when that turn ends, drains the rest);
+    // the others are pushed onto the queue KEEPING the ids the renderer was already
+    // given, so Cancel/Edit can still target them.
+    const held = this.endStarting(sessionId);
+    if (held.length > 0) {
+      const [first, ...rest] = held;
+      entry.queue.push(...rest);
+      this.send(sessionId, first.text, first.attachments);
+    }
   }
 
   /** Fresh session: write the header, build + wire a live HarnessSession. */
   async create(opts: CreateNativeSessionOpts): Promise<void> {
+    // From here until wire(), a send for this id is HELD rather than refused —
+    // see startingSends. Marked before the first await so there is no tick in
+    // which a typed message would be told the session is "no longer running",
+    // and released in the `finally` if the session never comes up, so a held
+    // message cannot sit in memory for the life of the app.
+    this.beginStarting(opts.sessionId);
+    try {
+      await this.createInner(opts);
+    } finally {
+      if (!this.live.has(opts.sessionId)) this.endStarting(opts.sessionId);
+    }
+  }
+
+  private async createInner(opts: CreateNativeSessionOpts): Promise<void> {
     // Same single-writer guard as resume() — create() also ends in wire(), so an
     // id that is somehow still live would gain a second appending listener here
     // too. Cheap and idempotent; closes the class at BOTH wire() entry points
@@ -2939,6 +3006,10 @@ export class NativeSessionHost extends EventEmitter {
           presetBody: specialist.systemPrompt, cwd: workDir, appVersion: this.appVersion,
           promptVariant: profile.promptVariant, hasTools: profile.supportsTools,
           instructionBudgetTokens: profile.injectionBudgetTokens,
+          // audience 'parent': the shared doctrine's writing-for-the-user block is
+          // for the person; a specialist's reader is the parent model, and its
+          // report rules live in specialists/builtins.ts.
+          supportsParallelToolCalls: profile.supportsParallelToolCalls, audience: 'parent',
         }),
         // Project rules / nested instructions for the CHILD's directory. Project
         // state, not conversation state, so it does not violate the cold start —
@@ -3166,6 +3237,18 @@ export class NativeSessionHost extends EventEmitter {
    *  would race that read and load the header's (possibly wrong/absent) model
    *  first. */
   async resume(sessionId: string, cwd: string, bindingOverride?: ModelBinding): Promise<boolean> {
+    // Same pre-live send holding as create() — resuming a big local model is
+    // exactly as slow as creating one, and typing during it must not be told the
+    // session is "no longer running".
+    this.beginStarting(sessionId);
+    try {
+      return await this.resumeInner(sessionId, cwd, bindingOverride);
+    } finally {
+      if (!this.live.has(sessionId)) this.endStarting(sessionId);
+    }
+  }
+
+  private async resumeInner(sessionId: string, cwd: string, bindingOverride?: ModelBinding): Promise<boolean> {
     // SINGLE-WRITER GUARD (2026-07-18): tear down any session already live under
     // this id BEFORE wiring a new one. Without this, resuming an id that is still
     // live leaves the old HarnessSession's transcript-event listener attached —
@@ -3284,7 +3367,21 @@ export class NativeSessionHost extends EventEmitter {
    *  surface is a provider-factory rejection, which runTurns catches. */
   send(sessionId: string, text: string, attachments: string[] = []): NativeSendResult {
     const entry = this.live.get(sessionId);
-    if (!entry) return { status: 'failed', reason: 'not-live' };
+    if (!entry) {
+      // Not live YET is not the same as not live any more. A session still being
+      // built holds the message and delivers it the moment it is ready (see
+      // startingSends). Only when that holding area is full does this refuse, and
+      // it refuses with its own reason so the renderer can say "still starting"
+      // instead of the flatly untrue "no longer running".
+      const held = this.startingSends.get(sessionId);
+      if (held) {
+        if (held.length >= SEND_QUEUE_LIMIT) return { status: 'failed', reason: 'starting' };
+        const queueId = randomUUID();
+        held.push({ id: queueId, text, attachments });
+        return { status: 'queued', queueId };
+      }
+      return { status: 'failed', reason: 'not-live' };
+    }
     if (entry.inFlight) {
       if (entry.queue.length >= SEND_QUEUE_LIMIT) return { status: 'failed', reason: 'queue-full' };
       // Task 11: mint a stable id per queued entry so the renderer can target
@@ -3323,6 +3420,16 @@ export class NativeSessionHost extends EventEmitter {
    *  renderer's Cancel/Edit affordance can render a single "too late" toast
    *  without needing to distinguish the reason. */
   removeQueued(sessionId: string, queueId: string): boolean {
+    // A message typed while the session was still starting is held OUTSIDE the
+    // live entry (startingSends), and it is exactly the message a user is most
+    // likely to want back — they have been staring at a spinner. Cancel/Edit has
+    // to reach it there too, or it would report "too late" for a message that has
+    // not been sent at all.
+    const held = this.startingSends.get(sessionId);
+    if (held) {
+      const i = held.findIndex((q) => q.id === queueId);
+      if (i !== -1) { held.splice(i, 1); return true; }
+    }
     const entry = this.live.get(sessionId);
     if (!entry) return false;
     const idx = entry.queue.findIndex((q) => q.id === queueId);
@@ -3767,7 +3874,9 @@ export class NativeSessionHost extends EventEmitter {
 
     let loaded;
     try {
-      loaded = (this.skillCatalog ?? createSkillCatalog()).load(skill);
+      // Match the session's Skill tool: a slash invocation must see this
+      // project's .claude/skills too, including on smaller models without Skill.
+      loaded = (this.skillCatalog ?? createSkillCatalog(undefined, entry.cwd)).load(skill);
     } catch (err: any) {
       // SkillNotFound is the ordinary case — the user typed a Claude Code command
       // or a skill they haven't installed — so it is a coded refusal, not an error.
@@ -4098,6 +4207,9 @@ export class NativeSessionHost extends EventEmitter {
     // generation this call captured (see the comment there), and that property
     // must survive the new await, not just the ones that were already here.
     const entry = this.live.get(sessionId);
+    // A session torn down while it was still starting has nowhere to deliver a
+    // held message, so drop it here rather than leave it stranded in memory.
+    this.endStarting(sessionId);
     // Specialist children go next, and unconditionally — before the not-live
     // early return, because a child must never outlive its parent even if the
     // parent's own entry is already gone (a double destroy, or a teardown

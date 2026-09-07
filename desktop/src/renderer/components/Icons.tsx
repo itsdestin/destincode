@@ -349,3 +349,15 @@ export function ThemeMascot({ variant, fallback: Fallback, className = 'w-6 h-6'
   }
   return mascot;
 }
+
+// Voice prompting (2026-09-05): the composer's mic. Same 24-box, 1.8 stroke and
+// round caps as AttachIcon so the two read as one family at 20px.
+export function MicIcon({ className = 'w-4 h-4' }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="3" width="6" height="11" rx="3" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0" />
+      <path d="M12 18v3M9 21h6" />
+    </svg>
+  );
+}

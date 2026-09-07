@@ -295,6 +295,49 @@ function deriveDestructiveFg(destructive: string, canvas: string, panel: string)
 }
 
 /**
+ * The one amber every warning is drawn in, before the theme gets a say. Tailwind
+ * amber-400 — the colour the app has always used for a warning.
+ */
+export const WARNING_BASE = '#FBBF24';
+
+/**
+ * Derive the amber a warning is actually painted in, per theme.
+ *
+ * WHY (contract R30, measured 2026-09-06): warnings were drawn in one fixed
+ * amber. On a dark theme that is crisp — 9.5:1 on Halftone Dimension. On a pale
+ * theme it is not: the same amber on Meadow Mist's pale-green card measured
+ * 1.05:1, roughly the same brightness as the card behind it. It was legible only
+ * if you already knew it was there, and it did not read as a warning at all.
+ * Themes are user-installable, so no per-theme colour can fix this — a theme
+ * nobody has written yet has to come out right on its own.
+ *
+ * Same shape as deriveDestructiveFg: mix the amber toward white (dark themes) or
+ * black (light themes) in 2% steps until it clears AA against every surface a
+ * warning is painted on, and return it unchanged when it already passes — so
+ * dark themes, where the amber is already crisp, see no change whatsoever.
+ *
+ * The surfaces are panel, inset AND their half-and-half blend, because the
+ * warning card is `bg-inset/50` sitting on a panel: the pixels behind the text
+ * are literally that mix, and checking only the two endpoints would let a
+ * straddling pair through. Canvas is in the set too — the same amber marks
+ * warnings out on the page itself.
+ */
+function deriveWarningFg(canvas: string, panel: string, inset: string): string {
+  const blend = mixHex(inset, panel, 0.5);
+  const worst = (c: string) => Math.min(
+    contrastRatio(c, canvas), contrastRatio(c, panel),
+    contrastRatio(c, inset), contrastRatio(c, blend),
+  );
+  if (worst(WARNING_BASE) >= 4.5) return WARNING_BASE;
+  const target = rgbLuminance(...parseHex(canvas)) < 0.5 ? '#FFFFFF' : '#000000';
+  for (let t = 0.02; t <= 1.0001; t += 0.02) {
+    const candidate = mixHex(WARNING_BASE, target, t);
+    if (worst(candidate) >= 4.5) return candidate;
+  }
+  return target;
+}
+
+/**
  * Nudge a DERIVED link colour until it is actually readable.
  *
  * WHY: the accent-vs-fg distance guard below only asks "is this link
@@ -419,6 +462,9 @@ export function computeOverlayTokens(
     // Text-on-surface variant. See deriveDestructiveFg — --destructive is a FILL
     // colour and cannot also serve as legible text on a dark canvas.
     '--destructive-fg': deriveDestructiveFg(destructive, tokens.canvas, tokens.panel),
+    // The amber warnings are painted in, made readable on THIS theme's surfaces.
+    // See deriveWarningFg — one fixed amber vanished on pale themes.
+    '--warning-fg': deriveWarningFg(tokens.canvas, tokens.panel, tokens.inset),
     '--code': code,
     '--link': link,
     '--link-hover': linkHover,

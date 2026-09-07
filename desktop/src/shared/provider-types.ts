@@ -46,11 +46,15 @@ export interface CatalogModel {
   supportsTools?: boolean;
   supportsReasoning?: boolean;
   // Whether this catalog row's model accepts image input, per the SOURCE's own
-  // modality data (currently only OpenRouter's `architecture.input_modalities`
-  // — see model-catalog.ts's openrouterModels()). `undefined` means "this
-  // source does not know" (models.dev rows, local-engine rows, or a malformed
-  // OpenRouter row) — a caller must NOT read that as `false`. Only an actual
-  // `false` means the source affirmatively says the model can't see images.
+  // modality data. Two sources publish it, both under the same name
+  // `architecture.input_modalities`: OpenRouter's /models (see
+  // model-catalog.ts's openrouterModels()) and llama-server's own /models for a
+  // LOCAL model (see EngineManager.catalogModels — `["text","image"]` exactly
+  // when the engine paired a vision projector beside the weights).
+  // `undefined` means "this source does not know" (models.dev rows, a local row
+  // read off the disk scan because the engine is stopped, or a malformed row)
+  // — a caller must NOT read that as `false`. Only an actual `false` means the
+  // source affirmatively says the model can't see images.
   supportsVision?: boolean;
   // USD per 1M tokens — terse to mirror per-1M-token convention; `in` is a JS
   // keyword — destructure as `{ in: input }`.

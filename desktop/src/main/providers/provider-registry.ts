@@ -12,11 +12,14 @@ import { withPrefillProgress, type PrefillProgress } from './prefill-progress';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import type { LanguageModel } from 'ai';
+import { wrapLanguageModel, type LanguageModel } from 'ai';
 import type { ProviderConfig, ProviderStatus, ModelBinding } from '../../shared/provider-types';
 import type { LocalEngineHook } from '../engine/engine-manager';
 import { NativeHome } from '../native-home';
 import { SecretsStore } from './secrets-store';
+import type { ChatGptAuth } from './chatgpt-auth';
+import { CHATGPT_CODEX_BASE_URL, CHATGPT_SIGN_IN_REQUIRED_MESSAGE } from './chatgpt-oauth';
+import { chatGptMiddleware } from './chatgpt-model';
 
 const FILE = 'providers.json';
 const BUILT_INS: ProviderConfig[] = [
@@ -26,6 +29,26 @@ const BUILT_INS: ProviderConfig[] = [
   { id: 'openrouter', type: 'openrouter', label: 'OpenRouter', enabled: true },
 ];
 const BUILT_IN_IDS = new Set(BUILT_INS.map((b) => b.id));
+// Sign in with ChatGPT (backend design §2). This row is VIRTUAL: it is
+// appended to what readAll() returns and is NEVER in BUILT_INS, because init()
+// writes every BUILT_INS entry to ~/.youcoded/providers.json — a file shared
+// by every instance on this machine, including Destin's built app and older
+// builds, whose Providers panel would render a persisted 'chatgpt' row as a
+// stray API-key card with a Remove button. Nothing on disk means nothing for
+// an older build to misread and nothing for the kill switch to migrate.
+const CHATGPT_ROW: ProviderConfig = { id: 'chatgpt', type: 'chatgpt', label: 'ChatGPT Plan', enabled: true };
+const VIRTUAL_IDS = new Set([CHATGPT_ROW.id]);
+// The one sentence upsert/remove/setKey answer for the virtual row: there is no
+// key to save and no entry to delete — the card's Sign out is the only control.
+const CHATGPT_NOT_A_KEY_MESSAGE =
+  'ChatGPT is signed in through OpenAI, not with a key — use Sign out on its card.';
+// Kill switch (§6): the registry is constructed with chatgpt = null, the row
+// is not appended, and a session already bound to a ChatGPT model fails its
+// next turn with this.
+const CHATGPT_TURNED_OFF_MESSAGE = 'ChatGPT sign-in is turned off in this build.';
+// The Codex endpoint wants to know which app is talking; 'youcoded' is us,
+// never the Codex CLI's own string (the investigation's rule: identify honestly).
+const CHATGPT_ORIGINATOR = 'youcoded';
 // OpenRouter asks apps to identify themselves (provider-dependencies.md entry).
 // OpenRouter shows these on its app leaderboard. youcoded.ai is the real domain
 // (bought 2026-09-03); the earlier youcoded.app placeholder was never ours.
@@ -41,7 +64,11 @@ export class ProviderRegistry {
               /** Plan B injects the EngineManager hook; null keeps the Plan A
                *  "coming in a later update" behavior (also what unit tests
                *  without an engine use). */
-              private localEngine: LocalEngineHook | null = null) {}
+              private localEngine: LocalEngineHook | null = null,
+              /** Sign in with ChatGPT. null = the kill switch (YOUCODED_CHATGPT=0)
+               *  or a unit test without it: the virtual row is not listed and a
+               *  ChatGPT binding is refused with a plain sentence. */
+              private chatgpt: ChatGptAuth | null = null) {}
 
   /** Seed the built-in entries. Runs under the file lock so two processes
    *  (dev instance + built app share ~/.youcoded) can't double-seed. */
@@ -58,7 +85,23 @@ export class ProviderRegistry {
   }
 
   private readAll(): ProviderConfig[] {
-    return ((this.home.readJson(FILE) as ProvidersFile | null)?.providers) ?? [];
+    const onDisk = ((this.home.readJson(FILE) as ProvidersFile | null)?.providers) ?? [];
+    if (!this.chatgpt) return onDisk;
+    // The virtual row goes LAST, and that position is load-bearing. The
+    // new-session form defaults to the FIRST ready provider, and ChatGPT's
+    // model list is cache-first: for the first seconds after signing in — and
+    // indefinitely while the manifest fetch keeps failing (offline, or a 401)
+    // — the plan is "ready" with zero models. First position would make that
+    // the default pick, and Create would sit greyed out with nothing said,
+    // even though the user's OpenRouter models are one dropdown away. Last
+    // means the user only lands on the plan by choosing it.
+    // (It used to go first so an id-only model lookup would prefer the plan's
+    // row when an OpenAI-key provider lists the same id. That is handled on
+    // its own in the renderer's resolveProviderType, which explicitly prefers
+    // providerId === 'chatgpt' before any first-match fallback.)
+    // Any on-disk row with the virtual id is dropped, so a file written by a
+    // buggy build can never shadow the live one or list it twice.
+    return [...onDisk.filter((p) => !VIRTUAL_IDS.has(p.id)), CHATGPT_ROW];
   }
 
   /**
@@ -67,17 +110,25 @@ export class ProviderRegistry {
    */
   async list(): Promise<ProviderStatus[]> {
     return this.readAll().map((p) => {
-      const builtIn = BUILT_IN_IDS.has(p.id);
+      // The virtual ChatGPT row reports builtIn so the panel never offers Remove.
+      const builtIn = BUILT_IN_IDS.has(p.id) || VIRTUAL_IDS.has(p.id);
       const hasKey = this.secrets.has(p.secretRef);
       // "Keyless" = a type that can work without an API key: the local engine
-      // never needs one, and an openai-compatible endpoint (Ollama, LM Studio)
-      // only needs one when the user saved one.
-      const keyless = p.type === 'local-engine' || (p.type === 'openai-compatible' && !p.secretRef);
+      // never needs one, ChatGPT signs in instead of keying, and an
+      // openai-compatible endpoint (Ollama, LM Studio) only needs one when the
+      // user saved one.
+      const keyless = p.type === 'local-engine' || p.type === 'chatgpt'
+        || (p.type === 'openai-compatible' && !p.secretRef);
       const ready =
         p.enabled &&
         (p.type === 'local-engine'
           ? (this.localEngine?.installed() ?? false) // ready = engine installed (running is lazy)
-          : keyless || hasKey);
+          : p.type === 'chatgpt'
+            // ready = signed in and not blocked (§4.6: a blocked account stays
+            // listed with ready:false, so the card keeps its Sign out while the
+            // plan's models leave the picker).
+            ? (this.chatgpt?.isSignedIn() ?? false)
+            : keyless || hasKey);
       return { ...p, builtIn, hasKey, ready };
     });
   }
@@ -93,6 +144,9 @@ export class ProviderRegistry {
    */
   async upsert(input: Omit<ProviderConfig, 'id'> & { id?: string }): Promise<string> {
     const id = input.id ?? ulid();
+    // The virtual row is never written to disk (see CHATGPT_ROW) — neither by
+    // its id nor by its type, which would be the same stray-card bug.
+    if (VIRTUAL_IDS.has(id) || input.type === 'chatgpt') throw new Error(CHATGPT_NOT_A_KEY_MESSAGE);
     await this.home.mutateJson(FILE, (cur) => {
       const file = (cur as ProvidersFile | null) ?? { v: 1 as const, providers: [] };
       const existing = file.providers.find((p) => p.id === id);
@@ -123,6 +177,7 @@ export class ProviderRegistry {
   }
 
   async remove(id: string): Promise<void> {
+    if (VIRTUAL_IDS.has(id)) throw new Error(CHATGPT_NOT_A_KEY_MESSAGE);
     const builtIn = BUILT_INS.find((b) => b.id === id);
     if (builtIn) {
       throw new Error(`${builtIn.label} is a built-in provider and cannot be removed.`);
@@ -146,6 +201,7 @@ export class ProviderRegistry {
   /** Save (or rotate) a provider's API key. Rotation reuses the existing
    *  secretRef so the providers.json pointer never needs rewriting. */
   async setKey(id: string, plaintext: string): Promise<void> {
+    if (VIRTUAL_IDS.has(id)) throw new Error(CHATGPT_NOT_A_KEY_MESSAGE);
     const entry = this.readAll().find((p) => p.id === id);
     if (!entry) {
       throw new Error(`Provider '${id}' is not configured.`);
@@ -183,12 +239,18 @@ export class ProviderRegistry {
 
   /** THE factory (spec §2.2). Throws plain-language errors — they surface in the UI error banner.
    *  `opts.serialToolCalls` (spec §4.2) is honored ONLY on the local-engine branch —
-   *  cloud providers handle parallel tool calls fine and ignore it. */
+   *  cloud providers handle parallel tool calls fine and ignore it.
+   *  `opts.cacheKey` (the harness session id) is honored ONLY on the chatgpt
+   *  branch, where it becomes the endpoint's prompt_cache_key. */
   async languageModel(
     binding: ModelBinding,
-    opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void },
+    opts?: { serialToolCalls?: boolean; onPrefillProgress?: (p: PrefillProgress) => void; cacheKey?: string },
   ): Promise<LanguageModel> {
     const p = this.readAll().find((x) => x.id === binding.providerId);
+    // Kill switch (§6): with chatgpt null the virtual row is not in readAll(),
+    // so a session still bound to it would otherwise read "not configured" —
+    // say what actually happened instead.
+    if (!p && VIRTUAL_IDS.has(binding.providerId)) throw new Error(CHATGPT_TURNED_OFF_MESSAGE);
     if (!p) throw new Error(`Provider '${binding.providerId}' is not configured.`);
     if (!p.enabled) throw new Error(`${p.label} is disabled in Settings → Providers.`);
 
@@ -214,13 +276,20 @@ export class ProviderRegistry {
             + 'It may have been deleted, moved, or renamed — re-download it in Settings → Providers → Local models.',
           );
         }
-        // Live prefill progress (llama.cpp `return_progress`). Only wrap when a
-        // consumer is listening — an unwatched tee would copy every byte of every
-        // response for nothing. See prefill-progress.ts for why this rides a fetch
-        // wrapper rather than the SDK's stream.
-        const localFetch = opts?.onPrefillProgress
-          ? withPrefillProgress(this.localEngine.fetchImpl(), opts.onPrefillProgress)
-          : this.localEngine.fetchImpl();
+        // The local stream tap does two jobs off ONE tee'd copy: live prefill
+        // progress (llama.cpp `return_progress`, only when someone is watching
+        // it) and the finished reply's speed, which is read off the final frame
+        // and pushed to the engine card's fact line. The second consumer is
+        // always present, so unlike before this wraps on every local send —
+        // that is the cost of the card knowing how fast the last reply ran. See
+        // prefill-progress.ts for why this rides a fetch wrapper rather than the
+        // SDK's stream.
+        const engine = this.localEngine;
+        const localFetch = withPrefillProgress(
+          engine.fetchImpl(),
+          opts?.onPrefillProgress,
+          (timings) => engine.recordReply(timings),
+        );
         return createOpenAICompatible({
           name: 'local',
           baseURL: base,
@@ -321,6 +390,38 @@ export class ProviderRegistry {
         if (!apiKey) throw new Error(`${p.label} needs an API key — add one in Settings → Providers.`);
         return createGoogleGenerativeAI({ apiKey })(binding.modelId);
       }
+      case 'chatgpt': {
+        // Backend design §4.1. A row of this type only reaches here through
+        // the virtual row, but a corrupt providers.json could carry one too —
+        // the null check covers both.
+        if (!this.chatgpt) throw new Error(CHATGPT_TURNED_OFF_MESSAGE);
+        // Throws the sign-in-required sentence when signed out, or OpenAI's own
+        // refusal when the account is blocked — both render on the card as-is.
+        const acct = this.chatgpt.signedInAccount();
+        const provider = createOpenAI({
+          // PLACEHOLDER, never a credential. modelFactory runs once per turn
+          // and a turn is many steps; the SDK freezes apiKey into its header
+          // closure at construction, so the real bearer is never given to it.
+          // ChatGptAuth.fetch() REPLACES the authorization header on every
+          // request with the live token (refreshing when needed) — pinned:
+          // 'Bearer chatgpt' never reaches the network.
+          apiKey: 'chatgpt',
+          baseURL: CHATGPT_CODEX_BASE_URL,
+          headers: {
+            'chatgpt-account-id': acct.accountId,
+            originator: CHATGPT_ORIGINATOR,
+            'OpenAI-Beta': 'responses=experimental',
+          },
+          fetch: this.chatgpt.fetch(),
+        });
+        // The middleware (chatgpt-model.ts) owns the request shape the endpoint
+        // insists on: store:false, instructions, encrypted reasoning, the cache
+        // key, and streaming for the one caller that would not.
+        return wrapLanguageModel({
+          model: provider.responses(binding.modelId),
+          middleware: chatGptMiddleware(opts?.cacheKey),
+        });
+      }
       default:
         // Unreachable with the current ProviderType union, but a corrupt
         // providers.json could hold anything — fail with a real message.
@@ -341,6 +442,12 @@ export class ProviderRegistry {
     let p: ProviderConfig | undefined;
     try {
       p = this.readAll().find((x) => x.id === id);
+      // Kill switch (§6), the same guard languageModel() has: with chatgpt null
+      // the virtual row is not in readAll(), so a Test on a leftover ChatGPT
+      // card would read "not configured" — which sounds like the user forgot to
+      // set something up. Say what actually happened, in the same words the
+      // send path uses, so one state never gets two explanations.
+      if (!p && VIRTUAL_IDS.has(id)) return { ok: false, message: CHATGPT_TURNED_OFF_MESSAGE };
       if (!p) return { ok: false, message: `Provider '${id}' is not configured.` };
       // Bare trailing slashes 404 on strict routers (`/v1//models`) —
       // createOpenAICompatible normalizes internally, but these hand-built
@@ -419,6 +526,20 @@ export class ProviderRegistry {
             { signal }
           );
           break;
+        }
+        case 'chatgpt': {
+          // No network on purpose (§2): a probe would spend the user's plan,
+          // and the account file already knows the answer. `ok` is exactly
+          // isSignedIn(); the message says which state the card is in.
+          if (!this.chatgpt) return { ok: false, message: CHATGPT_TURNED_OFF_MESSAGE };
+          const st = this.chatgpt.status();
+          const ok = this.chatgpt.isSignedIn();
+          const message =
+            st.state === 'signed-in' ? `Signed in as ${st.email}.`
+            : st.state === 'blocked' ? st.reason
+            : st.state === 'waiting' ? 'Sign-in is still in progress.'
+            : CHATGPT_SIGN_IN_REQUIRED_MESSAGE;
+          return { ok, message };
         }
         default:
           return { ok: false, message: `${p.label} has an unknown type and cannot be tested.` };

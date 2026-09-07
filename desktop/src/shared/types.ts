@@ -31,10 +31,18 @@ export const PERMISSION_OVERRIDES_DEFAULT: PermissionOverrides = {
 // 'claude'  = Claude Code CLI over PTY (the original path).
 // 'native'  = YouCoded's first-party harness (Phase 1+ of the platform
 //             roadmap; dormant until window.claude.native.supported is true).
+// 'shell'   = a plain terminal — the user's own $SHELL (Windows:
+//             powershell.exe) with NO AI in it at all: no hook pipe, no
+//             transcript watcher, no model. It exists so the app can offer
+//             "Run in terminal" for a set-up command (engine:run-in-terminal)
+//             instead of sending the user off to find a terminal themselves.
+//             Never offered in the new-session form — only that button makes
+//             one, and it selects the session it made, so every renderer branch
+//             that reads a provider CAN see 'shell'.
 // 'gemini' was removed 2026-07-10 — Google discontinued the Gemini CLI
 // (June 2026); Gemini models are reachable through the native runtime via
 // OpenRouter or a direct Google key instead.
-export type SessionProvider = 'claude' | 'native';
+export type SessionProvider = 'claude' | 'native' | 'shell';
 
 // A model reference portable ACROSS devices — persisted on a Conversation Store
 // record (conversations/store-core.ts) so the resume selector can pre-fill
@@ -64,7 +72,12 @@ export interface PortableModelRef {
 export type NativeSendResult =
   | { status: 'sent' }
   | { status: 'queued'; queueId: string }
-  | { status: 'failed'; reason: 'not-live' | 'queue-full' };
+  // 'starting' vs 'not-live' are DIFFERENT SITUATIONS and must never be merged
+  // back into one code: 'not-live' is a session that has ended or was never
+  // created, 'starting' is one that has not finished starting yet (a big local
+  // model can take a minute to load). One code for both is what told Destin a
+  // brand-new session was "no longer running" — see NativeSessionHost.startingSends.
+  | { status: 'failed'; reason: 'not-live' | 'queue-full' | 'starting' };
 
 export interface SessionInfo {
   id: string;
@@ -74,14 +87,32 @@ export interface SessionInfo {
   skipPermissions: boolean;
   status: 'active' | 'idle' | 'destroyed';
   createdAt: number;
-  /** Which runtime backend this session runs — 'claude' (default) or 'native' */
+  /** Which runtime backend this session runs — 'claude' (default), 'native' or 'shell' */
   provider: SessionProvider;
+  /** provider='shell' only: the shell that was actually spawned, already
+   *  display-shaped ('fish', 'zsh', 'powershell'). The session strip and the
+   *  header label the session with this — a shell session has no model and no
+   *  harness preset, so it would otherwise wear Claude Code's runtime label. */
+  shellName?: string;
   /** Native runtime only: the RESOLVED harness preset id ('assistant' | 'coder',
    *  post legacy-mapping — a stored 'chat' header resolves to 'assistant'). Drives
    *  the renderer's preset badge. Absent for Claude sessions. */
   harnessId?: string;
   /** Model alias the session was started with (e.g. 'claude-sonnet-4-6') */
   model?: string;
+  /** Native runtime only: which KIND of provider the bound model runs on
+   *  ('chatgpt' | 'openrouter' | 'local-engine' | …), as main already resolves
+   *  it in conversations/portable-model.ts.
+   *
+   *  WHY the renderer needs it rather than looking the model up itself: two
+   *  providers can offer the same model id — a personal OpenAI API key and the
+   *  ChatGPT plan both list `gpt-5.5`. Looked up by id alone, a conversation
+   *  spending API credit can be shown the ChatGPT plan's usage numbers and told
+   *  they are "measured across your whole ChatGPT plan". Only the session knows
+   *  which one it is actually billed to. Absent for Claude sessions, and for
+   *  any native session main has not stamped yet — the renderer then falls back
+   *  to the catalog lookup and reports nothing when the id is ambiguous. */
+  providerType?: string;
   /** Optional text to prefill into the input bar after this session is selected.
    *  Consumed once by InputBar on first render after session switch; cleared via
    *  a consumed-set ref so it never re-fires on re-renders. */
@@ -825,7 +856,7 @@ export interface SkillEntry {
   description: string;
   category: 'personal' | 'work' | 'development' | 'admin' | 'other';
   prompt: string;
-  source: 'youcoded-core' | 'self' | 'plugin' | 'marketplace';
+  source: 'youcoded-core' | 'self' | 'project' | 'plugin' | 'marketplace';
   pluginName?: string;
 
   // New — marketplace fields
@@ -1155,8 +1186,70 @@ export interface AttentionApi {
   report(payload: AttentionReport): void;
 }
 
+/**
+ * What the desktop answers when the settings screen asks about the Linux/KDE
+ * buddy helper (docs/active/design/2026-09-04-linux-buddy-helper/ §4).
+ *
+ * THREE facts, not two, and the first one is the one that keeps a working buddy
+ * working. `needed` says "this app cannot move its own windows here" — true only
+ * on a native-Wayland Linux session. On Windows, macOS, Linux/X11 and Linux
+ * Wayland that is really running through XWayland it is false, and there the
+ * buddy already works exactly as it always has: no helper, no consent card, no
+ * mention of any of this. `supported` is the separate question of whether a
+ * helper could work here at all (KDE 6 on Wayland), and it is only ever asked
+ * once `needed` is true.
+ *
+ * `installed` is reported TRUTHFULLY whatever `needed` says, because a user can
+ * add the helper on Wayland and then log into X11: the script is still sitting
+ * in their KDE settings, and the Remove helper button is the only way back out.
+ */
+export interface BuddyHelperStatus {
+  /** The app cannot position its own windows here, so a helper is required. */
+  needed: boolean;
+  /** A helper can work on this desktop at all (KDE Plasma 6 on Wayland). */
+  supported: boolean;
+  /** The helper script is loaded in the compositor right now. */
+  installed: boolean;
+  /** Why this desktop is unsupported — shown, never guessed at. */
+  reason?: string;
+}
+
+/**
+ * What `show()` answers. `ok: false` means MAIN REFUSED to put the buddy on
+ * screen — see design §5: the refusal is enforced in the main process, because
+ * the settings screen is not the only thing that switches the buddy on.
+ */
+export interface BuddyShowResult {
+  ok: boolean;
+  /** Main's own words for the refusal. Surfaced as-is; never re-worded. */
+  reason?: string;
+}
+
 export interface BuddyApi {
-  show(): Promise<void>;
+  // The Linux/KDE helper (docs/active/design/2026-09-04-linux-buddy-helper/).
+  // These had no backend while the popup was being designed; the real one landed
+  // 2026-09-04 (kwin-helper.ts + three channels on preload, remote-shim and the
+  // workbench mock), so they are no longer MOCK_ONLY.
+  //
+  // They keep the `?` because every caller optional-chains them anyway: the
+  // settings screen runs inside remote browsers and Android too, where the whole
+  // buddy surface is a set of stubs, and a `?.()` call site that silently does
+  // nothing is the behaviour we want there.
+  helperStatus?(): Promise<BuddyHelperStatus>;
+  installHelper?(): Promise<{ ok: boolean }>;
+  // Added 2026-09-04 (decide-uninstall#D-1). The consent card used to promise the
+  // helper was "removed when you uninstall YouCoded", which is false: the AppImage
+  // build has no uninstall step at all. Destin chose a Remove helper control the
+  // user owns instead, so the app needs a channel that takes the helper back out
+  // of KDE's settings — see design §6 for the order the main side must use.
+  removeHelper?(): Promise<{ ok: boolean }>;
+  /**
+   * Widened 2026-09-04 (design §5): this used to resolve to nothing, and now
+   * reports whether the buddy was actually shown. A Wayland user without the
+   * helper is REFUSED, and the settings switch must not sit in the "on"
+   * position after a refusal — that would be a switch that lies.
+   */
+  show(): Promise<BuddyShowResult | void>;
   hide(): Promise<void>;
   toggleChat(): Promise<void>;
   setSession(sessionId: string): Promise<void>;
@@ -1167,7 +1260,7 @@ export interface BuddyApi {
   // places the mascot at the supplied target (clamped to visible workArea).
   // Anchor-based, not delta-based, so per-move rounding on HiDPI displays
   // cannot accumulate drift between the cursor and the mascot.
-  moveMascot(target: { targetX: number; targetY: number }): void;
+  moveMascot(target: { localDx: number; localDy: number }): void;
   onAttentionSummary(cb: (summary: AttentionSummary) => void): () => void;
   // Pre-existing preload methods that were missing from this interface —
   // added while typing the buddy-upgrades members so call sites don't need
@@ -1692,6 +1785,20 @@ export const IPC = {
   // rare/user-driven, not a hover-hot path). Settings' keep-above toggle:
   // persists to BUDDY_POS_FILE and runs the KWin script live.
   BUDDY_OVERLAY_KEEP_ABOVE: 'buddy:overlay-keep-above',
+  // ── The Linux/KDE buddy helper (docs/active/design/2026-09-04-linux-buddy-helper/) ──
+  // On a native-Wayland desktop an app is not allowed to move its own windows,
+  // so the buddy appears but cannot be dragged. A small script that runs inside
+  // KDE's window manager can move it. These three channels are the app's side
+  // of that script: ask whether it is needed/possible/present, put it in the
+  // user's KDE settings, and take it back out again.
+  //
+  // Deliberately three surfaces, not five: buddy has NO Android (SessionService.kt)
+  // or remote-server presence today, and adding one would turn this feature into
+  // a platform-parity sweep (design §4). ipc-channels.test.ts's `buddy:*` block
+  // records that omission so it does not read as an oversight.
+  BUDDY_HELPER_STATUS: 'buddy:helper-status',
+  BUDDY_INSTALL_HELPER: 'buddy:install-helper',
+  BUDDY_REMOVE_HELPER: 'buddy:remove-helper',
   // Main → main window: switch active session (sent by buddy:open-main).
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
@@ -1744,6 +1851,15 @@ export const IPC = {
   PROVIDER_TEST: 'provider:test',
   PROVIDER_SET_KEY: 'provider:set-key',
   PROVIDER_CATALOG: 'provider:catalog',
+  // ---- Sign in with ChatGPT (design 2026-09-04, backend design 2026-09-05 §5) ----
+  // status → ChatGptAccountStatus (shared/chatgpt-types.ts); the three verbs →
+  // boolean, or a THROWN sentence the card renders verbatim. Kill switch
+  // YOUCODED_CHATGPT=0: the handlers stay registered (parity) and answer
+  // signed-out / false.
+  CHATGPT_STATUS: 'chatgpt:status',
+  CHATGPT_SIGN_IN: 'chatgpt:sign-in',
+  CHATGPT_CANCEL_SIGN_IN: 'chatgpt:cancel-sign-in',
+  CHATGPT_SIGN_OUT: 'chatgpt:sign-out',
   // ---- WebSearch providers (Phase 2 Plan B): keyed Tavily/Exa upgrades ----
   // list = the fixed upgradeable-backend rows (hasKey flags); set/remove-key
   // manage the encrypted key; test = never-throws connectivity check.
@@ -1786,6 +1902,19 @@ export const IPC = {
   // ---- Native runtime Plan C (Phase 1): model manager ----
   ENGINE_SET_BACKEND: 'engine:set-backend',
   ENGINE_SET_CONTEXT: 'engine:set-context',   // context-length knob (Task 9)
+  // One write for every engine-wide setting — { contextSize?, speed? } (design
+  // §B). Both are applied only once no reply is streaming, so a switch flipped
+  // mid-answer cannot kill the answer. ENGINE_SET_CONTEXT above is now a thin
+  // alias onto this for the callers already wired to it.
+  ENGINE_SET_CONFIG: 'engine:set-config',
+  // Open a plain-shell session (SessionProvider 'shell') in the folder the
+  // calling window is working in and TYPE the command onto its prompt —
+  // invoke(command) → { sessionId }. Nothing is executed: the user presses
+  // Enter. The renderer that made the call selects the session it gets back.
+  ENGINE_RUN_IN_TERMINAL: 'engine:run-in-terminal',
+  // What a faster engine build needs installed before it can be offered
+  // (Linux ROCm) — 2026-09-05 local-engine upgrades §A3/§A5.
+  ENGINE_PREREQS: 'engine:prereqs',
   MODELS_CURATED: 'models:curated',
   MODELS_SEARCH: 'models:search',
   MODELS_QUANTS: 'models:quants',
@@ -1797,6 +1926,22 @@ export const IPC = {
   // Resume an interrupted download from its manifest (2026-08-26) — invoke(modelId)
   // → { downloadId }. Replaces MODELS_ORPHANED_PARTIALS, removed the same day.
   MODELS_RESUME: 'models:resume',
+  // ---- Per-model settings + vision (2026-09-05 local-engine upgrades) ----
+  // Read one model's stored settings — invoke(modelId) -> StoredModelSettings.
+  // The READ is the stored shape, not the four fields the dialog writes: the
+  // dialog also has to show `pendingApply` ("Applies after the current reply")
+  // and `lastLoadError`, and neither of those is anything the user can set.
+  MODELS_SETTINGS: 'models:settings',
+  // Save one model's settings — invoke(modelId, patch) -> StoredModelSettings.
+  // The patch is `ModelSettingsWrite`: the four user-settable fields, plus the
+  // `dismissMemoryWarning` SIGNAL. It is a signal and not a value because the
+  // number that gets stored is the resolved effective context length, and only
+  // main knows how the per-model setting and the engine-wide default combine.
+  MODELS_SET_SETTINGS: 'models:set-settings',
+  // Fetch the vision projector for a model already on disk and move both into a
+  // folder of its own — invoke(modelId) -> { downloadId }. Progress arrives on
+  // the ordinary models:download-progress stream.
+  MODELS_ADD_VISION: 'models:add-vision',
   ENDPOINTS_DETECT: 'endpoints:detect',
   // ---- Model memory lifecycle (2026-07-14): per-model residency + guards ----
   ENGINE_MODELS: 'engine:models',                 // invoke → EngineModel[] with live state
@@ -1805,6 +1950,18 @@ export const IPC = {
   NATIVE_SHELL_EVENT: 'native:shell-event',       // push → one background command's run record changed (G-1)
   MODELS_MEMORY_CHECK: 'models:memory-check',     // invoke(modelId) → MemoryVerdict
   MODELS_LOAD: 'models:load',                     // invoke(modelId) → true ([Reload Model])
+  // ---- Voice prompting (design 2026-09-05) ----
+  // Mirrors preload.ts. Added here when the buddy-helper branch's channel-map
+  // guard caught them as preload-only: the voice work declared them on one side
+  // of the pair only, which is exactly the drift that guard exists to name.
+  VOICE_STATUS: 'voice:status',
+  VOICE_DOWNLOAD: 'voice:download',
+  VOICE_START: 'voice:start',
+  VOICE_STOP: 'voice:stop',
+  VOICE_CANCEL: 'voice:cancel',
+  VOICE_MIC_ACCESS: 'voice:mic-access',
+  VOICE_AUDIO: 'voice:audio',
+  VOICE_EVENT: 'voice:event',   // push
 } as const;
 
 // Performance / GPU configuration snapshot — returned by performance:get-config.
