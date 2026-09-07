@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { CLOSE_PROMPT_SUPPRESS_KEY } from '../CloseSessionPrompt';
 import ModelPicker, { type ModelChoice } from '../model/ModelPicker';
+import { unavailableReason, useAvailabilityData } from '../model/availability';
 import PermissionsSection from '../PermissionsSection';
 import SpecialistsSection, { SPECIALISTS_EXPLAINER_INTRO, SPECIALISTS_EXPLAINER_SECTIONS } from '../SpecialistsSection';
 import { PERMISSIONS_EXPLAINER_INTRO, PERMISSIONS_EXPLAINER_SECTIONS } from '../permissions/permissions-explainer';
@@ -147,6 +148,18 @@ function ProjectFolderRow({ defaults, onDefaultsChange }: PageContext) {
 
 function GeneralPage(ctx: PageContext) {
   const { defaults, onDefaultsChange } = ctx;
+  // WHY the panel judges the saved default (Destin, deck 2026-09-07).
+  //
+  // P-1 a: a default that cannot run right now is NEVER erased — a local engine
+  // that happens to be off, or a sign-in check that has not come back, must not
+  // cost him a setting he chose weeks ago. The stored choice stays exactly as
+  // written and the row keeps naming it.
+  //
+  // P-2 b + his note: the new-session form stays silent about it and simply
+  // starts with nothing chosen; THIS is the one place that says the default is
+  // being ignored, so there is a single place to look rather than two.
+  const avail = useAvailabilityData();
+  const defaultReason = avail.loaded ? unavailableReason(startChoice(defaults), avail) : null;
   // Close-session prompt suppression — reads/writes localStorage directly since
   // this is a UI preference, not a session default backed by sessionDefaults.
   const [closePromptDisabled, setClosePromptDisabled] = useState(
@@ -173,6 +186,12 @@ function GeneralPage(ctx: PageContext) {
               ...(choice.runtime === 'claude' ? { model: choice.alias } : {}),
             })}
           />
+          {defaultReason && (
+            <p className="text-3xs text-destructive-fg leading-relaxed">
+              {startSummary(defaults)} — {defaultReason.toLowerCase()}. New conversations start with no
+              model chosen until this is fixed or you pick another one. Your choice is kept.
+            </p>
+          )}
         </FieldRow>
         <ProjectFolderRow {...ctx} />
         <SettingRow

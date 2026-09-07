@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { useNarrowViewport } from '../../hooks/use-narrow-viewport';
 import { useScrollFade } from '../../hooks/useScrollFade';
 import SettingsExplainer, { InfoIconButton } from '../SettingsExplainer';
 import { AnchorTip, Dialog, SettingRow } from '../ui';
@@ -34,15 +33,58 @@ export interface AssistantSettingsRowProps {
   platform?: 'desktop' | 'android';
 }
 
+// Q-A (Destin, 2026-09-07): "begin squeezing first. switch to phone mode only at
+// about 1/3 laptop screen". The panel is the `wide` dialog — min(820px, 92vw) —
+// so it already narrows with the window; what changed is WHEN it gives up on two
+// columns. It used to fold at the app's global 640px narrow line, which is most
+// of a half-screen window. Its own line sits lower, so a half-screen window keeps
+// the list of pages beside the page and only a genuinely phone-sized viewport
+// gets the first-screen-then-back-arrow shape.
+//
+// Deliberately NOT the shared useNarrowViewport: that boundary belongs to the
+// whole app (the header's ||| menu, the marketplace), and moving it for this
+// panel would move it for everything.
+const PANEL_FOLD_QUERY = '(max-width: 519.98px)';
+
+function usePanelFold(): boolean {
+  const [folded, setFolded] = useState(
+    () => typeof window !== 'undefined' && !!window.matchMedia?.(PANEL_FOLD_QUERY).matches,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia?.(PANEL_FOLD_QUERY);
+    if (!mql) return;
+    setFolded(mql.matches);
+    const onChange = (e: MediaQueryListEvent) => setFolded(e.matches);
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, []);
+  return folded;
+}
+
 /** Which providers need attention right now (Q-4a: a warning dot on the row and
  *  on the page). ONLY states that are actually broken — a dot for anything less
  *  is the one way this row loses trust. Today: a ChatGPT plan OpenAI has blocked,
  *  and a local engine that failed to start. A key OpenRouter rejects is not
- *  known until a send fails; that error lands in the chat, not here. */
-function useAttention(active: boolean): Set<PageId> {
+ *  known until a send fails; that error lands in the chat, not here.
+ *
+ *  Q-B (Destin, 2026-09-07): the dot clears as soon as the panel sees the
+ *  provider working. You sign back in on the Cloud providers page and the
+ *  warning goes while you are still standing there — a dot that survives a
+ *  successful fix reads as "it did not work", and the natural next move is to
+ *  fix it again. So the check re-runs while the panel is open, not once per
+ *  app launch. */
+function useAttention(open: boolean): Set<PageId> {
   const [pages, setPages] = useState<Set<PageId>>(() => new Set());
+  const [tick, setTick] = useState(0);
+  // Re-ask on every open (and close), then keep asking while it is open. Cheap:
+  // two status calls that both already have local answers.
   useEffect(() => {
-    if (!active) return;
+    setTick((n) => n + 1);
+    if (!open) return;
+    const id = setInterval(() => setTick((n) => n + 1), 4000);
+    return () => clearInterval(id);
+  }, [open]);
+  useEffect(() => {
     let alive = true;
     const next = new Set<PageId>();
     // Only ask where the answer can mean anything. Design review 1 (R1-5):
@@ -61,7 +103,7 @@ function useAttention(active: boolean): Set<PageId> {
       engine?.status?.().then((s: { state?: string }) => { if (s?.state === 'error') next.add('local'); }).catch(() => {}),
     ]).then(() => { if (alive) setPages(next); });
     return () => { alive = false; };
-  }, [active]);
+  }, [tick]);
   return pages;
 }
 
@@ -89,7 +131,7 @@ export default function AssistantSettingsRow({
   // Phone fold: `null` page means "showing the list".
   const [narrowPage, setNarrowPage] = useState<PageId | null>(null);
   const [showInfo, setShowInfo] = useState(false);
-  const narrow = useNarrowViewport();
+  const narrow = usePanelFold();
 
   // The same gate the Model Providers row had: provider pages exist only where
   // the native runtime does (false over remote access, false on Android).
@@ -112,7 +154,7 @@ export default function AssistantSettingsRow({
   // Reset the explainer on every re-open so the user always lands on the page.
   useEffect(() => { if (!open) { setShowInfo(false); setNarrowPage(null); } }, [open]);
 
-  const attention = useAttention(true);
+  const attention = useAttention(open);
   const current: PageDef = pages.find((p) => p.id === (narrow ? narrowPage : page)) ?? pages[0];
   const showingList = narrow && narrowPage === null;
 

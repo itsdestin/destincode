@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { fieldClasses } from '../ui';
+import { Button, fieldClasses } from '../ui';
 import { SearchFilterPill } from '../ui/SearchFilterPill';
 import { POPOVER_Z } from '../overlays/Overlay';
 import { useEscClose } from '../../hooks/use-esc-close';
@@ -33,6 +33,7 @@ import { CLAUDE_ALIASES, type ClaudeAlias } from '../../../shared/model-ids';
 import { matchesQuery } from '../../../shared/text-match';
 import { resolveModelBrand, type ProviderIconKey } from '../provider-brand';
 import { ProviderIcon } from '../ProviderIcon';
+import { unavailableReason, useClaudeReady, type CatalogRow, type ProviderRow } from './availability';
 
 export type ModelChoice =
   | { runtime: 'claude'; alias: string }
@@ -57,9 +58,6 @@ const CLAUDE_SOURCE = 'claude';
  *    'all'   — marks everywhere + every row's name is brand-coloured.
  *  Review deck 2026-08-31 captures all three; the loser gets deleted. */
 
-interface ProviderRow { id: string; type: string; label: string; ready: boolean }
-interface CatalogRow { id: string; providerId: string; label: string }
-
 interface Entry {
   key: string;
   label: string;
@@ -71,6 +69,11 @@ interface Entry {
    *  the brand matcher's fallback when the model id itself names no company —
    *  e.g. a direct Anthropic key serving an id we don't recognise. */
   providerType?: string;
+  /** Why this row cannot be picked right now ("Sign in to use", "Add an API
+   *  key"). Set means the row is listed, greyed and inert — Destin, 2026-09-07
+   *  (Q-E a): a model this install cannot run is still worth SEEING, so the
+   *  list stops pretending the rest of the app does not exist. */
+  unavailable?: string;
 }
 
 /** Which company mark + colour a row carries.
@@ -210,6 +213,9 @@ export default function ModelPicker({
 }) {
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [catalog, setCatalog] = useState<CatalogRow[]>([]);
+  // Whether Claude Code itself can start a conversation here. Unknown counts as
+  // yes (see useClaudeReady) — the list must never invent a problem.
+  const claudeReady = useClaudeReady();
   const [loaded, setLoaded] = useState(false);
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -386,27 +392,46 @@ export default function ModelPicker({
 
   const entries: Entry[] = useMemo(() => {
     const out: Entry[] = [];
+    const data = { providers, catalog, claudeReady };
     if (includeClaude) {
       for (const m of CLAUDE_MODELS) {
         const choice: ModelChoice = { runtime: 'claude', alias: m.alias };
         out.push({
           key: choiceKey(choice), label: m.label, choice,
           sourceId: CLAUDE_SOURCE, sourceLabel: 'Claude Code', local: false,
+          unavailable: unavailableReason(choice, data) ?? undefined,
         });
       }
     }
-    for (const p of includeNative ? providers.filter((x) => x.ready) : []) {
+    // WHY every provider, not just the ready ones (Destin, 2026-09-07, Q-E a):
+    // dropping an unready provider's models hid the app from the person most
+    // likely to need it — someone who set up with ChatGPT never learned the
+    // other models existed. They are listed, greyed and unpickable, each row
+    // carrying the one thing that would unlock it.
+    for (const p of includeNative ? providers : []) {
       for (const m of catalog.filter((c) => c.providerId === p.id)) {
         const choice: ModelChoice = { runtime: 'native', providerId: p.id, modelId: m.id };
         out.push({
           key: choiceKey(choice), label: m.label, choice,
           sourceId: p.id, sourceLabel: p.label, local: p.type === 'local-engine',
           providerType: p.type,
+          unavailable: unavailableReason(choice, data) ?? undefined,
         });
       }
     }
     return out;
-  }, [providers, catalog, includeClaude, includeNative]);
+  }, [providers, catalog, includeClaude, includeNative, claudeReady]);
+
+  /** Nothing on this install can actually start a conversation. Drives the
+   *  "You have not set up any model providers." block (P-3). */
+  const anyPickable = useMemo(() => entries.some((e) => !e.unavailable), [entries]);
+
+  /** Every provider with rows in the list, ready or not — the filter chips must
+   *  be able to reach a greyed source too. */
+  const listedProviders = useMemo(
+    () => (includeNative ? providers.filter((p) => catalog.some((c) => c.providerId === p.id)) : []),
+    [providers, catalog, includeNative],
+  );
 
   const readyProviders = useMemo(
     () => (includeNative ? providers.filter((p) => p.ready) : []),
@@ -472,7 +497,7 @@ export default function ModelPicker({
   }, [value, providers]);
 
   const row = (e: Entry) => {
-    const selected = !!value && choiceKey(value) === e.key;
+    const selected = !!value && choiceKey(value) === e.key && !e.unavailable;
     const fav = favorites.has(e.key);
     const brand = brandForEntry(e);
     // On the selected row the accent fill owns the foreground: painting a brand
@@ -488,16 +513,26 @@ export default function ModelPicker({
       <div key={e.key} className="group/model flex items-center gap-1 px-2">
         <button
           type="button"
+          // A row this install cannot run is inert, not hidden: nothing is
+          // picked on the user's behalf, and nothing fails later because the
+          // list offered something that could not start (Q-E a).
+          disabled={!!e.unavailable}
           onClick={() => pick(e.choice, { provider: e.sourceLabel, model: e.label })}
           aria-pressed={selected}
+          title={e.unavailable ? `${e.label} · ${e.sourceLabel} — ${e.unavailable}` : undefined}
           className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors flex items-center gap-2 ${
-            selected ? 'bg-accent text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
+            e.unavailable
+              ? 'text-fg-faint cursor-default'
+              : selected ? 'bg-accent text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
           }`}
         >
           {/* The company mark. A fixed-width box whether or not a mark resolves,
               so an unrecognised model's name still lines up with its neighbours'
               instead of hanging one glyph-width to the left. */}
-          <span className="w-[13px] shrink-0 inline-flex items-center justify-center" style={markColor ? { color: markColor } : undefined}>
+          <span
+            className={`w-[13px] shrink-0 inline-flex items-center justify-center ${e.unavailable ? 'opacity-45' : ''}`}
+            style={markColor ? { color: markColor } : undefined}
+          >
             {brand?.icon
               ? <ProviderIcon icon={brand.icon} size={13} />
               : <ModelIcon className="w-3 h-3 opacity-40" />}
@@ -509,6 +544,10 @@ export default function ModelPicker({
                 or 400. */}
             <span className={selected ? 'opacity-70' : 'text-fg-muted'}> · {e.sourceLabel}</span>
           </span>
+          {/* The one thing that would unlock this row, in its own words. */}
+          {e.unavailable && (
+            <span className="ml-auto shrink-0 pl-2 text-3xs text-fg-faint">{e.unavailable}</span>
+          )}
         </button>
         {/* touch-reveal + coarse-hit: hover-only affordances never resolve on
             the Android WebView (narrow-viewport rule). */}
@@ -603,12 +642,29 @@ export default function ModelPicker({
             <div className="flex-1 min-h-0 overflow-y-auto py-1.5">
               {!loaded ? (
                 <p className="text-xs text-fg-muted text-center py-4">Loading…</p>
-              ) : entries.length === 0 ? (
-                <p className="text-xs text-fg-muted text-center py-4 px-3">
-                  No models available. Add a provider in Settings → Model Providers.
-                </p>
               ) : (
                 <>
+                  {/* NOTHING here can run yet. Destin, 2026-09-07 (P-3): this is
+                      the app's answer instead of an empty list or a fallback to
+                      a provider nobody chose — his words, and a way out that
+                      lands in Assistant settings. Sits between the search field
+                      and "Manage models…", where he asked for it. */}
+                  {!anyPickable && (
+                    <div className="px-4 py-4 text-center space-y-2.5">
+                      <p className="text-xs text-fg-muted leading-relaxed">You have not set up any model providers.</p>
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => {
+                          setOpen(false);
+                          if (onManageModels) onManageModels();
+                          else window.dispatchEvent(new CustomEvent('youcoded:open-model-providers'));
+                        }}
+                      >
+                        Add provider
+                      </Button>
+                    </div>
+                  )}
                   {rows.map(row)}
 
                   {/* Freeform providers only surface while searching — they are
@@ -647,7 +703,7 @@ export default function ModelPicker({
                       </div>
                     ))}
 
-                  {rows.length === 0 && (
+                  {rows.length === 0 && anyPickable && (
                     <p className="text-xs text-fg-muted text-center py-4 px-4 leading-relaxed">
                       {searching
                         ? 'No models match.'
@@ -702,7 +758,7 @@ export default function ModelPicker({
                     })}
                   >Claude Code</Chip>
                 )}
-                {readyProviders.map((p) => (
+                {listedProviders.map((p) => (
                   <Chip
                     key={p.id}
                     active={sources.has(p.id)}
