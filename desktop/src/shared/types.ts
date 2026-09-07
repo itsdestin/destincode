@@ -1184,6 +1184,14 @@ export type AttentionReport =
 
 export interface AttentionApi {
   report(payload: AttentionReport): void;
+  /**
+   * Snapshot of main's cross-window aggregate, pulled once on mount. The
+   * matching push (`buddy.onAttentionSummary`) only fires on change, so a
+   * newly opened window has no colours for peer sessions until one of them
+   * next flips. Resolves to an empty summary where aggregation doesn't run
+   * (remote browsers, Android).
+   */
+  getSummary(): Promise<AttentionSummary>;
 }
 
 /**
@@ -1803,6 +1811,7 @@ export const IPC = {
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
+  ATTENTION_GET_SUMMARY: 'attention:get-summary',
   // Settings → Development feature (bug report, contribute, known issues)
   DEV_LOG_TAIL: 'dev:log-tail',
   DEV_DIAGNOSTICS: 'dev:diagnostics',

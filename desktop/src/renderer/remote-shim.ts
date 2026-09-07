@@ -1786,6 +1786,10 @@ export function installShim(): void {
     // main-process aggregation is desktop-Electron only.
     attention: {
       report: () => { /* no-op: buddy attention summary is desktop-only */ },
+      // Resolves empty rather than throwing: App's mount effect calls this
+      // unconditionally, and remote clients get their dot colours from
+      // status:data's attentionMap instead (see useAttentionSummary).
+      getSummary: () => Promise.resolve({ anyNeedsAttention: false, perSession: {} }),
     },
     // WHY: useAttentionClassifier calls window.claude.terminal.getScreenText
     // every 1s on Electron to read the xterm PTY buffer for attention state

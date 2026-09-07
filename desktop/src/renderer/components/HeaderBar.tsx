@@ -201,7 +201,7 @@ interface Props {
   // harness preset id) must be in the type or a forwarding drift goes unnoticed
   // (bivariance lets a shorter signature compile). Matches SessionStrip's prop.
   onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }, preset?: string) => void;
-  onCloseSession: (id: string) => void;
+  onCloseSession: (id: string, name?: string) => void;
   viewMode: 'chat' | 'terminal';
   onToggleView: (mode: 'chat' | 'terminal') => void;
   gamePanelOpen: boolean;
