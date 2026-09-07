@@ -4,7 +4,8 @@
 //
 // Why this matters: an install that was set up by signing in with ChatGPT has
 // no Claude login. If either new-session form opened on "Claude Code", the
-// user's next session would fail to start. The first-run completion path
+// user's next session would fail to start. Since 2026-09-07 the key is honoured
+// unconditionally — no provider is the app's fallback (deck step P-3). The first-run completion path
 // stores 'native' under `youcoded-runtime-default`; BOTH forms must read it for
 // their initial runtime AND for the reset they do after every create (review
 // R2-3: a reset to the literal 'claude' made the default last one session).
@@ -58,14 +59,20 @@ describe('defaultRuntime()', () => {
     expect(defaultRuntime()).toBe('native');
   });
 
-  it('(c) stored native + native unsupported → claude (R3-6: the kill switch must not open a form with Create disabled)', () => {
+  it('(c) stored native + native unsupported → STILL native (Destin, 2026-09-07: nothing falls back to Claude Code)', () => {
+    // This pinned the opposite until 2026-09-07. The old rule (R3-6) sent an
+    // install whose non-Claude side is switched off back to Claude Code so its
+    // forms stayed usable; Destin overruled it on deck step P-3 — "i never want
+    // to 'default' back to claude code when the chosen models are unavailable.
+    // all providers should be equal/neutral". The user instead meets the model
+    // menu's "You have not set up any model providers." and its Add provider
+    // button, which is a way out that does not choose an engine for them.
     stubNative(false);
     localStorage.setItem(KEY, 'native');
-    expect(defaultRuntime()).toBe('claude');
-    // Android has no native runtime either, whatever the flag says.
+    expect(defaultRuntime()).toBe('native');
     stubNative(true);
     (window as any).__PLATFORM__ = 'android';
-    expect(defaultRuntime()).toBe('claude');
+    expect(defaultRuntime()).toBe('native');
   });
 
   it('(d) persistRuntimeDefault writes the key', () => {

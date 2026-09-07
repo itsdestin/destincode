@@ -139,6 +139,11 @@ interface Props {
   onOpenResumeBrowser: () => void;
   onReorderSessions?: (fromIndex: number, toIndex: number) => void;
   defaultModel?: string;
+  /** The saved default across EVERY provider (Assistant settings → Default
+   *  model). `defaultModel` beside it is the Claude alias this form has always
+   *  had; on its own it could not express "my default is GPT-5.6", which is why
+   *  a non-Claude default was written down and then ignored (contract R5). */
+  defaultStartModel?: ModelChoice;
   defaultSkipPermissions?: boolean;
   defaultProjectFolder?: string;
   /** Window directory (for switcher's "Sessions in other windows" group). */
@@ -326,7 +331,7 @@ export default function SessionStrip({
   sessions, activeSessionId, onSelectSession,
   onCreateSession, onCloseSession, sessionStatuses,
   onOpenResumeBrowser, onReorderSessions,
-  defaultModel, defaultSkipPermissions, defaultProjectFolder,
+  defaultModel, defaultStartModel, defaultSkipPermissions, defaultProjectFolder,
   windowDirectory, myWindowId,
 }: Props) {
   // One registry read for the whole menu: the rows need tag COLOURS, and a hook
@@ -393,15 +398,17 @@ export default function SessionStrip({
         : null)
     : { runtime: 'claude', alias: newModel };
 
-  const applyModelChoice = (c: ModelChoice) => {
+  // useCallback so the create path below can list it as a dependency: every
+  // setter it touches is stable, so this identity never changes.
+  const applyModelChoice = useCallback((c: ModelChoice) => {
     if (c.runtime === 'claude') {
       setRuntime('claude');
       setNewModel(c.alias);
     } else {
       setRuntime('native');
-      nb.setBinding({ providerId: c.providerId, modelId: c.modelId });
+      setBinding({ providerId: c.providerId, modelId: c.modelId });
     }
-  };
+  }, []);
   // Launch the new session in its own peer window instead of this one.
   // Hidden on platforms without multi-window support (Android / remote-shim).
   const [launchInNewWindow, setLaunchInNewWindow] = useState(false);
@@ -766,7 +773,8 @@ export default function SessionStrip({
     // Reset to the remembered default, NOT the literal 'claude' -- otherwise a
     // ChatGPT-only install's default would last one session (review R2-3).
     setRuntime(defaultRuntime());
-  }, [newCwd, dangerous, newModel, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel, runtime, nb.effectiveBinding, preset]);
+    if (defaultStartModel) applyModelChoice(defaultStartModel);
+  }, [newCwd, dangerous, newModel, launchInNewWindow, onCreateSession, defaultSkipPermissions, defaultModel, defaultStartModel, applyModelChoice, runtime, nb.effectiveBinding, preset]);
 
   /* ── Pointer-event drag handlers ───────────────────────── */
 
@@ -2418,6 +2426,9 @@ export default function SessionStrip({
                   setNewCwd(defaultProjectFolder || '');
                   setDangerous(defaultSkipPermissions || false);
                   setNewModel(defaultModel || 'sonnet');
+                  // The saved default, whatever provider it names — through the
+                  // picker's own setter, which moves the engine with it.
+                  if (defaultStartModel) applyModelChoice(defaultStartModel);
                   // usePreset re-arms the heuristic itself on the showNewForm
                   // false→true edge — no manual touched reset needed here.
                   setShowNewForm(true);

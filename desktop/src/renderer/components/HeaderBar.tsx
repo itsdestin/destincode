@@ -219,6 +219,9 @@ interface Props {
   onOpenResumeBrowser: () => void;
   onReorderSessions?: (fromIndex: number, toIndex: number) => void;
   defaultModel?: string;
+  /** The saved default across every provider (Assistant settings). Passed
+   *  through, like the rest of these — this bar has no form of its own. */
+  defaultStartModel?: import('./model/ModelPicker').ModelChoice;
   defaultSkipPermissions?: boolean;
   defaultProjectFolder?: string;
   windowDirectory?: any;
@@ -346,7 +349,7 @@ export default function HeaderBar({
   gamePanelOpen, onToggleGamePanel, gameConnected, challengePending,
   settingsOpen, onToggleSettings, settingsBadge, settingsDangerBadge, sessionStatuses,
   onOpenResumeBrowser, onReorderSessions,
-  defaultModel, defaultSkipPermissions, defaultProjectFolder,
+  defaultModel, defaultStartModel, defaultSkipPermissions, defaultProjectFolder,
   windowDirectory, myWindowId,
 }: Props) {
   const headerRef = useRef<HTMLDivElement>(null);
@@ -541,6 +544,7 @@ export default function HeaderBar({
         onOpenResumeBrowser={onOpenResumeBrowser}
         onReorderSessions={onReorderSessions}
         defaultModel={defaultModel}
+        defaultStartModel={defaultStartModel}
         defaultSkipPermissions={defaultSkipPermissions}
         defaultProjectFolder={defaultProjectFolder}
         windowDirectory={windowDirectory}
