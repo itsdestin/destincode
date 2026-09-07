@@ -521,57 +521,62 @@ export default function ModelPicker({
     // names reads as decoration rather than meaning.
     const markColor = selected ? undefined : brand?.color;
     return (
-      // The accent fill lives on the ROW, not the model-name button, so a
-      // selected row's highlight reaches the favourite star's column too —
-      // it used to stop short of the star, leaving a visibly unpainted gap
-      // at the row's end (reported 2026-09-07 with a screenshot).
-      <div key={e.key} className={`group/model flex items-center gap-1 px-2 rounded ${selected ? 'bg-accent' : ''}`}>
-        <button
-          type="button"
-          onClick={() => pick(e.choice)}
-          aria-pressed={selected}
-          className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors flex items-center gap-2 ${
-            selected ? 'text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
-          }`}
-        >
-          {/* The company mark. A fixed-width box whether or not a mark resolves,
-              so an unrecognised model's name still lines up with its neighbours'
-              instead of hanging one glyph-width to the left. */}
-          <span className="w-[13px] shrink-0 inline-flex items-center justify-center" style={markColor ? { color: markColor } : undefined}>
-            {brand?.icon
-              ? <ProviderIcon icon={brand.icon} size={13} />
-              : <ModelIcon className="w-3 h-3 opacity-40" />}
-          </span>
-          <span className="truncate block min-w-0">
-            {e.label}
-            {/* Divider dot + source, inline per row — this is what replaced the
-                per-provider sections. One flat list reads the same at 4 models
-                or 400. */}
-            <span className={selected ? 'opacity-70' : 'text-fg-muted'}> · {e.sourceLabel}</span>
-          </span>
-        </button>
-        {/* touch-reveal + coarse-hit: hover-only affordances never resolve on
-            the Android WebView (narrow-viewport rule). Selected uses the same
-            on-accent colour as the mark/name above, for the same reason:
-            painting the ordinary favourite-gold onto the accent fill is the
-            one place it can fail contrast, since the accent is theme-authored
-            and unknown to us. */}
-        <button
-          type="button"
-          onClick={() => toggleFavorite(e.key)}
-          aria-pressed={fav}
-          aria-label={fav ? `Unfavourite ${e.label}` : `Favourite ${e.label}`}
-          title={fav ? 'Remove from favourites' : 'Add to favourites'}
-          className={`shrink-0 w-6 h-6 rounded inline-flex items-center justify-center transition-opacity coarse-hit touch-reveal ${
-            selected
-              ? 'text-on-accent opacity-100'
-              : fav
-                ? 'text-accent opacity-100'
-                : 'text-fg-faint opacity-0 group-hover/model:opacity-100 hover:text-fg-2'
-          }`}
-        >
-          <StarGlyph filled={fav} />
-        </button>
+      // Two levels now: the OUTER div keeps the row's original left/right
+      // margin (px-2, unhighlighted, same on every row) — the accent fill on
+      // the whole outer box read as "too far across" once it ate that margin
+      // (2026-09-07 feedback). The INNER div is what actually carries the
+      // fill, sized to the space between those margins, so it covers the
+      // favourite star's column too instead of stopping at the name button.
+      <div key={e.key} className="group/model flex items-center px-2">
+        <div className={`flex-1 min-w-0 flex items-center gap-1 rounded ${selected ? 'bg-accent' : ''}`}>
+          <button
+            type="button"
+            onClick={() => pick(e.choice)}
+            aria-pressed={selected}
+            className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors flex items-center gap-2 ${
+              selected ? 'text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
+            }`}
+          >
+            {/* The company mark. A fixed-width box whether or not a mark resolves,
+                so an unrecognised model's name still lines up with its neighbours'
+                instead of hanging one glyph-width to the left. */}
+            <span className="w-[13px] shrink-0 inline-flex items-center justify-center" style={markColor ? { color: markColor } : undefined}>
+              {brand?.icon
+                ? <ProviderIcon icon={brand.icon} size={13} />
+                : <ModelIcon className="w-3 h-3 opacity-40" />}
+            </span>
+            <span className="truncate block min-w-0">
+              {e.label}
+              {/* Divider dot + source, inline per row — this is what replaced the
+                  per-provider sections. One flat list reads the same at 4 models
+                  or 400. */}
+              <span className={selected ? 'opacity-70' : 'text-fg-muted'}> · {e.sourceLabel}</span>
+            </span>
+          </button>
+          {/* touch-reveal + coarse-hit: hover-only affordances never resolve on
+              the Android WebView (narrow-viewport rule). Selected uses the same
+              on-accent colour as the mark/name above, for the same reason:
+              painting the ordinary favourite-gold onto the accent fill is the
+              one place it can fail contrast, since the accent is theme-authored
+              and unknown to us. mr-1 keeps it off the fill's rounded corner,
+              mirroring the name button's own left inset (px-2) on the other end. */}
+          <button
+            type="button"
+            onClick={() => toggleFavorite(e.key)}
+            aria-pressed={fav}
+            aria-label={fav ? `Unfavourite ${e.label}` : `Favourite ${e.label}`}
+            title={fav ? 'Remove from favourites' : 'Add to favourites'}
+            className={`shrink-0 w-6 h-6 mr-1 rounded inline-flex items-center justify-center transition-opacity coarse-hit touch-reveal ${
+              selected
+                ? 'text-on-accent opacity-100'
+                : fav
+                  ? 'text-accent opacity-100'
+                  : 'text-fg-faint opacity-0 group-hover/model:opacity-100 hover:text-fg-2'
+            }`}
+          >
+            <StarGlyph filled={fav} />
+          </button>
+        </div>
       </div>
     );
   };
