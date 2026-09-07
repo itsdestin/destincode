@@ -130,7 +130,10 @@ interface Props {
   activeSessionId: string | null;
   onSelectSession: (id: string) => void;
   onCreateSession: (cwd: string, dangerous: boolean, model: string, provider?: 'claude' | 'native', launchInNewWindow?: boolean, binding?: { providerId: string; modelId: string }, preset?: string) => void;
-  onCloseSession: (id: string) => void;
+  // WHY (2026-09-07): name is optional so the confirm prompt can show a real
+  // session name for a "sessions in other windows" row — that session isn't
+  // in the `sessions` array App.tsx uses to look names up by id.
+  onCloseSession: (id: string, name?: string) => void;
   sessionStatuses?: Map<string, SessionStatusColor>;
   // WHY: `onResumeSession` is no longer accepted here. The strip never invoked
   // it — resuming is owned by the ResumeBrowser modal, opened via
@@ -520,6 +523,20 @@ export default function SessionStrip({
   // the cursor is currently over this window's strip. Drives a visual drop-
   // target highlight. Cleared on any non-hover tick or when the drag ends.
   const [incomingDropActive, setIncomingDropActive] = useState(false);
+  // Drop-target highlight for the "sessions in this window" list while a
+  // "sessions in other windows" row (native HTML5 drag, see below) is over it.
+  const [peerDropActive, setPeerDropActive] = useState(false);
+  // Reordering INSIDE the All Sessions menu, by the same native drag the peer
+  // rows use. WHY a second system rather than the pointer path the pill bar
+  // uses: that path picks a target slot from the cursor's clientX against the
+  // PILL BAR's geometry and ignores Y entirely ("Y is ignored on purpose",
+  // handlePointerMove) — so in a vertical list the one gesture the list invites
+  // could never land anywhere, and a sideways drag reordered against pills the
+  // dropdown isn't even near. `menuDragId` is the row in hand; `menuDropIndex`
+  // is the insertion slot (0…sessions.length) the line is drawn at.
+  const [menuDragId, setMenuDragId] = useState<string | null>(null);
+  const [menuDropIndex, setMenuDropIndex] = useState<number | null>(null);
+  const endMenuDrag = useCallback(() => { setMenuDragId(null); setMenuDropIndex(null); setPeerDropActive(false); }, []);
 
   // Listen for cross-window cursor updates from main — fires ~30Hz while
   // a peer window is dragging a pill. We hit-test each update against our
@@ -787,6 +804,17 @@ export default function SessionStrip({
   const handlePointerDown = useCallback((e: React.PointerEvent, sessionId: string, inStrip = false) => {
     // Only primary button
     if (e.button !== 0) return;
+    // WHY (2026-09-07, Destin: "i cant seem to grab the drag handle for
+    // same-window sessions"): the All Sessions menu's grip is a native
+    // draggable (see the menu list below). Two reasons this path must not
+    // engage from it. It cannot do the job — its target slot comes from
+    // clientX against the pill bar and ignores Y, so a vertical list drag
+    // lands nowhere. And on the live-window model it takes pointer capture,
+    // which can stop Chromium ever firing dragstart (same reason the
+    // html-drag branch below skips capture). Pressing anywhere ELSE on a menu
+    // row still takes this path, so the tear-off-from-the-menu it supports on
+    // Windows/macOS is untouched.
+    if ((e.target as HTMLElement).closest?.('[data-menu-drag-grip]')) return;
     lastPointerType.current = e.pointerType || 'mouse';
     // Another pill's peek closes NOW, before the drag geometry is frozen below:
     // the packer counts that pill as a dot, but it is drawn 56px wide while its
@@ -2130,7 +2158,68 @@ export default function SessionStrip({
               rows on short windows) and scrolls before its New Session controls
               can be pushed past the bottom edge. */}
           {sessions.length > 0 && (
-            <div ref={sessionListRef} className="scroll-fade flex-1" style={{ maxHeight: 'min(432px, 55vh)' }}>
+            <div
+              ref={sessionListRef}
+              className="scroll-fade flex-1"
+              // WHY (2026-09-07, Destin): lets a "sessions in other windows" row be
+              // dragged straight back into this window's list — reuses the same
+              // dragAdopt() main already uses for the header pill bar's cross-window
+              // drop, just triggered by a plain in-page drag confined to this
+              // dropdown instead of an OS-level drag. Separate from the pointer-based
+              // reorder system above (session-strip-motion.md) — deliberately not
+              // touching that fragile, heavily-reviewed code path. Background stays
+              // inline (not a class) so this div's className keeps matching the
+              // literal string menu-row-reachability.test.ts pins.
+              style={{
+                maxHeight: 'min(432px, 55vh)',
+                background: peerDropActive ? 'color-mix(in srgb, var(--accent) 12%, transparent)' : undefined,
+              }}
+              onDragOver={(e) => {
+                if (!dragCarriesSession(e.dataTransfer)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                // A row from THIS list is a reorder — the rows draw their own
+                // insertion line, and lighting the whole list as a drop target
+                // would say "adopt", which is the wrong promise. WHY we read
+                // state instead of the drag's payload: dataTransfer.getData is
+                // deliberately blank during dragover (only `types` is legible),
+                // so which session is in hand is knowable only from the
+                // dragstart that set it — and that is always this window's.
+                if (menuDragId) return;
+                if (!peerDropActive) setPeerDropActive(true);
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setPeerDropActive(false);
+                  setMenuDropIndex(null);
+                }
+              }}
+              onDrop={(e) => {
+                const sessionId = readSessionDrag(e.dataTransfer);
+                if (!sessionId) return;
+                e.preventDefault();
+                const insertAt = menuDropIndex;
+                setPeerDropActive(false);
+                setMenuDropIndex(null);
+                setMenuDragId(null);
+                // Ownership decides the route, read from the dropped payload
+                // rather than the in-flight state: a session already in this
+                // list is a reorder, anything else came from another window
+                // and is an adoption.
+                const from = sessions.findIndex((x) => x.id === sessionId);
+                if (from < 0) {
+                  (window as any).claude?.detach?.dragAdopt?.({ sessionId });
+                  return;
+                }
+                if (insertAt === null || !onReorderSessions) return;
+                // insertAt is a slot in the list AS SHOWN; onReorderSessions
+                // splices the row out first, so a slot after the row's own
+                // position shifts down by one. Both slots either side of the
+                // row it came from are where it already is.
+                const to = insertAt > from ? insertAt - 1 : insertAt;
+                if (to !== from) onReorderSessions(from, to);
+              }}
+            >
               <div className="py-1">
               {sessions.map((s, idx) => {
                 const color = sessionStatuses?.get(s.id) || 'gray';
@@ -2144,7 +2233,20 @@ export default function SessionStrip({
                     onPointerDown={(e) => handlePointerDown(e, s.id)}
                     onPointerMove={handlePointerMove}
                     onPointerUp={handlePointerUp}
+                    // Half a row decides the slot: above the midline the row in
+                    // hand lands before this one, below it lands after. Only
+                    // while a row from THIS list is in hand — a peer window's
+                    // row is an adoption, which has no position to choose.
+                    onDragOver={(e) => {
+                      if (!menuDragId || !dragCarriesSession(e.dataTransfer)) return;
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = 'move';
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenuDropIndex(e.clientY < r.top + r.height / 2 ? idx : idx + 1);
+                    }}
                     className={`relative flex items-center pr-1 group/row select-none touch-none ${
+                      menuDragId === s.id ? 'opacity-40 ' : ''
+                    }${
                       shiftNavIdx === idx
                         ? 'bg-accent/20 text-fg'
                         : s.id === activeSessionId
@@ -2163,8 +2265,36 @@ export default function SessionStrip({
                       cursor: 'default',
                     }}
                   >
-                    {/* Drag grip — visible on hover */}
-                    <span className={`shrink-0 flex items-center pl-1.5 transition-opacity ${isAndroid() ? 'hidden' : 'opacity-0 group-hover/row:opacity-100'}`}>
+                    {/* Where the row in hand will land. Drawn on the row above
+                        the slot, or under the last row for the final slot, so
+                        the line sits between rows without a spacer element of
+                        its own perturbing the list's layout mid-drag. */}
+                    {menuDragId && menuDropIndex === idx && (
+                      <span className="absolute left-0 right-0 top-0 h-[2px] bg-accent rounded-full pointer-events-none" />
+                    )}
+                    {menuDragId && menuDropIndex === idx + 1 && idx === sessions.length - 1 && (
+                      <span className="absolute left-0 right-0 bottom-0 h-[2px] bg-accent rounded-full pointer-events-none" />
+                    )}
+                    {/* Drag grip — visible on hover, and the handle itself: it
+                        is the native draggable, so the browser owns the gesture
+                        (handlePointerDown steps aside for it by the data
+                        attribute). Hidden on Android, which has no drag. */}
+                    <span
+                      data-menu-drag-grip
+                      draggable={!isAndroid()}
+                      onDragStart={(e) => {
+                        writeSessionDrag(e.dataTransfer, s.id);
+                        e.dataTransfer.effectAllowed = 'move';
+                        // Drag the whole row, not the ten-pixel grip: the grip
+                        // alone gives the cursor nothing to aim a list slot with.
+                        const row = e.currentTarget.closest('[data-session-id]') as HTMLElement | null;
+                        const r = row?.getBoundingClientRect();
+                        if (row && r) { try { e.dataTransfer.setDragImage(row, e.clientX - r.left, e.clientY - r.top); } catch { /* no picture, drag still works */ } }
+                        setMenuDragId(s.id);
+                      }}
+                      onDragEnd={endMenuDrag}
+                      className={`shrink-0 flex items-center pl-1.5 transition-opacity ${isAndroid() ? 'hidden' : 'opacity-0 group-hover/row:opacity-100 cursor-grab active:cursor-grabbing'}`}
+                    >
                       <DragGrip />
                     </span>
                     <button
@@ -2224,7 +2354,7 @@ export default function SessionStrip({
                     <button
                       // Close the dropdown so the CloseSessionPrompt (L2 popup)
                       // isn't competing with the still-open session menu above it.
-                      onClick={(e) => { e.stopPropagation(); if (!suppressClick.current) { setMenuOpen(false); onCloseSession(s.id); } }}
+                      onClick={(e) => { e.stopPropagation(); if (!suppressClick.current) { setMenuOpen(false); onCloseSession(s.id, s.name); } }}
                       onPointerDown={(e) => e.stopPropagation()}
                       className="shrink-0 w-5 h-5 flex items-center justify-center rounded-sm text-fg-faint hover:text-[#DD4444] hover:bg-inset opacity-0 group-hover/row:opacity-100 transition-opacity"
                       title="Close Session"
@@ -2257,6 +2387,17 @@ export default function SessionStrip({
               }))
               .filter((g) => g.sessions.length > 0);
             if (remoteGroups.length === 0) return null;
+            // WHY (2026-09-07, Destin): rows here used to be a flat button with a
+            // bare dot — visually a different UI from "sessions in this window"
+            // right above it. This mirrors that section's card markup (background,
+            // folder subtitle, status pill, runtime line, tags) so the two read as
+            // one list. The click target and the trailing "→ window" tag still
+            // differ; the drag grip and close button are real here too — drag
+            // adopts the session into this window (native HTML5 drag, dropped on
+            // the "this window" list above), close destroys it outright (main's
+            // session:destroy already takes any session id regardless of which
+            // window owns it — no new IPC needed for either).
+            let remoteIdx = 0;
             return (
               <>
                 <div className="border-t border-edge" />
@@ -2270,22 +2411,90 @@ export default function SessionStrip({
                   {remoteGroups.flatMap((g) =>
                     g.sessions.map((s) => {
                       const color = sessionStatuses?.get(s.id) || 'gray';
+                      const idx = remoteIdx++;
                       return (
-                        <button
+                        <div
                           key={s.id}
-                          onClick={() => {
-                            (window as any).claude?.detach?.focusAndSwitch?.({ windowId: g.windowId, sessionId: s.id });
-                            setMenuOpen(false);
+                          draggable
+                          onDragStart={(e) => {
+                            writeSessionDrag(e.dataTransfer, s.id);
+                            e.dataTransfer.effectAllowed = 'move';
                           }}
-                          className="w-full text-left pl-3 pr-2 py-2 flex items-center gap-2 text-fg-dim hover:bg-inset hover:text-fg transition-colors"
+                          // A drag abandoned outside any drop target still has
+                          // to put the list's highlight back.
+                          onDragEnd={endMenuDrag}
+                          className="relative flex items-center pr-1 group/row select-none touch-none text-fg-dim hover:bg-inset hover:text-fg"
+                          style={{
+                            animation: `row-fade-in 100ms ease both`,
+                            animationDelay: `${idx * 20}ms`,
+                            transition: 'opacity 150ms steps(4), background 150ms steps(4)',
+                          }}
                         >
-                          <SessionDot color={color} isActive={false} />
-                          <span className="flex-1 min-w-0"><SessionName name={s.name} /></span>
-                          <span className="ml-auto shrink-0 text-3xs text-fg-muted whitespace-nowrap flex items-center gap-1">
-                            <span>→</span>
-                            <span>{g.label}</span>
+                          {/* Drag grip — visible on hover. Drag this row onto the
+                              "sessions in this window" list above to claim it. */}
+                          <span className="shrink-0 flex items-center pl-1.5 transition-opacity opacity-0 group-hover/row:opacity-100 cursor-grab">
+                            <DragGrip />
                           </span>
-                        </button>
+                          <button
+                            onClick={() => {
+                              (window as any).claude?.detach?.focusAndSwitch?.({ windowId: g.windowId, sessionId: s.id });
+                              setMenuOpen(false);
+                            }}
+                            className="flex-1 text-left pl-1 pr-1.5 py-1.5 flex items-center min-w-0"
+                          >
+                            <span className="flex-1 min-w-0 flex flex-col gap-0.5">
+                              <span className="flex items-center gap-2 min-w-0">
+                                <span className="flex-1 min-w-0"><SessionName name={s.name} /></span>
+                                {s.permissionMode === 'bypass' && (
+                                  <span className="shrink-0 text-4xs font-medium px-1 py-0.5 rounded-sm bg-[#DD4444]/20 text-[#DD4444]">
+                                    DANGER
+                                  </span>
+                                )}
+                                <StatusPill color={color} isActive={false} />
+                              </span>
+                              <span className="flex items-center gap-2 min-w-0">
+                                <span className="flex-1 min-w-0 flex items-center gap-1 text-3xs text-fg-muted">
+                                  <FolderMark className="w-3 h-3 shrink-0 text-fg-faint" />
+                                  <span className="truncate">{s.cwd.replace(/\\/g, '/').split('/').pop()}</span>
+                                </span>
+                                {(() => {
+                                  const rt = sessionRuntimeLabel(s);
+                                  return (
+                                    <span
+                                      className="shrink-0 min-w-0 max-w-[35%] flex items-center gap-1 text-3xs text-fg-muted"
+                                      title={rt.text}
+                                    >
+                                      {rt.icon && (
+                                        <span className="shrink-0 flex items-center" style={{ color: rt.color }}>
+                                          <ProviderIcon icon={rt.icon} size={10} />
+                                        </span>
+                                      )}
+                                      <span className="truncate">{rt.text}</span>
+                                    </span>
+                                  );
+                                })()}
+                                <SessionTagMarks sessionId={s.id} byId={tagsById} />
+                                <span className="ml-auto shrink-0 text-3xs text-fg-muted whitespace-nowrap flex items-center gap-1">
+                                  <span>→</span>
+                                  <span>{g.label}</span>
+                                </span>
+                              </span>
+                            </span>
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setMenuOpen(false);
+                              onCloseSession(s.id, s.name);
+                            }}
+                            className="shrink-0 w-5 h-5 flex items-center justify-center rounded-sm text-fg-faint hover:text-[#DD4444] hover:bg-inset opacity-0 group-hover/row:opacity-100 transition-opacity"
+                            title="Close Session"
+                          >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                          </button>
+                        </div>
                       );
                     }),
                   )}

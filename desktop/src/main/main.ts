@@ -500,7 +500,13 @@ type PerSessionAttention = {
 };
 const attentionReports = new Map<number, Map<string, PerSessionAttention>>();
 
-function recomputeAndBroadcastAttention(): void {
+// WHY (2026-09-07): split out of recomputeAndBroadcastAttention so the same
+// aggregate can also be PULLED. SESSION_ATTENTION_SUMMARY is push-on-change
+// only, so a window that just opened hears nothing until some session's state
+// next flips — leaving a peer session that is already mid-turn reading gray in
+// its switcher. Renderers call attention.getSummary() once on mount for the
+// current snapshot (same pull-vs-race reason as detach.getDirectory).
+function buildAttentionSummary(): AttentionSummary {
   const perSession: Record<string, PerSessionAttention> = {};
   let anyNeedsAttention = false;
   for (const byWin of attentionReports.values()) {
@@ -514,7 +520,12 @@ function recomputeAndBroadcastAttention(): void {
       }
     }
   }
-  const summary: AttentionSummary = { anyNeedsAttention, perSession };
+  return { anyNeedsAttention, perSession };
+}
+
+function recomputeAndBroadcastAttention(): void {
+  const summary = buildAttentionSummary();
+  const anyNeedsAttention = summary.anyNeedsAttention;
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.SESSION_ATTENTION_SUMMARY, summary);
   }
@@ -2230,6 +2241,11 @@ void app.whenReady().then(async () => {
     }
     debouncedBroadcastAttention();
   });
+
+  // Pull-style companion to the SESSION_ATTENTION_SUMMARY push. A renderer
+  // calls this from its mount effect so a window opened mid-turn draws the
+  // right dot immediately instead of waiting for the next state flip.
+  ipcMain.handle(IPC.ATTENTION_GET_SUMMARY, async () => buildAttentionSummary());
 
   // Start native sync service — owns push/pull lifecycle, background timer,
   // session-end sync. Replaces bash hook sync when app is running.

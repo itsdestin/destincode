@@ -319,6 +319,7 @@ const IPC = {
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
+  ATTENTION_GET_SUMMARY: 'attention:get-summary',
   // Settings → Development feature (bug report, contribute, known issues)
   DEV_LOG_TAIL: 'dev:log-tail',
   DEV_DIAGNOSTICS: 'dev:diagnostics',
@@ -1297,6 +1298,13 @@ contextBridge.exposeInMainWorld('claude', {
   // and broadcasts a global AttentionSummary to buddy subscribers.
   attention: {
     report: (payload: AttentionReport) => ipcRenderer.send(IPC.ATTENTION_REPORT, payload),
+    // Pull-style snapshot of that same aggregate. The push channel
+    // (buddy.onAttentionSummary, which every window may subscribe to) only
+    // fires on change, so a window that opens while a peer session is already
+    // mid-turn would otherwise show it gray until the turn ended. Called once
+    // from the subscriber's mount effect. Lives under `attention` rather than
+    // `buddy` because the main window's session switcher reads it too.
+    getSummary: (): Promise<AttentionSummary> => ipcRenderer.invoke(IPC.ATTENTION_GET_SUMMARY),
   },
   // Exposes the live xterm buffer for a session. Used by useAttentionClassifier
   // (~1s cadence) so it can read terminal state on both Electron and Android

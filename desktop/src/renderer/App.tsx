@@ -45,7 +45,8 @@ import { usePartyGame } from './hooks/usePartyGame';
 import { useChessGame } from './hooks/useChessGame';
 import { useRemoteAttentionSync } from './hooks/useRemoteAttentionSync';
 import { useSubmitConfirmation } from './hooks/useSubmitConfirmation';
-import { useSessionAttention } from './hooks/useSessionAttention';
+import { useSessionAttention, mergePeerSessionStatuses } from './hooks/useSessionAttention';
+import { useAttentionSummary } from './hooks/useAttentionSummary';
 import { useActiveSessionModel } from './hooks/useActiveSessionModel';
 import { useNativeSessionUsage, useTurnsWithUsage } from './hooks/useNativeSessionUsage';
 import { useNativeSessionTotals } from './hooks/useNativeSessionTotals';
@@ -144,6 +145,11 @@ interface StatusDataState {
   contextMap: Record<string, number>;
   gitBranchMap: Record<string, string>;
   sessionStatsMap: Record<string, SessionStats>;
+  // Cross-window/cross-platform attention feed (main's `lastAttentionBySession`,
+  // pushed every ~10s) — remote browsers have always used this for their dots;
+  // desktop now also reads it for a peer window's sessions in the switcher,
+  // since a peer session has no local chat-store entry to derive a color from.
+  attentionMap: Record<string, string>;
   syncWarnings: SyncWarning[] | null;
   lastSyncEpoch: number | null;
   syncInProgress: boolean;
@@ -211,6 +217,7 @@ function AppInner() {
   const [statusData, setStatusData] = useState<StatusDataState>({
     usage: null, chatgptUsage: null, announcement: null, updateStatus: null,
     model: null, contextMap: {}, gitBranchMap: {}, sessionStatsMap: {},
+    attentionMap: {},
     syncWarnings: [],
     lastSyncEpoch: null, syncInProgress: false, backupMeta: null,
   });
@@ -327,6 +334,9 @@ function AppInner() {
   // Shown when the user closes an active session — offers to mark it complete
   // in one step so it's hidden from the resume menu by default.
   const [closePromptFor, setClosePromptFor] = useState<string | null>(null);
+  // WHY (2026-09-07): a "sessions in other windows" close can't look its name
+  // up in `sessions` — that session isn't in this window's local list.
+  const [closePromptName, setClosePromptName] = useState<string | undefined>(undefined);
   // Preferences popup state — opened by /config in chat view or from SettingsPanel
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   // Model/effort/fast picker — opened by bare /model, /fast, /effort (and future status-bar chip clicks)
@@ -792,11 +802,35 @@ function AppInner() {
   // re-renders only when a triple changes, not on every dispatch (see
   // useSessionAttention). sessionStatuses keeps its old shape for HeaderBar.
   const sessionAttention = useSessionAttention(sessions, viewedSessions, sessionId);
+  const attentionSummary = useAttentionSummary();
   const sessionStatuses = useMemo(() => {
     const m = new Map<string, SessionStatusColor>();
     for (const [id, info] of sessionAttention) m.set(id, info.status);
-    return m;
-  }, [sessionAttention]);
+    // WHY (2026-09-07, Destin: "status lights properly displayed across
+    // windows"): a peer-window session has no transcript events in this
+    // renderer at all, so nothing here can derive its colour locally — the
+    // switcher's "sessions in other windows" rows read gray/Inactive whatever
+    // the truth. Two cross-window feeds can answer, and they are NOT
+    // equivalent:
+    //   1. attentionSummary — main's merge of every window's own derived dot
+    //      colour, pushed ~100ms after any change. Carries the colour itself,
+    //      green and blue included. Authoritative; the buddy pill already uses it.
+    //   2. statusData.attentionMap — "needs attention" STATES on the 10s status
+    //      push. Can only ever say red or amber, and is up to 10s stale, but it
+    //      survives places the summary doesn't run (remote browsers, and the
+    //      instant before this window's first summary arrives).
+    // So: summary first, attentionMap as the fallback. A session THIS window
+    // owns always keeps its local derivation — blue depends on what *you* have
+    // looked at, which only this window knows. Precedence lives in the pure
+    // mergePeerSessionStatuses so it can be pinned by tests.
+    return mergePeerSessionStatuses({
+      base: m,
+      localSessionIds: new Set<string>(sessions.map((s: any) => s.id)),
+      windowDirectory,
+      summaryPerSession: attentionSummary.perSession,
+      attentionMap: statusData.attentionMap,
+    });
+  }, [sessionAttention, attentionSummary, sessions, windowDirectory, statusData.attentionMap]);
 
   // Play the 'attention' sound when any session transitions to red (awaiting
   // approval). Red is a visible state, so color-driven dedup is correct here.
@@ -822,15 +856,24 @@ function AppInner() {
   // was restarted. For anyone who never signs in with ChatGPT this value is
   // `false` on every push forever and nothing below ever runs.
   const hadChatGptUsageRef = useRef(false);
+  // WHY (2026-09-07) this walks `sessions` rather than the whole map: since the
+  // switcher started colouring peer-window rows, sessionStatuses also contains
+  // sessions OTHER windows own. Chiming on those would play the same alert once
+  // per open window, all at once, on top of the owning window's own chime — and
+  // the owner is already chiming, so no alert is lost by staying owner-only.
   useEffect(() => {
     const prev = prevStatusSoundRef.current;
-    for (const [id, color] of sessionStatuses) {
-      const was = prev.get(id);
+    const next = new Map<string, SessionStatusColor>();
+    for (const s of sessions) {
+      const color = sessionStatuses.get(s.id);
+      if (!color) continue;
+      next.set(s.id, color);
+      const was = prev.get(s.id);
       if (was === color) continue;
       if (color === 'red' && was !== 'red') playSound('attention');
     }
-    prevStatusSoundRef.current = new Map(sessionStatuses);
-  }, [sessionStatuses]);
+    prevStatusSoundRef.current = next;
+  }, [sessionStatuses, sessions]);
 
   // Play the 'ready' sound when any session's isThinking transitions true → false.
   // Replaces the prior blue-color-transition trigger, which never fired for the
@@ -882,10 +925,22 @@ function AppInner() {
   // Stays a REACT EFFECT (not a store subscription) and is declared here (not
   // where the ref is) because it must observe the post-render selector output
   // — running it before sessionAttention is computed would read `undefined`.
+  //
+  // WHY (2026-09-07) this reports only sessions THIS window owns: sessionAttention
+  // also holds placeholder entries for peer-window sessions (App dispatches
+  // ATTENTION_STATE_CHANGED for every id in the 10s attentionMap, whoever owns
+  // it), and those placeholders can only ever derive gray/red/amber — they have
+  // no transcript, so they never know "green". Main's aggregate is keyed by
+  // session id across all windows, last report wins, so reporting them let a
+  // non-owner's stale gray overwrite the owner's green in the very feed the
+  // switcher now reads. One session, one reporter: its owner.
   useEffect(() => {
     const prev = lastAttentionReportedRef.current;
     const currentIds = new Set<string>();
-    for (const [sid, info] of sessionAttention) {
+    for (const s of sessions) {
+      const sid = s.id;
+      const info = sessionAttention.get(sid);
+      if (!info) continue;
       currentIds.add(sid);
       // Thread the same dot color the main switcher renders for this
       // session so the buddy pill's dot is visually identical.
@@ -906,7 +961,7 @@ function AppInner() {
         prev.delete(sid);
       }
     }
-  }, [sessionAttention]);
+  }, [sessionAttention, sessions]);
 
   // Buddy "open main app" → land on the buddy's viewed session. Reads the
   // existing sessionsRef mirror so the IPC subscription survives
@@ -1508,6 +1563,7 @@ function AppInner() {
         contextMap: data.contextMap || prev.contextMap,
         gitBranchMap: data.gitBranchMap || prev.gitBranchMap,
         sessionStatsMap: data.sessionStatsMap || prev.sessionStatsMap,
+        attentionMap: data.attentionMap || prev.attentionMap,
       }));
 
       // Diff attentionMap and dispatch per-session when state flips.
@@ -3077,13 +3133,17 @@ function AppInner() {
                   });
                 }}
                 onCreateSession={createSession}
-                onCloseSession={(id) => {
+                onCloseSession={(id, name) => {
                   // Skip prompt if the user has checked "Don't show again".
                   // In that case destroy immediately without any flags — the
                   // user can still tag sessions from the resume menu later.
+                  // WHY: session:destroy is a global main-process command keyed
+                  // only by session id — it works the same for a peer window's
+                  // session as it does for a local one, no ownership check.
                   if (localStorage.getItem(CLOSE_PROMPT_SUPPRESS_KEY) === '1') {
                     try { window.claude.session.destroy(id); } catch {}
                   } else {
+                    setClosePromptName(name);
                     setClosePromptFor(id);
                   }
                 }}
@@ -3605,9 +3665,9 @@ function AppInner() {
       />
       <CloseSessionPrompt
         open={closePromptFor !== null}
-        sessionName={sessions.find((s) => s.id === closePromptFor)?.name}
+        sessionName={closePromptName ?? sessions.find((s) => s.id === closePromptFor)?.name}
         sessionId={closePromptFor}
-        onCancel={() => setClosePromptFor(null)}
+        onCancel={() => { setClosePromptFor(null); setClosePromptName(undefined); }}
         onConfirm={(result) => {
           const id = closePromptFor;
           if (!id) return;
@@ -3632,6 +3692,7 @@ function AppInner() {
           if (result.noteChanged) { try { Promise.resolve((window as any).claude.session.setNote(id, result.note)).catch(() => {}); } catch {} }
           try { window.claude.session.destroy(id); } catch {}
           setClosePromptFor(null);
+          setClosePromptName(undefined);
         }}
       />
       <PreferencesPopup
