@@ -1728,7 +1728,13 @@ export class RemoteServer {
           try { await fs.promises.access(candidate); pagePath = candidate; break; } catch { /* try the next slug */ }
         }
         if (!pagePath) {
-          this.respond(client.ws, type, id, emptyPage);
+          // Same distinction the desktop handler makes (shared/types.ts,
+          // TranscriptPageResult.unresolved): "I could not find the transcript"
+          // must not read as "you have reached the beginning of the
+          // conversation", which the renderer records by dropping the cursor
+          // and the scroll-up sentinel for good. The renderer is the SAME React
+          // code over this bridge, so the phone needs the same answer.
+          this.respond(client.ws, type, id, { ...emptyPage, unresolved: true });
           break;
         }
         const page = await readTranscriptPage({

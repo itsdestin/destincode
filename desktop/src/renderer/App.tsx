@@ -78,12 +78,8 @@ import { ProjectView } from './components/project-view/ProjectView';
 import type { SkillEntry, PermissionMode, AttentionState, CommandEntry, SessionProvider } from '../shared/types';
 import type { NativePermissionMode } from '../shared/permission-types';
 import { RESUMING_NATIVE, RESUMING_CLAUDE } from '../shared/session-title';
+import { decideFirstPage, FIRST_PAGE_RETRY_MS } from './state/first-page-retry';
 
-/** First-page fetch retries — see loadFirstPage. Three attempts 400ms apart
- *  covers the gap between a session starting and Claude Code's hook reporting
- *  its transcript path, without making a genuinely empty session feel slow. */
-const FIRST_PAGE_ATTEMPTS = 3;
-const FIRST_PAGE_RETRY_MS = 400;
 import FirstRunView from './components/FirstRunView';
 import { getPlatform, isRemoteMode, onConnectionModeChange } from './platform';
 import type { SessionStatusColor } from './components/StatusDot';
@@ -1771,7 +1767,7 @@ function AppInner() {
     if (firstPageAsked.current.has(sid)) return;
     firstPageAsked.current.add(sid);
     dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId: sid });
-    for (let attempt = 0; attempt < FIRST_PAGE_ATTEMPTS; attempt++) {
+    for (let attempt = 0; ; attempt++) {
       try {
         const page = await (window as any).claude?.detach?.requestTranscriptPage?.({
           sessionId: sid,
@@ -1780,17 +1776,19 @@ function AppInner() {
           projectSlug: locator?.projectSlug,
         });
         if (!page) { dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid }); return; }
-        // An empty page is ambiguous: either the session genuinely has no
-        // history, or main cannot resolve its transcript YET (a just-started
-        // session is not watched until Claude Code's hook reports its path).
-        // Retry a few times before accepting it — guessing wrong one way shows
-        // an empty conversation with no way to recover, guessing wrong the
-        // other way costs a few hundred ms on a genuinely new session.
-        const empty = page.events.length === 0 && !page.hasMore;
-        if (!empty || attempt === FIRST_PAGE_ATTEMPTS - 1) {
+        // An empty page used to be ambiguous: either the session genuinely has
+        // no history, or main could not resolve its transcript YET (a
+        // just-started session is not watched until Claude Code's hook reports
+        // its path). Main now says which — `unresolved` — so the two get
+        // different budgets, and an unresolved one is never RECORDED: writing
+        // hasMore:false + a null cursor is what permanently removes the
+        // scroll-up sentinel (Destin, 2026-09-07). See first-page-retry.ts.
+        const decision = decideFirstPage(page, attempt);
+        if (decision === 'accept') {
           dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId: sid, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
           return;
         }
+        if (decision === 'give-up') { dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId: sid }); return; }
       } catch {
         // The scroll sentinel can retry; a failed first page leaves an empty
         // view rather than a wrong one.
