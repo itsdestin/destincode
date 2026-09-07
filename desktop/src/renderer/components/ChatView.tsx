@@ -37,6 +37,17 @@ import { useSessionPreviewListener } from '../hooks/useSessionPreviewListener';
  *  input releases it immediately. */
 const ANCHOR_SETTLE_MS = 700;
 
+/** Retry budget for a page main could not LOCATE (`unresolved`) — as opposed to
+ *  a page that genuinely does not exist. The usual cause is a just-resumed
+ *  Claude Code session whose SessionStart hook has not reported its transcript
+ *  path yet, so the window that matters is a second or two; the cap exists so a
+ *  transcript that never resolves cannot become a permanent background poll for
+ *  as long as the conversation stays open. Doubling from 400ms, capped: 8
+ *  attempts span ~13s. */
+const UNRESOLVED_RETRY_MS = 400;
+const UNRESOLVED_RETRY_MAX_MS = 3000;
+const UNRESOLVED_RETRY_LIMIT = 8;
+
 interface Props {
   sessionId: string;
   visible: boolean;
@@ -324,15 +335,50 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
     return null;
   }, []);
 
+  /** Backoff state for `unresolved` answers. Load-bearing: an unresolved answer
+   *  ends in HISTORY_PAGE_FAILED, which clears `loading`, which re-runs the
+   *  observer effect, which re-observes a sentinel that is still on screen and
+   *  fires immediately — a request-per-frame busy loop without this gate. */
+  const unresolvedRetryRef = useRef({ attempts: 0, notBefore: 0 });
+  const unresolvedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The timer fires long after the closure that scheduled it went stale. */
+  const loadOlderPageRef = useRef<() => void>(() => {});
+
   const loadOlderPage = useCallback(async () => {
     const cursor = history.cursor;
     if (!cursor || history.loading) return;
+    if (Date.now() < unresolvedRetryRef.current.notBefore) return;
     // Announce FIRST: `loading` is the one-in-flight guard, so a second sentinel
     // hit in the same frame must already see it set.
     dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId });
     try {
       const page = await (window as any).claude?.detach?.requestTranscriptPage?.({ sessionId, beforeCursor: cursor });
+      // Main could not LOCATE the transcript — NOT "this is the beginning of the
+      // conversation". Recording it as a page would write hasMore:false and a
+      // null cursor into the reducer, which removes the sentinel for good and
+      // makes the rest of the conversation unreachable in this window (Destin,
+      // 2026-09-07). Treat it as a failed fetch, which keeps the cursor, and
+      // retry on a timer so it heals without needing a gesture the user may not
+      // even be able to make — at the top of the list there is nothing left to
+      // scroll, so nothing would re-trigger the sentinel.
+      if (page?.unresolved) {
+        const retry = unresolvedRetryRef.current;
+        if (retry.attempts < UNRESOLVED_RETRY_LIMIT) {
+          const delay = Math.min(UNRESOLVED_RETRY_MS * 2 ** retry.attempts, UNRESOLVED_RETRY_MAX_MS);
+          retry.attempts += 1;
+          retry.notBefore = Date.now() + delay;
+          if (unresolvedTimerRef.current) clearTimeout(unresolvedTimerRef.current);
+          unresolvedTimerRef.current = setTimeout(() => {
+            unresolvedTimerRef.current = null;
+            unresolvedRetryRef.current.notBefore = 0;
+            void loadOlderPageRef.current();
+          }, delay);
+        }
+        dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+        return;
+      }
       if (page) {
+        unresolvedRetryRef.current = { attempts: 0, notBefore: 0 };
         // Captured HERE, one statement before the prepend — not before the await,
         // where a round-trip's worth of streaming could have moved everything.
         prependAnchorRef.current = captureScrollAnchor();
@@ -347,12 +393,27 @@ export default function ChatView({ sessionId, visible, sessionActive, cwd, gameP
     }
   }, [dispatch, sessionId, history.cursor, history.loading, captureScrollAnchor]);
 
+  useEffect(() => { loadOlderPageRef.current = loadOlderPage; });
+
+  // A pending retry belongs to the conversation that scheduled it. Switching
+  // sessions (this component is reused per session id) must not fire it against
+  // the new one, and must give the new one a full budget of its own.
+  useEffect(() => {
+    unresolvedRetryRef.current = { attempts: 0, notBefore: 0 };
+    return () => {
+      if (unresolvedTimerRef.current) clearTimeout(unresolvedTimerRef.current);
+      unresolvedTimerRef.current = null;
+    };
+  }, [sessionId]);
+
   useEffect(() => {
     if (!history.hasMore || history.loading || !history.cursor) return;
     // No IntersectionObserver (an exotic WebView): fall back to nothing rather
     // than eagerly loading the whole conversation, which is the cost this
-    // feature exists to avoid. The keyboard/scrollbar still reach the top; the
-    // scroll handler below covers that case.
+    // feature exists to avoid. There is NO scroll-handler backstop — this
+    // observer is the only trigger for an older page, so on such a WebView the
+    // conversation simply does not page. (A comment here used to promise "the
+    // scroll handler below covers that case"; there has never been one.)
     if (typeof IntersectionObserver === 'undefined') return;
     const el = historySentinelRef.current;
     const root = scrollContainerRef.current;

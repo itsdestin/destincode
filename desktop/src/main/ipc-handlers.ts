@@ -71,7 +71,8 @@ import { ddgBackend } from './harness/search/backends/ddg';
 import { tavilyBackend } from './harness/search/backends/tavily';
 import type { NativePermissionMode } from '../shared/permission-types';
 import { resolveMappingAction } from './session-id-mapping';
-import { listPastSessions, loadHistory, SAFE_ID_RE } from './session-browser';
+import { listPastSessions, loadHistory } from './session-browser';
+import { TranscriptPageSources, type ResolvedPageSource } from './transcript-page-source';
 import { readTranscriptMeta } from './transcript-utils';
 import { startThemeWatcher, listUserThemes, userThemeDir, userThemeManifest, THEMES_DIR } from './theme-watcher';
 import { isBundledPlugin } from '../shared/bundled-plugins';
@@ -1001,6 +1002,11 @@ export function registerIpcHandlers(
     // non-native ids (the feeder was never fed events for them) and cheap
     // idempotent Map.delete for native ones.
     nativeTitleFeeder.forget(sessionId);
+    // Deliberately NOT dropped on session-EXIT: a conversation whose process
+    // has ended stays on screen and must stay scrollable, and exit is what
+    // stops the transcript watcher. Closing the conversation is the point where
+    // nothing can ask for its history again.
+    pageSources.forget(sessionId);
     const result = sessionManager.destroySession(sessionId);
     if (result) {
       // Explicit user-initiated destroy → treat as clean exit (0). The
@@ -2343,6 +2349,10 @@ export function registerIpcHandlers(
   const topicDir = path.join(os.homedir(), '.claude', 'topics');
   // Maps desktop session ID → Claude Code session ID
   const sessionIdMap = new Map<string, string>();
+  // Where each session's transcript lives, for the paged-history handler to
+  // fall back on whenever the transcript watcher cannot say — see
+  // transcript-page-source.ts for the three ordinary moments when it cannot.
+  const pageSources = new TranscriptPageSources();
 
   // Holder-side takeover (Plan 2b Task 8): when another device requests this
   // session, cleanly interrupt, flush the final turn to the space, release the
@@ -2891,23 +2901,32 @@ export function registerIpcHandlers(
       };
     }
 
-    let source = transcriptWatcher.pageSourceFor(sessionId);
+    let source: ResolvedPageSource | null = transcriptWatcher.pageSourceFor(sessionId);
     if (!source) {
-      // Not watched yet (a just-resumed CC session — the watcher starts when
-      // CC's hook reports the transcript path, which is after the renderer
-      // wants to paint). Resolve from the ids the caller already has. Both are
-      // validated: they shape a filesystem path.
-      const { claudeSessionId, projectSlug } = req;
-      if (typeof claudeSessionId !== 'string' || typeof projectSlug !== 'string'
-        || !SAFE_ID_RE.test(claudeSessionId) || !SAFE_ID_RE.test(projectSlug)) return empty;
-      const fallbackPath = path.join(os.homedir(), '.claude', 'projects', projectSlug, `${claudeSessionId}.jsonl`);
-      if (!fs.existsSync(fallbackPath)) return empty;
-      source = {
-        jsonlPath: fallbackPath,
-        subagentsDir: path.join(path.dirname(fallbackPath), claudeSessionId, 'subagents'),
-        // Nothing is tailing it yet, so read to EOF.
-        startOffset: 0,
-      };
+      // Not watched (a just-resumed CC session before CC's hook reports the
+      // transcript path; a session whose process has exited, which tears the
+      // watcher down; the buddy floater, which never watched one). Resolve from
+      // the ids the caller supplied, or from the ones an EARLIER request for
+      // this session supplied — only the FIRST page request carries them, and
+      // the scroll-up sentinel that follows it must not be told the
+      // conversation has no more history just because it has no ids to send.
+      // rememberLocator validates both before either shapes a path.
+      pageSources.rememberLocator(sessionId, req.claudeSessionId, req.projectSlug);
+      source = pageSources.get(sessionId);
+      // NOT `empty`: "I cannot find the file" and "this is the beginning of the
+      // conversation" were the same answer until 2026-09-07, and the renderer
+      // acted on the second — dropping the cursor and the scroll-up sentinel
+      // for good. Say which one this is so the caller can retry.
+      if (!source) {
+        // Put the one-shot tear-off mark back. It was consumed above (before we
+        // knew whether we could serve anything) and it is what makes the
+        // inheriting window's first page read to EOF — an attempt that served
+        // NO events must not be the one that spends it, or the retry that
+        // finally succeeds renders the conversation frozen at the moment the
+        // session was resumed.
+        if (inherited) windowRegistry?.markInheritedByTransfer(sessionId, evt.sender.id);
+        return { ...empty, unresolved: true };
+      }
     }
     // The FIRST page ends where the live tailer started, so the page and the
     // live stream cannot overlap (transcript-watcher startOffset, Task 4). A
@@ -3503,6 +3522,15 @@ export function registerIpcHandlers(
         const ccCwd = payloadCwd || sessionInfo.cwd;
         const ccTranscriptPath = typeof event.payload?.transcript_path === 'string' ? event.payload.transcript_path : undefined;
         transcriptWatcher.startWatching(desktopId, claudeId, ccCwd, ccTranscriptPath);
+        // Take the AUTHORITATIVE path for paged history from the watcher we
+        // just started, so scroll-back keeps working after this session's
+        // process exits (session-exit stops the watcher; the conversation stays
+        // on screen). Read back rather than re-derived: the watcher prefers
+        // CC's own post-realpath transcript_path, which a path derived from our
+        // cwd can miss through a symlink. Overwrites any earlier guess, and
+        // follows a /clear rotation because this runs again on the remap.
+        const watched = transcriptWatcher.pageSourceFor(desktopId);
+        if (watched) pageSources.remember(desktopId, watched);
         // Conversation Store (Phase 2a): tell the store this claude session's cwd
         // so its activity upserts carry projectName/originalPath (local truth).
         noteSessionStarted(claudeId, ccCwd, 'claude');

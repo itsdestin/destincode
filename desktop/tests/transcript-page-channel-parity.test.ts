@@ -40,4 +40,16 @@ describe('transcript:page channel parity (desktop + remote; Android is a later c
   it('answered by a remote-server.ts WS case', () => {
     expect(read('src/main/remote-server.ts')).toContain(`'${CHANNEL}'`);
   });
+
+  // "I could not locate the transcript" vs "you have reached the beginning of
+  // the conversation" were the same answer until 2026-09-07, and the renderer
+  // acted on the second — dropping the cursor and the scroll-up sentinel, so
+  // the rest of the conversation became unreachable in that window. The SAME
+  // React renderer runs over the remote bridge, so a surface that answers this
+  // channel without the distinction reintroduces the bug on that surface only.
+  it('both answering surfaces distinguish "unresolved" from "no more history"', () => {
+    expect(read('src/shared/types.ts')).toMatch(/unresolved\?: true/);
+    expect(read('src/main/ipc-handlers.ts')).toMatch(/unresolved: true/);
+    expect(read('src/main/remote-server.ts')).toMatch(/unresolved: true/);
+  });
 });
