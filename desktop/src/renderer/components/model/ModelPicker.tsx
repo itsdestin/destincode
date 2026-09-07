@@ -178,6 +178,9 @@ export default function ModelPicker({
   includeNative = true,
   onManageModels,
   prefill,
+  defaultOpen = false,
+  layout = 'floating',
+  pinSelectedToTop = false,
 }: {
   value: ModelChoice | null;
   onSelect: (choice: ModelChoice) => void;
@@ -201,11 +204,32 @@ export default function ModelPicker({
    *  (Destin's Task 6 ruling — native resume ALWAYS offers the picker,
    *  pre-filled when the model is available here). */
   prefill?: PortableModelRef;
+  /** Starts the panel already expanded — for a host where the picker IS the
+   *  surface (ModelPickerPopup's status-bar dialog) rather than one field
+   *  among several (SessionStrip, the welcome form, Resume Browser). Defaults
+   *  false everywhere else so this doesn't change the six other call sites. */
+  defaultOpen?: boolean;
+  /** 'floating' (default) portals the open panel to document.body and pins it
+   *  to the trigger with fixed positioning — built for a picker sitting among
+   *  other fields, where the panel must escape an ancestor's clipping and
+   *  overlay whatever is below it. 'inline' instead renders the panel as a
+   *  normal child, in flow, so surrounding content is pushed down rather than
+   *  covered, and OMITS the collapsed trigger row entirely — there is nothing
+   *  to collapse back to, since the panel has no closed state to return to.
+   *  Only ModelPickerPopup uses 'inline', always paired with `defaultOpen`:
+   *  without a trigger, `defaultOpen` is the only way the panel ever opens. */
+  layout?: 'floating' | 'inline';
+  /** Pins the current `value` to the TOP of the favourites view, even when it
+   *  isn't favourited — so a menu that opens straight to the list (`layout:
+   *  'inline'`) shows what's active first, rather than only ever showing
+   *  favourites and leaving the current pick to `search` for. No effect while
+   *  searching (the whole catalogue is already the result, unordered). */
+  pinSelectedToTop?: boolean;
 }) {
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [catalog, setCatalog] = useState<CatalogRow[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [search, setSearch] = useState('');
   const [filterOpen, setFilterOpen] = useState(false);
   const [sources, setSources] = useState<Set<string>>(new Set());
@@ -418,14 +442,36 @@ export default function ModelPicker({
   // THE view rule: favourites until you type, then the whole catalogue.
   const rows = useMemo(() => {
     const pool = searching ? entries : entries.filter((e) => favorites.has(e.key));
-    return pool.filter((e) => {
+    const filtered = pool.filter((e) => {
       if (localOnly && !e.local) return false;
       if (sources.size && !sources.has(e.sourceId)) return false;
       // Word-by-word, punctuation-insensitive: "gpt 5.6" has to find "GPT-5.6".
       if (!matchesQuery(q, e.label, e.sourceLabel)) return false;
       return true;
     });
-  }, [entries, favorites, searching, localOnly, sources, q]);
+    // Pin the active model to the top of the favourites view, even when it
+    // isn't favourited — a menu that opens straight to this list (no click to
+    // get here first) should lead with what's actually selected, not require
+    // typing to find it. Skipped while searching: the whole catalogue is
+    // already the result there, and reordering a search result is surprising.
+    if (!pinSelectedToTop || searching || !value) return filtered;
+    const currentKey = choiceKey(value);
+    const idx = filtered.findIndex((e) => e.key === currentKey);
+    if (idx > 0) {
+      const reordered = filtered.slice();
+      const [current] = reordered.splice(idx, 1);
+      reordered.unshift(current);
+      return reordered;
+    }
+    if (idx === -1) {
+      const hit = entries.find((e) => e.key === currentKey);
+      const passesFilters = hit
+        && (!localOnly || hit.local)
+        && (!sources.size || sources.has(hit.sourceId));
+      if (passesFilters) return [hit, ...filtered];
+    }
+    return filtered;
+  }, [entries, favorites, searching, localOnly, sources, q, pinSelectedToTop, value]);
 
   const toggleFavorite = (key: string) => {
     setFavorites((prev) => {
@@ -475,52 +521,74 @@ export default function ModelPicker({
     // names reads as decoration rather than meaning.
     const markColor = selected ? undefined : brand?.color;
     return (
-      <div key={e.key} className="group/model flex items-center gap-1 px-2">
-        <button
-          type="button"
-          onClick={() => pick(e.choice)}
-          aria-pressed={selected}
-          className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors flex items-center gap-2 ${
-            selected ? 'bg-accent text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
-          }`}
-        >
-          {/* The company mark. A fixed-width box whether or not a mark resolves,
-              so an unrecognised model's name still lines up with its neighbours'
-              instead of hanging one glyph-width to the left. */}
-          <span className="w-[13px] shrink-0 inline-flex items-center justify-center" style={markColor ? { color: markColor } : undefined}>
-            {brand?.icon
-              ? <ProviderIcon icon={brand.icon} size={13} />
-              : <ModelIcon className="w-3 h-3 opacity-40" />}
-          </span>
-          <span className="truncate block min-w-0">
-            {e.label}
-            {/* Divider dot + source, inline per row — this is what replaced the
-                per-provider sections. One flat list reads the same at 4 models
-                or 400. */}
-            <span className={selected ? 'opacity-70' : 'text-fg-muted'}> · {e.sourceLabel}</span>
-          </span>
-        </button>
-        {/* touch-reveal + coarse-hit: hover-only affordances never resolve on
-            the Android WebView (narrow-viewport rule). */}
-        <button
-          type="button"
-          onClick={() => toggleFavorite(e.key)}
-          aria-pressed={fav}
-          aria-label={fav ? `Unfavourite ${e.label}` : `Favourite ${e.label}`}
-          title={fav ? 'Remove from favourites' : 'Add to favourites'}
-          className={`shrink-0 w-6 h-6 rounded inline-flex items-center justify-center transition-opacity coarse-hit touch-reveal ${
-            fav ? 'text-accent opacity-100' : 'text-fg-faint opacity-0 group-hover/model:opacity-100 hover:text-fg-2'
-          }`}
-        >
-          <StarGlyph filled={fav} />
-        </button>
+      // Two levels now: the OUTER div keeps the row's original left/right
+      // margin (px-2, unhighlighted, same on every row) — the accent fill on
+      // the whole outer box read as "too far across" once it ate that margin
+      // (2026-09-07 feedback). The INNER div is what actually carries the
+      // fill, sized to the space between those margins, so it covers the
+      // favourite star's column too instead of stopping at the name button.
+      <div key={e.key} className="group/model flex items-center px-2">
+        <div className={`flex-1 min-w-0 flex items-center gap-1 rounded ${selected ? 'bg-accent' : ''}`}>
+          <button
+            type="button"
+            onClick={() => pick(e.choice)}
+            aria-pressed={selected}
+            className={`flex-1 min-w-0 text-left text-xs rounded px-2 py-2 transition-colors flex items-center gap-2 ${
+              selected ? 'text-on-accent font-medium' : 'text-fg-2 hover:bg-inset'
+            }`}
+          >
+            {/* The company mark. A fixed-width box whether or not a mark resolves,
+                so an unrecognised model's name still lines up with its neighbours'
+                instead of hanging one glyph-width to the left. */}
+            <span className="w-[13px] shrink-0 inline-flex items-center justify-center" style={markColor ? { color: markColor } : undefined}>
+              {brand?.icon
+                ? <ProviderIcon icon={brand.icon} size={13} />
+                : <ModelIcon className="w-3 h-3 opacity-40" />}
+            </span>
+            <span className="truncate block min-w-0">
+              {e.label}
+              {/* Divider dot + source, inline per row — this is what replaced the
+                  per-provider sections. One flat list reads the same at 4 models
+                  or 400. */}
+              <span className={selected ? 'opacity-70' : 'text-fg-muted'}> · {e.sourceLabel}</span>
+            </span>
+          </button>
+          {/* touch-reveal + coarse-hit: hover-only affordances never resolve on
+              the Android WebView (narrow-viewport rule). Selected uses the same
+              on-accent colour as the mark/name above, for the same reason:
+              painting the ordinary favourite-gold onto the accent fill is the
+              one place it can fail contrast, since the accent is theme-authored
+              and unknown to us. mr-1 keeps it off the fill's rounded corner,
+              mirroring the name button's own left inset (px-2) on the other end. */}
+          <button
+            type="button"
+            onClick={() => toggleFavorite(e.key)}
+            aria-pressed={fav}
+            aria-label={fav ? `Unfavourite ${e.label}` : `Favourite ${e.label}`}
+            title={fav ? 'Remove from favourites' : 'Add to favourites'}
+            className={`shrink-0 w-6 h-6 mr-1 rounded inline-flex items-center justify-center transition-opacity coarse-hit touch-reveal ${
+              selected
+                ? 'text-on-accent opacity-100'
+                : fav
+                  ? 'text-accent opacity-100'
+                  : 'text-fg-faint opacity-0 group-hover/model:opacity-100 hover:text-fg-2'
+            }`}
+          >
+            <StarGlyph filled={fav} />
+          </button>
+        </div>
       </div>
     );
   };
 
   return (
     <div className="relative">
-      {/* Trigger — the project picker's field shape (FolderSwitcher.tsx:181). */}
+      {/* Trigger — the project picker's field shape (FolderSwitcher.tsx:181).
+          Omitted in 'inline' layout: that panel has no closed state to
+          collapse back to, so a row that only echoes `value` and toggles
+          `open` (to no visible effect worth keeping) is redundant with the
+          selected row already highlighted in the list below. */}
+      {layout !== 'inline' && (
       <button
         ref={triggerRef}
         type="button"
@@ -560,23 +628,13 @@ export default function ModelPicker({
           <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
         </svg>
       </button>
+      )}
 
-      {open && panelPos && createPortal(
-        <>
-          <div
-            ref={panelRef}
-            // Marker for HOST menus' outside-click handlers — the portal lives on
-            // document.body, so SessionStrip's contains() check can't see it and
-            // would otherwise unmount us on mousedown before our click fires.
-            // Same contract as FolderSwitcher's data-folder-switcher-portal.
-            data-model-picker-portal=""
-            className="layer-surface fixed flex flex-col overflow-hidden"
-            style={{
-              top: panelPos.top, bottom: panelPos.bottom, left: panelPos.left, width: panelPos.width,
-              maxHeight: panelPos.maxHeight, zIndex: POPOVER_Z,
-              animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both',
-            }}
-          >
+      {open && (() => {
+        // Shared between both layouts — see the `layout` prop doc above for
+        // why there are two hosts for the identical content.
+        const panelBody = (
+          <>
             <div className="p-2 border-b border-edge-dim">
               <SearchFilterPill
                 ref={pillRef}
@@ -665,60 +723,100 @@ export default function ModelPicker({
                 </button>
               </div>
             )}
+          </>
+        );
+
+        return layout === 'inline' ? (
+          // In flow, right under the trigger — pushes whatever the host draws
+          // below it (ModelPickerPopup's Effort/Fast sections) down instead of
+          // covering it. No portal, no fixed positioning: this panel is meant
+          // to stay open, so there is nothing transient to escape an ancestor
+          // clip for.
+          // No data-model-picker-portal marker here: that marker exists solely
+          // so a HOST's outside-click check (which can't see document.body via
+          // its own contains()) still recognises the portaled panel as part of
+          // the picker. Rendered in flow, this div already IS a normal
+          // descendant, so no host needs the marker to find it.
+          <div
+            ref={panelRef}
+            className="layer-surface mt-1.5 flex flex-col overflow-hidden rounded-md"
+            style={{ maxHeight: 320 }}
+          >
+            {panelBody}
           </div>
-          {filterOpen && filterPos && (
-            <div
-              ref={filterPopRef}
-              // WHY: This second portal is outside the panel marker. Hosts such
-              // as SessionStrip use the shared marker to recognise every part of
-              // this picker as an inside click before their own menu can close.
-              data-model-picker-portal=""
-              // Portaled OUT of the panel: `.layer-surface` sets
-              // `overflow: hidden` unlayered (globals.css:886) so it can clip
-              // scroll-fades to its rounded corners, which also chopped this
-              // popover off at the panel edge. Anchored to the pill's own rect
-              // instead, at POPOVER_Z + 1 so it sits above the panel.
-              className="layer-surface fixed p-3 flex flex-col gap-3"
-              style={{ top: filterPos.top, left: filterPos.left, width: FILTER_W, zIndex: POPOVER_Z + 1 }}
-            >
-              <Group label="Source">
-                {includeClaude && (
-                  <Chip
-                    active={sources.has(CLAUDE_SOURCE)}
-                    onClick={() => setSources((prev) => {
-                      const n = new Set(prev);
-                      if (n.has(CLAUDE_SOURCE)) n.delete(CLAUDE_SOURCE); else n.add(CLAUDE_SOURCE);
-                      return n;
-                    })}
-                  >Claude Code</Chip>
-                )}
-                {readyProviders.map((p) => (
-                  <Chip
-                    key={p.id}
-                    active={sources.has(p.id)}
-                    onClick={() => setSources((prev) => {
-                      const n = new Set(prev);
-                      if (n.has(p.id)) n.delete(p.id); else n.add(p.id);
-                      return n;
-                    })}
-                  >{p.label}</Chip>
-                ))}
-              </Group>
-              <Group label="Show">
-                <Chip active={localOnly} onClick={() => setLocalOnly((v) => !v)}>
-                  Runs on this device
-                </Chip>
-              </Group>
-              {activeFilters > 0 && (
-                <button
-                  type="button"
-                  onClick={() => { setSources(new Set()); setLocalOnly(false); }}
-                  className="self-start text-3xs text-fg-muted hover:text-fg"
-                >Clear filters</button>
-              )}
-            </div>
+        ) : panelPos && createPortal(
+          <div
+            ref={panelRef}
+            // Marker for HOST menus' outside-click handlers — the portal lives on
+            // document.body, so SessionStrip's contains() check can't see it and
+            // would otherwise unmount us on mousedown before our click fires.
+            // Same contract as FolderSwitcher's data-folder-switcher-portal.
+            data-model-picker-portal=""
+            className="layer-surface fixed flex flex-col overflow-hidden"
+            style={{
+              top: panelPos.top, bottom: panelPos.bottom, left: panelPos.left, width: panelPos.width,
+              maxHeight: panelPos.maxHeight, zIndex: POPOVER_Z,
+              animation: 'dropdown-in 120ms cubic-bezier(0.16, 1, 0.3, 1) both',
+            }}
+          >
+            {panelBody}
+          </div>,
+          document.body,
+        );
+      })()}
+      {open && filterOpen && filterPos && createPortal(
+        <div
+          ref={filterPopRef}
+          // WHY: This second portal is outside the panel marker. Hosts such
+          // as SessionStrip use the shared marker to recognise every part of
+          // this picker as an inside click before their own menu can close.
+          data-model-picker-portal=""
+          // Portaled OUT of the panel: `.layer-surface` sets
+          // `overflow: hidden` unlayered (globals.css:886) so it can clip
+          // scroll-fades to its rounded corners, which also chopped this
+          // popover off at the panel edge. Anchored to the pill's own rect
+          // instead, at POPOVER_Z + 1 so it sits above the panel — and, in
+          // 'inline' layout, above the dialog content the panel now pushes
+          // down too, since it is fixed-positioned regardless of `layout`.
+          className="layer-surface fixed p-3 flex flex-col gap-3"
+          style={{ top: filterPos.top, left: filterPos.left, width: FILTER_W, zIndex: POPOVER_Z + 1 }}
+        >
+          <Group label="Source">
+            {includeClaude && (
+              <Chip
+                active={sources.has(CLAUDE_SOURCE)}
+                onClick={() => setSources((prev) => {
+                  const n = new Set(prev);
+                  if (n.has(CLAUDE_SOURCE)) n.delete(CLAUDE_SOURCE); else n.add(CLAUDE_SOURCE);
+                  return n;
+                })}
+              >Claude Code</Chip>
+            )}
+            {readyProviders.map((p) => (
+              <Chip
+                key={p.id}
+                active={sources.has(p.id)}
+                onClick={() => setSources((prev) => {
+                  const n = new Set(prev);
+                  if (n.has(p.id)) n.delete(p.id); else n.add(p.id);
+                  return n;
+                })}
+              >{p.label}</Chip>
+            ))}
+          </Group>
+          <Group label="Show">
+            <Chip active={localOnly} onClick={() => setLocalOnly((v) => !v)}>
+              Runs on this device
+            </Chip>
+          </Group>
+          {activeFilters > 0 && (
+            <button
+              type="button"
+              onClick={() => { setSources(new Set()); setLocalOnly(false); }}
+              className="self-start text-3xs text-fg-muted hover:text-fg"
+            >Clear filters</button>
           )}
-        </>,
+        </div>,
         document.body,
       )}
     </div>
