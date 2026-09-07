@@ -388,6 +388,10 @@ export default function ModelPickerPopup({ open, onClose, sessionId, currentMode
                 // behaviour (built for a picker that's normally closed).
                 defaultOpen
                 layout="inline"
+                // Lead with what's actually running, not just favourites — the
+                // dialog opens with no click to get here, so a model you picked
+                // once but never starred should still be the first thing you see.
+                pinSelectedToTop
                 onManageModels={() => window.dispatchEvent(new CustomEvent('youcoded:open-model-providers'))}
               />
               {nativeError && <p className="text-xs text-destructive-fg mt-2">{nativeError}</p>}

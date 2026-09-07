@@ -180,6 +180,7 @@ export default function ModelPicker({
   prefill,
   defaultOpen = false,
   layout = 'floating',
+  pinSelectedToTop = false,
 }: {
   value: ModelChoice | null;
   onSelect: (choice: ModelChoice) => void;
@@ -213,10 +214,17 @@ export default function ModelPicker({
    *  other fields, where the panel must escape an ancestor's clipping and
    *  overlay whatever is below it. 'inline' instead renders the panel as a
    *  normal child, in flow, so surrounding content is pushed down rather than
-   *  covered. Only ModelPickerPopup uses 'inline' — paired with `defaultOpen`,
-   *  because there the panel is meant to stay open, and a permanently-open
-   *  floating panel there covered the Effort/Fast sections beneath it. */
+   *  covered, and OMITS the collapsed trigger row entirely — there is nothing
+   *  to collapse back to, since the panel has no closed state to return to.
+   *  Only ModelPickerPopup uses 'inline', always paired with `defaultOpen`:
+   *  without a trigger, `defaultOpen` is the only way the panel ever opens. */
   layout?: 'floating' | 'inline';
+  /** Pins the current `value` to the TOP of the favourites view, even when it
+   *  isn't favourited — so a menu that opens straight to the list (`layout:
+   *  'inline'`) shows what's active first, rather than only ever showing
+   *  favourites and leaving the current pick to `search` for. No effect while
+   *  searching (the whole catalogue is already the result, unordered). */
+  pinSelectedToTop?: boolean;
 }) {
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [catalog, setCatalog] = useState<CatalogRow[]>([]);
@@ -434,14 +442,36 @@ export default function ModelPicker({
   // THE view rule: favourites until you type, then the whole catalogue.
   const rows = useMemo(() => {
     const pool = searching ? entries : entries.filter((e) => favorites.has(e.key));
-    return pool.filter((e) => {
+    const filtered = pool.filter((e) => {
       if (localOnly && !e.local) return false;
       if (sources.size && !sources.has(e.sourceId)) return false;
       // Word-by-word, punctuation-insensitive: "gpt 5.6" has to find "GPT-5.6".
       if (!matchesQuery(q, e.label, e.sourceLabel)) return false;
       return true;
     });
-  }, [entries, favorites, searching, localOnly, sources, q]);
+    // Pin the active model to the top of the favourites view, even when it
+    // isn't favourited — a menu that opens straight to this list (no click to
+    // get here first) should lead with what's actually selected, not require
+    // typing to find it. Skipped while searching: the whole catalogue is
+    // already the result there, and reordering a search result is surprising.
+    if (!pinSelectedToTop || searching || !value) return filtered;
+    const currentKey = choiceKey(value);
+    const idx = filtered.findIndex((e) => e.key === currentKey);
+    if (idx > 0) {
+      const reordered = filtered.slice();
+      const [current] = reordered.splice(idx, 1);
+      reordered.unshift(current);
+      return reordered;
+    }
+    if (idx === -1) {
+      const hit = entries.find((e) => e.key === currentKey);
+      const passesFilters = hit
+        && (!localOnly || hit.local)
+        && (!sources.size || sources.has(hit.sourceId));
+      if (passesFilters) return [hit, ...filtered];
+    }
+    return filtered;
+  }, [entries, favorites, searching, localOnly, sources, q, pinSelectedToTop, value]);
 
   const toggleFavorite = (key: string) => {
     setFavorites((prev) => {
@@ -536,7 +566,12 @@ export default function ModelPicker({
 
   return (
     <div className="relative">
-      {/* Trigger — the project picker's field shape (FolderSwitcher.tsx:181). */}
+      {/* Trigger — the project picker's field shape (FolderSwitcher.tsx:181).
+          Omitted in 'inline' layout: that panel has no closed state to
+          collapse back to, so a row that only echoes `value` and toggles
+          `open` (to no visible effect worth keeping) is redundant with the
+          selected row already highlighted in the list below. */}
+      {layout !== 'inline' && (
       <button
         ref={triggerRef}
         type="button"
@@ -576,6 +611,7 @@ export default function ModelPicker({
           <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
         </svg>
       </button>
+      )}
 
       {open && (() => {
         // Shared between both layouts — see the `layout` prop doc above for
