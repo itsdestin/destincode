@@ -80,7 +80,7 @@ function makeSupervisor(fetchImpl: any, extra: Record<string, any> = {}) {
     fetchImpl,
     readyDeadlineMs: 2_000,
     readyPollMs: 10,
-    idleMs: 10 * 60_000,
+    idleMs: 25 * 60_000,
     idleCheckMs: 60_000,
     ...opts,
   });

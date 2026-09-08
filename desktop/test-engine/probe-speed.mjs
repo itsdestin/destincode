@@ -37,7 +37,7 @@ const modelId = gguf.replace(/\.gguf$/i, '');
 // MUST mirror engine-supervisor.ts's spawn list (only host/port/dir differ).
 const ARGS = [
   '--host', '127.0.0.1', '--port', String(PORT), '--no-webui', '--jinja',
-  '--models-dir', cacheDir, '--models-max', '2', '--sleep-idle-seconds', '300', '-c', '8192',
+  '--models-dir', cacheDir, '--models-max', '2', '--sleep-idle-seconds', '900', '-c', '8192',
   '--spec-default', '--cache-type-k', 'q8_0',
 ];
 const child = spawn(binary, ARGS, { env: { ...process.env, LLAMA_CACHE: cacheDir }, stdio: ['ignore', 'ignore', 'inherit'] });

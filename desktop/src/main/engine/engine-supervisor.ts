@@ -37,7 +37,7 @@ import { renderPresetFile, writePresetFile } from './model-presets';
 export interface EngineSpawnConfig {
   cacheDir: string;          // --models-dir, and exported to the child as LLAMA_CACHE
   contextSize: number;       // the preset's `[*] ctx-size` (a model may override it)
-  sleepIdleSeconds?: number; // the preset's `[*] sleep-idle-seconds`; default 300 (5 min)
+  sleepIdleSeconds?: number; // the preset's `[*] sleep-idle-seconds`; default 900 (15 min)
   /** The two speed switches (design §B). Both default ON — that is what shipped
    *  before they were switchable, so a config file without them behaves as today. */
   speed?: { speculative?: boolean; compressCache?: boolean };
@@ -57,7 +57,7 @@ export interface EngineSupervisorOpts {
   fetchImpl?: typeof fetch;  // test override
   readyDeadlineMs?: number;  // default 30_000 — first Vulkan init can be slow
   readyPollMs?: number;      // default 250
-  idleMs?: number;           // default 10 min (spec §3.2)
+  idleMs?: number;           // default 25 min (spec §3.2); raised 10→25 min 2026-09-07
   idleCheckMs?: number;      // default 60s
   modelPollMs?: number;      // /models state poll cadence when idle; default 1500
   modelPollLoadingMs?: number; // faster cadence while a model is loading; default 400
@@ -79,13 +79,14 @@ export interface EngineSupervisorOpts {
 const MODELS_MAX = 2;
 // Per-model idle sleep: the router frees an idle model's memory after this many
 // seconds (status → 'sleeping'); the next request wakes it. 5 min per product
-// decision 2026-07-14. This is FINER-grained than the engine-wide idle stop
-// (idleMs, 10 min) which tears down the whole process. Verified b9992.
+// decision 2026-07-14, raised to 15 min 2026-09-07 per Destin ("increase these to
+// 15 and 25 minutes"). This is FINER-grained than the engine-wide idle stop
+// (idleMs, 25 min) which tears down the whole process. Verified b9992.
 // Exported because the preset file's `[*]` section now carries this value too
 // (design §C2: engine-wide values a model may override move OFF the command
 // line). One constant, two writers — a second copy would let the command line
 // and the preset disagree about when a model sleeps.
-export const SLEEP_IDLE_SECONDS = 300;
+export const SLEEP_IDLE_SECONDS = 900;
 // Crash strike-out (spec §3.2): 3 crashes within 5 minutes → error state,
 // stop retrying until the user acts (EngineCard's Restart button).
 const STRIKE_LIMIT = 3;
@@ -810,7 +811,7 @@ export class EngineSupervisor extends EventEmitter {
 
   private armIdleTimer(): void {
     this.disarmIdleTimer();
-    const idleMs = this.opts.idleMs ?? 10 * 60_000;
+    const idleMs = this.opts.idleMs ?? 25 * 60_000;
     const checkMs = this.opts.idleCheckMs ?? 60_000;
     this.idleTimer = setInterval(() => {
       if (this.state !== 'running') return;

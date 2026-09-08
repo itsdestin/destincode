@@ -96,6 +96,14 @@ export function transformParams(
   return {
     ...params,
     prompt,
+    // The endpoint refuses `max_output_tokens` outright — HTTP 400
+    // `{"detail":"Unsupported parameter: max_output_tokens"}` — for every
+    // turn, since the harness always sets this from its own token budget.
+    // Explicit `undefined` (not omitted) so it overrides the `...params`
+    // spread above; the SDK's Responses body only emits the key when the
+    // value isn't undefined. Found 2026-09-07 chasing a "Bad Request" the
+    // user hit on the very first message sent through this provider.
+    maxOutputTokens: undefined,
     providerOptions: { ...params.providerOptions, openai: openai as never },
   };
 }

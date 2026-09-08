@@ -41,7 +41,7 @@ import { ARG_ALIASES } from '../src/main/engine/engine-pin';
 const DEFAULTS: ModelSettings = {
   contextLength: null, keepLoaded: false, gpuLayers: 'auto', extraFlags: '',
 };
-const base = { contextSize: 32768, sleepIdleSeconds: 300 };
+const base = { contextSize: 32768, sleepIdleSeconds: 900 };
 
 /** The section body for one id, as lines, or null when it got no section. */
 function section(file: string, id: string): string[] | null {
@@ -58,21 +58,21 @@ function section(file: string, id: string): string[] | null {
 describe('model-presets — the [*] global block', () => {
   it('writes the engine-wide context length and auto-sleep, and writes them FIRST', () => {
     const file = renderPresetFile({ ...base, modelIds: [] });
-    expect(file.split('\n').slice(0, 3)).toEqual(['[*]', 'ctx-size = 32768', 'sleep-idle-seconds = 300']);
+    expect(file.split('\n').slice(0, 3)).toEqual(['[*]', 'ctx-size = 32768', 'sleep-idle-seconds = 900']);
   });
 
   it('drops a context length that could not be a context length', () => {
     for (const contextSize of [0, -5]) {
-      expect(renderPresetFile({ contextSize, sleepIdleSeconds: 300, modelIds: [] })).not.toMatch(/ctx-size/);
+      expect(renderPresetFile({ contextSize, sleepIdleSeconds: 900, modelIds: [] })).not.toMatch(/ctx-size/);
     }
   });
 
   it('drops a value that is not a real number rather than writing it', () => {
     // `ctx-size = NaN` is not a parse error — it is a std::stoi throw when the
     // model loads, which kills that model with a message no user can act on.
-    const file = renderPresetFile({ contextSize: Number.NaN, sleepIdleSeconds: 300, modelIds: [] });
+    const file = renderPresetFile({ contextSize: Number.NaN, sleepIdleSeconds: 900, modelIds: [] });
     expect(file).not.toMatch(/ctx-size/);
-    expect(file).toMatch(/sleep-idle-seconds = 300/);
+    expect(file).toMatch(/sleep-idle-seconds = 900/);
   });
 });
 

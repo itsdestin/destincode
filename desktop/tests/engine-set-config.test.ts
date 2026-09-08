@@ -239,7 +239,7 @@ describe('engine:set-config — a context change reloads, it does not restart (�
     // The whole file, not a substring: a `[*]` section that also carried a
     // leftover key, or a ctx-size written into the wrong section, would both
     // pass a "contains 8192" check while meaning something different.
-    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 8192\nsleep-idle-seconds = 300\n');
+    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 8192\nsleep-idle-seconds = 900\n');
     // Exactly the reload URL — `/models` without the query does NOT re-read the
     // preset, and that is the whole difference between the change landing and
     // the change being invisible until the next launch.
@@ -272,7 +272,7 @@ describe('engine:set-config — a context change reloads, it does not restart (�
     await vi.waitFor(() => { expect(mgr!.status().configApplyPending).toBe(false); });
 
     expect(fs.readFileSync(presetPath(), 'utf8')).toBe(
-      '[*]\nctx-size = 65536\nsleep-idle-seconds = 300\n\n'
+      '[*]\nctx-size = 65536\nsleep-idle-seconds = 900\n\n'
       + '[tuned-model]\nctx-size = 16384\nn-gpu-layers = 24\nsleep-idle-seconds = -1\n',
     );
   });
@@ -303,7 +303,7 @@ describe('engine:set-context — the alias every existing caller still goes thro
 
     expect(engineSection().contextSize).toBe(65_536);
     expect(mgr.status().contextSize).toBe(65_536);
-    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 65536\nsleep-idle-seconds = 300\n');
+    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 65536\nsleep-idle-seconds = 900\n');
     expect(urls).toContain(`http://127.0.0.1:${PORT}/models?reload=1`);
     expect(children[0].kill).not.toHaveBeenCalled();
   });
@@ -361,7 +361,7 @@ describe('engine:set-config — one action per wait, however many changes (R3-5 
     await settled();      // same reason as the probe above
 
     // The preset carries the new context length…
-    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 8192\nsleep-idle-seconds = 300\n');
+    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 8192\nsleep-idle-seconds = 900\n');
     // …and the fresh process reads it on the way up, so asking the router that
     // is about to be torn down to re-read it would be work for nothing.
     expect(urls.filter((u) => u.includes('reload=1'))).toEqual([]);
@@ -396,7 +396,7 @@ describe('engine:set-config — one action per wait, however many changes (R3-5 
     // into the waiter leaves every test in this file green while coalescing
     // holds, because with one pass the two placements are the same thing.
     expect(mockSpawn).toHaveBeenCalledTimes(2);
-    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 8192\nsleep-idle-seconds = 300\n');
+    expect(fs.readFileSync(presetPath(), 'utf8')).toBe('[*]\nctx-size = 8192\nsleep-idle-seconds = 900\n');
   });
 });
 
