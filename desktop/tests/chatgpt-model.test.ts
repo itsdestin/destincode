@@ -10,7 +10,8 @@
 // failed answer, a cut-off turn treated as a clean stop, and dead network
 // connections piling up behind a run of failures.
 import { describe, it, expect } from 'vitest';
-import { foldStream } from '../src/main/providers/chatgpt-model';
+import { foldStream, transformParams } from '../src/main/providers/chatgpt-model';
+import type { LanguageModelV4CallOptions } from '@ai-sdk/provider';
 
 /** A stream of the given parts. `onCancel` fires if the reader cancels it —
  *  which is how we prove a bailed-out fold closes the network connection
@@ -105,5 +106,19 @@ describe('foldStream', () => {
     expect(out.usage.inputTokens.total).toBeUndefined();
     expect(out.usage.outputTokens.total).toBeUndefined();
     expect(out.content).toEqual([{ type: 'text', text: 'cut off mid-' }]);
+  });
+});
+
+describe('transformParams', () => {
+  it('strips maxOutputTokens — the endpoint 400s "Unsupported parameter: max_output_tokens" otherwise', () => {
+    // Reproduced 2026-09-07: every real turn sends this from the harness's own
+    // token budget, so leaving it in place breaks the very first message a
+    // signed-in user sends.
+    const params = {
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+      maxOutputTokens: 4096,
+    } as unknown as LanguageModelV4CallOptions;
+    const out = transformParams(params);
+    expect(out.maxOutputTokens).toBeUndefined();
   });
 });
