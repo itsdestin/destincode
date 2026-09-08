@@ -2158,7 +2158,7 @@ describe('HarnessSession — empty final step recovery', () => {
     expect(results).toHaveLength(9);
     expect((poll as any).calls).toHaveLength(8);
     expect(results[8].data!.isError).toBe(true);
-    expect(results[8].data!.toolResult).toBe('You have read background output 8 times this turn. Do other work; the finished notice will arrive.');
+    expect(results[8].data!.toolResult).toBe('You have read background output 8 times this turn. Do NOT use this tool again without instruction from the user. Do NOT attempt to continuously poll for outputs — the finished notice arrives automatically.');
   });
 
   it('G-1: the BashOutput cap resets on the next turn', async () => {
