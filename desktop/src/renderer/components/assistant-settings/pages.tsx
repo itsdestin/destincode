@@ -12,7 +12,7 @@ import {
 } from '../ModelProvidersPopup';
 import SkipPermissionsSection, { type PermissionOverrides } from './SkipPermissionsSection';
 import FolderSwitcher from '../FolderSwitcher';
-import { SettingRow, Toggle } from '../ui';
+import { FieldError, SettingRow, Toggle } from '../ui';
 
 // The pages of Assistant settings. Five, in one flat list (review round 1,
 // 2026-09-05 — P-5 note: one "Cloud providers" page for the three sign-in /
@@ -187,10 +187,10 @@ function GeneralPage(ctx: PageContext) {
             })}
           />
           {defaultReason && (
-            <p className="text-3xs text-destructive-fg leading-relaxed">
+            <FieldError as="p" className="leading-relaxed">
               {startSummary(defaults)} — {defaultReason.toLowerCase()}. New conversations start with no
               model chosen until this is fixed or you pick another one. Your choice is kept.
-            </p>
+            </FieldError>
           )}
         </FieldRow>
         <ProjectFolderRow {...ctx} />
