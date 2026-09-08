@@ -66,7 +66,11 @@ beforeEach(() => {
 });
 afterEach(async () => {
   await mgr?.stopAll();
-  fs.rmSync(root, { recursive: true, force: true });
+  // WHY the retries (2026-09-07): this threw ENOTEMPTY on the ubuntu CI leg with
+  // 9,743 tests already passed — an engine write landing mid-removal fails a run
+  // that had nothing wrong with it. Same shape as engine-acquisition.test.ts:154,
+  // and what `.claude/rules/test-suite-hygiene.md` prescribes for a real temp root.
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 25 });
 });
 
 function plantInstall(backend = 'cpu') {

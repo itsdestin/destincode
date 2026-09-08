@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useCallback, useMemo } from 'react';
 import { useChatState, useChatDispatch } from '../../state/chat-context';
 import { hookEventToAction } from '../../state/hook-dispatcher';
+import { decideFirstPage, FIRST_PAGE_RETRY_MS } from '../../state/first-page-retry';
 import UserMessage from '../UserMessage';
 import SpecialistReportCard from '../SpecialistReportCard';
 import AssistantTurnBubble from '../AssistantTurnBubble';
@@ -318,16 +319,28 @@ export function BubbleFeed({ sessionId }: Props) {
     // view, not a place to read back through a conversation.
     void (async () => {
       dispatch({ type: 'HISTORY_PAGE_REQUESTED', sessionId });
-      try {
-        const page = await (window as any).claude?.detach?.requestTranscriptPage?.({ sessionId, beforeCursor: null });
-        if (cancelled) return;
-        if (page) {
-          dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
-        } else {
-          dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+      // Retried, and on the same terms as the main window's first page
+      // (first-page-retry.ts). The floater has no scroll-up sentinel, so a
+      // single attempt that main could not resolve — a just-resumed session
+      // whose transcript path CC has not reported yet — silently showed a feed
+      // starting mid-conversation, with nothing to nudge it.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const page = await (window as any).claude?.detach?.requestTranscriptPage?.({ sessionId, beforeCursor: null });
+          if (cancelled) return;
+          if (!page) { dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId }); return; }
+          const decision = decideFirstPage(page, attempt);
+          if (decision === 'accept') {
+            dispatch({ type: 'HISTORY_PAGE_LOADED', sessionId, events: page.events, cursor: page.cursor, hasMore: page.hasMore });
+            return;
+          }
+          if (decision === 'give-up') { dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId }); return; }
+        } catch {
+          if (!cancelled) dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+          return;
         }
-      } catch {
-        if (!cancelled) dispatch({ type: 'HISTORY_PAGE_FAILED', sessionId });
+        await new Promise((r) => setTimeout(r, FIRST_PAGE_RETRY_MS));
+        if (cancelled) return;
       }
     })();
 

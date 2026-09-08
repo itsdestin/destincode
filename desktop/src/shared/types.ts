@@ -226,6 +226,18 @@ export interface TranscriptPageResult {
   /** The handle for the NEXT (older) page; null when hasMore is false. */
   cursor: PageCursor | null;
   hasMore: boolean;
+  /**
+   * "I could not locate this session's transcript", as distinct from "you have
+   * reached the beginning of the conversation" — which is what an empty page
+   * with hasMore:false otherwise means, and which the renderer treats as final.
+   *
+   * These two were the same answer until 2026-09-07, so a transcript that was
+   * merely not locatable YET (a just-resumed CC session before its hook lands,
+   * a session whose process has exited, the buddy floater) permanently ended
+   * the conversation's scroll-back in that window. A caller must RETRY on this,
+   * never record it. Absent means the answer is real.
+   */
+  unresolved?: true;
 }
 
 export interface TranscriptEvent {
@@ -1184,6 +1196,14 @@ export type AttentionReport =
 
 export interface AttentionApi {
   report(payload: AttentionReport): void;
+  /**
+   * Snapshot of main's cross-window aggregate, pulled once on mount. The
+   * matching push (`buddy.onAttentionSummary`) only fires on change, so a
+   * newly opened window has no colours for peer sessions until one of them
+   * next flips. Resolves to an empty summary where aggregation doesn't run
+   * (remote browsers, Android).
+   */
+  getSummary(): Promise<AttentionSummary>;
 }
 
 /**
@@ -1803,6 +1823,7 @@ export const IPC = {
   SESSION_FOCUS_REQUEST: 'session:focus-request',
   SESSION_ATTENTION_SUMMARY: 'session:attention-summary',
   ATTENTION_REPORT: 'attention:report',
+  ATTENTION_GET_SUMMARY: 'attention:get-summary',
   // Settings → Development feature (bug report, contribute, known issues)
   DEV_LOG_TAIL: 'dev:log-tail',
   DEV_DIAGNOSTICS: 'dev:diagnostics',
