@@ -22,7 +22,6 @@ import type { HarnessManifest } from '../../shared/harness-manifest';
 import type { PermissionDecision, PermissionRule } from '../../shared/permission-types';
 import { bashGrantOptions, type GrantScope } from '../../shared/bash-grant-shapes';
 import type { NativeTool, ServedRead, ToolContext, ToolResultPayload, ToolServices } from './tools/types';
-import { stepBudgetFor } from './model-step-budget';
 import { checkPathGuard, workspaceMatchFor } from './tools/guards';
 import { readImageFromDisk, MAX_IMAGES_PER_TURN, MAX_IMAGE_BYTES_PER_TURN, deliverableImageMediaType, MAX_ATTACHMENT_BYTES } from './image-support';
 
@@ -1874,10 +1873,9 @@ export class HarnessSession extends EventEmitter {
     let generationMs = 0;
     const recentCalls: string[] = [];           // doom-loop window (turn-level)
     const imageBudget = { count: 0, bytes: 0 };  // per-turn image delivery budget (spec "Budgets")
-    // Budget precedence: an explicit harness override wins; otherwise the step
-    // ceiling is chosen by MODEL tier (frontier models sustain longer autonomous
-    // runs than the conservative 25 — see model-step-budget.ts).
-    const maxSteps = this.opts.harness.limits?.maxSteps ?? stepBudgetFor(this.binding.modelId);
+    // WHY optional: ordinary root sessions run without this gate unless their
+    // creation-time preference snapshot supplied an explicit limit.
+    const maxSteps = this.opts.harness.limits?.maxSteps;
     let stepsSinceApproval = 0;
     // Consecutive contentless steps (empty-step recovery, spec 2026-08-21).
     // The single silent retry is allowed only at count 1; any real step resets
@@ -2152,7 +2150,7 @@ export class HarnessSession extends EventEmitter {
         // Budget gate (spec §2.4) — surfaces as a permission ASK, not a new
         // event. Allow resets the counter and continues; anything else ends the
         // turn with stopReason 'max_steps'; canceled is an interrupt.
-        if (stepsSinceApproval >= maxSteps) {
+        if (maxSteps !== undefined && stepsSinceApproval >= maxSteps) {
           const d = await this.opts.askUser?.({ sessionId: this.opts.sessionId, toolName: 'max_steps', toolInput: { steps: stepsSinceApproval }, denyListed: false });
           if (d?.behavior === 'canceled') { this.emitEvent('user-interrupt', {}); return; }
           if (d?.behavior !== 'allow') { stopReason = 'max_steps'; break turnLoop; }

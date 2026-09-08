@@ -299,6 +299,23 @@ describe('HarnessSession — multi-step turn driver', () => {
     }
   });
 
+  it('absent maxSteps runs beyond the former 50-step boundary without asking', async () => {
+    const read = fakeTool('Read');
+    const askUser = vi.fn(async (): Promise<AskDecision> => ({ behavior: 'deny' }));
+    const scripts = Array.from({ length: 51 }, (_, index) =>
+      stream(toolCallChunk(`c${index}`, 'Read', { file_path: 'x.ts' }), finishChunk('tool-calls')),
+    );
+    scripts.push(stream(...textChunks('done', 'finished'), finishChunk('stop')));
+    const harness = { ...HARNESS, limits: { maxTokens: 256 } };
+    const model = scriptedModel(scripts);
+    const session = new HarnessSession(makeOpts({ harness, tools: [read], decide: async () => ALLOW, askUser }), async () => model as any);
+    const events = collect(session);
+    await session.send('go');
+    expect(events.filter((event) => event.type === 'tool-use')).toHaveLength(51);
+    expect(askUser).not.toHaveBeenCalledWith(expect.objectContaining({ toolName: 'max_steps' }));
+    expect(events.find((event) => event.type === 'turn-complete')?.data.stopReason).toBe('end_turn');
+  });
+
   it('maxSteps: allow → loop continues (counter resets); deny → turn-complete stopReason max_steps', async () => {
     const twoStepHarness: HarnessManifest = { ...HARNESS, limits: { maxSteps: 2, maxTokens: 256 } };
     // deny path: two tool-calls hit the budget, ask denies → stopReason max_steps.
