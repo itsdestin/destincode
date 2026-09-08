@@ -119,15 +119,21 @@ function isNativeSupported(): boolean {
 // again, with no Claude login behind it. Resetting to defaultRuntime() instead
 // makes the default hold for every session, not just the first.
 //
-// WHY THE isNativeSupported() GATE (review R3-6): under the desktop kill switch
-// (YOUCODED_NATIVE=0) no native providers are loaded, so a stored 'native' would
-// open both forms with Create disabled and no way to fix it. Falling back to
-// 'claude' there keeps the forms usable; the stored value is left untouched so it
-// takes effect again once native is back.
+// WHY THERE IS NO LONGER AN isNativeSupported() FALLBACK (Destin, deck
+// 2026-09-07, P-3 b): "i never want to 'default' back to claude code when the
+// chosen models are unavailable. all providers should be equal/neutral, no
+// reason to randomly pick claude code."
+//
+// The old gate (review R3-6) sent an install whose non-Claude side is switched
+// off back to Claude Code so its forms stayed usable. That is exactly the
+// substitution the rule forbids: the user gets an engine nobody chose. What
+// replaces it is honest and reaches the same place in one tap — the model menu
+// says "You have not set up any model providers." and offers Add provider,
+// which opens Assistant settings (ModelPicker, P-3).
 export function defaultRuntime(): Runtime {
   try {
-    if (localStorage.getItem('youcoded-runtime-default') === 'native' && isNativeSupported()) return 'native';
-  } catch { /* storage blocked -- fall through to the safe default */ }
+    if (localStorage.getItem('youcoded-runtime-default') === 'native') return 'native';
+  } catch { /* storage blocked -- fall through to the base state */ }
   return 'claude';
 }
 
@@ -202,9 +208,23 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
   }, [nativeSupported, runtime, active]);
 
   const readyProviders = providersList.filter((p) => p.ready);
-  const selectedProviderId = (binding && readyProviders.some((p) => p.id === binding.providerId))
-    ? binding.providerId
-    : (readyProviders[0]?.id ?? '');
+  // NOTHING IS SUBSTITUTED (Destin, 2026-09-07 — "nothing should be overridden.
+  // if users select an openrouter/claude code/chatgpt plan model, they should
+  // get that. if the provider is unavailable, the model selector should just
+  // start empty", extended the same day to the last-used memory: "we should fix
+  // this too").
+  //
+  // This used to fall to the first ready provider and its first model whenever
+  // the remembered one could not be honoured, so a person whose local engine was
+  // off silently started a conversation on someone else's cloud model. Now an
+  // unusable binding selects nothing, Create stays gated on `effectiveBinding`
+  // below, and the picker reads "Choose a model…".
+  //
+  // The ONE case that still picks for you is having no binding at all — a first
+  // run with nothing to honour, which is a starting point, not a substitution.
+  const selectedProviderId = !binding
+    ? (readyProviders[0]?.id ?? '')
+    : (readyProviders.some((p) => p.id === binding.providerId) ? binding.providerId : '');
   const selectedProvider = readyProviders.find((p) => p.id === selectedProviderId);
   const providerModels = modelCatalog.filter((m) => m.providerId === selectedProviderId);
   // openai-compatible endpoints (Ollama, LM Studio, custom) may expose no catalog
@@ -214,10 +234,12 @@ export function useNativeBinding({ active, runtime, binding, setBinding }: {
   // providerId guard) so a stale id on a still-ready provider whose catalog no
   // longer lists it can't create a session bound to a model the <select> can't
   // display. Freeform ids pass through as typed.
-  const selectedModelId = (binding && binding.providerId === selectedProviderId && binding.modelId
-    && (needsFreeformModel || providerModels.some((m) => m.id === binding.modelId)))
-    ? binding.modelId
-    : (providerModels[0]?.id ?? '');
+  const selectedModelId = !binding
+    ? (providerModels[0]?.id ?? '')
+    : ((binding.providerId === selectedProviderId && binding.modelId
+        && (needsFreeformModel || providerModels.some((m) => m.id === binding.modelId)))
+      ? binding.modelId
+      : '');
   // Trimmed only at the boundary (never on the displayed value) — a whitespace-only
   // freeform entry is truthy but not a real model, so it must NOT pass the gate.
   const resolvedModelId = selectedModelId.trim();

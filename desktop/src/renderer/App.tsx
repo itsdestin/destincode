@@ -481,7 +481,17 @@ function AppInner() {
   // Zoom state + handlers extracted to useZoomControls (tranche 1).
   const { zoomPercent, zoomVisible, handleZoomIn, handleZoomOut, handleZoomReset } = useZoomControls();
 
-  const [sessionDefaults, setSessionDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
+  // `startModel` is the saved default across EVERY provider (Assistant settings,
+  // Q-3a). The inferred shape had only the Claude alias, which is exactly why the
+  // setting was written, read back, and then ignored by every form that starts a
+  // conversation (contract R5).
+  const [sessionDefaults, setSessionDefaults] = useState<{
+    skipPermissions: boolean;
+    model: string;
+    projectFolder: string;
+    startModel?: ModelChoice;
+    startModelLabel?: { provider: string; model: string };
+  }>({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
 
   // Check first-run state with a 3-second safety timeout — never hang the app
   useEffect(() => {
@@ -3168,6 +3178,7 @@ function AppInner() {
                 sessionStatuses={sessionStatuses}
                 onOpenResumeBrowser={() => setResumeRequested(true)}
                 defaultModel={sessionDefaults.model}
+                defaultStartModel={sessionDefaults.startModel}
                 defaultSkipPermissions={sessionDefaults.skipPermissions}
                 defaultProjectFolder={sessionDefaults.projectFolder}
                 windowDirectory={windowDirectory}
@@ -3548,8 +3559,10 @@ function AppInner() {
                         setWelcomeFormOpen(false);
                         // Reset to the remembered default, NOT the literal 'claude' --
                         // otherwise a ChatGPT-only install's default would last one
-                        // session (review R2-3).
+                        // session (review R2-3). The saved default then goes back on
+                        // top, or it too would survive exactly one conversation.
                         setWelcomeRuntime(defaultRuntime());
+                        if (sessionDefaults.startModel) applyWelcomeModelChoice(sessionDefaults.startModel);
                       }}
                       disabled={welcomeNb.nativeCreateBlocked}
                       variant={welcomeDangerous && welcomeRuntime !== 'native' ? 'danger' : 'primary'}
@@ -3577,6 +3590,12 @@ function AppInner() {
                       setWelcomeCwd(sessionDefaults.projectFolder || '');
                       setWelcomeDangerous(sessionDefaults.skipPermissions || false);
                       setWelcomeModel(sessionDefaults.model || 'sonnet');
+                      // The saved default, whatever provider it names. Routed
+                      // through the picker's own setter so a ChatGPT or local
+                      // default moves the engine with it — setWelcomeModel alone
+                      // only ever moved the Claude alias, which is why this form
+                      // fell back to the last-used memory instead (contract R5).
+                      if (sessionDefaults.startModel) applyWelcomeModelChoice(sessionDefaults.startModel);
                       // usePreset re-arms the heuristic itself on the welcomeFormOpen
                       // false→true edge — no manual touched reset needed here.
                       setWelcomeFormOpen(true);

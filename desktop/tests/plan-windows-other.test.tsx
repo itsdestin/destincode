@@ -22,7 +22,7 @@ import '@testing-library/jest-dom/vitest';
 import { PlanWindows, windowLengthLabel, windowBarLabel } from '../src/renderer/components/plan-windows';
 import StatusBar from '../src/renderer/components/StatusBar';
 import UsageCard from '../src/renderer/components/UsageCard';
-import ModelProvidersSection from '../src/renderer/components/ModelProvidersPopup';
+import { ChatGptBlock } from '../src/renderer/components/ModelProvidersPopup';
 import { makeStoreWrapper } from './helpers/chat-store-harness';
 import type { UsageSnapshot } from '../src/renderer/state/chat-types';
 
@@ -221,7 +221,7 @@ describe('a plan with no windows', () => {
 // The kill switch (design §6): `YOUCODED_CHATGPT=0` → preload's
 // `chatgpt.supported` is false → the ChatGPT card is not in the popup. Read as
 // `=== true`, so a shim with no `chatgpt` namespace hides it too.
-describe('ModelProvidersPopup — the ChatGPT card and chatgpt.supported', () => {
+describe('Assistant settings — the ChatGPT card and chatgpt.supported', () => {
   function stub(chatgpt: unknown) {
     (window as any).claude = {
       native: { supported: true },
@@ -236,7 +236,7 @@ describe('ModelProvidersPopup — the ChatGPT card and chatgpt.supported', () =>
       shell: { openExternal: () => {} },
     };
   }
-  const open = () => rtlRender(<ModelProvidersSection autoOpen />);
+  const open = () => rtlRender(<><span>surface</span><ChatGptBlock /></>);
 
   it('shows the card when supported is true', async () => {
     vi.useRealTimers();
@@ -250,7 +250,7 @@ describe('ModelProvidersPopup — the ChatGPT card and chatgpt.supported', () =>
     const status = vi.fn(async () => ({ state: 'signed-out' }));
     stub({ supported: false, status });
     open();
-    expect(await screen.findByRole('heading', { name: 'Model Providers' })).toBeInTheDocument();
+    expect(await screen.findByText('surface')).toBeInTheDocument();
     expect(screen.queryByText('Sign in with ChatGPT')).toBeNull();
     expect(screen.queryByText('Not signed in')).toBeNull();
     expect(status).not.toHaveBeenCalled(); // the card is gone, not just blank
@@ -260,7 +260,7 @@ describe('ModelProvidersPopup — the ChatGPT card and chatgpt.supported', () =>
     vi.useRealTimers();
     stub({ status: async () => ({ state: 'signed-out' }) });
     open();
-    expect(await screen.findByRole('heading', { name: 'Model Providers' })).toBeInTheDocument();
+    expect(await screen.findByText('surface')).toBeInTheDocument();
     expect(screen.queryByText('Sign in with ChatGPT')).toBeNull();
   });
 });

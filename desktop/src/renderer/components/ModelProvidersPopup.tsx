@@ -6,144 +6,19 @@ import LocalModelsSection from './LocalModelsSection';
 import type { FirstRunState } from '../../shared/first-run-types';
 import type { ProviderStatus } from '../../shared/provider-types';
 import { chatGptPlanLabel, type ChatGptAccountStatus } from '../../shared/chatgpt-types';
-import { AnchorTip, Button, Dialog, InputGroup, TextInput, SettingRow } from './ui';
+import { AnchorTip, Button, Dialog, InputGroup, TextInput } from './ui';
 import BrailleSpinner from './BrailleSpinner';
 import { PlanWindows, type PlanUsage } from './plan-windows';
 import { invalidateProviderTypeCache } from '../hooks/use-provider-type';
 
-// Settings → Model Providers. One settings row that opens an L2 popup gathering
-// every engine/provider surface in one place: Claude Code (the default engine),
-// OpenRouter (cloud models via YouCoded's native harness), and Local Models
-// (models that run on this computer). Replaces the two standalone settings
-// sections (Providers, Local Models) with a single organized popup.
-//
-// Gated on window.claude.native.supported, so — like the sections it replaces —
-// it renders NOTHING in production until Phase 2 ungates the native runtime.
-// Desktop-authoritative; not mounted in AndroidSettings.
-//
-// Pattern mirrors AccountSection/AboutPopup: a row-button in the settings stack
-// that opens a centered, portaled L2 overlay where the real controls live. The
-// (i) AnchorTips carry the plain-language "what is this?" explanations so the
-// section bodies stay focused on the actual settings.
-
-export default function ModelProvidersSection({
-  onOpenClaudePreferences,
-  autoOpen,
-  onAutoOpenHandled,
-}: {
-  // Opens Claude Code's preferences popup (/config). Threaded from App, which
-  // owns that popup's open state — undefined on surfaces that lack it.
-  onOpenClaudePreferences?: () => void;
-  // Deep-link: when true, open the popup immediately on mount (mirrors
-  // SyncSection). Used by the provider-error bubble's "Open Settings" jump so
-  // the user lands directly on the Model Providers controls, not the row.
-  autoOpen?: boolean;
-  onAutoOpenHandled?: () => void;
-}) {
-  // Gate on native support — invisible in production (same as the sections it
-  // replaces). Static boolean, no IPC round-trip.
-  const supported = window.claude?.native?.supported === true;
-  const [open, setOpen] = useState(false);
-
-  // Auto-open when deep-linked, then clear the flag so it doesn't reopen after
-  // the user closes it (same one-shot handshake SyncSection uses).
-  useEffect(() => {
-    if (autoOpen && !open) {
-      setOpen(true);
-      onAutoOpenHandled?.();
-    }
-  }, [autoOpen, open, onAutoOpenHandled]);
-
-  if (!supported) return null;
-
-  return (
-    <>
-      <SettingRow
-        // Simple stacked-layers glyph — "choose your engine".
-        icon={
-          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="M12 3l9 5-9 5-9-5 9-5z" />
-            <path d="M3 13l9 5 9-5" />
-          </svg>
-        }
-        title="Model Providers"
-        description="Claude Code, ChatGPT, OpenRouter, local models"
-        onClick={() => setOpen(true)}
-      />
-
-      {open && (
-        <ModelProvidersPopupInner
-          onClose={() => setOpen(false)}
-          onOpenClaudePreferences={onOpenClaudePreferences}
-        />
-      )}
-    </>
-  );
-}
-
-// ── The popup ────────────────────────────────────────────────────────────────
-
-function ModelProvidersPopupInner({
-  onClose,
-  onOpenClaudePreferences,
-}: {
-  onClose: () => void;
-  onOpenClaudePreferences?: () => void;
-}) {
-  useEscClose(true, onClose);
-  // Kill switch (design §6): `YOUCODED_CHATGPT=0` makes preload report
-  // `chatgpt.supported: false`, and the card must disappear with it — the
-  // main side refuses the plan's models in that build, so a card offering the
-  // sign-in would be a dead button. Read as `=== true` (the native.supported
-  // pattern), so a shim with no `chatgpt` namespace at all hides it too;
-  // the workbench mock declares `supported: true` so the review rig sees it.
-  const chatgptSupported = (window as any).claude?.chatgpt?.supported === true;
-
-  return createPortal(
-    <>
-      <Dialog open onClose={onClose} title="Model Providers" size="panel">
-            <p className="text-2xs text-fg-dim leading-relaxed">
-              Choose which AI engine powers your sessions. Claude Code is the default; a ChatGPT plan,
-              OpenRouter and local models are optional alternatives.
-            </p>
-
-            {/* Round 4 (2026-09-05, P-1 note): two group headings — Cloud Models
-                and Local Models — and no per-provider eyebrow. The three cloud
-                cards sit two units apart inside one group. */}
-            <section>
-              <SectionHeader
-                title="Cloud Models"
-                info={{
-                  label: 'About cloud models',
-                  body: (
-                    <>
-                      <p>
-                        Cloud models run on a company's servers. Sign in with a plan you already pay for
-                        (Claude, ChatGPT), or connect OpenRouter or your own API key and pay per use.
-                      </p>
-                      <p>
-                        Each card shows how you're connected and, for a plan, how much of its limits is
-                        left. Your conversations use whichever model you pick in the model picker.
-                      </p>
-                    </>
-                  ),
-                }}
-              />
-              <div className="space-y-2">
-                <ClaudeCodeBlock onOpenClaudePreferences={onOpenClaudePreferences} onCloseParent={onClose} />
-                {chatgptSupported && <ChatGptBlock />}
-                <OpenRouterBlock />
-              </div>
-            </section>
-
-            <LocalModelsBlock />
-
-            <SearchProvidersBlock />
-      </Dialog>
-    </>,
-    document.body,
-  );
-}
+// The provider blocks of Settings → Assistant settings (2026-09-05). This file
+// was the Model Providers popup — one row opening one dialog with four
+// sections. That row and dialog are gone: the panel in assistant-settings/
+// hosts each block on its own page (Claude Code · ChatGPT · OpenRouter · Local
+// models · Web search), so the blocks are exported here and nothing else
+// changed — same cards, same copy, same (i) explainers, only the frame around
+// them. The file keeps its name so the ChatGPT sign-in branch, which reshapes
+// these cards, merges without a rename conflict.
 
 // Shared header for each section: bold name + an (i) explainer.
 function SectionHeader({ title, info }: { title: string; info: { label: string; body: React.ReactNode } }) {
@@ -162,7 +37,7 @@ function SectionHeader({ title, info }: { title: string; info: { label: string; 
 // same muted grey · one action on the right · optional plan bars underneath.
 // No green "connected" text and no "Default engine" badge — the status line
 // says the state in words and the plan bars say how much is left.
-function ProviderRow({ title, info, status, detail, action, children }: {
+function ProviderRow({ title, info, status, detail, action, account, children }: {
   title: string;
   /** The (i) explainer, beside the name INSIDE the card (round 3, P-1): the
    *  eyebrow heading above the card repeated the name, so it is gone. */
@@ -172,6 +47,10 @@ function ProviderRow({ title, info, status, detail, action, children }: {
    *  'bad' is the destructive colour for a reason the user must read. */
   detail?: { text: React.ReactNode; tone?: 'muted' | 'bad' } | null;
   action?: React.ReactNode;
+  /** Round 2 (R2-3): a "My Account" button, top right, that opens the
+   *  provider's own account page in the browser. Only passed when signed in —
+   *  an account page is no use to someone who has no account here yet. */
+  account?: string;
   children?: React.ReactNode;
 }) {
   return (
@@ -189,7 +68,17 @@ function ProviderRow({ title, info, status, detail, action, children }: {
             <p className={`text-2xs mt-0.5 ${detail.tone === 'bad' ? 'text-destructive-fg' : 'text-fg-muted'}`}>{detail.text}</p>
           )}
         </div>
-        {action && <div className="shrink-0">{action}</div>}
+        {(account || action) && (
+          <div className="shrink-0 flex items-center gap-1.5">
+            {account && (
+              <Button variant="secondary" size="sm"
+                onClick={() => void (window as any).claude.shell.openExternal(account)}>
+                My Account
+              </Button>
+            )}
+            {action}
+          </div>
+        )}
       </div>
       {children && <div className="mt-2.5">{children}</div>}
     </div>
@@ -212,7 +101,7 @@ function useClaudePlanUsage(): PlanUsage | null {
 
 // ── 1. Claude Code ───────────────────────────────────────────────────────────
 
-function ClaudeCodeBlock({
+export function ClaudeCodeBlock({
   onOpenClaudePreferences,
   onCloseParent,
 }: {
@@ -259,6 +148,7 @@ function ClaudeCodeBlock({
     statusText = 'Not set up yet';
   }
   const claudeUsage = useClaudePlanUsage();
+  const [signOutOpen, setSignOutOpen] = useState(false);
 
   return (
     <>
@@ -283,14 +173,41 @@ function ClaudeCodeBlock({
           ),
         }}
         status={statusText}
-        action={onOpenClaudePreferences && (
-          <Button variant="secondary" size="sm" onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}>
-            Preferences
-          </Button>
-        )}
+        account={signedIn ? 'https://claude.ai/settings/usage' : undefined}
+        action={
+          <>
+            {onOpenClaudePreferences && (
+              <Button variant="secondary" size="sm" onClick={() => { onCloseParent(); onOpenClaudePreferences(); }}>
+                Preferences
+              </Button>
+            )}
+            {signedIn && (
+              <Button variant="secondary" size="sm" onClick={() => setSignOutOpen(true)}>
+                Sign out
+              </Button>
+            )}
+          </>
+        }
       >
         {signedIn && state?.authMode !== 'apikey' && <PlanWindows usage={claudeUsage} />}
       </ProviderRow>
+
+      {/* Round 3 (R3-5, pick a): the button stays, but nothing here signs you
+          out. Claude Code owns its own login, and the app has never had a way
+          to clear it — the CLI's /logout is a terminal-only screen, which is
+          exactly what the command list already tells people. So this says
+          where to go, in the same words. */}
+      <Dialog open={signOutOpen} onClose={() => setSignOutOpen(false)} title="Sign out of Claude Code" size="prompt">
+        <div className="space-y-3 text-xs text-fg leading-relaxed">
+          <p>
+            Open any conversation, switch it to Terminal view, and type <code className="font-mono bg-inset px-1 rounded">/logout</code>.
+            That signs Claude Code out on this computer.
+          </p>
+          <div className="flex justify-end pt-1">
+            <Button variant="secondary" onClick={() => setSignOutOpen(false)}>Got it</Button>
+          </div>
+        </div>
+      </Dialog>
     </>
   );
 }
@@ -314,7 +231,20 @@ function chatGptApi(): {
   return (window as any).claude.chatgpt;
 }
 
-function ChatGptBlock() {
+export function ChatGptBlock() {
+  // Kill switch (ChatGPT sign-in design §6): `YOUCODED_CHATGPT=0` makes preload
+  // report `chatgpt.supported: false`, and the card must disappear with it —
+  // the main side refuses the plan's models in that build, so a card offering
+  // the sign-in would be a dead button. Read as `=== true` (the
+  // native.supported pattern), so a shim with no `chatgpt` namespace at all
+  // hides it too; the workbench mock declares `supported: true` so the review
+  // rig sees it.
+  //
+  // WHY it lives HERE and not in the caller: master put this test in the Model
+  // Providers popup, which Assistant settings deletes — the card is now mounted
+  // straight onto the Cloud providers page, so the gate travels with the card
+  // or it does not exist at all. Merged 2026-09-07.
+  const supported = (window as any).claude?.chatgpt?.supported === true;
   const [status, setStatus] = useState<ChatGptAccountStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -323,7 +253,9 @@ function ChatGptBlock() {
     try { setStatus(await chatGptApi().status()); }
     catch (e) { setNote(e instanceof Error ? e.message : 'Could not read the ChatGPT sign-in state.'); }
   }, []);
-  useEffect(() => { void refresh(); }, [refresh]);
+  // Gated: a build with ChatGPT switched off must not call its IPC at all —
+  // the card is gone, not merely blank (guarded by plan-windows-other.test).
+  useEffect(() => { if (!supported) return; void refresh(); }, [refresh, supported]);
 
   // Every state change this card observes (signed-out → waiting → signed-in,
   // a sign-out, a block) changes which provider rows exist, and the status
@@ -409,6 +341,8 @@ function ChatGptBlock() {
     </Button>
   );
 
+  if (!supported) return null;
+
   return (
     <>
       <ProviderRow
@@ -436,6 +370,7 @@ function ChatGptBlock() {
         }}
         status={line}
         detail={note ? { text: note, tone: 'bad' } : detail}
+        account={status?.state === 'signed-in' || status?.state === 'blocked' ? 'https://chatgpt.com/#settings/Account' : undefined}
         action={action}
       >
         {status?.state === 'signed-in' && <PlanWindows usage={status.usage} />}
@@ -446,7 +381,7 @@ function ChatGptBlock() {
 
 // ── 2. OpenRouter ────────────────────────────────────────────────────────────
 
-function OpenRouterBlock() {
+export function OpenRouterBlock({ keysHeading }: { keysHeading?: string } = {}) {
   // The OpenRouter builtin provider (stable id 'openrouter'). undefined = still
   // loading; null = not found (shouldn't happen — it's builtin).
   const [openrouter, setOpenrouter] = useState<ProviderStatus | null | undefined>(undefined);
@@ -502,6 +437,7 @@ function OpenRouterBlock() {
             ),
           }}
           status={openrouter === undefined ? 'Checking…' : connected ? 'Connected' : 'Not connected'}
+          account={connected ? 'https://openrouter.ai/settings/credits' : undefined}
           detail={testNote ? { text: testNote.text, tone: testNote.tone === 'ok' ? 'muted' : 'bad' } : null}
           action={connected ? (
             <Button variant="secondary" size="sm" onClick={() => { setTestNote(null); setConnectOpen(true); }}>
@@ -522,7 +458,12 @@ function OpenRouterBlock() {
       </div>
 
       {/* Other API providers — direct keys (Anthropic/OpenAI/Google) + custom
-          endpoints. Embedded hides the openrouter + local-engine rows. */}
+          endpoints. Embedded hides the openrouter + local-engine rows.
+          `keysHeading`: the Assistant settings page names the list, because
+          there the OpenRouter card is the only thing above it. */}
+      {keysHeading && (
+        <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mt-4 mb-2">{keysHeading}</h3>
+      )}
       <ProvidersSection embedded="cloud" />
 
       {connectOpen && openrouter && (
@@ -640,27 +581,28 @@ function ConnectOpenRouterModal({
 
 // ── 3. Local Models ──────────────────────────────────────────────────────────
 
-function LocalModelsBlock() {
+export const LOCAL_MODELS_INFO = {
+  label: 'About local models',
+  body: (
+    <>
+      <p>
+        Local models run entirely on this computer — no internet, no account, and no per-use cost.
+        YouCoded downloads the model file and runs it with a bundled engine.
+      </p>
+      <p>
+        Bigger, smarter models need more memory (RAM), and a good graphics card (GPU) makes them
+        faster. Each model below shows whether it should run well on your hardware.
+      </p>
+    </>
+  ),
+};
+
+// `withHeader`: the page that hosts this block already names it in its title
+// line (with the same (i)), so the eyebrow is dropped there.
+export function LocalModelsBlock({ withHeader = true }: { withHeader?: boolean } = {}) {
   return (
     <section>
-      <SectionHeader
-        title="Local Models"
-        info={{
-          label: 'About local models',
-          body: (
-            <>
-              <p>
-                Local models run entirely on this computer — no internet, no account, and no per-use cost.
-                YouCoded downloads the model file and runs it with a bundled engine.
-              </p>
-              <p>
-                Bigger, smarter models need more memory (RAM), and a good graphics card (GPU) makes them
-                faster. Each model below shows whether it should run well on your hardware.
-              </p>
-            </>
-          ),
-        }}
-      />
+      {withHeader && <SectionHeader title="Local Models" info={LOCAL_MODELS_INFO} />}
 
       {/* Embedded: no standalone header (this section supplies it). */}
       <LocalModelsSection embedded />
@@ -691,7 +633,24 @@ const SEARCH_BACKEND_META: Record<SearchBackendId, { hint: string; url: string }
   exa: { hint: 'Neural search for AI — a key upgrades the keyless free tier.', url: 'https://exa.ai' },
 };
 
-function SearchProvidersBlock() {
+export const WEB_SEARCH_INFO = {
+  label: 'About web search',
+  body: (
+    <>
+      <p>
+        When Claude searches the web, YouCoded runs the search itself — no extra account needed.
+        It works for free out of the box using open search backends.
+      </p>
+      <p>
+        Adding a free Tavily or Exa API key is optional. It makes web search faster and more
+        reliable, especially when the free backends are busy. Your key is stored encrypted on this
+        computer and never leaves it.
+      </p>
+    </>
+  ),
+};
+
+export function SearchProvidersBlock({ withHeader = true, card = false }: { withHeader?: boolean; card?: boolean } = {}) {
   const [rows, setRows] = useState<Array<{ id: SearchBackendId; label: string; hasKey: boolean }>>([]);
   // Which backend's key input is open (only one at a time).
   const [editing, setEditing] = useState<SearchBackendId | null>(null);
@@ -754,39 +713,31 @@ function SearchProvidersBlock() {
     }
   };
 
+  // `card` (round 2, R2-1: "websearch should not be a bare header, but a card
+  // that contains the tavily/exa cards. tight spacing on it") — the whole block
+  // becomes one card on Assistant settings → General, with its name and (i)
+  // inside it and the two backend rows one surface deeper. Everywhere else the
+  // block keeps the bare-section shape the Model Providers popup gave it.
   return (
-    <section>
-      <SectionHeader
-        title="Web Search"
-        info={{
-          label: 'About web search',
-          body: (
-            <>
-              <p>
-                When Claude searches the web, YouCoded runs the search itself — no extra account needed.
-                It works for free out of the box using open search backends.
-              </p>
-              <p>
-                Adding a free Tavily or Exa API key is optional. It makes web search faster and more
-                reliable, especially when the free backends are busy. Your key is stored encrypted on this
-                computer and never leaves it.
-              </p>
-            </>
-          ),
-        }}
-      />
+    <section className={card ? 'bg-inset/50 rounded-lg px-3 py-2.5' : undefined}>
+      {card ? (
+        <div className="flex items-center gap-1.5">
+          <p className="text-xs text-fg font-medium">Web search</p>
+          <AnchorTip label={WEB_SEARCH_INFO.label} title="Web search">{WEB_SEARCH_INFO.body}</AnchorTip>
+        </div>
+      ) : withHeader && <SectionHeader title="Web Search" info={WEB_SEARCH_INFO} />}
 
-      <p className="text-3xs text-fg-muted mb-2.5 leading-relaxed">
+      <p className={`text-3xs text-fg-muted leading-relaxed ${card ? 'mb-1.5' : 'mb-2.5'}`}>
         Web search works for free with no setup. Add an optional key to make it faster and more reliable.
       </p>
 
-      <div className="space-y-2">
+      <div className={card ? 'space-y-1.5' : 'space-y-2'}>
         {rows.map((row) => {
           const meta = SEARCH_BACKEND_META[row.id];
           const isEditing = editing === row.id;
           const note = testMsg[row.id];
           return (
-            <div key={row.id} className="bg-inset/50 rounded-lg px-3 py-2.5">
+            <div key={row.id} className={card ? 'bg-well rounded-md px-2.5 py-2' : 'bg-inset/50 rounded-lg px-3 py-2.5'}>
               <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="text-xs text-fg font-medium">{row.label}</p>

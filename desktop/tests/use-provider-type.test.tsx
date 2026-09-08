@@ -28,7 +28,7 @@ vi.mock('../src/renderer/hooks/use-provider-type', async (importOriginal) => {
 });
 
 import { useModelProviderType, resolveProviderType, invalidateProviderTypeCache } from '../src/renderer/hooks/use-provider-type';
-import ModelProvidersSection from '../src/renderer/components/ModelProvidersPopup';
+import { ChatGptBlock } from '../src/renderer/components/ModelProvidersPopup';
 import ProvidersSection from '../src/renderer/components/ProvidersSection';
 
 const invalidateSpy = invalidateProviderTypeCache as unknown as ReturnType<typeof vi.fn>;
@@ -95,7 +95,7 @@ describe('invalidation', () => {
     const status = (window as any).claude.chatgpt.status as ReturnType<typeof vi.fn>;
     status.mockResolvedValueOnce({ state: 'waiting' });
     status.mockResolvedValue({ state: 'signed-in', email: 'd@example.com', plan: 'free', usage: null });
-    render(<ModelProvidersSection autoOpen />);
+    render(<ChatGptBlock />);
     // First read → 'waiting' (a mount, not a transition: no invalidation yet).
     expect(await screen.findByText('Waiting for the browser…')).toBeInTheDocument();
     expect(invalidateSpy).not.toHaveBeenCalled();
@@ -111,7 +111,7 @@ describe('invalidation', () => {
   it('is triggered by the card after a sign-out resolves', async () => {
     const status = (window as any).claude.chatgpt.status as ReturnType<typeof vi.fn>;
     status.mockResolvedValue({ state: 'signed-in', email: 'd@example.com', plan: 'plus', usage: null });
-    render(<ModelProvidersSection autoOpen />);
+    render(<ChatGptBlock />);
     const signOut = await screen.findByText('Sign out');
     status.mockResolvedValue({ state: 'signed-out' });
     fireEvent.click(signOut);

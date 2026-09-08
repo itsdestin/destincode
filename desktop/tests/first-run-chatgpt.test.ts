@@ -60,7 +60,7 @@ import {
 } from '../src/main/first-run';
 import type { ChatGptSignInAuth } from '../src/main/first-run';
 import FirstRunView from '../src/renderer/components/FirstRunView';
-import ModelProvidersSection from '../src/renderer/components/ModelProvidersPopup';
+import { ClaudeCodeBlock } from '../src/renderer/components/ModelProvidersPopup';
 
 const SCRATCH_HOME = join(tmpdir(), `first-run-chatgpt-test-home-${process.pid}`);
 
@@ -613,7 +613,7 @@ describe('ModelProvidersPopup — the Claude Code row after a ChatGPT-only first
 
   it('does not claim a Claude account when setup finished through ChatGPT', async () => {
     stubSettings({ authMode: 'chatgpt', authComplete: true });
-    render(React.createElement(ModelProvidersSection, { autoOpen: true }));
+    render(React.createElement(ClaudeCodeBlock, { onCloseParent: vi.fn() }));
 
     // The row is there, and it tells the truth: Claude Code is installed but
     // this user never signed in to it.
@@ -623,13 +623,13 @@ describe('ModelProvidersPopup — the Claude Code row after a ChatGPT-only first
 
   it('still says signed in for a Claude first run', async () => {
     stubSettings({ authMode: 'oauth', authComplete: true });
-    render(React.createElement(ModelProvidersSection, { autoOpen: true }));
+    render(React.createElement(ClaudeCodeBlock, { onCloseParent: vi.fn() }));
     expect(await screen.findByText('Signed in with your Claude account')).toBeTruthy();
   });
 
   it('still says connected for an Anthropic API key', async () => {
     stubSettings({ authMode: 'apikey', authComplete: true });
-    render(React.createElement(ModelProvidersSection, { autoOpen: true }));
+    render(React.createElement(ClaudeCodeBlock, { onCloseParent: vi.fn() }));
     expect(await screen.findByText('Connected with an Anthropic API key')).toBeTruthy();
   });
 });

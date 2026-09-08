@@ -1715,6 +1715,27 @@ void app.whenReady().then(async () => {
   }
   perfMark('main:chore:announcements:done');
 
+  // The withdrawn protection overrides switch themselves off, once (Assistant
+  // settings, contract R17). Runs HERE — before the remote server and before the
+  // IPC handlers register — so nothing can answer a defaults request, or push
+  // those overrides into the live permission cache, until it has happened.
+  //
+  // WHY `app.isPackaged` (design review 1, R1-8): run-dev.sh isolates ports and
+  // userData but NOT `~/.claude`, so an unguarded migration would perform this
+  // real, one-way, marker-stamping rewrite of the developer's own live settings
+  // the first time any dev build launched — and then never again on their real
+  // install. Verified against a COPY of a defaults file instead; there is
+  // deliberately no environment opt-in (design review 3, R3-1).
+  if (app.isPackaged) {
+    try {
+      const { migratePermissionOverrides } = require('./migrate-permission-overrides');
+      const result = migratePermissionOverrides(path.join(os.homedir(), '.claude', 'youcoded-defaults.json'));
+      if (result === 'migrated') log('INFO', 'Main', 'Cleared withdrawn permission overrides');
+    } catch (e) {
+      log('ERROR', 'Main', 'Permission override migration failed', { error: String(e) });
+    }
+  }
+
   try {
     await remoteServer.start();
   } catch (e) {

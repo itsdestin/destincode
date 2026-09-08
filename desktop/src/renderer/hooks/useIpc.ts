@@ -239,8 +239,13 @@ declare global {
       };
       // App-level defaults (skipPermissions, model, projectFolder).
       defaults: {
-        get: () => Promise<{ skipPermissions: boolean; model: string; projectFolder: string }>;
-        set: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string }>) => Promise<any>;
+        // `startModel` — Assistant settings Q-3a (2026-09-05): one default
+        // across every provider. Optional because installs that only ever set
+        // the Claude alias (`model`) have no such field; `model` stays the
+        // fallback and is kept in step on a Claude pick. Persisted by the same
+        // defaults store, which spreads whatever keys it is given.
+        get: () => Promise<{ skipPermissions: boolean; model: string; projectFolder: string; startModel?: import('../components/model/ModelPicker').ModelChoice; startModelLabel?: { provider: string; model: string } }>;
+        set: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; startModel: import('../components/model/ModelPicker').ModelChoice; startModelLabel: { provider: string; model: string } }>) => Promise<any>;
       };
       // Anonymous analytics opt-out — read/write the gate the analytics-service
       // checks on launch. Shape mirrors preload.ts + remote-shim.ts (Phase 6).

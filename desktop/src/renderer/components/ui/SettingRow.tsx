@@ -138,10 +138,10 @@ export function SettingRow({
   radioTabIndex,
   radioLabel,
   truncateTitle,
+  expanded,
   disabled,
   descriptionClassName,
   className = '',
-  expanded,
 }: SettingRowProps) {
   const d = DENSITY[variant];
   // A row is a <button> only when nothing inside it is focusable. Everything

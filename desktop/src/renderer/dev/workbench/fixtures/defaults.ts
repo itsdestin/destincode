@@ -5,12 +5,16 @@ export interface MockDefaults {
   skipPermissions: boolean;
   model: string;
   projectFolder: string;
+  // Assistant settings → General → "Start on" (Q-3a, 2026-09-05). Absent here
+  // on purpose: the fixture is an install that only ever set the Claude alias,
+  // which is every install today, so the page's fallback path is what renders.
+  startModel?: import('../../../components/model/ModelPicker').ModelChoice;
 }
 
 export function defaults(): MockDefaults {
   return {
     skipPermissions: false,
     model: 'claude-sonnet-4-6',
-    projectFolder: '/home/destin/youcoded-dev/youcoded',
+    projectFolder: '/home/you/code/youcoded',
   };
 }

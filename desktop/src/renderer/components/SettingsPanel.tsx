@@ -11,9 +11,6 @@ import ThemeScreen from './ThemeScreen';
 import SyncSection from './SyncPanel';
 import SettingsExplainer, { InfoIconButton, type ExplainerSection } from './SettingsExplainer';
 import { useTheme } from '../state/theme-context';
-import { MODELS } from './StatusBar';
-import { CLOSE_PROMPT_SUPPRESS_KEY } from './CloseSessionPrompt';
-import { ModelInfoTooltip } from './ModelPickerPopup';
 import { useScrollFade } from '../hooks/useScrollFade';
 import { Scrim } from './overlays/Overlay';
 import { useEscClose } from '../hooks/use-esc-close';
@@ -23,11 +20,9 @@ import { BugReportPopup } from './development/BugReportPopup';
 import { ContributePopup } from './development/ContributePopup';
 import PerformanceButton from './PerformanceButton';
 import AccountSection from './AccountSection';
-import ModelProvidersSection from './ModelProvidersPopup';
-import PermissionsSection from './PermissionsSection';
-import SpecialistsSection, { SPECIALISTS_EXPLAINER_INTRO, SPECIALISTS_EXPLAINER_SECTIONS } from './SpecialistsSection';
-import { PERMISSIONS_EXPLAINER_INTRO, PERMISSIONS_EXPLAINER_SECTIONS } from './permissions/permissions-explainer';
 import { DonateConfirm } from './DonateConfirm';
+import AssistantSettingsRow from './assistant-settings/AssistantSettings';
+import type { AssistantDefaults } from './assistant-settings/pages';
 import { formatVersionLine } from '../../shared/version-line';
 // The Linux/KDE buddy helper's three-state answer. Typed centrally so the popup
 // and the launch path in App.tsx cannot drift apart on what `needed` means.
@@ -1640,489 +1635,6 @@ function RemoteButton({
   );
 }
 
-// ─── Defaults popup button ────────────────────────────────────────────────
-
-const MODEL_LABELS: Record<string, string> = {
-  sonnet: 'Sonnet',
-  'opus[1m]': 'Opus',
-  haiku: 'Haiku',
-  fable: 'Fable',
-};
-
-interface PermissionOverrides {
-  approveAll: boolean;
-  protectedConfigFiles: boolean;
-  protectedDirectories: boolean;
-  compoundCdRedirect: boolean;
-  compoundCdGit: boolean;
-}
-
-const OVERRIDES_DEFAULT: PermissionOverrides = {
-  approveAll: false,
-  protectedConfigFiles: false,
-  protectedDirectories: false,
-  compoundCdRedirect: false,
-  compoundCdGit: false,
-};
-
-// Per-category override toggles for the Advanced section
-const OVERRIDE_CATEGORIES: { key: keyof Omit<PermissionOverrides, 'approveAll'>; label: string; description: string }[] = [
-  { key: 'protectedConfigFiles', label: 'Config files', description: '.bashrc, .gitconfig, .mcp.json' },
-  { key: 'protectedDirectories', label: 'Protected directories', description: '.git/, .claude/ paths' },
-  { key: 'compoundCdRedirect', label: 'cd + redirect commands', description: 'Compound cd with output redirection' },
-  { key: 'compoundCdGit', label: 'cd + git commands', description: 'Compound cd with git operations' },
-];
-
-function SkipPermissionsSection({ defaults, onDefaultsChange }: {
-  defaults: { skipPermissions: boolean; permissionOverrides?: PermissionOverrides };
-  onDefaultsChange: (updates: any) => void;
-}) {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const overrides = { ...OVERRIDES_DEFAULT, ...defaults.permissionOverrides };
-
-  const updateOverride = useCallback((key: keyof PermissionOverrides, value: boolean) => {
-    onDefaultsChange({ permissionOverrides: { ...overrides, [key]: value } });
-  }, [overrides, onDefaultsChange]);
-
-  const handleApproveAllToggle = useCallback(() => {
-    if (!overrides.approveAll) {
-      // Turning ON — show confirmation popup
-      setConfirmOpen(true);
-    } else {
-      // Turning OFF — immediate
-      updateOverride('approveAll', false);
-    }
-  }, [overrides.approveAll, updateOverride]);
-
-  return (
-    <section>
-      {/* K2: "Skip Permissions" was a K1 SECTION LABEL doing a row title's job —
-          an uppercase eyebrow heading labelling a single control. K1's rule is
-          that a section label never labels one control; if a control needs a
-          label, it is this row's title. The consequence line was the other
-          retired shape (a <p> below the whole row); it belongs in the left
-          column under the title, where every other description lives. */}
-      {/* K9 — danger zone. One shape: a "Danger zone" K1 label, the consequence
-          in a K4 danger callout, and the control, callout and control kept
-          together.
-
-          TWO DOCUMENTED DEVIATIONS, both approved 2026-07-28:
-
-          1. PLACEMENT. K9 says a danger zone is always LAST in its menu; this
-             one stays mid-menu. The rule exists so you cannot stumble into a
-             destructive ACTION, and a toggle you must deliberately flip is a
-             different risk from a Delete button — moving the most important
-             setting in Session Defaults to the bottom would de-emphasise it to
-             buy consistency that protects against nothing here.
-
-          2. ORDER. The callout sits AFTER the control, not before it. K9's
-             order assumes a button ("read this, then press"); for a toggle the
-             sentence is a consequence of the state you just turned on, and it
-             only exists while the toggle is on. Above the row it would push the
-             control down every time you flipped it. */}
-      <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-2">Danger zone</h3>
-      <SettingRow
-        variant="item"
-        title="Skip Permissions"
-        description="New sessions will skip tool approval"
-        control={
-          <Toggle
-            enabled={defaults.skipPermissions}
-            onToggle={() => onDefaultsChange({ skipPermissions: !defaults.skipPermissions })}
-            color="red"
-            label="Skip Permissions"
-          />
-        }
-      />
-      {defaults.skipPermissions && (
-        // Was a raw `text-[#DD4444]` span inside the row's description — the
-        // fixed status red, which theme packs cannot restyle. The Callout's
-        // danger tone rides the destructive token instead (change 17).
-        <Callout tone="danger" className="mt-2">
-          Claude will execute tools without asking for approval.
-        </Callout>
-      )}
-      {defaults.skipPermissions && (
-        <>
-          {/* Advanced expandable section */}
-          <button
-            onClick={() => setAdvancedOpen(!advancedOpen)}
-            className="flex items-center gap-1.5 mt-3 group"
-          >
-            <svg
-              className="w-3 h-3 text-fg-faint transition-transform"
-              style={{ transform: advancedOpen ? 'rotate(90deg)' : 'rotate(0deg)' }}
-              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}
-              strokeLinecap="round" strokeLinejoin="round"
-            >
-              <path d="M9 5l7 7-7 7" />
-            </svg>
-            <span className="text-3xs text-fg-muted group-hover:text-fg-2 transition-colors">Advanced</span>
-          </button>
-
-          {advancedOpen && (
-            <div className="mt-2 ml-1 border-l border-edge-dim pl-3 space-y-3">
-              {/* Approve All toggle. K2: these were text-3xs/text-4xs — a third
-                  and fourth type size used to signal nesting depth. The indent
-                  rail to the left already says "nested"; the rows take the one
-                  item density like every other in-menu row. */}
-              <SettingRow
-                variant="item"
-                title="Auto-approve all"
-                description="Silently approve all protected requests"
-                control={<Toggle enabled={overrides.approveAll} onToggle={handleApproveAllToggle} color="red" label="Auto-approve all" />}
-              />
-
-              {/* Separator */}
-              <div className="flex items-center gap-2">
-                <div className="flex-1 border-t border-edge-dim" />
-                <span className="text-4xs text-fg-muted">or approve by category</span>
-                <div className="flex-1 border-t border-edge-dim" />
-              </div>
-
-              {/* Per-category toggles */}
-              {OVERRIDE_CATEGORIES.map(({ key, label, description }) => (
-                <SettingRow
-                  key={key}
-                  variant="item"
-                  title={label}
-                  description={description}
-                  // 40% + pointer-events-none, not the row's own `disabled`: this
-                  // is "superseded by approve-all", not "unavailable", and the
-                  // existing resting opacity is what the spec approved.
-                  className={overrides.approveAll ? 'opacity-40 pointer-events-none' : ''}
-                  control={<Toggle enabled={overrides[key]} onToggle={() => updateOverride(key, !overrides[key])} label={`Auto-approve ${label}`} />}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Confirmation popup for Approve All — L3 destructive, theme-driven glass */}
-          {confirmOpen && createPortal(
-            <>
-              <Dialog
-                open
-                onClose={() => setConfirmOpen(false)}
-                layer={3}
-                destructive
-                size="prompt"
-                // The `&#9888;` glyph goes with the hand-rolled header the spec
-                // named. HTML entities do not decode inside a string PROP (only
-                // in JSX text), so carrying it here would have rendered the
-                // literal characters — and Dialog's `destructive` already tints
-                // the whole panel, which is the same signal without the glyph.
-                title="This is extremely dangerous"
-                scrollBody={false}
-              >
-                <div className="px-4 py-3 space-y-2">
-                  {/* K9: this was the hand-rolled block the spec named — a
-                      `bg-red-600/10` header strip carrying a `&#9888;` glyph and
-                      an `text-[#DD4444]` heading, which is a FOURTH red beside
-                      the destructive token, the fixed status red, and the
-                      red-600 the strip itself used. The title is Dialog's now
-                      (with `destructive`, which already tints the panel) and the
-                      consequence is a danger Callout. Copy is unchanged
-                      throughout — it was specific, it was accurate, and it is
-                      the strongest warning in the app for good reason. */}
-                  <Callout tone="danger">
-                    <strong>This setting is not recommended or condoned by Claude, Anthropic, or YouCoded.</strong>{' '}
-                    Do not enable this unless you fully understand the consequences.
-                  </Callout>
-                  <p className="text-3xs text-fg-dim leading-relaxed">
-                    Full auto-approve silently grants <strong>every</strong> remaining permission request with zero human review. Claude will be able to:
-                  </p>
-                  <ul className="text-3xs text-fg-muted space-y-1 ml-3 list-disc">
-                    <li>Overwrite your <code className="text-fg-dim">.git/</code> history and repository internals</li>
-                    <li>Modify shell config files (<code className="text-fg-dim">.bashrc</code>, <code className="text-fg-dim">.gitconfig</code>, <code className="text-fg-dim">.zshrc</code>)</li>
-                    <li>Rewrite <code className="text-fg-dim">.claude/</code> configuration and MCP settings</li>
-                    <li>Execute compound commands that bypass path resolution safety checks</li>
-                    <li>Execute compound commands that bypass bare repository attack protections</li>
-                  </ul>
-                  <p className="text-3xs text-destructive-fg/80 leading-relaxed font-medium">
-                    These protections exist for a reason. Disabling them means a single bad model output could corrupt your repository, hijack your shell environment, or escalate access beyond this project. There is no undo.
-                  </p>
-                  <div className="flex gap-2 pt-2">
-                    <Button variant="secondary" onClick={() => setConfirmOpen(false)} className="flex-1">
-                      Cancel
-                    </Button>
-                    {/* Change 59: was stock bg-red-600/70 + text-white — a second
-                        red beside the app's #DD4444, and white-on-pale on packs
-                        that soften --destructive. Filled danger commits. */}
-                    <Button
-                      variant="danger"
-                      onClick={() => { updateOverride('approveAll', true); setConfirmOpen(false); }}
-                      className="flex-1"
-                    >
-                      I understand, enable anyway
-                    </Button>
-                  </div>
-                </div>
-              </Dialog>
-            </>,
-            document.body,
-          )}
-        </>
-      )}
-    </section>
-  );
-}
-
-interface DefaultsButtonProps {
-  defaults: { skipPermissions: boolean; model: string; projectFolder: string; permissionOverrides?: PermissionOverrides };
-  onDefaultsChange: (updates: Partial<{ skipPermissions: boolean; model: string; projectFolder: string; permissionOverrides: PermissionOverrides }>) => void;
-}
-
-function DefaultsButton({ defaults, onDefaultsChange }: DefaultsButtonProps) {
-  const [open, setOpen] = useState(false);
-  const popupRef = useRef<HTMLDivElement>(null);
-  // Close-session prompt suppression — reads/writes localStorage directly since
-  // this is a UI preference, not a session default backed by sessionDefaults.
-  const [closePromptDisabled, setClosePromptDisabled] = useState(
-    () => localStorage.getItem(CLOSE_PROMPT_SUPPRESS_KEY) === '1',
-  );
-
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: MouseEvent) => {
-      if (popupRef.current && !popupRef.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [open]);
-
-  const handleBrowseFolder = useCallback(async () => {
-    try {
-      const folder = await (window as any).claude.dialog.openFolder();
-      if (folder) onDefaultsChange({ projectFolder: folder });
-    } catch {}
-  }, [onDefaultsChange]);
-
-  const summaryParts: string[] = [];
-  summaryParts.push(MODEL_LABELS[defaults.model] || 'Sonnet');
-  if (defaults.skipPermissions) summaryParts.push('Skip Perms');
-
-  return (
-    <>
-      <SettingRow
-        icon={
-          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-            <line x1="4" y1="7" x2="20" y2="7" /><circle cx="8" cy="7" r="2.2" fill="var(--panel)" />
-            <line x1="4" y1="17" x2="20" y2="17" /><circle cx="16" cy="17" r="2.2" fill="var(--panel)" />
-          </svg>
-        }
-        title="Defaults"
-        description={summaryParts.join(' · ')}
-        onClick={() => setOpen(true)}
-      />
-
-      <Dialog
-        open={open}
-        onClose={() => setOpen(false)}
-        title="Session Defaults"
-        size="panel"
-        panelRef={popupRef}
-      >
-                {/* Default Model */}
-                <section>
-                  <h3 className="text-3xs font-medium text-fg-muted tracking-wider uppercase mb-3">Default Model</h3>
-                  {/* K3: three short options -> segmented. The info tooltip
-                      rides in the label, which is a ReactNode. */}
-                  <SegmentedTabs
-                    variant="contained"
-                    aria-label="Default Model"
-                    value={defaults.model}
-                    onChange={(id) => onDefaultsChange({ model: id })}
-                    tabs={MODELS.map((m) => ({
-                      id: m,
-                      label: (
-                        <>
-                          {MODEL_LABELS[m] || m}
-                          <ModelInfoTooltip model={m} />
-                        </>
-                      ),
-                    }))}
-                  />
-                </section>
-
-                {/* Skip Permissions */}
-                <SkipPermissionsSection defaults={defaults} onDefaultsChange={onDefaultsChange} />
-
-                {/* Default Project Folder.
-
-                    K7: this was a <button> wearing the FIELD surface — bg-inset,
-                    border-edge-dim, rounded-md — so it read as a text box you
-                    could type into, and nothing about it said "this opens a
-                    folder picker". A value chosen ELSEWHERE (an OS dialog, a
-                    picker, another screen) is a value row plus a Change button:
-                    here is the value, here is how to change it.
-
-                    The uppercase "Project Folder" eyebrow was also a K1 section
-                    label doing a row title's job — the same violation K2 already
-                    retired at Skip Permissions and Close-session prompt. */}
-                <SettingRow
-                  variant="item"
-                  title="Project folder"
-                  // The path lives in the description, not the `value` slot: a
-                  // filesystem path is long and must wrap, and `value` is
-                  // shrink-0 so it would push the buttons off the row.
-                  description={defaults.projectFolder || 'Home directory (default)'}
-                  control={
-                    <div className="flex items-center gap-1 shrink-0">
-                      {defaults.projectFolder && (
-                        <Button variant="ghost" size="sm" onClick={() => onDefaultsChange({ projectFolder: '' })}>
-                          Reset
-                        </Button>
-                      )}
-                      <Button variant="secondary" size="sm" onClick={handleBrowseFolder}>
-                        Change
-                      </Button>
-                    </div>
-                  }
-                />
-
-                {/* Close-session prompt — toggle off to skip the tag-before-closing
-                    popup and destroy sessions immediately. Mirrors the "Don't show
-                    again" checkbox inside the prompt itself. */}
-                {/* K2: the other K1-label-as-row-title violation, and the one the
-                    spec called out by name. "Close-session prompt" was an
-                    uppercase section eyebrow labelling exactly one switch. */}
-                <SettingRow
-                  variant="item"
-                  title="Close-session prompt"
-                  description="Show tag options when closing a session"
-                  control={
-                    // Was a hand-rolled 32x18 track with an inline var(--accent)
-                    // background; one geometry now (change 16). The state is stored
-                    // INVERTED (closePromptDisabled), so `checked` is the negation —
-                    // the switch reads as "show the prompt".
-                    <UiToggle
-                      checked={!closePromptDisabled}
-                      onChange={(show) => {
-                        const next = !show;
-                        setClosePromptDisabled(next);
-                        if (next) {
-                          localStorage.setItem(CLOSE_PROMPT_SUPPRESS_KEY, '1');
-                        } else {
-                          localStorage.removeItem(CLOSE_PROMPT_SUPPRESS_KEY);
-                        }
-                      }}
-                      aria-label="Close-session prompt"
-                    />
-                  }
-                />
-      </Dialog>
-    </>
-  );
-}
-
-// ─── Permissions (M5 item 2a) ──────────────────────────────────────────────
-
-// Settings → Permissions: every "Always allow" a native session remembered,
-// with a way to take it back. The list itself lives in PermissionsSection.tsx;
-// this is only the row + the Dialog frame + the (i) explainer toggle, which is
-// the same shape Remote Access, Backup & Sync and Appearance already use.
-//
-// NOT gated on window.claude.native.supported, unlike ModelProvidersSection
-// above. remote-shim.ts hardcodes that flag false, so copying the gate would
-// render nothing over remote access — the one transport where revoking a grant
-// from a phone matters. Spec 2026-08-11, "Open item for Phase 1 review".
-//
-// No popupRef / outside-click effect here: <Dialog>'s own Scrim already calls
-// onClose. The older popups in this file predate that and keep a duplicate
-// handler; new ones should not grow one.
-function PermissionsButton() {
-  const [open, setOpen] = useState(false);
-  // Flips the dialog body to the plain-language explainer. Reset on every
-  // re-open so the user always lands on the list, not on whichever view they
-  // happened to leave behind (same reason RemoteButton resets its showInfo).
-  const [showInfo, setShowInfo] = useState(false);
-
-  useEffect(() => {
-    if (!open) setShowInfo(false);
-  }, [open]);
-
-  return (
-    <>
-      <SettingRow
-        icon={
-          // Shield + check: an approval you granted, not a lock you're behind.
-          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 3l7 3v5.5c0 4.3-2.9 8.1-7 9.5-4.1-1.4-7-5.2-7-9.5V6l7-3z" />
-            <path d="M9 12l2 2 4-4" />
-          </svg>
-        }
-        title="Permissions"
-        description="Things you approved with “Always allow”"
-        onClick={() => setOpen(true)}
-      />
-
-      <Dialog
-        open={open}
-        onClose={() => setOpen(false)}
-        title={showInfo ? 'About Permissions' : 'Permissions'}
-        onBack={showInfo ? () => setShowInfo(false) : undefined}
-        headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
-        size="panel"
-        fill
-      >
-        {showInfo ? (
-          <SettingsExplainer
-            intro={PERMISSIONS_EXPLAINER_INTRO}
-            sections={PERMISSIONS_EXPLAINER_SECTIONS}
-          />
-        ) : (
-          <PermissionsSection />
-        )}
-      </Dialog>
-    </>
-  );
-}
-
-// Settings → Specialists (1c): the two model tiers helpers run on, and the
-// roster of everything the assistant can hire (built-in, your folder, the
-// project's folder, Claude Code agent files) with any loader warnings. Same
-// row + Dialog + (i) shape as Permissions directly above it. Not gated on
-// native.supported for the same reason Permissions isn't.
-function SpecialistsButton({ cwd }: { cwd?: string }) {
-  const [open, setOpen] = useState(false);
-  const [showInfo, setShowInfo] = useState(false);
-  useEffect(() => { if (!open) setShowInfo(false); }, [open]);
-  return (
-    <>
-      <SettingRow
-        icon={
-          // Two people, one slightly behind: helpers.
-          <svg className="w-4 h-4 text-fg-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="9" cy="8" r="3.2" />
-            <path d="M3.5 19c0-3 2.5-5 5.5-5s5.5 2 5.5 5" />
-            <path d="M16 5.5a3 3 0 0 1 0 5.6" />
-            <path d="M17.5 14.5c2 .6 3.5 2.4 3.5 4.5" />
-          </svg>
-        }
-        title="Specialists"
-        description="Helpers your assistant can hire, and the models they run on"
-        onClick={() => setOpen(true)}
-      />
-      <Dialog
-        open={open}
-        onClose={() => setOpen(false)}
-        title={showInfo ? 'About Specialists' : 'Specialists'}
-        onBack={showInfo ? () => setShowInfo(false) : undefined}
-        headerActions={showInfo ? undefined : <InfoIconButton onClick={() => setShowInfo(true)} />}
-        size="panel"
-        fill
-      >
-        {showInfo ? (
-          <SettingsExplainer intro={SPECIALISTS_EXPLAINER_INTRO} sections={SPECIALISTS_EXPLAINER_SECTIONS} />
-        ) : (
-          <SpecialistsSection cwd={cwd} />
-        )}
-      </Dialog>
-    </>
-  );
-}
-
 // ─── Tier selector popup ───────────────────────────────────────────────────
 
 // Mirrors PackageTier.kt — descriptions list the actual packages each tier
@@ -2541,7 +2053,7 @@ function AndroidSettings({ open, onSendInput, onRunCommand, onOpenThemeMarketpla
   const [loading, setLoading] = useState(true);
   const [tier, setTier] = useState('CORE');
   const [aboutInfo, setAboutInfo] = useState<{ version: string; build: string } | null>(null);
-  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
+  const [defaults, setDefaults] = useState<AssistantDefaults>({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
   const [remoteConnected, setRemoteConnected] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
   const [showDonateConfirm, setShowDonateConfirm] = useState(false);
@@ -2571,7 +2083,7 @@ function AndroidSettings({ open, onSendInput, onRunCommand, onOpenThemeMarketpla
     Promise.all([
       claude.android?.getTier?.() ?? 'CORE',
       claude.android?.getAbout?.() ?? { version: 'unknown', build: '' },
-      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } },
+      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '' },
     ]).then(([t, about, defs]) => {
       setTier(t?.tier || t || 'CORE');
       setAboutInfo(about);
@@ -2628,7 +2140,9 @@ function AndroidSettings({ open, onSendInput, onRunCommand, onOpenThemeMarketpla
 
         <ConnectToDesktopButton />
 
-        <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
+        {/* Q-6b (2026-09-05): the same Assistant settings row as desktop, with
+            the pages the phone can serve today — General. */}
+        <AssistantSettingsRow platform="android" defaults={defaults} onDefaultsChange={handleDefaultsChange} />
 
         {/* Development — bug reports, contributions, known issues */}
         <SettingRow
@@ -2727,7 +2241,7 @@ function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, ac
   const [showAddDevice, setShowAddDevice] = useState(false);
   const [showSetupQR, setShowSetupQR] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [defaults, setDefaults] = useState({ skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } });
+  const [defaults, setDefaults] = useState<AssistantDefaults>({ skipPermissions: false, model: 'sonnet', projectFolder: '' });
   const [setupStatus, setSetupStatus] = useState<'idle' | 'confirm' | 'installing' | 'authenticating' | 'done' | 'error'>('idle');
   const [setupError, setSetupError] = useState('');
   // Populated when IPC.REMOTE_SET_CONFIG reports the server failed to bind.
@@ -2753,7 +2267,7 @@ function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, ac
       claude.remote.getConfig(),
       claude.remote.detectTailscale(),
       claude.remote.getClientList(),
-      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '', permissionOverrides: { ...OVERRIDES_DEFAULT } },
+      claude.defaults?.get?.() ?? { skipPermissions: false, model: 'sonnet', projectFolder: '' },
     ]).then(([cfg, ts, cls, defs]: [RemoteConfig, TailscaleInfo, ClientInfo[], any]) => {
       setConfig(cfg);
       setTailscale(ts);
@@ -2883,13 +2397,19 @@ function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, ac
 
         <SyncSection autoOpen={syncAutoOpen} onAutoOpenHandled={onSyncAutoOpenHandled} />
 
-        {/* Model Providers — one popup gathering Claude Code, OpenRouter, and
-            Local Models (the Plan A/B/C native-runtime surfaces). Self-gated on
-            native.supported, so it renders nothing in production until Phase 2.
-            Desktop-authoritative — NOT mounted in AndroidSettings. */}
-        <ModelProvidersSection
+        {/* Assistant settings (2026-09-05): ONE row where Model Providers,
+            Defaults, Permissions and Specialists were four. The deep link that
+            used to open Model Providers now opens this panel on its first
+            provider page. Provider pages self-gate on native.supported, so over
+            remote access the panel still shows General, Permissions and
+            Specialists — the three that never had the gate. */}
+        <AssistantSettingsRow
+          defaults={defaults}
+          onDefaultsChange={handleDefaultsChange}
+          cwd={activeSessionCwd}
           onOpenClaudePreferences={onOpenClaudePreferences}
           autoOpen={providersAutoOpen}
+          autoOpenPage="cloud"
           onAutoOpenHandled={onProvidersAutoOpenHandled}
         />
 
@@ -2922,21 +2442,8 @@ function DesktopSettings({ open, onSendInput, onRunCommand, hasActiveSession, ac
           onReportIssue={() => setShowBugReport(true)}
         />
 
-        <DefaultsButton defaults={defaults} onDefaultsChange={handleDefaultsChange} />
 
-        {/* Permissions sits directly under Defaults because they are the two
-            halves of the same question: Defaults sets how much a NEW session
-            asks, Permissions lists the individual asks you already waived.
-            Desktop-authoritative — NOT mounted in AndroidSettings, whose
-            runtime stubs the permissions:* channels (M8 owns Android parity).
-            A phone reaching this over remote access reports platform 'browser',
-            so it renders DesktopSettings and still gets the screen. */}
-        <PermissionsButton />
 
-        {/* Specialists (1c) sits under Permissions: approving a hire is a
-            permission grant, and this is where its two model tiers and the
-            roster live. */}
-        <SpecialistsButton cwd={activeSessionCwd} />
 
         {/* Development — bug reports, contributions, known issues */}
         <SettingRow
