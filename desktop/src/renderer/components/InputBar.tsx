@@ -25,6 +25,16 @@ import { useScrollFade } from '../hooks/useScrollFade';
 import { useStreamingGate } from '../hooks/useStreamingGate';
 import { isAndroid } from '../platform';
 
+// WHY: the composer auto-focus listener must leave controls and composite widgets
+// with their own keyboard behavior focused so they can handle Enter and arrows.
+const isInteractiveTarget = (el: Element | null | undefined): boolean => {
+  const target = el as HTMLElement | null;
+  if (!target) return false;
+  return !!target.closest(
+    'button, a[href], input, textarea, select, summary, [role="button"], [role="link"], [role="menu"], [role="menuitem"], [role="listbox"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"]',
+  );
+};
+
 export interface InputBarHandle {
   clear: () => void;
   // Task 11 (cancel/edit queued messages): the edit-refill idiom. There was no
@@ -354,14 +364,6 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       });
     },
   }));
-
-  const isInteractiveTarget = (el: Element | null | undefined): boolean => {
-    const target = el as HTMLElement | null;
-    if (!target) return false;
-    return !!target.closest(
-      'button, a[href], input, textarea, select, summary, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"]',
-    );
-  };
 
   // Auto-focus input when user starts typing anywhere in the app.
   // When Enter is pressed while the textarea is blurred, we must also
