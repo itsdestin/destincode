@@ -228,6 +228,50 @@ describe('NativeSessionHost', () => {
     expect(history![1].data.text).toBe('Hi there');   // coalesced on disk
   });
 
+  it('fresh roots persist and use one exact step-guard snapshot', async () => {
+    const readGuard = vi.fn(() => 12);
+    const guarded = new NativeSessionHost(
+      new SessionStore(new NativeHome(root)), factory, NO_CONTEXT, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      new SpecialistCatalog({ claudeUserDir: null }), readGuard,
+    );
+    await guarded.create({ sessionId: 'guarded', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    expect(readGuard).toHaveBeenCalledTimes(1);
+    expect(new SessionStore(new NativeHome(root)).readHeader('guarded', root)?.stepGuard).toBe(12);
+    expect((guarded as any).live.get('guarded').session.opts.harness.limits.maxSteps).toBe(12);
+    await guarded.destroyAll();
+  });
+
+  it('resume uses the stored snapshot despite preference changes, while old and malformed headers use no guard', async () => {
+    const store = new SessionStore(new NativeHome(root));
+    let preference = 14;
+    const guarded = new NativeSessionHost(
+      store, factory, NO_CONTEXT, async () => null, async () => null,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      new SpecialistCatalog({ claudeUserDir: null }), () => preference,
+    );
+    await guarded.create({ sessionId: 'stored', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
+    await guarded.destroyAll();
+    preference = 99;
+    await guarded.resume('stored', root);
+    expect((guarded as any).live.get('stored').session.opts.harness.limits.maxSteps).toBe(14);
+    await guarded.destroyAll();
+
+    const headerBase = { v: 1, harnessId: 'assistant', binding: { providerId: 'openrouter', modelId: 'm' }, cwd: root, createdAt: Date.now() };
+    await store.create({ ...headerBase, sessionId: 'old' });
+    await new NativeHome(root).appendSessionLine(nativeStoreSlug(root), 'bad', { ...headerBase, sessionId: 'bad', stepGuard: 'oops' });
+    for (const id of ['old', 'bad']) {
+      const resumed = new NativeSessionHost(
+        store, factory, NO_CONTEXT, async () => null, async () => null,
+        undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+        new SpecialistCatalog({ claudeUserDir: null }), () => 77,
+      );
+      expect(await resumed.resume(id, root)).toBe(true);
+      expect((resumed as any).live.get(id).session.opts.harness.limits.maxSteps).toBeUndefined();
+      await resumed.destroyAll();
+    }
+  });
+
   it('resume rebuilds a live session whose history includes the stored exchange', async () => {
     await host.create({ sessionId: 's-1', cwd: root, binding: { providerId: 'openrouter', modelId: 'm' } });
     host.send('s-1', 'hello');       // M1: dispatch-only — wait for the turn separately
@@ -2468,6 +2512,7 @@ describe('NativeSessionHost', () => {
       const { childId } = await h.createChild('root-1', {
         specialist: CAPPED, prompt: 'p', workDir: root, parentToolCallId: 'tc-1',
       });
+      expect((childSession(h, childId) as any).opts.harness.limits.maxSteps).toBe(CAPPED.stepCap);
       const events: any[] = [];
       const asks: any[] = [];
       h.on('hook-event', (e) => asks.push(e));
@@ -2480,7 +2525,7 @@ describe('NativeSessionHost', () => {
       expect(done.data.stopReason).toBe('max_steps');
       // The DEFINITION's cap is what stopped it, not the model-tier default:
       // exactly two steps ran. Without the harness.limits.maxSteps wiring this
-      // model would loop to stepBudgetFor(modelId) — same stopReason, ~25 steps.
+      // model uses only an explicit maxSteps cap.
       expect(events.filter((e) => e.type === 'tool-use')).toHaveLength(2);
       // Task 8: the ask DOES now reach the host — under the PARENT's id, never
       // answered here, ended only by the timeout redirect.
