@@ -645,17 +645,18 @@ body.pill-accent.legend-on .dl-legend{border-color:transparent;color:var(--fg);
    Scoped to .nav on purpose: the FOOTER logo shares .mark and .wm with a
    different payload ("YC" text, no tagline) and is deliberately untouched here.
    =========================================================================== */
-.nav .mark{width:38px;height:38px;border-radius:32%;
+.nav .mark,.foot .mark{width:38px;height:38px;border-radius:32%;
   background:var(--glass);color:var(--accent);
   border:1px solid var(--hair);
   box-shadow:inset 0 1px 0 var(--glass-hi)}
-.nav .mark-bot{display:block;width:62%;height:62%}
-.nav .mark-bot path,.nav .mark-bot rect,.nav .mark-bot circle,.nav .mark-bot g{fill:currentColor}
-.nav .wm{font-family:'DM Sans',system-ui,sans-serif;font-weight:700;font-size:.94rem;
-  line-height:1.14;letter-spacing:.12em;text-transform:uppercase}
-.nav .wm .wm-a{color:var(--accent)}
-.nav .wm b{font-weight:700;color:inherit}
-.nav .wm i{font-weight:700;opacity:.45}
+.nav .mark-bot,.foot .mark-bot{display:block;width:62%;height:62%}
+.nav .mark-bot path,.nav .mark-bot rect,.nav .mark-bot circle,.nav .mark-bot g,
+.foot .mark-bot path,.foot .mark-bot rect,.foot .mark-bot circle,.foot .mark-bot g{fill:currentColor}
+.nav .wm,.foot .wm{font-family:'DM Sans',system-ui,sans-serif;font-weight:700;font-size:.94rem;
+  line-height:1.14;letter-spacing:.08em;text-transform:uppercase}
+.nav .wm .wm-a,.foot .wm .wm-a{color:var(--accent)}
+.nav .wm b,.foot .wm b{font-weight:700;color:inherit}
+.nav .wm i,.foot .wm i{font-weight:700;opacity:.45}
 /* The tagline joins the name's typeface and tracking so the two lines read as
    one block rather than as a logo with a caption stuck under it. */
 .nav .wm em{display:block;font-family:inherit;font-weight:500;
@@ -2251,7 +2252,7 @@ Contract: ../README.md
 </div></div></section>
 
 <footer><div class="wrap"><div class="panel foot">
-  <a href="#top" class="logo"><span class="mark">YC</span><span class="wm">You<b>Coded</b></span></a>
+  <a href="#top" class="logo"><span class="mark"><svg class="mark-bot" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path fill-rule="evenodd" d="M9 4 L15 4 A4 4 0 0 1 19 8 L19 12 A4 4 0 0 1 15 16 L9 16 A4 4 0 0 1 5 12 L5 8 A4 4 0 0 1 9 4 Z M8.5 8 L10.5 10 L8.5 12 L9.5 12 L11.5 10 L9.5 8 Z M15.5 8 L13.5 10 L15.5 12 L14.5 12 L12.5 10 L14.5 8 Z"/><path d="M1.8 9 L3.2 9 A0.8 0.8 0 0 1 4 9.8 L4 12.2 A0.8 0.8 0 0 1 3.2 13 L1.8 13 A0.8 0.8 0 0 1 1 12.2 L1 9.8 A0.8 0.8 0 0 1 1.8 9 Z"/><path d="M20.8 9 L22.2 9 A0.8 0.8 0 0 1 23 9.8 L23 12.2 A0.8 0.8 0 0 1 22.2 13 L20.8 13 A0.8 0.8 0 0 1 20 12.2 L20 9.8 A0.8 0.8 0 0 1 20.8 9 Z"/><rect x="7.2" y="17" width="3.5" height="4" rx="1.2"/><rect x="13.3" y="17" width="3.5" height="4" rx="1.2"/></svg></span><span class="wm"><span class="wm-a">You</span><b>Coded</b> <i>Assistant</i></span></a>
   <span class="badge">Open Source</span>
   <div class="flinks"><a href="https://github.com/itsdestin/youcoded" target="_blank" rel="noopener">GitHub</a><a href="https://github.com/itsdestin" target="_blank" rel="noopener">Built by Destin</a><a href="https://github.com/itsdestin/youcoded/blob/master/PRIVACY.md" target="_blank" rel="noopener">Privacy</a><a href="https://github.com/itsdestin/youcoded/blob/master/TERMS.md" target="_blank" rel="noopener">Terms</a></div>
   <p class="legal">MIT License &middot; YouCoded is an independent, community-built project. Not affiliated with, endorsed by, or officially supported by Anthropic, OpenAI, or OpenRouter.</p>
