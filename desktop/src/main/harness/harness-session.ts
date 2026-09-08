@@ -2826,7 +2826,7 @@ export class HarnessSession extends EventEmitter {
     if (call.toolName === 'BashOutput') {
       this.bashOutputReadsThisTurn += 1;
       if (this.bashOutputReadsThisTurn > BASH_OUTPUT_READS_PER_TURN) {
-        return { text: `You have read background output ${BASH_OUTPUT_READS_PER_TURN} times this turn. Do other work; the finished notice will arrive.`, isError: true };
+        return { text: `You have read background output ${BASH_OUTPUT_READS_PER_TURN} times this turn. Do NOT use this tool again without instruction from the user. Do NOT attempt to continuously poll for outputs — the finished notice arrives automatically.`, isError: true };
       }
     }
 
