@@ -16,10 +16,10 @@ describe('landing demo fade', () => {
     expect(site).toContain('top: scrollY + er.top + er.height / 2 - innerHeight / 2');
   });
 
-  it('uses a named shorter scroll reveal span and retains the safe mask technique', () => {
-    expect(site).toContain('var FADE_REVEAL_SPAN = 0.5;');
-    expect(site).toContain('var revealSpan = Math.max(120, band * FADE_REVEAL_SPAN);');
-    expect(site).toContain('/ revealSpan');
+  it('finishes the passive reveal before the demo top leaves the viewport', () => {
+    expect(site).toContain('var FADE_REVEAL_START = 240;');
+    expect(site).toContain('var FADE_REVEAL_SPAN = 180;');
+    expect(site).toContain('((FADE_REVEAL_START - er.top) / FADE_REVEAL_SPAN)');
     expect(site).toContain("embed.style.maskComposite = 'intersect'");
     expect(site).not.toContain('.frame.embed{overflow:hidden');
     expect(site).not.toContain('.frame.embed{clip-path:');

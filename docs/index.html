@@ -2538,10 +2538,11 @@ function bootEmbed(){
 // bottom of the window once its own resting spot would have scrolled off.
 var dlFloat = document.querySelector('.dlfloat'), heroApp = document.querySelector('.hero-app');
 var DOCK_GAP = 34;
-// WHY: a full dissolved-band traversal left the live demo partially invisible
-// after visitors had scrolled past it; half that distance restores it promptly
-// without moving mask construction back into the scroll path.
-var FADE_REVEAL_SPAN = 0.5;
+// WHY: the bottom-edge anchor kept the demo blended after its top was leaving
+// the viewport. Start before the top reaches the viewport and finish the 180px
+// reveal while the complete window remains visible, without rebuilding its mask.
+var FADE_REVEAL_START = 240;
+var FADE_REVEAL_SPAN = 180;
 var demoRevealed = false, lastFz = null;
 // Below 820px the pill is not a floating object at all -- it sits in the flow
 // under the demo. The docked rule is `body.fade-d .dlfloat.docked`, which
@@ -2576,22 +2577,10 @@ function placeFloat(){
   // Try Demo used to set to dock the pill early.
   dlFloat.classList.add('docked');
 
-  // --- The dissolve heals as the dissolved band scrolls up past the pill.
-  // Anchored on the embed's own BOTTOM EDGE relative to the TOP of the docked
-  // pill, and spanning the height of the dissolved band itself. Two things this
-  // fixes, both measured 2026-08-31 at 1728x1080:
-  //   * the old anchor (the hero's bottom vs the docking line) was already at
-  //     k=0.007 at rest, so the demo started un-dissolving on the FIRST wheel
-  //     notch -- there was never a moment of the pill simply floating in the fade;
-  //   * the old 300px span finished the reveal at scrollY 305, by which point the
-  //     window being revealed was already sliding off the top of the screen.
-  // Now it starts once the fade's own top edge reaches the pill and ends when the
-  // whole band has passed it, so the healing tracks the thing you are watching.
+  // --- Heal the dissolve before the complete demo starts leaving the viewport.
   if (!demoRevealed && embed && maskRest < 1) {
     var er = embed.getBoundingClientRect();
-    var band = Math.max(120, er.height * (1 - maskRest));   // the dissolved strip
-    var revealSpan = Math.max(120, band * FADE_REVEAL_SPAN);
-    var k = Math.max(0, Math.min(1, ((innerHeight - DOCK_GAP - h) - er.bottom) / revealSpan));
+    var k = Math.max(0, Math.min(1, ((FADE_REVEAL_START - er.top) / FADE_REVEAL_SPAN)));
     k = k * k * (3 - 2 * k);                                // ease in AND out
     var fz = maskRest + (1 - maskRest) * k;
     // Quantised only enough to skip sub-pixel writes. The old 0.012 step moved
