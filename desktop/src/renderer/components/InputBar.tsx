@@ -25,6 +25,16 @@ import { useScrollFade } from '../hooks/useScrollFade';
 import { useStreamingGate } from '../hooks/useStreamingGate';
 import { isAndroid } from '../platform';
 
+// WHY: the composer auto-focus listener must leave controls and composite widgets
+// with their own keyboard behavior focused so they can handle Enter and arrows.
+const isInteractiveTarget = (el: Element | null | undefined): boolean => {
+  const target = el as HTMLElement | null;
+  if (!target) return false;
+  return !!target.closest(
+    'button, a[href], input, textarea, select, summary, [role="application"], [role="button"], [role="link"], [role="menu"], [role="menuitem"], [role="listbox"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"]',
+  );
+};
+
 export interface InputBarHandle {
   clear: () => void;
   // Task 11 (cancel/edit queued messages): the edit-refill idiom. There was no
@@ -366,7 +376,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // isTypingTarget: covers INPUT/TEXTAREA and the CodeMirror editor (a
       // contenteditable DIV) — without it, every printable key typed in the
       // code editor yanks focus into the composer mid-word (spec §12.6).
-      if (isTypingTarget(e.target as Element)) return;
+      // WHY: a focused prompt/menu control owns Enter and arrows. Taking focus
+      // here briefly moves it to the composer before that control can respond.
+      if (isTypingTarget(e.target as Element) || isInteractiveTarget(e.target as Element)) return;
       // Focus textarea for paste shortcuts so Ctrl+V lands in the input
       // even after the idle blur timer has unfocused it
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
