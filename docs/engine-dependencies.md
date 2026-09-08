@@ -109,7 +109,7 @@ server-models.cpp) — a `-c` left here silently outranks, and so defeats, every
 per-model context length. The ONE case they come back is the recovery boot that has
 no usable preset file:
 ```
---sleep-idle-seconds 300 -c <contextSize>      # only when presetPath === null
+--sleep-idle-seconds 900 -c <contextSize>      # only when presetPath === null
 ```
 <!-- verify: {"path": "youcoded/desktop/src/main/engine/engine-supervisor.ts", "contains": "models-preset"} -->
 - **`--models-dir <cacheDir>` is LOAD-BEARING.** It is what makes the router
@@ -129,15 +129,16 @@ no usable preset file:
   stderr so a startup exit surfaces the engine's REAL message instead of a guess.
 - **`--models-max 2`** — the router's LRU default is 4; 2 bounds RAM on consumer
   machines while keeping chat↔utility switching cheap.
-- **Auto-sleep after 5 minutes — now `[*] sleep-idle-seconds = 300` in the preset
+- **Auto-sleep after 15 minutes — now `[*] sleep-idle-seconds = 900` in the preset
   file, NOT a command-line flag.** The router frees an idle model's memory (status →
   `'sleeping'`) and wakes it on the next request. Verified b9992. FINER-grained than the
-  engine-wide idle stop (`idleMs`, 10 min) which tears down the whole process — the two
+  engine-wide idle stop (`idleMs`, 25 min) which tears down the whole process — the two
   are complementary, and "Keep loaded" on a model turns BOTH off for it
   (`sleep-idle-seconds = -1` in its section, and `hasKeepLoadedResident()` holds the
   engine timer). `SLEEP_IDLE_SECONDS` still lives in `engine-supervisor.ts` because the
   preset writer reads it. **`engine-supervisor.test.ts` now pins the flag's ABSENCE from
   the command line** — it only reappears on the recovery boot that has no usable preset.
+  (Raised 5→15 min and 10→25 min on 2026-09-07 per Destin.)
 - **Speed flags (2026-09-04), both measured on b10665, Qwen3.5-9B Q8_0, Z13 Vulkan;
   guard: `test-engine/probe-speed.mjs` (flags reach the model child AND the drafter fires).
   Both are now user switches (`engine.speed` in config.json, `engine:set-config`) and
