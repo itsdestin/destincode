@@ -355,6 +355,14 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
     },
   }));
 
+  const isInteractiveTarget = (el: Element | null | undefined): boolean => {
+    const target = el as HTMLElement | null;
+    if (!target) return false;
+    return !!target.closest(
+      'button, a[href], input, textarea, select, summary, [role="button"], [role="link"], [role="menuitem"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"]',
+    );
+  };
+
   // Auto-focus input when user starts typing anywhere in the app.
   // When Enter is pressed while the textarea is blurred, we must also
   // preventDefault and send — otherwise the browser inserts a newline
@@ -366,7 +374,9 @@ const InputBar = forwardRef<InputBarHandle, Props>(function InputBar({ sessionId
       // isTypingTarget: covers INPUT/TEXTAREA and the CodeMirror editor (a
       // contenteditable DIV) — without it, every printable key typed in the
       // code editor yanks focus into the composer mid-word (spec §12.6).
-      if (isTypingTarget(e.target as Element)) return;
+      // WHY: a focused prompt/menu control owns Enter and arrows. Taking focus
+      // here briefly moves it to the composer before that control can respond.
+      if (isTypingTarget(e.target as Element) || isInteractiveTarget(e.target as Element)) return;
       // Focus textarea for paste shortcuts so Ctrl+V lands in the input
       // even after the idle blur timer has unfocused it
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v') {
