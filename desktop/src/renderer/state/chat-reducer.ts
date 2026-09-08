@@ -28,7 +28,8 @@ function nextMessageId(): string {
 
 let groupCounter = 0;
 function nextGroupId(): string {
-  return `group-${++groupCounter}`;
+  // WHY: a fresh remote boot must not overwrite a hydrated host's tool group.
+  return `group-${ID_EPOCH}-${++groupCounter}`;
 }
 
 // Fix (Destin, 2026-08-16): CC writes a bare `/compact` line as a real user
@@ -52,7 +53,8 @@ function isCompactCommandEcho(text: string): boolean {
 
 let turnCounter = 0;
 function nextTurnId(): string {
-  return `turn-${++turnCounter}`;
+  // WHY: turns are Map keys too; counter-only ids replace hydrated history.
+  return `turn-${ID_EPOCH}-${++turnCounter}`;
 }
 
 /**
