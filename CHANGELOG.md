@@ -5,6 +5,10 @@ All notable changes to YouCoded are documented in this file.
 ## [Unreleased]
 
 ### Changed
+- **Local engine frees models less aggressively** — a model now auto-sleeps after 15
+  minutes idle (was 5) and the whole local engine shuts down after 25 minutes of no
+  requests (was 10). Both are still transparent: the next message wakes the model or
+  restarts the engine. Raised per Destin 2026-09-07.
 - Terms, Privacy and Security pages now name Destin's Adventures, LLC (Arizona) as the company behind YouCoded, and the contact address is support@youcoded.ai.
 - **Android app relicensed from GPLv3 to MIT** — The whole repository is now
   MIT. The GPL label on the Android app rested on a misreading of Termux's

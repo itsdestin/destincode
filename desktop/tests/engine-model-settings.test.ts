@@ -145,7 +145,7 @@ const settled = () => new Promise((r) => setTimeout(r, 40));
 const reloads = () => urls.filter((u) => u.includes('reload=1'));
 
 /** The preset a freshly booted engine writes when no model has settings yet. */
-const BARE_PRESET = '[*]\nctx-size = 32768\nsleep-idle-seconds = 300\n';
+const BARE_PRESET = '[*]\nctx-size = 32768\nsleep-idle-seconds = 900\n';
 
 async function plantConfig(models: Record<string, unknown> = {}) {
   await home.mutateJson('config.json', () => ({
@@ -492,7 +492,7 @@ describe('a deferred ENGINE-WIDE change cannot ride out on somebody else\'s relo
     expect(reply.received()).toBe('the first half and the second.');
     // …and only then does the context change land.
     await vi.waitFor(() => {
-      expect(readPreset()).toBe('[*]\nctx-size = 65536\nsleep-idle-seconds = 300\n');
+      expect(readPreset()).toBe('[*]\nctx-size = 65536\nsleep-idle-seconds = 900\n');
     }, { timeout: 2_000 });
   });
 
