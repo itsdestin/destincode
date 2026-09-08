@@ -31,7 +31,7 @@ const isInteractiveTarget = (el: Element | null | undefined): boolean => {
   const target = el as HTMLElement | null;
   if (!target) return false;
   return !!target.closest(
-    'button, a[href], input, textarea, select, summary, [role="button"], [role="link"], [role="menu"], [role="menuitem"], [role="listbox"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"]',
+    'button, a[href], input, textarea, select, summary, [role="application"], [role="button"], [role="link"], [role="menu"], [role="menuitem"], [role="listbox"], [role="option"], [role="checkbox"], [role="radio"], [role="switch"], [role="tab"]',
   );
 };
 
