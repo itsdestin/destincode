@@ -2538,6 +2538,10 @@ function bootEmbed(){
 // bottom of the window once its own resting spot would have scrolled off.
 var dlFloat = document.querySelector('.dlfloat'), heroApp = document.querySelector('.hero-app');
 var DOCK_GAP = 34;
+// WHY: a full dissolved-band traversal left the live demo partially invisible
+// after visitors had scrolled past it; half that distance restores it promptly
+// without moving mask construction back into the scroll path.
+var FADE_REVEAL_SPAN = 0.5;
 var demoRevealed = false, lastFz = null;
 // Below 820px the pill is not a floating object at all -- it sits in the flow
 // under the demo. The docked rule is `body.fade-d .dlfloat.docked`, which
@@ -2586,7 +2590,8 @@ function placeFloat(){
   if (!demoRevealed && embed && maskRest < 1) {
     var er = embed.getBoundingClientRect();
     var band = Math.max(120, er.height * (1 - maskRest));   // the dissolved strip
-    var k = Math.max(0, Math.min(1, ((innerHeight - DOCK_GAP - h) - er.bottom) / band));
+    var revealSpan = Math.max(120, band * FADE_REVEAL_SPAN);
+    var k = Math.max(0, Math.min(1, ((innerHeight - DOCK_GAP - h) - er.bottom) / revealSpan));
     k = k * k * (3 - 2 * k);                                // ease in AND out
     var fz = maskRest + (1 - maskRest) * k;
     // Quantised only enough to skip sub-pixel writes. The old 0.012 step moved
@@ -2664,36 +2669,28 @@ if (dlFloat) {
   });
 }
 
-var tryPill = document.querySelector('.trypill');
-if (tryPill && embed) {
-  tryPill.addEventListener('click', function(){
-    // Once the pill has docked, the demo it offers is far up the page -- pressing
-    // it there would boot a window nobody can see. Go back to it first.
-    var er = embed.getBoundingClientRect();
-    if (er.bottom < 120 || er.top > innerHeight - 120) {
-      embed.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-    bootEmbed();
-    embed.classList.add('interactive');
-    document.querySelector('.hero-app').classList.add('revealed');
-    demoRevealed = true; placeFloat();
-    // Start from whatever the scroll has already healed, not from the variant's
-    // resting value -- otherwise pressing Try Demo part-way down the page snaps
-    // the dissolve BACK before clearing it.
-    var from = (embedFade !== null ? embedFade : maskRest) || 1;
-    var t0 = performance.now(), DUR = 520;
-    (function step(now){
-      var k = Math.min(1, (now - t0) / DUR);
-      k = 1 - Math.pow(1 - k, 3);
-      embedFade = from + (1 - from) * k;
-      setFadeStop(embedFade);
-      if (k < 1) requestAnimationFrame(step);
-    })(t0);
+var demoActivated = false;
+function activateDemo(){
+  bootEmbed();
+  embed.classList.add('interactive');
+  document.querySelector('.hero-app').classList.add('revealed');
+  demoRevealed = true;
+  // WHY: after a visitor chooses the app, the decorative dissolve must not hide
+  // any part of the surface they are about to use.
+  embedFade = 1; setFadeStop(1); placeFloat();
+  if (!wideMQ.matches || demoActivated) return;
+  demoActivated = true;
+  var er = embed.getBoundingClientRect();
+  scrollTo({
+    top: scrollY + er.top + er.height / 2 - innerHeight / 2,
+    behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth'
   });
 }
+var tryPill = document.querySelector('.trypill');
+if (tryPill && embed) tryPill.addEventListener('click', activateDemo);
 if (embed) {
-  embed.querySelector('.embed-start').addEventListener('click', function(){ bootEmbed(); embed.classList.add('interactive'); });
-  embed.querySelector('.embed-interact').addEventListener('click', function(){ embed.classList.add('interactive'); });
+  embed.querySelector('.embed-start').addEventListener('click', activateDemo);
+  embed.querySelector('.embed-interact').addEventListener('click', activateDemo);
   // Also boot once it scrolls into view, unless the visitor asked for less
   // motion -- or is on a phone, or has Data Saver on. The iframe is the REAL
   // app: a 2.2MB script plus its wallpapers, about 3MB before anyone has asked
